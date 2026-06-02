@@ -46,6 +46,9 @@ def write(rel: str, content: str, *, manifest: bool = False) -> None:
     """Write a file, creating parents. Skip if present unless --force."""
     global skipped
     path = ROOT / rel
+    if path.is_dir():  # a directory placeholder already occupies this path
+        skipped += 1
+        return
     if path.exists() and not FORCE:
         skipped += 1
         return
@@ -285,6 +288,8 @@ def stub_for(path: str, desc: str) -> str | None:
     base = Path(path).name
     ext = Path(path).suffix
     if base in MANIFEST_BASENAMES or path.startswith("docs/"):
+        return None
+    if ext == "":  # extensionless structure entries are directory markers
         return None
     d = doc_line(desc)
     if ext == ".rs":

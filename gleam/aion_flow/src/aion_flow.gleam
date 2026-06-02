@@ -1,1 +1,1 @@
-//// The Gleam authoring SDK (Hex). workflow, activity, signal, query, timer, child, error, and testing modules, with @external bindings to the engine NIFs. Compiles to the Erlang target, runs on beamr.
+//// top-level package doc + curated re-exports (the public surface)
