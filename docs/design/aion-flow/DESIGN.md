@@ -152,7 +152,9 @@ composition fails `gleam build` (**CO5**):
 Passing a `String` to an `Activity(Order, _)`, awaiting the wrong signal
 type, or returning the wrong type from a handler are all type errors. A
 type-safety brief asserts representative invalid compositions are rejected
-(documented compile-fail expectations).
+by an actual `gleam check` over committed negative fixtures (a `check.sh`
+driver runs each in an ephemeral project and asserts the type-mismatch
+failure), not merely documented in prose.
 
 ### Activities are typed values
 
@@ -260,11 +262,16 @@ unit-safe representation everywhere the engine receives a duration.
 
 A workflow is a plain Gleam function `fn(i) -> Result(o, e)`. It is made
 engine-runnable by `workflow.define(name, input_codec, output_codec,
-error_codec, entry_fn)` (**D13**), which records the entry module/function
-and the codecs the engine needs at its type-erased boundary. This typed
-contract is what the `.aion` manifest (cluster AP) consumes. The SDK does
-not invoke the function — AE spawns the process and calls the entry; the SDK
-provides the typed wrapper and the codec declaration. The bare
+error_codec, entry_fn)` (**D13**), which returns an opaque
+`WorkflowDefinition(i, o, e)` carrying the name, the three codecs, and the
+entry function. The consumer is the **engine** (AE), not the Rust
+`aion-package` crate: at spawn AE calls the package's entry function (named
+in the manifest), receives the `WorkflowDefinition`, and uses the codecs to
+decode the input `Payload` and encode the result/error at its type-erased
+boundary. The `.aion` manifest records only the entry module and function
+*names* — it never introspects this Gleam value. The SDK does not invoke the
+function — AE spawns the process and calls the entry; the SDK provides the
+typed wrapper and the codec declaration. The bare
 `pub fn run(String) -> String` bootstrap convention from
 `onatopp-dev-gleam` is a degenerate case the typed `define` supersedes,
 because that convention loses exactly the static input/output types this
@@ -285,9 +292,15 @@ engine, or store. A `TestEnv` holds:
   observation sequence, replay it, and assert the two sequences are
   identical, catching accidental non-determinism in author code.
 
-The harness binds the same ffi surface to in-Gleam test implementations
-(selected by a test-only ffi shim) rather than engine NIFs, so the author's
-workflow code is byte-for-byte identical between test and production.
+The harness binds the same ffi surface to in-Gleam test implementations via
+a concrete test double — a hand-written `test/aion_flow_ffi.erl` that
+implements the production `aion_flow_ffi` NIF namespace in-process against a
+process-scoped `TestEnv` (process dictionary / ETS keyed by pid). `gleam
+test` loads it so the identical `@external` declarations resolve to it; the
+package ships no `aion_flow_ffi` in `src/` (production resolves those names
+to engine-registered NIFs). The author's workflow code is byte-for-byte
+identical between test and production — only which module backs the name at
+load time differs.
 
 ### What this cluster does not own (the seams)
 
@@ -297,7 +310,8 @@ spawning, replay, and the determinism context are AE/AD/AT, reached via
 `@external`. Authoring the NIFs that `aion_flow_ffi` names in Rust is
 `aion-nif` (AN) and the engine (AE-004). Compiling the Gleam to `.beam` and
 bundling a `.aion` archive is `aion-package` (AP) — `workflow.define`
-provides the manifest's typed entry contract, not the archive. Starting /
+provides the typed entry contract the engine invokes at spawn (the manifest
+records only its module/function names), not the archive. Starting /
 signalling / querying a workflow from across a network is the client SDKs
 (AL) over `aion-server` (AW).
 
@@ -376,8 +390,9 @@ gleam/aion_flow/
 - **No Rust NIF authoring** — writing/registering the NIFs that
   `aion_flow_ffi` names is `aion-nif` (AN) and the engine (AE-004).
 - **No `.aion` packaging** — compiling Gleam to `.beam` and bundling the
-  archive is `aion-package` (AP). `workflow.define` provides the manifest's
-  typed entry contract, not the archive.
+  archive is `aion-package` (AP). `workflow.define` provides the typed entry
+  contract the engine invokes at spawn (the manifest records only its
+  module/function names), not the archive.
 - **No network transport, client, or server** — starting/signalling/querying
   from outside is the client SDKs (AL) over `aion-server` (AW). `aion/signal`'s
   `send` is the in-engine/Gleam-client typed binding, not an HTTP client.

@@ -46,12 +46,12 @@
     {
       "id": "R3",
       "title": "workflow.define — typed entry contract",
-      "spec": "THE SYSTEM SHALL define workflow.define(name, input_codec, output_codec, error_codec, entry_fn) registering a typed entry contract that the .aion manifest (AP) consumes, carrying the entry function and the codecs for the engine's type-erased boundary.",
+      "spec": "THE SYSTEM SHALL define workflow.define(name, input_codec, output_codec, error_codec, entry_fn) returning an opaque WorkflowDefinition(input, output, error) value carrying the name, the three Codecs, and the entry function, which the engine invokes at spawn to bridge the typed entry to the type-erased boundary.",
       "acceptance": [
-        "workflow/define.gleam defines define taking the workflow name, input/output/error Codecs, and the entry function fn(i) -> Result(o, e), producing a typed definition value.",
-        "A doc comment states the definition is consumed by aion-package (AP) to record the entry module/function and codecs; the SDK does not invoke the function itself (AE spawns the process).",
-        "The definition carries enough to bridge the typed entry to the type-erased ffi boundary (encode input on entry, decode output/error on completion).",
-        "A test constructs a define for a concrete typed workflow function and asserts the codecs and name are carried."
+        "workflow/define.gleam defines an opaque type WorkflowDefinition(input, output, error) and define(name: String, input_codec: Codec(input), output_codec: Codec(output), error_codec: Codec(error), entry_fn: fn(input) -> Result(output, error)) -> WorkflowDefinition(input, output, error).",
+        "A doc comment states the AF/AE/AP contract precisely: the engine (AE) consumes the WorkflowDefinition at spawn — it calls the package's entry function (named in the manifest), receives this value, and uses the codecs to decode the input Payload and encode the result/error Payload; aion-package (AP) records only the entry module and function NAMES (strings) in the manifest and does not introspect this Gleam value.",
+        "The WorkflowDefinition carries enough to bridge the typed entry to the type-erased ffi boundary (decode input on entry via input_codec, encode output via output_codec / error via error_codec on completion); the SDK does not invoke entry_fn itself (AE spawns the process and drives it).",
+        "A test constructs a WorkflowDefinition for a concrete typed workflow function and asserts the name and the three codecs are carried and recoverable."
       ],
       "files": {
         "create": ["gleam/aion_flow/src/aion/workflow/define.gleam"],

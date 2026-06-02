@@ -14,13 +14,13 @@
       "title": "TestEnv and the test-side ffi binding",
       "spec": "THE SYSTEM SHALL define a TestEnv that runs entirely under gleam test with no beamr, engine, or store, binding the ffi surface to in-Gleam test implementations so author workflow code is unchanged between test and production.",
       "acceptance": [
-        "aion/testing exposes a TestEnv constructed in a test, holding the simulated clock, the mock registry, and the observation capture.",
-        "The same ffi surface that production resolves to engine NIFs is, under the harness, resolved to in-Gleam test implementations (a test-only ffi shim / target), so a workflow function compiles and runs identically in test and production.",
+        "aion/testing exposes a TestEnv constructed in a test, holding the simulated clock, the mock registry, and the observation capture, stored in process-scoped state (process dictionary or an ETS table keyed by the running pid) so concurrent tests do not collide.",
+        "The swap mechanism is concrete: a hand-written test-only Erlang module test/aion_flow_ffi.erl implements every binding the production NIF namespace 'aion_flow_ffi' exposes, in-process against the current process's TestEnv. gleam test compiles and loads it so the identical @external(erlang, \"aion_flow_ffi\", ...) declarations resolve to it; the package ships NO aion_flow_ffi module in src/ (in production the engine registers those NIFs at runtime, per D2). Author workflow code and every @external declaration are byte-identical between test and production — only which module backs the name at load time differs.",
         "A doc comment states the harness requires no external services (CO11) and is the recommended way to test workflows.",
         "A test runs a trivial workflow under a TestEnv and asserts it completes with the expected typed result."
       ],
       "files": {
-        "create": ["gleam/aion_flow/src/aion/testing.gleam"],
+        "create": ["gleam/aion_flow/src/aion/testing.gleam", "gleam/aion_flow/test/aion_flow_ffi.erl"],
         "modify": []
       },
       "checklist": ["C37"],
