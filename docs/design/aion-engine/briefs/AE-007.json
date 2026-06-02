@@ -2,12 +2,12 @@
   "id": "AE-007",
   "cluster": "aion-engine",
   "title": "In-VM activity dispatch and outcome propagation",
-  "depends_on": ["AE-002", "AE-004", "AE-006"],
+  "depends_on": ["AE-002", "AE-003", "AE-006"],
   "blocked_by": [],
   "checklist": ["C21", "C22", "C23"],
   "stories": ["S11"],
   "purpose": "Dispatch a Tier-2 in-VM activity as a linked child BEAM process and surface its outcome to the workflow process. This is the in-VM execution path; recording the activity events and deciding retry are seams owned by AD and AT, called from elsewhere.",
-  "task": "Implement the activity module: dispatch an in-VM activity as a child process linked to the workflow process, choosing the dirty scheduler when the activity's underlying NIF was registered dirty — the dirty flag is looked up from the NIF registration surface (AE-004), which records per (module, function) whether it was registered via register_dirty. Then surface the activity's outcome — a result Payload or an exit signal carrying an ActivityError — back to the workflow process through the link/mailbox. This brief performs no event recording and no retry decision; it provides the dispatch and outcome plumbing those seams build on.",
+  "task": "Implement the activity module: dispatch an in-VM activity as a child process linked to the workflow process, choosing the dirty scheduler when the activity's underlying NIF was registered dirty — the dirty flag is looked up from the NIF registration surface (AE-003), which records per (module, function) whether it was registered via register_dirty. Then surface the activity's outcome — a result Payload or an exit signal carrying an ActivityError — back to the workflow process through the link/mailbox. This brief performs no event recording and no retry decision; it provides the dispatch and outcome plumbing those seams build on.",
   "requirements": [
     {
       "id": "R1",
@@ -15,7 +15,7 @@
       "spec": "WHEN an in-VM activity is dispatched, THE SYSTEM SHALL spawn it as a child BEAM process linked to the workflow process via the RuntimeHandle, running on the dirty scheduler when the activity's underlying NIF is flagged dirty.",
       "acceptance": [
         "dispatch.rs exposes dispatch_activity(parent_pid, deployed_module, function, input: Payload) -> Result<Pid, EngineError> that calls RuntimeHandle::spawn_activity to spawn-and-link.",
-        "The dirty flag is resolved by querying the NIF registration surface (AE-004) for (deployed_module, function): NIFs registered via register_dirty are recorded as dirty there, and dispatch consults that record — it does not guess or carry the flag separately. RuntimeHandle exposes an is_dirty(module, function) -> bool (or equivalent) lookup over the registered NIFs.",
+        "The dirty flag is resolved by querying the NIF registration surface (AE-003) for (deployed_module, function): NIFs registered via register_dirty are recorded as dirty there, and dispatch consults that record — it does not guess or carry the flag separately. RuntimeHandle exposes an is_dirty(module, function) -> bool (or equivalent) lookup over the registered NIFs.",
         "When the looked-up flag is dirty, the child runs on beamr's dirty scheduler pool; otherwise on the normal scheduler.",
         "activity/mod.rs contains only pub mod and pub use.",
         "A test dispatches a trivial in-VM activity from a workflow process and asserts the child is spawned and linked to the parent."

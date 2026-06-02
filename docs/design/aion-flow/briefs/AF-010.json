@@ -31,6 +31,7 @@
       "spec": "THE SYSTEM SHALL define workflow.race(List(Activity(i, o))) -> Result(o, ActivityError) returning the first result to arrive and cancelling the remaining activities.",
       "acceptance": [
         "race spawns the activities, returns the first arriving result decoded with its output Codec, and binds to AT's cancellation of the losers (recorded per AT D10).",
+        "A doc comment states race resolves on FIRST SETTLE: the first child to finish wins whether it succeeded or failed, so a first-arriving Error(ActivityError) wins the race (matching engine AT-011) — it is not first-success-wins. A harness test covers a first-arriving failure winning.",
         "A harness test with two activities resolving at different simulated times asserts the first result wins and the loser is cancelled.",
         "The result type o is preserved (the list is homogeneous in output type)."
       ],
