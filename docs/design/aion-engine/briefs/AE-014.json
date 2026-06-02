@@ -7,8 +7,25 @@
   "checklist": ["C34", "C35"],
   "stories": ["S1", "S6", "S8"],
   "purpose": "Prove the engine works end to end against InMemoryStore: start records the right event and registers a discoverable handle, cancel tears down activity children and records the cancellation, and completion yields the recorded result. These are the cross-cutting tests that exercise the whole lifecycle through the public Engine API.",
-  "task": "Build integration tests in crates/aion/tests that drive a real Engine over InMemoryStore using a minimal test workflow (a tiny compiled-beam fixture or a test-only module registered through the runtime) that dispatches an in-VM activity. Assert the start/register/list path, the cancel/teardown/append path, and the complete/result path. Tests run a real runtime at runtime — never gated out or #[ignore]'d.",
+  "task": "Build integration tests in crates/aion/tests that drive a real Engine over InMemoryStore using a committed minimal workflow fixture (R0) that dispatches an in-VM activity. Assert the start/register/list path, the cancel/teardown/append path, and the complete/result path. Tests run a real runtime at runtime — never gated out or #[ignore]'d.",
   "requirements": [
+    {
+      "id": "R0",
+      "title": "Committed minimal workflow beam fixture",
+      "spec": "THE SYSTEM SHALL provide a committed, minimal compiled workflow fixture the integration tests load through the runtime, with its source and a documented regeneration step, so the tests have a real beam to execute.",
+      "acceptance": [
+        "crates/aion/tests/fixtures/ holds a minimal workflow fixture: its source (a tiny hand-written .erl or .gleam module exposing an entry function that completes with a known result and one that dispatches an in-VM activity) AND its compiled .beam, both committed.",
+        "crates/aion/tests/fixtures/README.md documents the exact regeneration command (e.g. erlc / gleam build) and states the fixture is checked in so the test suite needs no Gleam/Erlang toolchain at test time.",
+        "A test loads the fixture .beam through the RuntimeHandle and asserts the entry module/function resolve, establishing the fixture is valid before the lifecycle tests use it.",
+        "The fixture is deliberately tiny (no external deps) so it stays maintainable and its bytes are reviewable."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/fixtures/README.md"],
+        "modify": []
+      },
+      "checklist": ["C34"],
+      "stories": ["S1"]
+    },
     {
       "id": "R1",
       "title": "Start, append, register, and list",

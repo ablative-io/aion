@@ -2,7 +2,7 @@
   "id": "AD-001",
   "cluster": "aion-durability",
   "title": "Durability module scaffold and error taxonomy",
-  "depends_on": [],
+  "depends_on": ["AE-001"],
   "blocked_by": [],
   "checklist": ["C1", "C2", "C3", "C4"],
   "stories": [],
@@ -16,7 +16,7 @@
       "acceptance": [
         "crates/aion/src/durability/mod.rs declares submodules seq, recorder, correlation, cursor, command, resolver, error, determinism, executor, replay, recovery (declarations may be added incrementally by later briefs, but error is declared here).",
         "mod.rs contains no fn, struct, enum, trait, or impl item — only pub mod and pub use.",
-        "crates/aion/src/lib.rs gains exactly one new line, pub mod durability;, and nothing else in this brief.",
+        "crates/aion/src/lib.rs (created by AE-001, which must land first — the crate scaffold) gains exactly one new line, pub mod durability;, and nothing else in this brief; AD-001 and AT-001 add their single module line to the AE-001 lib.rs and must not conflict with each other or with engine wiring.",
         "cargo build -p aion succeeds with the new empty/partial module tree (placeholder submodules declared by later briefs are not required to exist yet beyond error)."
       ],
       "files": {

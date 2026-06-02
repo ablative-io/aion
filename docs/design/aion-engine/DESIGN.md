@@ -161,17 +161,22 @@ default lives in beamr where the runtime knowledge is, not invented here.
 
 A workflow's life is a small state machine the `lifecycle` module owns:
 
-- **Start** — assign a `WorkflowId` and `RunId`, append `WorkflowStarted`
-  (via the store, through the AD append path), spawn a beamr process running
-  the workflow's namespaced entry module/function over the input `Payload`,
-  register the handle, and return a `WorkflowHandle` to the caller.
+- **Start** — assign a `WorkflowId` and `RunId`, create the workflow's
+  single-writer `Recorder` and append `WorkflowStarted` through it (never
+  `EventStore::append` directly — the Recorder is the single writer, AD CO6),
+  spawn a beamr process running the workflow's namespaced entry
+  module/function over the input `Payload`, register the handle (with its
+  completion notifier and `Resident` residency), and return a `WorkflowHandle`.
 - **Suspend** — when a workflow blocks on a durable wait (a timer that
   outlives the process, a signal that has not arrived) the process yields;
-  the engine marks the handle `Suspended` in the registry. The *mechanism* of
-  durable waiting lives in AT; the lifecycle *transition* is here.
+  the engine sets the handle's *residency* to `Suspended`. Residency is an
+  engine-internal liveness flag, separate from `WorkflowStatus` (which has no
+  `Suspended` variant and stays `Running`); status reconciliation never
+  touches it. The *mechanism* of durable waiting lives in AT; the lifecycle
+  *transition* is here.
 - **Resume** — when the awaited timer fires or signal arrives, the workflow
-  process is woken (or, after a VM restart, replayed by AD) and the handle
-  returns to `Running`.
+  process is woken (or, after a VM restart, replayed by AD) and the handle's
+  residency returns to `Resident`.
 - **Cancel** — kill the workflow process (which, through links, kills its
   activity children), append `WorkflowCancelled`, deregister.
 - **Complete / Fail** — the workflow function returns `Ok`/`Err`; the engine

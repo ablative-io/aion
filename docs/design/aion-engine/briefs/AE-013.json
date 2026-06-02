@@ -6,8 +6,8 @@
   "blocked_by": [],
   "checklist": ["C33"],
   "stories": ["S7"],
-  "purpose": "Surface signal, query, and subscribe on Engine for API completeness, performing the registry-lookup step that AE owns and delegating the delivery mechanics to AT (signal routing, query dispatch) and AD/AT (event publishing). This fixes the method surface and the seam without implementing AT's machinery.",
-  "task": "Implement engine/delegated.rs: signal, query, and subscribe methods on Engine. Each resolves the target workflow via the registry (the AE-owned lookup) and then calls into the AT/AD delivery seam (a trait/hook the Engine holds) to perform routing/dispatch/publishing. This brief provides the method surface, the lookup, and the seam wiring — it does not implement signal routing, query dispatch, or the event publisher.",
+  "purpose": "Surface signal, query, and subscribe on Engine for API completeness, performing the registry-lookup step that AE owns and delegating the delivery mechanics to AT (signal routing, query dispatch) and AD/AT (event publishing). This fixes the method surface and the seam trait signatures without implementing AT's machinery.",
+  "task": "Implement engine/delegated.rs: signal, query, and subscribe methods on Engine. Define the three seam traits the Engine holds — SignalRouter, QueryService, EventPublisher — with concrete signatures (R4), since these are the cross-cluster integration contract AT/AD implement. Each Engine method resolves the target workflow via the registry (the AE-owned lookup) and then calls into the corresponding seam. This brief provides the method surface, the lookup, the trait definitions, and the seam wiring — it does not implement signal routing, query dispatch, or the event publisher.",
   "requirements": [
     {
       "id": "R1",
@@ -51,6 +51,24 @@
         "delegated.rs defines Engine::subscribe(filter) -> stream that delegates to the event-publisher seam (an EventPublisher trait/handle the Engine holds) and returns its filtered stream.",
         "grep of delegated.rs shows no broadcast-channel implementation — only the seam call.",
         "A test installs a fake EventPublisher seam that emits two events and asserts subscribe yields them filtered by the given EventFilter."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/delegated.rs"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R4",
+      "title": "Concrete seam trait signatures",
+      "spec": "THE SYSTEM SHALL define the SignalRouter, QueryService, and EventPublisher seam traits with concrete signatures, since AT/AD implement them and both sides must agree before independent dispatch.",
+      "acceptance": [
+        "SignalRouter: `async fn route(&self, target: &WorkflowHandle, name: String, payload: Payload) -> Result<(), EngineError>` — records SignalReceived (via the workflow's Recorder) and delivers to the mailbox; AT-005/AT-006 implement it.",
+        "QueryService: `async fn query(&self, target: &WorkflowHandle, name: String) -> Result<Payload, EngineError>` — dispatches the read-only query and returns the handler reply (mapping QueryError::Timeout/Unknown/NotRunning into EngineError); AT-007 implements it.",
+        "EventPublisher: `fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event>` (or an explicit named stream type) — yields the filtered live event stream; AD/AT implement it. EventFilter is defined here (by workflow id, run, and/or event family).",
+        "All three traits are Send + Sync and object-safe (held as Arc<dyn ...> on the Engine), so AT/AD supply implementations without AE depending on their internals.",
+        "Doc comments name the implementing brief for each trait (SignalRouter -> AT-005/006, QueryService -> AT-007, EventPublisher -> AD/AT) so the seam is traceable."
       ],
       "files": {
         "create": [],

@@ -251,7 +251,8 @@ unit-safe representation everywhere the engine receives a duration.
   output and error types.
 - **Concurrency** (**D11**): typed combinators over homogeneous lists —
   `workflow.all(List(Activity(i, o))) -> Result(List(o), ActivityError)`
-  (ordered), `workflow.race(...) -> Result(o, ActivityError)` (first wins),
+  (ordered), `workflow.race(...) -> Result(o, ActivityError)` (first to
+  settle — first to finish wins, success or failure, matching AT-011),
   `workflow.map(List(a), fn(a) -> Activity(i, o)) ->
   Result(List(o), ActivityError)` (dynamic fan-out). They bind to AT's
   selective-receive collectors; the SDK carries the types and per-element

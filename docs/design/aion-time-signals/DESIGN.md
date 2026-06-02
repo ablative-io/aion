@@ -265,7 +265,9 @@ crates/aion/src/concurrency/map.rs        map: dynamic fan-out from a runtime li
   record nothing. No code path delivers a recordable observation without
   recording it.
 - **CO8** — Durable timers go through `EventStore::schedule_timer` /
-  `expired_timers`; signals and child results go through `EventStore` append.
+  `expired_timers`; all AT event appends (`TimerStarted`/`Fired`/`Cancelled`,
+  `SignalReceived`, `ChildWorkflow*`) go through the target workflow's single
+  `Recorder` via the engine seam (AD CO6) — never a direct `EventStore::append`.
   No bespoke side-channel persistence outside the `aion-store` contract.
 - **CO9** — Tests run against `aion-store`'s `InMemoryStore`; timer expiry,
   signal delivery + durability, query reply, child spawn, and `all`/`race`/
