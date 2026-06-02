@@ -14,9 +14,10 @@
       "title": "Forward namespacing transform",
       "spec": "THE SYSTEM SHALL define a deterministic function mapping (logical module name, ContentHash) to a deployed module name that embeds the content hash so distinct versions of the same logical module get distinct deployed names.",
       "acceptance": [
-        "namespace.rs defines deployed_name(logical: &str, hash: &ContentHash) -> String (or a NamespacedName type) embedding the hash textual form via an unambiguous separator.",
+        "namespace.rs defines deployed_name(logical: &str, hash: &ContentHash) -> String (or a NamespacedName type) joining the logical name and the hash textual form with the literal '$' separator (logical$hash).",
+        "The '$' separator is mandated (CO13), exposed as a named constant, not a local literal: the engine (AE-005) must split on the identical character to recover logical names, and '$' is chosen because it cannot occur in a Gleam logical module name, keeping the boundary unambiguous.",
         "The transform is pure and total: same inputs always yield the same output, every valid (name, hash) pair maps successfully.",
-        "The produced name is a valid BEAM module name (uses the hash textual form constrained in AP-003 R3).",
+        "The produced name is a valid beamr module-atom name (uses the hash textual form constrained in AP-003 R3).",
         "A doc comment states this is the application-level versioning layered on top of beamr's VM-level dual-version hot-loading (D4)."
       ],
       "files": {

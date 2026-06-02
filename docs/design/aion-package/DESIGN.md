@@ -70,8 +70,8 @@ immediately after the persistence contract and before the core engine.
 
 ## Solution
 
-One crate, `aion-package`, depending only on `aion-core` (for the version
-record type and identifier conventions) plus external crates. It owns the
+One crate, `aion-package`, depending only on `aion-core` (for identifier
+conventions and the `Payload` type) plus external crates. It owns the
 `.aion` format end to end: the manifest model, the archive layout, the
 content-hash versioning scheme, the write path, the read path, and the
 integrity check.
@@ -136,11 +136,15 @@ version depend on packaging incidentals and break reproducibility.
 
 **Key decision — deployed module names are namespaced by the content
 hash.** When the engine loads a `.aion`, each module is registered under a
-name derived from its logical name *and* the package's content hash (e.g.
-`order_workflow$<hash>`), not its bare logical name. The package crate owns
-the namespacing scheme: it provides the deterministic transformation from
-(logical module name, content hash) to deployed module name, and the
-inverse, so the engine and any tooling agree on the mapping. Consequences,
+name derived from its logical name *and* the package's content hash, joined
+by a mandated `$` separator (`order_workflow$<hash>`), not its bare logical
+name. The `$` separator is a format constraint, not an example: the engine
+must split on the identical character to recover logical names, and `$` is
+chosen because it cannot occur in a Gleam logical module name. The package
+crate owns the namespacing scheme: it provides the deterministic
+transformation from (logical module name, content hash) to deployed module
+name, and the inverse, so the engine and any tooling agree on the mapping.
+Consequences,
 each load-bearing:
 
 - Version N and version N+5 coexist as separate, immutable modules — no
@@ -188,10 +192,15 @@ a distinct, typed `PackageError`.
 
 ### Version Record
 
-`aion-core` defines the version record type used across the system. This
-crate produces it from a loaded package (logical entry module, content hash,
-declared activities, schemas) so the engine and store reference a workflow
-version through one shared type rather than re-deriving it.
+`aion-package` defines `WorkflowVersion` — the version record used across the
+system — and produces it from a loaded package (logical entry module, content
+hash, declared activities, schemas) so the engine references a workflow
+version through one shared type rather than re-deriving it. It lives here, not
+in `aion-core`, because it embeds the `ContentHash` (an `aion-package` type);
+`aion-core` is a leaf and cannot reference it. The engine depends on
+`aion-package` and consumes `WorkflowVersion` directly. Where the store needs
+to record which version a run used, it does so via the content-hash textual
+form carried in event data — a plain string `aion-core` can hold.
 
 ## Structure
 
@@ -204,7 +213,7 @@ crates/aion-package/src/beam.rs         BeamModule + BeamSet (canonical ordering
 crates/aion-package/src/builder.rs      PackageBuilder — the write path
 crates/aion-package/src/package.rs      Package + load (read path) + integrity check
 crates/aion-package/src/error.rs        PackageError taxonomy
-crates/aion-package/src/version.rs      version-record production from a Package
+crates/aion-package/src/version.rs      WorkflowVersion type + production from a Package
 ```
 
 ## Constraints
@@ -247,8 +256,9 @@ crates/aion-package/src/version.rs      version-record production from a Package
   (a separate cluster). This crate packages already-compiled beams and may
   carry source for inspection, but never invokes a compiler.
 - No event store or persistence — clusters AC (in-memory) / AS (libSQL) /
-  AX (Postgres). The version record produced here is *referenced* by the
-  store; this crate does not write it.
+  AX (Postgres). The store records which version a run used via the
+  content-hash text carried in event data; this crate produces
+  `WorkflowVersion` for the engine but never writes to a store.
 - No network transport or registry protocol for shipping `.aion` files —
   that is server/client concern (cluster AW and beyond).
 - No hot-code-loading mechanism itself — that is beamr plus the engine. This

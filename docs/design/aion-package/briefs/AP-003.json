@@ -18,7 +18,7 @@
         "The computation iterates modules in BeamSet canonical order, feeding each module's logical name and its exact bytes into the digest with an unambiguous framing (length-prefixed or delimited) so distinct (name, bytes) splits cannot collide.",
         "ContentHash derives Clone, Debug, PartialEq, Eq, Hash and is Serialize + Deserialize.",
         "A doc comment states the hash is computed over the canonical beam set only and is independent of compression, timestamps, and source inclusion (CO7).",
-        "The hashing crate is a vetted, collision-resistant algorithm (e.g. SHA-256 / BLAKE3), not an ad-hoc hash."
+        "The hash algorithm is SHA-256 via the sha2 crate (mandated by CO14 — part of the format contract so packer and loader agree across hosts), not an ad-hoc or implementer-chosen hash."
       ],
       "files": {
         "create": ["crates/aion-package/src/hash.rs"],
