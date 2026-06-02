@@ -1,0 +1,70 @@
+{
+  "cluster": "aion-clients",
+  "sections": [
+    {
+      "name": "Shared Behavioural Contract",
+      "items": [
+        {"id": "C1", "text": "CLIENT-CONTRACT.md defines the seven operations (connect, start, signal, query, cancel, list, describe, subscribe) language-neutrally, each with inputs, outputs, and the errors it can raise.", "done": false},
+        {"id": "C2", "text": "The contract specifies start idempotency: a retried identical start (same idempotency key + request) returns the original handle; a conflicting reuse raises AlreadyExists.", "done": false},
+        {"id": "C3", "text": "The contract specifies run targeting: signal/query/cancel/describe target the latest run by default and a specific RunId when given one.", "done": false},
+        {"id": "C4", "text": "The contract specifies query as a synchronous deadline-bounded round-trip yielding QueryTimeout when the deadline elapses and QueryFailed when the handler errors.", "done": false},
+        {"id": "C5", "text": "The contract specifies cancellation as a recorded request (cooperative stop), not an immediate kill, and subscribe resumption from the last delivered per-event sequence number with no gaps or duplicates.", "done": false},
+        {"id": "C6", "text": "The contract defines the shared error taxonomy: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server.", "done": false}
+      ]
+    },
+    {
+      "name": "Rust Client (aion-client)",
+      "items": [
+        {"id": "C7", "text": "ClientBuilder connects to an aion-server endpoint with auth credential and TLS configuration and produces a reusable Client; the Client depends on aion-proto and aion-core, not on aion/aion-store/beamr by default.", "done": false},
+        {"id": "C8", "text": "Client exposes start, signal, query, cancel, list, and describe over the network transport, returning idiomatic Result<_, ClientError>.", "done": false},
+        {"id": "C9", "text": "start returns a WorkflowHandle bundling WorkflowId + RunId and offering signal/query/cancel/describe/subscribe as methods; a bare-ID constructor for WorkflowHandle also exists.", "done": false},
+        {"id": "C10", "text": "Typed payload helpers serialise serde::Serialize inputs to a JSON Payload and deserialise results to serde::DeserializeOwned, with a raw-Payload escape hatch on every payload-bearing operation.", "done": false},
+        {"id": "C11", "text": "subscribe returns a Stream of decoded events that resumes from the last delivered sequence number across transient disconnects and yields an Err item on terminal failure rather than ending silently.", "done": false},
+        {"id": "C12", "text": "ClientError is a closed enum covering NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, and Server, implementing std::error::Error via thiserror.", "done": false},
+        {"id": "C13", "text": "An embedded constructor binds the same Client/WorkflowHandle surface to an in-process aion engine behind a feature flag, pulling aion only when that feature is enabled.", "done": false}
+      ]
+    },
+    {
+      "name": "Python Client (aion-client-python)",
+      "items": [
+        {"id": "C14", "text": "Client connects to an aion-server endpoint with auth + TLS config and exposes start, signal, query, cancel, list, and describe; start returns a WorkflowHandle with per-workflow methods.", "done": false},
+        {"id": "C15", "text": "Payload helpers accept any JSON-serialisable value (and optionally a model / target type for results) with a raw bytes escape hatch on every payload-bearing operation.", "done": false},
+        {"id": "C16", "text": "subscribe yields an async iterator of decoded events that resumes from the last delivered sequence number across transient disconnects and raises on terminal failure rather than ending silently.", "done": false},
+        {"id": "C17", "text": "Errors form an exception hierarchy mapping the shared taxonomy (NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server) with a common base; mypy --strict passes.", "done": false}
+      ]
+    },
+    {
+      "name": "TypeScript Client (aion-client-typescript)",
+      "items": [
+        {"id": "C18", "text": "Client connects to an aion-server endpoint with auth + TLS config and exposes start, signal, query, cancel, list, and describe; start returns a WorkflowHandle with per-workflow methods.", "done": false},
+        {"id": "C19", "text": "Payload helpers are generic over input/result types with JSON serialisation and a raw-Payload escape hatch on every payload-bearing operation; the public API is typed while the wire stays Payload.", "done": false},
+        {"id": "C20", "text": "subscribe returns an AsyncIterable of decoded events that resumes from the last delivered sequence number across transient disconnects and rejects/throws on terminal failure rather than ending silently.", "done": false},
+        {"id": "C21", "text": "Errors are a discriminated union / class hierarchy mapping the shared taxonomy; tsc --noEmit (strict) and eslint pass.", "done": false}
+      ]
+    },
+    {
+      "name": "Gleam Client (aion_client)",
+      "items": [
+        {"id": "C22", "text": "aion_client connects to an aion-server endpoint with auth + TLS config and exposes connect, start, signal, query, cancel, list, and describe; start returns a workflow handle value usable in per-workflow operations.", "done": false},
+        {"id": "C23", "text": "Payload helpers take a gleam/json encoder for input and a gleam/dynamic decoder for the result, staying statically typed, with a raw-Payload escape hatch on every payload-bearing operation.", "done": false},
+        {"id": "C24", "text": "subscribe returns an event stream that resumes from the last delivered sequence number across transient disconnects and surfaces terminal failure through the stream rather than ending silently.", "done": false},
+        {"id": "C25", "text": "Errors are a Gleam custom type mapping the shared taxonomy; gleam check, gleam format --check, and gleam test pass.", "done": false}
+      ]
+    },
+    {
+      "name": "Cross-Language Conformance",
+      "items": [
+        {"id": "C26", "text": "A shared conformance scenario set encodes the start -> signal -> query -> list -> describe -> cancel -> subscribe happy path plus the idempotency-conflict, query-timeout, not-found, and disconnect-resume cases.", "done": false},
+        {"id": "C27", "text": "Each SDK has a conformance harness that runs the shared scenarios against a real aion-server fixture and asserts the observable results match the contract.", "done": false},
+        {"id": "C28", "text": "The four SDKs produce identical observable behaviour for every shared scenario (same effect, same returned values, same error variant).", "done": false}
+      ]
+    },
+    {
+      "name": "Packaging and Publishing",
+      "items": [
+        {"id": "C29", "text": "aion-client (crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Hex) each carry complete package metadata, a README, and a type-checked public surface.", "done": false},
+        {"id": "C30", "text": "Each package ships a runnable example exercising all seven operations against a server, referenced from its README.", "done": false}
+      ]
+    }
+  ]
+}

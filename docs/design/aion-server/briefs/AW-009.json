@@ -1,0 +1,76 @@
+{
+  "id": "AW-009",
+  "cluster": "aion-server",
+  "title": "gRPC and HTTP transports over the shared handler layer",
+  "depends_on": ["AW-008"],
+  "blocked_by": [],
+  "checklist": ["C23", "C24"],
+  "stories": ["S5"],
+  "purpose": "Expose the workflow-management handler layer over the two request/response transports: a tonic gRPC service (the primary transport, what client SDKs use) and an axum HTTP/JSON facade (for browsers and curl). Both are thin skins over the same handlers, so behaviour cannot diverge.",
+  "task": "Implement a tonic service that implements the aion-proto workflow service and delegates each RPC to the AW-008 handler layer, and an axum HTTP/JSON facade that routes each operation to the same handlers. Wire both into main's startup using the configured listen ports and TLS. Both transports decode to the same handler input and encode the handler output (or mapped WireError); neither adds logic.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "tonic gRPC service",
+      "spec": "THE SYSTEM SHALL implement the aion-proto workflow service as a tonic service that decodes each RPC, delegates to the matching AW-008 handler, and encodes the response or a WireError-bearing status.",
+      "acceptance": [
+        "grpc.rs implements the generated workflow service trait; each RPC method decodes the request, calls the shared handler, and encodes the response.",
+        "A handler WireError is encoded into the gRPC response (a status carrying the stable WireError code/message), not a stringified internal error (D3).",
+        "The service holds the shared state (engine handle + resolver) and adds no logic beyond decode/delegate/encode (CO6).",
+        "An integration-style test (in-process tonic) drives StartWorkflow and ListWorkflows against an InMemoryStore-backed engine."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/api/grpc.rs"],
+        "modify": ["crates/aion-server/src/api/mod.rs", "crates/aion-server/src/lib.rs", "crates/aion-server/src/main.rs"]
+      },
+      "checklist": ["C23"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "axum HTTP/JSON facade",
+      "spec": "THE SYSTEM SHALL implement an axum HTTP/JSON facade that routes each workflow-management operation to the same AW-008 handlers, decoding JSON requests and encoding JSON responses or a WireError.",
+      "acceptance": [
+        "http.rs defines axum routes for start/signal/query/cancel/list/describe, each delegating to the shared handler.",
+        "Request bodies decode from JSON into the same handler input the gRPC path uses; responses encode the same handler output as JSON.",
+        "A handler WireError is returned with an appropriate HTTP status and the stable WireError code/message in the body (D3).",
+        "A test exercises the HTTP path for at least start and list, asserting parity with the gRPC path's behaviour (same handler outcome)."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/api/http.rs"],
+        "modify": ["crates/aion-server/src/api/mod.rs", "crates/aion-server/src/lib.rs", "crates/aion-server/src/main.rs"]
+      },
+      "checklist": ["C23", "C24"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Startup wiring on configured ports/TLS",
+      "spec": "THE SYSTEM SHALL start both transports from main using the configured listen ports and TLS material, with no hardcoded port or TLS default.",
+      "acceptance": [
+        "main starts the gRPC and HTTP listeners on ports from config (AW-006); absence of a required port/TLS value is a ServerError, not a default (CO11).",
+        "TLS material is read from the Deserialize-only config (D4) and never re-serialised.",
+        "A graceful-shutdown path stops both listeners and calls Engine::shutdown (per aion-engine D11) so in-flight appends finish.",
+        "Tests that need a bound socket gate at runtime via a *_TEST_URL env var with a logged skip, never #[ignore] (CO2)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/main.rs"]
+      },
+      "checklist": ["C24"],
+      "stories": ["S5"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add logic beyond decode/delegate/encode; all behaviour lives in the AW-008 handlers (CO6, D5).",
+    "SHALL NOT implement WebSocket streaming or the worker endpoint — AW-010, AW-011.",
+    "SHALL NOT define new wire messages — those are owned by aion-proto (AW-003)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-server passes.",
+    "cargo fmt --check passes.",
+    "Tests run against InMemoryStore; socket-bound tests gate at runtime, never #[ignore].",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

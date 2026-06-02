@@ -1,0 +1,94 @@
+{
+  "cluster": "aion-durability",
+  "sections": [
+    {
+      "name": "Module Scaffold and Error Taxonomy",
+      "items": [
+        {"id": "C1", "text": "crates/aion/src/durability/mod.rs declares the durability submodules and re-exports the public surface, containing no logic.", "done": false},
+        {"id": "C2", "text": "DurabilityError is a thiserror enum covering at least sequence/append failure (wrapping StoreError), non-determinism violation, and history-shape errors, with no panics or unwrap in its construction paths.", "done": false},
+        {"id": "C3", "text": "NonDeterminismError is a distinct typed error carrying the WorkflowId, the sequence position of the mismatch, the expected command shape, and the found recorded-event shape.", "done": false},
+        {"id": "C4", "text": "DurabilityError implements std::error::Error and Display via thiserror, and no library code path constructs an error by panicking.", "done": false}
+      ]
+    },
+    {
+      "name": "Recorder and Single-Writer Append",
+      "items": [
+        {"id": "C5", "text": "A sequence-head tracker holds the current per-workflow head sequence and advances it only when an append succeeds.", "done": false},
+        {"id": "C6", "text": "Recorder is constructed for a single WorkflowId and is the only type that calls EventStore::append for that workflow.", "done": false},
+        {"id": "C7", "text": "Recorder computes expected_seq from its tracked head for every append; the head is never read from outside the Recorder nor guessed.", "done": false},
+        {"id": "C8", "text": "Recorder exposes recording methods for each event family: workflow lifecycle, activity (scheduled/started/completed/failed), timer (started/fired/cancelled), signal received, and child workflow (started/completed/failed).", "done": false},
+        {"id": "C9", "text": "When EventStore::append returns SequenceConflict, the Recorder surfaces a hard DurabilityError (double-writer bug) and does not retry by re-reading the head.", "done": false},
+        {"id": "C10", "text": "A Recorder can be initialised with a starting head read from existing history (so a recovered workflow continues appending at the correct sequence).", "done": false}
+      ]
+    },
+    {
+      "name": "History Cursor and Correlation",
+      "items": [
+        {"id": "C11", "text": "A correlation key type identifies a world-touching call: activity/child by scheduling ordinal (matching ActivityId/child WorkflowId derivation), timer by TimerId, signal by name-in-recorded-order.", "done": false},
+        {"id": "C12", "text": "HistoryCursor is built from an ordered Vec<Event> (read_history output) and walks it in sequence order.", "done": false},
+        {"id": "C13", "text": "HistoryCursor resolves the next recorded event matching a given event family and correlation key, advancing its internal position.", "done": false},
+        {"id": "C14", "text": "HistoryCursor reports exhaustion (no further recorded events) distinctly from a family/key mismatch.", "done": false},
+        {"id": "C15", "text": "Recorded non-exhausting ActivityFailed attempts are walked past as part of the recorded retry sequence so the cursor lands on the eventual recorded outcome.", "done": false}
+      ]
+    },
+    {
+      "name": "Command, Resolution, and Resolver",
+      "items": [
+        {"id": "C16", "text": "A Command enum models the world-touching calls the workflow can issue: RunActivity, AwaitSignal, StartTimer, SpawnChild, plus workflow-completion intent, each carrying its correlation key and any input Payload.", "done": false},
+        {"id": "C17", "text": "A Resolution enum models recorded outcomes: ActivityCompleted(result), ActivityFailedTerminal(error), TimerFired, SignalDelivered(payload), ChildCompleted(result), ChildFailed(error).", "done": false},
+        {"id": "C18", "text": "The Resolver, given a Command, returns exactly one of: a recorded Resolution from the cursor, ResumeLive when the cursor is exhausted, or a NonDeterminismError on family/key mismatch.", "done": false},
+        {"id": "C19", "text": "All world-touching calls funnel through the single Resolver entry point; recorded-vs-live and violation are decided in exactly one place.", "done": false}
+      ]
+    },
+    {
+      "name": "Determinism Violation Detection",
+      "items": [
+        {"id": "C20", "text": "When the next recorded event differs in family or correlation key from the issued Command, the Resolver raises NonDeterminismError and never returns a Resolution for that command.", "done": false},
+        {"id": "C21", "text": "A non-determinism violation causes the workflow to fail deterministically: exactly one WorkflowFailed is recorded (via the Recorder) carrying the violation classification.", "done": false},
+        {"id": "C22", "text": "A dedicated test drives a recorded history that deliberately diverges from the replayed command stream (wrong activity family, wrong correlation key) and asserts the typed NonDeterminismError with correct expected/found shapes.", "done": false}
+      ]
+    },
+    {
+      "name": "Determinism Context",
+      "items": [
+        {"id": "C23", "text": "DeterminismContext exposes the recorded timestamp of the event currently being applied as the sole source for workflow.now; it advances as the Resolver consumes recorded events.", "done": false},
+        {"id": "C24", "text": "No code path in this cluster calls the wall clock (SystemTime::now / Utc::now) to produce a workflow-visible value.", "done": false},
+        {"id": "C25", "text": "DeterminismContext provides a deterministic RNG seeded solely from WorkflowId + RunId as the sole source for workflow.random.", "done": false},
+        {"id": "C26", "text": "Two DeterminismContexts constructed for the same WorkflowId + RunId produce identical random sequences (asserted by test).", "done": false}
+      ]
+    },
+    {
+      "name": "Live Executor Seam and Handoff",
+      "items": [
+        {"id": "C27", "text": "A LiveExecutor trait defines the engine-implemented operations AD invokes only on resume-live: run an activity, start a timer, await a signal, spawn a child workflow.", "done": false},
+        {"id": "C28", "text": "While the cursor can satisfy a command, the LiveExecutor is never invoked (replay performs no live side effect).", "done": false},
+        {"id": "C29", "text": "After ResumeLive, the handoff glue invokes the LiveExecutor and records the resulting event(s) through the Recorder.", "done": false}
+      ]
+    },
+    {
+      "name": "Replay Driver and Activity-Result Caching",
+      "items": [
+        {"id": "C30", "text": "replay builds a Resolver from read_history and a DeterminismContext, and drives a freshly-created execution forward, satisfying each command from the cursor until exhaustion.", "done": false},
+        {"id": "C31", "text": "On replay a matched ActivityCompleted returns its recorded result Payload without dispatching the activity; a matched exhausted-retry ActivityFailed returns the recorded terminal ActivityError.", "done": false},
+        {"id": "C32", "text": "replay returns a resume point (the first command whose recorded event is absent) so the engine can continue live execution from there.", "done": false},
+        {"id": "C33", "text": "Behavioural tests over InMemoryStore assert: a fully-recorded history replays to its recorded terminal state with zero live calls; a partial history replays to the correct resume point; activity results are returned from cache.", "done": false}
+      ]
+    },
+    {
+      "name": "Recovery on Startup",
+      "items": [
+        {"id": "C34", "text": "recover calls EventStore::list_active and, for each returned WorkflowId, reads its history and replays it to its resume point.", "done": false},
+        {"id": "C35", "text": "recover initialises each workflow's Recorder at the head implied by its existing history so post-recovery appends continue at the correct sequence.", "done": false},
+        {"id": "C36", "text": "recover surfaces a per-workflow failure (e.g. a NonDeterminismError during replay) without silently dropping the workflow or aborting recovery of the others.", "done": false},
+        {"id": "C37", "text": "A test seeds InMemoryStore with multiple active and terminal workflows and asserts recover replays exactly the active ones to their correct resume points.", "done": false}
+      ]
+    },
+    {
+      "name": "End-to-End Round-Trip",
+      "items": [
+        {"id": "C38", "text": "An integration test records a workflow's events via the Recorder, then replays from the same store and asserts the replayed Resolutions match the recorded outcomes in order and the resume point is correct.", "done": false},
+        {"id": "C39", "text": "An integration test asserts workflow.now values during replay equal the recorded event timestamps in order, and that random draws match across two independent replays of the same run.", "done": false}
+      ]
+    }
+  ]
+}

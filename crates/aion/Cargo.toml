@@ -1,0 +1,24 @@
+[package]
+name = "aion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-core = { path = "../aion-core" }
+aion-store = { path = "../aion-store" }
+aion-package = { path = "../aion-package" }
+beamr = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+tracing = { workspace = true }
+futures = { workspace = true }
+dashmap = { workspace = true }

@@ -1,0 +1,76 @@
+{
+  "id": "AE-014",
+  "cluster": "aion-engine",
+  "title": "End-to-end engine integration tests over InMemoryStore",
+  "depends_on": ["AE-012", "AE-007"],
+  "blocked_by": [],
+  "checklist": ["C34", "C35"],
+  "stories": ["S1", "S6", "S8"],
+  "purpose": "Prove the engine works end to end against InMemoryStore: start records the right event and registers a discoverable handle, cancel tears down activity children and records the cancellation, and completion yields the recorded result. These are the cross-cutting tests that exercise the whole lifecycle through the public Engine API.",
+  "task": "Build integration tests in crates/aion/tests that drive a real Engine over InMemoryStore using a minimal test workflow (a tiny compiled-beam fixture or a test-only module registered through the runtime) that dispatches an in-VM activity. Assert the start/register/list path, the cancel/teardown/append path, and the complete/result path. Tests run a real runtime at runtime — never gated out or #[ignore]'d.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Start, append, register, and list",
+      "spec": "THE SYSTEM SHALL provide an integration test that builds an Engine over InMemoryStore, starts a test workflow, and asserts WorkflowStarted is appended, the handle is registered, and list_workflows reports it.",
+      "acceptance": [
+        "tests/engine_lifecycle.rs builds an Engine over a fresh InMemoryStore with one loaded test workflow.",
+        "After start_workflow, the store history's first event is WorkflowStarted with the workflow type and input.",
+        "The registry contains a Running handle for the new (WorkflowId, RunId) and list_workflows returns a matching WorkflowSummary.",
+        "The test runs under cargo test (real runtime), not gated out or ignored."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/engine_lifecycle.rs"],
+        "modify": []
+      },
+      "checklist": ["C34"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Cancel tears down activity child and appends cancellation",
+      "spec": "THE SYSTEM SHALL provide an integration test that starts a workflow which dispatches an in-VM activity child, cancels the workflow, and asserts the activity child is no longer alive and WorkflowCancelled is appended.",
+      "acceptance": [
+        "The test workflow dispatches an in-VM activity (AE-007) as a linked child that stays alive long enough to observe.",
+        "After cancel, the activity child process is no longer alive (link propagation) and the store history ends with WorkflowCancelled carrying the reason.",
+        "The registry no longer holds the handle after cancel.",
+        "The test is a real runtime test, not gated out or ignored."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/engine_cancel.rs"],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "Completion yields the recorded result",
+      "spec": "THE SYSTEM SHALL provide an integration test that starts a workflow which completes and asserts result() returns the recorded result Payload and the final history event is WorkflowCompleted.",
+      "acceptance": [
+        "The test workflow runs to completion returning a known value.",
+        "result() returns the recorded result Payload equal to the workflow's output.",
+        "The store history's final event is WorkflowCompleted carrying that Payload, and list_workflows reports the workflow as Completed.",
+        "The test is a real runtime test, not gated out or ignored."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/engine_result.rs"],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT require a database — all tests use InMemoryStore (CO13).",
+    "SHALL NOT use #[ignore] or feature-gate the tests out; any runtime requirement is satisfied by the embedded beamr runtime the test builds.",
+    "SHALL NOT test AT/AD mechanics (signal routing, replay, durable timers) beyond the AE lifecycle surface — those are exercised in AT/AD."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including the integration tests.",
+    "cargo fmt --check passes.",
+    "Tests run a real embedded runtime against InMemoryStore with no #[ignore] and no database.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

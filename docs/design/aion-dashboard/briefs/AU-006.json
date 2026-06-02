@@ -1,0 +1,63 @@
+{
+  "id": "AU-006",
+  "cluster": "aion-dashboard",
+  "title": "Namespace selection and query scoping",
+  "depends_on": ["AU-002"],
+  "blocked_by": [],
+  "checklist": ["C33", "C34"],
+  "stories": ["S10"],
+  "purpose": "Make the dashboard multi-tenant-aware: a selected namespace scopes every query and every subscription so an operator investigates one tenant cleanly.",
+  "task": "Build the namespace feature: a context holding the selected namespace (loaded from listNamespaces), a selector to switch it, and the scoping wiring so every query key and every subscription filter carries the selected namespace and re-scopes on switch.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Namespace context and selector",
+      "spec": "THE SYSTEM SHALL provide a namespace context holding the selected namespace (populated from listNamespaces) and a selector component letting the operator switch namespaces.",
+      "acceptance": [
+        "src/features/namespace/context/NamespaceContext.tsx exposes the selected namespace and a setter, with the available namespaces loaded via the api client's listNamespaces.",
+        "NamespaceSelector renders the available namespaces (shadcn select) and updates the context on change.",
+        "The selector renders loading and error states for the namespace list.",
+        "A test asserts selecting a namespace updates the context value."
+      ],
+      "files": {
+        "create": [
+          "apps/aion-dashboard/src/features/namespace/context/NamespaceContext.tsx",
+          "apps/aion-dashboard/src/features/namespace/components/NamespaceSelector.tsx",
+          "apps/aion-dashboard/src/features/namespace/index.ts"
+        ],
+        "modify": []
+      },
+      "checklist": ["C33"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R2",
+      "title": "Scoping every query and subscription",
+      "spec": "THE SYSTEM SHALL scope every query and every subscription by the selected namespace, and WHEN the namespace changes THE SYSTEM SHALL re-scope both the active query and the live subscription. No view SHALL issue an unscoped query when a namespace is selected.",
+      "acceptance": [
+        "The list query key, the history query key, and the subscription filter all include the selected namespace.",
+        "Changing the namespace invalidates/re-issues the active query and re-establishes the active subscription under the new namespace.",
+        "A test switching namespace asserts the query is re-issued and the subscription re-established with the new namespace, and that no query is issued without a namespace when one is selected."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "apps/aion-dashboard/src/features/namespace/context/NamespaceContext.tsx"
+        ]
+      },
+      "checklist": ["C34"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the REST client or WebSocket manager — AU-002, AU-003 (this brief threads the namespace through them).",
+    "SHALL NOT build the list or detail views — AU-004, AU-005 (this brief provides the namespace they scope by).",
+    "SHALL NOT define server namespace semantics — that is cluster AW."
+  ],
+  "verification": [
+    "bun run check (Biome) passes clean.",
+    "tsc --noEmit passes clean.",
+    "bun test passes for the namespace context and scoping tests.",
+    "No unscoped query when a namespace is selected; no lint-disable comments added."
+  ]
+}

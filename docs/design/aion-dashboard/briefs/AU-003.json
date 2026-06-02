@@ -1,0 +1,76 @@
+{
+  "id": "AU-003",
+  "cluster": "aion-dashboard",
+  "title": "Aion event WebSocket manager with reconnect and resync",
+  "depends_on": ["AU-002"],
+  "blocked_by": [],
+  "checklist": ["C10", "C11", "C12", "C13", "C14"],
+  "stories": ["S3"],
+  "purpose": "Provide the live spine of the dashboard: a singleton WebSocket manager that subscribes to the server's event stream, parses typed events, and survives network drops with bounded reconnect and active-view resync.",
+  "task": "Build a singleton WebSocket manager modelled on apps/web's, specialised for the Aion event protocol: subscribe by filter (per-workflow, filtered, firehose), parse incoming frames into typed Event values, dispatch to handlers, reconnect with bounded backoff on drop, re-establish the active subscription and trigger a resync, and expose connection status to the UI.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Singleton manager and subscription protocol",
+      "spec": "THE SYSTEM SHALL implement a singleton WebSocket manager that connects to the server's event endpoint and supports subscribe-by-filter for per-workflow, filtered, and firehose subscriptions, parsing incoming frames into typed Event values and dispatching them to registered handlers.",
+      "acceptance": [
+        "src/lib/api/websocket.ts defines a singleton manager modelled on apps/web's (handler set, connect(), close(), subscribe()/unsubscribe()).",
+        "subscribe accepts a filter descriptor (per-workflow id, filtered by type/status/namespace, or firehose) and registers a handler; the manager sends the AW subscribe message for that filter.",
+        "Incoming frames are JSON-parsed into typed Event values and dispatched to the matching handlers; parse failures are logged, not thrown into the UI.",
+        "The subscribe-message shape and the event-frame shape are isolated in this module as the AW protocol surface (single place to update when AW pins it).",
+        "A unit test feeds synthetic frames through a mocked socket and asserts handlers receive typed events."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/src/lib/api/websocket.ts"],
+        "modify": ["apps/aion-dashboard/src/lib/api/index.ts"]
+      },
+      "checklist": ["C10", "C11"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R2",
+      "title": "Bounded reconnect and resync on drop",
+      "spec": "WHEN the socket disconnects, THE SYSTEM SHALL reconnect with bounded backoff, re-establish the active subscription on reconnect, and signal a resync so the active view can re-fetch or replay after its last-seen sequence. THE SYSTEM SHALL notify connect/disconnect handlers throughout.",
+      "acceptance": [
+        "On unexpected close the manager retries with bounded backoff up to a configured attempt ceiling, then surfaces a disconnected state (no infinite tight-loop reconnect).",
+        "On successful reconnect the manager re-sends the active subscription message and fires a resync notification to subscribers.",
+        "Subscribers can supply a last-seen sequence so resync replays after_seq where the AW protocol supports it; otherwise resync falls back to a full re-fetch signal.",
+        "connect and disconnect handler sets are notified on each transition.",
+        "A unit test simulates a drop and asserts reconnect is attempted, the subscription is re-sent, and a resync is signalled."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["apps/aion-dashboard/src/lib/api/websocket.ts"]
+      },
+      "checklist": ["C12", "C13"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R3",
+      "title": "Connection status hook",
+      "spec": "THE SYSTEM SHALL expose a useConnectionStatus hook returning the live connection state (connected, reconnecting, disconnected) for the UI to render an indicator.",
+      "acceptance": [
+        "src/features/live-feed/hooks/useConnectionStatus.ts subscribes to the manager's connect/disconnect transitions and returns a connected | reconnecting | disconnected state.",
+        "The hook cleans up its subscription on unmount.",
+        "A test drives the manager through connect → drop → reconnect and asserts the hook reports the matching state sequence."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/src/features/live-feed/hooks/useConnectionStatus.ts"],
+        "modify": []
+      },
+      "checklist": ["C14"],
+      "stories": ["S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the WebSocket endpoint or protocol — that is cluster AW; this brief implements a client for it.",
+    "SHALL NOT wire subscriptions into the list/detail views — that is AU-009.",
+    "SHALL NOT render the connection indicator component — that is AU-008 (this brief provides the status hook it consumes)."
+  ],
+  "verification": [
+    "bun run check (Biome) passes clean.",
+    "tsc --noEmit passes clean.",
+    "bun test passes for the manager and hook unit tests.",
+    "No lint-disable comments added; reconnect is bounded (no infinite tight loop)."
+  ]
+}

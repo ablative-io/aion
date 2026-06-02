@@ -1,0 +1,71 @@
+{
+  "cluster": "aion-nif",
+  "sections": [
+    {
+      "name": "Crate Scaffold and Error Taxonomy",
+      "items": [
+        {"id": "C1", "text": "crates/aion-nif exists as a workspace member; Cargo.toml depends on beamr and aion-core only, with no dependency on the aion engine crate.", "done": false},
+        {"id": "C2", "text": "src/lib.rs contains only module declarations and re-exports, no logic.", "done": false},
+        {"id": "C3", "text": "The crate sets unsafe_code = \"deny\" at the root and inherits the workspace clippy lints.", "done": false},
+        {"id": "C4", "text": "TermError is a typed error enum (thiserror) describing a term-conversion failure, including the failing argument index where applicable, not a bare badarg.", "done": false},
+        {"id": "C5", "text": "NifDeclError is a typed error enum (thiserror) describing declaration/registration-set failures, including duplicate (module, function, arity).", "done": false}
+      ]
+    },
+    {
+      "name": "Term Conversion",
+      "items": [
+        {"id": "C6", "text": "FromTerm decodes a Term (with ProcessContext for atom resolution) into a Rust type, returning TermError on type mismatch.", "done": false},
+        {"id": "C7", "text": "IntoTerm encodes a Rust value into a Term, allocating on the process heap through the ProcessContext, returning TermError on allocation failure.", "done": false},
+        {"id": "C8", "text": "FromTerm and IntoTerm are implemented for signed and unsigned integers, floats, and booleans.", "done": false},
+        {"id": "C9", "text": "FromTerm and IntoTerm are implemented for binaries (Vec<u8> and String) and for atoms via a dedicated atom-name newtype.", "done": false},
+        {"id": "C10", "text": "FromTerm and IntoTerm are implemented for Option<T> (atom nil for None, the value for Some) and for a Result-shaped {ok, T} / {error, E} tuple.", "done": false},
+        {"id": "C11", "text": "FromTerm and IntoTerm are implemented for homogeneous lists (Vec<T>) over proper cons lists, and for string-keyed maps (BTreeMap<String, T>).", "done": false},
+        {"id": "C12", "text": "A round-trip test (encode then decode) holds for every implemented type across representative values.", "done": false}
+      ]
+    },
+    {
+      "name": "Payload and JSON Bridge",
+      "items": [
+        {"id": "C13", "text": "Payload (aion-core) converts to and from a Term via the JSON content-type (term_to_value to serde_json::Value to Payload and the reverse), round-tripping losslessly.", "done": false},
+        {"id": "C14", "text": "A blanket FromTerm/IntoTerm is provided for any T: Serialize + DeserializeOwned, routed through Payload, so a NIF can be written over ordinary Rust structs.", "done": false},
+        {"id": "C15", "text": "The payload module is the only place aion-nif references aion-core's Payload and ActivityError.", "done": false}
+      ]
+    },
+    {
+      "name": "NIF Descriptor and Determinism Tag",
+      "items": [
+        {"id": "C16", "text": "Determinism is an enum with exactly Pure and SideEffectful variants.", "done": false},
+        {"id": "C17", "text": "The Nif descriptor records module name, function name, arity, the NativeFn shim, a dirty-scheduler flag, and a Determinism tag.", "done": false},
+        {"id": "C18", "text": "The engine's registration path can read a Nif's Determinism tag to choose binding mode (inline for Pure, activity-body for SideEffectful).", "done": false}
+      ]
+    },
+    {
+      "name": "Deterministic Helper Declaration",
+      "items": [
+        {"id": "C19", "text": "deterministic_nif takes a Rust fn/closure with FromTerm arguments and an IntoTerm return and produces a Nif tagged Determinism::Pure.", "done": false},
+        {"id": "C20", "text": "The generated shim checks arity, decodes each argument by position (reporting the failing index on mismatch), calls the body, and encodes the return — author code never sees raw &[Term].", "done": false},
+        {"id": "C21", "text": "The generated return encoding is heap-safe (uses the ProcessContext allocation path) and does not Box::leak in any author-reachable path.", "done": false},
+        {"id": "C22", "text": "A panic raised inside the author body is caught and converted to a typed NIF error rather than unwinding across the FFI boundary.", "done": false}
+      ]
+    },
+    {
+      "name": "Side-Effectful Activity Declaration",
+      "items": [
+        {"id": "C23", "text": "activity_nif produces a Nif tagged Determinism::SideEffectful with the dirty-scheduler flag set, whose body returns Result<T, ActivityError>.", "done": false},
+        {"id": "C24", "text": "There is no untyped declaration path: deterministic_nif yields only Pure and activity_nif yields only SideEffectful, so a side-effectful NIF cannot be expressed as an inline deterministic helper.", "done": false},
+        {"id": "C25", "text": "An ActivityError returned by the body is encoded so its retryable/terminal classification survives the boundary back to the engine.", "done": false},
+        {"id": "C26", "text": "Where suspension is needed, the crate exposes beamr's existing request_suspend / wake_with_result mechanism rather than introducing a new async model.", "done": false}
+      ]
+    },
+    {
+      "name": "Registration and FFI Seam",
+      "items": [
+        {"id": "C27", "text": "NifSet collects declared Nifs under a module name and produces the value EngineBuilder::register_nifs consumes.", "done": false},
+        {"id": "C28", "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError and never silently overwrites.", "done": false},
+        {"id": "C29", "text": "aion-nif does not call beamr's BifRegistryImpl::register itself; the descriptor set is registered by the engine's runtime module.", "done": false},
+        {"id": "C30", "text": "Any unsafe is confined to the raw module behind safe wrappers, each unsafe block carrying a // SAFETY: comment; no unsafe appears outside raw.", "done": false},
+        {"id": "C31", "text": "A minimal illustrative NIF set (at least one Pure helper and one SideEffectful activity) exercises the full declaration-to-descriptor path and asserts the determinism tags and dispatch shapes.", "done": false}
+      ]
+    }
+  ]
+}

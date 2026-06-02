@@ -1,0 +1,73 @@
+{
+  "id": "AU-007",
+  "cluster": "aion-dashboard",
+  "title": "App shell — routing, providers, layout",
+  "depends_on": ["AU-004", "AU-005", "AU-006", "AU-003"],
+  "blocked_by": [],
+  "checklist": ["C36", "C37"],
+  "stories": ["S12"],
+  "purpose": "Assemble the features into a coherent application: routes for the list and detail views and the provider stack (query client, namespace, websocket) they all depend on, with the whole bundle passing the house quality gates.",
+  "task": "Build the app shell: React Router routes for / (list) and /workflows/:id (detail), the provider stack (QueryClient, namespace, websocket), and the layout chrome (header with namespace selector and connection indicator). Bring the whole bundle to a clean Biome and tsc pass.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Routing and layout chrome",
+      "spec": "THE SYSTEM SHALL define routes for / (workflow list) and /workflows/:id (workflow detail) and a layout shell with a header carrying the namespace selector and the connection indicator.",
+      "acceptance": [
+        "src/app/routes.tsx defines / → WorkflowList and /workflows/:id → WorkflowDetail using React Router v7.",
+        "src/app/App.tsx renders the layout shell (header + routed content); the header includes NamespaceSelector and ConnectionIndicator.",
+        "Navigating from a list row to a detail route and back works in a render test.",
+        "Configurable base path from AU-001 is respected by the router."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/src/app/App.tsx", "apps/aion-dashboard/src/app/routes.tsx"],
+        "modify": ["apps/aion-dashboard/src/main.tsx"]
+      },
+      "checklist": ["C36"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R2",
+      "title": "Provider stack",
+      "spec": "THE SYSTEM SHALL wire the provider stack — TanStack QueryClient, the namespace context, and the websocket connection — around the routed application.",
+      "acceptance": [
+        "src/app/providers.tsx nests QueryClientProvider → NamespaceProvider → (websocket connection lifecycle) around the router.",
+        "The websocket connects on mount and closes on unmount, and the QueryClient is configured consistently with apps/web's defaults.",
+        "A render test asserts the app mounts with all providers present and the list route renders."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/src/app/providers.tsx"],
+        "modify": ["apps/aion-dashboard/src/app/App.tsx"]
+      },
+      "checklist": ["C36"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R3",
+      "title": "House quality gates clean",
+      "spec": "THE SYSTEM SHALL bring the whole dashboard bundle to a clean Biome check and a clean tsc --noEmit, with no lint-disable comments added to silence findings.",
+      "acceptance": [
+        "bun run check (Biome lint + format) passes clean across the app.",
+        "tsc --noEmit passes clean across the app.",
+        "bun run build produces the static bundle.",
+        "No biome-ignore or ts-ignore/ts-expect-error comments were added to silence findings."
+      ],
+      "files": {
+        "create": [],
+        "modify": []
+      },
+      "checklist": ["C37"],
+      "stories": ["S12"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT reimplement features — it composes WorkflowList, WorkflowDetail, NamespaceSelector, and ConnectionIndicator.",
+    "SHALL NOT define server endpoints, the WebSocket protocol, or asset hosting — that is cluster AW (the shell only respects the configurable base path)."
+  ],
+  "verification": [
+    "bun run check (Biome) passes clean.",
+    "tsc --noEmit passes clean.",
+    "bun run build produces a static bundle.",
+    "bun test passes for the shell render tests; no lint-disable comments added."
+  ]
+}

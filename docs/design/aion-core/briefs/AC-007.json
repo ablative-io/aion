@@ -1,0 +1,55 @@
+{
+  "id": "AC-007",
+  "cluster": "aion-core",
+  "title": "Shared EventStore behavioural test suite",
+  "depends_on": ["AC-006"],
+  "blocked_by": [],
+  "checklist": ["C32"],
+  "stories": ["S6"],
+  "purpose": "Provide the reusable behavioural conformance suite that defines what a correct EventStore does. Durable backends (libSQL, Postgres) run this same suite as their correctness oracle.",
+  "task": "Build a reusable test suite, parameterised over a factory that produces a fresh EventStore, that exercises the full contract: append ordering, atomicity, the sequence-conflict guard, read_history, list_active, query filtering, and timer scheduling/expiry. Run it against InMemoryStore. Export it so later store clusters can run it against their backends.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Reusable conformance suite",
+      "spec": "THE SYSTEM SHALL provide a behavioural test suite parameterised over an async factory closure returning a fresh Arc<dyn EventStore>, exercising every method of the contract and its documented edge cases.",
+      "acceptance": [
+        "A module (exported behind a test-support feature or as a pub test-utility) defines run_event_store_suite(make_store) covering: append+read_history round-trip preserving order; multi-batch append with advancing sequence; SequenceConflict on stale expected_seq with no partial write; list_active reflecting projected status before and after a terminal event; query across type/status/time-range filters; schedule_timer + expired_timers boundary (due vs not-yet-due); timer re-schedule idempotency.",
+        "Each scenario asserts the documented contract, not implementation details, so any conformant backend passes.",
+        "The suite is reusable from another crate (visibility and feature gating allow AS and AX to call it)."
+      ],
+      "files": {
+        "create": ["crates/aion-store/src/conformance.rs"],
+        "modify": ["crates/aion-store/src/lib.rs"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "Run the suite against InMemoryStore",
+      "spec": "THE SYSTEM SHALL run the conformance suite against InMemoryStore and the suite SHALL pass.",
+      "acceptance": [
+        "An integration test invokes run_event_store_suite with a factory that yields a fresh InMemoryStore.",
+        "The test passes under cargo test.",
+        "The test is a real runtime test, not gated out or ignored."
+      ],
+      "files": {
+        "create": ["crates/aion-store/tests/inmemory_conformance.rs"],
+        "modify": []
+      },
+      "checklist": ["C32"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT test durability across process restarts — that is exercised by durable backends (AS/AX) using this suite plus their own persistence tests.",
+    "SHALL NOT bake in InMemoryStore-specific assumptions; the suite must pass for any conformant backend."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store passes, including the conformance run.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

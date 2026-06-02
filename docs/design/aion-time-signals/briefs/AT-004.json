@@ -1,0 +1,77 @@
+{
+  "id": "AT-004",
+  "cluster": "aion-time-signals",
+  "title": "Named cancellable timers and anonymous sleeps",
+  "depends_on": ["AT-002"],
+  "blocked_by": [],
+  "checklist": ["C11", "C12", "C13"],
+  "stories": ["S1", "S2"],
+  "purpose": "Provide the engine-side timer API the SDK binds to: start_timer for author-named, cancellable timers; cancel_timer to retire one; and sleep for anonymous delays with an engine-assigned TimerId. These are the verbs a workflow author reaches for (deadlines, SLAs, delays), built on the AT-002 TimerService.",
+  "task": "Implement start_timer, cancel_timer, and sleep on top of TimerService. start_timer takes an author-assigned TimerId and schedules a durable cancellable timer. cancel_timer disarms the wheel entry via the seam and records TimerCancelled, treating an already-fired timer as a no-op. sleep schedules an anonymous timer whose TimerId is engine-assigned from sequence position and is not separately cancellable.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "start_timer (named, cancellable)",
+      "spec": "WHEN start_timer is called with an author-assigned TimerId and a fire_at/duration, THE SYSTEM SHALL schedule a durable, cancellable timer via TimerService.",
+      "acceptance": [
+        "named.rs defines start_timer(workflow_id, timer_id, fire_at) that delegates to TimerService::schedule (record + arm).",
+        "The TimerId is the author-assigned one (named timer), preserved verbatim in the TimerStarted event and the schedule_timer record.",
+        "A test calls start_timer with a named TimerId and asserts a TimerStarted event with that exact id and the timer is retrievable via expired_timers at/after fire_at."
+      ],
+      "files": {
+        "create": ["crates/aion/src/time/named.rs"],
+        "modify": ["crates/aion/src/time/mod.rs"]
+      },
+      "checklist": ["C11"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R2",
+      "title": "cancel_timer",
+      "spec": "WHEN cancel_timer is called for a named timer that has not fired, THE SYSTEM SHALL disarm the wheel entry via the seam AND append a TimerCancelled event. IF the timer has already fired, THEN cancel_timer SHALL be a no-op and SHALL NOT return an error.",
+      "acceptance": [
+        "cancel_timer(workflow_id, timer_id) disarms the wheel entry (seam disarm) and appends TimerCancelled { timer_id }.",
+        "If the timer already has a recorded TimerFired, cancel_timer returns Ok without appending TimerCancelled and without disarming (no-op).",
+        "If the timer already has a recorded TimerCancelled, cancel_timer is an idempotent no-op.",
+        "A test starts a named timer, cancels it, and asserts a TimerCancelled event is recorded and the wheel entry was disarmed.",
+        "A test fires a timer then cancels it and asserts cancel is a no-op (no TimerCancelled, no error)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/time/named.rs"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R3",
+      "title": "sleep (anonymous, engine-assigned id)",
+      "spec": "WHEN sleep is called for a duration, THE SYSTEM SHALL schedule an anonymous durable timer with an engine-assigned TimerId derived from the workflow's sequence position. THE SYSTEM SHALL NOT expose a separate cancel for an anonymous sleep.",
+      "acceptance": [
+        "sleep(workflow_id, duration) computes fire_at from the workflow's recorded time + duration and schedules via TimerService with an engine-assigned TimerId derived from sequence position (deterministic, so replay matches the same TimerId).",
+        "The anonymous TimerId derivation is deterministic given the workflow's sequence position (documented), so AD's replay reconstructs the same id.",
+        "No public cancel entrypoint accepts an anonymous-sleep timer specifically (cancelling a sleep is cancelling the workflow); doc comment states this.",
+        "A test calls sleep, asserts a TimerStarted event with an engine-derived id and the correct fire_at relative to the workflow's recorded time."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/time/named.rs"]
+      },
+      "checklist": ["C13"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT reimplement scheduling, arming, or firing — those are TimerService (AT-002).",
+    "SHALL NOT implement recovery — that is AT-003.",
+    "SHALL NOT define the Gleam workflow.sleep/start_timer/cancel_timer surface — that is AF; this brief is the engine-side mechanism it binds to.",
+    "SHALL NOT derive fire_at from the wall clock — it uses the workflow's recorded time for determinism."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including the cancel no-op tests.",
+    "cargo fmt --check passes.",
+    "Anonymous TimerId derivation is deterministic (no random/UUID for anonymous sleeps).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

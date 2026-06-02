@@ -1,0 +1,75 @@
+{
+  "id": "AT-006",
+  "cluster": "aion-time-signals",
+  "title": "Non-resident signal delivery and terminal/unknown handling",
+  "depends_on": ["AT-005"],
+  "blocked_by": [],
+  "checklist": ["C17", "C18"],
+  "stories": ["S4"],
+  "purpose": "Make signals durable regardless of whether the target process is currently resident. A signal sent while a workflow is momentarily suspended or being restored must still be recorded and delivered once the workflow is resident again — no external event is silently dropped. A signal to a terminal or unknown workflow must fail cleanly with a typed error.",
+  "task": "Extend the SignalRouter so that when the target process is NonResident, the signal is still recorded as SignalReceived and queued for delivery on resume via the engine seam; and when the target is Terminal or Unknown, the router records nothing and returns a typed error. Implement the resume handoff path so a recorded-but-undelivered signal reaches the mailbox once AE makes the process resident.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Record-and-defer for non-resident targets",
+      "spec": "WHEN a signal targets a workflow whose process is NonResident, THE SYSTEM SHALL still append SignalReceived AND register the signal for delivery to the mailbox once AE makes the process resident.",
+      "acceptance": [
+        "resume.rs handles the NonResident branch: the SignalReceived event is appended (so it is durable / replayable) and the signal is registered with the seam for delivery-on-resume.",
+        "The router does not fail or drop the signal when the target is NonResident (CO7 — no silent drop).",
+        "A test marks a workflow NonResident, routes a signal, asserts SignalReceived is appended and the signal is registered for resume delivery (observable via the fake seam).",
+        "A follow-up in the same test transitions the workflow to Resident, drives the resume handoff, and asserts the mailbox receives the deferred signal."
+      ],
+      "files": {
+        "create": ["crates/aion/src/signal/resume.rs"],
+        "modify": ["crates/aion/src/signal/mod.rs", "crates/aion/src/signal/router.rs"]
+      },
+      "checklist": ["C17"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Resume handoff delivers deferred signals in order",
+      "spec": "WHEN AE makes a previously non-resident workflow resident, THE SYSTEM SHALL deliver any recorded-but-undelivered signals to its mailbox, in the order they were recorded.",
+      "acceptance": [
+        "The resume handoff delivers deferred signals to the mailbox in recorded order (the SignalReceived sequence order).",
+        "Once delivered live, a deferred signal is not delivered a second time on a subsequent resume (delivery is tracked so resume is not a duplicate source); on a full replay, AD — not this path — returns the recorded signal.",
+        "A test defers two signals for a NonResident workflow, marks it Resident, runs the handoff, and asserts both arrive in recorded order exactly once."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/signal/resume.rs"]
+      },
+      "checklist": ["C17"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "Terminal/unknown target returns a typed error, records nothing",
+      "spec": "IF a signal targets a workflow that is Terminal or Unknown, THEN THE SYSTEM SHALL return a typed error AND SHALL NOT append any SignalReceived event.",
+      "acceptance": [
+        "Routing to a Terminal workflow returns a typed SignalError (e.g. WorkflowTerminal) and appends nothing.",
+        "Routing to an Unknown workflow returns a typed SignalError (e.g. WorkflowNotFound) and appends nothing.",
+        "The error type is a thiserror enum in this module's error surface (no anyhow, CO5).",
+        "Tests assert: terminal target -> typed error + zero events appended; unknown target -> typed error + zero events appended."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/signal/router.rs"]
+      },
+      "checklist": ["C18"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT manage workflow residency/lifecycle itself — it reacts to seam-reported residency and registers deferred delivery; AE owns the transition to Resident.",
+    "SHALL NOT implement replay of deferred signals — AD returns recorded signals on a full restore; this brief covers live resume handoff only.",
+    "SHALL NOT change the resident happy-path delivery from AT-005 beyond adding the non-resident/terminal/unknown branches."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including non-resident and terminal/unknown tests.",
+    "cargo fmt --check passes.",
+    "No SignalReceived is appended for terminal/unknown targets (verified by test).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

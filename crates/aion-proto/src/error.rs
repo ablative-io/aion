@@ -1,0 +1,1 @@
+//! WireError taxonomy + mapping

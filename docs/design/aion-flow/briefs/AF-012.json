@@ -1,0 +1,58 @@
+{
+  "id": "AF-012",
+  "cluster": "aion-flow",
+  "title": "Type-safety verification and the end-to-end example workflow",
+  "depends_on": ["AF-011"],
+  "blocked_by": [],
+  "checklist": ["C35", "C36"],
+  "stories": ["S1"],
+  "purpose": "Prove the cluster's defining property — compile-time type safety — and demonstrate the whole surface composing. Assert representative invalid compositions are rejected by gleam build, and write a typed end-to-end example workflow exercising run/now/sleep/receive/spawn/all that compiles and passes under the harness.",
+  "task": "Add type-safety verification: document representative invalid compositions (wrong activity input type, wrong signal payload type, wrong query return type) as compile-fail expectations and verify they are rejected by gleam build (e.g. via a documented compile-fail fixture set or an inline negative-test approach). Write an end-to-end typed example workflow that uses run, now, sleep, receive, spawn, and all, and a harness test that drives it to a typed result.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Compile-time type-safety verification",
+      "spec": "THE SYSTEM SHALL document representative invalid compositions as compile-fail expectations and verify they are rejected by gleam build: a wrong activity input type, a wrong signal payload type, and a wrong query return type.",
+      "acceptance": [
+        "At least three invalid compositions are captured: (a) passing a value of the wrong type as an activity input, (b) receiving a SignalRef(a) into a context expecting payload b, (c) a query handler whose returned type does not match its registered type.",
+        "Each is documented (in a clearly marked fixture or a doc-tested comment block) with the expected gleam build rejection, and the positive counterpart compiles.",
+        "The verification approach is stated in the brief's notes so a reviewer can reproduce the compile-fail (e.g. a committed fixture compiled in a separate check, or documented expected-error snippets) — the point is that the static guarantee is demonstrated, not merely asserted in prose."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/test/aion_flow_test.gleam"],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "End-to-end typed example workflow",
+      "spec": "THE SYSTEM SHALL provide an end-to-end typed example workflow that exercises run, now, sleep, receive, spawn, and all, compiling and passing under the test harness.",
+      "acceptance": [
+        "The example is a plain Gleam workflow function fn(input) -> Result(output, error) registered with workflow.define, using typed activities (run), workflow.now, a sleep, a typed receive, a child spawn, and an all fan-out — demonstrating the full surface composes with static types.",
+        "A harness test (AF-011) drives the example: mocks its activities and child, advances the clock past its sleep, sends its signal, and asserts the typed output.",
+        "The example doubles as the canonical documentation snippet for the package (referenced from aion_flow.gleam's module doc)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/test/aion_flow_test.gleam", "gleam/aion_flow/src/aion_flow.gleam"]
+      },
+      "checklist": ["C36"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add new primitives — this brief verifies and demonstrates the surface built in AF-001 through AF-011.",
+    "SHALL NOT require a running engine — the example runs under the pure-Gleam harness.",
+    "SHALL NOT weaken any type signature to make the example compile; if a composition needs a type that does not exist, that is a gap to raise, not to paper over."
+  ],
+  "verification": [
+    "gleam build passes for the package and the positive example.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for the end-to-end example under the harness.",
+    "The documented invalid compositions are confirmed rejected by gleam build; the positive counterparts compile.",
+    "No panic/todo; no type signature weakened to force compilation."
+  ]
+}

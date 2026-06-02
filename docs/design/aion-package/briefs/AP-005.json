@@ -1,0 +1,78 @@
+{
+  "id": "AP-005",
+  "cluster": "aion-package",
+  "title": "PackageBuilder — the deterministic write path",
+  "depends_on": ["AP-002", "AP-003"],
+  "blocked_by": [],
+  "checklist": ["C17", "C18", "C19"],
+  "stories": ["S5", "S6", "S7", "S10"],
+  "purpose": "Implement producing a .aion. PackageBuilder takes a manifest (without the version), a beam set, and optional source, computes the content hash, stamps it as the version, and writes a valid ZIP-container archive in the fixed layout — deterministically, so identical inputs produce a byte-identical file. This is the toolchain's and the author's one way to produce a package.",
+  "task": "Define PackageBuilder. It accepts a Manifest with the version unset, a BeamSet, and optional source files. On write it computes the content hash over the beam set (AP-003), stamps it into the manifest version field, lays out the ZIP entries (manifest.json at the root, beam/ entries, optional src/ entries) in canonical order, and writes to a path or an in-memory buffer. The archive must be byte-identical for identical inputs: no wall-clock timestamps, fixed entry order, fixed compression settings. Do not read or validate an existing archive — that is AP-006.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Builder construction and version stamping",
+      "spec": "THE SYSTEM SHALL define PackageBuilder accepting a Manifest (version unset), a BeamSet, and optional source. On finalisation it SHALL compute the content hash over the BeamSet and stamp it into the manifest's version field.",
+      "acceptance": [
+        "builder.rs defines PackageBuilder with constructors taking the manifest, beam set, and optional source map.",
+        "On write/finalise, the builder computes content_hash over the BeamSet and sets the manifest version to that hash's textual form.",
+        "If the caller-supplied manifest already carries a version, the builder overwrites it with the computed hash (the hash is authoritative, not the caller — D2).",
+        "The entry_module named in the manifest is verified to exist in the BeamSet; otherwise the builder returns PackageError::MissingEntryModule.",
+        "A unit test builds a package and asserts the resulting manifest version equals content_hash(beam_set)."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/builder.rs"],
+        "modify": ["crates/aion-package/src/lib.rs"]
+      },
+      "checklist": ["C17"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "ZIP archive layout and output targets",
+      "spec": "THE SYSTEM SHALL write a valid ZIP-container .aion with the fixed layout (manifest.json at the root, beam/<name>.beam entries, optional src/<name>.gleam entries) to either a filesystem path or an in-memory byte buffer.",
+      "acceptance": [
+        "PackageBuilder can write to a path (write_to_path) and to an in-memory Vec<u8> (write_to_bytes).",
+        "manifest.json is stored at the archive root; each beam module is stored under beam/ keyed by its logical name; each source file under src/.",
+        "Optional source is included only when supplied; its absence does not change the manifest or the content hash (CO7).",
+        "An integration test writes to bytes, reopens the bytes as a ZIP, and confirms the expected entry names are present.",
+        "All I/O errors map to a PackageError variant (no .unwrap()/.expect() in library code, CO6)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/src/builder.rs"]
+      },
+      "checklist": ["C18"],
+      "stories": ["S5", "S10"]
+    },
+    {
+      "id": "R3",
+      "title": "Deterministic, reproducible output",
+      "spec": "THE SYSTEM SHALL write the archive deterministically so that identical inputs produce a byte-identical .aion, with no wall-clock timestamps and a fixed entry ordering and compression setting.",
+      "acceptance": [
+        "ZIP entry modification times are set to a fixed constant (not the wall clock), and entries are written in a fixed canonical order (CO8).",
+        "Compression settings are fixed and explicit, not defaulted to anything environment-dependent.",
+        "An integration test builds the same inputs twice and asserts the two output byte buffers are identical.",
+        "An integration test builds with source included vs omitted and confirms the manifest version (content hash) is identical across both."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/src/builder.rs"]
+      },
+      "checklist": ["C19"],
+      "stories": ["S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT read, parse, or validate an existing .aion — that is Package::load in AP-006.",
+    "SHALL NOT compute the namespaced module names — that is exposed on the loaded Package (AP-006) via AP-004's transform.",
+    "SHALL NOT produce the version record — that is AP-007.",
+    "SHALL NOT compile source — source is carried verbatim if supplied; no compiler is invoked."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-package passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

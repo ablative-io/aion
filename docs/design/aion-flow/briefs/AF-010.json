@@ -1,0 +1,73 @@
+{
+  "id": "AF-010",
+  "cluster": "aion-flow",
+  "title": "Concurrency: all, race, map typed combinators",
+  "depends_on": ["AF-009"],
+  "blocked_by": [],
+  "checklist": ["C32", "C33", "C34"],
+  "stories": ["S8"],
+  "purpose": "Give the author BEAM-native fan-out with the result types preserved. all collects N activities in input order and fails fast; race returns the first and cancels the rest; map produces activities dynamically from a list and collects like all.",
+  "task": "Implement workflow/concurrency.gleam: all(List(Activity(i, o))) -> Result(List(o), ActivityError), race(List(Activity(i, o))) -> Result(o, ActivityError), and map(List(a), fn(a) -> Activity(i, o)) -> Result(List(o), ActivityError). Bind to AT's selective-receive collectors via the ffi layer, encoding inputs and decoding the typed results, carrying per-spawn correlation as AT requires.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "all — ordered fan-out, fail-fast",
+      "spec": "THE SYSTEM SHALL define workflow.all(List(Activity(i, o))) -> Result(List(o), ActivityError) spawning all activities concurrently, returning results in input order, and failing fast on any activity failure.",
+      "acceptance": [
+        "all spawns the activities via AT's collector, decodes each result with its output Codec, and returns them in input order as Result(List(o), ActivityError).",
+        "Any single activity failure fails the whole all (returning that ActivityError) and the remaining activities are cancelled (AT D9); the SDK relies on AT for cancellation via ffi.",
+        "A harness test mocks three activities and asserts ordered results on success; a second test asserts a single failure fails the all."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/workflow/concurrency.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/workflow.gleam", "gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "race — first wins, cancel the rest",
+      "spec": "THE SYSTEM SHALL define workflow.race(List(Activity(i, o))) -> Result(o, ActivityError) returning the first result to arrive and cancelling the remaining activities.",
+      "acceptance": [
+        "race spawns the activities, returns the first arriving result decoded with its output Codec, and binds to AT's cancellation of the losers (recorded per AT D10).",
+        "A harness test with two activities resolving at different simulated times asserts the first result wins and the loser is cancelled.",
+        "The result type o is preserved (the list is homogeneous in output type)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/workflow/concurrency.gleam"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "map — dynamic fan-out",
+      "spec": "THE SYSTEM SHALL define workflow.map(List(a), fn(a) -> Activity(i, o)) -> Result(List(o), ActivityError) producing an activity per element and collecting like all.",
+      "acceptance": [
+        "map applies the element->Activity function to each item of the runtime list, then collects like all (ordered, fail-fast).",
+        "A harness test maps over a list of inputs, mocks the produced activities, and asserts ordered typed results.",
+        "A doc comment notes that homogeneous-output combinators cover the design's stated fan-out use; typed-tuple variants (all2/all3) are a later addition (per D11)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/workflow/concurrency.gleam"]
+      },
+      "checklist": ["C34"],
+      "stories": ["S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the selective-receive collectors, correlation tokens, or cancellation — those are AT-009/AT-010/AT-011/AT-012. This brief binds to them.",
+    "SHALL NOT add heterogeneous-tuple combinators in this brief (deferred per D11).",
+    "SHALL NOT let activity inputs/outputs cross the boundary without Codecs (CO9)."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for all, race, and map tests under the harness.",
+    "No panic/todo; result types preserved; ordering and fail-fast asserted."
+  ]
+}

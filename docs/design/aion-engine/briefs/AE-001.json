@@ -1,0 +1,93 @@
+{
+  "id": "AE-001",
+  "cluster": "aion-engine",
+  "title": "aion crate scaffold and EngineError taxonomy",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4"],
+  "stories": ["S4"],
+  "purpose": "Create the aion engine crate and define the error taxonomy every other module returns. This is the foundation the runtime, registry, lifecycle, supervision, loader, and engine modules build on, and it fixes the crate's dependency boundary up front.",
+  "task": "Create the aion crate as a workspace member depending only on aion-core, aion-store, aion-package, and beamr among workspace crates, with a thin lib.rs re-export surface and an error module defining EngineError. The crate must contain no transport (HTTP/gRPC/WebSocket) dependency. Define the EngineError thiserror enum with the variants the rest of the cluster needs. Scope is the crate skeleton and the error type only — no runtime, registry, lifecycle, or engine logic.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and dependency boundary",
+      "spec": "THE SYSTEM SHALL create the aion crate as a workspace member whose only workspace dependencies are aion-core, aion-store, aion-package, and beamr. THE SYSTEM SHALL NOT add any HTTP, gRPC, or WebSocket dependency, and SHALL NOT depend on aion-server or any store backend crate.",
+      "acceptance": [
+        "crates/aion exists and is registered in the workspace Cargo.toml members list.",
+        "aion/Cargo.toml lists aion-core, aion-store, aion-package, and beamr as the only workspace-internal dependencies; external deps are limited to async/serde/thiserror-style support crates with no networking crate present.",
+        "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+        "cargo check -p aion passes.",
+        "grep of the crate shows no http/grpc/tonic/axum/hyper/tungstenite dependency or import."
+      ],
+      "files": {
+        "create": ["crates/aion/Cargo.toml", "crates/aion/src/lib.rs"],
+        "modify": ["Cargo.toml"]
+      },
+      "checklist": ["C1"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Thin lib.rs re-export surface",
+      "spec": "THE SYSTEM SHALL provide a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL NOT place any function, struct, enum, or trait body in lib.rs.",
+      "acceptance": [
+        "src/lib.rs contains only pub mod declarations and pub use re-exports.",
+        "The module declarations name error, runtime, registry, loader, supervision, activity, lifecycle, and engine (modules created by later briefs may be declared as they land; this brief declares at least error).",
+        "No logic appears in lib.rs."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lib.rs"]
+      },
+      "checklist": ["C2"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "EngineError thiserror taxonomy",
+      "spec": "THE SYSTEM SHALL define EngineError as a thiserror enum covering MissingStore, Load, Store wrapping aion_store StoreError, Package wrapping aion_package PackageError, Runtime, RegistryPoisoned, WorkflowNotFound, and NifRegistration. THE SYSTEM SHALL NOT use anyhow in the crate.",
+      "acceptance": [
+        "error.rs defines EngineError with at least the variants MissingStore, Load { reason }, Store(StoreError), Package(PackageError), Runtime { reason }, RegistryPoisoned, WorkflowNotFound(WorkflowId), and NifRegistration { reason }.",
+        "EngineError derives thiserror::Error and Debug with a Display message per variant.",
+        "From<StoreError> and From<PackageError> are implemented (or derived via #[from]) so the ? operator lifts those errors.",
+        "No anyhow import appears anywhere in the crate."
+      ],
+      "files": {
+        "create": ["crates/aion/src/error.rs"],
+        "modify": ["crates/aion/src/lib.rs"]
+      },
+      "checklist": ["C3"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R4",
+      "title": "Lint and panic-freedom baseline",
+      "spec": "THE SYSTEM SHALL contain no lint-bypass directive and no panicking unwrap/expect outside test code, establishing the baseline every later brief must preserve.",
+      "acceptance": [
+        "grep of crates/aion/src shows no #[allow], #[expect], or #[ignore].",
+        "grep of non-test code shows no .unwrap() or .expect().",
+        "cargo clippy -p aion --all-targets -- -D warnings passes.",
+        "cargo fmt --check passes."
+      ],
+      "files": {
+        "create": [],
+        "modify": []
+      },
+      "checklist": ["C4"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the runtime, registry, loader, supervision, activity, lifecycle, or engine modules — those are AE-002 onward.",
+    "SHALL NOT add any networking, server, or store-backend dependency (per CO5/CO6).",
+    "SHALL NOT define the WorkflowHandle, RuntimeHandle, or Engine types — only the crate skeleton and EngineError."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo check -p aion passes.",
+    "cargo fmt --check passes.",
+    "ast-grep scan passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code; no anyhow; no .unwrap()/.expect() outside tests."
+  ]
+}

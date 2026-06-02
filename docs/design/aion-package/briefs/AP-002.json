@@ -1,0 +1,77 @@
+{
+  "id": "AP-002",
+  "cluster": "aion-package",
+  "title": "Manifest model and format versioning",
+  "depends_on": ["AP-001"],
+  "blocked_by": [],
+  "checklist": ["C6", "C7", "C8", "C9", "C10"],
+  "stories": ["S5", "S8", "S9"],
+  "purpose": "Define the manifest — the package's self-describing deployment descriptor — as a typed struct that serialises to and from manifest.json. The manifest tells the engine the entry point, the input/output shapes, the timeout, the declared activities, the content-hash version, and the format version of the .aion layout itself.",
+  "task": "Define the Manifest struct carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version (the content hash, as a value type), and format_version. Derive serde and verify lossless round-trip through manifest.json. Model declared activities and the JSON-Schema input/output descriptions as typed fields. Define the format_version constant and the surface that rejects an unknown value (the rejection itself fires in the read path, AP-006; this brief defines the field, the current value, and the check helper). Do not parse the archive or compute the hash here.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Manifest struct and serde round-trip",
+      "spec": "THE SYSTEM SHALL define Manifest as a typed struct carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version, and format_version, deriving Serialize and Deserialize, round-tripping losslessly through serde_json.",
+      "acceptance": [
+        "manifest.rs defines Manifest with fields: entry_module (logical module name), entry_function (String), input_schema, output_schema, timeout, activities, version, format_version.",
+        "Manifest derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+        "A unit test serialises a Manifest to JSON and deserialises it back, asserting equality (lossless round-trip).",
+        "Field names in the JSON form are stable and documented (the on-disk manifest.json key names are part of the format).",
+        "timeout is a typed duration (not a bare integer with an undocumented unit)."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/manifest.rs"],
+        "modify": ["crates/aion-package/src/lib.rs"]
+      },
+      "checklist": ["C6", "C7"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "Schemas and declared activities",
+      "spec": "THE SYSTEM SHALL model input_schema and output_schema as JSON-Schema descriptions of the workflow input and result Payload shapes, and SHALL model declared activities as a list where each entry identifies its activity type.",
+      "acceptance": [
+        "input_schema and output_schema hold JSON-Schema documents (serde_json::Value or a typed wrapper), describing the input and result Payload shapes.",
+        "Declared activities are a list of entries, each carrying at least the activity type identifier the workflow invokes.",
+        "The activity-type identifiers use aion-core's conventions (no bare ad-hoc string type where aion-core provides a type).",
+        "A unit test constructs a Manifest with two declared activities and a non-trivial input/output schema and round-trips it."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/src/manifest.rs"]
+      },
+      "checklist": ["C9", "C10"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Format version field and check",
+      "spec": "THE SYSTEM SHALL define format_version identifying the .aion format schema version, expose the current supported value, and provide a check that returns the UnknownFormatVersion PackageError for any other value.",
+      "acceptance": [
+        "A constant defines the current supported format_version, and Manifest carries the field.",
+        "A function (e.g. Manifest::check_format_version) returns Ok for the supported value and Err(PackageError::UnknownFormatVersion { found }) otherwise.",
+        "A doc comment states that format_version lets a future layout change be detected rather than silently misread.",
+        "A unit test asserts the supported value passes and an unsupported value yields UnknownFormatVersion."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/src/manifest.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT open or parse the ZIP archive — that is the read path in AP-006.",
+    "SHALL NOT compute or set the content hash — AP-003 computes it; AP-005 stamps it into the version field.",
+    "SHALL NOT validate input Payloads against input_schema at runtime — schema validation is a consumer concern (engine/server), not the package format.",
+    "The UnknownFormatVersion rejection is invoked from the read path (AP-006); this brief defines the field, the constant, and the check helper only."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-package passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

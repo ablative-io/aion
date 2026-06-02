@@ -1,0 +1,93 @@
+{
+  "id": "AC-002",
+  "cluster": "aion-core",
+  "title": "Event model and payload",
+  "depends_on": ["AC-001"],
+  "blocked_by": [],
+  "checklist": ["C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15"],
+  "stories": ["S1", "S2", "S8"],
+  "purpose": "Define the Event enum — the spine of the event-sourcing system — and the Payload type that carries type-erased values through it. Every recorded fact in a workflow's life is an Event variant.",
+  "task": "Define a Payload newtype carrying opaque serialised bytes plus a content-type tag, with lossless conversion to and from serde_json::Value. Define the Event enum with all lifecycle, activity, timer, signal, and child-workflow variants, each wrapped in an envelope carrying a per-workflow sequence number, a recorded timestamp, and the owning WorkflowId. Event must be type-erased — it carries Payload values, never a generic type parameter.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Payload newtype",
+      "spec": "THE SYSTEM SHALL define Payload as a newtype over a byte buffer plus a content-type tag. THE SYSTEM SHALL provide lossless conversion between Payload and serde_json::Value.",
+      "acceptance": [
+        "payload.rs defines Payload holding bytes and a content-type tag (an enum or stable string identifying the encoding).",
+        "Payload::from_json(&serde_json::Value) and Payload::to_json() -> Result round-trip losslessly for all JSON value kinds.",
+        "Payload derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+        "A unit test asserts round-trip fidelity for null, bool, number, string, array, and object."
+      ],
+      "files": {
+        "create": ["crates/aion-core/src/payload.rs"],
+        "modify": ["crates/aion-core/src/lib.rs"]
+      },
+      "checklist": ["C13", "C14", "C15"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R2",
+      "title": "Event envelope",
+      "spec": "THE SYSTEM SHALL define an event envelope carrying a monotonic per-workflow sequence number, a recorded UTC timestamp, and the owning WorkflowId. Every event SHALL carry this envelope.",
+      "acceptance": [
+        "event.rs defines an envelope (a struct field group or wrapper) with seq: u64, recorded_at: DateTime<Utc>, and workflow_id: WorkflowId.",
+        "The envelope is part of every Event value, accessible via accessors regardless of variant.",
+        "The recorded_at timestamp is the documented determinism source for workflow.now (a doc comment states this).",
+        "A unit test constructs an event and reads back its seq, recorded_at, and workflow_id."
+      ],
+      "files": {
+        "create": ["crates/aion-core/src/event.rs"],
+        "modify": ["crates/aion-core/src/lib.rs"]
+      },
+      "checklist": ["C11"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Event variants",
+      "spec": "THE SYSTEM SHALL define the Event enum with workflow-lifecycle, activity, timer, signal, and child-workflow variants. Variants carrying user data SHALL carry it as Payload, and the enum SHALL NOT take a generic type parameter.",
+      "acceptance": [
+        "Workflow lifecycle: WorkflowStarted (workflow_type + input Payload), WorkflowCompleted (result Payload), WorkflowFailed (WorkflowError), WorkflowCancelled (reason).",
+        "Activity: ActivityScheduled (ActivityId + activity_type + input Payload), ActivityStarted (ActivityId), ActivityCompleted (ActivityId + result Payload), ActivityFailed (ActivityId + ActivityError + attempt).",
+        "Timer: TimerStarted (TimerId + fire_at), TimerFired (TimerId), TimerCancelled (TimerId).",
+        "Signal: SignalReceived (name + payload Payload).",
+        "Child workflow: ChildWorkflowStarted (child WorkflowId + workflow_type + input), ChildWorkflowCompleted (child WorkflowId + result), ChildWorkflowFailed (child WorkflowId + WorkflowError).",
+        "Event has no generic type parameter; all user data is Payload."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/event.rs"]
+      },
+      "checklist": ["C6", "C7", "C8", "C9", "C10", "C15"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R4",
+      "title": "Event serialisation round-trip",
+      "spec": "THE SYSTEM SHALL derive Serialize and Deserialize on Event and all its variants. Serialising an Event and deserialising it back SHALL produce an equal value.",
+      "acceptance": [
+        "Event derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+        "A unit test round-trips at least one event of every variant through serde_json and asserts equality.",
+        "Enum representation is explicit (tagged) so the wire form is stable and forward-readable."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/event.rs"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT compute WorkflowStatus from events — that is AC-003.",
+    "SHALL NOT define ActivityError or WorkflowError bodies beyond referencing them — their definitions land in AC-004 (this brief may use a minimal placeholder only if AC-004 is not yet merged, but the final shape is owned by AC-004).",
+    "SHALL NOT define any storage trait."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-core passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

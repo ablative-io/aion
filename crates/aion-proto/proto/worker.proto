@@ -1,0 +1,5 @@
+syntax = "proto3";
+
+package aion;
+
+// register/task/result/heartbeat bidi service

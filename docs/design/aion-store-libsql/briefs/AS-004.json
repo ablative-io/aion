@@ -1,0 +1,95 @@
+{
+  "id": "AS-004",
+  "cluster": "aion-store-libsql",
+  "title": "Atomic append with the expected-sequence guard",
+  "depends_on": ["AS-003"],
+  "blocked_by": [],
+  "checklist": ["C14", "C15", "C16", "C17"],
+  "stories": ["S4"],
+  "purpose": "Implement the load-bearing operation of the crate: append a batch of events all-or-none, gated on an expected sequence, inside one libSQL transaction. This is what preserves replay integrity over durable storage; a partial write or a TOCTOU race here corrupts the entire system silently.",
+  "task": "Implement append in append.rs: open a libSQL transaction, read the workflow's current head seq, compare against the expected next sequence, and either insert every event in the batch with contiguous seq values and commit, or roll back and return StoreError::SequenceConflict writing nothing. Serialise each Event to the stored blob via the error boundary. The guard read and the inserts must be one transaction.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Transactional head read and guard comparison",
+      "spec": "WHEN append is called, THE SYSTEM SHALL, within a single libSQL transaction, read the current maximum seq for the workflow (the head) and compare the expected next sequence against it. THE SYSTEM SHALL NOT read the head outside the transaction that performs the insert.",
+      "acceptance": [
+        "append.rs opens a transaction and queries MAX(seq) for the workflow_id (treating no rows as head 0 / empty, matching the contract's first-append semantics from AC-005/AC-006).",
+        "The expected_seq argument is compared against the stored head; the comparison and the subsequent insert occur in the same transaction (no separate pre-check transaction).",
+        "The head-read and guard logic is covered by a unit/integration test that appends a first batch from the empty state successfully.",
+        "Any libsql error during the read maps to StoreError::Backend via the error boundary; the transaction is rolled back on error."
+      ],
+      "files": {
+        "create": ["crates/aion-store-libsql/src/append.rs"],
+        "modify": ["crates/aion-store-libsql/src/store.rs", "crates/aion-store-libsql/src/lib.rs"]
+      },
+      "checklist": ["C14"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Atomic insert on match",
+      "spec": "WHEN the expected sequence matches the stored head, THE SYSTEM SHALL insert every event in the batch with contiguous seq values starting at the expected sequence and commit the transaction so all events become durable together.",
+      "acceptance": [
+        "On a matching expected_seq, each Event is serialised (via serde, errors mapped to StoreError::Serialization) and inserted with seq = expected_seq + offset and the event's recorded_at written to recorded_at.",
+        "The transaction commits only after all inserts succeed; the head advances by exactly the batch length.",
+        "A test appends a multi-event batch, then read_history (from AS-005, or a direct row count assertion if AS-005 not yet landed) shows all events present in contiguous seq order.",
+        "An empty batch is handled per the contract (no-op append that does not advance the head, or rejected — match the AC-005/AC-006 documented behaviour; note the chosen behaviour in the test)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/append.rs"]
+      },
+      "checklist": ["C15"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "Conflict rollback writes nothing",
+      "spec": "IF the expected sequence does not match the stored head, THEN THE SYSTEM SHALL roll back the transaction, persist no events, and return StoreError::SequenceConflict { expected, found }.",
+      "acceptance": [
+        "On mismatch, the transaction is rolled back and no rows are inserted.",
+        "StoreError::SequenceConflict { expected, found } is returned with expected = the caller's expected_seq and found = the actual stored head.",
+        "A test appends a batch, then attempts a second append with a stale expected_seq, asserts SequenceConflict, and asserts via read_history / row count that no partial write occurred (head unchanged from the first successful append).",
+        "A mismatch mid-way (e.g. expected ahead of head) is also rejected, not partially applied."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/append.rs"]
+      },
+      "checklist": ["C16"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R4",
+      "title": "Concurrent append resolves to one winner",
+      "spec": "WHILE two appends race on the same expected sequence, THE SYSTEM SHALL resolve them to exactly one commit and one SequenceConflict, with no partial batch persisted by the loser.",
+      "acceptance": [
+        "A concurrency test launches two appends with the same expected_seq against the same store and asserts exactly one returns Ok and one returns SequenceConflict.",
+        "After the race, read_history shows only the winning batch's events (the loser wrote nothing).",
+        "The guarantee comes from libSQL transactional isolation on the (workflow_id, seq) primary key, not application-level locking; the test does not rely on timing luck (it asserts the invariant regardless of which append wins).",
+        "If the underlying isolation surfaces the loser as a constraint/backend error rather than a clean head-mismatch, append maps it to SequenceConflict (so callers see one uniform conflict signal); this normalisation is covered by the test."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/append.rs"]
+      },
+      "checklist": ["C17"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement read_history/list_active/query — AS-005 (tests here may read rows directly or use read_history if already landed).",
+    "SHALL NOT implement timer methods — AS-006.",
+    "SHALL NOT introduce a mutable status column to detect conflicts — the guard is on the events table head seq.",
+    "SHALL NOT leave any path where a mismatch could persist a partial batch."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store-libsql passes, including the conflict and concurrency tests.",
+    "cargo fmt --check passes.",
+    "ast-grep scan passes.",
+    "A reviewer confirms the head read and inserts are in one transaction and that no code path writes a partial batch on conflict.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

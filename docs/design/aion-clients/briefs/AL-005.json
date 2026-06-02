@@ -1,0 +1,96 @@
+{
+  "id": "AL-005",
+  "cluster": "aion-clients",
+  "title": "aion-client-typescript (npm): Client, handle, generic typed payloads, AsyncIterable stream, error union",
+  "depends_on": ["AL-001"],
+  "blocked_by": ["AW: aion-server API + aion-proto wire contract must be defined"],
+  "checklist": ["C18", "C19", "C20", "C21"],
+  "stories": ["S1", "S2", "S4", "S8", "S9"],
+  "purpose": "Build the TypeScript/Node caller SDK so JS-ecosystem teams and frontends-with-a-backend can drive Aion workflows with full type-checking. It implements the AL-001 contract in TS idioms: a connect-and-operate Client, a WorkflowHandle, generic JSON-typed payloads with a raw escape hatch, an AsyncIterable event stream that resumes across disconnects, and a branchable error type. tsc strict and eslint clean.",
+  "task": "Create the aion-client-typescript package (npm name aion-client-typescript). Implement a Client that connects to an aion-server (auth + TLS), exposes start/signal/query/cancel/list/describe with start returning a WorkflowHandle, generic typed payload helpers with a raw escape hatch, a subscribe AsyncIterable with sequence-based resumption, and an error union / class hierarchy over the shared taxonomy. Behaviour must match the AL-001 contract; the conformance harness is AL-007, but the package must be drivable by it.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Package scaffold and Client connection",
+      "spec": "THE SYSTEM SHALL create the package with a Client that connects to an aion-server with an auth credential and TLS configuration and exposes start, signal, query, cancel, list, and describe, with start returning a WorkflowHandle. THE SYSTEM SHALL NOT require reconnection per operation.",
+      "acceptance": [
+        "sdks/typescript/aion-client/package.json declares name aion-client-typescript, the module/types entry points, and a strict tsconfig is present.",
+        "A connect(options) factory (or new Client(options)) with { endpoint, auth, tls } establishes a reusable client.",
+        "Client exposes async start, signal, query, cancel, list, describe matching the contract; start resolves to a WorkflowHandle.",
+        "WorkflowHandle exposes signal/query/cancel/describe/subscribe bound to workflowId and runId, defaulting to the latest run and targeting a specific run when given one.",
+        "A connection failure rejects with Unavailable; a rejected credential rejects with Unauthenticated."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-client/package.json", "sdks/typescript/aion-client/tsconfig.json", "sdks/typescript/aion-client/src/index.ts", "sdks/typescript/aion-client/src/client.ts", "sdks/typescript/aion-client/src/handle.ts"],
+        "modify": []
+      },
+      "checklist": ["C18"],
+      "stories": ["S1", "S2"]
+    },
+    {
+      "id": "R2",
+      "title": "Error union / class hierarchy",
+      "spec": "THE SYSTEM SHALL map server failures to a branchable error type covering the shared taxonomy. THE SYSTEM SHALL NOT reject with a plain Error for a condition that has a specific variant and SHALL NOT swallow failures.",
+      "acceptance": [
+        "errors.ts defines the taxonomy as a discriminated union (on a literal kind/code field) and/or an Error-subclass hierarchy with a common base: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server (with detail).",
+        "A mapping function converts a server/transport failure into the correct variant; a unit test asserts the NotFound, AlreadyExists, QueryTimeout, and Unavailable mappings.",
+        "The discriminant is exhaustively switchable so a consumer's switch with no default still type-checks for all variants.",
+        "No catch block discards an error without re-throwing or converting it."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-client/src/errors.ts"],
+        "modify": ["sdks/typescript/aion-client/src/index.ts"]
+      },
+      "checklist": ["C21"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Generic typed payload helpers with raw escape hatch",
+      "spec": "THE SYSTEM SHALL make the operations generic over input/result types with JSON serialisation while keeping the wire Payload, and SHALL keep a raw-Payload escape hatch on every payload-bearing operation. THE SYSTEM SHALL NOT remove the raw path.",
+      "acceptance": [
+        "payload.ts provides toPayload<T>(value): Payload (JSON content-type) and fromPayload<T>(payload): T.",
+        "start<I>, signal<I>, and query<I, R> are generic over input/result types; raw overloads accept a Payload (bytes + content-type) directly.",
+        "A serialisation failure throws InvalidArgument; a result-decode failure throws a non-swallowed error.",
+        "A unit test round-trips a typed value through toPayload/fromPayload and asserts deep equality.",
+        "tsc --noEmit (strict) reports no errors for the payload surface."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-client/src/payload.ts"],
+        "modify": ["sdks/typescript/aion-client/src/client.ts", "sdks/typescript/aion-client/src/handle.ts"]
+      },
+      "checklist": ["C19"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R4",
+      "title": "subscribe AsyncIterable with resumption",
+      "spec": "THE SYSTEM SHALL implement subscribe returning an AsyncIterable of decoded events. WHILE open, IF the connection drops transiently, THEN THE SYSTEM SHALL reconnect and resume from the last delivered sequence number with no gaps or duplicates. IF the subscription fails terminally, THEN THE SYSTEM SHALL throw out of the iterator rather than completing silently.",
+      "acceptance": [
+        "stream.ts exposes an AsyncIterable<Event> (for await (const event of handle.subscribe()) { ... }) over the WebSocket transport.",
+        "The iterator tracks the last delivered sequence number and resumes from sequence+1 after a transient disconnect.",
+        "A test with a stub transport that drops mid-stream asserts each event is yielded exactly once across the reconnect.",
+        "A terminal failure throws the mapped error out of the for-await loop; the iterable does not complete silently on failure.",
+        "tsc --noEmit (strict) reports no errors for the stream surface."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-client/src/stream.ts"],
+        "modify": ["sdks/typescript/aion-client/src/handle.ts"]
+      },
+      "checklist": ["C20"],
+      "stories": ["S8", "S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the wire protocol or server endpoints (AW).",
+    "SHALL NOT depend on the Rust crate at runtime — it is an independent npm package over the same wire contract.",
+    "SHALL NOT implement the cross-language conformance harness — that is AL-007."
+  ],
+  "verification": [
+    "tsc --noEmit with strict mode passes.",
+    "eslint passes on sdks/typescript/aion-client/src.",
+    "The package's test runner passes on sdks/typescript/aion-client/test.",
+    "The build emits both runtime JS and .d.ts type declarations, and the public index re-exports the seven operations.",
+    "No catch block silently discards an error."
+  ]
+}

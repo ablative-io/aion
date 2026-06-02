@@ -1,0 +1,1 @@
+//! PackageBuilder — deterministic write path

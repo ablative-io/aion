@@ -1,0 +1,73 @@
+{
+  "id": "AW-005",
+  "cluster": "aion-server",
+  "title": "Remote-worker protocol wire shape (register/task/result/heartbeat, bidi)",
+  "depends_on": ["AW-002"],
+  "blocked_by": [],
+  "checklist": ["C13", "C14", "C15"],
+  "stories": ["S3", "S9"],
+  "purpose": "Define the wire contract for out-of-process Tier-3 activity workers — the protocol every worker SDK (cluster AR) generates stubs from. This is the bidirectional-streaming gRPC service: workers register, the server pushes tasks, workers report results and heartbeats.",
+  "task": "Add worker.proto declaring a bidirectional-streaming gRPC service with RegisterWorker, ActivityTask, ActivityResult, and Heartbeat messages. ActivityTask carries the activity type, input Payload, and the WorkflowId/ActivityId correlation; ActivityResult carries a result Payload or an ActivityError; Heartbeat carries liveness and optional progress; RegisterWorker carries the worker's namespace and the activity types it implements. Provide serde types and assert lossless round-trip. This brief defines the protocol; the server-side endpoint is AW-011/AW-012.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Bidirectional worker service",
+      "spec": "THE SYSTEM SHALL define a gRPC service in worker.proto using bidirectional streaming, where the server pushes ActivityTask messages down the stream and the worker pushes ActivityResult and Heartbeat messages up it, opened by a RegisterWorker handshake.",
+      "acceptance": [
+        "worker.proto defines a bidirectional-streaming RPC carrying a server->worker message (ActivityTask) and a worker->server message (RegisterWorker, ActivityResult, Heartbeat) as the two stream directions.",
+        "The transport is gRPC bidi streaming, not unary polling (per D7); the proto reflects push dispatch.",
+        "tonic-build generates the streaming service and the crate compiles."
+      ],
+      "files": {
+        "create": ["crates/aion-proto/proto/worker.proto"],
+        "modify": ["crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C13"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R2",
+      "title": "Task, result, and heartbeat payloads",
+      "spec": "THE SYSTEM SHALL define ActivityTask carrying activity type, input Payload, and WorkflowId/ActivityId correlation; ActivityResult carrying a result Payload or an ActivityError; and Heartbeat carrying liveness and optional progress.",
+      "acceptance": [
+        "ActivityTask carries the activity type string, the input Payload, the owning WorkflowId, and the ActivityId for correlation.",
+        "ActivityResult carries either a success result Payload or an ActivityError (using aion-core's ActivityError shape via the AW-002 conversion, preserving the retryable/terminal classification).",
+        "Heartbeat carries the WorkflowId/ActivityId it concerns and an optional progress Payload.",
+        "A unit test round-trips ActivityTask, ActivityResult (both success and error), and Heartbeat through serde and proto encode/decode."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/proto/worker.proto", "crates/aion-proto/src/convert.rs"]
+      },
+      "checklist": ["C14"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R3",
+      "title": "Worker registration advertisement",
+      "spec": "THE SYSTEM SHALL define RegisterWorker carrying the worker's namespace and the list of activity types it implements.",
+      "acceptance": [
+        "RegisterWorker carries a namespace and a repeated activity-type field.",
+        "RegisterWorker has a serde type deriving Serialize + Deserialize and round-trips losslessly.",
+        "The proto documents that registration scopes the worker to one namespace (server-side partitioning per D8 is AW-011)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/proto/worker.proto", "crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C15"],
+      "stories": ["S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the server-side worker registry, dispatch, or heartbeat handling — AW-011, AW-012.",
+    "SHALL NOT build any worker client — that is cluster AR.",
+    "SHALL NOT define how the engine surfaces a Tier-3 activity need — that is AE; this brief defines only the wire protocol."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-proto passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,1 @@
+//! NamespaceResolver: scope + authorise

@@ -1,0 +1,62 @@
+{
+  "id": "AS-008",
+  "cluster": "aion-store-libsql",
+  "title": "Embedded-replica sync against a remote primary",
+  "depends_on": ["AS-007"],
+  "blocked_by": [],
+  "checklist": ["C26"],
+  "stories": ["S2"],
+  "purpose": "Prove the distributed deployment path: a local embedded replica that syncs to a remote libSQL primary. This is the one part of the crate that needs an external service, so its test is runtime env-gated rather than ignored, per CLAUDE.md.",
+  "task": "Add an embedded-replica sync integration test that, when a remote primary is configured via AION_LIBSQL_TEST_URL (and token), opens a LibSqlStore in EmbeddedReplica mode, appends and syncs, and asserts the data reaches the primary / is readable through a second replica after sync. When the env var is unset, the test emits a tracing skip line and returns Ok trivially. It is never #[ignore]. Confirm the same EventStore behaviour holds in replica mode as in embedded mode.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Env-gated embedded-replica sync test",
+      "spec": "WHILE AION_LIBSQL_TEST_URL is set, THE SYSTEM SHALL run the embedded-replica sync test against that primary; WHILE it is unset, THE SYSTEM SHALL emit a tracing skip line and return Ok without failing. THE SYSTEM SHALL NOT mark the test #[ignore].",
+      "acceptance": [
+        "tests/replica_sync.rs reads AION_LIBSQL_TEST_URL (and the accompanying auth token env var, e.g. AION_LIBSQL_TEST_TOKEN) at runtime.",
+        "When unset, the test emits a tracing::info! skip line naming the missing env var and returns Ok(()) — it does not fail and is not #[ignore]d.",
+        "When set, the test constructs a LibSqlConfig::EmbeddedReplica pointing at the primary with the token and opens a LibSqlStore.",
+        "The gate is a runtime read of the env var, not a cfg!/feature/#[ignore] compile-time gate."
+      ],
+      "files": {
+        "create": ["crates/aion-store-libsql/tests/replica_sync.rs"],
+        "modify": []
+      },
+      "checklist": ["C26"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R2",
+      "title": "Sync round-trip assertion",
+      "spec": "WHEN the env-gated test runs against a real primary, THE SYSTEM SHALL append history through the embedded replica, sync to the primary, and observe the synced data so that the distributed path is proven end-to-end.",
+      "acceptance": [
+        "The test appends a known event batch through the replica store and triggers/awaits a sync to the primary.",
+        "The test asserts the data is durably present on the primary — either by reading it back through a second freshly-opened replica that syncs from the primary, or by querying the primary directly — and asserts read_history matches what was appended.",
+        "The same EventStore contract behaviour (append ordering, read_history) holds in replica mode as in embedded mode; the test reuses the contract assertions rather than asserting libSQL internals.",
+        "Sync or connection failures surface as StoreError::Backend, not panics."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/tests/replica_sync.rs"]
+      },
+      "checklist": ["C26"],
+      "stories": ["S2"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT require a live primary for the crate to build or for the rest of the test suite to pass — only this test consults the primary, and only when its env var is set.",
+    "SHALL NOT use #[ignore] — the gate is a runtime env-var read per CLAUDE.md.",
+    "SHALL NOT re-implement the EventStore methods — replica mode reuses the same impl; only the connection-open path differs (AS-002 R2).",
+    "SHALL NOT add distributed shard-assignment or coordination logic — that is engine/distributed scope, not this store."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store-libsql passes with AION_LIBSQL_TEST_URL unset (the replica test skips with a tracing line, all other tests run).",
+    "With AION_LIBSQL_TEST_URL pointing at a real primary, cargo test -p aion-store-libsql runs the replica sync test and it passes.",
+    "cargo fmt --check passes.",
+    "ast-grep scan passes.",
+    "A reviewer confirms the test uses a runtime env-gate (not #[ignore], not a feature flag) and emits a visible skip line when unset.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

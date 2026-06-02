@@ -1,0 +1,58 @@
+{
+  "id": "AF-002",
+  "cluster": "aion-flow",
+  "title": "Codec and Duration: the typed boundary primitives",
+  "depends_on": ["AF-001"],
+  "blocked_by": [],
+  "checklist": ["C6", "C7", "C8", "C9"],
+  "stories": ["S6", "S13"],
+  "purpose": "Define the two primitives that every typed boundary depends on: Codec(a), which carries a typed Gleam value across the type-erased ffi boundary, and Duration, the single unit-safe time quantity used by every timer and timeout.",
+  "task": "Define Codec(a) as a paired encoder/decoder over the ffi string form, with default JSON codec helpers built on gleam_json and a typed DecodeError. Define Duration as a typed quantity with named constructors normalised to a canonical internal representation, used by every time-quantity argument in the SDK.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Codec(a) and default JSON helpers",
+      "spec": "THE SYSTEM SHALL define Codec(a) as a pair of an encoder fn(a) -> String and a decoder fn(String) -> Result(a, DecodeError) over the ffi string form, with default JSON codec helpers and a typed DecodeError.",
+      "acceptance": [
+        "codec.gleam defines Codec(a) carrying encode: fn(a) -> String and decode: fn(String) -> Result(a, DecodeError).",
+        "A json_codec helper constructs a Codec(a) from a gleam_json encoder and a decoder; decoding malformed input returns DecodeError, never a panic.",
+        "DecodeError is a typed value carrying enough context (the failing field / reason) to diagnose a boundary failure.",
+        "A unit test round-trips representative values (record, list, nested) through a JSON codec and asserts equality, and asserts a malformed string yields DecodeError."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/codec.gleam"],
+        "modify": []
+      },
+      "checklist": ["C6", "C7"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R2",
+      "title": "Duration type and constructors",
+      "spec": "THE SYSTEM SHALL define Duration as a typed quantity with constructors milliseconds, seconds, minutes, hours, and days, normalised to a single canonical internal representation.",
+      "acceptance": [
+        "duration.gleam defines an opaque Duration with constructors milliseconds, seconds, minutes, hours, and days.",
+        "All constructors normalise to one canonical internal representation (milliseconds) so the engine receives a single form; a to_milliseconds accessor exposes it for the ffi boundary.",
+        "A unit test asserts that equivalent durations (e.g. minutes(1) and seconds(60)) compare equal and convert to the same canonical value."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/duration.gleam"],
+        "modify": []
+      },
+      "checklist": ["C8", "C9"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define ActivityError or any workflow primitive — those are later briefs; this brief defines only Codec, DecodeError, and Duration.",
+    "SHALL NOT declare an @external — encoding/decoding is pure Gleam; the ffi string form it produces is consumed by later briefs' typed wrappers.",
+    "SHALL NOT bake in any default duration value."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for the codec round-trip and duration normalisation tests.",
+    "No todo, panic, or placeholder in new code."
+  ]
+}

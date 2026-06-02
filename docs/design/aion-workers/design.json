@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-workers",
+  "title": "Aion Remote Workers — Worker Protocol Client and the Rust, Python, and TypeScript Worker SDKs",
+  "intention": "This cluster is how Tier 3 work — work that cannot run on beamr — gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+  "problem": [
+    "The engine runs BEAM bytecode on beamr; ML inference, data-science pipelines, the JS/Python ecosystems, and anything warranting isolation or independent scaling cannot run on beamr and must be Tier 3 out-of-process work — always recorded as an activity, retried on failure, returned from cache on replay.",
+    "Without worker SDKs every team would hand-roll a client against the raw protocol: connect, handshake, register, receive a task, decode an opaque payload, run the function, classify the error, encode the result, heartbeat, and survive a disconnect without double-executing a side effect.",
+    "Getting any one of those wrong silently breaks durability: a mis-classified error retries a non-idempotent charge, a dropped heartbeat times out a live job, a botched reconnect re-runs an already-recorded side effect.",
+    "The protocol semantics are identical across languages and must be implemented once per language to the same contract; and the contract itself (the dispatch endpoint and the wire types) is owned by cluster AW (aion-server + aion-proto). This cluster builds the worker side against that contract."
+  ],
+  "solution": {
+    "summary": "Three SDK packages, one per ecosystem, each implementing the same worker-side protocol against aion-proto's wire types (AW). aion-worker (Rust, crates.io) is the reference: its protocol module is the canonical worker protocol client (connect+handshake, register activity types, receive tasks over a server-streamed gRPC call, report completion/failure with explicit retryable/terminal classification, cooperative heartbeat and cancellation through an ActivityContext, backoff reconnect that re-registers and re-reports unacknowledged results). aion-worker-python (PyPI) ports the same state machine with decorator-based typed activities and an asyncio loop; aion-worker-typescript (npm) ports it with generics-based typed activities. Typed I/O is per-language idiom but opaque on the wire (JSON-tagged Payload). A cross-SDK conformance suite holds all three to identical observable behaviour. The cluster defines no wire types, no server endpoint, no client SDK, no engine behaviour — it is the worker side only."
+  },
+  "decisions": [
+    {"id": "D1", "title": "One protocol, three faithful ports; Rust is the reference", "status": "active", "choice": "aion-worker's protocol module is the canonical worker-side implementation; the Python and TS SDKs implement the same state machine (handshake, register, receive, report, heartbeat, reconnect) against the same aion-proto wire contract. A cross-SDK conformance suite (AR-011) holds all three to identical observable behaviour. Rejected: generating all three from an IDL with no ergonomics layer — it produces unidiomatic SDKs authors avoid; generated stubs are the transport floor, not the SDK."},
+    {"id": "D2", "title": "Long-poll receive over a server-streamed gRPC call, not client busy-polling", "status": "active", "choice": "The worker receives tasks via a server-streamed ReceiveTasks gRPC call the engine pushes onto, not a tight client poll loop — matching the push-style dispatch the process-per-workflow engine favours and avoiding Temporal-style task-queue poll latency/load; the stream doubles as the liveness signal. Rejected: HTTP/1 short-poll (latency, connections, no backpressure) and bespoke WebSocket framing (aion-proto is gRPC-first in AW). If AW's final protocol chooses WebSocket for workers, the SDK transport layer adapts behind the same session API with no public-surface change."},
+    {"id": "D3", "title": "Transport isolated behind a session abstraction in each SDK", "status": "active", "choice": "Each SDK wraps the generated gRPC stubs behind a small internal session abstraction (WorkerSession in Rust, equivalents in Python/TS) so the activity-execution machinery never touches raw stubs — testable against an in-memory fake session and isolating the one place that changes if AW revises the transport. Rejected: calling generated stubs directly throughout — untestable and brittle to wire changes."},
+    {"id": "D4", "title": "Heartbeating is cooperative, surfaced through the activity context", "status": "active", "choice": "A handler receives an ActivityContext through which it heartbeats and checks cancellation. The SDK does not heartbeat on the handler's behalf — a handler wanting liveness must call ctx.heartbeat(); a CPU-bound handler that never yields cannot be heartbeated and must be split/chunked (documented). Heartbeat detail is an opaque Payload. Rejected: an automatic background heartbeat thread — it would report a wedged handler as alive, defeating the purpose."},
+    {"id": "D5", "title": "Cancellation is delivered, never forced", "status": "active", "choice": "When the engine cancels an activity, the worker is notified through the session and the SDK flips a cancellation flag on the ActivityContext; the handler observes it (ctx.is_cancelled() / await ctx.cancelled()) and returns. The SDK does not kill the handler's thread/task — cooperative only, so resources release cleanly. A handler that ignores cancellation runs to completion and the engine discards its result. Rejected: forced termination — unsafe across all three runtimes (orphaned locks, half-written files)."},
+    {"id": "D6", "title": "Error classification explicit at the SDK boundary, never inferred", "status": "active", "choice": "The author declares retryable vs terminal. Rust handlers return Result<Output, ActivityFailure> carrying the classification. Python/TS provide RetryableError/TerminalError base classes; an unclassified exception that escapes a handler defaults to retryable (transient infra faults are the common unplanned case) and is logged loudly as unclassified — the one justified, deliberate, non-silent default. Rejected: defaulting unclassified to terminal — it would turn a transient network blip into a permanently failed workflow."},
+    {"id": "D7", "title": "Reconnect re-reports unacknowledged results before serving new tasks", "status": "active", "choice": "The SDK tracks results computed locally but not yet acknowledged by the engine; on reconnect, after re-registration, it re-reports those first. The engine de-duplicates by ActivityId (idempotent ingest, owned by AW), so worker-crash-after-compute-before-ack is safe and re-reporting an already-recorded result is a no-op. Rejected: dropping un-acked results on reconnect — it silently loses completed work and forces a needless retry of an already-performed side effect."},
+    {"id": "D8", "title": "Typed activities per language idiom, opaque on the wire", "status": "active", "choice": "The author defines a handler with concrete input/output types; the SDK encodes/decodes Payload at the boundary using the content-type tag (JSON baseline across all three, matching aion-core's Payload). The wire stays type-erased (carries Payload), exactly as aion-core mandates — only the SDK knows concrete types. Rejected: language types on the wire — it would break the type-erased event/store model and stop a Python result being read by a Rust-embedded engine."},
+    {"id": "D9", "title": "Bounded, operator-configured concurrency per worker", "status": "active", "choice": "A worker serves up to N activities concurrently (Rust async tasks; Python asyncio tasks with a thread/process-pool escape hatch for blocking/CPU-bound handlers; TS concurrent promises). N is operator-configured — no assumed default cap. The SDK applies backpressure on the receive stream when the pool is full. Rejected: unbounded concurrency — a task burst would exhaust worker memory; bounded-but-configurable is the contract."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "unsafe_code = deny in aion-worker (Rust). No unsafe."},
+    {"id": "CO2", "description": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."},
+    {"id": "CO3", "description": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only — no logic."},
+    {"id": "CO4", "description": "500-line file limit (excluding tests/comments/whitespace) in every language."},
+    {"id": "CO5", "description": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."},
+    {"id": "CO6", "description": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."},
+    {"id": "CO7", "description": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."},
+    {"id": "CO8", "description": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."},
+    {"id": "CO9", "description": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."},
+    {"id": "CO10", "description": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."},
+    {"id": "CO11", "description": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."},
+    {"id": "CO12", "description": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."}
+  ],
+  "goals": [
+    "A Rust worker registers typed activities and serves them against a running engine, with completion/failure/heartbeat/reconnect all working.",
+    "A Python worker offers decorator-based typed activities with the same durability semantics, installable from PyPI.",
+    "A TypeScript worker offers generics-based typed activities with the same durability semantics, installable from npm.",
+    "All three SDKs classify failures explicitly as retryable or terminal and map them onto the wire identically.",
+    "All three SDKs heartbeat long-running activities and observe cooperative cancellation through an activity context.",
+    "All three SDKs reconnect with backoff, re-register, and re-report unacknowledged results so completed work is never lost on a disconnect.",
+    "A cross-SDK conformance suite proves the three SDKs exhibit identical observable protocol behaviour against a shared fake-engine harness."
+  ],
+  "non_goals": [
+    "No protocol or wire-type definition — aion-proto (AW) owns the wire messages and gRPC service; this cluster consumes them.",
+    "No server-side dispatch endpoint — aion-server (AW) dispatches tasks and ingests results; this is the worker side only.",
+    "No client SDKs — starting/signalling/querying workflows is cluster AL; workers execute activities, clients drive workflows.",
+    "No engine, replay, or recording — the worker returns a result; the engine (AE/AD) records it; idempotent ingest/de-dup by ActivityId is AW's responsibility.",
+    "No in-VM NIF activities — native activities inside the BEAM are a different mechanism, cluster AN.",
+    "No Go worker SDK this round (the aion-proto contract allows it later).",
+    "No authentication/TLS scheme design — the SDK passes through credential/TLS config to the transport; the auth model is AW's."
+  ],
+  "structure": {
+    "crates/aion-worker/src/lib.rs": "[AR-001] thin re-export surface",
+    "crates/aion-worker/src/config.rs": "[AR-001] WorkerConfig (endpoint, task queue, identity, concurrency, TLS/creds passthrough)",
+    "crates/aion-worker/src/error.rs": "[AR-001] WorkerError taxonomy",
+    "crates/aion-worker/src/protocol/session.rs": "[AR-001] WorkerSession trait + gRPC-backed impl (connect, handshake, register)",
+    "crates/aion-worker/src/protocol/task.rs": "[AR-002] ActivityTask decode, TaskResult/TaskFailure encode",
+    "crates/aion-worker/src/runtime/loop_.rs": "[AR-002] receive->dispatch->report worker loop + bounded concurrency",
+    "crates/aion-worker/src/runtime/dispatch.rs": "[AR-003] handler invocation, payload decode/encode, failure classification",
+    "crates/aion-worker/src/context.rs": "[AR-003, AR-004] ActivityContext (heartbeat, cancellation, attempt, ids)",
+    "crates/aion-worker/src/protocol/heartbeat.rs": "[AR-004] heartbeat frame send + heartbeat-timeout bookkeeping",
+    "crates/aion-worker/src/protocol/reconnect.rs": "[AR-005] backoff reconnect, re-register, re-report un-acked results",
+    "crates/aion-worker/src/activity.rs": "[AR-006] Activity trait, ActivityFailure, typed registration",
+    "crates/aion-worker/src/worker.rs": "[AR-006] Worker builder + run(); shutdown wiring",
+    "sdks/python/aion-worker/aion_worker/session.py": "[AR-007] protocol session over generated gRPC stubs",
+    "sdks/python/aion-worker/aion_worker/loop.py": "[AR-007] asyncio receive->dispatch->report loop + bounded concurrency",
+    "sdks/python/aion-worker/aion_worker/reconnect.py": "[AR-007] backoff reconnect, re-register, re-report",
+    "sdks/python/aion-worker/aion_worker/activity.py": "[AR-008] @activity decorator, type-hint codec, registry",
+    "sdks/python/aion-worker/aion_worker/context.py": "[AR-008] ActivityContext (heartbeat, cancellation)",
+    "sdks/python/aion-worker/aion_worker/errors.py": "[AR-008] RetryableError, TerminalError, classification",
+    "sdks/python/aion-worker/aion_worker/worker.py": "[AR-008] Worker object + run()",
+    "sdks/typescript/aion-worker/src/session.ts": "[AR-009] protocol session over @grpc/grpc-js",
+    "sdks/typescript/aion-worker/src/loop.ts": "[AR-009] receive->dispatch->report loop + bounded concurrency",
+    "sdks/typescript/aion-worker/src/reconnect.ts": "[AR-009] backoff reconnect, re-register, re-report",
+    "sdks/typescript/aion-worker/src/activity.ts": "[AR-010] defineActivity<I,O>, JSON codec, registry",
+    "sdks/typescript/aion-worker/src/context.ts": "[AR-010] ActivityContext (heartbeat, cancellation)",
+    "sdks/typescript/aion-worker/src/errors.ts": "[AR-010] RetryableError, TerminalError, classification",
+    "sdks/typescript/aion-worker/src/worker.ts": "[AR-010] Worker class + run()",
+    "conformance/aion-workers/scenarios.json": "[AR-011] language-agnostic protocol-conformance scenarios",
+    "conformance/aion-workers/fake_engine/": "[AR-011] fake worker-endpoint harness driving the scenarios across all three SDKs"
+  }
+}

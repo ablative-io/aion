@@ -1,0 +1,79 @@
+{
+  "id": "AP-001",
+  "cluster": "aion-package",
+  "title": "aion-package crate scaffold, error taxonomy, and beam set types",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5"],
+  "stories": ["S1", "S5"],
+  "purpose": "Create the aion-package leaf crate and the two foundational types every later brief builds on: the PackageError taxonomy that every failure path maps into, and the BeamModule/BeamSet types that carry compiled modules with a canonical ordering. This is the foundation for the manifest, hashing, write, and read paths.",
+  "task": "Create the aion-package crate as a workspace member depending only on aion-core among Aion crates. Add a thin lib.rs re-export surface. Define PackageError as a closed thiserror enum covering every malformed-input case the read path can hit. Define BeamModule (logical name + exact bytes) and BeamSet (an ordered collection of BeamModules) with a deterministic canonical ordering sorted by logical name. Do not define the manifest, hashing, namespacing, or the write/read paths — those land in later briefs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and workspace wiring",
+      "spec": "THE SYSTEM SHALL create the aion-package crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL NOT add any dependency on an Aion crate other than aion-core.",
+      "acceptance": [
+        "crates/aion-package exists and is registered in the workspace Cargo.toml members list.",
+        "aion-package/Cargo.toml depends on aion-core plus external crates only (a zip crate, serde, a hashing crate, thiserror) — no dependency on aion, aion-server, beamr, or any storage backend.",
+        "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+        "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+        "cargo check -p aion-package passes."
+      ],
+      "files": {
+        "create": ["crates/aion-package/Cargo.toml", "crates/aion-package/src/lib.rs"],
+        "modify": ["Cargo.toml"]
+      },
+      "checklist": ["C1", "C2"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "PackageError taxonomy",
+      "spec": "THE SYSTEM SHALL define PackageError as a closed thiserror enum with a distinct variant for every malformed-input case: archive-read/not-a-ZIP failure, missing manifest, manifest parse failure, unknown format_version, missing entry module, integrity (hash) mismatch, and malformed beam entry.",
+      "acceptance": [
+        "error.rs defines PackageError as a thiserror enum (no anyhow).",
+        "Distinct variants exist for: ArchiveRead (not a ZIP / read failure, wrapping the underlying cause), MissingManifest, ManifestParse, UnknownFormatVersion { found }, MissingEntryModule { module }, IntegrityMismatch { expected, computed }, and MalformedBeamEntry { entry }.",
+        "PackageError derives Debug, implements std::error::Error and Display via thiserror, and is Send + Sync.",
+        "Each variant's Display message names the failing condition precisely (no generic catch-all message).",
+        "No variant is a bare String catch-all that collapses distinct failures together."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/error.rs"],
+        "modify": ["crates/aion-package/src/lib.rs"]
+      },
+      "checklist": ["C3"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "BeamModule and BeamSet with canonical ordering",
+      "spec": "THE SYSTEM SHALL define BeamModule carrying a logical module name and its exact compiled bytes, and BeamSet as an ordered collection of BeamModules with a deterministic canonical ordering sorted by logical module name and independent of insertion order.",
+      "acceptance": [
+        "beam.rs defines BeamModule { name: String, bytes: Vec<u8> } (or equivalent) preserving bytes exactly, deriving Clone, Debug, PartialEq.",
+        "BeamSet stores BeamModules and exposes a canonical iteration order sorted by logical module name.",
+        "Constructing a BeamSet from the same modules in different insertion orders yields the same canonical order (a unit test asserts this).",
+        "BeamSet rejects or is documented to reject duplicate logical module names so the canonical order is unambiguous.",
+        "BeamSet exposes lookup of a module's bytes by logical name."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/beam.rs"],
+        "modify": ["crates/aion-package/src/lib.rs"]
+      },
+      "checklist": ["C4", "C5"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the Manifest — that lands in AP-002.",
+    "SHALL NOT compute the content hash — that lands in AP-003.",
+    "SHALL NOT define the namespacing transform — that lands in AP-004.",
+    "SHALL NOT implement the write or read path — those land in AP-005 and AP-006."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-package passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

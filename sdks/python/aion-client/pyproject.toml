@@ -1,0 +1,5 @@
+[project]
+name = "aion-client-python"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "The Python caller SDK for starting, signalling, querying, and cancelling workflows."

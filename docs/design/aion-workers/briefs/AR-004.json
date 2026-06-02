@@ -1,0 +1,75 @@
+{
+  "id": "AR-004",
+  "cluster": "aion-workers",
+  "title": "aion-worker (Rust) heartbeat and cooperative cancellation delivery",
+  "depends_on": ["AR-003"],
+  "blocked_by": [],
+  "checklist": ["C13", "C14"],
+  "stories": ["S2"],
+  "purpose": "Connect the ActivityContext surfaces to the live session: a handler's ctx.heartbeat() reaches the engine, and an engine-issued cancellation flips the context's flag so a cooperative handler can stop. This is what keeps a long-running activity alive in the engine's eyes and lets it be cancelled without forced termination.",
+  "task": "Implement protocol/heartbeat.rs (heartbeat frame send + heartbeat-timeout bookkeeping) and wire the ActivityContext heartbeat seam and cancellation-flag setter from AR-003 to the WorkerSession. Heartbeats carry an optional opaque Payload of progress detail. Cancellation is delivered through the session and flips the context flag; the SDK never kills the handler task. Do not implement reconnect (AR-005).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Heartbeat frame send",
+      "spec": "WHEN a handler calls ctx.heartbeat(detail), THE SYSTEM SHALL send a heartbeat frame for the activity through the session carrying the optional opaque Payload detail. THE SYSTEM SHALL NOT heartbeat on the handler's behalf.",
+      "acceptance": [
+        "protocol/heartbeat.rs implements sending a heartbeat for an ActivityId via WorkerSession::send_heartbeat, carrying detail: Option<Payload>.",
+        "ctx.heartbeat() (the seam from AR-003) now routes to this send; the detail Payload's content-type tag is preserved per CO7.",
+        "No background timer or thread emits heartbeats automatically — only an explicit ctx.heartbeat() call sends one (per D4).",
+        "A test with the fake session asserts that a handler calling ctx.heartbeat(Some(detail)) twice results in two heartbeat frames for the correct ActivityId carrying the detail."
+      ],
+      "files": {
+        "create": ["crates/aion-worker/src/protocol/heartbeat.rs"],
+        "modify": ["crates/aion-worker/src/protocol/mod.rs", "crates/aion-worker/src/context.rs"]
+      },
+      "checklist": ["C13"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R2",
+      "title": "Heartbeat-timeout bookkeeping surface",
+      "spec": "THE SYSTEM SHALL track the last-heartbeat instant per in-flight activity so the worker can surface a locally-observable liveness view. THE SYSTEM SHALL NOT itself fail an activity for a missed heartbeat (the engine owns heartbeat-timeout enforcement).",
+      "acceptance": [
+        "heartbeat.rs records the last-heartbeat time per ActivityId, updated on each send.",
+        "The bookkeeping is exposed for observability/logging only; the SDK does not terminate or fail a handler on a missed local heartbeat — the engine enforces the heartbeat timeout (documented, per the boundary with AW).",
+        "A unit test asserts the last-heartbeat timestamp advances on each ctx.heartbeat() call."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-worker/src/protocol/heartbeat.rs"]
+      },
+      "checklist": ["C13"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R3",
+      "title": "Cooperative cancellation delivery",
+      "spec": "WHEN the engine signals cancellation for an in-flight activity through the session, THE SYSTEM SHALL flip that activity's ActivityContext cancellation flag. THE SYSTEM SHALL NOT forcibly terminate the handler's task.",
+      "acceptance": [
+        "A cancellation signal received on the session (per the aion-proto cancel frame) sets the cancellation handle for the matching ActivityId, so ctx.is_cancelled() returns true and ctx.cancelled() resolves.",
+        "The handler task is not aborted, dropped, or killed by the SDK; it runs until it returns (cooperative only, per D5 / CO9).",
+        "If a handler ignores cancellation and returns Ok, the result is still reported; the engine discards it (documented — the SDK does not suppress the report).",
+        "A test signals cancellation mid-execution and asserts the handler observes ctx.is_cancelled() == true and is allowed to return on its own; assert the SDK issued no abort."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-worker/src/context.rs", "crates/aion-worker/src/runtime/loop_.rs"]
+      },
+      "checklist": ["C14"],
+      "stories": ["S2"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT enforce heartbeat timeouts or activity timeouts — the engine owns that (AW/AT).",
+    "SHALL NOT forcibly kill, abort, or drop a running handler task — cooperative cancellation only (CO9).",
+    "SHALL NOT implement reconnect/re-report — AR-005."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-worker passes, including heartbeat and cooperative-cancellation tests.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code.",
+    "grep confirms no task abort/kill of a running handler (no JoinHandle::abort on the handler task)."
+  ]
+}

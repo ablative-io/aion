@@ -1,0 +1,94 @@
+{
+  "id": "AR-011",
+  "cluster": "aion-workers",
+  "title": "Cross-SDK worker protocol conformance suite",
+  "depends_on": ["AR-006", "AR-008", "AR-010"],
+  "blocked_by": [],
+  "checklist": ["C35", "C36", "C37"],
+  "stories": ["S11", "S12"],
+  "purpose": "Prove the three SDKs are interchangeable. A language-agnostic scenario set defines the protocol behaviours every worker must exhibit; a fake worker-endpoint harness drives those scenarios; each SDK is run against it and must produce identical observable wire behaviour. This is the guarantee that catches drift between the Rust reference and its Python and TS ports.",
+  "task": "Define the conformance scenarios (scenarios.json) covering register, complete, fail-retryable, fail-terminal, heartbeat, cancellation, reconnect-and-re-report, and backpressure. Build a fake worker-endpoint harness (fake_engine/) that plays each scenario against a connected worker and records the worker's observable behaviour. Wire a thin per-SDK runner (a small worker built with each SDK serving fixed conformance activities) and assert all three produce the same outcomes. Add JSON payload round-trip parity checks across the three languages.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Language-agnostic scenario set",
+      "spec": "THE SYSTEM SHALL define the protocol-conformance scenarios as language-agnostic data: register, receive+complete, receive+fail-retryable, receive+fail-terminal, heartbeat, cancellation, reconnect-and-re-report, and backpressure under full concurrency.",
+      "acceptance": [
+        "scenarios.json enumerates each scenario with its inputs (tasks to dispatch, signals to send) and its expected observable worker behaviour (reports emitted, classification, re-reports, peak concurrency).",
+        "The expected behaviour for fail-retryable vs fail-terminal is distinct and asserts the wire classification.",
+        "The reconnect scenario specifies a disconnect-before-ack and the expected re-report of the un-acked result before any new task.",
+        "The backpressure scenario specifies a max-concurrency of 2 with 5 tasks and an expected peak concurrency of 2.",
+        "A README documents how a new SDK is added to the suite."
+      ],
+      "files": {
+        "create": ["conformance/aion-workers/scenarios.json", "conformance/aion-workers/README.md"],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R2",
+      "title": "Fake worker-endpoint harness",
+      "spec": "THE SYSTEM SHALL provide a fake worker-endpoint harness that speaks the aion-proto worker protocol, plays a scenario against a connected worker, and records the worker's observable behaviour for assertion.",
+      "acceptance": [
+        "fake_engine/ implements the worker-endpoint side of the aion-proto protocol enough to run every scenario (handshake, register, dispatch tasks, accept results/failures/heartbeats, simulate cancellation and disconnect).",
+        "The harness records, per scenario, the registration set, the result/failure reports with classification, heartbeats received, re-reports after reconnect, and observed peak concurrency.",
+        "The harness can drive a worker process regardless of its implementation language (it talks the wire, not an SDK API).",
+        "A self-test runs the harness against the Rust SDK conformance runner and asserts every scenario's recorded behaviour matches scenarios.json."
+      ],
+      "files": {
+        "create": ["conformance/aion-workers/fake_engine/README.md"],
+        "modify": []
+      },
+      "checklist": ["C36"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R3",
+      "title": "Per-SDK runners and three-way equivalence",
+      "spec": "THE SYSTEM SHALL run each of the three SDKs (Rust, Python, TypeScript) against the harness and SHALL assert all three produce identical observable behaviour for every scenario.",
+      "acceptance": [
+        "A thin conformance worker is built with each SDK, registering the same fixed conformance activities (an echo activity, a retryable-fail activity, a terminal-fail activity, a heartbeating slow activity, a cancellation-observing activity).",
+        "The suite runs all three workers through every scenario in scenarios.json and asserts the recorded behaviour is identical across languages (same reports, same classification, same re-report on reconnect, same peak concurrency).",
+        "A drift in any one SDK (e.g. a mis-classified failure or a missing re-report) fails the suite with a clear per-scenario, per-language diff.",
+        "The suite runs without a live engine — only the fake harness — and is gated to skip cleanly if an SDK's toolchain is unavailable in the environment (logged skip, per CO6)."
+      ],
+      "files": {
+        "create": ["conformance/aion-workers/fake_engine/runners.md"],
+        "modify": ["conformance/aion-workers/README.md"]
+      },
+      "checklist": ["C36"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R4",
+      "title": "JSON payload round-trip parity",
+      "spec": "THE SYSTEM SHALL verify that the same input value encodes to an equivalent JSON Payload and decodes back to an equal value in each of the three SDKs.",
+      "acceptance": [
+        "A fixed set of representative values (nested object, array, numbers, booleans, null, unicode string) is encoded and decoded by each SDK's codec.",
+        "The encoded Payload content-type tag is the JSON baseline in all three (CO7), and the byte/string form is equivalent modulo insignificant whitespace.",
+        "Decoding the other SDK's encoding yields an equal value (Rust decodes Python's encoding, etc.), proving cross-language interchange.",
+        "The parity check fails if any SDK alters the content-type tag or loses a field on round-trip."
+      ],
+      "files": {
+        "create": ["conformance/aion-workers/payload_parity.md"],
+        "modify": []
+      },
+      "checklist": ["C37"],
+      "stories": ["S11"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT exercise a real aion-server or engine — the harness is a fake worker-endpoint per CO6.",
+    "SHALL NOT modify the SDKs to pass — a conformance failure is a bug fixed in the offending SDK's brief, not patched here.",
+    "SHALL NOT define new protocol behaviour — it asserts the behaviour AR-001..AR-010 implement against the AW contract."
+  ],
+  "verification": [
+    "The conformance suite runs all three SDKs against the fake harness and passes every scenario.",
+    "JSON payload round-trip parity passes across all three SDKs, including cross-language decode.",
+    "A deliberately-broken SDK build (e.g. flipping a classification) is shown to fail the suite (negative check documented).",
+    "Each SDK's own toolchain gates still pass (Rust clippy/fmt/test; Python ruff/mypy/pytest; TS tsc/eslint/vitest).",
+    "No lint-bypass directives in any language (CO2)."
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "cluster": "aion-core",
+  "sections": [
+    {
+      "name": "Domain Identifiers",
+      "items": [
+        {"id": "C1", "text": "WorkflowId is a newtype over Uuid deriving Serialize, Deserialize, Clone, Debug, Eq, Hash, and Display.", "done": false},
+        {"id": "C2", "text": "ActivityId is a newtype whose value derives from the activity's scheduling sequence position, enabling deterministic replay matching.", "done": false},
+        {"id": "C3", "text": "TimerId is a newtype supporting both author-assigned (named) and engine-assigned (anonymous) construction.", "done": false},
+        {"id": "C4", "text": "RunId is a newtype distinguishing successive runs of the same logical workflow (reset / continue-as-new).", "done": false},
+        {"id": "C5", "text": "No public signature in aion-core accepts a bare Uuid or String where a domain identifier is meant.", "done": false}
+      ]
+    },
+    {
+      "name": "Event Model",
+      "items": [
+        {"id": "C6", "text": "Event enum has workflow-lifecycle variants: WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled.", "done": false},
+        {"id": "C7", "text": "Event enum has activity variants: ActivityScheduled, ActivityStarted, ActivityCompleted, ActivityFailed.", "done": false},
+        {"id": "C8", "text": "Event enum has timer variants: TimerStarted, TimerFired, TimerCancelled.", "done": false},
+        {"id": "C9", "text": "Event enum has a SignalReceived variant carrying signal name and payload.", "done": false},
+        {"id": "C10", "text": "Event enum has child-workflow variants: ChildWorkflowStarted, ChildWorkflowCompleted, ChildWorkflowFailed.", "done": false},
+        {"id": "C11", "text": "Every event carries an envelope with a monotonic per-workflow sequence number, a recorded timestamp, and the owning WorkflowId.", "done": false},
+        {"id": "C12", "text": "Event derives Serialize and Deserialize and round-trips losslessly through serde_json.", "done": false},
+        {"id": "C13", "text": "Payload is a newtype over bytes with a content-type tag.", "done": false},
+        {"id": "C14", "text": "Payload constructs from and converts to serde_json::Value and round-trips losslessly.", "done": false},
+        {"id": "C15", "text": "Activity inputs/results, signal payloads, and workflow inputs are stored as Payload; Event carries no generic type parameter.", "done": false}
+      ]
+    },
+    {
+      "name": "Status, Filters, Summaries",
+      "items": [
+        {"id": "C16", "text": "WorkflowStatus enum has variants Running, Completed, Failed, Cancelled, TimedOut.", "done": false},
+        {"id": "C17", "text": "WorkflowStatus is computed by projecting over event history (the last lifecycle event determines the status).", "done": false},
+        {"id": "C18", "text": "No code path sets WorkflowStatus independently of the events that justify it.", "done": false},
+        {"id": "C19", "text": "WorkflowFilter supports filtering by workflow type, status, time range, and parent workflow.", "done": false},
+        {"id": "C20", "text": "WorkflowSummary carries workflow id, type, status, start time, and end time.", "done": false}
+      ]
+    },
+    {
+      "name": "Error Taxonomy",
+      "items": [
+        {"id": "C21", "text": "ActivityError carries an explicit retryable-vs-terminal classification, not a string or bool.", "done": false},
+        {"id": "C22", "text": "WorkflowError is defined as the terminal failure type of a workflow.", "done": false},
+        {"id": "C23", "text": "StoreError is a closed enum with SequenceConflict, NotFound, Backend, and Serialization variants.", "done": false}
+      ]
+    },
+    {
+      "name": "EventStore Trait",
+      "items": [
+        {"id": "C24", "text": "EventStore is an async trait that is Send + Sync + 'static.", "done": false},
+        {"id": "C25", "text": "append accepts an expected sequence number, applies all events atomically, and returns SequenceConflict if the stored head does not match.", "done": false},
+        {"id": "C26", "text": "read_history returns the complete event history for a workflow in sequence order.", "done": false},
+        {"id": "C27", "text": "list_active returns the WorkflowIds of all non-terminal workflows.", "done": false},
+        {"id": "C28", "text": "query returns WorkflowSummary values matching a WorkflowFilter.", "done": false},
+        {"id": "C29", "text": "schedule_timer persists a durable timer and expired_timers returns timers due to fire as of a given instant.", "done": false}
+      ]
+    },
+    {
+      "name": "In-Memory Reference Store",
+      "items": [
+        {"id": "C30", "text": "InMemoryStore implements EventStore in full, including timer scheduling and retrieval.", "done": false},
+        {"id": "C31", "text": "InMemoryStore append enforces the expected-sequence guard and applies events atomically (all or none).", "done": false},
+        {"id": "C32", "text": "A reusable behavioural test suite exercises append/read/list/query/timers plus conflict and atomicity, runnable against any EventStore, and passes against InMemoryStore.", "done": false}
+      ]
+    }
+  ]
+}

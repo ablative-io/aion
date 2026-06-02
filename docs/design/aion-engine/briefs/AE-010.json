@@ -1,0 +1,75 @@
+{
+  "id": "AE-010",
+  "cluster": "aion-engine",
+  "title": "Suspend and resume lifecycle transitions",
+  "depends_on": ["AE-008"],
+  "blocked_by": [],
+  "checklist": ["C27"],
+  "stories": ["S5"],
+  "purpose": "Mark a workflow Suspended when it blocks on a durable wait and return it to Running when woken. AE owns the lifecycle transitions around a durable wait; the durable-wait mechanism itself (timers, signal arrival) is AT's. This brief is the seam where the two meet.",
+  "task": "Implement lifecycle/transition.rs: suspend, which marks a registered handle Suspended when its workflow process blocks on a durable wait, and resume, which returns it to Running when the awaited timer fires or signal arrives (or when AD replays it after restart). The transitions update the registry and reconcile status against the event projection. Scope is the suspend/resume transitions only; the timer/signal machinery that triggers them is AT, the replay that re-creates a suspended workflow on restart is AD.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Suspend transition",
+      "spec": "WHEN a workflow process blocks on a durable wait, THE SYSTEM SHALL mark its handle Suspended in the registry. THE SYSTEM SHALL NOT remove the handle on suspend.",
+      "acceptance": [
+        "transition.rs provides suspend(id, run) that sets the cached status of the handle to Suspended (consistent with the aion-core projection for a workflow with no terminal event but an outstanding durable wait) and keeps the handle in the registry.",
+        "lifecycle/mod.rs contains only pub mod and pub use.",
+        "A test suspends a running handle and asserts it is still present in the registry with status Suspended.",
+        "IF the handle is absent, suspend returns EngineError::WorkflowNotFound."
+      ],
+      "files": {
+        "create": ["crates/aion/src/lifecycle/transition.rs"],
+        "modify": ["crates/aion/src/lifecycle/mod.rs"]
+      },
+      "checklist": ["C27"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "Resume transition",
+      "spec": "WHEN the durable wait completes (timer fired or signal arrived) or the workflow is replayed after a restart, THE SYSTEM SHALL return the handle to Running.",
+      "acceptance": [
+        "transition.rs provides resume(id, run) that sets the cached status back to Running for a Suspended handle.",
+        "resume is idempotent on an already-Running handle (no error, no double effect).",
+        "A test suspends then resumes a handle and asserts the final status is Running.",
+        "IF the handle is absent, resume returns EngineError::WorkflowNotFound."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/transition.rs"]
+      },
+      "checklist": ["C27"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Durable-wait mechanism delegated to AT",
+      "spec": "THE SYSTEM SHALL NOT implement the durable timer, signal-arrival, or replay mechanism that triggers suspend/resume; it SHALL only own the registry status transition, documenting the AT (timers/signals) and AD (replay) seams.",
+      "acceptance": [
+        "transition.rs contains no timer-wheel scheduling, no signal-routing, and no replay logic.",
+        "Module docs state that suspend is invoked by AT when a workflow enters a durable wait and resume by AT/AD when the wait completes or the workflow is replayed.",
+        "grep of transition.rs shows no store-timer call and no mailbox/signal routing construct."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/transition.rs"]
+      },
+      "checklist": ["C27"],
+      "stories": ["S5"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement durable timers or signal routing — those are AT.",
+    "SHALL NOT implement replay/recovery-on-startup — that is AD (it calls resume after re-creating a suspended workflow).",
+    "SHALL NOT append events — suspend/resume are live-view transitions; the durable record of a wait is the timer/signal event AT appends."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "suspend/resume only mutate registry status consistent with the projection (CO10); no AT/AD mechanism is implemented here.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

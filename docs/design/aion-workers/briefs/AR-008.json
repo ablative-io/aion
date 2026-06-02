@@ -1,0 +1,94 @@
+{
+  "id": "AR-008",
+  "cluster": "aion-workers",
+  "title": "aion-worker-python: @activity decorator, context, error classification, and Worker",
+  "depends_on": ["AR-007"],
+  "blocked_by": [],
+  "checklist": ["C23", "C24", "C25", "C26"],
+  "stories": ["S1", "S2", "S3", "S10"],
+  "purpose": "Give the Python author the native surface: decorate a function with @activity, let type hints drive serialisation, heartbeat and observe cancellation through a context, classify failures as retryable or terminal, and run a Worker that serves until graceful shutdown. This completes the Python SDK and is the brief a data scientist actually touches.",
+  "task": "Implement activity.py (the @activity decorator, type-hint-driven Payload codec, and the activity registry), context.py (heartbeat + cancellation observation), errors.py (RetryableError / TerminalError and the unclassified-defaults-to-retryable rule), and worker.py (the Worker object + async run with graceful drain and a pool escape hatch for blocking/CPU-bound handlers). Fill the dispatch seam AR-007's loop calls.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "@activity decorator and type-hint codec",
+      "spec": "THE SYSTEM SHALL provide an @activity(name=...) decorator registering an async (or pool-run sync) function as an activity, using the function's type hints to encode/decode the input and output Payload (JSON baseline). THE SYSTEM SHALL NOT change the content type on round-trip.",
+      "acceptance": [
+        "activity.py defines @activity(name=...) that registers the function in a registry keyed by the activity-type name.",
+        "Argument and return type hints drive JSON Payload decode/encode; the Payload content-type tag is preserved (CO7).",
+        "Registering two activities under the same name raises a clear error at decoration/registration time.",
+        "The dispatch seam (called by AR-007's loop) decodes the input Payload, invokes the handler with a context, and encodes the result Payload.",
+        "A test registers an activity with typed hints, dispatches an encoded input through the registry, and asserts the output Payload decodes to the expected value."
+      ],
+      "files": {
+        "create": ["sdks/python/aion-worker/aion_worker/activity.py"],
+        "modify": ["sdks/python/aion-worker/aion_worker/__init__.py", "sdks/python/aion-worker/aion_worker/loop.py"]
+      },
+      "checklist": ["C23"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Activity context: heartbeat and cancellation",
+      "spec": "THE SYSTEM SHALL pass a context to each handler exposing heartbeat(detail) and cancellation observation (is_cancelled() and an awaitable cancelled()). THE SYSTEM SHALL NOT heartbeat on the handler's behalf and SHALL NOT forcibly cancel the handler.",
+      "acceptance": [
+        "context.py defines a context object with activity_id, attempt, heartbeat(detail=None) routing to the session's heartbeat, is_cancelled() and an awaitable cancelled().",
+        "An engine cancellation flips the context's cancellation flag; the handler coroutine is not cancelled out from under it (cooperative only, per D5 / CO9).",
+        "heartbeat sends only on explicit call (per D4); no background heartbeat task exists.",
+        "A test signals cancellation mid-handler and asserts is_cancelled() becomes true while the handler is allowed to return on its own."
+      ],
+      "files": {
+        "create": ["sdks/python/aion-worker/aion_worker/context.py"],
+        "modify": ["sdks/python/aion-worker/aion_worker/loop.py"]
+      },
+      "checklist": ["C24"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R3",
+      "title": "Error classification",
+      "spec": "THE SYSTEM SHALL provide RetryableError and TerminalError base classes for handlers to raise. IF an unclassified exception escapes a handler, THEN THE SYSTEM SHALL classify the failure as retryable and SHALL log it as unclassified.",
+      "acceptance": [
+        "errors.py defines RetryableError and TerminalError; a handler raising one yields the corresponding wire classification (aligned with aion-core ActivityError per CO8).",
+        "An unclassified exception escaping a handler is reported as a retryable failure and logged at warning level as unclassified (never silent, per D6 / CO8).",
+        "The reported failure carries the exception message and, where available, a detail Payload.",
+        "Tests assert: RetryableError → retryable wire failure; TerminalError → terminal wire failure; a bare ValueError → retryable wire failure plus an emitted unclassified warning."
+      ],
+      "files": {
+        "create": ["sdks/python/aion-worker/aion_worker/errors.py"],
+        "modify": ["sdks/python/aion-worker/aion_worker/activity.py"]
+      },
+      "checklist": ["C25"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R4",
+      "title": "Worker object, run, and pool escape hatch",
+      "spec": "THE SYSTEM SHALL provide a Worker object that registers decorated activities and, on await worker.run(), connects and serves until graceful shutdown, draining in-flight activities. THE SYSTEM SHALL run blocking/CPU-bound handlers on a thread/process pool so they do not block the event loop.",
+      "acceptance": [
+        "worker.py defines a Worker taking a WorkerConfig and the registered activities; await worker.run() connects (AR-007), serves, and on a shutdown signal stops pulling new tasks and drains in-flight ones before returning.",
+        "A handler declared/synchronous-and-blocking is dispatched on a thread or process pool (configured) so the asyncio loop is not blocked; an async handler runs directly on the loop.",
+        "A test runs a Worker against the fake session, feeds a slow task, triggers shutdown mid-task, and asserts run() returns only after the in-flight task completes.",
+        "A test asserts a blocking sync handler does not stall concurrent async handlers (the pool offload works)."
+      ],
+      "files": {
+        "create": ["sdks/python/aion-worker/aion_worker/worker.py"],
+        "modify": ["sdks/python/aion-worker/aion_worker/__init__.py"]
+      },
+      "checklist": ["C26"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT re-implement the session/loop/reconnect — those are AR-007; this brief fills the dispatch seam and the author surface.",
+    "SHALL NOT change the content type of a payload on round-trip (CO7).",
+    "SHALL NOT forcibly cancel a running handler (CO9)."
+  ],
+  "verification": [
+    "ruff check passes.",
+    "mypy --strict passes (no blanket type: ignore).",
+    "pytest passes, including classification, cancellation, and graceful-drain tests.",
+    "An end-to-end test against the fake session decorates an activity, serves a task, and asserts the recorded completion — proving the full Python SDK path.",
+    "No # noqa / # type: ignore blanket suppressions in new code."
+  ]
+}

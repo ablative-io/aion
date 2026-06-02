@@ -1,0 +1,92 @@
+{
+  "id": "AD-008",
+  "cluster": "aion-durability",
+  "title": "Replay driver and activity-result caching",
+  "depends_on": ["AD-004", "AD-006", "AD-007"],
+  "blocked_by": [],
+  "checklist": ["C30", "C31", "C32", "C33"],
+  "stories": ["S2", "S3", "S4", "S10"],
+  "purpose": "Assemble the parts into the replay engine: given a workflow's history, build a Resolver and a DeterminismContext, drive a freshly-created execution forward satisfying every world-touching command from recorded history, and return the resume point so the engine continues live execution from exactly there. Activity results are served from history (the cursor is the cache), so a completed activity is never dispatched twice. Replay is invisible to workflow code.",
+  "task": "Implement the replay driver (replay.rs). It takes a WorkflowId, the read_history output, and the collaborators (Resolver over a HistoryCursor, DeterminismContext, Recorder, LiveExecutor). It drives the execution by repeatedly accepting the next Command the workflow issues and resolving it: recorded Resolutions are returned and the DeterminismContext timestamp advances; the first Exhausted is the resume point. Activity-result caching falls out of the Resolver (matched ActivityCompleted -> recorded Payload; matched exhausted ActivityFailed -> recorded terminal error). Add a behavioural test file over InMemoryStore. Note: replay does not itself run the Gleam workflow function (AE drives the BEAM process); replay provides the resolution loop AE feeds commands into and consumes the resume point from.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Replay driver assembly",
+      "spec": "THE SYSTEM SHALL provide a replay entry point that, given a WorkflowId and its recorded history, constructs a HistoryCursor, a Resolver, and a DeterminismContext, and drives command resolution forward until the cursor is exhausted.",
+      "acceptance": [
+        "replay.rs defines a Replay (or replay function) taking the WorkflowId, the Vec<Event> history, and the Recorder + LiveExecutor handles.",
+        "It builds the DeterminismContext seeded from the WorkflowId+RunId in the history's WorkflowStarted and initialises its recorded-now to that start timestamp.",
+        "It exposes a step that accepts the next Command from the (engine-driven) workflow and returns the Resolution / ResumeLive / error from the Resolver, advancing the DeterminismContext timestamp on each consumed recorded event.",
+        "A unit test drives a sequence of commands matching a recorded history and asserts each Resolution and that the DeterminismContext now() advanced to each event's recorded timestamp."
+      ],
+      "files": {
+        "create": ["crates/aion/src/durability/replay.rs"],
+        "modify": ["crates/aion/src/durability/mod.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S2", "S10"]
+    },
+    {
+      "id": "R2",
+      "title": "Activity-result caching from history",
+      "spec": "WHILE replaying, WHEN a RunActivity command matches a recorded ActivityCompleted, THE SYSTEM SHALL return the recorded result Payload without invoking the LiveExecutor; WHEN it matches a recorded exhausted-retry ActivityFailed, THE SYSTEM SHALL return the recorded terminal ActivityError.",
+      "acceptance": [
+        "A matched ActivityCompleted yields Resolution::ActivityCompleted with the exact recorded Payload and zero LiveExecutor calls.",
+        "A matched exhausted ActivityFailed yields Resolution::ActivityFailedTerminal with the exact recorded ActivityError and zero LiveExecutor calls.",
+        "There is no separate cache structure; the result comes from the HistoryCursor (the history is the cache).",
+        "A test asserts a recorded activity is served from cache and the mock LiveExecutor is never called for it."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/durability/replay.rs"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "Resume point reporting",
+      "spec": "THE SYSTEM SHALL return the resume point — the first Command whose recorded event is absent (the first ResumeLive) — so the engine can continue live execution from exactly there.",
+      "acceptance": [
+        "When the cursor exhausts mid-stream, the driver signals ResumeLive for that command and the engine takes over (via the AD-007 handoff) from that command onward.",
+        "A fully-recorded terminal history (ending in WorkflowCompleted/Failed/Cancelled) drives to completion with no ResumeLive — the resume point is 'terminal', reported distinctly.",
+        "A test asserts: a partial history reports ResumeLive at the correct command index; a complete history reports terminal with no ResumeLive."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/durability/replay.rs"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R4",
+      "title": "Replay behavioural test suite",
+      "spec": "THE SYSTEM SHALL provide behavioural tests over InMemoryStore proving: a fully-recorded history replays to its recorded terminal state with zero live calls; a partial history replays to the correct resume point; and activity results are returned from cache.",
+      "acceptance": [
+        "tests/replay_behaviour.rs records a multi-step workflow (activities + a timer + a signal) via the Recorder into InMemoryStore, then replays it and asserts the full Resolution sequence matches the recorded outcomes in order.",
+        "A case replays a fully-recorded terminal history with a mock LiveExecutor that fails if called, and asserts zero live calls.",
+        "A case replays a partial history and asserts the resume point command index and that the DeterminismContext now() at the resume point equals the last recorded event's timestamp.",
+        "The tests are real runtime tests (not #[ignore], not env-gated) and pass under cargo test."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/replay_behaviour.rs"],
+        "modify": []
+      },
+      "checklist": ["C33"],
+      "stories": ["S2", "S3", "S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT spawn or drive the BEAM workflow process — AE owns the process; replay provides the resolution loop AE feeds commands into.",
+    "SHALL NOT implement live timer/signal/child semantics — those are AT, reached via the LiveExecutor after the resume point.",
+    "SHALL NOT iterate the active-workflow set or run on startup — that is recovery, AD-009."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including tests/replay_behaviour.rs.",
+    "cargo fmt --check passes.",
+    "A test proves zero live calls when replaying a fully-recorded history (CO11) and activity results come from cache.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

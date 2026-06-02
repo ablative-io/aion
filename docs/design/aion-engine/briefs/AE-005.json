@@ -1,0 +1,91 @@
+{
+  "id": "AE-005",
+  "cluster": "aion-engine",
+  "title": "Workflow module loading and content-hash namespacing application",
+  "depends_on": ["AE-002"],
+  "blocked_by": [],
+  "checklist": ["C13", "C14", "C15", "C16"],
+  "stories": ["S9", "S10"],
+  "purpose": "Bridge aion-package to beamr: take a validated Package, apply aion-package's content-hash namespacing to its modules, register the namespaced beams with the runtime, and record the loaded version so start_workflow can spawn the right module. This is where multi-version coexistence and replay-safe naming are realised.",
+  "task": "Implement the loader module: a load operation that consumes an aion-package Package, applies the package crate's (logical name, content hash) -> deployed name transform to every module, registers the namespaced beam bytes via the RuntimeHandle, and returns a record mapping the workflow type to its deployed entry-module name and version. Loading registers but does not run. Failures (missing entry module, namespaced-name collision from a different hash) are typed EngineError::Load with nothing partially registered. Scope is loading and naming — spawning is lifecycle (AE-009).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Apply namespacing and register namespaced beams",
+      "spec": "WHEN loading a Package, THE SYSTEM SHALL apply aion-package's (logical module name, content hash) -> deployed module name transform to every module and SHALL register each module's beam bytes under its deployed name through the RuntimeHandle. THE SYSTEM SHALL NOT re-derive the namespacing scheme itself.",
+      "acceptance": [
+        "load.rs calls aion-package's namespacing transform for every module in the Package's beam set; it does not compute its own name derivation.",
+        "Each namespaced module is registered via RuntimeHandle::register_module(deployed_name, bytes).",
+        "loader/mod.rs contains only pub mod and pub use.",
+        "A test loads a fixture Package and asserts each module is registered under the package-crate-derived namespaced name (verified by round-tripping the transform's inverse)."
+      ],
+      "files": {
+        "create": ["crates/aion/src/loader/load.rs", "crates/aion/src/loader/mod.rs"],
+        "modify": ["crates/aion/src/lib.rs"]
+      },
+      "checklist": ["C13"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R2",
+      "title": "Record the loaded version",
+      "spec": "THE SYSTEM SHALL record, for each loaded workflow type, the deployed entry-module name and the content-hash version, so that start_workflow for that type spawns the entry module under its namespaced name.",
+      "acceptance": [
+        "load returns (or populates) a LoadedWorkflow record mapping the workflow type (logical entry module name) to its deployed entry-module name, entry function, and version identifier, derived from the Package's manifest and content hash.",
+        "The record exposes a lookup so lifecycle can resolve a workflow type to its deployed entry module/function at start time.",
+        "A test loads a Package and asserts the recorded deployed entry-module name matches the namespacing transform applied to the manifest's entry_module and the package version."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/loader/load.rs"]
+      },
+      "checklist": ["C14"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R3",
+      "title": "Multi-version coexistence",
+      "spec": "WHEN two packages with different content hashes are loaded, THE SYSTEM SHALL register two coexisting namespaced module sets with no name conflict, each independently spawnable.",
+      "acceptance": [
+        "Loading package A (hash h1) and package B (hash h2, same logical entry module name) registers modules under distinct namespaced names and both LoadedWorkflow records are retained.",
+        "A test loads two fixtures sharing a logical entry module name but differing in beam bytes (hence hash) and asserts both deployed names are registered and distinct, and neither overwrites the other."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/loader/load.rs"]
+      },
+      "checklist": ["C15"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R4",
+      "title": "Total load failures with no partial registration",
+      "spec": "IF a Package's manifest entry module is absent from its beam set, OR a namespaced module name collides with an already-registered name derived from a different content hash, THEN THE SYSTEM SHALL return EngineError::Load and SHALL NOT leave any module from that package registered.",
+      "acceptance": [
+        "A package whose manifest entry_module is not present among the beams returns EngineError::Load { reason } naming the missing entry module.",
+        "Registering a namespaced name that already maps to a different hash returns EngineError::Load { reason }; an identical re-load of the same hash is idempotent (no error, no duplicate effect).",
+        "On any load failure, no module from the failing package remains registered (registration is staged and only committed on full success, or rolled back on failure).",
+        "Tests cover the missing-entry-module case and the collision case and assert the no-partial-registration property."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/loader/load.rs"]
+      },
+      "checklist": ["C16"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT spawn or run any workflow — loading registers modules only; spawning is AE-009.",
+    "SHALL NOT compute the content hash, validate package integrity, or define the namespacing transform — those are aion-package; this brief consumes a validated Package and the package's transform.",
+    "SHALL NOT perform hot code loading or version migration — module coexistence here is by distinct namespaced names, not VM dual-version swap."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Namespacing uses aion-package's transform unchanged (CO12).",
+    "Load failures are total with no partial registration (D9).",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

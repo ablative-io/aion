@@ -1,0 +1,46 @@
+{
+  "cluster": "aion-core",
+  "personas": [
+    {
+      "name": "Engine",
+      "role": "Producing and Consuming Events",
+      "stories": [
+        {"id": "S1", "text": "As the engine, I want to append a batch of events atomically with an expected sequence so that concurrent or duplicate writes are detected and replay integrity is preserved."},
+        {"id": "S2", "text": "As the engine, I want to read a workflow's complete ordered history so that I can replay it to reconstruct the workflow's state."},
+        {"id": "S3", "text": "As the engine, I want to list active workflows so that on startup I know which workflows to replay and resume."},
+        {"id": "S4", "text": "As the engine, I want a failed activity's error to tell me whether it is retryable so that I apply the retry policy correctly instead of guessing."}
+      ]
+    },
+    {
+      "name": "Store Author",
+      "role": "Implementing a Persistence Backend",
+      "stories": [
+        {"id": "S5", "text": "As a store author, I want a single clear EventStore trait so that there is exactly one reasonable way to implement a backend correctly."},
+        {"id": "S6", "text": "As a store author, I want an in-memory reference implementation and a shared behavioural test suite so that I can verify my backend matches the contract exactly."},
+        {"id": "S7", "text": "As a store author, I want to implement the trait without depending on the engine so that my backend crate stays decoupled."}
+      ]
+    },
+    {
+      "name": "Workflow Author",
+      "role": "Writing Workflows via the SDK",
+      "stories": [
+        {"id": "S8", "text": "As a workflow author, I want time and identifiers to be deterministic so that my workflow replays to exactly the same state every time."}
+      ]
+    },
+    {
+      "name": "Operator",
+      "role": "Observing Workflows",
+      "stories": [
+        {"id": "S9", "text": "As an operator, I want to query workflows by type, status, and time range so that I can see what is running and what has failed."},
+        {"id": "S10", "text": "As an operator, I want a lightweight summary per workflow so that listing many workflows does not require loading every full history."}
+      ]
+    },
+    {
+      "name": "Worker",
+      "role": "Implementing Activities",
+      "stories": [
+        {"id": "S11", "text": "As a worker, I want to depend on the domain types without pulling in the store trait so that my worker binary stays small and decoupled."}
+      ]
+    }
+  ]
+}

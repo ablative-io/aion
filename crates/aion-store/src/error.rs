@@ -1,0 +1,1 @@
+//! StoreError taxonomy

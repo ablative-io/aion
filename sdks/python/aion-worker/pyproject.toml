@@ -1,0 +1,5 @@
+[project]
+name = "aion-worker-python"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "The Python remote-worker SDK. The home for ML inference and existing Python business logic as out-of-process activities."

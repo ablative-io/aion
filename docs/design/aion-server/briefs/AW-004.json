@@ -1,0 +1,58 @@
+{
+  "id": "AW-004",
+  "cluster": "aion-server",
+  "title": "Event-streaming wire shape (SubscriptionRequest + streamed Event envelope)",
+  "depends_on": ["AW-002"],
+  "blocked_by": [],
+  "checklist": ["C11", "C12"],
+  "stories": ["S6"],
+  "purpose": "Define the wire shape the WebSocket layer parses: how a client expresses what slice of the event firehose it wants, and how a streamed event is framed. This is the contract the server's stream module (AW-010) maps onto the engine's EventFilter.",
+  "task": "Add events.proto declaring a SubscriptionRequest with per-workflow, filtered (by type/status/namespace), and firehose variants, and the streamed Event envelope that carries an aion-core Event unmodified plus the owning namespace. Provide serde types and assert lossless round-trip. This brief defines the wire shape only; the server-side subscription loop is AW-010.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SubscriptionRequest variants",
+      "spec": "THE SYSTEM SHALL define a SubscriptionRequest with three subscription models: per-workflow (a single WorkflowId), filtered (by workflow type, status, and/or namespace), and firehose (all events in the caller's namespace).",
+      "acceptance": [
+        "events.proto defines a SubscriptionRequest expressing the three models (e.g. a oneof or a tagged variant).",
+        "The per-workflow variant carries a WorkflowId; the filtered variant carries optional type, status, and namespace selectors; the firehose variant carries the caller's namespace.",
+        "Every variant carries the caller's namespace so the server can scope it before mapping to an EventFilter (per D8).",
+        "The SubscriptionRequest has a serde type deriving Serialize + Deserialize and round-trips losslessly."
+      ],
+      "files": {
+        "create": ["crates/aion-proto/proto/events.proto"],
+        "modify": ["crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C11"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "Streamed Event envelope",
+      "spec": "THE SYSTEM SHALL define the streamed event frame as an envelope carrying the aion-core Event unmodified plus the owning namespace, round-tripping losslessly.",
+      "acceptance": [
+        "The streamed frame carries the aion-core Event (via the AW-002 envelope, not a wire clone) plus the namespace it belongs to.",
+        "A unit test round-trips a streamed frame containing an Event of at least one variant and asserts equality with the source aion-core Event.",
+        "The frame derives Serialize + Deserialize (CO7).",
+        "Inspection confirms the Event is carried by aion-core's type, not re-declared (CO12)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/proto/events.proto", "crates/aion-proto/src/convert.rs", "crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the WebSocket forward loop or the EventFilter mapping — that is AW-010.",
+    "SHALL NOT define how the engine produces or broadcasts events — that is AE/AD; this brief defines only the wire frame.",
+    "SHALL NOT define worker or workflow-management messages — AW-003, AW-005."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-proto passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

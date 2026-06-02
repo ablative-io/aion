@@ -1,0 +1,96 @@
+{
+  "id": "AN-001",
+  "cluster": "aion-nif",
+  "title": "aion-nif crate scaffold, error taxonomy, and FFI seam shell",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5", "C30"],
+  "stories": ["S7", "S9"],
+  "purpose": "Create the aion-nif leaf-of-the-helper-tree crate, its typed error taxonomy, and the single isolated module that will hold any unsafe needed at the beamr term-construction boundary. This establishes the dependency boundaries and the audited unsafe seam before any conversion or declaration logic lands.",
+  "task": "Create the aion-nif crate as a workspace member depending only on beamr and aion-core. Add a thin lib.rs of declarations and re-exports. Define TermError and NifDeclError as thiserror enums. Create the raw module as the sole place permitted to use unsafe: it wraps beamr's process-heap term construction (cons cells, tuples, binaries) behind safe functions, preferring beamr's existing safe ProcessContext allocation APIs (alloc_cons, alloc_tuple) and using unsafe only where a return shape has no safe beamr path, each unsafe block documented with a // SAFETY: comment.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and dependency boundary",
+      "spec": "THE SYSTEM SHALL create the aion-nif crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL declare dependencies on beamr and aion-core only and SHALL NOT depend on the aion engine crate.",
+      "acceptance": [
+        "crates/aion-nif exists and is registered in the workspace Cargo.toml members list.",
+        "aion-nif/Cargo.toml depends on beamr and aion-core (plus external crates such as serde, serde_json, thiserror) and has no aion (engine) dependency.",
+        "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+        "The crate sets unsafe_code = \"deny\" at the crate root and inherits the workspace clippy lints.",
+        "cargo check -p aion-nif passes."
+      ],
+      "files": {
+        "create": ["crates/aion-nif/Cargo.toml", "crates/aion-nif/src/lib.rs"],
+        "modify": ["Cargo.toml"]
+      },
+      "checklist": ["C1", "C2", "C3"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "TermError taxonomy",
+      "spec": "THE SYSTEM SHALL define TermError as a typed thiserror enum describing term-conversion failures, including a variant that records the failing argument index for argument-decode failures, rather than surfacing a bare badarg.",
+      "acceptance": [
+        "error.rs defines TermError with variants covering type mismatch (expected vs found kind), argument-position decode failure carrying the zero-based index, atom-resolution failure, and heap-allocation failure.",
+        "TermError implements std::error::Error and Display and derives Debug.",
+        "A doc comment explains that TermError replaces beamr's bare badarg so authors and the engine get a typed, descriptive failure.",
+        "A unit test constructs each variant and asserts its Display text."
+      ],
+      "files": {
+        "create": ["crates/aion-nif/src/error.rs"],
+        "modify": ["crates/aion-nif/src/lib.rs"]
+      },
+      "checklist": ["C4"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R3",
+      "title": "NifDeclError taxonomy",
+      "spec": "THE SYSTEM SHALL define NifDeclError as a typed thiserror enum describing NIF declaration and registration-set failures, including a duplicate (module, function, arity) declaration.",
+      "acceptance": [
+        "error.rs defines NifDeclError with at least a Duplicate variant carrying the conflicting module, function, and arity, and an InvalidArity variant for an out-of-range arity.",
+        "NifDeclError implements std::error::Error and Display and derives Debug.",
+        "A unit test constructs the Duplicate variant and asserts the conflicting identity appears in its Display text."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-nif/src/error.rs", "crates/aion-nif/src/lib.rs"]
+      },
+      "checklist": ["C5"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R4",
+      "title": "Isolated FFI seam module",
+      "spec": "THE SYSTEM SHALL create the raw module as the only module permitted to use unsafe. It SHALL expose safe wrapper functions for process-heap term construction (cons cell, tuple, binary), preferring beamr's existing safe ProcessContext allocation APIs and using unsafe only where a return shape has no safe beamr path. Any unsafe SHALL be confined to this module behind those wrappers, each block carrying a // SAFETY: comment.",
+      "acceptance": [
+        "raw.rs exposes safe functions to build a binary term, a tuple term, and a cons-list term from Rust values, returning TermError on allocation failure.",
+        "Where beamr's ProcessContext provides a safe allocation path (alloc_cons, alloc_tuple), raw uses it and contains no unsafe for that shape.",
+        "If any unsafe is required for a return shape with no safe beamr path, it appears only in raw.rs behind a single module-level documented #![allow(unsafe_code)] seam, and every unsafe block carries a // SAFETY: comment stating the invariant; no unsafe appears in any other module.",
+        "raw.rs does NOT use Box::leak: leaking the process heap per call is explicitly rejected (a doc comment records why, referencing the beamr-meridian limitation it supersedes).",
+        "A unit test builds a tuple and a small cons list through the safe wrappers and reads the values back.",
+        "cargo clippy --workspace --all-targets -- -D warnings passes, confirming no allow other than the documented raw.rs seam."
+      ],
+      "files": {
+        "create": ["crates/aion-nif/src/raw.rs"],
+        "modify": ["crates/aion-nif/src/lib.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the FromTerm/IntoTerm traits or any primitive conversions — those land in AN-002.",
+    "SHALL NOT reference aion-core::Payload here — the Payload bridge is AN-003.",
+    "SHALL NOT define the Nif descriptor, declaration macros, or NifSet — those are AN-004/005/006.",
+    "SHALL NOT call beamr's BifRegistryImpl::register — registration is performed by the engine (AE)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes (the only allow permitted is the documented raw.rs FFI seam, if unsafe is needed at all).",
+    "cargo test -p aion-nif passes.",
+    "cargo fmt --check passes.",
+    "ast-grep scan passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code other than the single documented #![allow(unsafe_code)] in raw.rs."
+  ]
+}

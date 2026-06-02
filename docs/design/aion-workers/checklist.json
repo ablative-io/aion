@@ -1,0 +1,87 @@
+{
+  "cluster": "aion-workers",
+  "sections": [
+    {
+      "name": "Rust SDK — Protocol Session and Configuration",
+      "items": [
+        {"id": "C1", "text": "aion-worker is a workspace member with unsafe_code = deny and a lib.rs containing only declarations and re-exports; it depends on aion-proto and aion-core but not on aion, aion-server, or aion-store.", "done": false},
+        {"id": "C2", "text": "WorkerConfig carries the engine endpoint, task-queue name, worker identity, max concurrency, and a TLS/credentials passthrough; no field has a hardcoded default concurrency or tunable.", "done": false},
+        {"id": "C3", "text": "WorkerError is a closed thiserror enum covering connection, handshake, registration, decode/encode, and transport failures, and is Send + Sync.", "done": false},
+        {"id": "C4", "text": "A WorkerSession trait abstracts the transport (connect+handshake, register activity types, receive-task stream, report result/failure, send heartbeat) so execution machinery never touches generated gRPC stubs directly.", "done": false},
+        {"id": "C5", "text": "A gRPC-backed WorkerSession implementation connects to the engine's worker endpoint, performs the handshake declaring task queue and identity, and registers a set of activity-type names per the aion-proto contract.", "done": false},
+        {"id": "C6", "text": "Registering an activity-type name for which no handler exists is rejected by the SDK before serving begins, not at dispatch time.", "done": false}
+      ]
+    },
+    {
+      "name": "Rust SDK — Task Loop and Dispatch",
+      "items": [
+        {"id": "C7", "text": "The worker receives tasks via the server-streamed receive call; each task exposes activity type, ActivityId, attempt number, and the input Payload with its content-type tag.", "done": false},
+        {"id": "C8", "text": "The worker loop serves up to the configured max-concurrency activities at once and applies backpressure on the receive stream when the pool is full (no unbounded spawning).", "done": false},
+        {"id": "C9", "text": "Dispatch decodes the input Payload to the handler's input type using the content-type tag (JSON baseline) and encodes the handler's output back to a Payload without changing the content type.", "done": false},
+        {"id": "C10", "text": "On success the worker reports completion for the task's ActivityId carrying the encoded output Payload; on failure it reports a failure carrying the error and its retryable/terminal classification.", "done": false},
+        {"id": "C11", "text": "ActivityFailure carries an explicit retryable-vs-terminal classification (not a string or bool); a handler returns Result<Output, ActivityFailure>.", "done": false}
+      ]
+    },
+    {
+      "name": "Rust SDK — Context, Heartbeat, Cancellation, Reconnect",
+      "items": [
+        {"id": "C12", "text": "ActivityContext exposes the ActivityId, attempt number, a heartbeat method, and cancellation observation (is_cancelled and an awaitable cancelled signal).", "done": false},
+        {"id": "C13", "text": "ctx.heartbeat() sends a heartbeat frame carrying an optional opaque Payload of progress detail; the SDK never heartbeats on the handler's behalf.", "done": false},
+        {"id": "C14", "text": "When the engine signals cancellation for an in-flight activity, the SDK flips the ActivityContext cancellation flag; it never forcibly terminates the handler's task.", "done": false},
+        {"id": "C15", "text": "On session drop the SDK reconnects with bounded exponential backoff and re-registers its activity types before serving new tasks.", "done": false},
+        {"id": "C16", "text": "The SDK tracks results computed locally but not yet acknowledged, and on reconnect re-reports those un-acked results before serving any new task.", "done": false}
+      ]
+    },
+    {
+      "name": "Rust SDK — Typed Activities and Worker Surface",
+      "items": [
+        {"id": "C17", "text": "An Activity is definable as an async handler taking a typed input (Serialize/DeserializeOwned) and an &ActivityContext, returning Result<Output, ActivityFailure>, and registered by activity-type name.", "done": false},
+        {"id": "C18", "text": "A Worker builder accepts a WorkerConfig and registered activities; Worker::run() connects, serves, and returns on a graceful shutdown signal after draining in-flight activities.", "done": false}
+      ]
+    },
+    {
+      "name": "Python SDK — Protocol and Loop",
+      "items": [
+        {"id": "C19", "text": "aion-worker-python is a PyPI-packaged project (pyproject.toml) depending on grpcio and protobuf, with __init__.py exposing only re-exports.", "done": false},
+        {"id": "C20", "text": "A session module performs connect+handshake (task queue + identity) and activity-type registration over generated gRPC stubs, behind a session abstraction the loop depends on.", "done": false},
+        {"id": "C21", "text": "An asyncio worker loop receives tasks from the server stream, dispatches up to the operator-configured concurrency, and reports completion or failure; backpressure is applied when the pool is full.", "done": false},
+        {"id": "C22", "text": "The Python SDK reconnects with bounded backoff, re-registers, and re-reports un-acked results before serving new tasks.", "done": false}
+      ]
+    },
+    {
+      "name": "Python SDK — Typed Activities, Context, Errors",
+      "items": [
+        {"id": "C23", "text": "An @activity(name=...) decorator registers an async (or pool-run sync) function as an activity; type hints on its arguments and return drive Payload encode/decode (JSON baseline).", "done": false},
+        {"id": "C24", "text": "A context object passed to the handler exposes heartbeat(detail) and cancellation observation (is_cancelled() and an awaitable cancelled()).", "done": false},
+        {"id": "C25", "text": "RetryableError and TerminalError base classes classify failures; an unclassified exception escaping a handler defaults to retryable and is logged as unclassified (never silent).", "done": false},
+        {"id": "C26", "text": "A Worker object registers decorated activities and await worker.run() connects, serves, and shuts down gracefully draining in-flight activities; a thread/process-pool escape hatch handles blocking/CPU-bound handlers.", "done": false}
+      ]
+    },
+    {
+      "name": "TypeScript SDK — Protocol and Loop",
+      "items": [
+        {"id": "C27", "text": "aion-worker-typescript is an npm package (package.json with ESM+CJS builds and bundled type declarations) depending on @grpc/grpc-js, with index.ts exposing only re-exports and strict tsconfig.", "done": false},
+        {"id": "C28", "text": "A session module performs connect+handshake (task queue + identity) and activity-type registration over @grpc/grpc-js, behind a session abstraction the loop depends on.", "done": false},
+        {"id": "C29", "text": "A worker loop receives tasks from the server stream, dispatches up to the operator-configured concurrency as concurrent promises, and reports completion or failure; backpressure is applied when the pool is full.", "done": false},
+        {"id": "C30", "text": "The TypeScript SDK reconnects with bounded backoff, re-registers, and re-reports un-acked results before serving new tasks.", "done": false}
+      ]
+    },
+    {
+      "name": "TypeScript SDK — Typed Activities, Context, Errors",
+      "items": [
+        {"id": "C31", "text": "defineActivity<I, O>(name, handler) registers a typed activity; the generic types drive Payload encode/decode (JSON baseline) at the boundary.", "done": false},
+        {"id": "C32", "text": "A ctx object passed to the handler exposes heartbeat(detail) and cancellation observation (isCancelled() and an awaitable cancelled()).", "done": false},
+        {"id": "C33", "text": "RetryableError and TerminalError classes classify failures; an unclassified throw escaping a handler defaults to retryable and is logged as unclassified (never silent).", "done": false},
+        {"id": "C34", "text": "A Worker class registers activities and await worker.run() connects, serves, and shuts down gracefully draining in-flight activities.", "done": false}
+      ]
+    },
+    {
+      "name": "Cross-SDK Conformance",
+      "items": [
+        {"id": "C35", "text": "A language-agnostic scenario set defines the protocol behaviours every SDK must exhibit: register, receive+complete, receive+fail-retryable, receive+fail-terminal, heartbeat, cancellation, reconnect-and-re-report, and backpressure under full concurrency.", "done": false},
+        {"id": "C36", "text": "A fake worker-endpoint harness drives the scenarios, and each of the three SDKs is run against it producing identical observable wire behaviour (same completion/failure classification, same re-report on reconnect).", "done": false},
+        {"id": "C37", "text": "JSON payload round-trip parity is verified across all three SDKs: the same input value encodes to an equivalent Payload and decodes back to an equal value in each language.", "done": false}
+      ]
+    }
+  ]
+}

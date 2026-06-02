@@ -1,0 +1,72 @@
+{
+  "cluster": "aion-package",
+  "sections": [
+    {
+      "name": "Crate Scaffold and Core Types",
+      "items": [
+        {"id": "C1", "text": "crates/aion-package exists, is registered as a workspace member, and depends only on aion-core among Aion crates (plus external crates: zip, serde, a hashing crate, thiserror).", "done": false},
+        {"id": "C2", "text": "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic, and sets unsafe_code = \"deny\".", "done": false},
+        {"id": "C3", "text": "PackageError is a closed thiserror enum with distinct variants for: not-a-ZIP/archive-read failure, missing manifest, manifest parse failure, unknown format_version, missing entry module, integrity (hash) mismatch, and malformed beam entry.", "done": false},
+        {"id": "C4", "text": "BeamModule carries a logical module name and its exact compiled bytes; BeamSet is an ordered collection of BeamModules.", "done": false},
+        {"id": "C5", "text": "BeamSet exposes a canonical ordering (sorted by logical module name) that is deterministic and independent of insertion order.", "done": false}
+      ]
+    },
+    {
+      "name": "Manifest",
+      "items": [
+        {"id": "C6", "text": "Manifest is a typed struct carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version (content hash), and format_version.", "done": false},
+        {"id": "C7", "text": "Manifest derives Serialize and Deserialize and round-trips losslessly through serde_json against manifest.json.", "done": false},
+        {"id": "C8", "text": "format_version identifies the .aion format schema version and an unknown value is rejected at load with the unknown-format_version PackageError variant.", "done": false},
+        {"id": "C9", "text": "input_schema and output_schema hold JSON-Schema descriptions of the workflow input and result Payload shapes.", "done": false},
+        {"id": "C10", "text": "Declared activities enumerate the activity types the workflow invokes, each identifying its activity type.", "done": false}
+      ]
+    },
+    {
+      "name": "Content-Hash Versioning",
+      "items": [
+        {"id": "C11", "text": "The content hash is computed over the canonical beam set only (sorted logical names plus exact bytes), never over archive bytes, compression, timestamps, or source inclusion.", "done": false},
+        {"id": "C12", "text": "Two BeamSets with identical modules and bytes produce identical content hashes regardless of insertion order; any change to a beam's name or bytes changes the hash.", "done": false},
+        {"id": "C13", "text": "The content hash has a stable, documented textual form usable as a version identifier and as a module-name component.", "done": false}
+      ]
+    },
+    {
+      "name": "Module Namespacing",
+      "items": [
+        {"id": "C14", "text": "A namespacing function maps (logical module name, content hash) to a deployed module name (e.g. order_workflow$<hash>) deterministically.", "done": false},
+        {"id": "C15", "text": "An inverse function recovers the logical module name from a deployed module name; the transform is a verified round-trip (bijection).", "done": false},
+        {"id": "C16", "text": "Two packages with different content hashes produce disjoint deployed module-name sets, so distinct versions never collide in the registry.", "done": false}
+      ]
+    },
+    {
+      "name": "Write Path",
+      "items": [
+        {"id": "C17", "text": "PackageBuilder accepts a manifest (without the version), a BeamSet, and optional source, computes the content hash, and stamps it into the manifest as the version.", "done": false},
+        {"id": "C18", "text": "PackageBuilder writes a valid ZIP-container .aion with the fixed layout (manifest.json, beam/ entries, optional src/ entries) to a path or an in-memory buffer.", "done": false},
+        {"id": "C19", "text": "The write path is deterministic: identical inputs produce a byte-identical .aion, with no wall-clock timestamps or nondeterministic ordering in the archive.", "done": false}
+      ]
+    },
+    {
+      "name": "Read Path and Integrity",
+      "items": [
+        {"id": "C20", "text": "Package::load reads a .aion from a path and from an in-memory byte buffer, opening the ZIP and parsing manifest.json.", "done": false},
+        {"id": "C21", "text": "Load checks format_version and extracts the BeamSet (and optional source) from the archive entries.", "done": false},
+        {"id": "C22", "text": "Load recomputes the content hash over the extracted beams and rejects with the integrity-mismatch PackageError variant when it does not equal the manifest version.", "done": false},
+        {"id": "C23", "text": "Load is total: a truncated/non-ZIP input, a missing manifest, a missing entry module, and a malformed beam entry each map to their distinct PackageError variant with no panic and no partial result.", "done": false},
+        {"id": "C24", "text": "A loaded Package exposes the manifest, the BeamSet, the optional source, and the derived namespaced deployed module names ready for the engine to register.", "done": false}
+      ]
+    },
+    {
+      "name": "Version Record",
+      "items": [
+        {"id": "C25", "text": "A version record is producible from a loaded Package, carrying the logical entry module, the content hash, the declared activities, and the input/output schemas, using the shared aion-core version-record type.", "done": false}
+      ]
+    },
+    {
+      "name": "Round-Trip Conformance",
+      "items": [
+        {"id": "C26", "text": "A test suite round-trips PackageBuilder output through Package::load and asserts the manifest, beam set, and namespaced names survive intact.", "done": false},
+        {"id": "C27", "text": "A test asserts reproducibility (two builds of identical inputs are byte-identical) and asserts integrity rejection (a package whose beams are altered after packing fails to load).", "done": false}
+      ]
+    }
+  ]
+}

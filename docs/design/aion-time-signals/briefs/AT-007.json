@@ -1,0 +1,94 @@
+{
+  "id": "AT-007",
+  "cluster": "aion-time-signals",
+  "title": "Query service: non-recording read-only dispatch with reply",
+  "depends_on": ["AT-001"],
+  "blocked_by": [],
+  "checklist": ["C19", "C20", "C21", "C22"],
+  "stories": ["S11", "S12"],
+  "purpose": "Let an operator inspect a live workflow's state without recording anything, without blocking the workflow, and without risking determinism. A query is BEAM message passing to the workflow process, answered by a registered handler and replied on a one-shot channel — fast, non-disruptive, and never an event.",
+  "task": "Implement a QueryService that dispatches a read-only query to a workflow process via the engine seam as a distinct message kind, the process answers it from a registered query handler, and the reply returns on a one-shot channel. No Event is ever appended. Handle the failure modes explicitly: unknown query name, reply timeout (engine-configured), and terminal/unknown workflow.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Dispatch a query and return the handler's reply",
+      "spec": "WHEN a query is dispatched to a resident workflow, THE SYSTEM SHALL deliver it as a distinct query message kind with a one-shot reply channel and return the reply produced by the workflow's registered query handler.",
+      "acceptance": [
+        "service.rs defines QueryService holding an EngineHandle (and the query timeout from config).",
+        "query(workflow_id, name, args) resolves the workflow via the seam, delivers a query message (distinct from a signal message) carrying name + args + a one-shot reply sender, and awaits the reply.",
+        "The returned value is whatever the registered query handler produced (a Payload-or-typed reply), surfaced to the caller.",
+        "A test (fake seam) wires a fake workflow process that answers a known query and asserts the dispatched query returns the handler's reply."
+      ],
+      "files": {
+        "create": ["crates/aion/src/query/service.rs"],
+        "modify": ["crates/aion/src/query/mod.rs"]
+      },
+      "checklist": ["C19"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R2",
+      "title": "Queries never record and never block the workflow",
+      "spec": "THE SYSTEM SHALL NOT append any Event for a query AND SHALL NOT mutate workflow state or block the workflow's forward progress to answer one.",
+      "acceptance": [
+        "QueryService holds no EventStore and no append path; the type cannot record an event by construction.",
+        "The query message is answered at a yield point so it does not preempt in-progress deterministic logic mid-step (documented in the message-kind contract).",
+        "A test runs a query against a workflow and asserts zero events were appended to the store over the query's lifetime (using a store observer alongside the fake process).",
+        "A doc comment states queries are non-recording and non-disruptive (CO7)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/query/service.rs"]
+      },
+      "checklist": ["C20"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R3",
+      "title": "Unknown query name returns a typed error",
+      "spec": "IF a query names a handler the workflow does not recognise, THEN THE SYSTEM SHALL return a typed QueryError::UnknownQuery AND the workflow SHALL NOT panic.",
+      "acceptance": [
+        "An unrecognised query name results in QueryError::UnknownQuery(name) returned to the caller.",
+        "The workflow process answering an unknown query replies with the error rather than crashing; the workflow process is not torn down by an unknown query.",
+        "A test dispatches an unknown query and asserts QueryError::UnknownQuery and that the workflow remains live."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/query/service.rs"]
+      },
+      "checklist": ["C21"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R4",
+      "title": "Timeout and terminal/unknown handling",
+      "spec": "IF no reply arrives within the engine-configured query timeout, THEN THE SYSTEM SHALL return QueryError::Timeout. IF the target workflow is terminal or unknown, THEN THE SYSTEM SHALL return a typed NotRunning/Unknown error AND SHALL NOT replay the workflow solely to answer the query.",
+      "acceptance": [
+        "The query timeout is supplied by engine configuration (a Duration field/param), NOT a hardcoded constant (CO10).",
+        "If the one-shot reply does not arrive within the timeout, query returns QueryError::Timeout (the wait is bounded; tests inject a short timeout and a non-replying fake process).",
+        "Querying a Terminal workflow returns QueryError::NotRunning; querying an Unknown workflow returns QueryError::Unknown.",
+        "Neither error path triggers a replay of the workflow (the service has no replay capability and does not request one).",
+        "Tests assert: non-replying process + short injected timeout -> Timeout; terminal target -> NotRunning; unknown target -> Unknown."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/query/service.rs"]
+      },
+      "checklist": ["C22"],
+      "stories": ["S12"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT append any event, ever — queries are non-recording (CO7).",
+    "SHALL NOT define the Gleam query-handler registration surface — that is AF; this is the engine-side dispatch it binds to.",
+    "SHALL NOT define the network query endpoint — that is AW.",
+    "SHALL NOT hardcode the query timeout — it is engine-configured (CO10)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including timeout/unknown/not-running tests.",
+    "cargo fmt --check passes.",
+    "QueryService has no EventStore dependency (queries cannot record).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

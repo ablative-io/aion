@@ -1,0 +1,87 @@
+{
+  "cluster": "aion-time-signals",
+  "sections": [
+    {
+      "name": "Engine Seam",
+      "items": [
+        {"id": "C1", "text": "An engine-facing handle/trait (consumed, not owned, by this cluster) exposes: resolve a WorkflowId to a live process handle, deliver a message to a workflow process mailbox, request AE to spawn a child workflow, and arm/disarm a beamr timer-wheel entry.", "done": false},
+        {"id": "C2", "text": "The engine seam is an explicit trait (or handle type) so this cluster never manages workflow process lifecycle, supervision, or module loading directly.", "done": false},
+        {"id": "C3", "text": "The time/signal/query/child/concurrency modules live under the aion crate with mod.rs files containing only pub mod declarations and pub use re-exports.", "done": false}
+      ]
+    },
+    {
+      "name": "Durable Timer Service",
+      "items": [
+        {"id": "C4", "text": "Scheduling a durable timer records it via EventStore::schedule_timer with the timer's TimerId and fire_at, and records a TimerStarted event in the workflow history.", "done": false},
+        {"id": "C5", "text": "Scheduling a durable timer arms a beamr timer-wheel entry (via the engine seam) so the timer fires live during normal execution without a store read.", "done": false},
+        {"id": "C6", "text": "When a wheel entry fires, the service records a TimerFired event and delivers TimerFired to the owning workflow process's mailbox.", "done": false},
+        {"id": "C7", "text": "A timer is fired exactly once: a timer already recorded as TimerFired (by the wheel) is not fired again by recovery, and vice versa.", "done": false}
+      ]
+    },
+    {
+      "name": "Timer Recovery",
+      "items": [
+        {"id": "C8", "text": "On engine startup the timer service polls EventStore::expired_timers(now) and, for each entry whose TimerFired has not been recorded, records TimerFired and delivers it to the owning workflow process.", "done": false},
+        {"id": "C9", "text": "A periodic recovery tick (interval engine-configured, not hardcoded) re-polls expired_timers as a safety net for timers whose owning process was not resident on the wheel.", "done": false},
+        {"id": "C10", "text": "Recovery is idempotent: re-running it does not double-fire a timer already recorded as fired or cancelled.", "done": false}
+      ]
+    },
+    {
+      "name": "Named Timers and Sleeps",
+      "items": [
+        {"id": "C11", "text": "start_timer takes an author-assigned (named) TimerId and schedules a durable, cancellable timer.", "done": false},
+        {"id": "C12", "text": "cancel_timer disarms the wheel entry and records a TimerCancelled event; cancelling an already-fired timer is a no-op, not an error.", "done": false},
+        {"id": "C13", "text": "sleep schedules an anonymous timer with an engine-assigned TimerId derived from sequence position; an anonymous sleep is not separately cancellable.", "done": false}
+      ]
+    },
+    {
+      "name": "Signal Router",
+      "items": [
+        {"id": "C14", "text": "Delivering a signal records a SignalReceived event (signal name + Payload) before/atomically with delivery, so a crash after delivery but before consumption is recoverable.", "done": false},
+        {"id": "C15", "text": "The signal is delivered to the target workflow process's mailbox so the workflow's selective receive picks it up without polling.", "done": false},
+        {"id": "C16", "text": "Signal delivery resolves a WorkflowId to a live process via the engine seam; the router does not manage process lifecycle.", "done": false}
+      ]
+    },
+    {
+      "name": "Non-Resident Signal Delivery",
+      "items": [
+        {"id": "C17", "text": "Signalling a workflow whose process is not currently resident still records SignalReceived; the signal is delivered to the mailbox once AE makes the process resident.", "done": false},
+        {"id": "C18", "text": "Signalling a terminal or unknown workflow returns a typed error and records nothing.", "done": false}
+      ]
+    },
+    {
+      "name": "Query Service",
+      "items": [
+        {"id": "C19", "text": "A query is dispatched to the workflow process as a distinct message kind and answered from a registered query handler, replying on a one-shot reply channel.", "done": false},
+        {"id": "C20", "text": "No Event is ever appended for a query, and the query never mutates workflow state or blocks the workflow's forward progress.", "done": false},
+        {"id": "C21", "text": "An unknown query name returns a typed QueryError; the workflow does not panic.", "done": false},
+        {"id": "C22", "text": "Query dispatch carries an engine-configured timeout and returns QueryError::Timeout if no reply arrives; querying a terminal/unknown workflow returns a typed NotRunning/Unknown error and never replays the workflow solely to answer.", "done": false}
+      ]
+    },
+    {
+      "name": "Child Workflow Spawning",
+      "items": [
+        {"id": "C23", "text": "Spawning a child requests AE to start a new workflow execution (distinct WorkflowId/RunId, own history) as a process linked to the parent, and records ChildWorkflowStarted in the parent history.", "done": false},
+        {"id": "C24", "text": "spawn_and_wait blocks the parent on its mailbox until the child result arrives, recording ChildWorkflowCompleted on success and ChildWorkflowFailed on child failure.", "done": false},
+        {"id": "C25", "text": "Fire-and-forget spawn records ChildWorkflowStarted and detaches (monitor rather than blocking await).", "done": false},
+        {"id": "C26", "text": "Cancelling the parent propagates over the link to the child process.", "done": false}
+      ]
+    },
+    {
+      "name": "Concurrency Correlation and Cancellation",
+      "items": [
+        {"id": "C27", "text": "Each spawned child in an all/race/map carries a per-spawn correlation token derived deterministically from the spawning sequence position, carried in its result message.", "done": false},
+        {"id": "C28", "text": "Selective receive matches an arriving result to its spawn position by correlation token, correctly even when many children of the same type run concurrently.", "done": false},
+        {"id": "C29", "text": "Cancellation terminates losing/remaining linked children via their links (exit signal) and records the cancellation so replay reconstructs started-vs-cancelled children; the workflow process traps exits so child exits arrive as messages.", "done": false}
+      ]
+    },
+    {
+      "name": "all / race / map",
+      "items": [
+        {"id": "C30", "text": "all spawns N linked children, blocks until all N results arrive, and returns them in input order; any child failure fails the whole all and cancels the remaining children.", "done": false},
+        {"id": "C31", "text": "race spawns N linked children, returns the first result to arrive, then cancels the remaining children and records their cancellation.", "done": false},
+        {"id": "C32", "text": "map applies a function to each element of a runtime list to produce child specs (dynamic fan-out), then collects like all (ordered, fail-fast).", "done": false}
+      ]
+    }
+  ]
+}

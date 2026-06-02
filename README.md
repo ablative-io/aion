@@ -1,0 +1,129 @@
+# Aion
+
+**A durable workflow engine for Gleam, Rust, and the BEAM.**
+
+Aion gives you Temporal-class durable execution — workflows that survive
+crashes, replay from event history, durable timers, signals, and child
+workflows — built on the BEAM's native process model for concurrency,
+supervision, and fault tolerance. It runs on [beamr](https://crates.io/crates/beamr),
+a Rust implementation of the BEAM VM.
+
+> Aion is the Greek conception of eternal, unbounded time — distinct from
+> Chronos, who is sequential, ticking time. A durable workflow lives in
+> Aion's time: it persists across crashes, restarts, and arbitrary delays.
+> A workflow that sleeps for three months and resumes is living in eternal
+> time, not clock time.
+
+Aion is **general purpose**. It ships as an embeddable Rust library, a
+standalone server, a type-safe Gleam authoring SDK, and worker and client
+SDKs in multiple languages.
+
+## Why Gleam + Rust + BEAM
+
+The three technologies meet at their points of maximum leverage:
+
+- **Gleam** — compile-time type safety for workflow definitions. Activity
+  inputs, results, signals, and queries are all statically typed; you
+  cannot wire mismatched types together and ship it. Compiles to BEAM
+  bytecode.
+- **BEAM** (via beamr) — the execution runtime. Designed for systems that
+  run forever, handle millions of concurrent processes, recover from
+  failure automatically, and upgrade without downtime. Every workflow is a
+  process; every activity is a supervised child process.
+- **Rust** — the durable substrate. Persistence, the event store, the
+  network API, and performance-critical infrastructure.
+
+Temporal had to build distributed process management, supervision, and
+fault tolerance from scratch in Go. The BEAM provides them natively. Aion
+starts with the runtime Temporal wished it had and adds the durability
+layer the BEAM traditionally lacks.
+
+## Architecture
+
+Three layers:
+
+1. **beamr** — the BEAM runtime. Processes, mailboxes, selective receive,
+   links, monitors, supervision, timers, hot code loading. (External
+   dependency, already built.)
+2. **The Aion engine** (`crates/aion`) — workflow lifecycle, the
+   event-sourced durability and replay layer, durable timers, signal
+   routing, queries, child workflows. Transport-agnostic.
+3. **The SDKs** — the Gleam authoring SDK (`gleam/aion_flow`), the Rust NIF
+   helper, the network server, and worker/client SDKs.
+
+The full vision and the component breakdown live in
+[`docs/design/workflow-engine/`](docs/design/workflow-engine/):
+- [`DESIGN-OVERVIEW.md`](docs/design/workflow-engine/DESIGN-OVERVIEW.md) —
+  the whole-system design.
+- [`COMPONENT-ARCHITECTURE.md`](docs/design/workflow-engine/COMPONENT-ARCHITECTURE.md) —
+  every crate and package and how they fit.
+
+## Repository layout
+
+```
+crates/            Rust crates (the engine, store, package, proto, server, nif, worker, client)
+gleam/             Gleam packages (aion_flow authoring SDK, aion_client)
+sdks/python/       Python worker + client SDKs
+sdks/typescript/   TypeScript worker + client SDKs
+apps/              The monitoring dashboard (React + Vite)
+conformance/       Cross-language conformance suites
+docs/design/       The design — one folder per cluster, plus the overview
+tools/             Workspace tooling (scaffold.py)
+workspace.json     Machine-readable description of every component
+```
+
+### Components
+
+| Crate / package | Role |
+|---|---|
+| `aion-core` | Domain model: events, payloads, identifiers, status, errors |
+| `aion-store` | The `EventStore` contract + in-memory reference + conformance suite |
+| `aion-store-libsql` | Default durable store over libSQL (embedded + replica sync) |
+| `aion-package` | The `.aion` package format, content-hash versioning |
+| `aion` | The engine: lifecycle, supervision, durability/replay, timers, signals, queries |
+| `aion-nif` | Rust helper for in-VM activity NIFs |
+| `aion-proto` | Shared wire contract (gRPC + serde) |
+| `aion-server` | Standalone deployable: HTTP/gRPC/WebSocket + worker protocol |
+| `aion-worker` | Rust remote-worker SDK |
+| `aion-client` | Rust caller SDK |
+| `gleam/aion_flow` | The Gleam authoring SDK |
+| `gleam/aion_client` | The Gleam caller SDK |
+| `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs |
+| `apps/aion-dashboard` | Monitoring UI |
+
+## Status
+
+**Design complete; implementation not yet started.**
+
+The design is fully authored across 12 clusters (~117 implementation
+briefs) using the structured design system in `docs/design/`. Each cluster
+has a `DESIGN.md`, a `design.json`, a `checklist.json`, a `stories.json`,
+and numbered briefs. The beamr runtime Aion builds on — including hot code
+loading — is implemented, tested, and published.
+
+This repository currently holds the design and a scaffolded workspace
+skeleton. Implementation proceeds cluster by cluster in dependency order:
+`aion-core` → `aion` (engine) → durability/time → the Gleam SDK → the
+server → workers and clients.
+
+## Scaffolding
+
+The workspace skeleton is generated from a single machine-readable
+description:
+
+- [`workspace.json`](workspace.json) — every component: kind, path,
+  cluster, dependencies.
+- [`tools/scaffold.py`](tools/scaffold.py) — reads `workspace.json` and the
+  per-cluster `design.json` `structure` maps, and generates the workspace
+  `Cargo.toml`, per-crate manifests, module stubs, and the Gleam / Python /
+  TypeScript package manifests.
+
+```sh
+python3 tools/scaffold.py            # generate missing files (idempotent)
+python3 tools/scaffold.py --dry-run  # preview
+python3 tools/scaffold.py --force    # regenerate (overwrites)
+```
+
+## License
+
+MIT.

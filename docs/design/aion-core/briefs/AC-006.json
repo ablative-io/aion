@@ -1,0 +1,78 @@
+{
+  "id": "AC-006",
+  "cluster": "aion-core",
+  "title": "InMemoryStore reference implementation",
+  "depends_on": ["AC-005"],
+  "blocked_by": [],
+  "checklist": ["C30", "C31"],
+  "stories": ["S6"],
+  "purpose": "Provide the correct, non-durable reference implementation of EventStore. It is the behavioural oracle every durable backend must match and the store the engine's own tests use.",
+  "task": "Implement InMemoryStore: a Send + Sync EventStore backed by in-memory maps behind a lock. It must implement every trait method correctly, including the atomic append with expected-sequence guard and durable-timer scheduling and retrieval. Correctness matters more than performance — this is the oracle.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "InMemoryStore structure and event methods",
+      "spec": "THE SYSTEM SHALL implement InMemoryStore as an EventStore backed by in-memory state behind a lock, implementing append, read_history, list_active, and query.",
+      "acceptance": [
+        "memory.rs defines InMemoryStore holding per-workflow event vectors and any derived index behind a Mutex or RwLock; the struct is Send + Sync and Default-constructible.",
+        "read_history returns the stored events in sequence order; NotFound is returned for an unknown workflow only where the contract specifies (otherwise an empty history per the documented semantics — match the trait docs from AC-005).",
+        "list_active returns workflows whose projected status (via aion-core status projection) is Running.",
+        "query evaluates each workflow's summary against the filter using the aion-core filter semantics.",
+        "Lock poisoning is handled explicitly (no unwrap that can panic on a poisoned lock)."
+      ],
+      "files": {
+        "create": ["crates/aion-store/src/memory.rs"],
+        "modify": ["crates/aion-store/src/lib.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "Atomic append with sequence guard",
+      "spec": "WHEN append is called with an expected sequence equal to the stored head, THE SYSTEM SHALL apply all events atomically and advance the head. WHEN the expected sequence does not match, THE SYSTEM SHALL apply no events and return SequenceConflict.",
+      "acceptance": [
+        "append checks the current head sequence for the workflow against expected_seq before applying.",
+        "On match, all events in the batch are appended together and the head advances by the batch length.",
+        "On mismatch, no events are applied and StoreError::SequenceConflict { expected, found } is returned.",
+        "A test appends two batches in order (success), then attempts an append with a stale expected_seq and asserts SequenceConflict and that no partial write occurred.",
+        "Concurrency test: two appends racing on the same expected_seq result in exactly one success and one SequenceConflict."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store/src/memory.rs"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "Durable timer implementation",
+      "spec": "THE SYSTEM SHALL implement schedule_timer and expired_timers in InMemoryStore so that scheduled timers are retrievable once due.",
+      "acceptance": [
+        "schedule_timer records a TimerEntry keyed by (workflow_id, timer_id).",
+        "expired_timers(as_of) returns all entries with fire_at <= as_of and does not return future timers.",
+        "Re-scheduling the same timer id replaces the prior entry (idempotent under replay).",
+        "A test schedules timers at different instants and asserts expired_timers returns exactly the due ones for a given as_of."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store/src/memory.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add durability (file or database) — durability is clusters AS and AX.",
+    "SHALL NOT optimise for performance at the cost of obvious correctness — this is the reference oracle.",
+    "SHALL NOT define the shared behavioural test suite — that is AC-007 (this brief provides the implementation it runs against)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store passes.",
+    "cargo fmt --check passes.",
+    "Mutex/RwLock poisoning handled explicitly per CLAUDE.md.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

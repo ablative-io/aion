@@ -1,0 +1,78 @@
+{
+  "id": "AU-008",
+  "cluster": "aion-dashboard",
+  "title": "Shared presentational components — badge, icon, states, indicator",
+  "depends_on": ["AU-001", "AU-003"],
+  "blocked_by": [],
+  "checklist": ["C35"],
+  "stories": ["S4"],
+  "purpose": "Provide the small, reused presentational vocabulary the views depend on — status badge, event icon, the three async-state panels, and the connection indicator — so every view renders consistent loading, empty, error, and connection feedback.",
+  "task": "Build the shared components: StatusBadge (WorkflowStatus → badge), EventIcon (event kind → icon + colour), EmptyState, ErrorState (with retry), LoadingSkeleton, and ConnectionIndicator (driven by useConnectionStatus). These are the reusable building blocks AU-004, AU-005, and AU-007 consume.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Status badge and event icon",
+      "spec": "THE SYSTEM SHALL provide a StatusBadge mapping each WorkflowStatus to a labelled, colour-coded badge and an EventIcon mapping each event kind to an icon and colour.",
+      "acceptance": [
+        "StatusBadge renders a distinct colour/label for Running, Completed, Failed, Cancelled, and TimedOut.",
+        "EventIcon renders a distinct icon and colour for lifecycle, activity, timer, signal, and child-workflow kinds (lucide-react icons, matching apps/web).",
+        "A test asserts each WorkflowStatus and each event kind maps to a distinct rendering."
+      ],
+      "files": {
+        "create": [
+          "apps/aion-dashboard/src/components/StatusBadge.tsx",
+          "apps/aion-dashboard/src/components/EventIcon.tsx"
+        ],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Empty, error, and loading state panels",
+      "spec": "THE SYSTEM SHALL provide reusable EmptyState (message + optional icon), ErrorState (cause message + retry affordance), and LoadingSkeleton (layout-reserving skeleton) components.",
+      "acceptance": [
+        "EmptyState renders a configurable message and optional icon.",
+        "ErrorState renders a cause message and a retry button that invokes a supplied callback.",
+        "LoadingSkeleton renders layout-reserving skeletons (configurable for list rows and timeline entries), not a bare spinner.",
+        "A test asserts ErrorState's retry invokes the callback and the three panels render distinctly."
+      ],
+      "files": {
+        "create": [
+          "apps/aion-dashboard/src/components/EmptyState.tsx",
+          "apps/aion-dashboard/src/components/ErrorState.tsx",
+          "apps/aion-dashboard/src/components/LoadingSkeleton.tsx"
+        ],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "Connection indicator",
+      "spec": "THE SYSTEM SHALL provide a ConnectionIndicator that renders the live connection state from useConnectionStatus (connected, reconnecting, disconnected).",
+      "acceptance": [
+        "ConnectionIndicator consumes useConnectionStatus and renders a distinct visual for connected, reconnecting, and disconnected.",
+        "It is always present in the layout (it does not disappear when connected; it shows a steady 'connected' affordance).",
+        "A test drives the three states and asserts the matching rendering."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/src/features/live-feed/components/ConnectionIndicator.tsx"],
+        "modify": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define useConnectionStatus — that is AU-003 (this brief consumes it).",
+    "SHALL NOT build the list or detail views — AU-004, AU-005 (this brief provides the components they consume)."
+  ],
+  "verification": [
+    "bun run check (Biome) passes clean.",
+    "tsc --noEmit passes clean.",
+    "bun test passes for the component tests; no lint-disable comments added."
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "id": "AE-006",
+  "cluster": "aion-engine",
+  "title": "Three-level supervision tree and trap-exit policy",
+  "depends_on": ["AE-002"],
+  "blocked_by": [],
+  "checklist": ["C17", "C18", "C19", "C20"],
+  "stories": ["S11", "S12", "S6"],
+  "purpose": "Stand up the engine -> per-type -> workflow -> activity supervision tree on beamr's link/monitor/trap-exit primitives. This is the structural backbone that makes an activity crash a message the workflow can act on and makes cancellation propagate cleanly to children.",
+  "task": "Implement the supervision module: construction of the engine supervisor root and per-workflow-type supervisors, and the trap-exit/crash-propagation policy that workflow processes run under. Workflow processes trap exits; activity children do not. Cancelling a workflow kills its linked activity children via link propagation. Scope is the supervision shape and policy; activity spawning mechanics are AE-007 and lifecycle is AE-009/010.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Engine supervisor and per-type supervisors",
+      "spec": "THE SYSTEM SHALL construct an engine supervisor as the root and SHALL create exactly one workflow supervisor per registered workflow type, under the engine supervisor.",
+      "acceptance": [
+        "tree.rs constructs an engine supervisor (the root) and provides ensure_type_supervisor(workflow_type) that creates the per-type supervisor on first use and returns the existing one thereafter.",
+        "The number of workflow supervisors equals the number of distinct registered workflow types (per D6), never one-per-execution.",
+        "supervision/mod.rs contains only pub mod and pub use.",
+        "A test registers two workflow types, ensures their supervisors, and asserts exactly two per-type supervisors exist under the one engine supervisor."
+      ],
+      "files": {
+        "create": ["crates/aion/src/supervision/tree.rs", "crates/aion/src/supervision/mod.rs"],
+        "modify": ["crates/aion/src/lib.rs"]
+      },
+      "checklist": ["C17"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R2",
+      "title": "Workflow process under its type supervisor; activities as linked children",
+      "spec": "WHEN a workflow execution is placed in the tree, THE SYSTEM SHALL run it as a process under its workflow type's supervisor, and SHALL run activity invocations as child processes linked to the workflow process.",
+      "acceptance": [
+        "tree.rs exposes placing a workflow process under the correct per-type supervisor and recording the parent->children link relationship for its activities.",
+        "An activity child is linked to its workflow process (the link is established at spawn, via RuntimeHandle::spawn_activity from AE-002).",
+        "A test asserts that a workflow process's activity children are linked to it and sit one level below it in the tree."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/supervision/tree.rs"]
+      },
+      "checklist": ["C18"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R3",
+      "title": "Trap-exit policy: workflows trap, activities do not",
+      "spec": "THE SYSTEM SHALL set the trap-exit flag on workflow processes so an activity child's exit signal arrives as a message. THE SYSTEM SHALL NOT set trap-exit on activity processes.",
+      "acceptance": [
+        "policy.rs sets trap-exit on a workflow process at spawn (through the RuntimeHandle / beamr primitive surface).",
+        "Activity processes are spawned without trap-exit.",
+        "WHEN an activity child exits abnormally, the workflow process receives the exit as a trapped-exit message rather than crashing.",
+        "A test spawns a workflow process (trap-exit) with a linked activity child that exits abnormally and asserts the workflow process observes a trapped-exit message and stays alive."
+      ],
+      "files": {
+        "create": ["crates/aion/src/supervision/policy.rs"],
+        "modify": ["crates/aion/src/supervision/mod.rs"]
+      },
+      "checklist": ["C19"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R4",
+      "title": "Cancellation propagates to activity children",
+      "spec": "WHEN a workflow process is killed, THE SYSTEM SHALL rely on link propagation to terminate its linked activity children with no manual per-child teardown.",
+      "acceptance": [
+        "Because activity children are linked and do not trap exits, killing the workflow process propagates an exit along the links that terminates them.",
+        "policy.rs documents that cancellation teardown is link propagation, not an explicit loop over children.",
+        "A test spawns a workflow process with two linked activity children, kills the workflow process, and asserts both children are no longer alive."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/supervision/policy.rs"]
+      },
+      "checklist": ["C20"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement activity result/error propagation back to the workflow — that is AE-007 (this brief establishes the link/trap-exit shape it relies on).",
+    "SHALL NOT implement workflow restart-on-crash replay — triggering replay is AD; this brief notifies the supervisor and re-registers, the reconstruction is AD's.",
+    "SHALL NOT implement supervisor restart strategies beyond the structural tree and trap-exit policy needed for cancellation and crash observation."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Workflow processes trap exits and activity processes do not (D5).",
+    "Per-type supervisor count, not per-execution (D6).",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

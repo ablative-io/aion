@@ -1,0 +1,76 @@
+{
+  "id": "AT-009",
+  "cluster": "aion-time-signals",
+  "title": "Concurrency correlation tokens and cancellation propagation",
+  "depends_on": ["AT-008"],
+  "blocked_by": [],
+  "checklist": ["C27", "C28", "C29"],
+  "stories": ["S10", "S13"],
+  "purpose": "Provide the shared substrate that all/race/map (AT-010/011/012) build on: per-spawn correlation tokens that match arriving results to their spawn position deterministically, and cancellation that terminates losing/remaining linked children while recording the cancellation so replay reconstructs which children were started and which were cancelled.",
+  "task": "Implement a correlation module that derives a per-spawn correlation token deterministically from the spawning sequence position, carries it in each child's result message, and matches arriving results to spawn positions via selective receive even when many children of the same type run concurrently. Implement cancellation that kills losing/remaining linked children via their links and records the cancellation, relying on the workflow process trapping exits so child exits arrive as messages.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Deterministic per-spawn correlation token",
+      "spec": "THE SYSTEM SHALL derive a per-spawn correlation token deterministically from the spawning sequence position and carry it in the spawned child's result message.",
+      "acceptance": [
+        "correlation.rs defines a CorrelationToken derived deterministically from the workflow's spawning sequence position (e.g. base seq + index), so the same fan-out replays to the same tokens.",
+        "Each spawned child (activity or workflow) carries its token, echoed back in its result message.",
+        "Tokens are unique within a single fan-out batch (each spawn position gets a distinct token).",
+        "A test derives tokens for an N-element fan-out and asserts they are distinct and reproducible for the same starting sequence position."
+      ],
+      "files": {
+        "create": ["crates/aion/src/concurrency/correlation.rs"],
+        "modify": ["crates/aion/src/concurrency/mod.rs"]
+      },
+      "checklist": ["C27"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R2",
+      "title": "Match results to spawn position by token",
+      "spec": "WHEN a child result arrives, THE SYSTEM SHALL match it to its spawn position by correlation token via selective receive, correctly even when many children of the same type run concurrently.",
+      "acceptance": [
+        "A collector helper selectively receives result messages and routes each to its spawn index by the carried correlation token.",
+        "Matching is by token, not by activity/workflow type, so identical-type children in one batch are disambiguated.",
+        "A test spawns three children of the SAME type, delivers their results out of order, and asserts each is placed at its correct spawn index by token.",
+        "A test asserts an unrelated mailbox message (e.g. a signal) is NOT consumed by the collector's selective receive (it leaves non-matching messages in the mailbox)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/concurrency/correlation.rs"]
+      },
+      "checklist": ["C28"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R3",
+      "title": "Cancellation kills children and records it",
+      "spec": "WHEN remaining/losing children must be cancelled, THE SYSTEM SHALL terminate them via their links (exit signal) AND record the cancellation so replay reconstructs started-vs-cancelled children; the workflow process SHALL trap exits so child exits arrive as messages.",
+      "acceptance": [
+        "A cancel_remaining helper terminates the named child processes via their links (seam-mediated kill / link exit) and records the appropriate cancellation event for each (so replay knows the child was cancelled, not completed).",
+        "The workflow process is set to trap exits (documented requirement on the collector context) so a killed child's exit arrives as a message the collector can drain, not as a fatal signal to the parent.",
+        "A test cancels two of three in-flight children and asserts both linked children were terminated and the cancellation recorded for each.",
+        "A test asserts that after cancellation, a late result message from a cancelled child does not overwrite or resurrect its slot (the cancelled outcome stands)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/concurrency/correlation.rs"]
+      },
+      "checklist": ["C29"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement all/race/map themselves — those are AT-010/011/012 and consume this substrate.",
+    "SHALL NOT define how the child is spawned/linked — that is AT-008's spawn (workflow children) and AE's activity spawn; this brief tokens, matches, and cancels.",
+    "SHALL NOT define replay of cancellation — AD reconstructs started-vs-cancelled from the recorded events this brief writes."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including same-type disambiguation and cancellation tests.",
+    "cargo fmt --check passes.",
+    "Selective receive leaves non-matching messages in the mailbox (verified by test).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "id": "AT-012",
+  "cluster": "aion-time-signals",
+  "title": "map: dynamic fan-out from a runtime list",
+  "depends_on": ["AT-010"],
+  "blocked_by": [],
+  "checklist": ["C32"],
+  "stories": ["S6"],
+  "purpose": "Implement the map primitive: apply a function to each element of a runtime list to produce the child specs (dynamic fan-out), then collect like all — ordered, fail-fast. This is how a workflow fans out work derived from data (e.g. one child per order item), built on the all collector from AT-010.",
+  "task": "Implement map over a runtime list and a spec-producing function. Apply the function to each element to build the child specs, then delegate collection to the all primitive (AT-010) so the result is ordered by input position and fails fast on any child failure (cancelling the rest).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Produce child specs from a runtime list",
+      "spec": "WHEN map is called with a runtime list and a spec-producing function, THE SYSTEM SHALL apply the function to each element to produce one child spec per element (dynamic fan-out).",
+      "acceptance": [
+        "map.rs defines map(items, f) that applies f to each element of items to produce a Vec of child specs, one per element, preserving element order.",
+        "An empty input list produces zero children and yields an empty result (documented and tested).",
+        "A test passes a 4-element list and asserts 4 child specs are produced in element order."
+      ],
+      "files": {
+        "create": ["crates/aion/src/concurrency/map.rs"],
+        "modify": ["crates/aion/src/concurrency/mod.rs"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "Collect like all (ordered, fail-fast)",
+      "spec": "WHEN the child specs are produced, THE SYSTEM SHALL collect them via the all primitive so results are returned in input order and any child failure fails the whole map and cancels the rest.",
+      "acceptance": [
+        "map delegates collection to all (AT-010) over the produced specs; it does not reimplement collection or cancellation.",
+        "The result list is ordered by input element position; a child failure fails the whole map and cancels remaining children (inherited from all).",
+        "A test fans out a list, delivers results out of order, and asserts ordered output.",
+        "A test delivers one failure mid-flight and asserts map returns the failure and remaining children are cancelled."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/concurrency/map.rs"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT reimplement collection, ordering, or cancellation — it delegates to all (AT-010).",
+    "SHALL NOT implement all or race — those are AT-010 and AT-011.",
+    "SHALL NOT define the Gleam workflow.map surface — that is AF."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including empty-list, ordering, and fail-fast tests.",
+    "cargo fmt --check passes.",
+    "map delegates to all rather than duplicating its logic (verified by reading the implementation).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

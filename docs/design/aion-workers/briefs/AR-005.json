@@ -1,0 +1,75 @@
+{
+  "id": "AR-005",
+  "cluster": "aion-workers",
+  "title": "aion-worker (Rust) reconnect, re-registration, and un-acked result re-reporting",
+  "depends_on": ["AR-003"],
+  "blocked_by": [],
+  "checklist": ["C15", "C16"],
+  "stories": ["S9"],
+  "purpose": "Make a worker survive a disconnect without losing completed work. On a dropped session the SDK reconnects with backoff, re-registers its activity types, and — before serving any new task — re-reports results it computed but the engine never acknowledged. This is the guarantee that a network blip never drops a finished activity or re-runs a side effect.",
+  "task": "Implement protocol/reconnect.rs: a bounded exponential-backoff reconnect that re-establishes the session (handshake + register, reusing AR-001), and an un-acked result tracker that records every result/failure reported until the engine acknowledges it. On reconnect, re-report all un-acked results before the loop resumes serving. Rely on the engine de-duplicating by ActivityId (AW owns idempotent ingest).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Un-acked result tracking",
+      "spec": "WHEN the SDK reports a completion or failure, THE SYSTEM SHALL retain that report keyed by ActivityId until the engine acknowledges it, and SHALL drop it once acknowledged.",
+      "acceptance": [
+        "reconnect.rs (or a tracker it owns) records each reported result/failure keyed by ActivityId on report and removes it on the engine's acknowledgement.",
+        "The tracker is the single source of un-acked reports; report paths from AR-003 funnel through it.",
+        "A unit test reports two completions, acknowledges one, and asserts exactly one un-acked report remains, keyed by the un-acked ActivityId."
+      ],
+      "files": {
+        "create": ["crates/aion-worker/src/protocol/reconnect.rs"],
+        "modify": ["crates/aion-worker/src/protocol/mod.rs", "crates/aion-worker/src/runtime/dispatch.rs"]
+      },
+      "checklist": ["C16"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R2",
+      "title": "Backoff reconnect and re-registration",
+      "spec": "WHEN the session drops, THE SYSTEM SHALL reconnect using bounded exponential backoff and SHALL re-perform the handshake and activity-type registration before serving new tasks.",
+      "acceptance": [
+        "On a session error/disconnect, reconnect.rs retries the connection with exponential backoff and a configured cap (cap drawn from WorkerConfig, not hardcoded, per CO10).",
+        "Each reconnect re-runs the AR-001 handshake (task queue + identity) and re-registers the worker's activity types.",
+        "Reconnect backoff and failure are logged via tracing; a permanently-unreachable endpoint surfaces WorkerError without busy-looping at zero delay.",
+        "A test using a fake session that fails once then succeeds asserts the worker reconnects, re-registers, and resumes."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-worker/src/protocol/reconnect.rs", "crates/aion-worker/src/runtime/loop_.rs"]
+      },
+      "checklist": ["C15"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R3",
+      "title": "Re-report un-acked results before serving",
+      "spec": "WHEN a session is re-established, THE SYSTEM SHALL re-report all un-acked results before pulling any new task from the receive stream.",
+      "acceptance": [
+        "After re-registration and before the first new-task pull, the worker re-reports every un-acked result/failure from the tracker (R1).",
+        "Re-reporting relies on engine-side de-duplication by ActivityId (AW idempotent ingest); the SDK re-reports unconditionally rather than guessing what the engine retained (per D7).",
+        "A test: report a completion, simulate a disconnect before acknowledgement, reconnect, and assert the completion is re-reported before any new task is dispatched.",
+        "Ordering: no new task outcome is reported until the un-acked backlog has been re-sent."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-worker/src/protocol/reconnect.rs", "crates/aion-worker/src/runtime/loop_.rs"]
+      },
+      "checklist": ["C16"],
+      "stories": ["S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement engine-side de-duplication or idempotent ingest — that is AW.",
+    "SHALL NOT persist un-acked results to disk — in-memory tracking only this round (a crashed worker process loses its in-memory backlog; the engine retries via the activity policy).",
+    "SHALL NOT define the Worker builder / shutdown — AR-006."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-worker passes, including the disconnect-before-ack re-report test.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code.",
+    "The reconnect path is exercised entirely against the fake session (no live engine required), per CO6."
+  ]
+}

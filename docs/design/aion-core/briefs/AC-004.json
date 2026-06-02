@@ -1,0 +1,58 @@
+{
+  "id": "AC-004",
+  "cluster": "aion-core",
+  "title": "Error taxonomy — activity and workflow errors",
+  "depends_on": ["AC-001"],
+  "blocked_by": [],
+  "checklist": ["C21", "C22"],
+  "stories": ["S4"],
+  "purpose": "Define the domain error types that appear inside events. The retryable/terminal classification on activity errors is load-bearing for the engine's retry decisions.",
+  "task": "Define ActivityError carrying an explicit retryable-vs-terminal classification, a message, and an optional details Payload. Define WorkflowError as the terminal failure type of a workflow. Both are referenced by Event variants defined in AC-002.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ActivityError with retryable classification",
+      "spec": "THE SYSTEM SHALL define ActivityError carrying a classification that is explicitly Retryable or Terminal, a human-readable message, and optional structured details. The classification SHALL be a dedicated type, not a bool or string.",
+      "acceptance": [
+        "error.rs defines ActivityError with a kind: ActivityErrorKind { Retryable, Terminal } (or equivalent dedicated enum), a message: String, and details: Option<Payload>.",
+        "ActivityError exposes is_retryable() -> bool derived from the classification.",
+        "ActivityError derives Serialize, Deserialize, Clone, Debug, PartialEq and implements std::error::Error and Display.",
+        "A doc comment states that the engine consults is_retryable() to decide whether to apply the activity's retry policy or fail the workflow.",
+        "Unit tests construct a retryable and a terminal error and assert is_retryable()."
+      ],
+      "files": {
+        "create": ["crates/aion-core/src/error.rs"],
+        "modify": ["crates/aion-core/src/lib.rs"]
+      },
+      "checklist": ["C21"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "WorkflowError",
+      "spec": "THE SYSTEM SHALL define WorkflowError as the terminal failure type of a workflow, carrying a message and optional structured details.",
+      "acceptance": [
+        "WorkflowError carries a message: String and details: Option<Payload>.",
+        "WorkflowError derives Serialize, Deserialize, Clone, Debug, PartialEq and implements std::error::Error and Display.",
+        "A From<ActivityError> conversion exists so an unrecovered activity failure can become the workflow's terminal error, preserving the message and details.",
+        "A unit test exercises the From conversion."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/error.rs"]
+      },
+      "checklist": ["C22"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define StoreError — that belongs to the aion-store crate in AC-005.",
+    "SHALL NOT implement retry policy logic — this defines the error type the engine's policy consults; the policy itself is engine work (cluster AE/AD)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-core passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

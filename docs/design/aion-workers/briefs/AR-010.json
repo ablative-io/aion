@@ -1,0 +1,94 @@
+{
+  "id": "AR-010",
+  "cluster": "aion-workers",
+  "title": "aion-worker-typescript: defineActivity, context, error classification, and Worker",
+  "depends_on": ["AR-009"],
+  "blocked_by": [],
+  "checklist": ["C31", "C32", "C33", "C34"],
+  "stories": ["S4", "S10"],
+  "purpose": "Give the TypeScript author the native surface: defineActivity<I, O> with generic typed I/O, a ctx for heartbeat and cancellation, RetryableError/TerminalError classification, and a Worker that serves until graceful shutdown. This completes the TypeScript SDK.",
+  "task": "Implement activity.ts (defineActivity<I, O>, JSON Payload codec, registry), context.ts (heartbeat + cancellation observation), errors.ts (RetryableError / TerminalError and unclassified-defaults-to-retryable), and worker.ts (Worker class + run with graceful drain). Fill the dispatch seam AR-009's loop calls.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "defineActivity and JSON codec",
+      "spec": "THE SYSTEM SHALL provide defineActivity<I, O>(name, handler) registering a typed activity whose generic types drive JSON Payload encode/decode at the boundary. THE SYSTEM SHALL NOT change the content type on round-trip.",
+      "acceptance": [
+        "activity.ts defines defineActivity<I, O>(name: string, handler: (input: I, ctx: ActivityContext) => Promise<O>) and registers it in a registry keyed by name.",
+        "Input Payload decodes to I and output O encodes to a Payload via JSON, preserving the content-type tag (CO7).",
+        "Registering two activities under the same name throws a clear error at registration.",
+        "The dispatch seam (called by AR-009's loop) decodes input, invokes the handler with a ctx, and encodes the result.",
+        "A test defines an activity, dispatches an encoded input through the registry, and asserts the output Payload decodes to the expected value with matching types."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-worker/src/activity.ts"],
+        "modify": ["sdks/typescript/aion-worker/src/index.ts", "sdks/typescript/aion-worker/src/loop.ts"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Activity context: heartbeat and cancellation",
+      "spec": "THE SYSTEM SHALL pass a ctx to each handler exposing heartbeat(detail) and cancellation observation (isCancelled() and an awaitable cancelled()). THE SYSTEM SHALL NOT heartbeat on the handler's behalf and SHALL NOT forcibly cancel the handler.",
+      "acceptance": [
+        "context.ts defines ActivityContext with activityId, attempt, heartbeat(detail?) routing to the session, isCancelled(): boolean, and cancelled(): Promise<void>.",
+        "An engine cancellation flips the ctx cancellation flag; the handler promise is not rejected/aborted by the SDK (cooperative only, per D5 / CO9).",
+        "heartbeat sends only on explicit call (per D4); no timer auto-heartbeats.",
+        "A test signals cancellation mid-handler and asserts isCancelled() becomes true while the handler is allowed to resolve on its own."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-worker/src/context.ts"],
+        "modify": ["sdks/typescript/aion-worker/src/loop.ts"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "Error classification",
+      "spec": "THE SYSTEM SHALL provide RetryableError and TerminalError classes for handlers to throw. IF an unclassified value is thrown from a handler, THEN THE SYSTEM SHALL classify the failure as retryable and SHALL log it as unclassified.",
+      "acceptance": [
+        "errors.ts defines RetryableError and TerminalError; throwing one yields the corresponding wire classification (aligned with aion-core ActivityError per CO8).",
+        "An unclassified throw is reported as a retryable failure and logged at warn level as unclassified (never silent, per D6 / CO8).",
+        "The reported failure carries the error message and, where available, a detail Payload.",
+        "Tests assert: RetryableError → retryable wire failure; TerminalError → terminal wire failure; a thrown Error → retryable wire failure plus an emitted unclassified warning."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-worker/src/errors.ts"],
+        "modify": ["sdks/typescript/aion-worker/src/activity.ts"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R4",
+      "title": "Worker class, run, and graceful drain",
+      "spec": "THE SYSTEM SHALL provide a Worker class that registers activities and, on await worker.run(), connects and serves until graceful shutdown, draining in-flight activities before returning.",
+      "acceptance": [
+        "worker.ts defines a Worker taking a WorkerConfig and registered activities; await worker.run() connects (AR-009), serves, and on a shutdown signal (e.g. an AbortSignal) stops pulling new tasks and drains in-flight ones before returning.",
+        "Cooperative cancellation of in-flight activities on shutdown is offered via ctx (per R2) but not forced.",
+        "A test runs a Worker against the fake session, feeds a slow task, triggers shutdown mid-task, and asserts run() resolves only after the in-flight task completes.",
+        "An end-to-end test against the fake session defines an activity, serves a task, and asserts the recorded completion — proving the full TS SDK path."
+      ],
+      "files": {
+        "create": ["sdks/typescript/aion-worker/src/worker.ts"],
+        "modify": ["sdks/typescript/aion-worker/src/index.ts"]
+      },
+      "checklist": ["C34"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT re-implement the session/loop/reconnect — those are AR-009; this brief fills the dispatch seam and the author surface.",
+    "SHALL NOT change the content type of a payload on round-trip (CO7).",
+    "SHALL NOT forcibly cancel a running handler (CO9)."
+  ],
+  "verification": [
+    "tsc --noEmit (strict) passes.",
+    "eslint passes with no disabled rules in new code (CO2).",
+    "vitest passes, including classification, cancellation, and graceful-drain tests.",
+    "The package builds and an end-to-end fake-session test proves the full TS SDK path.",
+    "No // @ts-ignore, // @ts-nocheck, or eslint-disable in new code."
+  ]
+}

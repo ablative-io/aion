@@ -1,0 +1,16 @@
+[package]
+name = "aion-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-core = { path = "../aion-core" }
+serde = { workspace = true, features = ["derive"] }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["full"] }

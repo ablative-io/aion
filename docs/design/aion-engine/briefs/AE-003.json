@@ -1,0 +1,58 @@
+{
+  "id": "AE-003",
+  "cluster": "aion-engine",
+  "title": "NIF registration surface",
+  "depends_on": ["AE-002"],
+  "blocked_by": [],
+  "checklist": ["C8"],
+  "stories": ["S1"],
+  "purpose": "Provide the surface through which host-supplied NIFs and the engine's own NIFs are registered with beamr's native registry before any workflow runs. Workflow code reaches Rust through these NIFs; the builder collects them and this module installs them.",
+  "task": "Implement the runtime NIF registration surface: a type that accumulates NIF entries (the engine's own plus host-supplied) and installs them into beamr's native registry via the RuntimeHandle. Registration must run before any workflow spawns, and a duplicate MFA must surface as EngineError::NifRegistration. This crate only registers NIFs; it does not provide authoring macros (that is aion-nif, cluster AN).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "NIF entry collection",
+      "spec": "THE SYSTEM SHALL define a NIF-registration surface that collects native function entries keyed by module/function/arity, accepting both the engine's own NIFs and host-supplied NIFs handed in via the builder.",
+      "acceptance": [
+        "nif.rs defines a NifRegistration (or equivalent) that holds a collection of native entries, each carrying an MFA key, a beamr-compatible native function, and a dirty-scheduler flag.",
+        "The surface exposes a method to add a host-supplied set of NIFs and a method to add the engine's own NIFs.",
+        "The type is constructible empty and is consumed (not borrowed indefinitely) at install time so entries cannot be added after registration."
+      ],
+      "files": {
+        "create": ["crates/aion/src/runtime/nif.rs"],
+        "modify": ["crates/aion/src/runtime/mod.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Install into beamr before any workflow runs",
+      "spec": "THE SYSTEM SHALL install all collected NIF entries into beamr's native registry through the RuntimeHandle during engine build, before any workflow process is spawned. IF a duplicate module/function/arity is registered, THEN THE SYSTEM SHALL return EngineError::NifRegistration and SHALL NOT spawn any workflow.",
+      "acceptance": [
+        "A RuntimeHandle method installs every collected entry into beamr's native registry, honoring the dirty-scheduler flag per entry.",
+        "Registration is invoked during build (AE-010 wires the call); this brief provides the install method and its error contract.",
+        "A duplicate-MFA registration returns EngineError::NifRegistration { reason } carrying the offending MFA, mapping beamr's NativeRegistrationError::DuplicateMfa.",
+        "A unit test registers two NIFs with the same MFA and asserts EngineError::NifRegistration; a second test registers distinct NIFs and asserts they are callable from a trivial test module."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/handle.rs", "crates/aion/src/runtime/nif.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT provide NIF-authoring macros or term-mapping helpers — that is aion-nif (cluster AN).",
+    "SHALL NOT define which concrete NIFs workflows call (signal/timer/query NIFs are AT; activity NIFs are supplied by the host or aion-nif).",
+    "SHALL NOT spawn workflows or wire the builder — registration is invoked by build in AE-010."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Duplicate-MFA path returns EngineError::NifRegistration with no panic.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

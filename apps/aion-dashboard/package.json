@@ -1,0 +1,11 @@
+{
+  "name": "aion-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The monitoring web UI: workflow list, history viewer, and live event feed over WebSocket. React + Vite + Tailwind.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "id": "AU-001",
+  "cluster": "aion-dashboard",
+  "title": "Dashboard app scaffold on the house frontend stack",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5"],
+  "stories": ["S12"],
+  "purpose": "Stand up apps/aion-dashboard as a workspace member on the exact apps/web stack, so every later brief builds on a familiar, house-consistent foundation that the aion-server can serve as static assets.",
+  "task": "Create the apps/aion-dashboard Vite single-page application matching apps/web: React 19, TypeScript, Tailwind v4, Bun, Biome (100-char), shadcn/Radix primitives. Wire house scripts, a base-path-configurable build, the SPA entry, and the shadcn primitives directory. No application features yet — this is the shell of the project.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Workspace member and house scripts",
+      "spec": "THE SYSTEM SHALL create apps/aion-dashboard as a workspace member whose package.json declares the same script set as apps/web (dev, build, preview, check, format, typecheck) and the same toolchain (React 19, TypeScript, Vite, Tailwind v4, Bun, Biome).",
+      "acceptance": [
+        "apps/aion-dashboard/package.json exists, is registered in the workspace, and declares dev (vite), build (vite build), preview, check (biome check .), format, and typecheck (tsc --noEmit).",
+        "Dependencies match the apps/web stack versions (React 19, Vite 7, Tailwind v4, @biomejs/biome, TanStack Query); no alternate framework, styling system, or state library is introduced.",
+        "biome.json mirrors apps/web's config including the 100-char line width.",
+        "tsconfig.json mirrors apps/web's TypeScript configuration.",
+        "bun install resolves cleanly for the new workspace member."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/package.json", "apps/aion-dashboard/biome.json", "apps/aion-dashboard/tsconfig.json"],
+        "modify": []
+      },
+      "checklist": ["C1", "C2"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R2",
+      "title": "Vite build with configurable base path and SPA entry",
+      "spec": "THE SYSTEM SHALL configure Vite to build a static SPA bundle and to accept a configurable base path so aion-server (AW) can serve the bundle under a sub-path. THE SYSTEM SHALL provide the SPA entry (index.html) and the React root mount (src/main.tsx).",
+      "acceptance": [
+        "vite.config.ts uses the React and Tailwind v4 plugins and reads the base path from an env var (defaulting to '/') so AW can mount the bundle under a sub-path.",
+        "index.html is the SPA entry referencing src/main.tsx.",
+        "src/main.tsx mounts the React root into the document.",
+        "bun run build produces a static bundle in dist/.",
+        "tsc --noEmit passes on the scaffold."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/vite.config.ts", "apps/aion-dashboard/index.html", "apps/aion-dashboard/src/main.tsx"],
+        "modify": []
+      },
+      "checklist": ["C3", "C4"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R3",
+      "title": "shadcn/Radix UI primitive surface",
+      "spec": "THE SYSTEM SHALL provide the shadcn/Radix UI primitives the dashboard needs under src/components/ui, configured the same way apps/web configures shadcn.",
+      "acceptance": [
+        "components.json (or equivalent shadcn config) is present and matches apps/web's conventions.",
+        "src/components/ui contains at least the primitives later briefs require (badge, select, table, skeleton, tooltip, button) sourced from shadcn/Radix.",
+        "A trivial render test mounting one primitive compiles and passes.",
+        "bun run check passes on the scaffold."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/components.json", "apps/aion-dashboard/src/components/ui/index.ts"],
+        "modify": []
+      },
+      "checklist": ["C5"],
+      "stories": ["S12"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add any application feature (list, detail, live feed) — those are AU-004, AU-005, AU-009.",
+    "SHALL NOT define wire types or the REST/WebSocket client — AU-002, AU-003.",
+    "SHALL NOT define server endpoints, the WebSocket protocol, or asset hosting — that is cluster AW."
+  ],
+  "verification": [
+    "bun run check (Biome) passes clean.",
+    "tsc --noEmit passes clean.",
+    "bun run build produces a static bundle.",
+    "No lint-disable comments added to silence findings."
+  ]
+}

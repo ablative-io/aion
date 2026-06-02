@@ -1,0 +1,58 @@
+{
+  "id": "AW-012",
+  "cluster": "aion-server",
+  "title": "Worker heartbeats and lost-worker handling",
+  "depends_on": ["AW-011"],
+  "blocked_by": [],
+  "checklist": ["C31"],
+  "stories": ["S10"],
+  "purpose": "Keep long-running remote activities alive and detect dead workers. A worker heartbeats over its stream so the engine knows its task is still running; a worker that goes silent or disconnects before reporting has its in-flight task surfaced to the engine as failed, leaving the retry decision to the engine.",
+  "task": "Implement heartbeat handling on the worker stream: track per-task liveness against a configured heartbeat window, accept Heartbeat messages (with optional progress), and when a worker misses its window or disconnects before reporting, mark it lost, remove it from the registry, and surface its in-flight task(s) to the engine as failed so the engine applies its retry policy. The window is configured, not hardcoded.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Heartbeat tracking",
+      "spec": "THE SYSTEM SHALL accept Heartbeat messages on the worker stream, recording per-task liveness against a configured heartbeat window, and SHALL accept optional progress in a heartbeat without treating it as a result.",
+      "acceptance": [
+        "heartbeat.rs tracks, per in-flight task, the time of the last heartbeat and the configured heartbeat window (from AW-006 config, no hardcoded default — CO11).",
+        "A received Heartbeat (AW-005) refreshes the task's liveness; optional progress is recorded for observability but is not an ActivityResult and does not complete the activity.",
+        "A test feeds heartbeats and asserts a task stays live across the window."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/worker/heartbeat.rs"],
+        "modify": ["crates/aion-server/src/worker/mod.rs", "crates/aion-server/src/lib.rs"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R2",
+      "title": "Lost-worker detection and failure surfacing",
+      "spec": "THE SYSTEM SHALL mark a worker lost when it misses its heartbeat window or disconnects before reporting, remove it from the registry, and surface its in-flight task(s) to the engine as failed, leaving the retry decision to the engine.",
+      "acceptance": [
+        "When a worker's last heartbeat is older than the configured window, or its stream disconnects with in-flight tasks, the worker is removed from the registry and each in-flight task is surfaced to the engine as a failed activity (D9).",
+        "The failure is surfaced via the engine's activity contract (as in AW-011 R3); the server makes no retry decision itself — the engine applies its retry/timeout policy (aion-engine D7, CO6).",
+        "The surfaced failure carries a terminal-or-retryable classification consistent with a lost worker (documented), so the engine's policy behaves correctly.",
+        "A test simulates both a missed-heartbeat timeout and an abrupt disconnect with an in-flight task, asserting the worker is deregistered and the engine's activity-failure path is invoked exactly once per in-flight task."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/worker/heartbeat.rs", "crates/aion-server/src/worker/dispatch.rs"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT decide or perform activity retries — that is the engine's (D9, CO6).",
+    "SHALL NOT build the worker-side heartbeat sender — that is cluster AR.",
+    "SHALL NOT hardcode the heartbeat window (CO11)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-server passes.",
+    "cargo fmt --check passes.",
+    "Time-dependent tests inject the clock; no wall-clock sleeps in tests.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "id": "AL-002",
+  "cluster": "aion-clients",
+  "title": "aion-client (Rust): crate scaffold, connection, core operations, and error taxonomy",
+  "depends_on": ["AL-001"],
+  "blocked_by": ["AW: aion-proto crate must be published in the workspace"],
+  "checklist": ["C7", "C8", "C12"],
+  "stories": ["S1", "S5", "S7", "S11"],
+  "purpose": "Build the foundation of the Rust caller SDK: a crate that connects to an aion-server, exposes the unary operations (start, signal, query, cancel, list, describe) over the transport, and maps every server failure to a branchable ClientError. This is the network client every Rust application uses to drive workflows, and the reference against which the other-language SDKs are compared.",
+  "task": "Create the aion-client crate as a workspace member depending on aion-proto and aion-core (and external crates), never on aion/aion-store/beamr by default. Implement ClientBuilder/Client for connection with auth + TLS, a transport module mapping the six unary operations onto the aion-proto request/response types, and the ClientError taxonomy from the AL-001 contract. The WorkflowHandle, typed-payload helpers, event Stream, and embedded binding land in AL-003 — this brief returns bare WorkflowId/RunId from start and uses raw Payload arguments.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and workspace wiring",
+      "spec": "THE SYSTEM SHALL create the aion-client crate as a workspace member whose lib.rs contains only declarations and re-exports. THE SYSTEM SHALL depend on aion-proto and aion-core plus external crates, and SHALL NOT depend on aion, aion-store, or beamr by default.",
+      "acceptance": [
+        "crates/aion-client exists and is registered in the workspace Cargo.toml members list.",
+        "Cargo.toml declares aion-proto and aion-core as the only aion-* dependencies; aion is absent or gated behind an off-by-default feature reserved for AL-003.",
+        "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+        "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+        "cargo check -p aion-client passes."
+      ],
+      "files": {
+        "create": ["crates/aion-client/Cargo.toml", "crates/aion-client/src/lib.rs"],
+        "modify": ["Cargo.toml"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "ClientError taxonomy",
+      "spec": "THE SYSTEM SHALL define ClientError as a closed enum covering the nine variants from the AL-001 contract, implemented with thiserror. IF a server condition matches a known variant, THEN THE SYSTEM SHALL map it to that variant; IF it is an unexpected server error, THEN THE SYSTEM SHALL map it to Server carrying the server's detail. THE SYSTEM SHALL NOT collapse distinct conditions into one variant.",
+      "acceptance": [
+        "error.rs defines ClientError with variants NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, and Server { detail: String }.",
+        "ClientError derives Debug, implements Display and std::error::Error via thiserror, and is Send + Sync + 'static.",
+        "A mapping function converts an aion-proto / transport error into the correct ClientError variant, with a unit test asserting at least the NotFound, AlreadyExists, QueryTimeout, and Unavailable mappings.",
+        "No mapping path returns a generic Server for a condition that has a specific variant."
+      ],
+      "files": {
+        "create": ["crates/aion-client/src/error.rs"],
+        "modify": ["crates/aion-client/src/lib.rs"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R3",
+      "title": "ClientBuilder, Client, and transport connection",
+      "spec": "THE SYSTEM SHALL provide a ClientBuilder that connects to an aion-server endpoint with an auth credential and TLS configuration and produces a reusable Client. THE SYSTEM SHALL NOT require re-connection per operation.",
+      "acceptance": [
+        "client.rs defines Client and ClientBuilder; ClientBuilder::new(endpoint) plus with_auth(...) and with_tls(...) configure the connection and build() yields a Client (async).",
+        "transport.rs holds the network transport over aion-proto; Client holds a cheaply-cloneable transport handle reused across operations.",
+        "Connecting with a bad endpoint or failed handshake yields ClientError::Unavailable; a rejected credential yields ClientError::Unauthenticated.",
+        "Client is Clone and Send + Sync so it can be shared across tasks.",
+        "A doc example shows constructing a Client from an endpoint and credential."
+      ],
+      "files": {
+        "create": ["crates/aion-client/src/client.rs", "crates/aion-client/src/transport.rs"],
+        "modify": ["crates/aion-client/src/lib.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R4",
+      "title": "Unary operations: start, signal, query, cancel, list, describe",
+      "spec": "THE SYSTEM SHALL implement start, signal, query, cancel, list, and describe on Client over the transport, each returning Result<_, ClientError>, mapping inputs and outputs to the aion-proto types. THE SYSTEM SHALL surface a query deadline as QueryTimeout and SHALL NOT treat cancel as a confirmation that the workflow has stopped.",
+      "acceptance": [
+        "ops.rs implements start(workflow_type, input: Payload, opts) -> Result<(WorkflowId, RunId), ClientError>, signal(&WorkflowId, run, name, payload: Payload), query(&WorkflowId, run, name, args: Payload, deadline) -> Result<Payload, ClientError>, cancel(&WorkflowId, run, reason), list(&WorkflowFilter, page) -> Result<Vec<WorkflowSummary>, ClientError>, and describe(&WorkflowId, run) -> Result<WorkflowDescription, ClientError>.",
+        "Operations target the latest run by default and a specific RunId when the run argument is Some, per the AL-001 contract.",
+        "query enforces the supplied deadline and returns ClientError::QueryTimeout when it elapses; a handler error returns QueryFailed.",
+        "Operating on an unknown workflow returns ClientError::NotFound.",
+        "WorkflowSummary and WorkflowDescription reuse aion-core types where they exist (status from aion-core::WorkflowStatus); list pagination matches the contract.",
+        "Each operation has a unit test against a stub transport asserting the request mapping and the error mapping for at least one failure case."
+      ],
+      "files": {
+        "create": ["crates/aion-client/src/ops.rs"],
+        "modify": ["crates/aion-client/src/client.rs", "crates/aion-client/src/lib.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S5", "S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the WorkflowHandle type, typed serde payload helpers, the event Stream, or the embedded binding — those land in AL-003.",
+    "SHALL NOT define aion-proto wire types or aion-server endpoints — it consumes them (AW).",
+    "SHALL NOT depend on aion, aion-store, or beamr by default."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-client passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code.",
+    "cargo tree -p aion-client shows no dependency on aion, aion-store, or beamr."
+  ]
+}

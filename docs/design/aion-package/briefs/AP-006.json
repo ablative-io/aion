@@ -1,0 +1,77 @@
+{
+  "id": "AP-006",
+  "cluster": "aion-package",
+  "title": "Package::load — the read path and integrity check",
+  "depends_on": ["AP-002", "AP-003", "AP-004", "AP-005"],
+  "blocked_by": [],
+  "checklist": ["C20", "C21", "C22", "C23", "C24"],
+  "stories": ["S1", "S2", "S4", "S8", "S9"],
+  "purpose": "Implement loading a .aion: open the ZIP, parse and check the manifest, extract the beam set, recompute the content hash and reject any mismatch, and expose a validated Package with its namespaced deployed module names ready for the engine to register. Loading is total — every malformed-input case maps to a distinct typed error, never a panic or a partial result.",
+  "task": "Define Package and Package::load (from a path and from a byte buffer). Open the ZIP, read and parse manifest.json, check format_version, extract the beam set and optional source. Recompute the content hash over the extracted beams and compare it to the manifest version — mismatch is IntegrityMismatch. Verify the entry module exists. Expose accessors for the manifest, beam set, source, and the derived namespaced deployed module names (via AP-004). Map every failure mode to its distinct PackageError variant.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Open, parse manifest, check format version",
+      "spec": "THE SYSTEM SHALL load a .aion from a filesystem path and from an in-memory byte buffer, open the ZIP, read and parse manifest.json, and check format_version.",
+      "acceptance": [
+        "package.rs defines Package and Package::load_from_path and Package::load_from_bytes.",
+        "A non-ZIP or truncated input yields PackageError::ArchiveRead; an archive lacking manifest.json yields MissingManifest; an unparseable manifest yields ManifestParse.",
+        "format_version is checked via the AP-002 helper; an unknown value yields UnknownFormatVersion { found }.",
+        "A unit test exercises each of these failure paths and asserts the exact variant returned (no panic)."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/package.rs"],
+        "modify": ["crates/aion-package/src/lib.rs"]
+      },
+      "checklist": ["C20"],
+      "stories": ["S8", "S9"]
+    },
+    {
+      "id": "R2",
+      "title": "Extract beams and verify integrity",
+      "spec": "THE SYSTEM SHALL extract the BeamSet and optional source from the archive, recompute the content hash over the extracted beams, and reject the package with IntegrityMismatch when the recomputed hash does not equal the manifest version.",
+      "acceptance": [
+        "Load reads each beam/ entry into a BeamModule and assembles a BeamSet; a malformed/undecodable beam entry yields MalformedBeamEntry { entry }.",
+        "Load recomputes content_hash over the extracted BeamSet and compares it to the manifest version; inequality yields IntegrityMismatch { expected, computed } before any further use (CO9, D7).",
+        "The entry module named in the manifest is confirmed present in the extracted BeamSet; absence yields MissingEntryModule { module }.",
+        "An integration test loads a builder-produced package and asserts success; another test corrupts one beam byte in the archive and asserts IntegrityMismatch.",
+        "No partial Package is returned on any error path (CO10)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/src/package.rs"]
+      },
+      "checklist": ["C21", "C22", "C23"],
+      "stories": ["S1", "S2"]
+    },
+    {
+      "id": "R3",
+      "title": "Validated Package accessors and namespaced names",
+      "spec": "THE SYSTEM SHALL expose on a loaded Package the manifest, the BeamSet, the optional source, and the derived namespaced deployed module names produced via the AP-004 transform, ready for the engine to register.",
+      "acceptance": [
+        "Package exposes accessors for manifest(), beams(), source(), and content_hash().",
+        "Package exposes deployed_modules() returning, for each beam, its (deployed namespaced name, bytes) using namespace::deployed_name with the package's content hash (AP-004).",
+        "Package exposes the deployed name of the entry module specifically, so the engine knows which module/function to invoke.",
+        "An integration test loads a package and asserts the deployed names match namespace::deployed_name(logical, content_hash) for every module.",
+        "A doc comment states the engine performs the actual VM registration; this crate only supplies the names (CO11)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/src/package.rs"]
+      },
+      "checklist": ["C24"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT register modules into beamr or run anything — that is the engine (cluster AE).",
+    "SHALL NOT write to the event store or produce the version record — AP-007 produces the record; the store writes it (AC/AS/AX).",
+    "SHALL NOT recompile or validate source — source is extracted verbatim if present."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-package passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

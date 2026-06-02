@@ -1,0 +1,94 @@
+{
+  "id": "AW-001",
+  "cluster": "aion-server",
+  "title": "aion-proto crate scaffold and tonic-build wiring",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3"],
+  "stories": ["S1", "S4"],
+  "purpose": "Create the aion-proto leaf crate — the shared wire contract every client SDK, worker SDK, and the server depend on. Wire up the proto-compilation toolchain so later briefs add .proto files and get generated Rust types. This is the foundation of the entire wire layer.",
+  "task": "Create the aion-proto crate as a workspace member depending only on aion-core plus external crates (prost, tonic, serde, and tonic-build as a build dependency). Add a build.rs that compiles the crate's proto/ directory via tonic-build, and a thin lib.rs that includes the generated code and re-exports it alongside the hand-written serde/convert/error modules added in later briefs. Empty placeholder proto compilation is acceptable here; the message families land in AW-002..AW-005.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and workspace wiring",
+      "spec": "THE SYSTEM SHALL create the aion-proto crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL declare dependencies on aion-core and external crates only, with no dependency on aion, aion-server, or any store backend.",
+      "acceptance": [
+        "crates/aion-proto exists and is registered in the workspace Cargo.toml members list.",
+        "aion-proto/Cargo.toml declares aion-core and external crates (prost, tonic, serde) plus tonic-build under [build-dependencies] — and no aion-* dependency other than aion-core.",
+        "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+        "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+        "cargo check -p aion-proto passes."
+      ],
+      "files": {
+        "create": ["crates/aion-proto/Cargo.toml", "crates/aion-proto/src/lib.rs"],
+        "modify": ["Cargo.toml"]
+      },
+      "checklist": ["C1"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "tonic-build proto compilation",
+      "spec": "THE SYSTEM SHALL add a build.rs that compiles every .proto under the crate's proto/ directory via tonic-build, emitting generated Rust into OUT_DIR. THE SYSTEM SHALL include the generated code through lib.rs.",
+      "acceptance": [
+        "build.rs invokes tonic-build (or prost-build via tonic-build) over the proto/ directory and reruns when a .proto changes (cargo:rerun-if-changed).",
+        "lib.rs includes the generated module(s) via include!(concat!(env!(\"OUT_DIR\"), ...)) behind a generated module, kept to declarations and re-exports.",
+        "A minimal committed .proto (or the AW-002 common.proto if landed first) compiles cleanly so the build succeeds.",
+        "cargo build -p aion-proto succeeds and the generated types are reachable from the crate root."
+      ],
+      "files": {
+        "create": ["crates/aion-proto/build.rs", "crates/aion-proto/src/generated.rs"],
+        "modify": ["crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C2"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Lint and format conformance",
+      "spec": "THE SYSTEM SHALL ensure the crate passes the workspace lint and format gates, including the generated-code inclusion, without any lint-bypass directives.",
+      "acceptance": [
+        "cargo clippy -p aion-proto --all-targets -- -D warnings passes (generated code isolated so it does not require crate-wide #[allow]).",
+        "cargo fmt --check passes for hand-written code.",
+        "No #[allow], #[expect], or #[ignore] directives appear in hand-written code.",
+        "The generated module is confined to a single included file so lint scope is contained."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/src/lib.rs", "crates/aion-proto/src/generated.rs"]
+      },
+      "checklist": ["C3"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R4",
+      "title": "Contract documentation header",
+      "spec": "THE SYSTEM SHALL document, at the crate root, that aion-proto is the single shared wire contract consumed by aion-server, all client SDKs (AL), and all worker SDKs (AR), and that it depends only on aion-core to keep the wire Event identical to the domain Event.",
+      "acceptance": [
+        "lib.rs has a crate-level doc comment stating the contract role and the aion-core-only Aion dependency (per design D1, D2).",
+        "The doc names the four message families to be added (workflow management, event streaming, worker protocol, wire errors) so the crate's intended shape is discoverable.",
+        "missing_docs produces no warnings for the public surface introduced here."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C1"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define the workflow, events, or worker message families — those land in AW-003, AW-004, AW-005.",
+    "SHALL NOT define the WireError taxonomy or proto<->core conversions — that is AW-002.",
+    "SHALL NOT add any dependency on aion, aion-server, or a store backend (leaf-crate constraint CO5).",
+    "SHALL NOT create the aion-server crate — that is AW-006."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo build -p aion-proto passes.",
+    "cargo fmt --check passes.",
+    "aion-proto/Cargo.toml lists no Aion dependency other than aion-core.",
+    "No #[allow], #[expect], or #[ignore] directives in hand-written code."
+  ]
+}

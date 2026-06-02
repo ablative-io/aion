@@ -1,0 +1,43 @@
+{
+  "cluster": "aion-flow",
+  "personas": [
+    {
+      "name": "Workflow Author",
+      "role": "Writing Durable Workflows in Gleam",
+      "stories": [
+        {"id": "S1", "text": "As a workflow author, I want activity inputs and outputs to be statically typed so that passing the wrong value to an activity is a compile error, not a runtime failure three days into a long-running workflow."},
+        {"id": "S2", "text": "As a workflow author, I want a single recorded way to invoke a side effect (workflow.run over an activity) and plain Gleam everywhere else, so that the recorded/deterministic boundary is obvious from the code's shape."},
+        {"id": "S3", "text": "As a workflow author, I want workflow.now and workflow.random to be deterministic and to have no wall-clock alternative available, so that my workflow cannot accidentally become non-deterministic and desynchronise replay."},
+        {"id": "S4", "text": "As a workflow author, I want to classify an activity failure as retryable or terminal once, in the type system, so that the engine applies my retry policy correctly without me re-stating the intent."},
+        {"id": "S5", "text": "As a workflow author, I want to compose retry, timeout, and heartbeat onto an activity in a readable pipeline so that the activity's policy reads as data next to its definition."},
+        {"id": "S6", "text": "As a workflow author, I want to sleep for a duration, start and cancel named timers, and wrap a wait with a timeout, using one unit-safe Duration type, so that durable waiting is expressed without unit-ambiguous integers."},
+        {"id": "S7", "text": "As a workflow author, I want to wait for a typed signal and register typed query handlers so that external interaction and inspection are as type-safe as the rest of the workflow."},
+        {"id": "S8", "text": "As a workflow author, I want to spawn child workflows and fan activities out with all/race/map, with the result types preserved, so that concurrency stays type-safe."}
+      ]
+    },
+    {
+      "name": "Test Author",
+      "role": "Testing Workflows Without an Engine",
+      "stories": [
+        {"id": "S9", "text": "As a test author, I want to advance simulated time so that a workflow which sleeps for a month is exercised instantly in gleam test, with no wall-clock wait."},
+        {"id": "S10", "text": "As a test author, I want to mock an activity with a canned typed result so that I can test workflow logic without dispatching real side effects or running an engine."},
+        {"id": "S11", "text": "As a test author, I want to assert that a workflow replays to the same observations so that I catch accidental non-determinism before it reaches production."}
+      ]
+    },
+    {
+      "name": "Engine",
+      "role": "Resolving the Bindings at Runtime",
+      "stories": [
+        {"id": "S12", "text": "As the engine, I want every SDK primitive to bind to a NIF in one known registry namespace (aion_flow_ffi) so that I can register the native implementations in one place and have compiled workflows resolve against them."},
+        {"id": "S13", "text": "As the engine, I want user data to arrive as an encoded payload with a typed codec on the SDK side so that my type-erased event store and replay never need to know the workflow's concrete Gleam types."}
+      ]
+    },
+    {
+      "name": "Package Maintainer",
+      "role": "Publishing aion_flow to Hex",
+      "stories": [
+        {"id": "S14", "text": "As the package maintainer, I want aion_flow to be pure Gleam with no Rust or engine dependency so that it publishes to Hex standalone and type-checks with no engine present."}
+      ]
+    }
+  ]
+}

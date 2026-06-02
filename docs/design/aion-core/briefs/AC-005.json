@@ -1,0 +1,80 @@
+{
+  "id": "AC-005",
+  "cluster": "aion-core",
+  "title": "aion-store crate, EventStore trait, and StoreError",
+  "depends_on": ["AC-002", "AC-003", "AC-004"],
+  "blocked_by": [],
+  "checklist": ["C23", "C24", "C25", "C26", "C27", "C28", "C29"],
+  "stories": ["S3", "S5", "S7", "S11"],
+  "purpose": "Define the single persistence contract for Aion. The EventStore trait is what the engine talks to and what every backend implements, including external ones.",
+  "task": "Create the aion-store leaf crate depending only on aion-core. Define StoreError as a closed enum. Define the EventStore async trait with append (expected-sequence guard), read_history, list_active, query, schedule_timer, and expired_timers. Define the TimerEntry type the timer methods exchange.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and StoreError",
+      "spec": "THE SYSTEM SHALL create the aion-store crate depending only on aion-core (no other Aion crate). THE SYSTEM SHALL define StoreError as a closed enum with SequenceConflict, NotFound, Backend, and Serialization variants.",
+      "acceptance": [
+        "crates/aion-store exists, is a workspace member, and depends on aion-core plus external crates only (async-trait or native async, thiserror, serde).",
+        "src/lib.rs contains only declarations and re-exports.",
+        "StoreError has variants SequenceConflict { expected, found }, NotFound { workflow_id }, Backend(String or boxed error), Serialization(String).",
+        "StoreError derives Debug, implements std::error::Error and Display, and is Send + Sync.",
+        "cargo check -p aion-store passes."
+      ],
+      "files": {
+        "create": ["crates/aion-store/Cargo.toml", "crates/aion-store/src/lib.rs", "crates/aion-store/src/error.rs"],
+        "modify": ["Cargo.toml"]
+      },
+      "checklist": ["C23"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "EventStore trait — event methods",
+      "spec": "THE SYSTEM SHALL define EventStore as an async trait that is Send + Sync + 'static, with append (taking an expected sequence and applying events atomically), read_history, list_active, and query.",
+      "acceptance": [
+        "store.rs defines the EventStore trait, async, bound Send + Sync + 'static.",
+        "append(&self, workflow_id: &WorkflowId, events: &[Event], expected_seq: u64) -> Result<(), StoreError>, documented as atomic (all events apply or none) and returning SequenceConflict when the stored head does not equal expected_seq.",
+        "read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> returns events in sequence order.",
+        "list_active(&self) -> Result<Vec<WorkflowId>, StoreError> returns non-terminal workflows.",
+        "query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> returns matching summaries.",
+        "Trait method docs state the contract precisely, including the atomicity and sequence-guard semantics."
+      ],
+      "files": {
+        "create": ["crates/aion-store/src/store.rs"],
+        "modify": ["crates/aion-store/src/lib.rs"]
+      },
+      "checklist": ["C24", "C25", "C26", "C27", "C28"],
+      "stories": ["S3", "S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Durable timer methods and TimerEntry",
+      "spec": "THE SYSTEM SHALL define TimerEntry and add schedule_timer and expired_timers to EventStore. schedule_timer SHALL persist a durable timer; expired_timers SHALL return timers due to fire as of a given instant.",
+      "acceptance": [
+        "timer.rs defines TimerEntry { workflow_id: WorkflowId, timer_id: TimerId, fire_at: DateTime<Utc> } deriving the standard traits.",
+        "EventStore gains schedule_timer(&self, &WorkflowId, &TimerId, fire_at: DateTime<Utc>) -> Result<(), StoreError>.",
+        "EventStore gains expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> returning timers whose fire_at <= as_of.",
+        "Docs state that scheduling a timer is part of the same logical transaction as the TimerStarted event the engine appends.",
+        "The trait remains object-safe (usable as Arc<dyn EventStore>)."
+      ],
+      "files": {
+        "create": ["crates/aion-store/src/timer.rs"],
+        "modify": ["crates/aion-store/src/store.rs", "crates/aion-store/src/lib.rs"]
+      },
+      "checklist": ["C29"],
+      "stories": ["S11"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the trait — InMemoryStore lands in AC-006.",
+    "SHALL NOT depend on beamr, the engine, or any storage library (libSQL, Postgres).",
+    "SHALL NOT split timers into a separate trait; they live on EventStore per design decision D6."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store passes.",
+    "cargo fmt --check passes.",
+    "EventStore is object-safe — a compile test constructs an Arc<dyn EventStore> (against a trivial stub or deferred to AC-006).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

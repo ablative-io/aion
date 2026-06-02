@@ -1,0 +1,75 @@
+{
+  "id": "AF-001",
+  "cluster": "aion-flow",
+  "title": "Package scaffold, public root, and the @external binding layer",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5"],
+  "stories": ["S12", "S14"],
+  "purpose": "Stand up the aion_flow Gleam package and the single internal module that owns every @external(erlang) binding to the engine NIFs. This is the foundation every other brief builds on: a pure-Gleam, Hex-publishable package with one auditable binding seam.",
+  "task": "Create the gleam/aion_flow package with a gleam.toml declaring gleam_stdlib and gleam_json as the only runtime dependencies. Create the top-level aion_flow.gleam package-doc / re-export module. Create aion/internal/ffi.gleam holding every @external(erlang, \"aion_flow_ffi\", \"<fn>\") declaration the SDK needs, each with the type-erased string/Result signature the engine NIFs expose. No other module in the package declares an @external. The package must build, check, and format clean with no engine present.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Package scaffold",
+      "spec": "THE SYSTEM SHALL create a valid Gleam package at gleam/aion_flow whose gleam.toml declares the package name, version, and Hex metadata with gleam_stdlib and gleam_json as the only runtime dependencies.",
+      "acceptance": [
+        "gleam/aion_flow/gleam.toml declares name = \"aion_flow\", a version, a description, and a licences/repository field set for Hex publication.",
+        "Dependencies are exactly gleam_stdlib and gleam_json (plus dev-dependency gleeunit for tests); no Rust, beamr, or engine dependency appears.",
+        "gleam build, gleam check, and gleam format --check pass clean for the package.",
+        "The package has no Rust source and no build-script dependency on the engine crates."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/gleam.toml", "gleam/aion_flow/.gitignore"],
+        "modify": []
+      },
+      "checklist": ["C1", "C2"],
+      "stories": ["S14"]
+    },
+    {
+      "id": "R2",
+      "title": "The @external binding layer",
+      "spec": "THE SYSTEM SHALL define aion/internal/ffi as the single module declaring every @external(erlang, \"aion_flow_ffi\", \"<fn>\") binding to the engine NIFs. No other module SHALL declare an @external.",
+      "acceptance": [
+        "aion/internal/ffi.gleam declares the @external bindings the SDK needs (activity dispatch, now, random, sleep/start_timer/cancel_timer, signal receive/send, query register/reply, child spawn/await, concurrency collectors), each using the Erlang module name \"aion_flow_ffi\".",
+        "Each binding's Gleam signature uses the type-erased ffi form (String payloads, Result(String, String) returns) — the typed wrappers live in the author-facing modules.",
+        "A doc comment states that \"aion_flow_ffi\" is the engine's NIF registry namespace registered via EngineBuilder::register_nifs (AE-004), resolved by beamr at runtime, and that gleam build type-checks the signatures with no engine present.",
+        "No author-facing module anywhere in the package declares an @external (verified by inspection / a grep-style check in review)."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/internal/ffi.gleam"],
+        "modify": []
+      },
+      "checklist": ["C3", "C4"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R3",
+      "title": "Public root module",
+      "spec": "THE SYSTEM SHALL provide aion_flow.gleam as the top-level package-doc module that re-exports the curated public surface and contains no @external and no business logic.",
+      "acceptance": [
+        "aion_flow.gleam carries a module doc comment describing the package and the recorded/deterministic discipline at a high level.",
+        "It re-exports (or documents the import paths for) the author-facing modules; it contains no @external declaration and no logic beyond re-exports.",
+        "gleam build passes with the root module present."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion_flow.gleam"],
+        "modify": []
+      },
+      "checklist": ["C5"],
+      "stories": ["S14"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement any engine NIF — the native side is AE/AN. This brief declares the Gleam @external signatures only.",
+    "SHALL NOT define the typed author-facing wrappers (activity, workflow, signal, etc.) — those are later briefs; this brief only declares the raw ffi bindings they will call.",
+    "SHALL NOT add a Rust crate or beamr dependency to the package."
+  ],
+  "verification": [
+    "gleam build passes for gleam/aion_flow.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "Only aion/internal/ffi.gleam contains @external declarations.",
+    "No todo, panic, or placeholder is left in any module."
+  ]
+}

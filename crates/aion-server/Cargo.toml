@@ -1,0 +1,28 @@
+[package]
+name = "aion-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-core = { path = "../aion-core" }
+aion-store = { path = "../aion-store" }
+aion-store-libsql = { path = "../aion-store-libsql" }
+aion-package = { path = "../aion-package" }
+aion = { path = "../aion" }
+aion-proto = { path = "../aion-proto" }
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+futures = { workspace = true }

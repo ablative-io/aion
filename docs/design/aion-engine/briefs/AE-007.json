@@ -1,0 +1,76 @@
+{
+  "id": "AE-007",
+  "cluster": "aion-engine",
+  "title": "In-VM activity dispatch and outcome propagation",
+  "depends_on": ["AE-002", "AE-006"],
+  "blocked_by": [],
+  "checklist": ["C21", "C22", "C23"],
+  "stories": ["S11"],
+  "purpose": "Dispatch a Tier-2 in-VM activity as a linked child BEAM process and surface its outcome to the workflow process. This is the in-VM execution path; recording the activity events and deciding retry are seams owned by AD and AT, called from elsewhere.",
+  "task": "Implement the activity module: dispatch an in-VM activity as a child process linked to the workflow process (on the dirty scheduler when the underlying NIF is flagged dirty), then surface the activity's outcome — a result Payload or an exit signal carrying an ActivityError — back to the workflow process through the link/mailbox. This brief performs no event recording and no retry decision; it provides the dispatch and outcome plumbing those seams build on.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Dispatch as a linked child process",
+      "spec": "WHEN an in-VM activity is dispatched, THE SYSTEM SHALL spawn it as a child BEAM process linked to the workflow process via the RuntimeHandle, running on the dirty scheduler when the activity's underlying NIF is flagged dirty.",
+      "acceptance": [
+        "dispatch.rs exposes dispatch_activity(parent_pid, deployed_module, function, input: Payload) -> Result<Pid, EngineError> that calls RuntimeHandle::spawn_activity to spawn-and-link.",
+        "When the activity's NIF entry is flagged dirty, the child runs on beamr's dirty scheduler pool; otherwise on the normal scheduler.",
+        "activity/mod.rs contains only pub mod and pub use.",
+        "A test dispatches a trivial in-VM activity from a workflow process and asserts the child is spawned and linked to the parent."
+      ],
+      "files": {
+        "create": ["crates/aion/src/activity/dispatch.rs", "crates/aion/src/activity/mod.rs"],
+        "modify": ["crates/aion/src/lib.rs"]
+      },
+      "checklist": ["C21"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R2",
+      "title": "Surface the outcome to the workflow process",
+      "spec": "WHEN an activity child completes, THE SYSTEM SHALL surface its result Payload to the workflow process; WHEN it exits abnormally, THE SYSTEM SHALL surface an exit signal carrying an ActivityError to the workflow process through the link/mailbox.",
+      "acceptance": [
+        "On success, the activity's result is delivered to the workflow process as a result Payload (via the mailbox / linked completion path).",
+        "On failure, the workflow process receives a trapped-exit message whose reason carries an aion_core ActivityError (preserving the retryable/terminal classification).",
+        "A test dispatches an activity that returns a value and asserts the workflow process receives the result Payload; a second test dispatches one that fails and asserts the workflow process receives an ActivityError-bearing exit."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/activity/dispatch.rs"]
+      },
+      "checklist": ["C22"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R3",
+      "title": "No recording, no retry decision here",
+      "spec": "THE SYSTEM SHALL NOT append any Activity* event and SHALL NOT make any retry decision in the dispatch path; recording is delegated to the AD append path and the retry decision to AT's policy machinery.",
+      "acceptance": [
+        "dispatch.rs contains no call that appends ActivityScheduled/Started/Completed/Failed events and no RetryPolicy evaluation.",
+        "Module docs state that recording is AD's append path and retry is AT's machinery, and that dispatch only spawns, links, and propagates the outcome.",
+        "grep of activity/ shows no store append call and no retry-loop construct."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/activity/dispatch.rs"]
+      },
+      "checklist": ["C23"],
+      "stories": ["S11"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT record Activity* events — that is the AD append path.",
+    "SHALL NOT evaluate or apply RetryPolicy — that is AT's activity machinery, which consumes the ActivityError this brief surfaces.",
+    "SHALL NOT dispatch remote (Tier-3) activities — those ride aion-server's worker protocol (AW); this is the in-VM path only.",
+    "SHALL NOT set trap-exit or build the supervision tree — that is AE-006, on which this brief depends."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Dispatch path performs no event recording and no retry decision (D7).",
+    "ActivityError's retryable/terminal classification is preserved through the exit reason.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

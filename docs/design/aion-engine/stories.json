@@ -1,0 +1,41 @@
+{
+  "cluster": "aion-engine",
+  "personas": [
+    {
+      "name": "Engine Operator",
+      "role": "Embedding and Running the Engine",
+      "stories": [
+        {"id": "S1", "text": "As an engine operator, I want to build an Engine from a store, loaded workflows, and my NIFs with one builder so that embedding durable workflows in my Rust app is a single, clear assembly step."},
+        {"id": "S2", "text": "As an engine operator, I want to set the scheduler thread count (and have a sensible runtime default when I don't) so that I tune concurrency to my host without the engine guessing a number for me."},
+        {"id": "S3", "text": "As an engine operator, I want a graceful shutdown that finishes in-flight appends and stops the runtime cleanly so that stopping the engine never abandons writes or leaks scheduler threads."},
+        {"id": "S4", "text": "As an engine operator, I want the engine to depend on no network stack so that I can run durable workflows in a CLI or single service with nothing but a file-backed store."}
+      ]
+    },
+    {
+      "name": "Workflow Caller",
+      "role": "Starting, Cancelling, and Inspecting Workflows",
+      "stories": [
+        {"id": "S5", "text": "As a workflow caller, I want to start a workflow by type and get a handle so that I can later await its result or cancel it by ID."},
+        {"id": "S6", "text": "As a workflow caller, I want to cancel a running workflow and have its in-flight activities torn down automatically so that cancellation leaves no orphaned work."},
+        {"id": "S7", "text": "As a workflow caller, I want to list and query workflows by type, status, and time so that I can see what is running and what has finished without loading full histories."},
+        {"id": "S8", "text": "As a workflow caller, I want to await a workflow's result and receive either its output payload or its terminal error so that I can react to the outcome."}
+      ]
+    },
+    {
+      "name": "Workflow Deployer",
+      "role": "Deploying Workflow Packages",
+      "stories": [
+        {"id": "S9", "text": "As a workflow deployer, I want to load a .aion package and have its modules registered under content-hash-namespaced names so that multiple versions coexist and a long-running execution keeps the exact module set it started on."},
+        {"id": "S10", "text": "As a workflow deployer, I want a corrupt or entry-less package to be rejected on load with nothing partially registered so that a bad deploy never half-installs a workflow."}
+      ]
+    },
+    {
+      "name": "Reliability Engineer",
+      "role": "Relying on Supervision and Fault Isolation",
+      "stories": [
+        {"id": "S11", "text": "As a reliability engineer, I want an activity crash to reach the workflow process as a trapped exit rather than killing it outright so that the workflow can apply its retry policy instead of dying."},
+        {"id": "S12", "text": "As a reliability engineer, I want workflows supervised per type under an engine root so that crashes are isolated and the supervision shape is explicit and bounded."}
+      ]
+    }
+  ]
+}

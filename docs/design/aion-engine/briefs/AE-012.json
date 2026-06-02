@@ -1,0 +1,94 @@
+{
+  "id": "AE-012",
+  "cluster": "aion-engine",
+  "title": "Engine API: start_workflow, cancel, result, list_workflows, shutdown",
+  "depends_on": ["AE-008", "AE-009", "AE-011"],
+  "blocked_by": [],
+  "checklist": ["C30", "C31", "C32"],
+  "stories": ["S3", "S5", "S6", "S7", "S8"],
+  "purpose": "Expose the runtime embedding API consumers actually call. Engine wraps the lifecycle transitions, the registry, the store, and the runtime into start_workflow, cancel, result, list_workflows, and a graceful shutdown.",
+  "task": "Implement engine/engine.rs: the Engine type returned by build(), exposing start_workflow (delegating to the start transition and returning a WorkflowHandle), cancel (delegating to the cancel transition), result (awaiting completion/failure and returning the Payload or WorkflowError), list_workflows (live handles from the registry plus terminal workflows from the store query), and shutdown (graceful drain). Scope is these methods; signal/query/subscribe are AE-013.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "start_workflow and cancel",
+      "spec": "THE SYSTEM SHALL expose start_workflow(workflow_type, input: Payload) -> Result<WorkflowHandle, EngineError> delegating to the start transition, and cancel(&id, &run, reason) -> Result<(), EngineError> delegating to the cancel transition.",
+      "acceptance": [
+        "engine.rs defines Engine holding the RuntimeHandle, the Arc<dyn EventStore>, the registry, the supervision tree, and the loaded-workflow records.",
+        "start_workflow calls the AE-008 start operation and returns the WorkflowHandle.",
+        "cancel calls the AE-009 cancel transition and returns Ok or EngineError::WorkflowNotFound.",
+        "A test starts then cancels a workflow against InMemoryStore and asserts the resulting history is WorkflowStarted followed by WorkflowCancelled."
+      ],
+      "files": {
+        "create": ["crates/aion/src/engine/engine.rs"],
+        "modify": ["crates/aion/src/engine/mod.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "result()",
+      "spec": "WHEN result(&id, &run) is called, THE SYSTEM SHALL await the workflow's terminal transition and return the result Payload on completion or the WorkflowError on failure. IF the workflow id/run is unknown and has no terminal history, THEN THE SYSTEM SHALL return EngineError::WorkflowNotFound.",
+      "acceptance": [
+        "result awaits the completion-notification channel resolved by the AE-009 complete/fail transitions and returns Result<Payload, WorkflowError> wrapped in EngineError where appropriate.",
+        "For an already-terminal workflow, result reads the terminal event from the store and returns its Payload/WorkflowError without blocking forever.",
+        "An unknown id/run with no history returns EngineError::WorkflowNotFound.",
+        "A test starts a workflow that completes and asserts result returns the recorded Payload; a test for a failing workflow asserts the WorkflowError."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/engine.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "list_workflows",
+      "spec": "WHEN list_workflows(filter: WorkflowFilter) is called, THE SYSTEM SHALL return WorkflowSummary values for live workflows from the registry and for terminal workflows from the store query, deduplicated and matching the filter.",
+      "acceptance": [
+        "list_workflows builds summaries from live registry handles and merges them with the store's query(filter) results, with no duplicate entry for a workflow present in both.",
+        "The returned summaries match the WorkflowFilter (type/status/time-range/parent) semantics from aion-core.",
+        "A test with one running and one completed workflow asserts both appear once, with correct statuses, and that a status filter narrows the result."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/engine.rs"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R4",
+      "title": "Graceful shutdown",
+      "spec": "WHEN shutdown() is called, THE SYSTEM SHALL stop accepting new starts, allow in-flight store appends to finish, drain and stop the runtime scheduler, and return once beamr has stopped. THE SYSTEM SHALL NOT drop the runtime to stop it.",
+      "acceptance": [
+        "shutdown sets a flag so subsequent start_workflow calls return an EngineError (shutting-down) rather than spawning.",
+        "shutdown waits for outstanding store appends initiated by lifecycle transitions to complete before stopping the runtime.",
+        "shutdown calls RuntimeHandle::shutdown to drain and stop the scheduler and returns Ok once beamr has stopped.",
+        "A workflow mid-execution at shutdown is left with its durable history intact (Suspended), not force-completed.",
+        "A test builds an Engine, starts and completes a workflow, calls shutdown, and asserts it returns Ok and a subsequent start_workflow is rejected."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/engine.rs"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement signal/query/subscribe — those are AE-013.",
+    "SHALL NOT implement HTTP/gRPC/WebSocket — Engine is transport-agnostic (CO6); networking is AW.",
+    "SHALL NOT reimplement lifecycle transitions — Engine delegates to AE-008/AE-009.",
+    "SHALL NOT force-complete or discard in-flight workflows on shutdown — they remain replayable via their durable history (D11)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes against InMemoryStore.",
+    "cargo fmt --check passes.",
+    "shutdown drains rather than drops (D11); start after shutdown is rejected.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-engine",
+  "title": "Aion Engine — Lifecycle, Process Management, Supervision, and the Embedding API",
+  "intention": "Build the heart of the engine — the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic — no HTTP/gRPC/WebSocket — keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+  "problem": [
+    "aion-core gives vocabulary, aion-store a place to put events, aion-package a validated version-stamped bundle of beams, and beamr a process runtime with spawn/link/monitor/trap-exit, mailboxes, a configurable scheduler, and a NIF registry — but none of them alone runs a workflow.",
+    "Something must own the beamr runtime: configure scheduler thread count, register the NIFs workflow code calls through, hold the handle, and shut it down cleanly.",
+    "Something must map a WorkflowId to a running process so a signal/query/cancel request finds its target and list_workflows reports what is live, and must drive the start/suspend/resume/cancel/complete lifecycle.",
+    "Something must stand up the engine→per-type→workflow→activity supervision tree on beamr's primitives, dispatch in-VM activities as linked children, and load workflow modules by applying aion-package's content-hash namespacing and registering the beams with beamr.",
+    "Without this crate every consumer reimplements process-to-workflow mapping, supervision wiring, and module loading against beamr's raw primitives — the boilerplate Aion exists to remove."
+  ],
+  "solution": {
+    "summary": "One crate, aion, depending on aion-core, aion-store, aion-package, and beamr. Folder modules each with one responsibility: runtime embeds beamr (the sole beamr boundary) and owns scheduler config, NIF registration, and shutdown; registry is the active-execution map from (WorkflowId, RunId) to a WorkflowHandle (pid, type, version, status); lifecycle is the start/suspend/resume/cancel/complete state machine over registry+runtime, appending lifecycle events through the store; supervision wires the three-level tree onto beamr links/monitors/trap-exit; activity dispatches in-VM activities as linked child processes and surfaces their outcome; loader applies aion-package's namespacing transform and registers namespaced beams with the runtime; engine exposes EngineBuilder and Engine (start/cancel/result/list/shutdown plus surfaced-but-delegated signal/query/subscribe). Recording, replay, determinism are AD; timers, signal/query delivery, child spawning, and concurrency primitives are AT. aion calls into them and never reimplements them."
+  },
+  "decisions": [
+    {"id": "D1", "title": "runtime is the sole beamr boundary", "status": "active", "choice": "Only the runtime module imports beamr. Every other module talks to beamr through runtime's typed handle (spawn_workflow, spawn_activity, register_module, cancel_pid, shutdown). Rejected scattering beamr calls across modules: it would make the embedding contract unauditable and couple lifecycle logic to VM internals. The single boundary keeps beamr swappable and the seam reviewable."},
+    {"id": "D2", "title": "Scheduler thread count is builder-supplied, not defaulted in aion", "status": "active", "choice": "EngineBuilder takes the scheduler thread count from the caller; unset means aion passes thread_count: None to beamr, which applies its own available_parallelism() default. aion hardcodes no number (CLAUDE.md no-assumed-defaults). The default lives in beamr where the runtime knowledge is."},
+    {"id": "D3", "title": "Status read from the store projection, never tracked independently", "status": "active", "choice": "The registry caches a status for fast lookup, but authoritative status is aion-core's projection over event history (aion-core CO7). On disagreement the projection wins and the registry is corrected. Rejected a registry-owned mutable status as source of truth: it would let the live view drift from the durable record and defeat replay integrity."},
+    {"id": "D4", "title": "Registry keyed by (WorkflowId, RunId); lock poison handled explicitly", "status": "active", "choice": "A logical workflow may have successive runs (reset / continue-as-new, via aion-core RunId); the live registry keys on both so a stale run cannot shadow a new one. The map is behind a lock whose poison maps to EngineError::RegistryPoisoned, never .unwrap()-ed. Rejected keying on WorkflowId alone: it cannot represent two runs and would mis-route during continue-as-new."},
+    {"id": "D5", "title": "Workflow processes trap exits; activity processes do not", "status": "active", "choice": "A workflow process sets trap-exit so an activity child's crash arrives as a message it can act on (retry / fail), rather than killing the workflow. Activity processes do not trap exits — on cancellation the link kills them cleanly with no special handling. Rejected trapping on activities: it would swallow cancellation and require manual teardown, defeating natural BEAM propagation."},
+    {"id": "D6", "title": "One workflow supervisor per workflow type, not per execution", "status": "active", "choice": "Supervisors are created per registered workflow type (entry module); all executions of that type live under it. This bounds supervisor count to deployed types and gives a natural place for type-level restart policy. Rejected a supervisor per execution: it doubles process count and adds a supervision layer with nothing to coordinate."},
+    {"id": "D7", "title": "aion dispatches in-VM activities; recording and retry are seams, not owned here", "status": "active", "choice": "Spawning the linked child, running it, and propagating its outcome is this cluster. Recording ActivityScheduled/Started/Completed/Failed is the AD append path; deciding retry per RetryPolicy is AT's machinery (consulting the retryable/terminal split). aion calls those; it does not reimplement them. Remote Tier-3 dispatch is aion-server's worker protocol (AW). Rejected folding recording+retry into dispatch: it would duplicate AD/AT and split event-sourcing logic."},
+    {"id": "D8", "title": "Namespacing transform consumed from aion-package, never re-derived", "status": "active", "choice": "aion-package owns the (logical name, content hash) -> deployed name bijection (its CO12); aion calls it to map names at registration and spawn time. Each version is a distinct namespaced module, so N and N+5 coexist, in-flight executions keep their started-on module set (replay-safe), and beamr's two-deep same-name limit never binds for workflow modules. Rejected the engine deriving its own naming: it would risk divergence from the recorded hash and break replay."},
+    {"id": "D9", "title": "load_workflows registers; it does not run", "status": "active", "choice": "Loading a package registers modules and records the version; no workflow executes until start_workflow. A package whose entry module is absent, or whose modules collide with an already-registered namespaced name from a different hash, is a typed EngineError::Load. Rejected auto-starting on load: deployment and execution are distinct operations and must stay so."},
+    {"id": "D10", "title": "build is the only assembly path; everything else goes through Engine", "status": "active", "choice": "One construction path (the builder) and one runtime object (Engine). The builder validates a store is present (EngineError::MissingStore otherwise) and that loaded workflows' NIF dependencies are satisfiable. Rejected free functions that spawn workflows without an Engine: they would bypass the registry and supervision, leaving orphaned processes the engine cannot find, cancel, or report on."},
+    {"id": "D11", "title": "shutdown is graceful and total", "status": "active", "choice": "shutdown() stops accepting new starts, lets the store finish in-flight appends, instructs the runtime to drain and stop the scheduler, and returns once beamr has stopped. A workflow mid-execution at shutdown is left Suspended in its durable history so a later engine can replay it (AD). Rejected dropping the runtime to stop: it would abandon in-flight appends and leak scheduler threads."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "unsafe_code = deny. No unsafe in the crate."},
+    {"id": "CO2", "description": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."},
+    {"id": "CO3", "description": "lib.rs/mod.rs are declarations and re-exports only."},
+    {"id": "CO4", "description": "500-line file limit (excluding tests/comments/whitespace)."},
+    {"id": "CO5", "description": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates — no aion-server, no store backend crate, no networking crate. Structural; must hold."},
+    {"id": "CO6", "description": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."},
+    {"id": "CO7", "description": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."},
+    {"id": "CO8", "description": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."},
+    {"id": "CO9", "description": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."},
+    {"id": "CO10", "description": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."},
+    {"id": "CO11", "description": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."},
+    {"id": "CO12", "description": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."},
+    {"id": "CO13", "description": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."}
+  ],
+  "goals": [
+    "EngineBuilder builds an Engine from an EventStore plus loaded workflows plus NIFs, with caller-supplied scheduler thread count and no hardcoded default in aion.",
+    "start_workflow spawns a beamr process for a loaded workflow type, appends WorkflowStarted, registers the handle, and returns a WorkflowHandle.",
+    "The active-execution registry maps (WorkflowId, RunId) to a live handle, is the lookup for cancel/signal/query and the source for list_workflows, and maps lock poison to a typed error.",
+    "The three-level supervision tree (engine -> per-type -> workflow -> activity) is built on beamr links/monitors/trap-exit; an activity crash reaches the trapping workflow process and cancelling a workflow kills its activity children.",
+    "In-VM activities dispatch as linked child processes whose result or exit is surfaced to the workflow process, with recording and retry delegated to AD/AT.",
+    ".aion packages load by applying aion-package's content-hash namespacing and registering the namespaced beams; versions coexist and start_workflow spawns the correct namespaced entry module.",
+    "cancel, result, list_workflows, and a graceful shutdown work end-to-end against InMemoryStore, with signal/query/subscribe surfaced on Engine as delegation points to AT/AD."
+  ],
+  "non_goals": [
+    "No replay/determinism machinery (event-append-on-observable-action, the replay engine, workflow.now/random, recovery-on-startup) — cluster AD. AE calls the append path and triggers replay; it does not implement them.",
+    "No durable timers, signal routing, query service, child-workflow spawning, or concurrency primitives (all/race/map) — cluster AT. AE surfaces signal/query on Engine and owns suspend/resume around them; delivery and primitives are AT's.",
+    "No HTTP/gRPC/WebSocket or server — cluster AW. aion is transport-agnostic.",
+    "No Rust NIF authoring helper — aion-nif, cluster AN. This crate registers NIFs handed to the builder; it does not provide the macros/builders to write them.",
+    "No Gleam SDK — aion_flow, cluster AF.",
+    "No durable storage backend — libSQL is AS, PostgreSQL is AX. Engine tests use InMemoryStore.",
+    "No remote (Tier-3) activity worker dispatch — that rides the worker protocol in aion-server (AW)."
+  ],
+  "structure": {
+    "crates/aion/src/lib.rs": "[AE-001] thin re-export surface",
+    "crates/aion/src/error.rs": "[AE-002] EngineError thiserror taxonomy",
+    "crates/aion/src/runtime/mod.rs": "[AE-003] pub mod + re-exports only",
+    "crates/aion/src/runtime/handle.rs": "[AE-003] RuntimeHandle: spawn/register/cancel/shutdown",
+    "crates/aion/src/runtime/config.rs": "[AE-003] scheduler config (builder-supplied threads)",
+    "crates/aion/src/runtime/nif.rs": "[AE-004] NIF registration surface",
+    "crates/aion/src/registry/mod.rs": "[AE-005] pub mod + re-exports only",
+    "crates/aion/src/registry/handle.rs": "[AE-005] WorkflowHandle (pid, type, version, status)",
+    "crates/aion/src/registry/table.rs": "[AE-005] active-execution registry, lock-poison handling",
+    "crates/aion/src/loader/mod.rs": "[AE-006] pub mod + re-exports only",
+    "crates/aion/src/loader/load.rs": "[AE-006] Package -> namespaced beams -> runtime register",
+    "crates/aion/src/supervision/mod.rs": "[AE-007] pub mod + re-exports only",
+    "crates/aion/src/supervision/tree.rs": "[AE-007] engine + per-type supervisor construction",
+    "crates/aion/src/supervision/policy.rs": "[AE-007] trap-exit + crash-propagation policy",
+    "crates/aion/src/activity/mod.rs": "[AE-008] pub mod + re-exports only",
+    "crates/aion/src/activity/dispatch.rs": "[AE-008] in-VM activity child spawn + outcome propagation",
+    "crates/aion/src/lifecycle/mod.rs": "[AE-009] pub mod + re-exports only",
+    "crates/aion/src/lifecycle/start.rs": "[AE-009] start: spawn + WorkflowStarted + register",
+    "crates/aion/src/lifecycle/terminate.rs": "[AE-010] cancel/complete/fail transitions",
+    "crates/aion/src/lifecycle/transition.rs": "[AE-011] suspend/resume transitions",
+    "crates/aion/src/engine/mod.rs": "[AE-012] pub mod + re-exports only",
+    "crates/aion/src/engine/builder.rs": "[AE-012] EngineBuilder + build()",
+    "crates/aion/src/engine/engine.rs": "[AE-013] Engine: start/cancel/result/list/shutdown",
+    "crates/aion/src/engine/delegated.rs": "[AE-014] signal/query/subscribe surface (AT/AD delegation)"
+  }
+}

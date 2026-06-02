@@ -1,0 +1,75 @@
+{
+  "id": "AP-007",
+  "cluster": "aion-package",
+  "title": "Version record production and round-trip conformance suite",
+  "depends_on": ["AP-005", "AP-006"],
+  "blocked_by": [],
+  "checklist": ["C25", "C26", "C27"],
+  "stories": ["S1", "S2", "S7"],
+  "purpose": "Produce the cross-system version record from a loaded Package so the engine and store reference a workflow version through one shared aion-core type, and provide the conformance suite that proves the write and read paths fit together: a built package loads back intact, builds are reproducible, and integrity rejection actually fires.",
+  "task": "Add a function producing the aion-core version-record type from a loaded Package (logical entry module, content hash, declared activities, input/output schemas). Then build the round-trip conformance suite: write a package, load it, assert manifest/beams/namespaced-names survive; assert two builds of identical inputs are byte-identical; assert a post-pack alteration of the beams is rejected on load. Do not write the record to any store.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Version record from a loaded Package",
+      "spec": "THE SYSTEM SHALL produce the shared aion-core version-record type from a loaded Package, carrying the logical entry module, the content hash, the declared activities, and the input/output schemas.",
+      "acceptance": [
+        "version.rs defines a function (e.g. Package::version_record()) returning the aion-core version-record type.",
+        "The record carries the logical entry module, the content hash, the declared activities, and the input/output schemas drawn from the loaded Package.",
+        "The function uses the aion-core type directly (no re-definition of a parallel version type in this crate).",
+        "A unit test builds and loads a package, produces its version record, and asserts each field matches the manifest and content hash."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/version.rs"],
+        "modify": ["crates/aion-package/src/lib.rs"]
+      },
+      "checklist": ["C25"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Write/read round-trip suite",
+      "spec": "THE SYSTEM SHALL provide a test suite that builds a package, loads it back, and asserts the manifest, beam set, and namespaced module names survive intact.",
+      "acceptance": [
+        "tests/roundtrip.rs builds a package (non-trivial: multiple beams, declared activities, schemas, with and without source) and loads it via Package::load_from_bytes.",
+        "The loaded manifest equals the built manifest (with the version stamped), the loaded BeamSet equals the input BeamSet, and the optional source matches.",
+        "The loaded deployed module names equal namespace::deployed_name(logical, content_hash) for every module.",
+        "The test is a real runtime test, not gated out or ignored."
+      ],
+      "files": {
+        "create": ["crates/aion-package/tests/roundtrip.rs"],
+        "modify": []
+      },
+      "checklist": ["C26"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Reproducibility and integrity-rejection assertions",
+      "spec": "THE SYSTEM SHALL assert that two builds of identical inputs are byte-identical and that a package whose beams are altered after packing fails to load with IntegrityMismatch.",
+      "acceptance": [
+        "A test builds identical inputs twice and asserts the output byte buffers are equal (reproducibility, CO8).",
+        "A test takes a valid package's bytes, mutates a byte inside a beam entry (re-zipping or patching the entry), and asserts Package::load returns PackageError::IntegrityMismatch.",
+        "A test asserts that including vs omitting source yields the same content hash / version (CO7).",
+        "All tests run under cargo test without #[ignore]."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-package/tests/roundtrip.rs"]
+      },
+      "checklist": ["C27"],
+      "stories": ["S2", "S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT write the version record to any store — that is AC (in-memory) / AS (libSQL) / AX (Postgres).",
+    "SHALL NOT test VM registration or execution — that is the engine cluster (AE).",
+    "SHALL NOT add a parallel version type; it uses the aion-core version-record type."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-package passes, including the round-trip suite.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

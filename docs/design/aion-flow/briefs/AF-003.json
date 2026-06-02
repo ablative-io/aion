@@ -1,0 +1,74 @@
+{
+  "id": "AF-003",
+  "cluster": "aion-flow",
+  "title": "Error taxonomy: ActivityError and engine-originated failures",
+  "depends_on": ["AF-002"],
+  "blocked_by": [],
+  "checklist": ["C10", "C11", "C12"],
+  "stories": ["S4"],
+  "purpose": "Express the retryable-vs-terminal classification in Gleam's type system, mapping aion-core's ActivityError, and define the distinct typed failures the engine originates (timeout, cancellation, non-determinism, decode) so an author never confuses an author-decided failure with an engine-decided one.",
+  "task": "Define aion/error: ActivityError with Retryable and Terminal constructors carrying a message and structured details, mapping aion-core's classification. Define the engine-originated failure types (timeout, cancellation, non-determinism, decode) as distinct typed variants. Establish the no-panic / typed-Result discipline for the whole package.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ActivityError retryable/terminal split",
+      "spec": "THE SYSTEM SHALL define ActivityError with Retryable and Terminal constructors carrying a message and structured details, expressing aion-core's retryable/terminal classification.",
+      "acceptance": [
+        "error.gleam defines ActivityError with constructors Retryable(message, details) and Terminal(message, details).",
+        "A doc comment states the engine retries on Retryable until the RetryPolicy's attempts are exhausted and fails immediately on Terminal, mapping aion-core's classification (aion-core C21).",
+        "Helper constructors (e.g. retryable(message), terminal(message)) make the common case ergonomic.",
+        "A unit test pattern-matches both constructors and asserts the classification is preserved."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/error.gleam"],
+        "modify": []
+      },
+      "checklist": ["C10"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Engine-originated failure types",
+      "spec": "THE SYSTEM SHALL define the engine-originated failures (timeout, cancellation, non-determinism, decode) as distinct typed variants, separate from author-returned ActivityError.",
+      "acceptance": [
+        "Distinct typed variants exist for timeout, cancellation, non-determinism violation, and decode failure (the latter wrapping the DecodeError from AF-002), used by the workflow primitives' return types (e.g. ReceiveError, the with_timeout result).",
+        "These are not ActivityError constructors — an author cannot construct an engine-originated failure as if it were an activity decision, and a workflow handling code can distinguish them by type.",
+        "A doc comment relates non-determinism to AD's NonDeterminismError and timeout/cancellation to the engine lifecycle, so the provenance is clear."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/error.gleam"]
+      },
+      "checklist": ["C11"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "No-panic, typed-Result discipline",
+      "spec": "THE SYSTEM SHALL establish that no public function panics, calls todo, or uses assert as control flow; every fallible operation returns a typed Result.",
+      "acceptance": [
+        "error.gleam documents the package-wide discipline: failure is always a typed Result error, never a panic or todo.",
+        "The error types defined here are sufficient to express every documented failure path of the later primitives (activity failure, decode failure, timeout, cancellation, non-determinism, unknown query/signal).",
+        "Review confirms no panic / todo / assert-as-control-flow is introduced by this brief."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/error.gleam"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define RetryPolicy or Backoff — those are AF-004 (they reference the classification defined here).",
+    "SHALL NOT define the activity or workflow primitives — only the error types they return.",
+    "SHALL NOT re-implement aion-core's Rust ActivityError — this is the Gleam mirror that maps to it across the ffi boundary."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for the classification tests.",
+    "No panic, todo, or assert-as-control-flow in new code."
+  ]
+}

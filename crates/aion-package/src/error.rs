@@ -1,0 +1,1 @@
+//! PackageError taxonomy

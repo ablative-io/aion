@@ -1,0 +1,87 @@
+{
+  "id": "AU-005",
+  "cluster": "aion-dashboard",
+  "title": "Workflow detail — event history timeline",
+  "depends_on": ["AU-002"],
+  "blocked_by": [],
+  "checklist": ["C21", "C22", "C23", "C24", "C25", "C26", "C27"],
+  "stories": ["S5", "S6", "S7", "S9"],
+  "purpose": "Build the centre of gravity of the dashboard: a single workflow's full event history rendered as a readable, ordered timeline that tells the story of the execution at a glance.",
+  "task": "Build the workflow-detail feature: load a workflow's full event history via TanStack Query against the history API, project the aion-core Event list into a sequence-ordered timeline model with activity/timer/child lifecycles correlated by id, and render it as a vertical timeline with kind icons, envelope info, expandable payloads, child-workflow links, and loading/empty/error states.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "History load and timeline projection",
+      "spec": "THE SYSTEM SHALL load a workflow's full event history via TanStack Query against the history API and project the events into a timeline model ordered strictly by event sequence number.",
+      "acceptance": [
+        "src/features/workflow-detail/hooks/useWorkflowHistory.ts wraps the api client's getHistory in a TanStack Query keyed by workflow id + namespace.",
+        "src/features/workflow-detail/lib/timeline.ts projects Event[] into a timeline model ordered by the envelope sequence number.",
+        "The projection is a pure function unit-tested against a sample history (asserts ordering and one entry per logical event/group).",
+        "EventTimeline renders entries in sequence order."
+      ],
+      "files": {
+        "create": [
+          "apps/aion-dashboard/src/features/workflow-detail/components/WorkflowDetail.tsx",
+          "apps/aion-dashboard/src/features/workflow-detail/components/EventTimeline.tsx",
+          "apps/aion-dashboard/src/features/workflow-detail/hooks/useWorkflowHistory.ts",
+          "apps/aion-dashboard/src/features/workflow-detail/lib/timeline.ts",
+          "apps/aion-dashboard/src/features/workflow-detail/types.ts",
+          "apps/aion-dashboard/src/features/workflow-detail/index.ts"
+        ],
+        "modify": []
+      },
+      "checklist": ["C21", "C22"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "Per-variant entries with lifecycle correlation",
+      "spec": "THE SYSTEM SHALL render a timeline entry for each Event variant — lifecycle, activity, timer, signal, child workflow — correlating activity events by ActivityId, timer events by TimerId, and child-workflow events by child id into expandable groups, with activity retries shown as repeated failed attempts.",
+      "acceptance": [
+        "Lifecycle events (WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled) render with distinct treatment; the closing event shows the terminal outcome and result/error.",
+        "ActivityScheduled/Started/Completed/Failed correlate by ActivityId into one ActivityGroup; repeated ActivityFailed attempts render as the activity's retry history.",
+        "TimerStarted/Fired/Cancelled correlate by TimerId; ChildWorkflowStarted/Completed/Failed correlate by child id.",
+        "SignalReceived renders the signal name and payload summary.",
+        "Child-workflow entries link to /workflows/:childId.",
+        "A test over a sample history asserts an activity with two failures and a success renders as one group with the retry history, and a child entry links to the child."
+      ],
+      "files": {
+        "create": [
+          "apps/aion-dashboard/src/features/workflow-detail/components/TimelineEntry.tsx",
+          "apps/aion-dashboard/src/features/workflow-detail/components/ActivityGroup.tsx"
+        ],
+        "modify": ["apps/aion-dashboard/src/features/workflow-detail/lib/timeline.ts"]
+      },
+      "checklist": ["C23", "C24", "C26"],
+      "stories": ["S6", "S9"]
+    },
+    {
+      "id": "R3",
+      "title": "Envelope, payload view, and detail states",
+      "spec": "THE SYSTEM SHALL show each entry's envelope (sequence number, recorded timestamp), a kind icon and colour, a one-line summary, and an expandable payload view; and SHALL render explicit loading, empty, and error states for the detail view.",
+      "acceptance": [
+        "Each entry shows its sequence number, a human-readable recorded timestamp, an EventIcon (kind icon + colour), and a one-line summary.",
+        "PayloadView renders the decoded payload (activity input/result, signal payload, error detail) collapsed by default and expandable on demand.",
+        "While loading, a skeleton timeline renders; when the history is empty, EmptyState renders 'this workflow has no events yet'; on error, ErrorState renders the cause plus retry.",
+        "A test asserts payload expand/collapse and that each of the three async states renders."
+      ],
+      "files": {
+        "create": ["apps/aion-dashboard/src/features/workflow-detail/components/PayloadView.tsx"],
+        "modify": ["apps/aion-dashboard/src/features/workflow-detail/components/WorkflowDetail.tsx"]
+      },
+      "checklist": ["C25", "C27"],
+      "stories": ["S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add live event streaming into the timeline — that is AU-009 (this brief provides the static history timeline and projection it extends).",
+    "SHALL NOT define the EventIcon/EmptyState/ErrorState/LoadingSkeleton components — AU-008 (this brief consumes them).",
+    "SHALL NOT define the namespace selector — AU-006 (this brief consumes the selected namespace in its query key)."
+  ],
+  "verification": [
+    "bun run check (Biome) passes clean.",
+    "tsc --noEmit passes clean.",
+    "bun test passes for the timeline projection and detail view tests.",
+    "Timeline ordering is strictly by sequence number; no lint-disable comments added."
+  ]
+}

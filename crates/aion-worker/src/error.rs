@@ -1,0 +1,1 @@
+//! WorkerError taxonomy

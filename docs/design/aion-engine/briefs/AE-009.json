@@ -1,0 +1,77 @@
+{
+  "id": "AE-009",
+  "cluster": "aion-engine",
+  "title": "Cancel, complete, and fail lifecycle transitions",
+  "depends_on": ["AE-008"],
+  "blocked_by": [],
+  "checklist": ["C25", "C26"],
+  "stories": ["S6", "S8"],
+  "purpose": "Implement the terminal transitions of a workflow's life: completion records the result and unblocks awaiters, failure records the terminal error, and cancellation kills the process (propagating to activity children) and records the reason. Together with start, this is the full terminal lifecycle.",
+  "task": "Implement lifecycle/terminate.rs: complete (append WorkflowCompleted with the result Payload, deregister, unblock result awaiters), fail (append WorkflowFailed with the WorkflowError, deregister analogously), and cancel (kill the workflow process so links tear down activity children, append WorkflowCancelled with the reason, deregister). Scope is the terminal transitions; suspend/resume are AE-011 and the Engine public methods are AE-013.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Complete transition",
+      "spec": "WHEN a workflow function returns Ok, THE SYSTEM SHALL append WorkflowCompleted carrying the result Payload, deregister the handle, and unblock any awaiter of the workflow's result.",
+      "acceptance": [
+        "terminate.rs provides complete(id, run, result: Payload) that appends WorkflowCompleted with the result and the correct expected sequence.",
+        "After the append, the handle is removed from the registry.",
+        "Any pending result() awaiter for that (id, run) is resolved with the result Payload (via the completion-notification channel the engine uses).",
+        "A test completes a workflow and asserts the last event is WorkflowCompleted with the result and the registry no longer holds the handle."
+      ],
+      "files": {
+        "create": ["crates/aion/src/lifecycle/terminate.rs"],
+        "modify": ["crates/aion/src/lifecycle/mod.rs"]
+      },
+      "checklist": ["C25"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "Fail transition",
+      "spec": "WHEN a workflow function returns Err, THE SYSTEM SHALL append WorkflowFailed carrying the WorkflowError, deregister the handle, and resolve any awaiter with that error.",
+      "acceptance": [
+        "terminate.rs provides fail(id, run, error: WorkflowError) that appends WorkflowFailed with the error and the correct expected sequence.",
+        "The handle is removed from the registry after the append.",
+        "Any pending result() awaiter is resolved with the WorkflowError.",
+        "A test fails a workflow and asserts the last event is WorkflowFailed with the error and the handle is deregistered."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/terminate.rs"]
+      },
+      "checklist": ["C25"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "Cancel transition with link propagation",
+      "spec": "WHEN cancel is requested for a workflow, THE SYSTEM SHALL kill the workflow process so its linked activity children are torn down by link propagation, append WorkflowCancelled carrying the reason, and deregister the handle. IF the workflow is not in the registry, THEN THE SYSTEM SHALL return EngineError::WorkflowNotFound.",
+      "acceptance": [
+        "terminate.rs provides cancel(id, run, reason) that looks up the handle, calls RuntimeHandle::cancel_pid on the workflow pid, appends WorkflowCancelled with the reason, and removes the handle.",
+        "Because activity children are linked (AE-006/AE-007), killing the workflow process terminates them with no per-child teardown loop.",
+        "Cancelling an unknown (id, run) returns EngineError::WorkflowNotFound.",
+        "A test starts a workflow with a linked activity child, cancels it, and asserts WorkflowCancelled is appended, the child is no longer alive, and the handle is deregistered."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/terminate.rs"]
+      },
+      "checklist": ["C26"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement suspend/resume — those are AE-011.",
+    "SHALL NOT decide retry or re-run a failed activity — failure here is workflow-terminal; activity retry is AT.",
+    "SHALL NOT define the Engine public cancel/result methods — those are AE-013; this brief provides the transitions they call.",
+    "SHALL NOT compute WorkflowStatus independently — terminal status follows from the appended event via the aion-core projection (CO10)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes against InMemoryStore.",
+    "cargo fmt --check passes.",
+    "Cancellation relies on link propagation, not a manual child loop (D5).",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

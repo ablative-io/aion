@@ -1,0 +1,75 @@
+{
+  "id": "AE-013",
+  "cluster": "aion-engine",
+  "title": "Delegated signal, query, and subscribe surface",
+  "depends_on": ["AE-012"],
+  "blocked_by": [],
+  "checklist": ["C33"],
+  "stories": ["S7"],
+  "purpose": "Surface signal, query, and subscribe on Engine for API completeness, performing the registry-lookup step that AE owns and delegating the delivery mechanics to AT (signal routing, query dispatch) and AD/AT (event publishing). This fixes the method surface and the seam without implementing AT's machinery.",
+  "task": "Implement engine/delegated.rs: signal, query, and subscribe methods on Engine. Each resolves the target workflow via the registry (the AE-owned lookup) and then calls into the AT/AD delivery seam (a trait/hook the Engine holds) to perform routing/dispatch/publishing. This brief provides the method surface, the lookup, and the seam wiring — it does not implement signal routing, query dispatch, or the event publisher.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "signal surface with registry lookup",
+      "spec": "WHEN signal(&id, &run, name, payload) is called, THE SYSTEM SHALL resolve the target workflow handle via the registry and SHALL hand the signal to the AT signal-routing seam. IF the workflow is not registered, THEN THE SYSTEM SHALL return EngineError::WorkflowNotFound. THE SYSTEM SHALL NOT implement the mailbox routing itself.",
+      "acceptance": [
+        "delegated.rs defines Engine::signal that looks up the handle and, on success, calls the AT signal-routing seam (a SignalRouter trait/handle the Engine holds) with the target pid, name, and payload.",
+        "An unregistered workflow returns EngineError::WorkflowNotFound.",
+        "grep of delegated.rs shows no direct mailbox-send / selective-receive routing logic — only the seam call.",
+        "A test installs a fake SignalRouter seam, signals a registered workflow, and asserts the seam received the (pid, name, payload); signalling an unknown id returns WorkflowNotFound."
+      ],
+      "files": {
+        "create": ["crates/aion/src/engine/delegated.rs"],
+        "modify": ["crates/aion/src/engine/mod.rs"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "query surface with registry lookup",
+      "spec": "WHEN query(&id, &run, name) is called, THE SYSTEM SHALL resolve the target workflow handle via the registry and SHALL hand the query to the AT query-dispatch seam, returning the reply Payload. IF the workflow is not registered, THEN THE SYSTEM SHALL return EngineError::WorkflowNotFound. THE SYSTEM SHALL NOT implement the query dispatch itself.",
+      "acceptance": [
+        "delegated.rs defines Engine::query that looks up the handle and calls the AT query-dispatch seam (a QueryService trait/handle) with the target pid and query name, returning the reply Payload.",
+        "An unregistered workflow returns EngineError::WorkflowNotFound.",
+        "grep of delegated.rs shows no query-handler invocation logic — only the seam call.",
+        "A test installs a fake QueryService seam returning a known Payload and asserts query returns it for a registered workflow."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/delegated.rs"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R3",
+      "title": "subscribe surface delegating to the event publisher",
+      "spec": "WHEN subscribe(filter: EventFilter) is called, THE SYSTEM SHALL return an event stream produced by the AD/AT event-publishing seam. THE SYSTEM SHALL NOT implement the broadcast/publishing mechanism itself.",
+      "acceptance": [
+        "delegated.rs defines Engine::subscribe(filter) -> stream that delegates to the event-publisher seam (an EventPublisher trait/handle the Engine holds) and returns its filtered stream.",
+        "grep of delegated.rs shows no broadcast-channel implementation — only the seam call.",
+        "A test installs a fake EventPublisher seam that emits two events and asserts subscribe yields them filtered by the given EventFilter."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/delegated.rs"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement signal routing into mailboxes, query dispatch to workflow processes, or the durable signal/query event recording — those are AT (delivery) and AD (recording).",
+    "SHALL NOT implement the event publisher / broadcast channel — that is AD/AT; this brief consumes its seam.",
+    "SHALL NOT add networking — WebSocket fan-out of the subscribe stream is AW; subscribe here returns an in-process stream."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes (with fake seams).",
+    "cargo fmt --check passes.",
+    "signal/query/subscribe perform only the registry lookup and the seam call; no AT/AD mechanism is implemented here (per the AE/AT/AD boundary).",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

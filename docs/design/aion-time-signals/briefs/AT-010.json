@@ -1,0 +1,59 @@
+{
+  "id": "AT-010",
+  "cluster": "aion-time-signals",
+  "title": "all: fan-out, ordered collect, fail-fast",
+  "depends_on": ["AT-009"],
+  "blocked_by": [],
+  "checklist": ["C30"],
+  "stories": ["S6"],
+  "purpose": "Implement the all primitive: spawn N children concurrently, collect every result, and return them in input order. Any child failure fails the whole all and cancels the rest. This is the fan-out workhorse for parallel activities and child workflows, built on the correlation/cancellation substrate from AT-009.",
+  "task": "Implement all over a fixed list of child specs. Spawn each as a linked child carrying its correlation token (AT-009), block in selective receive until all N results arrive, and return them ordered by input position. On the first child failure, fail the whole all and cancel the remaining in-flight children via the AT-009 cancel path.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Spawn N and collect in input order",
+      "spec": "WHEN all is called with N child specs, THE SYSTEM SHALL spawn N linked children, block until all N results arrive, and return the results in input order.",
+      "acceptance": [
+        "all.rs defines all(specs) that spawns each spec as a linked child tagged with its correlation token (AT-009 R1) and collects via the AT-009 matcher.",
+        "The returned collection preserves input order regardless of the order results arrive (verified by delivering results out of order in a test).",
+        "all blocks until exactly N results have arrived before returning success.",
+        "A test fans out 3 children, delivers results out of order, and asserts the returned list is in input order with the correct values."
+      ],
+      "files": {
+        "create": ["crates/aion/src/concurrency/all.rs"],
+        "modify": ["crates/aion/src/concurrency/mod.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "Fail-fast: a child failure fails all and cancels the rest",
+      "spec": "IF any child fails, THEN THE SYSTEM SHALL fail the whole all with that child's error AND cancel the remaining in-flight children via the AT-009 cancel path.",
+      "acceptance": [
+        "On receiving a failure result for any child, all stops collecting, cancels the remaining in-flight children (AT-009 R3, recording their cancellation), and returns the failing child's error.",
+        "Children that already completed before the failure are not resurrected; the all result is the error.",
+        "A test fans out 3 children, delivers one failure while two are in flight, and asserts: all returns the failure error, and the two in-flight children were cancelled and their cancellation recorded.",
+        "A test asserts no panic and no partial success value is returned on failure."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/concurrency/all.rs"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT reimplement correlation, matching, or cancellation — those are AT-009.",
+    "SHALL NOT implement race or map — those are AT-011 and AT-012.",
+    "SHALL NOT define the Gleam workflow.all surface — that is AF."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including out-of-order ordering and fail-fast tests.",
+    "cargo fmt --check passes.",
+    "Remaining children are cancelled and recorded on failure (verified by test).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

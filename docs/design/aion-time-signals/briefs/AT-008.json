@@ -1,0 +1,92 @@
+{
+  "id": "AT-008",
+  "cluster": "aion-time-signals",
+  "title": "Child workflow spawning: linked process, await and fire-and-forget",
+  "depends_on": ["AT-001"],
+  "blocked_by": [],
+  "checklist": ["C23", "C24", "C25", "C26"],
+  "stories": ["S5", "S10"],
+  "purpose": "Let a parent workflow compose larger processes from smaller ones. Spawning a child asks AE to start a new execution — its own WorkflowId/RunId and event history — as a process linked to the parent, recorded in the parent's history. The parent can await the result or fire and forget, and cancelling the parent propagates to the child.",
+  "task": "Implement child-workflow spawning on the engine seam. spawn requests AE to start a linked child execution and records ChildWorkflowStarted. spawn_and_wait blocks the parent on its mailbox until the child result arrives, recording ChildWorkflowCompleted or ChildWorkflowFailed. A fire-and-forget spawn records the start and detaches via monitor. Cancelling the parent propagates over the link to the child. This brief owns the spawn-request / result-collection / recording mechanics; AE owns the child's lifecycle.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Spawn a linked child with its own history",
+      "spec": "WHEN a parent spawns a child workflow, THE SYSTEM SHALL request AE (via the seam) to start a new workflow execution with a distinct WorkflowId/RunId and its own event history as a process LINKED to the parent, AND SHALL append ChildWorkflowStarted to the parent's history.",
+      "acceptance": [
+        "spawn.rs defines a spawn(parent_id, child_type, input) that calls the seam child-spawn request (linked to the parent process) and receives the child's WorkflowId + process handle.",
+        "ChildWorkflowStarted { child_id, workflow_type, input } is appended to the PARENT's history.",
+        "The child is started with a distinct WorkflowId and RunId (the child has its own history; the parent only records the start/outcome).",
+        "A test (fake seam) spawns a child, asserts a child-spawn request was made linked to the parent, and asserts ChildWorkflowStarted is in the parent history with the child's id."
+      ],
+      "files": {
+        "create": ["crates/aion/src/child/spawn.rs"],
+        "modify": ["crates/aion/src/child/mod.rs"]
+      },
+      "checklist": ["C23"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "spawn_and_wait collects the child result",
+      "spec": "WHEN spawn_and_wait is used, THE SYSTEM SHALL block the parent on its mailbox until the child's result arrives, appending ChildWorkflowCompleted on success and ChildWorkflowFailed on child failure.",
+      "acceptance": [
+        "spawn_and_wait spawns (R1) then blocks in selective receive on the parent mailbox for the child's result message (matched to the child id).",
+        "On child success, ChildWorkflowCompleted { child_id, result } is appended to the parent history and the result is returned to the parent.",
+        "On child failure, ChildWorkflowFailed { child_id, error } is appended and the failure is surfaced to the parent (as a typed error).",
+        "A test drives a fake child-completion message and asserts ChildWorkflowCompleted is recorded and the result returned; a second test drives a failure and asserts ChildWorkflowFailed."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/child/spawn.rs"]
+      },
+      "checklist": ["C24"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Fire-and-forget spawn detaches",
+      "spec": "WHEN a child is spawned fire-and-forget, THE SYSTEM SHALL append ChildWorkflowStarted and detach (monitor rather than blocking await), not waiting for the child result.",
+      "acceptance": [
+        "A fire-and-forget spawn variant records ChildWorkflowStarted and returns immediately without blocking on a result.",
+        "The parent monitors (not blocking-links-and-awaits) the child so the parent is not blocked and a child exit arrives as a monitor message rather than blocking the parent.",
+        "A test spawns fire-and-forget, asserts ChildWorkflowStarted is recorded, and asserts the call returns without waiting for a result message."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/child/spawn.rs"]
+      },
+      "checklist": ["C25"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R4",
+      "title": "Parent cancellation propagates to the child",
+      "spec": "WHEN the parent workflow process is cancelled, THE SYSTEM SHALL propagate cancellation over the link to the child process.",
+      "acceptance": [
+        "Because spawn (R1) links the child to the parent, parent cancellation/termination propagates an exit signal to the linked child via the link (no separate teardown bookkeeping needed for the await case).",
+        "The mechanism is the link established at spawn; a doc comment states parent cancellation kills linked children.",
+        "A test cancels the parent (fake seam termination) and asserts the linked child receives a propagated exit (observable via the fake)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/child/spawn.rs"]
+      },
+      "checklist": ["C26"],
+      "stories": ["S10"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT own the child's lifecycle/supervision/replay — AE owns the child execution; this brief records the parent-side start/outcome and collects results.",
+    "SHALL NOT implement all/race/map — those are AT-010/011/012 (they reuse this spawn mechanism for workflow children).",
+    "SHALL NOT define the Gleam workflow.spawn/spawn_and_wait surface — that is AF.",
+    "SHALL NOT record events in the CHILD's history — the child records its own; the parent records ChildWorkflowStarted/Completed/Failed only."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes, including completed/failed/fire-and-forget/cancellation tests.",
+    "cargo fmt --check passes.",
+    "ChildWorkflow* events are appended only to the parent history (CO7/CO8).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,19 @@
+[package]
+name = "aion-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-core = { path = "../aion-core" }
+aion-proto = { path = "../aion-proto" }
+tokio = { workspace = true, features = ["full"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+futures = { workspace = true }

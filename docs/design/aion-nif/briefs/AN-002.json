@@ -1,0 +1,93 @@
+{
+  "id": "AN-002",
+  "cluster": "aion-nif",
+  "title": "FromTerm / IntoTerm conversion traits and primitive impls",
+  "depends_on": ["AN-001"],
+  "blocked_by": [],
+  "checklist": ["C6", "C7", "C8", "C9", "C10", "C11", "C12"],
+  "stories": ["S1"],
+  "purpose": "Define the typed conversion layer between beamr terms and Rust values. This is the foundation every declared NIF stands on: arguments decode via FromTerm, return values encode via IntoTerm, and a mismatch is a typed TermError instead of a runtime badarg.",
+  "task": "Define FromTerm (decode a Term into a Rust type, using ProcessContext for atom resolution) and IntoTerm (encode a Rust value into a Term, allocating through ProcessContext via the raw seam). Implement both for the primitives the design enumerates — integers, floats, bools, binaries, atoms — and for the structural shapes — Option, Result-tuple, homogeneous lists, and string-keyed maps. Build on beamr's Binary, Tuple, the raw module's safe allocators, and the atom table on the context.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "FromTerm and IntoTerm traits",
+      "spec": "THE SYSTEM SHALL define FromTerm with a method decoding a Term into Self given the ProcessContext, returning TermError on mismatch, and IntoTerm with a method encoding Self into a Term given the ProcessContext, returning TermError on allocation failure.",
+      "acceptance": [
+        "term.rs defines trait FromTerm { fn from_term(term: Term, ctx: &ProcessContext) -> Result<Self, TermError> } (or equivalent signature giving access to the atom table for resolution).",
+        "term.rs defines trait IntoTerm { fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> } encoding through the raw module's safe allocators.",
+        "A doc comment states FromTerm is used to decode NIF arguments and IntoTerm to encode NIF return values, and that neither exposes raw term internals to the caller.",
+        "Both traits are object-safe-where-needed or documented as static-dispatch-only, consistent with how the declaration macros in AN-004 use them."
+      ],
+      "files": {
+        "create": ["crates/aion-nif/src/term.rs"],
+        "modify": ["crates/aion-nif/src/lib.rs"]
+      },
+      "checklist": ["C6", "C7"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Primitive impls — integers, floats, bools, binaries, atoms",
+      "spec": "THE SYSTEM SHALL implement FromTerm and IntoTerm for signed and unsigned integer types, floats, booleans, binary types (Vec<u8> and String), and atoms via a dedicated atom-name newtype.",
+      "acceptance": [
+        "FromTerm/IntoTerm hold for at least i64, u64, f64, and bool (bool decoding the true/false atoms).",
+        "FromTerm/IntoTerm hold for Vec<u8> and String over beamr binary terms, using the raw module's safe binary builder for encoding.",
+        "A dedicated atom-name newtype (e.g. AtomName(String) or similar) implements FromTerm/IntoTerm, interning/resolving through the context's atom table; decoding a non-atom term yields TermError.",
+        "Decoding a term of the wrong kind (e.g. a binary where an integer is expected) returns a TermError type-mismatch variant, never a panic."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-nif/src/term.rs"]
+      },
+      "checklist": ["C8", "C9"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Structural impls — option, result, list, map",
+      "spec": "THE SYSTEM SHALL implement FromTerm and IntoTerm for Option<T> (atom nil for None, the encoded value for Some), a Result-shaped {ok, T} / {error, E} tuple, homogeneous lists (Vec<T>) over proper cons lists, and string-keyed maps (BTreeMap<String, T>), each generic over T: FromTerm/IntoTerm.",
+      "acceptance": [
+        "term_collection.rs implements Option<T>: None encodes to the nil atom, Some(v) encodes the inner value; decoding nil yields None, any other term yields Some after inner decode.",
+        "A Result-shaped conversion encodes Ok(v) as {ok, v} and Err(e) as {error, e} and decodes the two-tuple back, rejecting other tuple shapes with TermError.",
+        "Vec<T> encodes to a proper cons list (via the raw cons builder) and decodes a proper list element-by-element; an improper list yields TermError.",
+        "BTreeMap<String, T> encodes to a beamr map term and decodes it back, preserving keys and values; a non-map term yields TermError.",
+        "Element/value decode failures propagate the inner TermError rather than collapsing to a generic error."
+      ],
+      "files": {
+        "create": ["crates/aion-nif/src/term_collection.rs"],
+        "modify": ["crates/aion-nif/src/lib.rs"]
+      },
+      "checklist": ["C10", "C11"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R4",
+      "title": "Round-trip conformance",
+      "spec": "THE SYSTEM SHALL verify that for every implemented type, encoding a representative value with IntoTerm and decoding it back with FromTerm yields an equal value.",
+      "acceptance": [
+        "A test module round-trips representative values for each primitive (i64, u64, f64, bool, String, Vec<u8>, atom-name) and asserts equality.",
+        "A test round-trips Option (both None and Some), the Result-tuple (both Ok and Err), a non-empty Vec<T>, and a non-empty BTreeMap<String, T>.",
+        "Round-trip tests run against a real beamr ProcessContext with an atom table, exercising the actual allocation path, not a mock."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-nif/src/term.rs", "crates/aion-nif/src/term_collection.rs"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the Payload bridge or the serde blanket impl — those are AN-003.",
+    "SHALL NOT define the Nif descriptor or declaration macros — those are AN-004.",
+    "SHALL NOT introduce any unsafe outside the raw module from AN-001; all heap allocation goes through raw's safe wrappers."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-nif passes.",
+    "cargo fmt --check passes.",
+    "ast-grep scan passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

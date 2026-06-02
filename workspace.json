@@ -1,0 +1,194 @@
+{
+  "name": "aion",
+  "description": "Aion — a durable workflow engine for Gleam, Rust, and the BEAM. Temporal-class durability with the BEAM's native concurrency, supervision, and fault tolerance, running on the beamr VM.",
+  "schema_version": 1,
+  "rust": {
+    "edition": "2024",
+    "rust_version": "1.85",
+    "dependencies": {
+      "serde": "1",
+      "serde_json": "1",
+      "thiserror": "2",
+      "anyhow": "1",
+      "uuid": "1",
+      "chrono": "0.4",
+      "async-trait": "0.1",
+      "tokio": "1",
+      "tokio-util": "0.7",
+      "tracing": "0.1",
+      "tracing-subscriber": "0.3",
+      "sha2": "0.10",
+      "zip": "2",
+      "libsql": "0.6",
+      "tonic": "0.12",
+      "tonic-build": "0.12",
+      "prost": "0.13",
+      "axum": "0.8",
+      "tower": "0.5",
+      "futures": "0.3",
+      "dashmap": "6",
+      "beamr": "0.1"
+    }
+  },
+  "components": [
+    {
+      "id": "aion-core",
+      "kind": "rust-lib",
+      "path": "crates/aion-core",
+      "cluster": "aion-core",
+      "description": "Pure domain model: Event enum, Payload, identifiers, WorkflowStatus, filters, error taxonomy. The vocabulary every other component speaks. Leaf crate.",
+      "internal_deps": [],
+      "external_deps": ["serde", "serde_json", "uuid", "thiserror", "chrono"]
+    },
+    {
+      "id": "aion-store",
+      "kind": "rust-lib",
+      "path": "crates/aion-store",
+      "cluster": "aion-core",
+      "description": "The EventStore persistence contract, StoreError, the InMemoryStore reference implementation, and the shared behavioural conformance suite. Leaf crate (depends only on aion-core).",
+      "internal_deps": ["aion-core"],
+      "external_deps": ["serde", "async-trait", "thiserror", "chrono", "tokio"]
+    },
+    {
+      "id": "aion-store-libsql",
+      "kind": "rust-lib",
+      "path": "crates/aion-store-libsql",
+      "cluster": "aion-store-libsql",
+      "description": "The default durable EventStore over libSQL. Embedded local file plus embedded-replica sync for the distributed path. Runs the aion-store conformance suite.",
+      "internal_deps": ["aion-core", "aion-store"],
+      "external_deps": ["libsql", "serde", "thiserror", "async-trait", "chrono", "tokio"]
+    },
+    {
+      "id": "aion-package",
+      "kind": "rust-lib",
+      "path": "crates/aion-package",
+      "cluster": "aion-package",
+      "description": "The .aion package format: manifest, archive read/write, content-hash versioning and module namespacing.",
+      "internal_deps": ["aion-core"],
+      "external_deps": ["serde", "serde_json", "thiserror", "sha2", "zip", "chrono"]
+    },
+    {
+      "id": "aion",
+      "kind": "rust-lib",
+      "path": "crates/aion",
+      "cluster": ["aion-engine", "aion-durability", "aion-time-signals"],
+      "description": "The core engine. Embeds beamr; owns workflow lifecycle, process-per-workflow management, the supervision tree, .aion module loading, durability and replay (durability module), and timers/signals/queries/children/concurrency (time module). Transport-agnostic.",
+      "internal_deps": ["aion-core", "aion-store", "aion-package"],
+      "external_deps": ["beamr", "tokio", "tokio-util", "thiserror", "serde", "serde_json", "chrono", "uuid", "tracing", "futures", "dashmap"]
+    },
+    {
+      "id": "aion-nif",
+      "kind": "rust-lib",
+      "path": "crates/aion-nif",
+      "cluster": "aion-nif",
+      "description": "Rust helper crate for writing and registering NIFs that Gleam activities call. Deterministic helpers and recorded light in-VM activities, with the split enforced by type.",
+      "internal_deps": ["aion-core", "aion"],
+      "external_deps": ["beamr", "thiserror", "serde", "serde_json"]
+    },
+    {
+      "id": "aion-proto",
+      "kind": "rust-lib",
+      "path": "crates/aion-proto",
+      "cluster": "aion-server",
+      "description": "The shared wire contract: gRPC service definitions and serde wire types used by the server, all client SDKs, and all worker SDKs. Depends only on aion-core for type parity.",
+      "internal_deps": ["aion-core"],
+      "external_deps": ["tonic", "prost", "serde", "serde_json", "chrono"],
+      "build_deps": ["tonic-build"]
+    },
+    {
+      "id": "aion-server",
+      "kind": "rust-bin",
+      "path": "crates/aion-server",
+      "cluster": "aion-server",
+      "description": "The standalone deployable. Wraps the transport-agnostic engine with HTTP/gRPC APIs, WebSocket event streaming, the remote-worker protocol endpoint, multi-tenancy, and dashboard hosting.",
+      "internal_deps": ["aion-core", "aion-store", "aion-store-libsql", "aion-package", "aion", "aion-proto"],
+      "external_deps": ["tokio", "axum", "tonic", "prost", "tower", "serde", "serde_json", "thiserror", "anyhow", "tracing", "tracing-subscriber", "futures"]
+    },
+    {
+      "id": "aion-worker",
+      "kind": "rust-lib",
+      "path": "crates/aion-worker",
+      "cluster": "aion-workers",
+      "description": "The Rust remote-worker SDK. Registers activity types, receives pushed tasks over the gRPC worker protocol, executes them out-of-process, reports results and heartbeats.",
+      "internal_deps": ["aion-core", "aion-proto"],
+      "external_deps": ["tokio", "tonic", "prost", "thiserror", "serde", "serde_json", "tracing", "futures"]
+    },
+    {
+      "id": "aion-client",
+      "kind": "rust-lib",
+      "path": "crates/aion-client",
+      "cluster": "aion-clients",
+      "description": "The Rust caller SDK: start, signal, query, cancel, list, subscribe over the aion-proto wire contract.",
+      "internal_deps": ["aion-core", "aion-proto"],
+      "external_deps": ["tokio", "tonic", "prost", "thiserror", "serde", "serde_json", "futures"]
+    },
+    {
+      "id": "aion_flow",
+      "kind": "gleam",
+      "path": "gleam/aion_flow",
+      "cluster": "aion-flow",
+      "description": "The Gleam authoring SDK (Hex). workflow, activity, signal, query, timer, child, error, and testing modules, with @external bindings to the engine NIFs. Compiles to the Erlang target, runs on beamr.",
+      "internal_deps": [],
+      "external_deps": ["gleam_stdlib"]
+    },
+    {
+      "id": "aion_client_gleam",
+      "kind": "gleam",
+      "path": "gleam/aion_client",
+      "cluster": "aion-clients",
+      "description": "The Gleam caller SDK: start, signal, query, cancel, list over the aion-server API.",
+      "internal_deps": [],
+      "external_deps": ["gleam_stdlib", "gleam_http"]
+    },
+    {
+      "id": "aion-worker-python",
+      "kind": "python",
+      "path": "sdks/python/aion-worker",
+      "cluster": "aion-workers",
+      "description": "The Python remote-worker SDK. The home for ML inference and existing Python business logic as out-of-process activities.",
+      "internal_deps": [],
+      "external_deps": []
+    },
+    {
+      "id": "aion-client-python",
+      "kind": "python",
+      "path": "sdks/python/aion-client",
+      "cluster": "aion-clients",
+      "description": "The Python caller SDK for starting, signalling, querying, and cancelling workflows.",
+      "internal_deps": [],
+      "external_deps": []
+    },
+    {
+      "id": "aion-worker-typescript",
+      "kind": "typescript",
+      "path": "sdks/typescript/aion-worker",
+      "cluster": "aion-workers",
+      "description": "The TypeScript/Node remote-worker SDK for out-of-process activities in the JS ecosystem.",
+      "internal_deps": [],
+      "external_deps": []
+    },
+    {
+      "id": "aion-client-typescript",
+      "kind": "typescript",
+      "path": "sdks/typescript/aion-client",
+      "cluster": "aion-clients",
+      "description": "The TypeScript caller SDK for starting, signalling, querying, and cancelling workflows.",
+      "internal_deps": [],
+      "external_deps": []
+    },
+    {
+      "id": "aion-dashboard",
+      "kind": "frontend",
+      "path": "apps/aion-dashboard",
+      "cluster": "aion-dashboard",
+      "description": "The monitoring web UI: workflow list, history viewer, and live event feed over WebSocket. React + Vite + Tailwind.",
+      "internal_deps": [],
+      "external_deps": []
+    }
+  ],
+  "planned": [
+    {"id": "aion-store-postgres", "cluster": "AX (not yet authored)", "description": "Alternative PostgreSQL backend for teams that prefer it."},
+    {"id": "aion-toolchain", "cluster": "AO (not yet authored)", "description": "Optional server-side Gleam compile/type-check/package via the gleam binary."},
+    {"id": "aion_flow_ex", "cluster": "Elixir SDK (later)", "description": "Elixir authoring SDK, blocked on beamr opcode/BIF coverage for Elixir."}
+  ]
+}

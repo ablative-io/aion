@@ -1,0 +1,39 @@
+{
+  "cluster": "aion-nif",
+  "personas": [
+    {
+      "name": "In-VM Activity Author",
+      "role": "Writing Native Rust NIFs for Workflows",
+      "stories": [
+        {"id": "S1", "text": "As an in-VM activity author, I want to declare a native function with ordinary typed Rust arguments and return value so that I never hand-write term decoding or encoding."},
+        {"id": "S2", "text": "As an in-VM activity author, I want to write a NIF directly over my own Serialize/Deserialize structs so that workflow values marshal across the boundary without manual JSON glue."},
+        {"id": "S3", "text": "As an in-VM activity author, I want a panic in my NIF body to surface as a typed error rather than crash the VM so that a bug in one helper does not take down the scheduler."},
+        {"id": "S4", "text": "As an in-VM activity author writing a side-effectful operation, I want the API to force it to be an activity returning an ActivityError so that I cannot accidentally make it an inline helper that breaks replay."}
+      ]
+    },
+    {
+      "name": "Workflow Author",
+      "role": "Calling NIFs from Gleam Workflow Code",
+      "stories": [
+        {"id": "S5", "text": "As a workflow author, I want deterministic NIF helpers to be callable inline from my workflow so that pure transforms (JSON, templating, formatting) cost nothing extra and replay safely."},
+        {"id": "S6", "text": "As a workflow author, I want any side-effectful NIF to go through the activity contract so that its result is recorded once and returned from history on replay instead of running twice."}
+      ]
+    },
+    {
+      "name": "Engine Operator",
+      "role": "Registering NIFs with the Engine",
+      "stories": [
+        {"id": "S7", "text": "As an engine operator, I want to hand a single NIF set to register_nifs so that wiring native helpers into the engine is one call, not per-function boilerplate."},
+        {"id": "S8", "text": "As an engine operator, I want a duplicate NIF declaration to be rejected at build time so that a registration clash is caught before the engine runs rather than silently overwriting a function."}
+      ]
+    },
+    {
+      "name": "Reviewer",
+      "role": "Auditing the Native Boundary",
+      "stories": [
+        {"id": "S9", "text": "As a reviewer, I want all unsafe confined to one documented FFI module with SAFETY comments so that I can audit the entire native-boundary risk surface in one place."},
+        {"id": "S10", "text": "As a reviewer, I want the deterministic-vs-side-effectful distinction enforced by the type system so that I can trust the determinism invariant without reading every call site."}
+      ]
+    }
+  ]
+}

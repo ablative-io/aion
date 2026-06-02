@@ -1,0 +1,58 @@
+{
+  "id": "AF-008",
+  "cluster": "aion-flow",
+  "title": "Queries: typed read-only handler registration and reply",
+  "depends_on": ["AF-007"],
+  "blocked_by": [],
+  "checklist": ["C28", "C29"],
+  "stories": ["S7"],
+  "purpose": "Let a workflow expose typed, read-only inspection of its state. A query handler registered for type a returns a; the engine's query service calls it and the SDK encodes the reply. No event is recorded for a query.",
+  "task": "Implement aion/query: query.handler(name, Codec(a), fn() -> a) registering a typed read-only handler bound to AT's query service via the ffi layer, with the reply encoded by the SDK and unknown-query handling returning a typed QueryError. A query records no event.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Typed query handler registration",
+      "spec": "THE SYSTEM SHALL define query.handler(name, Codec(a), fn() -> a) registering a read-only handler whose return type a is fixed at registration, with the reply encoded by the SDK.",
+      "acceptance": [
+        "query.gleam defines handler(name: String, Codec(a), reply: fn() -> a) registering the handler with AT's query service via the ffi layer; the return type a is fixed at registration.",
+        "When the engine dispatches a query, the SDK invokes the handler, encodes the returned value with the Codec, and replies on the engine's reply channel.",
+        "By type and by documented convention the handler returns a value and does not run an activity (it is read-only).",
+        "A harness test registers a handler returning a typed state value and asserts a dispatched query returns the decoded value."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/query.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C28"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "No-record guarantee and unknown-query handling",
+      "spec": "THE SYSTEM SHALL ensure a query records no event (binding to AT's read-only query service) and that an unknown query name yields a typed QueryError.",
+      "acceptance": [
+        "A doc comment states that a query records no Event (AT D6/CO7) and never blocks workflow progress.",
+        "Dispatching an unregistered query name returns a typed QueryError (unknown query), not a panic and not a fabricated answer.",
+        "A harness test asserts: a query produces no recorded observation in the env's capture, and an unknown query returns the typed QueryError."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/query.gleam"]
+      },
+      "checklist": ["C29"],
+      "stories": ["S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the query service, dispatch, timeout, or reply channel — those are AT-007. This brief binds to them.",
+    "SHALL NOT allow a query handler to record an event or run an activity.",
+    "SHALL NOT let a query return value cross the boundary without a Codec (CO9)."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for handler registration and unknown-query tests under the harness.",
+    "No panic/todo; queries record nothing in the harness capture."
+  ]
+}

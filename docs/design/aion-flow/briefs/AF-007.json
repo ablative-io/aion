@@ -1,0 +1,74 @@
+{
+  "id": "AF-007",
+  "cluster": "aion-flow",
+  "title": "Signals: SignalRef, typed receive, typed send",
+  "depends_on": ["AF-006"],
+  "blocked_by": [],
+  "checklist": ["C25", "C26", "C27"],
+  "stories": ["S7"],
+  "purpose": "Make signals type-safe. A SignalRef(payload) names a signal and carries its payload type; workflow.receive decodes the recorded SignalReceived payload to the typed value; a typed send helper delivers a typed payload to a workflow.",
+  "task": "Implement aion/signal: signal.new(name, Codec(payload)) -> SignalRef(payload); workflow.receive(SignalRef(payload)) -> Result(payload, ReceiveError) decoding the recorded payload; and a typed send helper for the in-engine / Gleam-client side. Bind to AT's signal router via the ffi layer.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SignalRef and signal.new",
+      "spec": "THE SYSTEM SHALL define signal.new(name, Codec(payload)) -> SignalRef(payload) carrying the signal name and payload type.",
+      "acceptance": [
+        "signal.gleam defines an opaque SignalRef(payload) carrying the name and the payload Codec.",
+        "signal.new(name: String, Codec(payload)) -> SignalRef(payload) constructs it; the payload type parameter flows into receive and send.",
+        "A unit test constructs a SignalRef with a concrete payload type and reads back its name."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/signal.gleam"],
+        "modify": []
+      },
+      "checklist": ["C25"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "Typed receive",
+      "spec": "THE SYSTEM SHALL define workflow.receive(SignalRef(payload)) -> Result(payload, ReceiveError) decoding the recorded SignalReceived payload to the typed value, binding to AT's signal router.",
+      "acceptance": [
+        "receive(SignalRef(payload)) blocks (selective-receive semantics) until the named signal arrives, then decodes the payload with the ref's Codec and returns Result(payload, ReceiveError).",
+        "On replay the recorded SignalReceived is returned without waiting (AT D4); the SDK relies on AT/AD for that — it binds via ffi.",
+        "A decode failure surfaces as a typed ReceiveError, never a panic; with_timeout (AF-006) composes around receive.",
+        "A harness test sends a typed signal and asserts receive returns the decoded value."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/signal.gleam", "gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C26"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R3",
+      "title": "Typed send helper",
+      "spec": "THE SYSTEM SHALL define a typed send helper that sends a typed payload to a workflow by id and signal name (the in-engine / Gleam-client side), binding to AT's signal router.",
+      "acceptance": [
+        "signal.send(workflow_id, SignalRef(payload), payload) encodes the payload via the ref's Codec and binds to AT's signal-delivery mechanism via the ffi layer.",
+        "A doc comment states this is the in-engine / Gleam-client typed binding, not an HTTP client (network clients are AL).",
+        "A harness test asserts a sent typed payload is delivered to a receiving workflow under the env."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/signal.gleam", "gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C27"],
+      "stories": ["S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the signal router, mailbox delivery, or durability — those are AT-005/AT-006. This brief binds to them.",
+    "SHALL NOT provide an HTTP/network client — that is AL.",
+    "SHALL NOT let a payload cross the boundary without a Codec (CO9)."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for SignalRef, receive, and send tests under the harness.",
+    "No panic/todo; decode failures are typed ReceiveError."
+  ]
+}

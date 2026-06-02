@@ -1,0 +1,66 @@
+{
+  "cluster": "aion-store-libsql",
+  "sections": [
+    {
+      "name": "Crate, Config, and Error Mapping",
+      "items": [
+        {"id": "C1", "text": "crates/aion-store-libsql exists, is a workspace member, and depends only on aion-store among Aion crates (plus external crates: libsql, serde, thiserror, chrono, async-trait or native async).", "done": false},
+        {"id": "C2", "text": "src/lib.rs contains only module declarations and re-exports, no logic.", "done": false},
+        {"id": "C3", "text": "LibSqlConfig is a Deserialize-only type whose mode enum selects Embedded { path } or EmbeddedReplica { path, primary_url, auth_token }.", "done": false},
+        {"id": "C4", "text": "LibSqlConfig exposes libSQL durability/WAL settings (e.g. sync interval for replica mode, journal/WAL options) with no hardcoded default values baked into the crate.", "done": false},
+        {"id": "C5", "text": "A boundary error-mapping module maps every libsql driver error and serde (de)serialisation failure into StoreError (Backend, Serialization), so no foreign error type leaks across the EventStore surface.", "done": false}
+      ]
+    },
+    {
+      "name": "Connection and Schema",
+      "items": [
+        {"id": "C6", "text": "Opening in Embedded mode produces a working connection to a local file database.", "done": false},
+        {"id": "C7", "text": "Opening in EmbeddedReplica mode produces a local replica connection configured to sync with the remote primary URL using the auth token.", "done": false},
+        {"id": "C8", "text": "Opening a store runs idempotent DDL (CREATE TABLE IF NOT EXISTS) so a fresh file and an existing file both arrive at the same schema with no external migration tool.", "done": false},
+        {"id": "C9", "text": "The events table has columns workflow_id, seq, event (serialised blob), recorded_at, with primary key (workflow_id, seq) and a secondary index supporting query/list_active projections.", "done": false},
+        {"id": "C10", "text": "The timers table has columns workflow_id, timer_id, fire_at, with primary key (workflow_id, timer_id) and an index on fire_at.", "done": false}
+      ]
+    },
+    {
+      "name": "Store Wiring",
+      "items": [
+        {"id": "C11", "text": "LibSqlStore is a Send + Sync + 'static type holding the libSQL connection, constructed from a LibSqlConfig.", "done": false},
+        {"id": "C12", "text": "LibSqlStore implements the aion-store EventStore trait and is usable as Arc<dyn EventStore>.", "done": false},
+        {"id": "C13", "text": "An open/constructor associated function (e.g. LibSqlStore::open and/or LibSqlStore::connect) builds the store from a config and ensures the schema exists before returning.", "done": false}
+      ]
+    },
+    {
+      "name": "Atomic Append",
+      "items": [
+        {"id": "C14", "text": "append reads the current head seq for the workflow and compares the expected next sequence inside one libSQL transaction.", "done": false},
+        {"id": "C15", "text": "On a matching expected sequence, all events in the batch are inserted with contiguous seq values and the transaction commits.", "done": false},
+        {"id": "C16", "text": "On a non-matching expected sequence, the transaction rolls back, no events are persisted, and StoreError::SequenceConflict { expected, found } is returned.", "done": false},
+        {"id": "C17", "text": "Two appends racing on the same expected sequence resolve to exactly one commit and one SequenceConflict, with no partial batch written.", "done": false}
+      ]
+    },
+    {
+      "name": "Reads, Listing, and Query",
+      "items": [
+        {"id": "C18", "text": "read_history returns a workflow's complete event history in ascending seq order, deserialised from the stored blobs.", "done": false},
+        {"id": "C19", "text": "list_active returns the WorkflowIds whose projected status (via aion-core's projection) is non-terminal (Running).", "done": false},
+        {"id": "C20", "text": "query translates a WorkflowFilter (workflow type, status, time range, parent) into a SQL WHERE clause and returns matching WorkflowSummary values.", "done": false},
+        {"id": "C21", "text": "WorkflowStatus and WorkflowSummary fields are derived from lifecycle event rows via aion-core's projection; there is no mutable stored status column.", "done": false}
+      ]
+    },
+    {
+      "name": "Durable Timers",
+      "items": [
+        {"id": "C22", "text": "schedule_timer persists a TimerEntry into the timers table keyed by (workflow_id, timer_id); re-scheduling the same timer id replaces the prior row (idempotent under replay).", "done": false},
+        {"id": "C23", "text": "expired_timers(as_of) returns all timers with fire_at <= as_of and excludes timers not yet due.", "done": false}
+      ]
+    },
+    {
+      "name": "Conformance and Durability Verification",
+      "items": [
+        {"id": "C24", "text": "The shared AC-007 conformance suite (run_event_store_suite) runs against LibSqlStore over a temporary local file as a real, non-gated runtime test and passes.", "done": false},
+        {"id": "C25", "text": "Persistence-across-reopen tests append history, drop the store, reopen the same file, and assert read_history, list_active, and timers are intact.", "done": false},
+        {"id": "C26", "text": "Embedded-replica sync is exercised by a test runtime-gated on AION_LIBSQL_TEST_URL: when the env var is unset the test emits a tracing skip line and returns Ok; it is never marked #[ignore].", "done": false}
+      ]
+    }
+  ]
+}

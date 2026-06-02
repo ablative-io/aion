@@ -1,0 +1,29 @@
+# Rust
+/target
+**/target
+
+# Gleam
+**/build
+*.beam
+*.ez
+
+# Node / TypeScript
+node_modules
+**/dist
+*.tsbuildinfo
+
+# Python
+__pycache__
+*.egg-info
+.venv
+.mypy_cache
+.pytest_cache
+
+# Aion build artifacts
+*.aion
+
+# OS / editor
+.DS_Store
+*.swp
+.idea
+.vscode

@@ -1,0 +1,33 @@
+{
+  "cluster": "aion-durability",
+  "personas": [
+    {
+      "name": "Engine",
+      "role": "Recording and Replaying Workflows",
+      "stories": [
+        {"id": "S1", "text": "As the engine, I want a single writer per workflow that owns the sequence head so that every event lands with the correct expected sequence and the log never races or develops gaps."},
+        {"id": "S2", "text": "As the engine, I want to replay a workflow from its recorded history and have every activity, timer, signal, and child call return its recorded outcome so that I reconstruct the exact prior state without repeating side effects."},
+        {"id": "S3", "text": "As the engine, I want replay to tell me the resume point so that I know precisely where live execution should continue."},
+        {"id": "S4", "text": "As the engine, I want activity results served from recorded history during replay so that a completed activity is never dispatched a second time."},
+        {"id": "S5", "text": "As the engine, I want a single seam (LiveExecutor) that is called only after the resume point so that replay performs no live side effect and live execution is cleanly separated."}
+      ]
+    },
+    {
+      "name": "Operator",
+      "role": "Recovering and Diagnosing",
+      "stories": [
+        {"id": "S6", "text": "As an operator, I want every active workflow to be replayed and resumed automatically on engine startup so that no in-flight workflow is silently lost after a restart."},
+        {"id": "S7", "text": "As an operator, I want a non-deterministic workflow to fail loudly with an error that names the workflow, the position, and what diverged so that I can find and fix the offending workflow code instead of debugging corrupted state."},
+        {"id": "S8", "text": "As an operator, I want a failure recovering one workflow not to abort recovery of the others so that one bad workflow cannot take down the whole engine restart."}
+      ]
+    },
+    {
+      "name": "Workflow Author",
+      "role": "Writing Deterministic Workflows",
+      "stories": [
+        {"id": "S9", "text": "As a workflow author, I want workflow.now to return the recorded event time and workflow.random to return a workflow-seeded value so that my workflow replays to exactly the same state every time without me thinking about it."},
+        {"id": "S10", "text": "As a workflow author, I want replay to be invisible so that I write a normal deterministic function and never code differently for the replay case."}
+      ]
+    }
+  ]
+}

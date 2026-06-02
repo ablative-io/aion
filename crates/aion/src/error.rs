@@ -1,0 +1,1 @@
+//! EngineError thiserror taxonomy

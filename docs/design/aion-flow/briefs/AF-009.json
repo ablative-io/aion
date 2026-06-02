@@ -1,0 +1,59 @@
+{
+  "id": "AF-009",
+  "cluster": "aion-flow",
+  "title": "Child workflows: ChildHandle, spawn, await",
+  "depends_on": ["AF-008"],
+  "blocked_by": [],
+  "checklist": ["C30", "C31"],
+  "stories": ["S8"],
+  "purpose": "Let a workflow spawn other workflows as typed children. workflow.spawn yields a ChildHandle(output, error); spawn_and_wait blocks for the result; child.await collects a handle's recorded result. The child's output and error types are carried through.",
+  "task": "Implement aion/child: ChildHandle(o, e); workflow.spawn(name, workflow_fn, input, codecs) -> ChildHandle(o, e) and workflow.spawn_and_wait(...) -> Result(o, e) wrappers; child.await(ChildHandle(o, e)) -> Result(o, e). Bind to AT's child-workflow spawner via the ffi layer, encoding the input and decoding the recorded child result.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ChildHandle and spawn",
+      "spec": "THE SYSTEM SHALL define ChildHandle(o, e) and workflow.spawn(name, workflow_fn, input, codecs) -> ChildHandle(o, e) starting a child workflow as a linked execution, carrying the child output and error types.",
+      "acceptance": [
+        "child.gleam defines an opaque ChildHandle(o, e) carrying the child's correlation/handle and the output/error Codecs.",
+        "workflow.spawn(name, workflow_fn: fn(i) -> Result(o, e), input: i, codecs) encodes the input and binds to AT's child-spawn mechanism (linked process, ChildWorkflowStarted recorded), returning a ChildHandle(o, e).",
+        "The workflow_fn's o and e types flow into the ChildHandle so await/spawn_and_wait return Result(o, e).",
+        "A harness test spawns a typed child and asserts the handle carries the expected types (compiles) and a started observation is captured."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/child.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/workflow.gleam", "gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C30"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "await and spawn_and_wait",
+      "spec": "THE SYSTEM SHALL define child.await(ChildHandle(o, e)) -> Result(o, e) collecting the recorded child result, and workflow.spawn_and_wait(...) -> Result(o, e) as the spawn-then-await convenience.",
+      "acceptance": [
+        "child.await(ChildHandle(o, e)) blocks for the child result via AT's await mechanism, decoding the recorded ChildWorkflowCompleted result with the output Codec or returning the decoded child error on ChildWorkflowFailed.",
+        "workflow.spawn_and_wait(name, workflow_fn, input, codecs) -> Result(o, e) is spawn followed by await.",
+        "On replay the recorded child result is returned without re-spawning (AT D8/AD); the SDK relies on AT/AD via ffi.",
+        "A harness test (mocking the child result) asserts spawn_and_wait returns the decoded typed Ok and that a failing child returns the decoded typed Err."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/child.gleam", "gleam/aion_flow/src/aion/workflow.gleam"]
+      },
+      "checklist": ["C31"],
+      "stories": ["S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement child-workflow lifecycle, linking, supervision, or result recording — those are AT-008 and AE. This brief binds to them.",
+    "SHALL NOT implement all/race/map — that is AF-010.",
+    "SHALL NOT let child input/output cross the boundary without Codecs (CO9)."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for spawn, await, and spawn_and_wait tests under the harness.",
+    "No panic/todo; child types are carried through the handle."
+  ]
+}

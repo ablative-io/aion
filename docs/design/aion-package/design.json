@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-package",
+  "title": "Aion Package — The .aion Workflow Archive Format",
+  "intention": "Define the .aion package — the single file a workflow is deployed as — and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+  "problem": [
+    "The engine needs a stable, self-describing input. Without a package format, deploying a workflow means shipping loose .beam files, a hand-maintained entry-point record, an out-of-band note of input/output shapes, and a separately tracked version string — four things that drift apart and that the engine cannot verify belong together.",
+    "Versioning is the sharpest edge: Aion workflows are long-lived (one may sleep for months), and beamr enforces a two-deep same-name module-version limit. A workflow pinning an old version for months would, under naive same-name versioning, block every subsequent deploy. The resolution is to namespace each deployed module by the package's content hash so each version is a distinct, immutable module — and that must be implemented in the format and loader-facing surface, because the hash and namespaced names are derived at pack and load time.",
+    "Integrity is the third edge: a .aion travels between hosts, registries, and networks, so a truncated, tampered, or bit-rotted package must be rejected at load — not discovered mid-registration. The content hash that doubles as the version is also the integrity check, but only if the load path recomputes and compares it rather than trusting the stored value.",
+    "This must be settled early: the engine's load path (cluster AE) consumes .aion packages, and the indicative build order places this format immediately after the persistence contract and before the core engine."
+  ],
+  "solution": {
+    "summary": "One crate, aion-package, depending only on aion-core among Aion crates. It owns the .aion format end to end. The archive is a ZIP container with a fixed layout: manifest.json (a typed Manifest: entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version, format_version), a beam/ directory of compiled .beam modules, and an optional src/ directory of Gleam source. The content hash of the canonical beam set IS the version — computed over module names and bytes in sorted order, independent of compression, timestamps, or source inclusion, recorded in the manifest at pack time and recomputed at load time. Deployed module names are namespaced by the content hash (logical_name$hash) via a pure bijective transform this crate owns, so version N and N+5 coexist as distinct immutable modules and beamr's two-deep limit never binds. PackageBuilder writes a .aion deterministically (byte-identical for identical inputs). Package::load reads from a path or buffer, parses and checks the manifest, recomputes the content hash, rejects on mismatch, and exposes a validated in-memory Package with namespaced names ready for the engine to register. The crate performs no VM loading and no event-store I/O."
+  },
+  "decisions": [
+    {"id": "D1", "title": "ZIP container with a fixed internal layout", "status": "active", "choice": "A .aion is a ZIP archive with a fixed layout: manifest.json at the root, a beam/ directory of compiled .beam modules, and an optional src/ directory of Gleam source. ZIP is chosen for ubiquitous tooling (an operator can unzip -l a package), random access to entries, and per-entry compression. Rejected: a bespoke binary container — it would need its own tooling for no benefit over ZIP."},
+    {"id": "D2", "title": "The content hash of the compiled beams IS the version", "status": "active", "choice": "The version identifier is not a human-assigned string; it is a hash computed over the set of .beam files. A new set of beams is a new version automatically and unforgeably. The hash is recorded in the manifest at pack time and recomputed at load time. Rejected a human-assigned semantic version: it can lie, collide, and requires discipline the format should not depend on. The content hash cannot lie about what is in the package."},
+    {"id": "D3", "title": "The hash covers the canonical beam set, not the archive", "status": "active", "choice": "The hash is computed over a canonical serialisation of the beam set alone — sorted by logical module name, each contributing its name and exact bytes — not over the archive file. This makes the version stable across irrelevant variation: source inclusion, ZIP compression level, entry mtimes, on-disk ordering. Two packages with identical beams are the same version. Rejected hashing the archive bytes: it would tie the version to packaging incidentals and break reproducibility."},
+    {"id": "D4", "title": "Deployed module names are namespaced by the content hash", "status": "active", "choice": "Each module is registered (by the engine) under a name derived from its logical name and the package's content hash (e.g. order_workflow$<hash>), not its bare logical name. This crate owns the namespacing scheme — a pure, total bijection between (logical name, content hash) and deployed name, plus its inverse. Consequences: version N and N+5 coexist as distinct immutable modules; beamr's two-deep same-name limit never binds for workflow modules; replay is safe by construction because an in-flight execution names its modules by the hash it started on and that set never mutates. Application-level versioning on top of beamr's VM-level dual-version hot-loading underneath."},
+    {"id": "D5", "title": "Manifest is a typed struct with a format_version", "status": "active", "choice": "manifest.json is a typed Manifest serialised to JSON, carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version (the content hash), and format_version (the .aion format's own schema version). format_version makes a future layout change detectable rather than silently misread. Rejected free-form metadata: a typed manifest validates at the boundary and reads like a deployment descriptor."},
+    {"id": "D6", "title": "Deterministic, reproducible write path", "status": "active", "choice": "PackageBuilder writes a .aion deterministically: identical inputs produce a byte-identical archive. No wall-clock timestamps, no nondeterministic entry ordering. Reproducible builds make a package's bytes a function of its content, which complements content-hash versioning. Rejected leaking mtimes/order: it would make otherwise-identical packages differ byte-wise."},
+    {"id": "D7", "title": "Integrity is verified on load, never trusted", "status": "active", "choice": "Package::load recomputes the content hash over the extracted beams and compares it to the manifest's stored version; a mismatch rejects the package with IntegrityError before any further use. The stored version is a claim; the recomputed hash is the proof. Rejected trusting the stored hash: a truncated or tampered package would otherwise be accepted."},
+    {"id": "D8", "title": "Loading is total and side-effect free", "status": "active", "choice": "The read path produces a validated in-memory Package and nothing else — it never registers modules into a VM and never touches the event store. Every malformed-input case (not a ZIP, missing manifest, unknown format_version, missing entry module, hash mismatch, malformed beam entry) maps to a distinct typed PackageError; no panic, no silent fallback, no partial result on error. The engine (AE) does the registering."},
+    {"id": "D9", "title": "aion-package depends only on aion-core", "status": "active", "choice": "Among Aion crates, aion-package depends only on aion-core (for the version record type and identifier conventions). It must not depend on aion, aion-server, beamr, or any storage backend. This keeps the format independent of the engine and loadable/inspectable in isolation by tooling and the optional toolchain."},
+    {"id": "D10", "title": "Version record produced from a loaded Package", "status": "active", "choice": "aion-core defines the cross-system version record type. This crate produces it from a loaded Package (logical entry module, content hash, declared activities, schemas) so the engine and store reference a workflow version through one shared type rather than re-deriving it. This crate produces the record; it does not write it to the store (that is AC/AS/AX)."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "unsafe_code = deny in the crate."},
+    {"id": "CO2", "description": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."},
+    {"id": "CO3", "description": "lib.rs/mod.rs are declarations and re-exports only."},
+    {"id": "CO4", "description": "500-line file limit (excluding tests/comments/whitespace)."},
+    {"id": "CO5", "description": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."},
+    {"id": "CO6", "description": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."},
+    {"id": "CO7", "description": "The content hash is computed over the canonical beam set only — never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."},
+    {"id": "CO8", "description": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."},
+    {"id": "CO9", "description": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."},
+    {"id": "CO10", "description": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."},
+    {"id": "CO11", "description": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."},
+    {"id": "CO12", "description": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."}
+  ],
+  "goals": [
+    "A .aion is a ZIP container with a fixed layout: manifest.json, beam/ modules, optional src/ source.",
+    "Manifest is a typed struct: entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version, format_version.",
+    "The content hash of the canonical beam set is the workflow version, stable across compression/timestamps/source-inclusion.",
+    "Deployed module names are namespaced by the content hash via a pure bijective transform with a verified round-trip.",
+    "PackageBuilder writes a byte-identical .aion for identical inputs (reproducible).",
+    "Package::load reads from a path or buffer, validates the manifest and format_version, and extracts the beam set.",
+    "Load recomputes the content hash and rejects integrity mismatches before any further use.",
+    "Loading is total: every malformed-input case maps to a distinct typed PackageError; no panic or partial result.",
+    "A version record is producible from a loaded Package for the engine and store to share.",
+    "Namespaced module names for a loaded package are exposed ready for the engine to register."
+  ],
+  "non_goals": [
+    "No loading modules into beamr and running them (engine, cluster AE); this crate produces the namespaced names, the engine applies them.",
+    "No compiling Gleam source to beams (optional aion-toolchain, separate cluster); this crate packages already-compiled beams.",
+    "No event store or persistence (AC/AS/AX); the version record produced here is referenced by the store, not written by this crate.",
+    "No network transport or registry protocol for shipping .aion files (AW and beyond).",
+    "No hot-code-loading mechanism (beamr + engine); this crate defines the unit and naming scheme, not the load operation.",
+    "No signing or encryption; integrity here is a content hash, not authenticity — cryptographic signing is a later, separate concern."
+  ],
+  "structure": {
+    "crates/aion-package/src/lib.rs": "[AP-001] thin re-export surface",
+    "crates/aion-package/src/error.rs": "[AP-001] PackageError taxonomy",
+    "crates/aion-package/src/beam.rs": "[AP-001] BeamModule + BeamSet with canonical ordering",
+    "crates/aion-package/src/manifest.rs": "[AP-002] Manifest struct + format_version + serde",
+    "crates/aion-package/src/hash.rs": "[AP-003] content-hash computation over the canonical beam set",
+    "crates/aion-package/src/namespace.rs": "[AP-004] logical-name <-> namespaced-name bijection",
+    "crates/aion-package/src/builder.rs": "[AP-005] PackageBuilder — deterministic write path",
+    "crates/aion-package/src/package.rs": "[AP-006] Package + load (read path) + integrity check",
+    "crates/aion-package/src/version.rs": "[AP-007] version-record production from a Package",
+    "crates/aion-package/tests/roundtrip.rs": "[AP-007] write/read round-trip + reproducibility + integrity-rejection suite"
+  }
+}

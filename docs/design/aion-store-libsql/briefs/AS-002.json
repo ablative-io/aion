@@ -1,0 +1,95 @@
+{
+  "id": "AS-002",
+  "cluster": "aion-store-libsql",
+  "title": "libSQL connection opening and idempotent schema",
+  "depends_on": ["AS-001"],
+  "blocked_by": [],
+  "checklist": ["C6", "C7", "C8", "C9", "C10"],
+  "stories": ["S1", "S2"],
+  "purpose": "Open a libSQL connection in either embedded or embedded-replica mode from a LibSqlConfig, and create the events and timers schema idempotently on open. This is the substrate the EventStore impl reads and writes through.",
+  "task": "Build the connection module that turns a LibSqlConfig into a working libSQL connection — a local file in Embedded mode, a local replica syncing to a remote primary in EmbeddedReplica mode. Build the schema module with the events and timers table DDL and a migration function that creates them idempotently (CREATE TABLE IF NOT EXISTS). Do NOT implement EventStore methods here — only connection and schema.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Open an embedded (local file) connection",
+      "spec": "WHEN constructed from a LibSqlConfig in Embedded mode, THE SYSTEM SHALL open a libSQL connection to the local file at the configured path, applying the configured WAL/journal settings where present.",
+      "acceptance": [
+        "connection.rs provides an async function that, given an Embedded config, returns a libSQL connection (or database handle) to the local file.",
+        "Configured WAL/journal settings present on the config are applied to the connection; absent settings are not overridden by crate-chosen defaults (per AS-001 R3).",
+        "A test opens an embedded connection at a tempfile path and executes a trivial SELECT 1 successfully.",
+        "Any libsql error during open is mapped to StoreError via the AS-001 error boundary."
+      ],
+      "files": {
+        "create": ["crates/aion-store-libsql/src/connection.rs"],
+        "modify": ["crates/aion-store-libsql/src/lib.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Open an embedded-replica connection",
+      "spec": "WHEN constructed from a LibSqlConfig in EmbeddedReplica mode, THE SYSTEM SHALL open a local replica database configured to sync with the remote primary_url using the auth_token, honouring the configured sync interval where present.",
+      "acceptance": [
+        "connection.rs provides the replica open path using libSQL's embedded-replica builder with the local path, primary_url, and auth_token from the config.",
+        "The configured sync interval, when present, is applied; when absent, no crate-chosen interval is assumed.",
+        "The open path returns a connection usable identically to the embedded path (same downstream type), so the EventStore impl is mode-agnostic.",
+        "Connection-open failures (bad URL, auth) are mapped to StoreError::Backend via the error boundary; this requirement does NOT require a live primary to test the embedded-replica open call path's error mapping."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/connection.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R3",
+      "title": "events and timers table DDL",
+      "spec": "THE SYSTEM SHALL define the DDL for an append-only events table and a durable timers table with the keys and indexes the store requires.",
+      "acceptance": [
+        "schema.rs defines the events table DDL: workflow_id TEXT, seq INTEGER, event BLOB, recorded_at TEXT, PRIMARY KEY (workflow_id, seq).",
+        "schema.rs defines a secondary index on events supporting query/list_active projection (e.g. on the lifecycle-event discriminant and recorded_at, or on workflow_id with the columns query needs).",
+        "schema.rs defines the timers table DDL: workflow_id TEXT, timer_id TEXT, fire_at TEXT, PRIMARY KEY (workflow_id, timer_id), plus an index on fire_at.",
+        "DDL statements use IF NOT EXISTS so they are idempotent."
+      ],
+      "files": {
+        "create": ["crates/aion-store-libsql/src/schema.rs"],
+        "modify": ["crates/aion-store-libsql/src/lib.rs"]
+      },
+      "checklist": ["C9", "C10"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R4",
+      "title": "Idempotent migration on open",
+      "spec": "WHEN a store is opened against a fresh or an existing database file, THE SYSTEM SHALL ensure the events and timers schema exists by running the idempotent DDL, arriving at the same schema in both cases with no external migration tool.",
+      "acceptance": [
+        "schema.rs provides an async ensure_schema(conn) that executes the events and timers DDL.",
+        "A test runs ensure_schema twice against the same connection and asserts the second run succeeds (idempotent, no error).",
+        "A test opens a fresh tempfile, runs ensure_schema, and asserts both tables and their indexes exist (e.g. via a query against sqlite_master / pragma).",
+        "Migration failures are mapped to StoreError::Backend via the error boundary."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/schema.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement append, read_history, list_active, query, or timer methods — those are AS-004, AS-005, AS-006.",
+    "SHALL NOT construct LibSqlStore or implement EventStore — that is AS-003.",
+    "SHALL NOT require a live remote primary to compile or to run its tests; replica open is built but live sync is exercised only in AS-008.",
+    "SHALL NOT introduce a mutable workflow/status table — summaries are derived from event rows (AS-005)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store-libsql passes.",
+    "cargo fmt --check passes.",
+    "ast-grep scan passes.",
+    "A reviewer confirms the DDL uses IF NOT EXISTS and the keys/indexes match the design (events PK (workflow_id, seq); timers PK (workflow_id, timer_id); index on fire_at).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

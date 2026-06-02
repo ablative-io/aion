@@ -1,0 +1,75 @@
+{
+  "id": "AW-003",
+  "cluster": "aion-server",
+  "title": "Workflow-management wire service (start/signal/query/cancel/list/describe)",
+  "depends_on": ["AW-002"],
+  "blocked_by": [],
+  "checklist": ["C8", "C9", "C10"],
+  "stories": ["S1", "S5"],
+  "purpose": "Define the gRPC service and request/response messages for the core workflow-management surface every caller uses. This is the wire form of the engine's start/signal/query/cancel/list/describe API — the contract client SDKs generate stubs from.",
+  "task": "Add workflow.proto declaring a service with StartWorkflow, Signal, Query, Cancel, ListWorkflows, and DescribeWorkflow RPCs and their request/response messages. Each request carries a namespace; inputs and results are aion-core Payload; ListWorkflows carries a WorkflowFilter and returns WorkflowSummary values; DescribeWorkflow returns a summary (and optionally history). Provide the serde request/response types and assert lossless proto<->serde round-trips.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Workflow service definition",
+      "spec": "THE SYSTEM SHALL define a gRPC service in workflow.proto with StartWorkflow, Signal, Query, Cancel, ListWorkflows, and DescribeWorkflow RPCs, each with a request and a response message.",
+      "acceptance": [
+        "workflow.proto defines a service exposing all six RPCs.",
+        "StartWorkflow request carries namespace, workflow type, and input Payload; response carries the assigned WorkflowId and RunId.",
+        "Signal request carries namespace, target WorkflowId, signal name, and payload Payload; Cancel request carries namespace, WorkflowId, and reason.",
+        "Query request carries namespace, WorkflowId, and query name; response carries a result Payload or a WireError.",
+        "tonic-build generates the service stub and the crate compiles."
+      ],
+      "files": {
+        "create": ["crates/aion-proto/proto/workflow.proto"],
+        "modify": ["crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "Namespace, Payload, Filter, and Summary on the wire",
+      "spec": "THE SYSTEM SHALL carry a namespace on every request, carry inputs/results as aion-core Payload, and carry ListWorkflows as a WorkflowFilter returning WorkflowSummary values.",
+      "acceptance": [
+        "Every request message in workflow.proto has a namespace field.",
+        "Inputs and results use the common Payload message (from AW-002), not bespoke byte fields.",
+        "ListWorkflows request carries a WorkflowFilter (via the AW-002 envelope/conversion) and its response carries a repeated WorkflowSummary.",
+        "DescribeWorkflow response carries a WorkflowSummary (history inclusion is optional and, if present, carried as repeated Event envelopes)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/proto/workflow.proto", "crates/aion-proto/src/convert.rs"]
+      },
+      "checklist": ["C9"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Serde types and round-trip",
+      "spec": "THE SYSTEM SHALL provide serde request/response types for the workflow-management messages that derive Serialize + Deserialize and round-trip losslessly to and from their proto form.",
+      "acceptance": [
+        "Each workflow-management request/response has a serde-deriving Rust type (the generated prost type or a hand-paired serde type per the crate's chosen pattern).",
+        "A unit test round-trips at least StartWorkflow, ListWorkflows, and Query request+response through serde_json and through proto encode/decode, asserting equality.",
+        "All wire data types here derive both Serialize and Deserialize (CO7) — none is Deserialize-only (these are data, not credentials)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/src/convert.rs", "crates/aion-proto/src/lib.rs"]
+      },
+      "checklist": ["C10"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define event-streaming or worker messages — AW-004, AW-005.",
+    "SHALL NOT implement the server handlers that call the Engine — that is AW-008.",
+    "SHALL NOT add server-side orchestration semantics; this brief defines the wire shape only."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-proto passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

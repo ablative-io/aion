@@ -1,0 +1,73 @@
+{
+  "id": "AF-006",
+  "cluster": "aion-flow",
+  "title": "Timers: sleep, start_timer, cancel_timer, with_timeout",
+  "depends_on": ["AF-005"],
+  "blocked_by": [],
+  "checklist": ["C22", "C23", "C24"],
+  "stories": ["S6"],
+  "purpose": "Give the author durable waiting: an anonymous sleep, named cancellable timers, and a with_timeout combinator that bounds an awaiting operation. All over the unit-safe Duration type, all binding to AT's two-tier timer mechanics.",
+  "task": "Implement workflow/timer.gleam: sleep(Duration) (anonymous durable timer), start_timer(name, Duration) returning a cancellable reference, cancel_timer(reference) (no-op if already fired), and with_timeout wrapping an awaiting operation with a Duration deadline returning a typed TimedOut on expiry. Bind each to AT's timer mechanics via the ffi layer.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "sleep — anonymous durable timer",
+      "spec": "THE SYSTEM SHALL define workflow.sleep(Duration) binding to an anonymous durable timer (engine-assigned TimerId) that is not separately cancellable.",
+      "acceptance": [
+        "workflow/timer.gleam defines sleep(Duration) -> Nil (or Result for the cancellation-originated case), binding to AT's anonymous-sleep mechanism via the ffi layer.",
+        "A doc comment states the sleep is durable (survives restart, replayed instantly if already fired) and that cancelling a sleep means cancelling the workflow (AT D3); it is not separately cancellable.",
+        "A harness test advances simulated time past the sleep and asserts the workflow proceeds."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/workflow/timer.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/workflow.gleam", "gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C22"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "start_timer / cancel_timer — named cancellable timers",
+      "spec": "THE SYSTEM SHALL define workflow.start_timer(name, Duration) returning a timer reference and workflow.cancel_timer(reference) cancelling it, with cancelling an already-fired timer being a no-op.",
+      "acceptance": [
+        "start_timer(name: String, Duration) returns a typed timer reference (carrying the TimerId) bound to AT's named-timer mechanism.",
+        "cancel_timer(reference) disarms the timer; cancelling an already-fired timer is a no-op (not an error), matching AT D3.",
+        "A harness test starts a timer, cancels it before advancing past it, and asserts it does not fire; a second test fires it and asserts cancel is a no-op."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/workflow/timer.gleam", "gleam/aion_flow/src/aion/internal/ffi.gleam"]
+      },
+      "checklist": ["C23"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "with_timeout combinator",
+      "spec": "THE SYSTEM SHALL define workflow.with_timeout bounding an awaiting operation with a Duration deadline, returning a typed TimedOut on expiry.",
+      "acceptance": [
+        "with_timeout takes an awaiting operation (e.g. the result of workflow.receive) and a Duration, returning Result(value, TimedOut)-shaped output using the engine-originated timeout variant from AF-003.",
+        "On expiry it returns the typed timeout error; on completion before the deadline it returns the value.",
+        "A harness test asserts both paths: a receive that arrives within the deadline returns Ok, and one that does not returns the typed timeout."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/workflow/timer.gleam"]
+      },
+      "checklist": ["C24"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the timer wheel, durable timer recording, or recovery — those are AT-002/AT-003/AT-004. This brief binds to them.",
+    "SHALL NOT define signal receive itself — with_timeout wraps it; the receive is AF-007.",
+    "SHALL NOT introduce a default timer duration."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for sleep, named-timer, and with_timeout tests under the harness.",
+    "No panic/todo in new code; durations are Duration, not bare Int."
+  ]
+}

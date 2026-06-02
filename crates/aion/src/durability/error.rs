@@ -1,0 +1,1 @@
+//! NonDeterminismError + DurabilityError taxonomy

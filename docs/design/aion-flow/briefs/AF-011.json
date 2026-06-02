@@ -1,0 +1,90 @@
+{
+  "id": "AF-011",
+  "cluster": "aion-flow",
+  "title": "Test harness: simulated time, activity mocking, replay assertions",
+  "depends_on": ["AF-010"],
+  "blocked_by": [],
+  "checklist": ["C37", "C38", "C39", "C40"],
+  "stories": ["S9", "S10", "S11"],
+  "purpose": "Ship the Temporal-equivalent test harness so authors can test workflows without an engine. Simulate time so a month-long sleep resolves instantly, mock activities with canned typed results, and assert a workflow replays to the same observations — all in pure gleam test.",
+  "task": "Implement aion/testing and its submodules: a TestEnv binding the ffi surface to in-Gleam test implementations (no beamr, engine, or store); testing/clock.gleam (advance resolves pending sleeps/timers instantly); testing/mock.gleam (activity mock registry intercepting workflow.run); testing/replay.gleam (run-twice-over-history replay assertions). Author workflow code must be unchanged between test and production.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "TestEnv and the test-side ffi binding",
+      "spec": "THE SYSTEM SHALL define a TestEnv that runs entirely under gleam test with no beamr, engine, or store, binding the ffi surface to in-Gleam test implementations so author workflow code is unchanged between test and production.",
+      "acceptance": [
+        "aion/testing exposes a TestEnv constructed in a test, holding the simulated clock, the mock registry, and the observation capture.",
+        "The same ffi surface that production resolves to engine NIFs is, under the harness, resolved to in-Gleam test implementations (a test-only ffi shim / target), so a workflow function compiles and runs identically in test and production.",
+        "A doc comment states the harness requires no external services (CO11) and is the recommended way to test workflows.",
+        "A test runs a trivial workflow under a TestEnv and asserts it completes with the expected typed result."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/testing.gleam"],
+        "modify": []
+      },
+      "checklist": ["C37"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R2",
+      "title": "Simulated clock",
+      "spec": "THE SYSTEM SHALL define a simulated clock whose advance(Duration) resolves pending sleeps and timers instantly, with no wall-clock wait.",
+      "acceptance": [
+        "testing/clock.gleam implements a logical clock; advance(env, Duration) moves logical time forward and resolves any sleep/timer whose deadline is now reached, returning control with no wall-clock sleep.",
+        "workflow.now under the harness returns the simulated clock's current logical time (deterministically), not wall time.",
+        "A test sleeps for days(30), advances the clock, and asserts the workflow proceeds instantly (the test itself runs in milliseconds)."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/testing/clock.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/testing.gleam"]
+      },
+      "checklist": ["C38"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R3",
+      "title": "Activity mock registry",
+      "spec": "THE SYSTEM SHALL define an activity mock registry whose mock(name, fn(input) -> Result(output, ActivityError)) intercepts workflow.run for that activity and returns the canned typed result without dispatching a NIF.",
+      "acceptance": [
+        "testing/mock.gleam lets a test register mock(env, name, fn(input) -> Result(output, ActivityError)); when the workflow calls workflow.run on an activity of that name, the mock's typed result is returned instead of a NIF dispatch.",
+        "The mock is type-checked against the activity's input/output types so a wrong-typed mock fails to compile.",
+        "A test mocks an activity to return a canned result and asserts the workflow under the env observes it; a second mocks a Retryable failure and asserts the workflow sees the typed ActivityError."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/testing/mock.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/testing.gleam"]
+      },
+      "checklist": ["C39"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R4",
+      "title": "Replay assertions",
+      "spec": "THE SYSTEM SHALL define a replay assertion that runs a workflow over a recorded observation sequence twice and asserts the two observation sequences are identical, catching accidental non-determinism.",
+      "acceptance": [
+        "testing/replay.gleam captures the observation sequence of a workflow run under the env, replays the workflow against that captured history, and asserts the replayed observation sequence is identical.",
+        "A test with a deterministic workflow passes the replay assertion; a test with a deliberately non-deterministic workflow (e.g. branching on an un-recorded value) fails the assertion with a clear diagnostic.",
+        "A doc comment relates the assertion to AD's non-determinism detection: the harness surfaces in test what the engine would surface as a NonDeterminismError in production."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/testing/replay.gleam"],
+        "modify": ["gleam/aion_flow/src/aion/testing.gleam"]
+      },
+      "checklist": ["C40"],
+      "stories": ["S11"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT require a running engine, beamr, or store — the harness is pure Gleam (CO11).",
+    "SHALL NOT implement the production engine replay/determinism — it simulates the observable contract for tests; the real machinery is AD.",
+    "SHALL NOT change the author-facing API; workflow code is identical in test and production."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for the clock, mock, and replay-assertion tests, all running with no external services and in milliseconds (no wall-clock waits).",
+    "No panic/todo; a non-deterministic workflow fails the replay assertion with a diagnostic."
+  ]
+}

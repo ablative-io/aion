@@ -1,0 +1,76 @@
+{
+  "id": "AR-002",
+  "cluster": "aion-workers",
+  "title": "aion-worker (Rust) task receive loop and bounded concurrency",
+  "depends_on": ["AR-001"],
+  "blocked_by": [],
+  "checklist": ["C7", "C8"],
+  "stories": ["S6", "S8"],
+  "purpose": "Build the heart of the Rust worker: the loop that pulls tasks off the server-streamed receive call, decodes the task envelope, dispatches each to a bounded pool of concurrent executions, and feeds results back to the session for reporting. This is the runtime that turns a connected session into a serving worker.",
+  "task": "Implement the worker loop in runtime/loop_.rs and the task envelope decode in protocol/task.rs. The loop consumes the WorkerSession receive stream, decodes each ActivityTask (activity type, ActivityId, attempt, input Payload), and spawns its execution onto a bounded pool sized by WorkerConfig.max_concurrency, applying backpressure on the stream when the pool is saturated. Do not implement handler invocation/classification (AR-003), heartbeat (AR-004), or reconnect (AR-005) here — the loop calls into a dispatch seam those briefs fill.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ActivityTask envelope decode",
+      "spec": "THE SYSTEM SHALL decode a received task into an ActivityTask exposing the activity-type name, ActivityId, attempt number, and the input Payload with its content-type tag.",
+      "acceptance": [
+        "protocol/task.rs defines an ActivityTask struct (or thin wrapper over the aion-proto task message) exposing activity_type, activity_id (aion-core ActivityId), attempt: u32, and input: Payload.",
+        "Decoding preserves the Payload content-type tag exactly (no coercion), per CO7.",
+        "A malformed task message maps to WorkerError::Decode with the cause preserved.",
+        "A unit test decodes a representative aion-proto task message into an ActivityTask and asserts every field, including the content-type tag."
+      ],
+      "files": {
+        "create": ["crates/aion-worker/src/protocol/task.rs"],
+        "modify": ["crates/aion-worker/src/protocol/mod.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "Worker loop: receive and dispatch seam",
+      "spec": "WHILE the session is connected, THE SYSTEM SHALL consume the receive-task stream, decode each task, and hand it to a dispatch seam for execution, collecting results to report through the session.",
+      "acceptance": [
+        "runtime/loop_.rs defines the loop that drives the WorkerSession receive stream to completion (or until shutdown).",
+        "Each received task is decoded (R1) and passed to a dispatch entry point whose implementation lands in AR-003 (the loop depends on a trait/fn seam, not a concrete handler invoker).",
+        "Completed and failed outcomes from dispatch are routed back through WorkerSession::report_result / report_failure.",
+        "A test using the in-memory fake session feeds two tasks and asserts both are dispatched and their outcomes reported in correspondence to their ActivityIds.",
+        "The loop logs (via tracing) each task received and reported without logging payload contents."
+      ],
+      "files": {
+        "create": ["crates/aion-worker/src/runtime/mod.rs", "crates/aion-worker/src/runtime/loop_.rs"],
+        "modify": ["crates/aion-worker/src/lib.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "Bounded concurrency and backpressure",
+      "spec": "THE SYSTEM SHALL execute at most WorkerConfig.max_concurrency activities simultaneously and SHALL apply backpressure on the receive stream when the pool is saturated. THE SYSTEM SHALL NOT spawn executions unbounded.",
+      "acceptance": [
+        "The loop limits in-flight executions to max_concurrency using a semaphore or equivalent bounded primitive.",
+        "When max_concurrency executions are in flight, the loop stops pulling new tasks from the stream until a slot frees (backpressure), rather than buffering unboundedly.",
+        "A test sets max_concurrency = 2, feeds 5 slow tasks, and asserts no more than 2 execute concurrently (e.g. via a shared atomic gauge with an asserted peak of 2).",
+        "On shutdown, no new task is pulled and the bounded pool drains before the loop returns (drain semantics finalised in AR-006; the loop exposes the drain hook)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-worker/src/runtime/loop_.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT invoke typed handlers or classify failures — that is AR-003 (the loop calls a dispatch seam).",
+    "SHALL NOT send heartbeats (AR-004) or implement reconnect (AR-005).",
+    "SHALL NOT define the Worker builder or shutdown signal source — AR-006 (the loop exposes a drain hook AR-006 wires)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-worker passes, including the concurrency-cap test.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "cluster": "aion-time-signals",
+  "personas": [
+    {
+      "name": "Workflow Author",
+      "role": "Writing Durable, Interactive, Concurrent Workflows",
+      "stories": [
+        {"id": "S1", "text": "As a workflow author, I want my workflow to sleep for an arbitrary duration and resume after a VM restart so that long delays are durable, not lost on a crash."},
+        {"id": "S2", "text": "As a workflow author, I want to start a named timer and cancel it later so that I can model deadlines and SLAs that may be retired before they elapse."},
+        {"id": "S3", "text": "As a workflow author, I want to wait for a named signal and have it delivered the instant it arrives so that my workflow reacts to external events without polling."},
+        {"id": "S4", "text": "As a workflow author, I want a signal sent while my workflow was momentarily not resident to still reach me so that no external event is silently dropped."},
+        {"id": "S5", "text": "As a workflow author, I want to spawn a child workflow and await its result so that I can compose larger processes from smaller ones, each with its own durable history."},
+        {"id": "S6", "text": "As a workflow author, I want to fan work out with all, race the fastest of several with race, and fan out dynamically from data with map so that I can express concurrency directly without writing a join runtime."}
+      ]
+    },
+    {
+      "name": "Engine",
+      "role": "Driving Live Interaction and Recording It",
+      "stories": [
+        {"id": "S7", "text": "As the engine, I want every timer firing, signal arrival, and child outcome recorded as an aion-core Event so that replay can return the same observation without re-waiting or re-spawning."},
+        {"id": "S8", "text": "As the engine, I want a timer fired exactly once whether it fires on the live wheel or via recovery so that replay sees one TimerFired, never two and never none."},
+        {"id": "S9", "text": "As the engine, I want to recover elapsed timers on startup and on a periodic tick so that a workflow that slept across a restart wakes correctly."},
+        {"id": "S10", "text": "As the engine, I want cancellation to terminate losing or remaining child processes and record it so that no orphaned children leak and replay reconstructs which children were cancelled."}
+      ]
+    },
+    {
+      "name": "Operator",
+      "role": "Inspecting Live Workflows",
+      "stories": [
+        {"id": "S11", "text": "As an operator, I want to query a running workflow's current state without recording anything or disturbing its execution so that I can observe progress safely on a live system."},
+        {"id": "S12", "text": "As an operator, I want a query against an unresponsive, terminal, or unknown workflow to return a clear typed error rather than hang so that my tooling stays responsive."}
+      ]
+    },
+    {
+      "name": "Replay Engine (AD)",
+      "role": "Consuming the Recorded Events",
+      "stories": [
+        {"id": "S13", "text": "As the replay engine, I want recorded events to carry exactly what I need (timer id + fire_at, signal name + payload, child id + result/error, spawn correlation) so that on restore I can return recorded observations deterministically without re-running live delivery."}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "id": "AF-004",
+  "cluster": "aion-flow",
+  "title": "Activities: typed Activity values, decorators, RetryPolicy and Backoff",
+  "depends_on": ["AF-003"],
+  "blocked_by": [],
+  "checklist": ["C13", "C14", "C15", "C16"],
+  "stories": ["S5"],
+  "purpose": "Make activities typed values. activity.new builds an Activity(input, output) whose type parameters flow into workflow.run; the retry/timeout/heartbeat decorators attach typed policy data in a composable pipeline; RetryPolicy and Backoff are typed config with no baked-in defaults.",
+  "task": "Define aion/activity: an opaque Activity(i, o) carrying name, typed input, output Codec, runner, and policy config. Define activity.new and the retry/timeout/heartbeat decorators (each returning a new Activity(i, o)). Define RetryPolicy and the Backoff sum type (Exponential | Linear | Fixed). Bake in no default policy — an undecorated activity runs once.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Activity(i, o) and activity.new",
+      "spec": "THE SYSTEM SHALL define an opaque Activity(i, o) built by activity.new(name, input, run) carrying the name, typed input, an output Codec, and the runner fn(i) -> Result(o, ActivityError).",
+      "acceptance": [
+        "activity.gleam defines an opaque Activity(i, o) type parameterised by input and output.",
+        "activity.new(name: String, input: i, run: fn(i) -> Result(o, ActivityError)) constructs an Activity(i, o); the output Codec is supplied (as an argument or via a labelled field) so the result can be decoded at the boundary.",
+        "The type parameters i and o are carried such that workflow.run(Activity(i, o)) can return Result(o, ActivityError) (verified once AF-005 lands; this brief establishes the shape).",
+        "A unit test constructs an Activity with concrete input/output types and reads back its name."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/activity.gleam"],
+        "modify": []
+      },
+      "checklist": ["C13"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "retry / timeout / heartbeat decorators",
+      "spec": "THE SYSTEM SHALL define activity.retry, activity.timeout, and activity.heartbeat, each taking and returning an Activity(i, o) so they compose in a pipeline.",
+      "acceptance": [
+        "activity.retry(Activity(i, o), RetryPolicy) -> Activity(i, o) attaches the retry policy.",
+        "activity.timeout(Activity(i, o), Duration) -> Activity(i, o) attaches the timeout.",
+        "activity.heartbeat(Activity(i, o), Duration) -> Activity(i, o) attaches the heartbeat interval for long-running activities.",
+        "Each decorator returns a new Activity(i, o) preserving the type parameters; a unit test composes new |> retry |> timeout |> heartbeat and asserts the config is carried."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/activity.gleam"]
+      },
+      "checklist": ["C14"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "RetryPolicy and Backoff",
+      "spec": "THE SYSTEM SHALL define RetryPolicy (max_attempts + Backoff) and Backoff as a sum type with Exponential, Linear, and Fixed variants, with no default policy baked into the SDK.",
+      "acceptance": [
+        "RetryPolicy carries max_attempts and a Backoff (and any further documented fields, e.g. non-retryable-error filter, expressed in terms of AF-003's classification).",
+        "Backoff is Exponential(initial: Duration, multiplier, max: Duration), Linear(initial: Duration, increment: Duration, max: Duration), Fixed(delay: Duration).",
+        "No constructor supplies a default RetryPolicy, default timeout, or default backoff numbers; a doc comment states that an activity with no retry decorator runs exactly once (CO8 / no-assumed-defaults).",
+        "A unit test constructs each Backoff variant and a RetryPolicy and asserts the values are carried."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/activity.gleam"]
+      },
+      "checklist": ["C15", "C16"],
+      "stories": ["S5"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement activity dispatch — workflow.run is AF-005. This brief defines the Activity value and its policy data; dispatch reads them.",
+    "SHALL NOT bake in any default retry/timeout/backoff value (CO8).",
+    "SHALL NOT declare an @external — the Activity value is pure Gleam data; the ffi dispatch is AF-005."
+  ],
+  "verification": [
+    "gleam build passes.",
+    "gleam check passes.",
+    "gleam format --check passes.",
+    "gleam test passes for the activity construction, decorator composition, and policy tests.",
+    "No default policy values are present; no panic/todo in new code."
+  ]
+}

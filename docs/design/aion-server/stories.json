@@ -1,0 +1,54 @@
+{
+  "cluster": "aion-server",
+  "personas": [
+    {
+      "name": "Client SDK Author",
+      "role": "Building a caller SDK (cluster AL) against the wire contract",
+      "stories": [
+        {"id": "S1", "text": "As a client SDK author, I want one published wire contract with gRPC service definitions so that I can generate stubs for my language instead of inventing my own request and response shapes."},
+        {"id": "S2", "text": "As a client SDK author, I want failures to arrive as stable error codes so that my SDK can branch on 'workflow not found' versus 'namespace denied' without parsing strings."}
+      ]
+    },
+    {
+      "name": "Worker SDK Author",
+      "role": "Building a remote-worker SDK (cluster AR) against the wire contract",
+      "stories": [
+        {"id": "S3", "text": "As a worker SDK author, I want the worker protocol defined in the shared contract so that registration, task dispatch, results, and heartbeats are identical across every language."},
+        {"id": "S4", "text": "As a worker SDK author, I want my build to depend only on the wire contract and the domain types, never the engine, so that my worker binary stays small and decoupled."}
+      ]
+    },
+    {
+      "name": "Workflow Caller",
+      "role": "Driving workflows over the network",
+      "stories": [
+        {"id": "S5", "text": "As a workflow caller, I want to start, signal, query, cancel, list, and describe workflows over gRPC or HTTP so that I can drive the engine from any service without embedding it."}
+      ]
+    },
+    {
+      "name": "Dashboard / Observer",
+      "role": "Watching workflow execution in real time",
+      "stories": [
+        {"id": "S6", "text": "As an observer, I want to open a WebSocket and subscribe to one workflow, a filtered class, or the whole firehose so that I see events as they happen."},
+        {"id": "S7", "text": "As an observer on a slow connection, I want to be dropped with a clear lag signal so that my slowness never stalls the engine or other subscribers, and I know to resubscribe."},
+        {"id": "S8", "text": "As a dashboard, I want to be served by the server and backed by the same public API every client uses so that there is no privileged side channel to maintain."}
+      ]
+    },
+    {
+      "name": "Remote Worker",
+      "role": "Executing Tier-3 activities out of process",
+      "stories": [
+        {"id": "S9", "text": "As a remote worker, I want to connect once, advertise the activity types I implement, and have tasks pushed to me so that I run heavy work without polling."},
+        {"id": "S10", "text": "As a remote worker running a long activity, I want to heartbeat so that the engine knows I am alive and does not treat my task as failed."}
+      ]
+    },
+    {
+      "name": "Engine Operator",
+      "role": "Deploying and running the standalone server",
+      "stories": [
+        {"id": "S11", "text": "As an operator, I want a single binary I point clients and workers at, configured by file/env with no baked-in defaults, so that I can run a managed deployment without embedding the engine in my own code."},
+        {"id": "S12", "text": "As an operator running many tenants, I want each namespace isolated so that a caller or worker in one namespace can never touch another's workflows, events, or tasks."},
+        {"id": "S13", "text": "As a security-conscious operator, I want credentials in config to be load-only so that a DSN, token, or TLS key can never be accidentally re-serialised into a log, error, or response."}
+      ]
+    }
+  ]
+}
