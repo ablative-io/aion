@@ -18,7 +18,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/ablative/aion"
+repository = "https://github.com/ablative-io/aion"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

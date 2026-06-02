@@ -213,7 +213,7 @@ version = "0.1.0"
 edition = "{spec['rust']['edition']}"
 rust-version = "{spec['rust']['rust_version']}"
 license = "MIT"
-repository = "https://github.com/ablative/aion"
+repository = "https://github.com/ablative-io/aion"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
