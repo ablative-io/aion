@@ -245,7 +245,8 @@ def generate_gleam(comp: dict) -> None:
     write(f"{comp['path']}/gleam.toml",
           f'name = "{name}"\nversion = "0.1.0"\ntarget = "erlang"\n\n'
           f"[dependencies]\n{deps}\n", manifest=True)
-    write(f"{comp['path']}/src/{name}.gleam", f"//// {comp['description']}\n")
+    # Source files come from the cluster design.json structure (single source
+    # of truth); the generator owns only the manifest.
 
 
 def generate_python(comp: dict) -> None:
@@ -254,7 +255,7 @@ def generate_python(comp: dict) -> None:
           f'[project]\nname = "{comp["id"]}"\nversion = "0.1.0"\n'
           f'requires-python = ">=3.10"\ndescription = "{comp["description"]}"\n',
           manifest=True)
-    write(f"{comp['path']}/src/{pkg}/__init__.py", f'"""{comp["description"]}"""\n')
+    # Source files come from the cluster design.json structure.
 
 
 def generate_typescript(comp: dict) -> None:
@@ -269,7 +270,7 @@ def generate_typescript(comp: dict) -> None:
                       "moduleResolution": "bundler", "strict": True,
                       "declaration": True, "outDir": "dist", "rootDir": "src"},
                       "include": ["src"]}, indent=2) + "\n", manifest=True)
-    write(f"{comp['path']}/src/index.ts", f"// {comp['description']}\n")
+    # Source files come from the cluster design.json structure.
 
 
 def generate_frontend(comp: dict) -> None:
