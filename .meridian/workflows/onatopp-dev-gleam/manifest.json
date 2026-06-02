@@ -1,0 +1,14 @@
+{
+  "executor": "gleam",
+  "entry_module": "onatopp_dev",
+  "entry_function": "run",
+  "beam_dir": "build/dev/erlang/onatopp_dev/ebin",
+  "timeout_ms": 600000,
+  "inputs": {
+    "brief": "object",
+    "design": "object",
+    "checklist": "object",
+    "stories": "object",
+    "notify": "string?"
+  }
+}
