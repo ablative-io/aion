@@ -15,7 +15,7 @@
       "spec": "THE SYSTEM SHALL implement InMemoryStore as an EventStore backed by in-memory state behind a lock, implementing append, read_history, list_active, and query.",
       "acceptance": [
         "memory.rs defines InMemoryStore holding per-workflow event vectors and any derived index behind a Mutex or RwLock; the struct is Send + Sync and Default-constructible.",
-        "read_history returns the stored events in sequence order; NotFound is returned for an unknown workflow only where the contract specifies (otherwise an empty history per the documented semantics — match the trait docs from AC-005).",
+        "read_history returns the stored events in sequence order, and an empty Vec (never NotFound) for an unknown workflow, per the AC-005 contract.",
         "list_active returns workflows whose projected status (via aion-core status projection) is Running.",
         "query evaluates each workflow's summary against the filter using the aion-core filter semantics.",
         "Lock poisoning is handled explicitly (no unwrap that can panic on a poisoned lock)."

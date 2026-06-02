@@ -10,11 +10,11 @@
 
 ## Event Model
 
-- [ ] **C6** — Event enum has workflow-lifecycle variants: WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled.
-- [ ] **C7** — Event enum has activity variants: ActivityScheduled, ActivityStarted, ActivityCompleted, ActivityFailed.
+- [ ] **C6** — Event enum has workflow-lifecycle variants: WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowTimedOut.
+- [ ] **C7** — Event enum has activity variants: ActivityScheduled, ActivityStarted, ActivityCompleted, ActivityFailed (with attempt), ActivityCancelled.
 - [ ] **C8** — Event enum has timer variants: TimerStarted, TimerFired, TimerCancelled.
 - [ ] **C9** — Event enum has a SignalReceived variant carrying signal name and payload.
-- [ ] **C10** — Event enum has child-workflow variants: ChildWorkflowStarted, ChildWorkflowCompleted, ChildWorkflowFailed.
+- [ ] **C10** — Event enum has child-workflow variants: ChildWorkflowStarted, ChildWorkflowCompleted, ChildWorkflowFailed, ChildWorkflowCancelled.
 - [ ] **C11** — Every event carries an envelope with a monotonic per-workflow sequence number, a recorded timestamp, and the owning WorkflowId.
 - [ ] **C12** — Event derives Serialize and Deserialize and round-trips losslessly through serde_json.
 - [ ] **C13** — Payload is a newtype over bytes with a content-type tag.

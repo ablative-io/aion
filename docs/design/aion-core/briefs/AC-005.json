@@ -18,6 +18,7 @@
         "src/lib.rs contains only declarations and re-exports.",
         "StoreError has variants SequenceConflict { expected, found }, NotFound { workflow_id }, Backend(String or boxed error), Serialization(String).",
         "StoreError derives Debug, implements std::error::Error and Display, and is Send + Sync.",
+        "A doc comment on StoreError::NotFound states it is reserved for operations that target a must-exist workflow; the read and query methods defined in this crate return empty results (not NotFound) for absent workflows.",
         "cargo check -p aion-store passes."
       ],
       "files": {
@@ -25,7 +26,7 @@
         "modify": ["Cargo.toml"]
       },
       "checklist": ["C23"],
-      "stories": ["S7"]
+      "stories": ["S7", "S11"]
     },
     {
       "id": "R2",
@@ -34,10 +35,11 @@
       "acceptance": [
         "store.rs defines the EventStore trait, async, bound Send + Sync + 'static.",
         "append(&self, workflow_id: &WorkflowId, events: &[Event], expected_seq: u64) -> Result<(), StoreError>, documented as atomic (all events apply or none) and returning SequenceConflict when the stored head does not equal expected_seq.",
-        "read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> returns events in sequence order.",
+        "read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> returns events in sequence order, and an empty Vec (never NotFound) for a workflow with no recorded events — the first append with expected_seq 0 creates the workflow implicitly, so 'unknown' and 'empty history' are the same observable state.",
         "list_active(&self) -> Result<Vec<WorkflowId>, StoreError> returns non-terminal workflows.",
         "query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> returns matching summaries.",
-        "Trait method docs state the contract precisely, including the atomicity and sequence-guard semantics."
+        "read_history, list_active, and query never return StoreError::NotFound for absent workflows; NotFound is reserved for operations that target a must-exist workflow.",
+        "Trait method docs state the contract precisely, including the atomicity, sequence-guard, and empty-history-for-unknown semantics."
       ],
       "files": {
         "create": ["crates/aion-store/src/store.rs"],
@@ -62,7 +64,7 @@
         "modify": ["crates/aion-store/src/store.rs", "crates/aion-store/src/lib.rs"]
       },
       "checklist": ["C29"],
-      "stories": ["S11"]
+      "stories": ["S5"]
     }
   ],
   "boundaries": [

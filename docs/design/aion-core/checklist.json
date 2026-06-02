@@ -14,11 +14,11 @@
     {
       "name": "Event Model",
       "items": [
-        {"id": "C6", "text": "Event enum has workflow-lifecycle variants: WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled.", "done": false},
-        {"id": "C7", "text": "Event enum has activity variants: ActivityScheduled, ActivityStarted, ActivityCompleted, ActivityFailed.", "done": false},
+        {"id": "C6", "text": "Event enum has workflow-lifecycle variants: WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowTimedOut.", "done": false},
+        {"id": "C7", "text": "Event enum has activity variants: ActivityScheduled, ActivityStarted, ActivityCompleted, ActivityFailed (with attempt), ActivityCancelled.", "done": false},
         {"id": "C8", "text": "Event enum has timer variants: TimerStarted, TimerFired, TimerCancelled.", "done": false},
         {"id": "C9", "text": "Event enum has a SignalReceived variant carrying signal name and payload.", "done": false},
-        {"id": "C10", "text": "Event enum has child-workflow variants: ChildWorkflowStarted, ChildWorkflowCompleted, ChildWorkflowFailed.", "done": false},
+        {"id": "C10", "text": "Event enum has child-workflow variants: ChildWorkflowStarted, ChildWorkflowCompleted, ChildWorkflowFailed, ChildWorkflowCancelled.", "done": false},
         {"id": "C11", "text": "Every event carries an envelope with a monotonic per-workflow sequence number, a recorded timestamp, and the owning WorkflowId.", "done": false},
         {"id": "C12", "text": "Event derives Serialize and Deserialize and round-trips losslessly through serde_json.", "done": false},
         {"id": "C13", "text": "Payload is a newtype over bytes with a content-type tag.", "done": false},

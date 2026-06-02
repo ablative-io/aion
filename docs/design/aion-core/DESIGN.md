@@ -82,13 +82,22 @@ recorded and are only ever appended, never mutated or deleted.
 The variants cover the full lifecycle:
 
 - **Workflow lifecycle** — `WorkflowStarted`, `WorkflowCompleted`,
-  `WorkflowFailed`, `WorkflowCancelled`.
+  `WorkflowFailed`, `WorkflowCancelled`, `WorkflowTimedOut`. The four
+  terminal variants (`Completed`/`Failed`/`Cancelled`/`TimedOut`) are
+  exactly the events the status projection maps to terminal statuses.
 - **Activity lifecycle** — `ActivityScheduled`, `ActivityStarted`,
-  `ActivityCompleted`, `ActivityFailed`.
+  `ActivityCompleted`, `ActivityFailed` (carrying the attempt number),
+  `ActivityCancelled`.
 - **Timers** — `TimerStarted`, `TimerFired`, `TimerCancelled`.
 - **Signals** — `SignalReceived`.
 - **Child workflows** — `ChildWorkflowStarted`, `ChildWorkflowCompleted`,
-  `ChildWorkflowFailed`.
+  `ChildWorkflowFailed`, `ChildWorkflowCancelled`.
+
+Cancellation is modelled as its own events (`ActivityCancelled`,
+`ChildWorkflowCancelled`), symmetric with `WorkflowCancelled` and
+`TimerCancelled`, rather than overloading the failure variants — so the
+cancelled outcome is unmistakable at the type level and the engine's
+cancellation paths have a concrete event to record.
 
 Each event carries an envelope: a monotonic per-workflow sequence number, a
 recorded timestamp, and the workflow ID it belongs to. The sequence number
@@ -133,8 +142,12 @@ the benefit is that a whole class of mix-up bugs cannot compile.
 `WorkflowStatus` is the derived, queryable state of a workflow: `Running`,
 `Completed`, `Failed`, `Cancelled`, `TimedOut`. Status is not stored as a
 mutable field — it is a projection over the event history (the last
-lifecycle event determines it). The store may cache it for query
-performance, but the events remain authoritative.
+lifecycle event determines it). Each terminal status has exactly one
+corresponding terminal event, so the projection is total. The store may
+cache status for query performance, but the events remain authoritative.
+`WorkflowStatus` is not `Default` and has no public constructor:
+`status_from_events` is its only producer, so no code path can set a status
+the events do not justify.
 
 ### Filters and Summaries
 

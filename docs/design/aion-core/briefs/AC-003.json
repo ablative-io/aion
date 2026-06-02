@@ -16,8 +16,9 @@
       "acceptance": [
         "status.rs defines WorkflowStatus { Running, Completed, Failed, Cancelled, TimedOut } deriving Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq.",
         "A function status_from_events(&[Event]) -> WorkflowStatus returns Running when no terminal event exists, and the matching terminal status otherwise.",
-        "WorkflowCompleted maps to Completed, WorkflowFailed to Failed, WorkflowCancelled to Cancelled; a workflow-level timeout maps to TimedOut.",
-        "Unit tests cover: empty history (Running), each terminal event, and a history with events after start but before any terminal event (Running)."
+        "WorkflowCompleted maps to Completed, WorkflowFailed to Failed, WorkflowCancelled to Cancelled, and WorkflowTimedOut to TimedOut — every terminal WorkflowStatus variant has exactly one corresponding terminal event (AC-002 R2), so the projection is total.",
+        "WorkflowStatus does not derive or implement Default and exposes no new()/constructor; status_from_events is the only function in aion-core that produces a WorkflowStatus from history, and a doc comment states that status must be obtained only by projection from event history, never assigned directly (enforces C18 / CO7).",
+        "Unit tests cover: empty history (Running), each terminal event including WorkflowTimedOut, and a history with events after start but before any terminal event (Running); a test asserts the projection is deterministic (the same history always yields the same status)."
       ],
       "files": {
         "create": ["crates/aion-core/src/status.rs"],

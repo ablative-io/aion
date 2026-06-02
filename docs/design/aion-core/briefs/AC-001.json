@@ -1,13 +1,13 @@
 {
   "id": "AC-001",
   "cluster": "aion-core",
-  "title": "aion-core crate scaffold and domain identifiers",
+  "title": "aion-core crate scaffold, domain identifiers, and payload",
   "depends_on": [],
   "blocked_by": [],
-  "checklist": ["C1", "C2", "C3", "C4", "C5"],
-  "stories": ["S8", "S11"],
-  "purpose": "Create the aion-core leaf crate and define the newtype identifiers every other type and crate references. This is the foundation of the entire Aion type system.",
-  "task": "Create the aion-core crate with a thin lib.rs re-export surface and an ids module defining WorkflowId, ActivityId, TimerId, and RunId as distinct newtypes. The crate must depend on no other Aion crate. Identifiers must be constructible, serialisable, and printable, and must be distinct types the compiler will not interchange.",
+  "checklist": ["C1", "C2", "C3", "C4", "C5", "C13", "C14"],
+  "stories": ["S2", "S8", "S11"],
+  "purpose": "Create the aion-core leaf crate and define the foundational value types every other type and crate references: the newtype identifiers and the type-erased Payload carrier. This is the foundation of the entire Aion type system. Payload lives here, not in AC-002, because both the error taxonomy (AC-004) and the event model (AC-002) depend on it — placing it at the root keeps the brief dependency graph acyclic.",
+  "task": "Create the aion-core crate with a thin lib.rs re-export surface, an ids module defining WorkflowId, ActivityId, TimerId, and RunId as distinct newtypes, and a payload module defining the Payload newtype that carries opaque serialised values through events and errors. The crate must depend on no other Aion crate. Identifiers must be constructible, serialisable, and printable, and must be distinct types the compiler will not interchange. Payload must round-trip losslessly to and from serde_json::Value.",
   "requirements": [
     {
       "id": "R1",
@@ -15,7 +15,7 @@
       "spec": "THE SYSTEM SHALL create the aion-core crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL NOT add any dependency on another Aion crate.",
       "acceptance": [
         "crates/aion-core exists and is registered in the workspace Cargo.toml members list.",
-        "aion-core/Cargo.toml declares only external dependencies (serde, uuid, thiserror, chrono or equivalent) — no aion-* dependency.",
+        "aion-core/Cargo.toml declares only external dependencies (serde, serde_json, uuid, thiserror, chrono or equivalent) — no aion-* dependency.",
         "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
         "cargo check -p aion-core passes.",
         "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints."
@@ -61,10 +61,27 @@
       },
       "checklist": ["C1"],
       "stories": ["S8"]
+    },
+    {
+      "id": "R4",
+      "title": "Payload newtype",
+      "spec": "THE SYSTEM SHALL define Payload as a newtype over a byte buffer plus a content-type tag. THE SYSTEM SHALL provide lossless conversion between Payload and serde_json::Value. Payload is the type-erased carrier for all user data that flows through events and error details.",
+      "acceptance": [
+        "payload.rs defines Payload holding bytes and a content-type tag (an enum or stable string identifying the encoding).",
+        "Payload::from_json(&serde_json::Value) and Payload::to_json() -> Result round-trip losslessly for all JSON value kinds.",
+        "Payload derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+        "A unit test asserts round-trip fidelity for null, bool, number, string, array, and object."
+      ],
+      "files": {
+        "create": ["crates/aion-core/src/payload.rs"],
+        "modify": ["crates/aion-core/src/lib.rs"]
+      },
+      "checklist": ["C13", "C14"],
+      "stories": ["S2"]
     }
   ],
   "boundaries": [
-    "SHALL NOT define the Event enum or Payload — those land in AC-002.",
+    "SHALL NOT define the Event enum — that lands in AC-002. Payload (the value carrier) lands here because both AC-002 and AC-004 depend on it.",
     "SHALL NOT define WorkflowStatus, filters, or errors — those land in AC-003 and AC-004.",
     "SHALL NOT define the EventStore trait — that is the aion-store crate in AC-005."
   ],

@@ -1,33 +1,16 @@
 {
   "id": "AC-002",
   "cluster": "aion-core",
-  "title": "Event model and payload",
-  "depends_on": ["AC-001"],
+  "title": "Event model",
+  "depends_on": ["AC-001", "AC-004"],
   "blocked_by": [],
-  "checklist": ["C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15"],
+  "checklist": ["C6", "C7", "C8", "C9", "C10", "C11", "C12", "C15"],
   "stories": ["S1", "S2", "S8"],
-  "purpose": "Define the Event enum — the spine of the event-sourcing system — and the Payload type that carries type-erased values through it. Every recorded fact in a workflow's life is an Event variant.",
-  "task": "Define a Payload newtype carrying opaque serialised bytes plus a content-type tag, with lossless conversion to and from serde_json::Value. Define the Event enum with all lifecycle, activity, timer, signal, and child-workflow variants, each wrapped in an envelope carrying a per-workflow sequence number, a recorded timestamp, and the owning WorkflowId. Event must be type-erased — it carries Payload values, never a generic type parameter.",
+  "purpose": "Define the Event enum — the spine of the event-sourcing system. Every recorded fact in a workflow's life is an Event variant. Events are type-erased: they carry Payload values (from AC-001) and error types (from AC-004), never a generic type parameter.",
+  "task": "Define the event envelope (per-workflow sequence number, recorded timestamp, owning WorkflowId) and the Event enum with all lifecycle, activity, timer, signal, and child-workflow variants. User data is carried as Payload (AC-001); failure variants carry ActivityError / WorkflowError (AC-004). The enum SHALL NOT take a generic type parameter.",
   "requirements": [
     {
       "id": "R1",
-      "title": "Payload newtype",
-      "spec": "THE SYSTEM SHALL define Payload as a newtype over a byte buffer plus a content-type tag. THE SYSTEM SHALL provide lossless conversion between Payload and serde_json::Value.",
-      "acceptance": [
-        "payload.rs defines Payload holding bytes and a content-type tag (an enum or stable string identifying the encoding).",
-        "Payload::from_json(&serde_json::Value) and Payload::to_json() -> Result round-trip losslessly for all JSON value kinds.",
-        "Payload derives Serialize, Deserialize, Clone, Debug, PartialEq.",
-        "A unit test asserts round-trip fidelity for null, bool, number, string, array, and object."
-      ],
-      "files": {
-        "create": ["crates/aion-core/src/payload.rs"],
-        "modify": ["crates/aion-core/src/lib.rs"]
-      },
-      "checklist": ["C13", "C14", "C15"],
-      "stories": ["S2"]
-    },
-    {
-      "id": "R2",
       "title": "Event envelope",
       "spec": "THE SYSTEM SHALL define an event envelope carrying a monotonic per-workflow sequence number, a recorded UTC timestamp, and the owning WorkflowId. Every event SHALL carry this envelope.",
       "acceptance": [
@@ -41,19 +24,22 @@
         "modify": ["crates/aion-core/src/lib.rs"]
       },
       "checklist": ["C11"],
-      "stories": ["S1"]
+      "stories": ["S1", "S8"]
     },
     {
-      "id": "R3",
+      "id": "R2",
       "title": "Event variants",
-      "spec": "THE SYSTEM SHALL define the Event enum with workflow-lifecycle, activity, timer, signal, and child-workflow variants. Variants carrying user data SHALL carry it as Payload, and the enum SHALL NOT take a generic type parameter.",
+      "spec": "THE SYSTEM SHALL define the Event enum with workflow-lifecycle, activity, timer, signal, and child-workflow variants. Variants carrying user data SHALL carry it as Payload, failure variants SHALL carry the AC-004 error types, and the enum SHALL NOT take a generic type parameter.",
       "acceptance": [
-        "Workflow lifecycle: WorkflowStarted (workflow_type + input Payload), WorkflowCompleted (result Payload), WorkflowFailed (WorkflowError), WorkflowCancelled (reason).",
-        "Activity: ActivityScheduled (ActivityId + activity_type + input Payload), ActivityStarted (ActivityId), ActivityCompleted (ActivityId + result Payload), ActivityFailed (ActivityId + ActivityError + attempt).",
+        "Workflow lifecycle: WorkflowStarted (workflow_type + input Payload), WorkflowCompleted (result Payload), WorkflowFailed (WorkflowError), WorkflowCancelled (reason), WorkflowTimedOut (a timeout descriptor — a message or timeout-kind identifying which timeout elapsed).",
+        "Activity: ActivityScheduled (ActivityId + activity_type + input Payload), ActivityStarted (ActivityId), ActivityCompleted (ActivityId + result Payload), ActivityFailed (ActivityId + ActivityError + attempt: u32), ActivityCancelled (ActivityId).",
+        "ActivityFailed's attempt field plus the ActivityError classification (Retryable vs Terminal, from AC-004) are the discriminant the replay cursor uses to distinguish a retryable interim failure (followed by a later ActivityStarted/ActivityCompleted/ActivityFailed for the same ActivityId) from a terminal one — a doc comment states this so AD replay has the data it needs.",
         "Timer: TimerStarted (TimerId + fire_at), TimerFired (TimerId), TimerCancelled (TimerId).",
         "Signal: SignalReceived (name + payload Payload).",
-        "Child workflow: ChildWorkflowStarted (child WorkflowId + workflow_type + input), ChildWorkflowCompleted (child WorkflowId + result), ChildWorkflowFailed (child WorkflowId + WorkflowError).",
-        "Event has no generic type parameter; all user data is Payload."
+        "Child workflow: ChildWorkflowStarted (child WorkflowId + workflow_type + input), ChildWorkflowCompleted (child WorkflowId + result), ChildWorkflowFailed (child WorkflowId + WorkflowError), ChildWorkflowCancelled (child WorkflowId).",
+        "Cancellation is modelled as distinct events (ActivityCancelled, ChildWorkflowCancelled), symmetric with WorkflowCancelled and TimerCancelled, so the engine (AT-009) records a concrete cancellation event rather than overloading the failure variants.",
+        "Event has no generic type parameter; all user data is Payload, all failure data is ActivityError/WorkflowError.",
+        "The terminal lifecycle variants (WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowTimedOut) are exactly the events the AC-003 status projection maps to terminal statuses."
       ],
       "files": {
         "create": [],
@@ -63,7 +49,7 @@
       "stories": ["S2"]
     },
     {
-      "id": "R4",
+      "id": "R3",
       "title": "Event serialisation round-trip",
       "spec": "THE SYSTEM SHALL derive Serialize and Deserialize on Event and all its variants. Serialising an Event and deserialising it back SHALL produce an equal value.",
       "acceptance": [
@@ -80,8 +66,9 @@
     }
   ],
   "boundaries": [
+    "SHALL NOT define Payload — it is the value carrier defined in AC-001 (a hard dependency of this brief).",
+    "SHALL NOT define ActivityError or WorkflowError — they are defined in AC-004 (a hard dependency of this brief, so the real error types are always available; there are no placeholders).",
     "SHALL NOT compute WorkflowStatus from events — that is AC-003.",
-    "SHALL NOT define ActivityError or WorkflowError bodies beyond referencing them — their definitions land in AC-004 (this brief may use a minimal placeholder only if AC-004 is not yet merged, but the final shape is owned by AC-004).",
     "SHALL NOT define any storage trait."
   ],
   "verification": [
