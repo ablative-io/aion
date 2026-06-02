@@ -49,7 +49,7 @@
       "spec": "THE SYSTEM SHALL define the DDL for an append-only events table and a durable timers table with the keys and indexes the store requires.",
       "acceptance": [
         "schema.rs defines the events table DDL: workflow_id TEXT, seq INTEGER, event BLOB, recorded_at TEXT, PRIMARY KEY (workflow_id, seq).",
-        "schema.rs defines a secondary index on events supporting query/list_active projection (e.g. on the lifecycle-event discriminant and recorded_at, or on workflow_id with the columns query needs).",
+        "schema.rs defines a secondary index on events supporting query/list_active projection (e.g. on the lifecycle-event discriminant and recorded_at, or on workflow_id with the columns query needs). COORDINATION NOTE: the exact index columns depend on the query shapes finalised in AS-005 (query/list_active). Whoever implements AS-002 must coordinate with AS-005 — if the query plan needs different columns, AS-005 amends schema.rs (schema.rs is in AS-005's modify set for exactly this) rather than leaving a wrong index. Prefer settling the AS-005 query shapes before fixing this index.",
         "schema.rs defines the timers table DDL: workflow_id TEXT, timer_id TEXT, fire_at TEXT, PRIMARY KEY (workflow_id, timer_id), plus an index on fire_at.",
         "DDL statements use IF NOT EXISTS so they are idempotent."
       ],

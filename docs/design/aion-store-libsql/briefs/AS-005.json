@@ -69,11 +69,12 @@
         "Filtering by workflow type matches WorkflowStarted's recorded type; by status matches the projected status; by time range matches against recorded_at / start time; by parent matches the parent workflow id recorded for child workflows.",
         "Each returned WorkflowSummary carries workflow id, type, status, start time, and end time, derived from the WorkflowStarted row and the terminal event row (status via the projection from R2).",
         "Query parameters are bound (parameterised SQL), not string-interpolated, so values cannot break the query; a test asserts a filter value containing SQL metacharacters is handled safely.",
+        "The secondary index defined in AS-002 R3 is now validated against the concrete query/list_active plan: if the finalised WHERE/ORDER columns differ from what AS-002 indexed, this brief amends schema.rs to match (schema.rs is in this requirement's modify set for exactly that reason — do not leave a wrong or unused index).",
         "Tests cover each filter dimension individually and a combined filter, matching the equivalent assertions the AC-007 conformance suite makes."
       ],
       "files": {
         "create": [],
-        "modify": ["crates/aion-store-libsql/src/read.rs"]
+        "modify": ["crates/aion-store-libsql/src/read.rs", "crates/aion-store-libsql/src/schema.rs"]
       },
       "checklist": ["C20"],
       "stories": ["S10"]
