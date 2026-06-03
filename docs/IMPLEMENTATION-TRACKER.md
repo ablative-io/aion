@@ -71,10 +71,10 @@ The keystone. Everything else depends on AC being right.
 - [x] **AC-003** — Workflow status, filters, summaries · _landed c758486_
 
 ### Wave 5
-- [ ] **AC-005** — EventStore trait, StoreError · _depends: AC-002, AC-003, AC-004_
+- [x] **AC-005** — EventStore trait, StoreError · _landed 967223b_
 
 ### Wave 6
-- [ ] **AC-006** — InMemoryStore reference implementation · _depends: AC-005_
+- [x] **AC-006** — InMemoryStore reference implementation · _landed 17ba2c9_
 
 ### Wave 7
 - [ ] **AC-007** — Shared EventStore behavioural test suite · _depends: AC-006_
