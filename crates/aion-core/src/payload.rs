@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Type-erased user data with an explicit content type tag.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
     content_type: ContentType,
     bytes: Vec<u8>,

@@ -153,23 +153,23 @@ mod tests {
 
     use super::{ActivityId, RunId, TimerId, WorkflowId};
 
-    fn round_trip<T>(identifier: T) -> Result<(), serde_json::Error>
+    fn round_trip<T>(identifier: &T) -> Result<(), serde_json::Error>
     where
         T: DeserializeOwned + PartialEq + serde::Serialize + std::fmt::Debug,
     {
-        let json = serde_json::to_string(&identifier)?;
+        let json = serde_json::to_string(identifier)?;
         let decoded = serde_json::from_str::<T>(&json)?;
-        assert_eq!(identifier, decoded);
+        assert_eq!(*identifier, decoded);
         Ok(())
     }
 
     #[test]
     fn identifiers_round_trip_through_json() -> Result<(), serde_json::Error> {
-        round_trip(WorkflowId::new_v4())?;
-        round_trip(ActivityId::from_sequence_position(17))?;
-        round_trip(TimerId::named("reminder"))?;
-        round_trip(TimerId::anonymous(29))?;
-        round_trip(RunId::new_v4())?;
+        round_trip(&WorkflowId::new_v4())?;
+        round_trip(&ActivityId::from_sequence_position(17))?;
+        round_trip(&TimerId::named("reminder"))?;
+        round_trip(&TimerId::anonymous(29))?;
+        round_trip(&RunId::new_v4())?;
         Ok(())
     }
 
@@ -195,5 +195,26 @@ mod tests {
         assert_eq!(activity_id.sequence_position(), 42);
         assert_eq!(timer_id.sequence_position(), Some(43));
         assert_eq!(TimerId::named("deadline").name(), Some("deadline"));
+    }
+
+    #[test]
+    fn display_formats_are_stable() {
+        let workflow_id = WorkflowId::new(uuid::Uuid::nil());
+        let run_id = RunId::new(uuid::Uuid::nil());
+
+        assert_eq!(
+            workflow_id.to_string(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(run_id.to_string(), "00000000-0000-0000-0000-000000000000");
+        assert_eq!(
+            ActivityId::from_sequence_position(7).to_string(),
+            "activity:7"
+        );
+        assert_eq!(
+            TimerId::named("reminder").to_string(),
+            "timer:named:reminder"
+        );
+        assert_eq!(TimerId::anonymous(3).to_string(), "timer:anonymous:3");
     }
 }
