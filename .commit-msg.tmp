@@ -1,1 +1,1 @@
-test(aion-package): cover package error guarantees
+review: harden libsql error boundary surface
