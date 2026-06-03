@@ -61,7 +61,7 @@ impl WorkflowFilter {
 }
 
 /// Lightweight projection of a workflow execution for query results.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct WorkflowSummary {
     /// Workflow execution identifier.
     pub workflow_id: WorkflowId,
