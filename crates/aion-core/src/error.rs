@@ -17,7 +17,7 @@ pub enum ActivityErrorKind {
 ///
 /// The engine consults [`ActivityError::is_retryable`] to decide whether to
 /// apply the activity's retry policy or fail the workflow.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct ActivityError {
     /// Explicit retryability classification for this activity failure.
@@ -37,7 +37,7 @@ impl ActivityError {
 }
 
 /// Terminal failure reported by a workflow execution.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct WorkflowError {
     /// Human-readable error message.
@@ -82,6 +82,28 @@ mod tests {
         };
 
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn errors_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
+        let activity_error = ActivityError {
+            kind: ActivityErrorKind::Retryable,
+            message: String::from("connection reset"),
+            details: Some(Payload::from_json(&json!({"retry_after_ms": 500}))?),
+        };
+        let json = serde_json::to_string(&activity_error)?;
+        let decoded: ActivityError = serde_json::from_str(&json)?;
+        assert_eq!(activity_error, decoded);
+
+        let workflow_error = WorkflowError {
+            message: String::from("workflow failed"),
+            details: None,
+        };
+        let json = serde_json::to_string(&workflow_error)?;
+        let decoded: WorkflowError = serde_json::from_str(&json)?;
+        assert_eq!(workflow_error, decoded);
+
+        Ok(())
     }
 
     #[test]
