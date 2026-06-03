@@ -153,7 +153,7 @@ mod tests {
     fn envelope(seq: u64, workflow_id: &WorkflowId) -> EventEnvelope {
         EventEnvelope {
             seq,
-            recorded_at: recorded_at(seq as i64),
+            recorded_at: recorded_at(i64::try_from(seq).unwrap_or(0)),
             workflow_id: workflow_id.clone(),
         }
     }

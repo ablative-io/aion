@@ -63,14 +63,14 @@ mod tests {
     use super::{WorkflowStatus, status_from_events};
     use crate::{ActivityId, Event, EventEnvelope, Payload, WorkflowError, WorkflowId};
 
-    fn recorded_at(seq: u64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000 + seq as i64, 0).unwrap_or_default()
+    fn recorded_at(offset: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000 + offset, 0).unwrap_or_default()
     }
 
     fn envelope(seq: u64) -> EventEnvelope {
         EventEnvelope {
             seq,
-            recorded_at: recorded_at(seq),
+            recorded_at: recorded_at(i64::try_from(seq).unwrap_or(0)),
             workflow_id: WorkflowId::new(uuid::Uuid::nil()),
         }
     }
