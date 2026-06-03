@@ -80,16 +80,14 @@ fn affected_crates_from_brief(brief) {
 
 fn verify_command_for_crates(crates) {
     if crates.len() == 0 {
-        return "cargo check --workspace && cargo clippy --workspace -- -D warnings";
+        return "cargo clippy --workspace --keep-going -- -D warnings";
     }
-    let check = "cargo check";
-    let clippy = "cargo clippy";
+    let clippy = "cargo clippy --keep-going";
     for c in crates {
-        check += " -p " + c;
         clippy += " -p " + c;
     }
     clippy += " -- -D warnings";
-    check + " && " + clippy
+    clippy
 }
 
 fn build_lookup(items) {

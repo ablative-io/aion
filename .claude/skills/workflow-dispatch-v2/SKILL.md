@@ -18,14 +18,14 @@ When your own session has been linked into the workspace ACL, prefer dispatching
 ## Workspace and Binary
 
 - **v2 workspace ID:** `2d5fdd51-1f25-45a4-8f86-4d4c978d1355`
-- **Unified binary:** `/Users/tom/Developer/ablative/yggdrasil/target/release/meridian`
+- **Unified binary:** `meridian` (installed on PATH)
 - **Server config:** `~/.meridian/v2-config.toml`
-- **Workflow source:** `.meridian/workflows/*.yaml` in the repo (scanned at server startup). `.yggdrasil/workflows/` is NOT scanned.
+- **Workflow source:** `.meridian/workflows/` in the repo (scanned at server startup). Supports YAML files (`*.yaml`), Rhai scripts (`*.rhai`), and Rhai packages (`<name>/workflow.rhai` with co-located templates, schemas, profiles). `.yggdrasil/workflows/` is NOT scanned.
 
 Restart the v2 server after a rebuild or config change:
 
 ```bash
-nohup ./target/release/meridian serve start --foreground --config ~/.meridian/v2-config.toml \
+nohup meridian serve start --foreground --config ~/.meridian/v2-config.toml \
   > /tmp/meridian-v2-$(date +%Y%m%d-%H%M).log 2>&1 </dev/null & disown
 ```
 
@@ -48,12 +48,13 @@ Authoritative list is `meridian workflow list`; this table is the common set at 
 
 | Workflow | Required inputs | Purpose |
 |----------|----------------|---------|
-| `orchestrated-dev` | `brief` (optional: `run-name`) | Scout → Plan → Implement → checks → Review → Done → **Notify**. Default for greenfield brief work. Pass `--input run-name="brief NNN — short description"` so the auto-notification DM identifies the run. |
-| `review-and-land` | `brief`, `findings`, `commit_prefix` | Apply reviewer findings to an existing worktree, run full checks in a loop, commit. Used to close out an orchestrated-dev run that produced review output needing action. |
-| `stack-land` | see `show` | Land stacked branch work. |
-| `notify` | (optional: `workflow`, `run-name`) | End-of-workflow notification helper. Dispatched automatically from `orchestrated-dev`'s terminal step; rarely run by hand. Sends a DM to Waffles + Tom with branch, build counts, and lint-suppression delta vs `origin/main`. |
-| `mechanical-review` / `smell-and-criterion-review` | see `show` | Review-only passes; no code changes. |
-| `code-review` | see `show` | Reviewer-facing review pass. |
+| `onatopp-dev-lean` | `brief` (optional: `design_content`, `checklist_content`, `stories_content`, `notify`, `run-name`) | **Primary workflow.** Scout → Dev → Checks → Review+Harden → Done → Notify. Three action steps. Merged harden+review into a single pass. One check dispatch after dev. |
+| `onatopp-dev-compact` | same as lean | Scout → Dev → Checks → Harden → Checks → Review → Checks → Done → Notify. Four action steps, three check dispatches. More thorough but slower. |
+| `onatopp-dev-multi` | `brief`, `design_content`, `provider` | Mixed-provider variant (Rhai imperative). `provider=mixed` (default): scout=Codex, dev=Claude, review=Codex. File-scope enforcement + commit steps. |
+| `orchestrated-dev` | `brief` (optional: `run-name`) | Legacy. Scout → Plan → Implement → checks → Review → Done → Notify. |
+| `review-and-land` | `brief`, `findings`, `commit_prefix` | Apply reviewer findings to an existing worktree, run full checks in a loop, commit. |
+| `run-checks-triaged` | (standalone or sub-workflow) | Cargo check → clippy (blocking/deferred split) → test → TS check → biome → file-size → verdict. Used as a dispatch sub-workflow by dev workflows. |
+| `notify` | (optional: `workflow`, `run-name`) | End-of-workflow notification helper. Rarely run by hand. |
 
 Always run `meridian workflow show <name> --workspace <id>` before dispatching something unfamiliar.
 
@@ -62,15 +63,19 @@ Always run `meridian workflow show <name> --workspace <id>` before dispatching s
 ### Fresh worktree (new feature branch from `main`)
 
 ```bash
-meridian workflow run orchestrated-dev \
+meridian workflow run onatopp-dev-lean \
   --workspace 2d5fdd51-1f25-45a4-8f86-4d4c978d1355 \
   --as c9255b2a-5731-4d17-8124-e3bfa2224186 \
   --worktree --base main \
-  --input "brief=$(cat /abs/path/to/brief.md)" \
-  --input "run-name=brief 215 — libcorpus loaders"
+  --input brief="$(cat /abs/path/to/brief.json)" \
+  --input design_content="$(cat /abs/path/to/DESIGN.md)" \
+  --input checklist_content="$(cat /abs/path/to/checklist.json)" \
+  --input stories_content="$(cat /abs/path/to/stories.json)" \
+  --input notify="Marge the All-Knowing" \
+  --input run-name="brief 215 — libcorpus loaders"
 ```
 
-The `run-name` input flows through to the end-of-workflow notification DM so the message identifies which brief it relates to. Optional but recommended.
+The `brief` input is a JSON object (not a markdown file). `design_content`, `checklist_content`, and `stories_content` are optional but recommended — they feed the design document, checklist C-numbers, and user-story S-numbers into all action step prompts. `notify` triggers a completion DM to the named member. `run-name` labels the notification.
 
 ### Existing worktree (follow-up work on a branch)
 
@@ -78,8 +83,8 @@ The `run-name` input flows through to the end-of-workflow notification DM so the
 meridian workflow run review-and-land \
   --workspace 2d5fdd51-1f25-45a4-8f86-4d4c978d1355 \
   --as c9255b2a-5731-4d17-8124-e3bfa2224186 \
-  --worktree /abs/path/to/.yggdrasil-worktrees/workflow/orchestrated-dev/<id> \
-  --input "brief=$(cat /abs/path/to/brief.md)" \
+  --worktree /abs/path/to/.yggdrasil-worktrees/workflow/onatopp-dev-lean/<id> \
+  --input "brief=$(cat /abs/path/to/brief.json)" \
   --input "findings=$(cat /abs/path/to/findings.md)" \
   --input "commit_prefix=feat: brief 123 (short description)"
 ```
@@ -101,16 +106,9 @@ One `--input` per named input in the workflow's schema. Inputs that are multi-li
 
 ## After dispatch — auto-notify
 
-`orchestrated-dev` runs a terminal `Notify` step that dispatches the `notify` workflow before `End`. The notify workflow:
+`onatopp-dev-lean` and `onatopp-dev-compact` run a terminal `Notify` step that sends a DM via `collective send` to the member named in the `notify` input. Both `Done`'s success and failure routes go through `Notify`, so the DM fires regardless of whether the workflow succeeded or failed.
 
-1. Captures the current branch (`git branch --show-current`).
-2. Runs `cargo check --all-targets --message-format=json` to capture error + warning counts.
-3. Computes a lint-suppression hygiene delta vs `origin/main` for touched `.rs` files: net `allow(dead_code)`, added `allow(unused_*)`, added panic-class lines (`unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`).
-4. Sends a single DM to Waffles' and Tom's inboxes with branch, build counts, the audit numbers, and a `meridian stack land` next-step reminder.
-
-Both `Done`'s success and failure routes go through `Notify`, so the DM fires regardless of whether the workflow itself succeeded or failed mid-flight. You don't need to wake-and-poll for completion — wait for the DM.
-
-If you need to re-dispatch the notify workflow standalone (rare, e.g. after a failed dispatch): `meridian workflow run notify --workspace 2d5fdd51-1f25-45a4-8f86-4d4c978d1355 --as c9255b2a-5731-4d17-8124-e3bfa2224186 --input workflow=manual --input run-name="..."`. It runs in whatever cwd the dispatcher invoked it from, so cd into the worktree first if you want a meaningful diff.
+Pass `--input notify="Full Member Name"` (must be the exact collective member name — e.g. `"Marge the All-Knowing"`, not `"Marge"`).
 
 ## Monitoring
 
@@ -129,12 +127,26 @@ meridian workflow history --workspace <id> --status failed --text
 meridian workflow cancel <execution-id>
 ```
 
-## YAML Format
+## Workflow Format
 
-Workflow YAML lives in `.meridian/workflows/*.yaml`. Grammar matches the v1 `workflows` skill (see `.claude/skills/workflows/SKILL.md` for the full grammar — step kinds, templates, parsers). Two v2-specific rules worth knowing:
+Workflows live in `.meridian/workflows/`. Two formats are supported:
 
-- `evaluate` step `criteria:` must be a **list of strings**, not a scalar. `criteria: "X"` is rejected; use `criteria:\n  - "X"`.
+### YAML (declarative)
+
+`*.yaml` files. Grammar matches the v1 `workflows` skill (see `.claude/skills/workflows/SKILL.md` for the full grammar — step kinds, templates, parsers). Rules:
+
+- `evaluate` step `criteria:` must be a **list of strings**, not a scalar.
 - A workflow's `output:` block is captured on completion and made available to parent dispatches as `{Step.field_name}`.
+
+### Rhai (scripting)
+
+Bare `*.rhai` files or package directories (`<name>/workflow.rhai` with co-located `templates/`, `schemas/`, `profiles/`). Rhai scripts can be:
+
+- **Declarative** — call `add_step`/`set_input`/`set_route`/`set_template`/`set_schema` to build a step graph that the engine walks.
+- **Imperative** — call `execute_step`/`commit`/`run_cmd`/`render_template` to drive execution directly from the script. Gives full control flow (conditionals, loops, provider routing).
+- **Mixed** — define steps declaratively, then call `execute_step` to dispatch them with script-controlled sequencing.
+
+Imperative builtins: `run_cmd`, `read_file`, `write_file`, `read_json`, `parse_json`, `to_json`, `write_json`, `set_context`, `render_template`, `execute_step`, `commit`, `edit_transcript`.
 
 ## Where to Put Things
 
@@ -153,7 +165,9 @@ Workflow YAML lives in `.meridian/workflows/*.yaml`. Grammar matches the v1 `wor
 
 ## When to Use Which Workflow
 
-- **Greenfield feature work from a brief:** `orchestrated-dev` with `--worktree --base main` and `--input run-name="..."`.
+- **Greenfield feature work from a brief (default):** `onatopp-dev-lean` with `--worktree --base main`. Three action steps, one check pass. Fastest cycle.
+- **Greenfield with more thorough checking:** `onatopp-dev-compact`. Four action steps, three check passes. Use when quality matters more than speed.
+- **Mixed-provider (Codex + Claude):** `onatopp-dev-multi` with `--input provider=mixed`. Scout and review via Codex (cheaper), dev via Claude.
 - **Apply reviewer findings on an existing branch:** `review-and-land` with `--worktree <existing-path>`.
 - **Verify a branch without touching code:** `mechanical-review` or `smell-and-criterion-review`.
 - **Stacked-branch land:** `stack-land`.
