@@ -1,1 +1,1 @@
-feat(store): implement in-memory event store
+review(aion-store): harden in-memory store ordering and test failure handling

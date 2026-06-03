@@ -31,6 +31,16 @@ impl InMemoryStore {
     }
 }
 
+fn history_head(history: &[Event]) -> u64 {
+    history.iter().map(Event::seq).max().unwrap_or_default()
+}
+
+fn history_in_sequence_order(history: &[Event]) -> Vec<Event> {
+    let mut ordered = history.to_vec();
+    ordered.sort_by_key(Event::seq);
+    ordered
+}
+
 #[async_trait]
 impl EventStore for InMemoryStore {
     async fn append(
@@ -43,8 +53,7 @@ impl EventStore for InMemoryStore {
         let current_head = state
             .histories
             .get(workflow_id)
-            .and_then(|history| history.last())
-            .map_or(0, Event::seq);
+            .map_or(0, |history| history_head(history));
 
         if current_head != expected_seq {
             return Err(StoreError::SequenceConflict {
@@ -70,8 +79,7 @@ impl EventStore for InMemoryStore {
         Ok(state
             .histories
             .get(workflow_id)
-            .cloned()
-            .unwrap_or_default())
+            .map_or_else(Vec::new, |history| history_in_sequence_order(history)))
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
@@ -79,7 +87,9 @@ impl EventStore for InMemoryStore {
         let mut active = state
             .histories
             .iter()
-            .filter(|(_, history)| status_from_events(history) == WorkflowStatus::Running)
+            .filter(|(_, history)| {
+                status_from_events(&history_in_sequence_order(history)) == WorkflowStatus::Running
+            })
             .map(|(workflow_id, _)| workflow_id.clone())
             .collect::<Vec<_>>();
         active.sort_by_key(ToString::to_string);
@@ -91,7 +101,9 @@ impl EventStore for InMemoryStore {
         let mut summaries = state
             .histories
             .values()
-            .filter_map(|history| WorkflowSummary::from_history(history))
+            .filter_map(|history| {
+                WorkflowSummary::from_history(&history_in_sequence_order(history))
+            })
             .filter(|summary| filter.matches(summary))
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| {
@@ -363,13 +375,14 @@ mod tests {
                 .await
         });
 
-        let mut results = Vec::new();
-        if let Ok(result) = first.await {
-            results.push(result);
-        }
-        if let Ok(result) = second.await {
-            results.push(result);
-        }
+        let results = [
+            first
+                .await
+                .map_err(|error| StoreError::Backend(format!("append task failed: {error}")))?,
+            second
+                .await
+                .map_err(|error| StoreError::Backend(format!("append task failed: {error}")))?,
+        ];
 
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
         assert_eq!(
