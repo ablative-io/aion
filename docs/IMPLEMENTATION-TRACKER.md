@@ -91,9 +91,9 @@ Both depend on AC types.
 - [x] **AS-001** — Crate scaffold, config, error mapping · _landed fb5b644_
 
 ### Wave 9 (3 parallel)
-- [ ] **AP-002** — Manifest model and format versioning · _depends: AP-001_
-- [ ] **AP-003** — Content-hash versioning (canonical beam set) · _depends: AP-001_
-- [ ] **AS-002** — libSQL connection and idempotent schema · _depends: AS-001_
+- [x] **AP-002** — Manifest model and format versioning · _landed 0208d9e_
+- [x] **AP-003** — Content-hash versioning (canonical beam set) · _landed db3c9eb_
+- [x] **AS-002** — libSQL connection and idempotent schema · _landed 349bf27_
 
 ### Wave 10 (3 parallel)
 - [ ] **AP-004** — Content-hash module namespacing scheme · _depends: AP-003_
