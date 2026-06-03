@@ -1,1 +1,1 @@
-//! Package + load (read path) + integrity check
+//! `Package` load path and integrity check.

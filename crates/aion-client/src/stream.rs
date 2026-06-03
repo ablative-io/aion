@@ -1,1 +1,1 @@
-//! event subscription Stream + resumption
+//! Event subscription `Stream` and resumption.

@@ -1,4 +1,4 @@
-//! The default durable EventStore over libSQL. Embedded local file plus embedded-replica sync for the distributed path. Runs the aion-store conformance suite.
+//! The default durable `EventStore` over libSQL. Embedded local file plus embedded-replica sync for the distributed path. Runs the `aion-store` conformance suite.
 
 pub mod append;
 pub mod config;

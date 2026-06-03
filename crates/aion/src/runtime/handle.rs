@@ -1,1 +1,1 @@
-//! RuntimeHandle: spawn/register/cancel/shutdown
+//! `RuntimeHandle` spawn, register, cancel, and shutdown support.

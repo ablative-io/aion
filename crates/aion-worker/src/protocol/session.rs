@@ -1,1 +1,1 @@
-//! WorkerSession trait + gRPC-backed impl (connect, handshake, register)
+//! `WorkerSession` trait and gRPC-backed implementation.

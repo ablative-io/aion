@@ -1,1 +1,1 @@
-//! WorkflowHandle (pid, type, version, status)
+//! `WorkflowHandle` process id, type, version, and status metadata.

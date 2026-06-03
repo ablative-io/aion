@@ -1,1 +1,1 @@
-//! Engine: start/cancel/result/list/shutdown
+//! `Engine` start, cancel, result, list, and shutdown support.

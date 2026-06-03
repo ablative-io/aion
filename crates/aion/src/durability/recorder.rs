@@ -1,1 +1,1 @@
-//! Recorder: single-writer append path over EventStore
+//! Recorder: single-writer append path over `EventStore`.

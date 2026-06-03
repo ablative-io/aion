@@ -1,1 +1,1 @@
-//! version-record production from a Package
+//! Version-record production from a `Package`.

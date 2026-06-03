@@ -1,1 +1,1 @@
-//! Nif descriptor + Determinism tag + dirty flag
+//! NIF descriptor, `Determinism` tag, and dirty flag.

@@ -1,1 +1,1 @@
-//! DeterminismContext: recorded-now + seeded RNG
+//! `DeterminismContext` recorded-now and seeded RNG support.

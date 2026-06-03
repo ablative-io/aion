@@ -1,1 +1,1 @@
-//! Activity trait, ActivityFailure, typed registration
+//! `Activity` trait, `ActivityFailure`, and typed registration.

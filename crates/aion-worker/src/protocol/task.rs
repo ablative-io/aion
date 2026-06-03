@@ -1,1 +1,1 @@
-//! ActivityTask decode, TaskResult/TaskFailure encode
+//! `ActivityTask` decode and `TaskResult`/`TaskFailure` encode.

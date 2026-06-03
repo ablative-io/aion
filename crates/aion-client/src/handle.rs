@@ -1,1 +1,1 @@
-//! WorkflowHandle (signal/query/cancel/describe/subscribe)
+//! `WorkflowHandle` signal, query, cancel, describe, and subscribe support.

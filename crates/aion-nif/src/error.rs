@@ -1,1 +1,1 @@
-//! TermError, NifDeclError taxonomy
+//! `TermError` and `NifDeclError` taxonomy.

@@ -1,1 +1,1 @@
-//! LibSqlConfig (Deserialize-only) + mode enum
+//! `LibSqlConfig` deserialize-only configuration and mode enum.

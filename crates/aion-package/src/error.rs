@@ -1,1 +1,1 @@
-//! PackageError taxonomy
+//! `PackageError` taxonomy.

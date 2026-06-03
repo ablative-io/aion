@@ -1,1 +1,1 @@
-//! StoreError taxonomy
+//! `StoreError` taxonomy.

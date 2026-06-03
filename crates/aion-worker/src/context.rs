@@ -1,1 +1,1 @@
-//! ActivityContext (heartbeat, cancellation, attempt, ids)
+//! `ActivityContext` heartbeat, cancellation, attempt, and identifier support.

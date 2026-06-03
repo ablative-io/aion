@@ -1,1 +1,1 @@
-//! typed <-> Payload (serde) helpers
+//! Typed conversion helpers for `Payload` values.

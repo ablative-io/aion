@@ -1,1 +1,1 @@
-//! NonDeterminismError + DurabilityError taxonomy
+//! `NonDeterminismError` and `DurabilityError` taxonomy.

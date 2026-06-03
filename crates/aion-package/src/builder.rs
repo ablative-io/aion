@@ -1,1 +1,1 @@
-//! PackageBuilder — deterministic write path
+//! `PackageBuilder` deterministic write path.

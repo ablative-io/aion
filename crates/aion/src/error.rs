@@ -1,1 +1,1 @@
-//! EngineError thiserror taxonomy
+//! `EngineError` thiserror taxonomy.
