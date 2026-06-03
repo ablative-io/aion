@@ -49,8 +49,8 @@ meridian workflow run onatopp-dev-norn \
 
 ## Phase 0 — Scaffold (prerequisite)
 
-- [ ] Run `tools/scaffold.py` to generate workspace skeleton
-- [ ] Commit scaffold output so `cargo check` passes for every worktree
+- [x] Run `tools/scaffold.py` to generate workspace skeleton
+- [x] Commit scaffold output so `cargo check` passes for every worktree
 
 ---
 
@@ -59,16 +59,16 @@ meridian workflow run onatopp-dev-norn \
 The keystone. Everything else depends on AC being right.
 
 ### Wave 1
-- [ ] **AC-001** — aion-core crate scaffold, identifiers, payload
+- [x] **AC-001** — aion-core crate scaffold, identifiers, payload · _landed 736dc1f_
 
 ### Wave 2
-- [ ] **AC-004** — Error taxonomy (activity/workflow errors) · _depends: AC-001_
+- [x] **AC-004** — Error taxonomy (activity/workflow errors) · _landed d7137b5_
 
 ### Wave 3
-- [ ] **AC-002** — Event model · _depends: AC-001, AC-004_
+- [x] **AC-002** — Event model · _landed 113dbab_
 
 ### Wave 4
-- [ ] **AC-003** — Workflow status, filters, summaries · _depends: AC-002_
+- [x] **AC-003** — Workflow status, filters, summaries · _landed c758486_
 
 ### Wave 5
 - [ ] **AC-005** — EventStore trait, StoreError · _depends: AC-002, AC-003, AC-004_
