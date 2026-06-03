@@ -98,7 +98,7 @@ async fn execute_pragma(
 ) -> Result<(), StoreError> {
     let value = validate_pragma_value(value)?;
     let sql = format!("PRAGMA {name} = {value}");
-    conn.execute(&sql, ())
+    conn.query(&sql, ())
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
