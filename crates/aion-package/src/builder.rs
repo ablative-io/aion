@@ -66,7 +66,7 @@ impl PackageBuilder {
     /// serialisation failures, ZIP writer failures, or target I/O failures.
     pub fn write_to_bytes(&self) -> Result<Vec<u8>, PackageError> {
         let cursor = Cursor::new(Vec::new());
-        let cursor = self.write_archive(cursor)?;
+        let cursor = self.write_archive(cursor, self.manifest_bytes()?)?;
         Ok(cursor.into_inner())
     }
 
@@ -77,9 +77,15 @@ impl PackageBuilder {
     /// Returns [`PackageError`] variants for missing entry modules, manifest JSON
     /// serialisation failures, ZIP writer failures, or target I/O failures.
     pub fn write_to_path(&self, path: impl AsRef<Path>) -> Result<(), PackageError> {
+        let manifest_bytes = self.manifest_bytes()?;
         let file = File::create(path).map_err(|source| PackageError::ArchiveWriteIo { source })?;
-        self.write_archive(file)?;
+        self.write_archive(file, manifest_bytes)?;
         Ok(())
+    }
+
+    fn manifest_bytes(&self) -> Result<Vec<u8>, PackageError> {
+        let manifest = self.stamped_manifest()?;
+        serde_json::to_vec(&manifest).map_err(|source| PackageError::ManifestSerialise { source })
     }
 
     fn stamped_manifest(&self) -> Result<Manifest, PackageError> {
@@ -95,25 +101,27 @@ impl PackageBuilder {
         Ok(manifest)
     }
 
-    fn write_archive<W>(&self, writer: W) -> Result<W, PackageError>
+    fn write_archive<W>(&self, writer: W, manifest_bytes: Vec<u8>) -> Result<W, PackageError>
     where
         W: Write + Seek,
     {
-        let manifest = self.stamped_manifest()?;
-        let manifest_bytes = serde_json::to_vec(&manifest)
-            .map_err(|source| PackageError::ManifestSerialise { source })?;
         let mut archive = ZipWriter::new(writer);
         let options = deterministic_file_options();
 
-        write_entry(&mut archive, "manifest.json", &manifest_bytes, options)?;
+        write_entry(
+            &mut archive,
+            "manifest.json",
+            manifest_bytes.as_slice(),
+            options,
+        )?;
 
         for module in self.beams.iter() {
-            let entry_name = format!("beam/{}.beam", module.name());
+            let entry_name = archive_entry_name("beam", module.name(), "beam")?;
             write_entry(&mut archive, entry_name, module.bytes(), options)?;
         }
 
         for (name, bytes) in &self.source {
-            let entry_name = format!("src/{name}.gleam");
+            let entry_name = archive_entry_name("src", name, "gleam")?;
             write_entry(&mut archive, entry_name, bytes, options)?;
         }
 
@@ -127,6 +135,30 @@ fn deterministic_file_options() -> SimpleFileOptions {
         .compression_level(None)
         .last_modified_time(DateTime::DEFAULT)
         .unix_permissions(0o644)
+}
+
+fn archive_entry_name(
+    prefix: &str,
+    logical_name: &str,
+    extension: &str,
+) -> Result<String, PackageError> {
+    if is_safe_logical_name(logical_name) {
+        Ok(format!("{prefix}/{logical_name}.{extension}"))
+    } else {
+        Err(PackageError::MalformedBeamEntry {
+            entry: logical_name.to_owned(),
+        })
+    }
+}
+
+fn is_safe_logical_name(logical_name: &str) -> bool {
+    !logical_name.is_empty()
+        && !logical_name.starts_with('/')
+        && !logical_name.starts_with('\\')
+        && !logical_name.contains('\\')
+        && logical_name
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 fn write_entry<W>(
@@ -267,6 +299,21 @@ mod tests {
             .version;
 
         assert_eq!(without_source, with_source);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unsafe_source_names() -> Result<(), PackageError> {
+        let mut source = BTreeMap::new();
+        source.insert("../escape".to_owned(), b"pub fn run() { Nil }".to_vec());
+
+        let result = PackageBuilder::with_source(sample_manifest(), sample_beams()?, source)
+            .write_to_bytes();
+
+        assert!(matches!(
+            result,
+            Err(PackageError::MalformedBeamEntry { entry }) if entry == "../escape"
+        ));
         Ok(())
     }
 }
