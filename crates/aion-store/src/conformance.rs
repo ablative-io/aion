@@ -449,7 +449,10 @@ fn signal_received(seq: u64, workflow_id: &WorkflowId, name: &str) -> Result<Eve
 }
 
 fn expect_empty<T>(items: Vec<T>, message: &str) -> Result<(), StoreError> {
-    if items.is_empty() {
+    let is_empty = items.is_empty();
+    drop(items);
+
+    if is_empty {
         Ok(())
     } else {
         Err(contract_error(message))
@@ -460,7 +463,10 @@ fn expect_eq<T>(actual: T, expected: T, message: &str) -> Result<(), StoreError>
 where
     T: PartialEq,
 {
-    if actual == expected {
+    let values_are_equal = actual == expected;
+    drop((actual, expected));
+
+    if values_are_equal {
         Ok(())
     } else {
         Err(contract_error(message))
