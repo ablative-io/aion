@@ -1,1 +1,1 @@
-//! named/cancellable timers + anonymous sleeps (start_timer/cancel_timer/sleep)
+//! Named/cancellable timers and anonymous sleeps.

@@ -1,1 +1,1 @@
-//! recover: list_active + replay-and-resume on startup
+//! Recovery: enumerate active workflows and replay-and-resume on startup.

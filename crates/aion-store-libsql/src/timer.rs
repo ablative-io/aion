@@ -1,1 +1,1 @@
-//! schedule_timer, expired_timers
+//! Durable timer scheduling and expiry retrieval.

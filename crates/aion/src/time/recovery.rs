@@ -1,1 +1,1 @@
-//! expired_timers polling on startup + periodic recovery tick
+//! Expired timer polling on startup and periodic recovery tick.
