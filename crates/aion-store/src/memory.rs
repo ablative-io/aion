@@ -66,6 +66,17 @@ impl EventStore for InMemoryStore {
             return Ok(());
         }
 
+        let mut next_seq = expected_seq + 1;
+        for event in events {
+            if event.seq() != next_seq {
+                return Err(StoreError::Backend(format!(
+                    "event sequence must be contiguous: expected {next_seq}, got {}",
+                    event.seq()
+                )));
+            }
+            next_seq += 1;
+        }
+
         state
             .histories
             .entry(workflow_id.clone())
@@ -282,7 +293,7 @@ mod tests {
         store
             .append(
                 &running_checkout,
-                &[workflow_started(5, &running_checkout, "checkout")],
+                &[workflow_started(1, &running_checkout, "checkout")],
                 0,
             )
             .await?;
@@ -290,8 +301,8 @@ mod tests {
             .append(
                 &completed_checkout,
                 &[
-                    workflow_started(10, &completed_checkout, "checkout"),
-                    workflow_completed(11, &completed_checkout),
+                    workflow_started(1, &completed_checkout, "checkout"),
+                    workflow_completed(2, &completed_checkout),
                 ],
                 0,
             )
@@ -300,8 +311,8 @@ mod tests {
             .append(
                 &failed_billing,
                 &[
-                    workflow_started(20, &failed_billing, "billing"),
-                    workflow_failed(21, &failed_billing),
+                    workflow_started(1, &failed_billing, "billing"),
+                    workflow_failed(2, &failed_billing),
                 ],
                 0,
             )
@@ -310,8 +321,8 @@ mod tests {
         let filter = WorkflowFilter {
             workflow_type: Some(String::from("checkout")),
             status: Some(WorkflowStatus::Completed),
-            started_after: Some(recorded_at(10)),
-            started_before: Some(recorded_at(10)),
+            started_after: Some(recorded_at(1)),
+            started_before: Some(recorded_at(1)),
             parent: None,
         };
         let summaries = store.query(&filter).await?;
@@ -343,6 +354,28 @@ mod tests {
             })
         );
         assert_eq!(store.read_history(&workflow_id).await?, vec![first]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn append_rejects_non_contiguous_event_sequences() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        let wf = workflow_id(1);
+
+        let result = store
+            .append(
+                &wf,
+                &[
+                    workflow_started(1, &wf, "checkout"),
+                    workflow_completed(5, &wf),
+                ],
+                0,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(StoreError::Backend(_))));
+        assert_eq!(store.read_history(&wf).await?, Vec::new());
         Ok(())
     }
 
