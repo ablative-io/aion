@@ -77,7 +77,7 @@ The keystone. Everything else depends on AC being right.
 - [x] **AC-006** — InMemoryStore reference implementation · _landed 17ba2c9_
 
 ### Wave 7
-- [ ] **AC-007** — Shared EventStore behavioural test suite · _depends: AC-006_
+- [x] **AC-007** — Shared EventStore behavioural test suite · _landed 3049bc4_
 
 ---
 
