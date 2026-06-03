@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use aion_core::{
-    ContentType, Event, EventEnvelope, Payload, TimerId, WorkflowError, WorkflowFilter, WorkflowId,
+    Event, EventEnvelope, Payload, TimerId, WorkflowError, WorkflowFilter, WorkflowId,
     WorkflowStatus, WorkflowSummary,
 };
 use chrono::{DateTime, Utc};
@@ -347,11 +347,9 @@ fn envelope_at(
     })
 }
 
-fn payload(label: &str) -> Payload {
-    Payload::new(
-        ContentType::Json,
-        format!("{{\"label\":\"{label}\"}}").into_bytes(),
-    )
+fn payload(label: &str) -> Result<Payload, StoreError> {
+    Payload::from_json(&serde_json::json!({ "label": label }))
+        .map_err(|error| StoreError::Serialization(error.to_string()))
 }
 
 fn workflow_started(
@@ -362,7 +360,7 @@ fn workflow_started(
     Ok(Event::WorkflowStarted {
         envelope: envelope(seq, workflow_id)?,
         workflow_type: workflow_type.to_owned(),
-        input: payload("input"),
+        input: payload("input")?,
     })
 }
 
@@ -375,7 +373,7 @@ fn workflow_started_at(
     Ok(Event::WorkflowStarted {
         envelope: envelope_at(seq, workflow_id, offset_seconds)?,
         workflow_type: workflow_type.to_owned(),
-        input: payload("input"),
+        input: payload("input")?,
     })
 }
 
@@ -396,7 +394,7 @@ fn workflow_completed_at(
 ) -> Result<Event, StoreError> {
     Ok(Event::WorkflowCompleted {
         envelope: envelope_at(seq, workflow_id, offset_seconds)?,
-        result: payload("result"),
+        result: payload("result")?,
     })
 }
 
@@ -423,7 +421,7 @@ fn activity_scheduled(
         envelope: envelope(seq, workflow_id)?,
         activity_id: aion_core::ActivityId::from_sequence_position(seq),
         activity_type: activity_type.to_owned(),
-        input: payload("activity-input"),
+        input: payload("activity-input")?,
     })
 }
 
@@ -444,7 +442,7 @@ fn signal_received(seq: u64, workflow_id: &WorkflowId, name: &str) -> Result<Eve
     Ok(Event::SignalReceived {
         envelope: envelope(seq, workflow_id)?,
         name: name.to_owned(),
-        payload: payload("signal"),
+        payload: payload("signal")?,
     })
 }
 
