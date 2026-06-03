@@ -1,1 +1,1 @@
-Harden deterministic PackageBuilder archive writing
+feat(aion-package): add content-hash module namespacing
