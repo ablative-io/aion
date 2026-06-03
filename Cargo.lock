@@ -114,7 +114,6 @@ name = "aion-package"
 version = "0.1.0"
 dependencies = [
  "aion-core",
- "chrono",
  "serde",
  "serde_json",
  "sha2",
