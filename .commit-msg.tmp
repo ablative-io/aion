@@ -1,1 +1,1 @@
-review: harden libsql error boundary surface
+feat(aion-store-libsql): open libsql connections and ensure schema
