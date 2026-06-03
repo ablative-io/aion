@@ -106,9 +106,10 @@ async fn execute_pragma(
 }
 
 fn validate_pragma_value(value: &str) -> Result<&str, StoreError> {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
         Ok(value)
     } else {
