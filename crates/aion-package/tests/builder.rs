@@ -1,3 +1,5 @@
+//! Integration tests for the deterministic `PackageBuilder` write path.
+
 use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use aion_package::{

@@ -66,7 +66,8 @@ impl PackageBuilder {
     /// serialisation failures, ZIP writer failures, or target I/O failures.
     pub fn write_to_bytes(&self) -> Result<Vec<u8>, PackageError> {
         let cursor = Cursor::new(Vec::new());
-        let cursor = self.write_archive(cursor, self.manifest_bytes()?)?;
+        let manifest_bytes = self.manifest_bytes()?;
+        let cursor = self.write_archive(cursor, &manifest_bytes)?;
         Ok(cursor.into_inner())
     }
 
@@ -79,7 +80,7 @@ impl PackageBuilder {
     pub fn write_to_path(&self, path: impl AsRef<Path>) -> Result<(), PackageError> {
         let manifest_bytes = self.manifest_bytes()?;
         let file = File::create(path).map_err(|source| PackageError::ArchiveWriteIo { source })?;
-        self.write_archive(file, manifest_bytes)?;
+        self.write_archive(file, &manifest_bytes)?;
         Ok(())
     }
 
@@ -101,19 +102,14 @@ impl PackageBuilder {
         Ok(manifest)
     }
 
-    fn write_archive<W>(&self, writer: W, manifest_bytes: Vec<u8>) -> Result<W, PackageError>
+    fn write_archive<W>(&self, writer: W, manifest_bytes: &[u8]) -> Result<W, PackageError>
     where
         W: Write + Seek,
     {
         let mut archive = ZipWriter::new(writer);
         let options = deterministic_file_options();
 
-        write_entry(
-            &mut archive,
-            "manifest.json",
-            manifest_bytes.as_slice(),
-            options,
-        )?;
+        write_entry(&mut archive, "manifest.json", manifest_bytes, options)?;
 
         for module in self.beams.iter() {
             let entry_name = archive_entry_name("beam", module.name(), "beam")?;
