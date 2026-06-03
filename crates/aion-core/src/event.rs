@@ -61,6 +61,9 @@ pub enum Event {
         /// Recording metadata for this event.
         envelope: EventEnvelope,
         /// Descriptor identifying the timeout that elapsed.
+        ///
+        /// Intentionally stringly-typed: the closed set of timeout kinds is defined by cluster AT
+        /// (timers and signals), not by the core event model.
         timeout: String,
     },
     /// An activity was scheduled by workflow code.
