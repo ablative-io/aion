@@ -87,8 +87,8 @@ AP (aion-package) and AS (aion-store-libsql) are independent of each other.
 Both depend on AC types.
 
 ### Wave 8 (2 parallel)
-- [ ] **AP-001** — Crate scaffold, error taxonomy, beam set types
-- [ ] **AS-001** — Crate scaffold, config, error mapping
+- [x] **AP-001** — Crate scaffold, error taxonomy, beam set types · _landed 9d776ba_
+- [x] **AS-001** — Crate scaffold, config, error mapping · _landed fb5b644_
 
 ### Wave 9 (3 parallel)
 - [ ] **AP-002** — Manifest model and format versioning · _depends: AP-001_
