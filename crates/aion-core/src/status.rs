@@ -1,1 +1,1 @@
-//! WorkflowStatus + projection from events
+//! Future `WorkflowStatus` projection from event history.

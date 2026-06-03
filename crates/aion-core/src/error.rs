@@ -1,1 +1,1 @@
-//! ActivityError (retryable/terminal), WorkflowError
+//! Future `ActivityError` and `WorkflowError` domain error types.
