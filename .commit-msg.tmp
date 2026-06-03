@@ -1,1 +1,1 @@
-feat(aion-package): define manifest model and format version check
+review: harden manifest JSON key stability

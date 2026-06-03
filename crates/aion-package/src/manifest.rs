@@ -38,6 +38,7 @@ pub struct DeclaredActivity {
     ///
     /// This follows the current `aion-core` event convention, where scheduled
     /// activity types are represented as strings.
+    #[serde(rename = "activity_type")]
     pub activity_type: String,
 }
 
@@ -49,22 +50,30 @@ pub struct DeclaredActivity {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Stable `entry_module` key naming the logical workflow entry module.
+    #[serde(rename = "entry_module")]
     pub entry_module: String,
     /// Stable `entry_function` key naming the exported workflow entry function.
+    #[serde(rename = "entry_function")]
     pub entry_function: String,
     /// Stable `input_schema` key containing a JSON-Schema document for input payloads.
+    #[serde(rename = "input_schema")]
     pub input_schema: serde_json::Value,
     /// Stable `output_schema` key containing a JSON-Schema document for result payloads.
+    #[serde(rename = "output_schema")]
     pub output_schema: serde_json::Value,
     /// Stable `timeout` key containing the workflow timeout as a serde-encoded duration.
+    #[serde(rename = "timeout")]
     pub timeout: Duration,
     /// Stable `activities` key listing activity types declared by the workflow.
+    #[serde(rename = "activities")]
     pub activities: Vec<DeclaredActivity>,
     /// Stable `version` key containing the package content hash textual value.
+    #[serde(rename = "version")]
     pub version: ManifestVersion,
     /// Stable `format_version` key identifying the `.aion` format schema version.
     ///
     /// This lets future layout changes be detected rather than silently misread.
+    #[serde(rename = "format_version")]
     pub format_version: u32,
 }
 
@@ -181,5 +190,23 @@ mod tests {
             result,
             Err(PackageError::UnknownFormatVersion { found }) if found == CURRENT_FORMAT_VERSION + 1
         ));
+    }
+
+    #[test]
+    fn manifest_json_keys_are_stable() -> Result<(), serde_json::Error> {
+        let manifest = sample_manifest();
+
+        let json = serde_json::to_value(&manifest)?;
+
+        assert!(json.get("entry_module").is_some());
+        assert!(json.get("entry_function").is_some());
+        assert!(json.get("input_schema").is_some());
+        assert!(json.get("output_schema").is_some());
+        assert!(json.get("timeout").is_some());
+        assert!(json.get("activities").is_some());
+        assert!(json.get("version").is_some());
+        assert!(json.get("format_version").is_some());
+        assert_eq!(json["activities"][0]["activity_type"], "charge_card");
+        Ok(())
     }
 }
