@@ -48,3 +48,49 @@ pub enum PackageError {
         entry: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PackageError;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn package_error_is_send_and_sync() {
+        assert_send_sync::<PackageError>();
+    }
+
+    #[test]
+    fn display_messages_name_the_failed_condition() {
+        assert_eq!(
+            PackageError::MissingManifest.to_string(),
+            "missing required manifest.json entry"
+        );
+        assert_eq!(
+            PackageError::UnknownFormatVersion { found: 99 }.to_string(),
+            "unknown .aion format_version 99"
+        );
+        assert_eq!(
+            PackageError::MissingEntryModule {
+                module: "workflow/main".to_owned(),
+            }
+            .to_string(),
+            "missing entry module `workflow/main` in beam set"
+        );
+        assert_eq!(
+            PackageError::IntegrityMismatch {
+                expected: "expected".to_owned(),
+                computed: "computed".to_owned(),
+            }
+            .to_string(),
+            "package integrity mismatch: expected version `expected`, computed `computed`"
+        );
+        assert_eq!(
+            PackageError::MalformedBeamEntry {
+                entry: "beam/workflow.beam".to_owned(),
+            }
+            .to_string(),
+            "malformed beam entry `beam/workflow.beam`"
+        );
+    }
+}

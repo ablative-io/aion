@@ -1,1 +1,1 @@
-feat(aion-package): scaffold package errors and beam set types
+test(aion-package): cover package error guarantees
