@@ -238,10 +238,9 @@ mod tests {
     }
 
     #[test]
-    fn time_range_filters_match_start_time_inclusively() {
+    fn started_after_filter_matches_start_time_inclusively() {
         let filter = WorkflowFilter {
             started_after: Some(recorded_at(10)),
-            started_before: Some(recorded_at(20)),
             ..WorkflowFilter::default()
         };
 
@@ -254,13 +253,34 @@ mod tests {
         assert!(filter.matches(&summary(
             "checkout",
             WorkflowStatus::Running,
-            recorded_at(20),
+            recorded_at(11),
             None
         )));
         assert!(!filter.matches(&summary(
             "checkout",
             WorkflowStatus::Running,
             recorded_at(9),
+            None
+        )));
+    }
+
+    #[test]
+    fn started_before_filter_matches_start_time_inclusively() {
+        let filter = WorkflowFilter {
+            started_before: Some(recorded_at(20)),
+            ..WorkflowFilter::default()
+        };
+
+        assert!(filter.matches(&summary(
+            "checkout",
+            WorkflowStatus::Running,
+            recorded_at(19),
+            None
+        )));
+        assert!(filter.matches(&summary(
+            "checkout",
+            WorkflowStatus::Running,
+            recorded_at(20),
             None
         )));
         assert!(!filter.matches(&summary(
@@ -310,19 +330,34 @@ mod tests {
             started_before: Some(recorded_at(20)),
             parent: Some(parent.clone()),
         };
-
-        assert!(filter.matches(&summary(
+        let matching_summary = summary(
             "checkout",
             WorkflowStatus::Completed,
             recorded_at(15),
-            Some(parent.clone())
-        )));
-        assert!(!filter.matches(&summary(
-            "checkout",
-            WorkflowStatus::Running,
-            recorded_at(15),
-            Some(parent)
-        )));
+            Some(parent.clone()),
+        );
+
+        assert!(filter.matches(&matching_summary));
+        assert!(!filter.matches(&WorkflowSummary {
+            workflow_type: String::from("billing"),
+            ..matching_summary.clone()
+        }));
+        assert!(!filter.matches(&WorkflowSummary {
+            status: WorkflowStatus::Running,
+            ..matching_summary.clone()
+        }));
+        assert!(!filter.matches(&WorkflowSummary {
+            started_at: recorded_at(9),
+            ..matching_summary.clone()
+        }));
+        assert!(!filter.matches(&WorkflowSummary {
+            started_at: recorded_at(21),
+            ..matching_summary.clone()
+        }));
+        assert!(!filter.matches(&WorkflowSummary {
+            parent: None,
+            ..matching_summary
+        }));
     }
 
     #[test]
