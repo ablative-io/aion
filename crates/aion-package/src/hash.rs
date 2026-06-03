@@ -79,7 +79,7 @@ pub fn content_hash(beams: &BeamSet) -> ContentHash {
 }
 
 fn update_framed(digest: &mut Sha256, bytes: &[u8]) {
-    let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let length = bytes.len() as u64;
     digest.update(length.to_be_bytes().as_slice());
     digest.update(bytes);
 }

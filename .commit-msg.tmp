@@ -1,1 +1,1 @@
-feat(aion-package): add canonical content hash versioning
+Harden AP-003 content hash framing and verify acceptance coverage
