@@ -6,5 +6,6 @@ pub mod store;
 pub mod timer;
 
 pub use error::StoreError;
+pub use memory::InMemoryStore;
 pub use store::EventStore;
 pub use timer::TimerEntry;

@@ -1,1 +1,1 @@
-feat(aion-store): define store contract and error taxonomy
+review(aion-store): harden in-memory store ordering and test failure handling
