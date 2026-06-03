@@ -4,7 +4,7 @@
 #[derive(thiserror::Error, Debug)]
 pub enum PackageError {
     /// The archive could not be read as a ZIP container.
-    #[error("failed to read .aion ZIP archive")]
+    #[error("failed to read .aion ZIP archive: {0}")]
     ArchiveRead(#[from] zip::result::ZipError),
 
     /// The archive does not contain the required root manifest.
@@ -12,7 +12,7 @@ pub enum PackageError {
     MissingManifest,
 
     /// The manifest entry is present but is not valid manifest JSON.
-    #[error("failed to parse manifest.json")]
+    #[error("failed to parse manifest.json: {source}")]
     ManifestParse {
         /// JSON parsing failure reported by `serde_json`.
         source: serde_json::Error,
