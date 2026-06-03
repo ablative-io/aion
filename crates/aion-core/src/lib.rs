@@ -3,5 +3,5 @@
 pub mod ids;
 pub mod payload;
 
-pub use ids::{ActivityId, RunId, TimerId, WorkflowId};
+pub use ids::{ActivityId, IdError, RunId, TimerId, WorkflowId};
 pub use payload::{ContentType, Payload, PayloadError};

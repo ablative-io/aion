@@ -59,15 +59,30 @@ impl fmt::Display for ActivityId {
     }
 }
 
+/// Errors from identifier construction.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum IdError {
+    /// A timer name must be non-empty.
+    #[error("timer name must not be empty")]
+    EmptyTimerName,
+}
+
 /// Identifier for a timer scheduled by workflow code or by the engine.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TimerId(TimerIdKind);
 
 impl TimerId {
     /// Creates an author-assigned timer identifier.
-    #[must_use]
-    pub fn named(name: impl Into<String>) -> Self {
-        Self(TimerIdKind::Named(name.into()))
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdError::EmptyTimerName`] if the name is empty.
+    pub fn named(name: impl Into<String>) -> Result<Self, IdError> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(IdError::EmptyTimerName);
+        }
+        Ok(Self(TimerIdKind::Named(name)))
     }
 
     /// Creates an engine-assigned timer identifier derived from sequence position.
@@ -151,7 +166,7 @@ mod tests {
 
     use serde::de::DeserializeOwned;
 
-    use super::{ActivityId, RunId, TimerId, WorkflowId};
+    use super::{ActivityId, IdError, RunId, TimerId, WorkflowId};
 
     fn round_trip<T>(identifier: &T) -> Result<(), serde_json::Error>
     where
@@ -164,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn identifiers_round_trip_through_json() -> Result<(), serde_json::Error> {
+    fn identifiers_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
         round_trip(&WorkflowId::new_v4())?;
         round_trip(&ActivityId::from_sequence_position(17))?;
-        round_trip(&TimerId::named("reminder"))?;
+        round_trip(&TimerId::named("reminder")?)?;
         round_trip(&TimerId::anonymous(29))?;
         round_trip(&RunId::new_v4())?;
         Ok(())
@@ -188,17 +203,18 @@ mod tests {
     }
 
     #[test]
-    fn sequence_identifiers_expose_positions() {
+    fn sequence_identifiers_expose_positions() -> Result<(), IdError> {
         let activity_id = ActivityId::from_sequence_position(42);
         let timer_id = TimerId::anonymous(43);
 
         assert_eq!(activity_id.sequence_position(), 42);
         assert_eq!(timer_id.sequence_position(), Some(43));
-        assert_eq!(TimerId::named("deadline").name(), Some("deadline"));
+        assert_eq!(TimerId::named("deadline")?.name(), Some("deadline"));
+        Ok(())
     }
 
     #[test]
-    fn display_formats_are_stable() {
+    fn display_formats_are_stable() -> Result<(), IdError> {
         let workflow_id = WorkflowId::new(uuid::Uuid::nil());
         let run_id = RunId::new(uuid::Uuid::nil());
 
@@ -212,9 +228,15 @@ mod tests {
             "activity:7"
         );
         assert_eq!(
-            TimerId::named("reminder").to_string(),
+            TimerId::named("reminder")?.to_string(),
             "timer:named:reminder"
         );
         assert_eq!(TimerId::anonymous(3).to_string(), "timer:anonymous:3");
+        Ok(())
+    }
+
+    #[test]
+    fn named_timer_rejects_empty_name() {
+        assert_eq!(TimerId::named(""), Err(IdError::EmptyTimerName));
     }
 }
