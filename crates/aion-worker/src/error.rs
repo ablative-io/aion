@@ -1,1 +1,1 @@
-//! WorkerError taxonomy
+//! `WorkerError` taxonomy.

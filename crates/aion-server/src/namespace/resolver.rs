@@ -1,1 +1,1 @@
-//! NamespaceResolver: scope + authorise
+//! Namespace resolver: scope and authorisation.

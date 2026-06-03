@@ -1,1 +1,1 @@
-//! WireError taxonomy + mapping
+//! `WireError` taxonomy and mapping.

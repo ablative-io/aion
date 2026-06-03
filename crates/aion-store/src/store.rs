@@ -1,1 +1,1 @@
-//! EventStore trait
+//! `EventStore` trait.

@@ -1,1 +1,1 @@
-//! SubscriptionRequest -> EventFilter mapping
+//! `SubscriptionRequest` to `EventFilter` mapping.

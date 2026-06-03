@@ -1,1 +1,1 @@
-//! signal router: record SignalReceived + mailbox delivery
+//! Signal router: record `SignalReceived` and deliver to the mailbox.

@@ -1,1 +1,1 @@
-//! child spawn (linked), ChildWorkflowStarted/Completed/Failed, await + fire-and-forget
+//! Child spawn, `ChildWorkflowStarted`, `ChildWorkflowCompleted`, `ChildWorkflowFailed`, await, and fire-and-forget support.

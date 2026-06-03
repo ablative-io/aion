@@ -1,1 +1,1 @@
-//! read_history, list_active, query (filter -> SQL)
+//! Event read operations: history retrieval, active workflow listing, filtered queries.

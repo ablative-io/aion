@@ -1,1 +1,1 @@
-//! HistoryCursor over recorded events
+//! `HistoryCursor` over recorded events.

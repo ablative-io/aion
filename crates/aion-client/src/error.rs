@@ -1,1 +1,1 @@
-//! ClientError taxonomy
+//! `ClientError` taxonomy.

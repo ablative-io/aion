@@ -1,1 +1,1 @@
-//! LibSqlStore struct + EventStore impl wiring
+//! `LibSqlStore` struct and `EventStore` implementation wiring.

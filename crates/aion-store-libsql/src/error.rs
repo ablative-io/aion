@@ -1,1 +1,1 @@
-//! mapping libsql/serde errors into StoreError
+//! Mapping libsql and serde errors into `StoreError`.

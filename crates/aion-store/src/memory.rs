@@ -1,1 +1,1 @@
-//! InMemoryStore reference impl + behavioural test suite
+//! `InMemoryStore` reference implementation and behavioural test suite.

@@ -1,1 +1,1 @@
-//! LiveExecutor trait (AE implements) + resume-live handoff glue
+//! `LiveExecutor` trait and resume-live handoff glue.

@@ -1,1 +1,1 @@
-//! BeamModule + BeamSet with canonical ordering
+//! `BeamModule` and `BeamSet` with canonical ordering.

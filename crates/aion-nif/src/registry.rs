@@ -1,1 +1,1 @@
-//! NifSet builder; the value register_nifs consumes
+//! `NifSet` builder; the value `register_nifs` consumes.

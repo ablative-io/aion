@@ -1,1 +1,1 @@
-//! Payload<->Term bridge; serde blanket via Payload
+//! `Payload` to `Term` bridge with serde blanket support via `Payload`.

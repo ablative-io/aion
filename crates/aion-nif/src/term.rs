@@ -1,1 +1,1 @@
-//! FromTerm/IntoTerm traits + primitive impls (ints, floats, bools, binaries, atoms)
+//! `FromTerm`/`IntoTerm` traits and primitive implementations.

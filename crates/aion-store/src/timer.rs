@@ -1,1 +1,1 @@
-//! TimerEntry + timer-facing types
+//! `TimerEntry` and timer-facing types.

@@ -1,1 +1,1 @@
-//! Command + Resolution types (the AD seam)
+//! `Command` and `Resolution` types at the AD seam.

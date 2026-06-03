@@ -1,1 +1,1 @@
-//! deterministic_nif + activity_nif builders/macros
+//! NIF declaration builders for deterministic and side-effectful paths.

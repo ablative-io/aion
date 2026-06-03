@@ -1,1 +1,1 @@
-//! ServerError (thiserror)
+//! `ServerError` thiserror taxonomy.

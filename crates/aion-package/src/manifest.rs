@@ -1,1 +1,1 @@
-//! Manifest struct + format_version + serde
+//! Manifest struct with `format_version` and serde support.

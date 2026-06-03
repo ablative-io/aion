@@ -1,1 +1,1 @@
-//! start: spawn + WorkflowStarted + register
+//! Start path: spawn, `WorkflowStarted`, and register.

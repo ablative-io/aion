@@ -1,1 +1,1 @@
-//! Worker builder + run(); shutdown wiring
+//! `Worker` builder, run loop, and shutdown wiring.
