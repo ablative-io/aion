@@ -1,5 +1,6 @@
 //! Persistence contract for Aion event stores. Leaf crate depending only on `aion-core`.
 
+pub mod conformance;
 pub mod error;
 pub mod memory;
 pub mod store;
