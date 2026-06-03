@@ -4,4 +4,4 @@ pub mod config;
 pub mod error;
 
 pub use config::{LibSqlConfig, LibSqlMode};
-pub use error::IntoStoreError;
+pub use error::{libsql_error, serde_json_error};

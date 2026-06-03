@@ -1,1 +1,1 @@
-feat(store-libsql): add scaffold config and error mapping
+review: harden libsql error boundary surface

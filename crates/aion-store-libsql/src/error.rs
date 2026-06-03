@@ -2,34 +2,28 @@
 
 use aion_store::StoreError;
 
-/// Converts foreign backend and serialization errors into the closed `StoreError` taxonomy.
-pub trait IntoStoreError {
-    /// Convert this error into the `EventStore`-facing error surface.
-    fn into_store_error(self) -> StoreError;
+/// Map a libSQL driver error into the `StoreError::Backend` boundary variant.
+#[must_use]
+pub fn libsql_error(error: libsql::Error) -> StoreError {
+    StoreError::Backend(error.to_string())
 }
 
-impl IntoStoreError for libsql::Error {
-    fn into_store_error(self) -> StoreError {
-        StoreError::Backend(self.to_string())
-    }
-}
-
-impl IntoStoreError for serde_json::Error {
-    fn into_store_error(self) -> StoreError {
-        StoreError::Serialization(self.to_string())
-    }
+/// Map a JSON serialization or deserialization error into `StoreError::Serialization`.
+#[must_use]
+pub fn serde_json_error(error: serde_json::Error) -> StoreError {
+    StoreError::Serialization(error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use aion_store::StoreError;
 
-    use super::IntoStoreError;
+    use super::{libsql_error, serde_json_error};
 
     #[test]
     fn maps_libsql_error_to_backend() -> Result<(), Box<dyn std::error::Error>> {
         let error = libsql::Error::ConnectionFailed(String::from("database unavailable"));
-        let mapped = error.into_store_error();
+        let mapped = libsql_error(error);
 
         match mapped {
             StoreError::Backend(message) => {
@@ -45,7 +39,7 @@ mod tests {
     fn maps_serde_json_error_to_serialization() -> Result<(), Box<dyn std::error::Error>> {
         let error = serde_json::from_str::<serde_json::Value>("{")
             .map(|_| ())
-            .map_err(IntoStoreError::into_store_error)
+            .map_err(serde_json_error)
             .err();
 
         match error {
