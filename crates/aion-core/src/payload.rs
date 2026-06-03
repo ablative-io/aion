@@ -3,6 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Type-erased user data with an explicit content type tag.
+///
+/// Payload is a dumb carrier: it stores bytes and a tag but does not
+/// validate that the bytes match the tag on construction. Validation
+/// happens on read (e.g. [`Payload::to_json`] returns `Result`).
+/// Use [`Payload::from_json`] for a validated construction path.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
     content_type: ContentType,
@@ -10,7 +15,12 @@ pub struct Payload {
 }
 
 impl Payload {
-    /// Creates an opaque payload from a content type and byte buffer.
+    /// Creates an opaque payload from a content type and raw bytes.
+    ///
+    /// No validation is performed — the bytes are not checked against the
+    /// content type. Prefer [`Payload::from_json`] when constructing from
+    /// a known value. Conversion methods (e.g. [`Payload::to_json`])
+    /// validate on read.
     #[must_use]
     pub fn new(content_type: ContentType, bytes: Vec<u8>) -> Self {
         Self {
