@@ -447,27 +447,27 @@ fn signal_received(seq: u64, workflow_id: &WorkflowId, name: &str) -> Result<Eve
 }
 
 fn expect_empty<T>(items: Vec<T>, message: &str) -> Result<(), StoreError> {
-    let is_empty = items.is_empty();
+    let len = items.len();
     drop(items);
 
-    if is_empty {
+    if len == 0 {
         Ok(())
     } else {
-        Err(contract_error(message))
+        Err(contract_error(&format!("{message} (got {len} items)")))
     }
 }
 
 fn expect_eq<T>(actual: T, expected: T, message: &str) -> Result<(), StoreError>
 where
-    T: PartialEq,
+    T: PartialEq + std::fmt::Debug,
 {
-    let values_are_equal = actual == expected;
-    drop((actual, expected));
-
-    if values_are_equal {
+    if actual == expected {
+        drop((actual, expected));
         Ok(())
     } else {
-        Err(contract_error(message))
+        Err(contract_error(&format!(
+            "{message}\n  expected: {expected:?}\n  actual: {actual:?}"
+        )))
     }
 }
 
