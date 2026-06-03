@@ -11,10 +11,28 @@ pub enum PackageError {
     #[error("missing required manifest.json entry")]
     MissingManifest,
 
+    /// The archive could not be written as a ZIP container.
+    #[error("failed to write .aion ZIP archive: {0}")]
+    ArchiveWrite(zip::result::ZipError),
+
+    /// The archive target could not be written to the filesystem or memory buffer.
+    #[error("failed to write .aion archive bytes: {source}")]
+    ArchiveWriteIo {
+        /// I/O failure reported by the write target.
+        source: std::io::Error,
+    },
+
     /// The manifest entry is present but is not valid manifest JSON.
     #[error("failed to parse manifest.json: {source}")]
     ManifestParse {
         /// JSON parsing failure reported by `serde_json`.
+        source: serde_json::Error,
+    },
+
+    /// The manifest could not be serialised for writing into the archive.
+    #[error("failed to serialise manifest.json: {source}")]
+    ManifestSerialise {
+        /// JSON serialisation failure reported by `serde_json`.
         source: serde_json::Error,
     },
 
@@ -65,6 +83,13 @@ mod tests {
         assert_eq!(
             PackageError::MissingManifest.to_string(),
             "missing required manifest.json entry"
+        );
+        assert_eq!(
+            PackageError::ArchiveWriteIo {
+                source: std::io::Error::other("disk full"),
+            }
+            .to_string(),
+            "failed to write .aion archive bytes: disk full"
         );
         assert_eq!(
             PackageError::UnknownFormatVersion { found: 99 }.to_string(),
