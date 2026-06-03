@@ -1,1 +1,1 @@
-test(aion-store): harden event store conformance suite
+feat(store-libsql): add scaffold config and error mapping
