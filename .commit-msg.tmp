@@ -1,1 +1,1 @@
-Harden deterministic PackageBuilder archive writing
+feat(aion-store-libsql): wire LibSqlStore construction and EventStore impl
