@@ -256,7 +256,10 @@ pub trait EngineHandle: Send + Sync {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::collections::{HashMap, VecDeque};
+    use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
+
+    use aion_store::EventStore;
 
     use super::*;
 
@@ -300,6 +303,7 @@ pub(crate) mod test_support {
         disarmed_timers: Vec<(WorkflowProcessHandle, TimerId)>,
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
+        recorder_store: Option<Arc<dyn EventStore>>,
     }
 
     /// Test-only fake implementation of [`EngineHandle`].
@@ -313,6 +317,17 @@ pub(crate) mod test_support {
         #[must_use]
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Creates a fake whose recorder seam appends to the supplied store with event sequencing.
+        #[must_use]
+        pub fn recording_to(store: Arc<dyn EventStore>) -> Self {
+            Self {
+                state: Mutex::new(FakeEngineState {
+                    recorder_store: Some(store),
+                    ..FakeEngineState::default()
+                }),
+            }
         }
 
         /// Sets the residency response returned for a workflow.
@@ -330,6 +345,16 @@ pub(crate) mod test_support {
             &self,
         ) -> Result<Vec<(WorkflowProcessHandle, WorkflowMailboxMessage)>, EngineSeamError> {
             Ok(self.state()?.delivered.clone())
+        }
+
+        /// Returns a snapshot of armed timer-wheel entries.
+        pub fn armed_timers(&self) -> Result<Vec<TimerWheelEntry>, EngineSeamError> {
+            Ok(self.state()?.armed_timers.clone())
+        }
+
+        /// Returns a snapshot of recorded events.
+        pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
+            Ok(self.state()?.recorded_events.clone())
         }
 
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
@@ -418,10 +443,20 @@ pub(crate) mod test_support {
             state
                 .recorded_events
                 .push((workflow_id.clone(), event.clone()));
+            let recorder_store = state.recorder_store.clone();
             state.operations.push(FakeEngineOperation::EventRecorded {
                 workflow_id: workflow_id.clone(),
-                event,
+                event: event.clone(),
             });
+            drop(state);
+
+            if let Some(store) = recorder_store {
+                let expected_seq = event.seq().saturating_sub(1);
+                futures::executor::block_on(store.append(workflow_id, &[event], expected_seq))
+                    .map_err(|error| EngineSeamError::Recorder {
+                        reason: error.to_string(),
+                    })?;
+            }
             Ok(())
         }
     }
