@@ -1,1 +1,1 @@
-fix(aion-package): harden namespace inverse parsing
+fix(aion-store-libsql): remove async from placeholder module helpers
