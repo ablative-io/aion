@@ -98,7 +98,16 @@ pub enum WorkflowMailboxMessage {
     },
 }
 
-/// Request from AT to AE to spawn a child workflow linked to a parent process.
+/// Parent/child process relationship requested for a child workflow spawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildWorkflowSpawnMode {
+    /// Link the child to the parent so parent cancellation propagates as an exit signal.
+    Linked,
+    /// Detach the child from blocking await semantics and monitor it for terminal exits.
+    DetachedMonitor,
+}
+
+/// Request from AT to AE to spawn a child workflow under a parent process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChildWorkflowSpawnRequest {
     /// Parent workflow whose process owns the link.
@@ -109,6 +118,8 @@ pub struct ChildWorkflowSpawnRequest {
     pub input: Payload,
     /// Concrete run identifier requested for the child execution.
     pub run_id: RunId,
+    /// Relationship AE should establish between parent and child processes.
+    pub mode: ChildWorkflowSpawnMode,
 }
 
 /// AE's result after starting a linked child workflow execution.
@@ -300,6 +311,8 @@ pub(crate) mod test_support {
         disarmed_timers: Vec<(WorkflowProcessHandle, TimerId)>,
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
+        linked_children: HashMap<WorkflowId, Vec<WorkflowId>>,
+        propagated_child_exits: Vec<(WorkflowId, WorkflowId)>,
     }
 
     /// Test-only fake implementation of [`EngineHandle`].
@@ -330,6 +343,50 @@ pub(crate) mod test_support {
             &self,
         ) -> Result<Vec<(WorkflowProcessHandle, WorkflowMailboxMessage)>, EngineSeamError> {
             Ok(self.state()?.delivered.clone())
+        }
+
+        /// Queues the next child-spawn response returned by the fake.
+        pub fn push_child_spawn_response(
+            &self,
+            response: Result<ChildWorkflowSpawnResult, EngineSeamError>,
+        ) -> Result<(), EngineSeamError> {
+            self.state()?.child_spawn_responses.push_back(response);
+            Ok(())
+        }
+
+        /// Returns captured child-spawn requests in observed order.
+        pub fn child_spawn_requests(
+            &self,
+        ) -> Result<Vec<ChildWorkflowSpawnRequest>, EngineSeamError> {
+            Ok(self.state()?.child_spawn_requests.clone())
+        }
+
+        /// Returns events recorded through the fake recorder seam.
+        pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
+            Ok(self.state()?.recorded_events.clone())
+        }
+
+        /// Returns all fake engine operations in observed order.
+        pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
+            Ok(self.state()?.operations.clone())
+        }
+
+        /// Simulates AE terminating a parent process and propagating exits to linked children.
+        pub fn terminate_parent(&self, parent: &WorkflowId) -> Result<(), EngineSeamError> {
+            let mut state = self.state()?;
+            if let Some(children) = state.linked_children.get(parent).cloned() {
+                for child in children {
+                    state.propagated_child_exits.push((parent.clone(), child));
+                }
+            }
+            Ok(())
+        }
+
+        /// Returns propagated linked-child exits observed by the fake.
+        pub fn propagated_child_exits(
+            &self,
+        ) -> Result<Vec<(WorkflowId, WorkflowId)>, EngineSeamError> {
+            Ok(self.state()?.propagated_child_exits.clone())
         }
 
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
@@ -373,8 +430,17 @@ pub(crate) mod test_support {
             state.child_spawn_requests.push(request.clone());
             state
                 .operations
-                .push(FakeEngineOperation::ChildSpawnRequested(request));
+                .push(FakeEngineOperation::ChildSpawnRequested(request.clone()));
             if let Some(response) = state.child_spawn_responses.pop_front() {
+                if let Ok(result) = &response {
+                    if request.mode == ChildWorkflowSpawnMode::Linked {
+                        state
+                            .linked_children
+                            .entry(request.parent_workflow_id.clone())
+                            .or_default()
+                            .push(result.child_workflow_id.clone());
+                    }
+                }
                 response
             } else {
                 Err(EngineSeamError::ChildSpawn {
