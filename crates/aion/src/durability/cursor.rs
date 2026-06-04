@@ -113,7 +113,7 @@ impl HistoryCursor {
         match family {
             RecordedEventFamily::Activity => self.resolve_activity(expected_key),
             RecordedEventFamily::Timer | RecordedEventFamily::Child => {
-                self.resolve_started_with_immediate_outcome(expected_key)
+                self.resolve_started_with_immediate_outcome(&expected_key)
             }
             RecordedEventFamily::Signal => self.consume_one(),
         }
@@ -165,14 +165,14 @@ impl HistoryCursor {
 
     fn resolve_started_with_immediate_outcome(
         &mut self,
-        expected_key: CorrelationKey,
+        expected_key: &CorrelationKey,
     ) -> CursorResolveResult {
         let start = self.position;
         let next = self.position + 1;
         if self
             .events
             .get(next)
-            .is_some_and(|event| self.is_outcome_for_start_key(event, &expected_key))
+            .is_some_and(|event| self.is_outcome_for_start_key(event, expected_key))
         {
             self.consume_range(start, next + 1)
         } else {

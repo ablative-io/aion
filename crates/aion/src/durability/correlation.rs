@@ -73,10 +73,7 @@ fn key_for_event_with_signal_counts(
 ) -> Option<CorrelationKey> {
     match event {
         Event::SignalReceived { name, .. } => {
-            let index = match signal_counts.get(name).copied() {
-                Some(count) => count,
-                None => 0,
-            };
+            let index = signal_counts.get(name).copied().unwrap_or_default();
             signal_counts.insert(name.clone(), index + 1);
             Some(CorrelationKey::Signal {
                 name: name.clone(),
