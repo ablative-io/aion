@@ -28,15 +28,15 @@ impl Replay {
     /// Returns [`DurabilityError::HistoryShape`] if the history is unordered or lacks a
     /// `WorkflowStarted` event for the requested workflow.
     pub fn new(
-        workflow_id: WorkflowId,
-        run_id: RunId,
+        workflow_id: &WorkflowId,
+        run_id: &RunId,
         history: Vec<Event>,
     ) -> Result<Self, DurabilityError> {
-        let started_at = workflow_started_at(&workflow_id, &history)?;
+        let started_at = workflow_started_at(workflow_id, &history)?;
         let terminal = terminal_from_history(&history);
         let cursor = HistoryCursor::new(history)?;
         let resolver = Resolver::new(workflow_id.clone(), cursor);
-        let determinism = DeterminismContext::new(started_at, &workflow_id, &run_id);
+        let determinism = DeterminismContext::new(started_at, workflow_id, run_id);
 
         Ok(Self {
             resolver,
@@ -54,8 +54,8 @@ impl Replay {
     ///
     /// Returns the same history-shape errors as [`Self::new`].
     pub fn with_handoff(
-        workflow_id: WorkflowId,
-        run_id: RunId,
+        workflow_id: &WorkflowId,
+        run_id: &RunId,
         history: Vec<Event>,
         recorder: &Recorder,
         executor: &dyn LiveExecutor,
@@ -315,7 +315,9 @@ mod tests {
 
     #[test]
     fn step_returns_recorded_resolutions_and_advances_now() -> TestResult {
-        let mut replay = Replay::new(workflow_id(), run_id(), history()?)?;
+        let workflow_id = workflow_id();
+        let run_id = run_id();
+        let mut replay = Replay::new(&workflow_id, &run_id, history()?)?;
         assert_eq!(replay.now(), timestamp(10)?);
 
         assert_eq!(
@@ -334,7 +336,9 @@ mod tests {
 
     #[test]
     fn drive_reports_terminal_history_without_resume_live() -> TestResult {
-        let mut replay = Replay::new(workflow_id(), run_id(), history()?)?;
+        let workflow_id = workflow_id();
+        let run_id = run_id();
+        let mut replay = Replay::new(&workflow_id, &run_id, history()?)?;
 
         let outcome = replay.drive([activity_command()?, timer_command()?])?;
 

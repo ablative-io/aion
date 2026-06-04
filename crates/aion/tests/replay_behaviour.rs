@@ -219,7 +219,9 @@ async fn fully_recorded_history_replays_to_terminal_with_zero_live_calls()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let history = record_full_history(store).await?;
-    let mut replay = Replay::new(workflow_id(), run_id(), history)?;
+    let workflow_id = workflow_id();
+    let run_id = run_id();
+    let mut replay = Replay::new(&workflow_id, &run_id, history)?;
     let executor = CountingExecutor::default();
 
     let commands = vec![
@@ -251,7 +253,9 @@ async fn partial_history_reports_resume_point_and_last_recorded_timestamp()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let history = record_partial_history(store).await?;
-    let mut replay = Replay::new(workflow_id(), run_id(), history)?;
+    let workflow_id = workflow_id();
+    let run_id = run_id();
+    let mut replay = Replay::new(&workflow_id, &run_id, history)?;
     let resume_command = timer_command(TimerId::anonymous(4))?;
 
     let outcome = replay.drive(vec![activity_command(0)?, resume_command.clone()])?;
@@ -273,7 +277,9 @@ async fn activity_completed_is_served_from_history_cache_without_live_call()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let history = record_partial_history(store).await?;
-    let mut replay = Replay::new(workflow_id(), run_id(), history)?;
+    let workflow_id = workflow_id();
+    let run_id = run_id();
+    let mut replay = Replay::new(&workflow_id, &run_id, history)?;
     let executor = CountingExecutor::default();
 
     let step = replay.step(activity_command(0)?)?;
@@ -315,7 +321,9 @@ async fn terminal_activity_failure_is_served_from_history_cache_without_live_cal
         .await?;
 
     let history = store.read_history(&workflow_id()).await?;
-    let mut replay = Replay::new(workflow_id(), run_id(), history)?;
+    let workflow_id = workflow_id();
+    let run_id = run_id();
+    let mut replay = Replay::new(&workflow_id, &run_id, history)?;
 
     assert_eq!(
         replay.step(activity_command(0)?)?,
