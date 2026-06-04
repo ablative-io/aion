@@ -5,12 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{
-    ContentType, Event, EventEnvelope, EventStore, Payload, StoreError, TimerEntry, TimerId,
-    WorkflowId,
+    Event, EventEnvelope, EventStore, Payload, StoreError, TimerEntry, TimerId, WorkflowId,
 };
 use aion_store_libsql::LibSqlStore;
 use chrono::{DateTime, Utc};
-use serde_json::json;
 
 static DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -22,20 +20,20 @@ async fn history_active_list_and_timers_survive_reopen() -> Result<(), StoreErro
     let due_timer = TimerEntry {
         workflow_id: running.clone(),
         timer_id: TimerId::anonymous(10),
-        fire_at: recorded_at(50),
+        fire_at: recorded_at(50)?,
     };
     let future_timer = TimerEntry {
         workflow_id: running.clone(),
         timer_id: TimerId::anonymous(11),
-        fire_at: recorded_at(500),
+        fire_at: recorded_at(500)?,
     };
     let running_history = vec![
-        workflow_started(1, &running, "checkout"),
-        signal_received(2, &running, "wake"),
+        workflow_started(1, &running, "checkout")?,
+        signal_received(2, &running, "wake")?,
     ];
     let completed_history = vec![
-        workflow_started(1, &completed, "billing"),
-        workflow_completed(2, &completed),
+        workflow_started(1, &completed, "billing")?,
+        workflow_completed(2, &completed)?,
     ];
 
     {
@@ -62,9 +60,9 @@ async fn history_active_list_and_timers_survive_reopen() -> Result<(), StoreErro
 
     assert_eq!(reopened.read_history(&running).await?, running_history);
     assert_eq!(reopened.read_history(&completed).await?, completed_history);
-    assert_eq!(reopened.list_active().await?, vec![running.clone()]);
+    assert_workflows_eq(reopened.list_active().await?, &[running]);
     assert_eq!(
-        reopened.expired_timers(recorded_at(100)).await?,
+        reopened.expired_timers(recorded_at(100)?).await?,
         vec![due_timer]
     );
 
@@ -76,10 +74,10 @@ async fn sequence_guard_uses_persisted_head_after_reopen() -> Result<(), StoreEr
     let path = unique_temp_path("sequence-head");
     let workflow = workflow_id(3);
     let first_batch = vec![
-        workflow_started(1, &workflow, "checkout"),
-        signal_received(2, &workflow, "first"),
+        workflow_started(1, &workflow, "checkout")?,
+        signal_received(2, &workflow, "first")?,
     ];
-    let second_batch = vec![signal_received(3, &workflow, "second")];
+    let second_batch = vec![signal_received(3, &workflow, "second")?];
 
     {
         let store = LibSqlStore::open(path.clone()).await?;
@@ -89,7 +87,7 @@ async fn sequence_guard_uses_persisted_head_after_reopen() -> Result<(), StoreEr
     let reopened = LibSqlStore::open(path).await?;
     reopened.append(&workflow, &second_batch, 2).await?;
 
-    let stale_batch = vec![signal_received(4, &workflow, "stale")];
+    let stale_batch = vec![signal_received(4, &workflow, "stale")?];
     assert_eq!(
         reopened.append(&workflow, &stale_batch, 0).await,
         Err(StoreError::SequenceConflict {
@@ -109,54 +107,62 @@ fn workflow_id(value: u128) -> WorkflowId {
     WorkflowId::new(uuid::Uuid::from_u128(value))
 }
 
-fn workflow_started(seq: u64, workflow_id: &WorkflowId, workflow_type: &str) -> Event {
-    Event::WorkflowStarted {
-        envelope: envelope(seq, workflow_id),
+fn workflow_started(
+    seq: u64,
+    workflow_id: &WorkflowId,
+    workflow_type: &str,
+) -> Result<Event, StoreError> {
+    Ok(Event::WorkflowStarted {
+        envelope: envelope(seq, workflow_id)?,
         workflow_type: workflow_type.to_owned(),
-        input: payload("input"),
-    }
+        input: payload("input")?,
+    })
 }
 
-fn workflow_completed(seq: u64, workflow_id: &WorkflowId) -> Event {
-    Event::WorkflowCompleted {
-        envelope: envelope(seq, workflow_id),
-        result: payload("result"),
-    }
+fn workflow_completed(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
+    Ok(Event::WorkflowCompleted {
+        envelope: envelope(seq, workflow_id)?,
+        result: payload("result")?,
+    })
 }
 
-fn signal_received(seq: u64, workflow_id: &WorkflowId, name: &str) -> Event {
-    Event::SignalReceived {
-        envelope: envelope(seq, workflow_id),
+fn signal_received(seq: u64, workflow_id: &WorkflowId, name: &str) -> Result<Event, StoreError> {
+    Ok(Event::SignalReceived {
+        envelope: envelope(seq, workflow_id)?,
         name: name.to_owned(),
-        payload: payload("signal"),
-    }
+        payload: payload("signal")?,
+    })
 }
 
-fn envelope(seq: u64, workflow_id: &WorkflowId) -> EventEnvelope {
-    EventEnvelope {
+fn envelope(seq: u64, workflow_id: &WorkflowId) -> Result<EventEnvelope, StoreError> {
+    Ok(EventEnvelope {
         seq,
-        recorded_at: recorded_at(seq_as_offset(seq)),
+        recorded_at: recorded_at(seq_as_offset(seq)?)?,
         workflow_id: workflow_id.clone(),
-    }
+    })
 }
 
-fn payload(label: &str) -> Payload {
-    match Payload::from_json(&json!({ "label": label })) {
-        Ok(payload) => payload,
-        Err(error) => Payload::new(
-            ContentType::Json,
-            format!("{{\"payload_error\":\"{error}\"}}").into_bytes(),
-        ),
-    }
+fn payload(label: &str) -> Result<Payload, StoreError> {
+    Payload::from_json(&serde_json::json!({ "label": label }))
+        .map_err(|error| StoreError::Serialization(error.to_string()))
 }
 
-fn recorded_at(offset_seconds: i64) -> DateTime<Utc> {
+fn recorded_at(offset_seconds: i64) -> Result<DateTime<Utc>, StoreError> {
     DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0)
-        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+        .ok_or_else(|| StoreError::Backend(String::from("test timestamp should be representable")))
 }
 
-fn seq_as_offset(seq: u64) -> i64 {
-    i64::try_from(seq).unwrap_or(i64::MAX)
+fn seq_as_offset(seq: u64) -> Result<i64, StoreError> {
+    i64::try_from(seq).map_err(|error| {
+        StoreError::Backend(format!("event sequence out of timestamp range: {error}"))
+    })
+}
+
+fn assert_workflows_eq(mut actual: Vec<WorkflowId>, expected: &[WorkflowId]) {
+    actual.sort_by_key(ToString::to_string);
+    let mut expected = expected.to_vec();
+    expected.sort_by_key(ToString::to_string);
+    assert_eq!(actual, expected);
 }
 
 fn unique_temp_path(name: &str) -> PathBuf {
