@@ -7,6 +7,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 aion-core = { path = "../aion-core" }
 serde = { workspace = true, features = ["derive"] }

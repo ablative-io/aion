@@ -119,7 +119,10 @@ mod tests {
 
     use super::{Mfa, NifEntry, NifRegistration};
 
-    fn native_zero(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    fn native_zero(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+        if args.len() > 255 {
+            return Err(Term::small_int(0));
+        }
         Ok(Term::small_int(0))
     }
 

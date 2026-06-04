@@ -148,6 +148,23 @@ impl Package {
     pub fn deployed_entry_module(&self) -> String {
         deployed_name(&self.manifest.entry_module, &self.content_hash)
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_validated_parts_for_test(
+        manifest: Manifest,
+        beams: BeamSet,
+        source: BTreeMap<String, Vec<u8>>,
+        content_hash: ContentHash,
+    ) -> Self {
+        Self {
+            manifest,
+            beams,
+            source,
+            content_hash,
+        }
+    }
 }
 
 fn read_manifest<R>(archive: &mut ZipArchive<R>) -> Result<Manifest, PackageError>

@@ -22,3 +22,6 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 tracing = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
+
+[dev-dependencies]
+aion-package = { path = "../aion-package", features = ["test-support"] }
