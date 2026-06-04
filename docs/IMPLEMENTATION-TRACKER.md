@@ -113,7 +113,7 @@ Both depend on AC types.
 - [x] **AS-007** — Conformance suite and persistence tests · _landed 354af1c_
 
 ### Wave 14
-- [ ] **AS-008** — Embedded-replica sync · _depends: AS-007_
+- [x] **AS-008** — Embedded-replica sync · _landed 29e9bb7_
 
 ---
 
