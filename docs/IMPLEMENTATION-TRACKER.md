@@ -106,8 +106,8 @@ Both depend on AC types.
 - [x] **AS-006** — Durable timers (schedule/expired) · _landed e7cd99e_
 
 ### Wave 12 (2 parallel)
-- [ ] **AP-007** — Version record and round-trip conformance · _depends: AP-005, AP-006_
-- [ ] **AS-005** — read_history, list_active, query · _depends: AS-004_
+- [x] **AP-007** — Version record and round-trip conformance · _landed a727e26_
+- [x] **AS-005** — read_history, list_active, query · _landed 7271697_
 
 ### Wave 13
 - [ ] **AS-007** — Conformance suite and persistence tests · _depends: AS-004, AS-005, AS-006_
