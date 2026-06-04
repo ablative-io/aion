@@ -72,10 +72,10 @@ mod tests {
         }
     }
 
-    fn spec_from_item(item: &u8) -> AllChildWorkflowSpec {
+    fn spec_from_item(item: u8) -> AllChildWorkflowSpec {
         AllChildWorkflowSpec::new(
             "child",
-            Payload::new(ContentType::Json, vec![*item]),
+            Payload::new(ContentType::Json, vec![item]),
             RunId::new_v4(),
         )
     }
@@ -101,7 +101,7 @@ mod tests {
     fn child_specs_from_items_preserves_runtime_item_order() {
         let items = [4_u8, 3, 2, 1];
 
-        let specs = child_specs_from_items(&items, spec_from_item);
+        let specs = child_specs_from_items(&items, |&item| spec_from_item(item));
 
         assert_eq!(specs.len(), 4);
         let inputs: Vec<Payload> = specs.into_iter().map(|spec| spec.input).collect();
@@ -119,7 +119,7 @@ mod tests {
         let mut mailbox = VecCorrelationMailbox::new(Vec::new());
         let items: [u8; 0] = [];
 
-        let results = map(&engine, &recording, &mut mailbox, &items, spec_from_item)?;
+        let results = map(&engine, &recording, &mut mailbox, &items, |&item| spec_from_item(item))?;
 
         assert_eq!(results, Vec::<Payload>::new());
         assert!(engine.child_spawn_requests()?.is_empty());
@@ -162,7 +162,7 @@ mod tests {
             },
         ]);
 
-        let results = map(&engine, &recording, &mut mailbox, &items, spec_from_item)?;
+        let results = map(&engine, &recording, &mut mailbox, &items, |&item| spec_from_item(item))?;
 
         assert_eq!(results, vec![result_a, result_b, result_c]);
         assert!(mailbox.is_empty());
@@ -209,7 +209,7 @@ mod tests {
                 error: failure.clone(),
             }]);
 
-        let error = map(&engine, &recording, &mut mailbox, &items, spec_from_item);
+        let error = map(&engine, &recording, &mut mailbox, &items, |&item| spec_from_item(item));
 
         assert_eq!(
             error,
