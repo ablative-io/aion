@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aion_store::{Event, EventEnvelope, EventStore, Payload, StoreError, WorkflowId};
 use aion_store_libsql::{LibSqlConfig, LibSqlMode, LibSqlStore};
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 static DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -39,7 +40,7 @@ async fn embedded_replica_sync_round_trips_through_primary() -> Result<(), Store
     .await?;
     writer.sync().await?;
 
-    let workflow_id = workflow_id(8008);
+    let workflow_id = workflow_id();
     let events = vec![
         workflow_started(1, &workflow_id, "replica-sync")?,
         signal_received(2, &workflow_id, "remote-round-trip")?,
@@ -70,8 +71,13 @@ fn replica_config(name: &str, primary_url: String, auth_token: String) -> LibSql
     }
 }
 
-fn workflow_id(value: u128) -> WorkflowId {
-    WorkflowId::new(uuid::Uuid::from_u128(value))
+fn workflow_id() -> WorkflowId {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let counter = u128::from(DATABASE_COUNTER.fetch_add(1, Ordering::Relaxed));
+
+    WorkflowId::new(Uuid::from_u128(nanos ^ counter))
 }
 
 fn workflow_started(
