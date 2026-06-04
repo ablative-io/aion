@@ -1,1 +1,1 @@
-feat(aion): add named cancellable timer APIs
+harden(aion): enforce named timer cancellation semantics

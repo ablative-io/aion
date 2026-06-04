@@ -57,8 +57,8 @@ pub async fn start_timer(
 ///
 /// # Errors
 ///
-/// Returns [`TimerServiceError`] when history inspection, residency resolution, disarming, or
-/// cancellation recording fails.
+/// Returns [`TimerServiceError`] when an anonymous timer id is supplied, or when history inspection,
+/// residency resolution, disarming, or cancellation recording fails.
 pub async fn cancel_timer(
     service: &TimerService,
     workflow_id: WorkflowId,
@@ -103,6 +103,7 @@ pub async fn sleep(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use aion_core::{Event, EventEnvelope, IdError, TimerId, WorkflowId};
     use aion_store::{EventStore, InMemoryStore, StoreError};
@@ -110,9 +111,7 @@ mod tests {
 
     use super::{SleepTimerError, cancel_timer, sleep, start_timer};
     use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
-    use crate::engine_seam::{
-        EngineHandle, TimerWheelEntry, WorkflowProcessHandle, WorkflowResidency,
-    };
+    use crate::engine_seam::{TimerWheelEntry, WorkflowProcessHandle, WorkflowResidency};
     use crate::time::{TimerService, TimerServiceError};
 
     #[derive(thiserror::Error, Debug)]
@@ -278,6 +277,24 @@ mod tests {
         let history = history(&store, &workflow_id).await?;
         assert_eq!(count_cancelled(&history, &timer_id), 1);
         assert_eq!(engine.operations()?.len(), operation_count);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_timer_rejects_anonymous_sleep_timer() -> Result<(), TestError> {
+        let (store, engine, service) = service();
+        let workflow_id = workflow_id();
+        let timer_id = TimerId::anonymous(42);
+
+        let result = cancel_timer(&service, workflow_id.clone(), timer_id.clone()).await;
+
+        assert!(matches!(
+            result,
+            Err(TimerServiceError::AnonymousTimerNotCancellable { timer_id: rejected })
+                if rejected == timer_id
+        ));
+        assert!(history(&store, &workflow_id).await?.is_empty());
+        assert!(engine.operations()?.is_empty());
         Ok(())
     }
 
