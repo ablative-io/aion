@@ -37,7 +37,7 @@ pub async fn complete(
             .await?;
     }
 
-    let _ = handle
+    handle
         .completion()
         .notify(TerminalOutcome::Completed(result));
     context.registry.remove(id, run)?;
@@ -66,7 +66,7 @@ pub async fn fail(
             .await?;
     }
 
-    let _ = handle.completion().notify(TerminalOutcome::Failed(error));
+    handle.completion().notify(TerminalOutcome::Failed(error));
     context.registry.remove(id, run)?;
     Ok(())
 }
@@ -97,7 +97,7 @@ pub async fn cancel(
             .await?;
     }
 
-    let _ = handle
+    handle
         .completion()
         .notify(TerminalOutcome::Cancelled(reason));
     context.registry.remove(id, run)?;
