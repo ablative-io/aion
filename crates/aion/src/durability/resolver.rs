@@ -44,13 +44,32 @@ impl Resolver {
     /// mismatch, or [`DurabilityError::HistoryShape`] when matched history lacks one of AD-004's
     /// recorded terminal outcomes.
     pub fn resolve(&mut self, command: Command) -> Result<ResolveOutcome, DurabilityError> {
+        self.resolve_with_consumed(command)
+            .map(ResolvedCommand::into_outcome)
+    }
+
+    /// Resolves a command and includes the consumed recorded timestamp for replay bookkeeping.
+    ///
+    /// The returned [`ResolvedCommand`] preserves the existing recorded/resume-live decision while
+    /// exposing the timestamp of the last consumed history event. Replay uses that timestamp as the
+    /// only source for advancing workflow-visible `now`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError::NonDeterminism`] when the cursor reports a command-stream
+    /// mismatch, or [`DurabilityError::HistoryShape`] when matched history lacks one of AD-004's
+    /// recorded terminal outcomes.
+    pub fn resolve_with_consumed(
+        &mut self,
+        command: Command,
+    ) -> Result<ResolvedCommand, DurabilityError> {
         let Some((family, key)) = family_and_key(command) else {
-            return Ok(ResolveOutcome::ResumeLive);
+            return Ok(ResolvedCommand::ResumeLive { recorded_at: None });
         };
 
         match self.cursor.resolve_next(family, key) {
             CursorResolveResult::Matched(events) => resolution_from_matched(&events),
-            CursorResolveResult::Exhausted => Ok(ResolveOutcome::ResumeLive),
+            CursorResolveResult::Exhausted => Ok(ResolvedCommand::ResumeLive { recorded_at: None }),
             CursorResolveResult::Mismatch {
                 expected_key,
                 found,
@@ -72,6 +91,32 @@ impl Resolver {
                 "{} family {:?} key {:?}",
                 found.kind, found.family, found.key
             ),
+        }
+    }
+}
+
+/// Resolver outcome plus timestamp metadata for replay determinism bookkeeping.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedCommand {
+    /// The command was satisfied from recorded history without invoking live side effects.
+    Recorded {
+        /// Recorded resolution returned to workflow code.
+        resolution: Resolution,
+        /// Timestamp of the last recorded event consumed for this command.
+        recorded_at: DateTime<Utc>,
+    },
+    /// Recorded history cannot fully satisfy the command; ownership must hand off live.
+    ResumeLive {
+        /// Timestamp of a matched command-issued event consumed before handoff, if any.
+        recorded_at: Option<DateTime<Utc>>,
+    },
+}
+
+impl ResolvedCommand {
+    fn into_outcome(self) -> ResolveOutcome {
+        match self {
+            Self::Recorded { resolution, .. } => ResolveOutcome::Recorded(resolution),
+            Self::ResumeLive { .. } => ResolveOutcome::ResumeLive,
         }
     }
 }
@@ -109,21 +154,26 @@ fn family_and_key(command: Command) -> Option<(RecordedEventFamily, CorrelationK
     }
 }
 
-fn resolution_from_matched(events: &[Event]) -> Result<ResolveOutcome, DurabilityError> {
+fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, DurabilityError> {
     let Some(last) = events.last() else {
         return Err(DurabilityError::HistoryShape {
             reason: "cursor returned an empty matched event range".to_owned(),
         });
     };
+    let recorded_at = *last.recorded_at();
 
     match last {
-        Event::ActivityCompleted { result, .. } => {
-            Ok(recorded(Resolution::ActivityCompleted(result.clone())))
-        }
+        Event::ActivityCompleted { result, .. } => Ok(recorded(
+            Resolution::ActivityCompleted(result.clone()),
+            recorded_at,
+        )),
         Event::ActivityFailed { error, .. }
             if matches!(error.kind, aion_core::ActivityErrorKind::Terminal) =>
         {
-            Ok(recorded(Resolution::ActivityFailedTerminal(error.clone())))
+            Ok(recorded(
+                Resolution::ActivityFailedTerminal(error.clone()),
+                recorded_at,
+            ))
         }
         Event::ActivityFailed { error, .. } => Err(DurabilityError::HistoryShape {
             reason: format!(
@@ -131,18 +181,23 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolveOutcome, Durabilit
                 error.kind
             ),
         }),
-        Event::TimerFired { .. } => Ok(recorded(Resolution::TimerFired)),
-        Event::SignalReceived { payload, .. } => {
-            Ok(recorded(Resolution::SignalDelivered(payload.clone())))
-        }
-        Event::ChildWorkflowCompleted { result, .. } => {
-            Ok(recorded(Resolution::ChildCompleted(result.clone())))
-        }
-        Event::ChildWorkflowFailed { error, .. } => {
-            Ok(recorded(Resolution::ChildFailed(error.clone())))
-        }
+        Event::TimerFired { .. } => Ok(recorded(Resolution::TimerFired, recorded_at)),
+        Event::SignalReceived { payload, .. } => Ok(recorded(
+            Resolution::SignalDelivered(payload.clone()),
+            recorded_at,
+        )),
+        Event::ChildWorkflowCompleted { result, .. } => Ok(recorded(
+            Resolution::ChildCompleted(result.clone()),
+            recorded_at,
+        )),
+        Event::ChildWorkflowFailed { error, .. } => Ok(recorded(
+            Resolution::ChildFailed(error.clone()),
+            recorded_at,
+        )),
         Event::TimerStarted { .. } | Event::ChildWorkflowStarted { .. } => {
-            Ok(ResolveOutcome::ResumeLive)
+            Ok(ResolvedCommand::ResumeLive {
+                recorded_at: Some(recorded_at),
+            })
         }
         Event::ActivityCancelled { .. }
         | Event::TimerCancelled { .. }
@@ -167,8 +222,11 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolveOutcome, Durabilit
     }
 }
 
-fn recorded(resolution: Resolution) -> ResolveOutcome {
-    ResolveOutcome::Recorded(resolution)
+fn recorded(resolution: Resolution, recorded_at: DateTime<Utc>) -> ResolvedCommand {
+    ResolvedCommand::Recorded {
+        resolution,
+        recorded_at,
+    }
 }
 
 fn event_kind(event: &Event) -> &'static str {
