@@ -30,6 +30,10 @@ fn run_id() -> RunId {
     RunId::new(Uuid::from_u128(0x3333))
 }
 
+fn different_run_id() -> RunId {
+    RunId::new(Uuid::from_u128(0x4444))
+}
+
 fn timestamp(seconds: i64) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
     Utc.timestamp_opt(seconds, 0)
         .single()
@@ -119,6 +123,67 @@ async fn record_full_history(
             timestamp(80)?,
             child_workflow_id(),
             payload("child-result")?,
+        )
+        .await?;
+    recorder
+        .record_workflow_completed(timestamp(90)?, payload("workflow-result")?)
+        .await?;
+
+    Ok(store.read_history(&workflow_id()).await?)
+}
+
+async fn record_round_trip_history(
+    store: Arc<dyn EventStore>,
+) -> Result<Vec<aion_core::Event>, Box<dyn std::error::Error>> {
+    let mut recorder = Recorder::new(workflow_id(), Arc::clone(&store));
+    let first_activity_id = ActivityId::from_sequence_position(0);
+    let second_activity_id = ActivityId::from_sequence_position(1);
+    let timer_id = TimerId::anonymous(4);
+
+    recorder
+        .record_workflow_started(timestamp(10)?, "workflow".to_owned(), payload("input")?)
+        .await?;
+    recorder
+        .record_activity_scheduled(
+            timestamp(20)?,
+            first_activity_id.clone(),
+            "activity".to_owned(),
+            payload("first-activity-input")?,
+        )
+        .await?;
+    recorder
+        .record_activity_completed(
+            timestamp(30)?,
+            first_activity_id,
+            payload("first-activity-result")?,
+        )
+        .await?;
+    recorder
+        .record_activity_scheduled(
+            timestamp(40)?,
+            second_activity_id.clone(),
+            "activity".to_owned(),
+            payload("second-activity-input")?,
+        )
+        .await?;
+    recorder
+        .record_activity_completed(
+            timestamp(50)?,
+            second_activity_id,
+            payload("second-activity-result")?,
+        )
+        .await?;
+    recorder
+        .record_timer_started(timestamp(60)?, timer_id.clone(), timestamp(100)?)
+        .await?;
+    recorder
+        .record_timer_fired(timestamp(70)?, timer_id)
+        .await?;
+    recorder
+        .record_signal_received(
+            timestamp(80)?,
+            "ready".to_owned(),
+            payload("signal-payload")?,
         )
         .await?;
     recorder
@@ -245,6 +310,91 @@ async fn fully_recorded_history_replays_to_terminal_with_zero_live_calls()
         }
     );
     assert_eq!(executor.calls(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn record_then_replay_round_trip_reaches_terminal_without_resume_live()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let history = record_round_trip_history(store).await?;
+    let workflow_id = workflow_id();
+    let run_id = run_id();
+    let mut replay = Replay::new(&workflow_id, &run_id, history)?;
+
+    let outcome = replay.drive(vec![
+        activity_command(0)?,
+        activity_command(1)?,
+        timer_command(TimerId::anonymous(4))?,
+        signal_command("ready", 0),
+    ])?;
+
+    assert_eq!(
+        outcome,
+        ReplayOutcome::Terminal {
+            terminal: ReplayTerminal::Completed(payload("workflow-result")?),
+            recorded: vec![
+                Resolution::ActivityCompleted(payload("first-activity-result")?),
+                Resolution::ActivityCompleted(payload("second-activity-result")?),
+                Resolution::TimerFired,
+                Resolution::SignalDelivered(payload("signal-payload")?),
+            ],
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let history = record_round_trip_history(store).await?;
+    let workflow_id = workflow_id();
+    let run_id = run_id();
+    let mut replay = Replay::new(&workflow_id, &run_id, history.clone())?;
+
+    assert_eq!(replay.now(), timestamp(10)?);
+    assert_eq!(
+        replay.step(&activity_command(0)?)?,
+        ReplayStep::Recorded(Resolution::ActivityCompleted(payload(
+            "first-activity-result"
+        )?))
+    );
+    assert_eq!(replay.now(), timestamp(30)?);
+    assert_eq!(
+        replay.step(&activity_command(1)?)?,
+        ReplayStep::Recorded(Resolution::ActivityCompleted(payload(
+            "second-activity-result"
+        )?))
+    );
+    assert_eq!(replay.now(), timestamp(50)?);
+    assert_eq!(
+        replay.step(&timer_command(TimerId::anonymous(4))?)?,
+        ReplayStep::Recorded(Resolution::TimerFired)
+    );
+    assert_eq!(replay.now(), timestamp(70)?);
+    assert_eq!(
+        replay.step(&signal_command("ready", 0))?,
+        ReplayStep::Recorded(Resolution::SignalDelivered(payload("signal-payload")?))
+    );
+    assert_eq!(replay.now(), timestamp(80)?);
+
+    let mut first_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
+    let mut second_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
+    let same_run_draws = (0..8)
+        .map(|_| first_replay.determinism_mut().next_random_u64())
+        .collect::<Vec<_>>();
+    let repeated_same_run_draws = (0..8)
+        .map(|_| second_replay.determinism_mut().next_random_u64())
+        .collect::<Vec<_>>();
+    assert_eq!(same_run_draws, repeated_same_run_draws);
+
+    let different_run_id = different_run_id();
+    let mut different_run_replay = Replay::new(&workflow_id, &different_run_id, history)?;
+    let different_run_draws = (0..8)
+        .map(|_| different_run_replay.determinism_mut().next_random_u64())
+        .collect::<Vec<_>>();
+    assert_ne!(same_run_draws, different_run_draws);
     Ok(())
 }
 
