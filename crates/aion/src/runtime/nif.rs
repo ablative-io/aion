@@ -70,6 +70,18 @@ pub struct NifRegistration {
     entries: Vec<NifEntry>,
 }
 
+#[cfg(test)]
+pub(crate) fn test_native_zero(
+    args: &[beamr::term::Term],
+    context: &mut beamr::native::ProcessContext,
+) -> Result<beamr::term::Term, beamr::term::Term> {
+    let _ = context;
+    if args.len() > 255 {
+        return Err(beamr::term::Term::small_int(0));
+    }
+    Ok(beamr::term::Term::small_int(0))
+}
+
 impl NifRegistration {
     /// Construct an empty NIF registration collection.
     #[must_use]
@@ -119,11 +131,8 @@ mod tests {
 
     use super::{Mfa, NifEntry, NifRegistration};
 
-    fn native_zero(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-        if args.len() > 255 {
-            return Err(Term::small_int(0));
-        }
-        Ok(Term::small_int(0))
+    fn native_zero(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+        super::test_native_zero(args, context)
     }
 
     #[test]

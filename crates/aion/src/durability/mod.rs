@@ -17,4 +17,7 @@ pub use cursor::{CursorResolveResult, FoundEventDescriptor, HistoryCursor, Recor
 pub use determinism::DeterminismContext;
 pub use error::{DurabilityError, NonDeterminismError};
 pub use recorder::Recorder;
+pub use recovery::{
+    ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
+};
 pub use seq::SequenceHead;

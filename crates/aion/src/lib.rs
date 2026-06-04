@@ -18,6 +18,7 @@ pub mod signal;
 pub mod supervision;
 pub mod time;
 
+pub use engine::{Engine, EngineBuilder};
 pub use engine_seam::EngineHandle;
 pub use error::EngineError;
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};

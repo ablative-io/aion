@@ -1,1 +1,1 @@
-fix(aion): harden child workflow spawn await semantics
+feat(aion): add engine builder assembly
