@@ -11,3 +11,5 @@ pub mod recovery;
 pub mod replay;
 pub mod resolver;
 pub mod seq;
+
+pub use error::{DurabilityError, NonDeterminismError};
