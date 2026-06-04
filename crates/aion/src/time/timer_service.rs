@@ -19,6 +19,7 @@ use crate::engine_seam::{
 pub struct TimerService {
     engine: Arc<dyn EngineHandle>,
     store: Arc<dyn EventStore>,
+    recorded_at: fn() -> DateTime<Utc>,
     firing: DashSet<(WorkflowId, TimerId)>,
 }
 
@@ -49,9 +50,20 @@ impl TimerService {
     /// Creates a durable timer service from the engine seam and timer store.
     #[must_use]
     pub fn new(engine: Arc<dyn EngineHandle>, store: Arc<dyn EventStore>) -> Self {
+        Self::with_recorded_at(engine, store, Utc::now)
+    }
+
+    /// Creates a durable timer service with an injected history timestamp source.
+    #[must_use]
+    pub fn with_recorded_at(
+        engine: Arc<dyn EngineHandle>,
+        store: Arc<dyn EventStore>,
+        recorded_at: fn() -> DateTime<Utc>,
+    ) -> Self {
         Self {
             engine,
             store,
+            recorded_at,
             firing: DashSet::new(),
         }
     }
@@ -111,10 +123,13 @@ impl TimerService {
         fire_at: DateTime<Utc>,
     ) -> Result<(), TimerServiceError> {
         let key = (workflow_id.clone(), timer_id.clone());
-        let _slot = self.wait_for_fire_slot(key).await;
+        let fire_slot = self.wait_for_fire_slot(key).await;
 
-        self.fire_timer_guarded(workflow_id, timer_id, fire_at)
-            .await
+        let result = self
+            .fire_timer_guarded(workflow_id, timer_id, fire_at)
+            .await;
+        drop(fire_slot);
+        result
     }
 
     async fn wait_for_fire_slot(&self, key: (WorkflowId, TimerId)) -> FireSlot<'_> {
@@ -177,7 +192,7 @@ impl TimerService {
         let seq = history.iter().map(Event::seq).max().unwrap_or_default() + 1;
         Ok(EventEnvelope {
             seq,
-            recorded_at: Utc::now(),
+            recorded_at: (self.recorded_at)(),
             workflow_id: workflow_id.clone(),
         })
     }
@@ -192,7 +207,7 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     use super::{TimerService, TimerServiceError};
-    use crate::engine_seam::test_support::FakeEngineHandle;
+    use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
     use crate::engine_seam::{
         EngineHandle, TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle,
         WorkflowResidency,
@@ -214,8 +229,12 @@ mod tests {
         let concrete_store = Arc::new(InMemoryStore::default());
         let store: Arc<dyn EventStore> = concrete_store.clone();
         let engine = Arc::new(FakeEngineHandle::recording_to(store.clone()));
-        let service = TimerService::new(engine.clone(), store);
+        let service = TimerService::with_recorded_at(engine.clone(), store, recorded_at);
         (concrete_store, engine, service)
+    }
+
+    fn recorded_at() -> DateTime<Utc> {
+        instant(1)
     }
 
     async fn history(
@@ -255,10 +274,12 @@ mod tests {
         assert!(matches!(
             history.as_slice(),
             [Event::TimerStarted {
+                envelope,
                 timer_id: recorded,
                 fire_at: recorded_fire_at,
-                ..
-            }] if recorded == &timer_id && recorded_fire_at == &fire_at
+            }] if envelope.recorded_at == recorded_at()
+                && recorded == &timer_id
+                && recorded_fire_at == &fire_at
         ));
         Ok(())
     }
@@ -326,9 +347,28 @@ mod tests {
             engine.delivered_messages()?,
             vec![(
                 process,
-                WorkflowMailboxMessage::TimerFired { timer_id, fire_at }
+                WorkflowMailboxMessage::TimerFired {
+                    timer_id: timer_id.clone(),
+                    fire_at
+                }
             )]
         );
+        assert!(matches!(
+            engine.operations()?.as_slice(),
+            [
+                FakeEngineOperation::EventRecorded {
+                    workflow_id: recorded_workflow_id,
+                    event: Event::TimerFired { timer_id: recorded_timer_id, .. },
+                },
+                FakeEngineOperation::Delivered {
+                    process: delivered_process,
+                    message: WorkflowMailboxMessage::TimerFired { timer_id: delivered_timer_id, .. },
+                }
+            ] if recorded_workflow_id == &workflow_id
+                && recorded_timer_id == &timer_id
+                && delivered_process == &process
+                && delivered_timer_id == &timer_id
+        ));
         Ok(())
     }
 

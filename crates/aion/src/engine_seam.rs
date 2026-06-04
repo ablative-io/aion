@@ -357,6 +357,11 @@ pub(crate) mod test_support {
             Ok(self.state()?.recorded_events.clone())
         }
 
+        /// Returns a snapshot of fake engine operations in observed order.
+        pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
+            Ok(self.state()?.operations.clone())
+        }
+
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
             self.state.lock().map_err(|_| EngineSeamError::Recorder {
                 reason: "fake engine state lock was poisoned".to_owned(),
