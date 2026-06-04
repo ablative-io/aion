@@ -316,7 +316,10 @@ mod tests {
 
     #[test]
     fn rejects_logical_names_with_deployed_name_separator() -> Result<(), PackageError> {
-        let beams = BeamSet::new(vec![BeamModule::new("workflow/order$bad", vec![1])])?;
+        let beams = BeamSet::new(vec![
+            BeamModule::new("workflow/order", vec![1, 2, 3]),
+            BeamModule::new("workflow/order$bad", vec![1]),
+        ])?;
         let result = PackageBuilder::new(sample_manifest(), beams).write_to_bytes();
 
         assert!(matches!(

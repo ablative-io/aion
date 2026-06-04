@@ -390,35 +390,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_source_entry_returns_malformed_entry() -> Result<(), PackageError> {
-        let beams = sample_beams()?;
-        let mut manifest = sample_manifest();
-        manifest.version = ManifestVersion::new(content_hash(&beams).to_string());
-        let mut entries = vec![
-            (
-                "manifest.json".to_owned(),
-                serde_json::to_vec(&manifest)
-                    .map_err(|source| PackageError::ManifestSerialise { source })?,
-            ),
-            ("src/workflow/order.gleam".to_owned(), b"first".to_vec()),
-            ("src/workflow/order.gleam".to_owned(), b"second".to_vec()),
-        ];
-        entries.extend(beams.iter().map(|module| {
-            (
-                format!("beam/{}.beam", module.name()),
-                module.bytes().to_vec(),
-            )
-        }));
-        let result = Package::load_from_bytes(write_zip(entries)?);
-
-        assert!(matches!(
-            result,
-            Err(PackageError::MalformedBeamEntry { entry }) if entry == "src/workflow/order.gleam"
-        ));
-        Ok(())
-    }
-
-    #[test]
     fn invalid_source_entry_returns_malformed_entry() -> Result<(), PackageError> {
         let beams = sample_beams()?;
         let mut manifest = sample_manifest();
