@@ -58,7 +58,7 @@ impl WorkflowHandle {
     }
 
     /// Replaces the cached status with the durable event projection result.
-    pub(crate) const fn replace_projected_status(&mut self, status: WorkflowStatus) {
+    pub(in crate::registry) const fn replace_projected_status(&mut self, status: WorkflowStatus) {
         self.cached_status = status;
     }
 }
