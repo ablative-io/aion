@@ -436,18 +436,16 @@ mod tests {
         let missing = package_with_missing_entry(&package, "workflow/missing");
         let mut loaded = LoadedWorkflows::new();
 
-        let error = loaded
-            .load_with_rollback(
-                &missing,
-                |_deployed_name, _bytes| Ok(()),
-                |_deployed_name| Ok(()),
-            )
-            .expect_err("missing entry should fail");
+        let result = loaded.load_with_rollback(
+            &missing,
+            |_deployed_name, _bytes| Ok(()),
+            |_deployed_name| Ok(()),
+        );
 
-        assert!(matches!(
-            error,
-            EngineError::Load { reason } if reason.contains("workflow/missing")
-        ));
+        assert!(
+            matches!(&result, Err(EngineError::Load { reason }) if reason.contains("workflow/missing")),
+            "missing entry should fail with EngineError::Load"
+        );
         assert_eq!(loaded.iter().count(), 0);
         assert!(!loaded.has_registered_module(&missing.deployed_entry_module()));
         Ok(())
@@ -463,22 +461,20 @@ mod tests {
         let mut loaded = LoadedWorkflows::new();
         loaded.note_registered_module(colliding_name.clone(), second.content_hash().clone())?;
 
-        let error = loaded
-            .load_with_rollback(
-                &first,
-                |_deployed_name, _bytes| {
-                    *calls.borrow_mut() += 1;
-                    Ok(())
-                },
-                |_deployed_name| Ok(()),
-            )
-            .expect_err("different hash collision should fail");
+        let result = loaded.load_with_rollback(
+            &first,
+            |_deployed_name, _bytes| {
+                *calls.borrow_mut() += 1;
+                Ok(())
+            },
+            |_deployed_name| Ok(()),
+        );
 
-        assert!(matches!(
-            error,
-            EngineError::Load { reason }
-                if reason.contains(&colliding_name) && reason.contains(&first.content_hash().to_string())
-        ));
+        let expected_hash = first.content_hash().to_string();
+        assert!(
+            matches!(&result, Err(EngineError::Load { reason }) if reason.contains(&colliding_name) && reason.contains(&expected_hash)),
+            "different hash collision should fail with EngineError::Load"
+        );
         assert_eq!(*calls.borrow(), 0);
         assert_eq!(loaded.iter().count(), 0);
         Ok(())
@@ -519,19 +515,20 @@ mod tests {
         let package = package("workflow/order", vec![1, 2, 3])?;
         let mut loaded = LoadedWorkflows::new();
 
-        let error = loaded
-            .load_with_rollback(
-                &package,
-                |_deployed_name, _bytes| {
-                    Err(EngineError::Runtime {
-                        reason: "boom".to_owned(),
-                    })
-                },
-                |_deployed_name| Ok(()),
-            )
-            .expect_err("runtime failure should fail load");
+        let result = loaded.load_with_rollback(
+            &package,
+            |_deployed_name, _bytes| {
+                Err(EngineError::Runtime {
+                    reason: "boom".to_owned(),
+                })
+            },
+            |_deployed_name| Ok(()),
+        );
 
-        assert!(matches!(error, EngineError::Load { reason } if reason.contains("boom")));
+        assert!(
+            matches!(&result, Err(EngineError::Load { reason }) if reason.contains("boom")),
+            "runtime failure should fail load with EngineError::Load"
+        );
         assert_eq!(loaded.iter().count(), 0);
         for (deployed_name, _bytes) in package.deployed_modules() {
             assert!(!loaded.has_registered_module(&deployed_name));
