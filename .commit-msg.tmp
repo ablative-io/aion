@@ -1,1 +1,1 @@
-fix(aion): satisfy clippy in durability resolver
+fix(aion): harden durability resolver outcome mapping

@@ -89,9 +89,17 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolveOutcome, Durabilit
         Event::ActivityCompleted { result, .. } => {
             Ok(recorded(Resolution::ActivityCompleted(result.clone())))
         }
-        Event::ActivityFailed { error, .. } => {
+        Event::ActivityFailed { error, .. }
+            if matches!(error.kind, aion_core::ActivityErrorKind::Terminal) =>
+        {
             Ok(recorded(Resolution::ActivityFailedTerminal(error.clone())))
         }
+        Event::ActivityFailed { error, .. } => Err(DurabilityError::HistoryShape {
+            reason: format!(
+                "matched activity failure is not terminal and is not representable by AD-004 resolution: {:?}",
+                error.kind
+            ),
+        }),
         Event::TimerFired { .. } => Ok(recorded(Resolution::TimerFired)),
         Event::SignalReceived { payload, .. } => {
             Ok(recorded(Resolution::SignalDelivered(payload.clone())))
@@ -381,6 +389,34 @@ mod tests {
             })?,
             ResolveOutcome::Recorded(Resolution::ChildFailed(child_error))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_non_terminal_activity_failure_as_history_shape_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let retryable_error = ActivityError {
+            kind: ActivityErrorKind::Retryable,
+            message: "retryable activity failure without later outcome".to_owned(),
+            details: None,
+        };
+        let cursor = HistoryCursor::new(vec![
+            activity_scheduled(1, 0)?,
+            Event::ActivityFailed {
+                envelope: envelope(2)?,
+                activity_id: ActivityId::from_sequence_position(0),
+                error: retryable_error,
+                attempt: 1,
+            },
+        ])?;
+        let mut resolver = Resolver::new(workflow_id(), cursor);
+
+        let error = resolver.resolve(run_activity_command(0)?).err();
+
+        assert!(matches!(
+            error,
+            Some(crate::durability::DurabilityError::HistoryShape { .. })
+        ));
         Ok(())
     }
 }
