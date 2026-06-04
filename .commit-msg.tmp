@@ -1,1 +1,1 @@
-test(aion-store-libsql): harden embedded replica sync coverage
+feat(aion): add documented engine error taxonomy
