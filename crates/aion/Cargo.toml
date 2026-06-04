@@ -25,6 +25,7 @@ dashmap = { workspace = true }
 sha2.workspace = true
 rand_chacha.workspace = true
 rand_core.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 aion-package = { path = "../aion-package", features = ["test-support"] }

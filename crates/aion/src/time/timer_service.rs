@@ -13,9 +13,9 @@ use crate::engine_seam::{
 
 /// Durable timer scheduling and wheel-fire handling.
 ///
-/// The service owns the AT live path for timers, while all history writes still go through the
-/// engine's recorder seam. `EventStore::schedule_timer` is used only for the durable timer row that
-/// recovery later polls; workflow-history observations are never appended directly here.
+/// The service owns the AT live path for timers. Workflow-issued `TimerStarted` events are recorded
+/// by AD's resume-live handoff before this service is called; this service persists only the durable
+/// timer row and later asynchronous arrival/cancellation history through the engine recorder seam.
 pub struct TimerService {
     engine: Arc<dyn EngineHandle>,
     store: Arc<dyn EventStore>,
@@ -77,10 +77,9 @@ impl TimerService {
 
     /// Schedules a durable timer and arms the live wheel when the workflow is resident.
     ///
-    /// The operation is considered successful only after the durable timer row, `TimerStarted`
-    /// recorder event, and any required live wheel arm have succeeded. If the recorder fails after
-    /// the timer row is written, the row is left for operator/recovery visibility and the error is
-    /// returned; this service does not pretend a cross-store transaction exists.
+    /// The operation persists the durable timer row and arms the wheel when needed. The
+    /// command-issued `TimerStarted` recorder event is appended by AD's resume-live handoff before
+    /// AE/AT reaches this service, so this method deliberately does not record it again.
     ///
     /// # Errors
     ///
@@ -95,13 +94,6 @@ impl TimerService {
         self.store
             .schedule_timer(&workflow_id, &timer_id, fire_at)
             .await?;
-
-        let event = Event::TimerStarted {
-            envelope: self.next_envelope(&workflow_id).await?,
-            timer_id: timer_id.clone(),
-            fire_at,
-        };
-        self.engine.record_workflow_event(&workflow_id, event)?;
 
         if let WorkflowResidency::Resident(process) = self.engine.resolve_workflow(&workflow_id)? {
             self.engine.arm_timer(TimerWheelEntry {
@@ -315,7 +307,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schedule_records_timer_row_and_timer_started_event() -> Result<(), TimerServiceError> {
+    async fn schedule_records_timer_row_without_timer_started_event()
+    -> Result<(), TimerServiceError> {
         let (store, _engine, service) = service();
         let workflow_id = workflow_id();
         let timer_id = timer_id();
@@ -331,17 +324,7 @@ mod tests {
         assert_eq!(expired[0].timer_id, timer_id);
         assert_eq!(expired[0].fire_at, fire_at);
 
-        let history = history(&store, &workflow_id).await?;
-        assert!(matches!(
-            history.as_slice(),
-            [Event::TimerStarted {
-                envelope,
-                timer_id: recorded,
-                fire_at: recorded_fire_at,
-            }] if envelope.recorded_at == recorded_at()
-                && recorded == &timer_id
-                && recorded_fire_at == &fire_at
-        ));
+        assert!(history(&store, &workflow_id).await?.is_empty());
         Ok(())
     }
 
@@ -382,7 +365,7 @@ mod tests {
             .await?;
 
         assert!(engine.armed_timers()?.is_empty());
-        assert_eq!(history(&store, &workflow_id).await?.len(), 1);
+        assert!(history(&store, &workflow_id).await?.is_empty());
         Ok(())
     }
 
