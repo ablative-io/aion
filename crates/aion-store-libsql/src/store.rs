@@ -62,7 +62,7 @@ impl EventStore for LibSqlStore {
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError> {
-        crate::append::append(self.connection(), workflow_id, events, expected_seq)
+        crate::append::append(self.connection(), workflow_id, events, expected_seq).await
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
