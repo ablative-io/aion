@@ -106,14 +106,8 @@ where
 
         match time::timeout(self.query_timeout, reply_from).await {
             Ok(Ok(reply)) => reply,
-            Ok(Err(closed)) => {
-                drop(closed);
-                Err(QueryError::ReplyDropped)
-            }
-            Err(elapsed) => {
-                drop(elapsed);
-                Err(QueryError::Timeout)
-            }
+            Ok(Err(_)) => Err(QueryError::ReplyDropped),
+            Err(_) => Err(QueryError::Timeout),
         }
     }
 

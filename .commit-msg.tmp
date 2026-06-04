@@ -1,1 +1,1 @@
-feat(aion): add live workflow query service
+fix(aion): satisfy clippy for query timeout handling
