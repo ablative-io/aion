@@ -40,7 +40,7 @@ async fn malformed_event_blob_maps_to_serialization_error() -> Result<(), StoreE
     store
         .connection()
         .execute(
-            "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_projection_event) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_queryable_event) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![workflow_id.to_string(), 1_u64, b"not json".to_vec(), recorded_at(1).to_rfc3339(), "WorkflowStarted", 1_i64],
         )
         .await

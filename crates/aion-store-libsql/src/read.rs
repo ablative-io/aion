@@ -92,7 +92,7 @@ async fn load_summaries(
     let mut summaries = Vec::new();
 
     for history in histories.values_mut() {
-        history.retain(is_projection_event);
+        history.retain(is_queryable_event);
         if let Some(mut summary) = WorkflowSummary::from_history(history) {
             summary.status = status_from_events(history);
             summary.parent = parent_by_child.get(&summary.workflow_id).cloned();
@@ -139,7 +139,7 @@ struct QueryPlan {
 
 impl QueryPlan {
     fn from_filter(filter: &WorkflowFilter) -> Self {
-        let mut clauses = vec![String::from("is_projection_event = 1")];
+        let mut clauses = vec![String::from("is_queryable_event = 1")];
         let mut params = Vec::new();
 
         if let Some(workflow_type) = &filter.workflow_type {
@@ -215,7 +215,7 @@ async fn load_parent_links(
     Ok(links)
 }
 
-fn is_projection_event(event: &Event) -> bool {
+fn is_queryable_event(event: &Event) -> bool {
     matches!(
         event,
         Event::WorkflowStarted { .. }

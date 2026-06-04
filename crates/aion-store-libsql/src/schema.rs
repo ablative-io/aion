@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS events (
     event BLOB NOT NULL,
     recorded_at TEXT NOT NULL,
     event_kind TEXT NOT NULL,
-    is_projection_event INTEGER NOT NULL,
+    is_queryable_event INTEGER NOT NULL,
     workflow_type TEXT,
     child_workflow_id TEXT,
     PRIMARY KEY (workflow_id, seq)
@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS events (
 
 /// Event index supporting lifecycle projection scans and filter subqueries.
 pub const CREATE_EVENTS_PROJECTION_INDEX: &str = "
-CREATE INDEX IF NOT EXISTS idx_events_projection_filter
-ON events (is_projection_event, workflow_id, seq, event_kind, workflow_type, recorded_at, child_workflow_id)";
+CREATE INDEX IF NOT EXISTS idx_events_queryable_filter
+ON events (is_queryable_event, workflow_id, seq, event_kind, workflow_type, recorded_at, child_workflow_id)";
 
 /// Durable workflow timers table.
 pub const CREATE_TIMERS_TABLE: &str = "
@@ -86,7 +86,7 @@ mod tests {
 
         assert_schema_object(&conn, "table", "events").await?;
         assert_schema_object(&conn, "index", "sqlite_autoindex_events_1").await?;
-        assert_schema_object(&conn, "index", "idx_events_projection_filter").await?;
+        assert_schema_object(&conn, "index", "idx_events_queryable_filter").await?;
         assert_schema_object(&conn, "table", "timers").await?;
         assert_schema_object(&conn, "index", "sqlite_autoindex_timers_1").await?;
         assert_schema_object(&conn, "index", "idx_timers_fire_at").await?;

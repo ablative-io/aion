@@ -138,14 +138,14 @@ async fn insert_event(
     let seq = event.seq();
 
     tx.execute(
-        "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_projection_event, workflow_type, child_workflow_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_queryable_event, workflow_type, child_workflow_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             workflow_id,
             seq,
             serialized,
             recorded_at,
             metadata::event_kind(event),
-            metadata::projection_flag(event),
+            metadata::queryable_flag(event),
             metadata::workflow_type(event),
             metadata::child_workflow_id(event)
         ],

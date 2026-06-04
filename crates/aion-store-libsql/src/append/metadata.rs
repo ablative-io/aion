@@ -23,7 +23,7 @@ pub(super) fn event_kind(event: &Event) -> &'static str {
     }
 }
 
-pub(super) fn projection_flag(event: &Event) -> i64 {
+pub(super) fn queryable_flag(event: &Event) -> i64 {
     i64::from(matches!(
         event,
         Event::WorkflowStarted { .. }
