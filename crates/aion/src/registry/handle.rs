@@ -10,15 +10,15 @@ use crate::durability::Recorder;
 
 /// Engine-internal live residency cached on an active workflow handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HandleResidency {
+pub enum Residency {
     /// The workflow has a live BEAM process.
     Resident,
     /// The workflow is durable but currently has no live process.
     Suspended,
 }
 
-/// Engine-internal live residency type cached on an active workflow handle.
-pub type Residency = HandleResidency;
+/// Backward-compatible alias for the engine-internal residency type.
+pub type HandleResidency = Residency;
 
 /// Terminal outcome delivered to result awaiters by later terminal lifecycle transitions.
 #[derive(Clone, Debug, PartialEq, Eq)]

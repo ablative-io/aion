@@ -14,7 +14,7 @@
 use aion_core::{RunId, WorkflowId};
 
 use crate::EngineError;
-use crate::registry::{HandleResidency, Registry, WorkflowHandle};
+use crate::registry::{Registry, Residency, WorkflowHandle};
 
 /// Suspends an active workflow run in the registry without removing it.
 ///
@@ -27,7 +27,7 @@ pub fn suspend(
     id: &WorkflowId,
     run: &RunId,
 ) -> Result<WorkflowHandle, EngineError> {
-    replace_residency(registry, id, run, HandleResidency::Suspended)
+    replace_residency(registry, id, run, Residency::Suspended)
 }
 
 /// Resumes an active workflow run in the registry.
@@ -44,14 +44,14 @@ pub fn resume(
     id: &WorkflowId,
     run: &RunId,
 ) -> Result<WorkflowHandle, EngineError> {
-    replace_residency(registry, id, run, HandleResidency::Resident)
+    replace_residency(registry, id, run, Residency::Resident)
 }
 
 fn replace_residency(
     registry: &Registry,
     id: &WorkflowId,
     run: &RunId,
-    residency: HandleResidency,
+    residency: Residency,
 ) -> Result<WorkflowHandle, EngineError> {
     registry
         .replace_residency(id, run, residency)?
@@ -72,7 +72,7 @@ mod tests {
     use super::{resume, suspend};
     use crate::EngineError;
     use crate::registry::{
-        CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
+        CompletionNotifier, Registry, Residency, WorkflowHandle, WorkflowHandleParts,
     };
 
     type TestResult = Result<(), TestError>;
@@ -124,7 +124,7 @@ mod tests {
             workflow_type: "checkout".to_owned(),
             loaded_version: hash(3),
             cached_status: status,
-            residency: HandleResidency::Resident,
+            residency: Residency::Resident,
             recorder,
             completion: CompletionNotifier::new(),
         })
@@ -169,12 +169,12 @@ mod tests {
 
         let suspended = suspend(&registry, &workflow_id, &run_id)?;
 
-        assert_eq!(suspended.residency(), HandleResidency::Suspended);
+        assert_eq!(suspended.residency(), Residency::Suspended);
         assert_eq!(suspended.cached_status(), WorkflowStatus::Running);
         let registered = registry.get(&workflow_id, &run_id)?;
         assert_eq!(
             registered.map(|handle| (handle.residency(), handle.cached_status())),
-            Some((HandleResidency::Suspended, WorkflowStatus::Running))
+            Some((Residency::Suspended, WorkflowStatus::Running))
         );
         Ok(())
     }
@@ -190,13 +190,13 @@ mod tests {
 
         assert_eq!(
             reconciled.map(|handle| (handle.residency(), handle.cached_status())),
-            Some((HandleResidency::Suspended, WorkflowStatus::Running))
+            Some((Residency::Suspended, WorkflowStatus::Running))
         );
         assert_eq!(
             registry
                 .get(&workflow_id, &run_id)?
                 .map(|handle| handle.residency()),
-            Some(HandleResidency::Suspended)
+            Some(Residency::Suspended)
         );
         Ok(())
     }
@@ -209,13 +209,13 @@ mod tests {
 
         let resumed = resume(&registry, &workflow_id, &run_id)?;
 
-        assert_eq!(resumed.residency(), HandleResidency::Resident);
+        assert_eq!(resumed.residency(), Residency::Resident);
         assert_eq!(resumed.cached_status(), WorkflowStatus::Running);
         assert_eq!(
             registry
                 .get(&workflow_id, &run_id)?
                 .map(|handle| handle.residency()),
-            Some(HandleResidency::Resident)
+            Some(Residency::Resident)
         );
         Ok(())
     }
@@ -227,7 +227,7 @@ mod tests {
 
         let resumed = resume(&registry, &workflow_id, &run_id)?;
 
-        assert_eq!(resumed.residency(), HandleResidency::Resident);
+        assert_eq!(resumed.residency(), Residency::Resident);
         assert_eq!(resumed.cached_status(), WorkflowStatus::Running);
         Ok(())
     }
