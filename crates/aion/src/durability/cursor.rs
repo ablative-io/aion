@@ -98,11 +98,12 @@ impl HistoryCursor {
         family: RecordedEventFamily,
         expected_key: CorrelationKey,
     ) -> CursorResolveResult {
-        let Some(event) = self.events.get(self.position) else {
+        let Some(found_index) = self.next_matchable_index() else {
             return CursorResolveResult::Exhausted;
         };
+        self.position = found_index;
 
-        let found = self.descriptor_at(self.position, event);
+        let found = self.descriptor_at(found_index, &self.events[found_index]);
         if found.family != Some(family) || found.key.as_ref() != Some(&expected_key) {
             return CursorResolveResult::Mismatch {
                 expected_key,
@@ -156,7 +157,7 @@ impl HistoryCursor {
                 } if event_activity_id == &activity_id => {
                     return self.consume_range(start, index + 1);
                 }
-                _ => return self.mismatch_at_current(expected_key),
+                _ => return self.mismatch_at_index(index, expected_key),
             }
         }
 
@@ -190,11 +191,23 @@ impl HistoryCursor {
         CursorResolveResult::Matched(consumed)
     }
 
+    fn next_matchable_index(&self) -> Option<usize> {
+        self.events
+            .iter()
+            .enumerate()
+            .skip(self.position)
+            .find_map(|(index, event)| family_for_event(event).map(|_| index))
+    }
+
     fn mismatch_at_current(&self, expected_key: CorrelationKey) -> CursorResolveResult {
-        match self.events.get(self.position) {
+        self.mismatch_at_index(self.position, expected_key)
+    }
+
+    fn mismatch_at_index(&self, index: usize, expected_key: CorrelationKey) -> CursorResolveResult {
+        match self.events.get(index) {
             Some(event) => CursorResolveResult::Mismatch {
                 expected_key,
-                found: self.descriptor_at(self.position, event),
+                found: self.descriptor_at(index, event),
             },
             None => CursorResolveResult::Exhausted,
         }
@@ -326,6 +339,14 @@ mod tests {
         Ok(Payload::from_json(&json!(null))?)
     }
 
+    fn workflow_started(seq: u64) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowStarted {
+            envelope: envelope(seq)?,
+            workflow_type: "workflow".to_owned(),
+            input: payload()?,
+        })
+    }
+
     fn scheduled(seq: u64, ordinal: u64) -> Result<Event, Box<dyn std::error::Error>> {
         Ok(Event::ActivityScheduled {
             envelope: envelope(seq)?,
@@ -409,6 +430,34 @@ mod tests {
             cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(1),),
             CursorResolveResult::Exhausted
         );
+        Ok(())
+    }
+
+    #[test]
+    fn skips_non_matchable_lifecycle_events_before_resolving()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            workflow_started(1)?,
+            scheduled(2, 0)?,
+            completed(3, 0)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 2);
+                assert!(matches!(
+                    events.first(),
+                    Some(Event::ActivityScheduled { .. })
+                ));
+                assert_eq!(cursor.current_sequence(), None);
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("lifecycle events should not block command replay".into());
+            }
+        }
         Ok(())
     }
 

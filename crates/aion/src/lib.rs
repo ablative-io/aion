@@ -1,5 +1,7 @@
 //! The core engine. Embeds beamr; owns workflow lifecycle, process-per-workflow management, the supervision tree, .aion module loading, durability and replay (durability module), and timers/signals/queries/children/concurrency (time module). Transport-agnostic.
 
+#![deny(unsafe_code)]
+
 pub mod activity;
 pub mod child;
 pub mod concurrency;
