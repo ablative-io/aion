@@ -24,13 +24,13 @@ pub fn dispatch_activity(
     parent_pid: Pid,
     deployed_module: &str,
     function: &str,
-    input: Payload,
+    input: &Payload,
 ) -> Result<Pid, EngineError> {
     runtime.spawn_activity(
         parent_pid,
         deployed_module,
         function,
-        RuntimeInput::from_payload(&input)?,
+        RuntimeInput::from_payload(input)?,
     )
 }
 
@@ -100,7 +100,7 @@ mod tests {
         );
         let workflow = runtime.spawn_test_process_with_trap_exit(true)?;
 
-        let activity = dispatch_activity(&runtime, workflow, "activity_mod", "run", payload()?)?;
+        let activity = dispatch_activity(&runtime, workflow, "activity_mod", "run", &payload()?)?;
 
         assert!(runtime.is_linked(workflow, activity)?);
         assert!(runtime.is_dirty("activity_host", "answer"));
@@ -120,7 +120,7 @@ mod tests {
             "answer",
         );
         let workflow = runtime.spawn_test_process_with_trap_exit(true)?;
-        let activity = dispatch_activity(&runtime, workflow, "activity_ok", "run", payload()?)?;
+        let activity = dispatch_activity(&runtime, workflow, "activity_ok", "run", &payload()?)?;
 
         propagate_activity_outcome(&runtime, workflow, activity)?;
 
@@ -142,7 +142,7 @@ mod tests {
             "fail",
         );
         let workflow = runtime.spawn_test_process_with_trap_exit(true)?;
-        let activity = dispatch_activity(&runtime, workflow, "activity_fail", "run", payload()?)?;
+        let activity = dispatch_activity(&runtime, workflow, "activity_fail", "run", &payload()?)?;
         let details = aion_core::Payload::new(ContentType::Json, br#"{"code":"boom"}"#.to_vec());
         let error = aion_core::ActivityError {
             kind: ActivityErrorKind::Retryable,
