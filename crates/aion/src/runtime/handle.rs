@@ -44,7 +44,7 @@ impl RuntimeInput {
     /// immediate small integer.
     pub fn from_payload(payload: Payload) -> Result<Self, EngineError> {
         Ok(Self {
-            terms: vec![payload_to_term(payload)?],
+            terms: vec![payload_to_term(&payload)?],
         })
     }
 

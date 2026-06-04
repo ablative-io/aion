@@ -6,7 +6,7 @@ use beamr::term::Term;
 
 use crate::EngineError;
 
-pub(crate) fn payload_to_term(payload: Payload) -> Result<Term, EngineError> {
+pub(crate) fn payload_to_term(payload: &Payload) -> Result<Term, EngineError> {
     match payload.content_type() {
         ContentType::Json => json_to_term(payload.to_json().map_err(runtime_error_from_display)?),
     }
@@ -14,7 +14,10 @@ pub(crate) fn payload_to_term(payload: Payload) -> Result<Term, EngineError> {
 
 fn json_to_term(value: serde_json::Value) -> Result<Term, EngineError> {
     match value {
-        serde_json::Value::Null => Ok(Term::NIL),
+        serde_json::Value::Null
+        | serde_json::Value::String(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_) => Ok(Term::NIL),
         serde_json::Value::Bool(true) => Ok(Term::atom(beamr::atom::Atom::TRUE)),
         serde_json::Value::Bool(false) => Ok(Term::atom(beamr::atom::Atom::FALSE)),
         serde_json::Value::Number(number) => {
@@ -29,9 +32,6 @@ fn json_to_term(value: serde_json::Value) -> Result<Term, EngineError> {
                 ))
             })
         }
-        serde_json::Value::String(_)
-        | serde_json::Value::Array(_)
-        | serde_json::Value::Object(_) => Ok(Term::NIL),
     }
 }
 

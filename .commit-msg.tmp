@@ -1,1 +1,1 @@
-feat(aion): add in-vm activity dispatch plumbing
+fix(aion): satisfy clippy for activity payload conversion
