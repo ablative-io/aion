@@ -110,7 +110,7 @@ Both depend on AC types.
 - [x] **AS-005** — read_history, list_active, query · _landed 7271697_
 
 ### Wave 13
-- [ ] **AS-007** — Conformance suite and persistence tests · _depends: AS-004, AS-005, AS-006_
+- [x] **AS-007** — Conformance suite and persistence tests · _landed 354af1c_
 
 ### Wave 14
 - [ ] **AS-008** — Embedded-replica sync · _depends: AS-007_
