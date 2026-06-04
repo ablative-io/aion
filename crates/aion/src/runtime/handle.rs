@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use beamr::atom::AtomTable;
+use beamr::loader::prepare_module;
 use beamr::module::ModuleRegistry;
 use beamr::native::BifRegistryImpl;
 use beamr::process::ExitReason;
@@ -37,6 +38,7 @@ pub struct RuntimeHandle {
     scheduler: Scheduler,
     atom_table: Arc<AtomTable>,
     module_registry: Arc<ModuleRegistry>,
+    bif_registry: Arc<BifRegistryImpl>,
 }
 
 impl RuntimeHandle {
@@ -48,6 +50,7 @@ impl RuntimeHandle {
     pub fn new(config: RuntimeConfig) -> Result<Self, EngineError> {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let module_registry = Arc::new(ModuleRegistry::new());
+        let bif_registry = Arc::new(BifRegistryImpl::new());
         let scheduler_config = SchedulerConfig {
             thread_count: config.thread_count,
         };
@@ -55,7 +58,7 @@ impl RuntimeHandle {
             scheduler_config,
             Arc::clone(&module_registry),
             Arc::clone(&atom_table),
-            Arc::new(BifRegistryImpl::new()),
+            Arc::clone(&bif_registry),
         )
         .map_err(runtime_error_from_display)?;
 
@@ -63,6 +66,7 @@ impl RuntimeHandle {
             scheduler,
             atom_table,
             module_registry,
+            bif_registry,
         })
     }
 
@@ -107,28 +111,29 @@ impl RuntimeHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Runtime`] when beamr cannot load the module bytes,
-    /// cannot resolve the loaded module name, or the loaded name does not match
-    /// `deployed_name`.
+    /// Returns [`EngineError::Runtime`] when beamr cannot prepare the module bytes
+    /// or when the deployed name still has retained old code in the registry.
     pub fn register_module(
         &self,
         deployed_name: &str,
         beam_bytes: &[u8],
     ) -> Result<(), EngineError> {
-        let loaded = self
-            .scheduler
-            .hot_load_module(beam_bytes)
-            .map_err(runtime_error_from_display)?;
-        let loaded_name = self
-            .atom_table
-            .resolve(loaded.module_name)
-            .ok_or_else(|| runtime_error("loaded module name is not interned".to_owned()))?;
-
-        if loaded_name != deployed_name {
+        let deployed_atom = self.atom_table.intern(deployed_name);
+        if self.module_registry.lookup_old(deployed_atom).is_some() {
             return Err(runtime_error(format!(
-                "loaded module `{loaded_name}` did not match deployed name `{deployed_name}`"
+                "cannot register deployed module `{deployed_name}` while old code is still retained"
             )));
         }
+
+        let (mut module, _unresolved) = prepare_module(
+            beam_bytes,
+            &self.atom_table,
+            &self.module_registry,
+            self.bif_registry.as_ref(),
+        )
+        .map_err(runtime_error_from_display)?;
+        module.name = deployed_atom;
+        self.module_registry.insert(module);
 
         Ok(())
     }

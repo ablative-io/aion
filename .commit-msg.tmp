@@ -1,1 +1,1 @@
-feat(aion): load namespaced workflow packages
+Harden AE-005 loader registration and package test support

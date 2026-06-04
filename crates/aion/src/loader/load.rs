@@ -96,7 +96,8 @@ impl LoadedWorkflows {
 
     /// Return true when the loader has committed the deployed module name.
     #[must_use]
-    pub fn has_registered_module(&self, deployed_name: &str) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_registered_module(&self, deployed_name: &str) -> bool {
         self.registered_modules.contains_key(deployed_name)
     }
 
@@ -110,7 +111,8 @@ impl LoadedWorkflows {
     ///
     /// Returns [`EngineError::Load`] when the name is already mapped to a
     /// different version.
-    pub fn note_registered_module(
+    #[cfg(test)]
+    pub(crate) fn note_registered_module(
         &mut self,
         deployed_name: impl Into<String>,
         version: ContentHash,
@@ -144,7 +146,6 @@ impl LoadedWorkflows {
         let already_committed = staged.modules.iter().all(|module| {
             self.registered_modules.get(&module.deployed_name) == Some(&staged.version)
         });
-
         if !already_committed {
             let mut registered_now = Vec::new();
             for module in &staged.modules {
@@ -541,7 +542,7 @@ mod tests {
     fn package_with_missing_entry(original: &Package, missing_entry: &str) -> Package {
         let mut manifest = original.manifest().clone();
         manifest.entry_module = missing_entry.to_owned();
-        Package::from_validated_parts(
+        Package::from_validated_parts_for_test(
             manifest,
             original.beams().clone(),
             BTreeMap::new(),
