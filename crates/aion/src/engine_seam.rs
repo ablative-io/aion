@@ -304,6 +304,7 @@ pub(crate) mod test_support {
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
         recorder_store: Option<Arc<dyn EventStore>>,
+        record_responses: VecDeque<Result<(), EngineSeamError>>,
     }
 
     /// Test-only fake implementation of [`EngineHandle`].
@@ -340,6 +341,20 @@ pub(crate) mod test_support {
             Ok(())
         }
 
+        /// Queues the next response returned by recorder-seam calls.
+        pub fn push_record_response(
+            &self,
+            response: Result<(), EngineSeamError>,
+        ) -> Result<(), EngineSeamError> {
+            self.state()?.record_responses.push_back(response);
+            Ok(())
+        }
+
+        /// Returns a snapshot of seam operations in observed order.
+        pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
+            Ok(self.state()?.operations.clone())
+        }
+
         /// Returns a snapshot of delivered mailbox messages.
         pub fn delivered_messages(
             &self,
@@ -355,11 +370,6 @@ pub(crate) mod test_support {
         /// Returns a snapshot of recorded events.
         pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
             Ok(self.state()?.recorded_events.clone())
-        }
-
-        /// Returns a snapshot of fake engine operations in observed order.
-        pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
-            Ok(self.state()?.operations.clone())
         }
 
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
@@ -445,6 +455,9 @@ pub(crate) mod test_support {
             event: Event,
         ) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
+            if let Some(response) = state.record_responses.pop_front() {
+                response?;
+            }
             state
                 .recorded_events
                 .push((workflow_id.clone(), event.clone()));
