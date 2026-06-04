@@ -321,13 +321,14 @@ mod tests {
         assert_eq!(scheduled.timer_id, expected_timer_id);
         assert_eq!(scheduled.fire_at, expected_fire_at);
         let history = history(&store, &workflow_id).await?;
+        let expected_recorded_at = recorded_at();
         assert!(matches!(
             history.as_slice(),
             [Event::TimerStarted {
-                envelope: EventEnvelope { recorded_at, .. },
+                envelope: EventEnvelope { recorded_at: event_recorded_at, .. },
                 timer_id: recorded,
                 fire_at: recorded_fire_at,
-            }] if recorded_at == &recorded_at()
+            }] if event_recorded_at == &expected_recorded_at
                 && recorded == &expected_timer_id
                 && recorded_fire_at == &expected_fire_at
         ));
