@@ -316,6 +316,7 @@ pub(crate) mod test_support {
     struct FakeEngineState {
         residency: HashMap<WorkflowId, WorkflowResidency>,
         delivered: Vec<(WorkflowProcessHandle, DeliveredWorkflowMessage)>,
+        delivery_responses: VecDeque<Result<(), EngineSeamError>>,
         child_spawn_requests: Vec<ChildWorkflowSpawnRequest>,
         child_spawn_responses: VecDeque<Result<ChildWorkflowSpawnResult, EngineSeamError>>,
         armed_timers: Vec<TimerWheelEntry>,
@@ -450,6 +451,15 @@ pub(crate) mod test_support {
             Ok(())
         }
 
+        /// Queues the next response returned by mailbox-delivery seam calls.
+        pub fn push_delivery_response(
+            &self,
+            response: Result<(), EngineSeamError>,
+        ) -> Result<(), EngineSeamError> {
+            self.state()?.delivery_responses.push_back(response);
+            Ok(())
+        }
+
         /// Returns a snapshot of seam operations in observed order.
         pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
             Ok(self.state()?.operations.clone())
@@ -533,6 +543,9 @@ pub(crate) mod test_support {
             message: WorkflowMailboxMessage,
         ) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
+            if let Some(response) = state.delivery_responses.pop_front() {
+                response?;
+            }
             let delivered = DeliveredWorkflowMessage::from_message(&message);
             state.delivered.push((process, delivered.clone()));
             state.operations.push(FakeEngineOperation::Delivered {
@@ -631,7 +644,10 @@ mod tests {
     use aion_core::{ContentType, Payload, WorkflowId};
 
     use super::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
-    use super::{EngineHandle, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency};
+    use super::{
+        EngineHandle, EngineSeamError, WorkflowMailboxMessage, WorkflowProcessHandle,
+        WorkflowResidency,
+    };
 
     #[test]
     fn fake_captures_delivered_message_for_resident_workflow()
@@ -661,6 +677,31 @@ mod tests {
                 }
             )]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fake_can_inject_delivery_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let engine = FakeEngineHandle::new();
+        let process = WorkflowProcessHandle::new(43);
+        engine.push_delivery_response(Err(EngineSeamError::Delivery {
+            reason: "mailbox unavailable".to_owned(),
+        }))?;
+
+        let error = engine
+            .deliver_workflow_message(
+                process,
+                WorkflowMailboxMessage::SignalReceived {
+                    name: "wake".to_owned(),
+                    payload: Payload::new(ContentType::Json, b"null".to_vec()),
+                },
+            )
+            .err()
+            .ok_or_else(|| std::io::Error::other("delivery failure was not returned"))?;
+
+        assert!(matches!(error, EngineSeamError::Delivery { .. }));
+        assert!(engine.delivered_messages()?.is_empty());
+        assert!(engine.operations()?.is_empty());
         Ok(())
     }
 }

@@ -1,1 +1,1 @@
-feat(aion): defer non-resident signal delivery until resume
+review(aion): harden non-resident signal resume delivery

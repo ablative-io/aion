@@ -180,9 +180,9 @@ mod tests {
 
     use aion_core::{ContentType, Payload, WorkflowId};
 
-    use super::SignalResumeHandoff;
+    use super::{SignalResumeError, SignalResumeHandoff};
     use crate::engine_seam::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
-    use crate::engine_seam::{WorkflowProcessHandle, WorkflowResidency};
+    use crate::engine_seam::{EngineSeamError, WorkflowProcessHandle, WorkflowResidency};
 
     #[test]
     fn deferred_signals_deliver_in_order_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
@@ -200,6 +200,55 @@ mod tests {
         assert_eq!(handoff.deliver_deferred(engine.as_ref(), &workflow_id)?, 2);
         assert_eq!(handoff.deliver_deferred(engine.as_ref(), &workflow_id)?, 0);
 
+        assert_eq!(
+            engine.delivered_messages()?,
+            vec![
+                (
+                    process,
+                    DeliveredWorkflowMessage::SignalReceived {
+                        name: "first".to_owned(),
+                        payload: first,
+                    },
+                ),
+                (
+                    process,
+                    DeliveredWorkflowMessage::SignalReceived {
+                        name: "second".to_owned(),
+                        payload: second,
+                    },
+                ),
+            ]
+        );
+        assert_eq!(handoff.pending_count(&workflow_id)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_delivery_keeps_signal_queued_for_retry() -> Result<(), Box<dyn std::error::Error>> {
+        let engine = Arc::new(FakeEngineHandle::new());
+        let handoff = SignalResumeHandoff::new();
+        let workflow_id = WorkflowId::new_v4();
+        let process = WorkflowProcessHandle::new(42);
+        let first = payload(b"{\"n\":1}".to_vec());
+        let second = payload(b"{\"n\":2}".to_vec());
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.push_delivery_response(Err(EngineSeamError::Delivery {
+            reason: "mailbox unavailable".to_owned(),
+        }))?;
+
+        handoff.defer(workflow_id.clone(), "first".to_owned(), first.clone())?;
+        handoff.defer(workflow_id.clone(), "second".to_owned(), second.clone())?;
+
+        let error = handoff
+            .deliver_deferred(engine.as_ref(), &workflow_id)
+            .err()
+            .ok_or_else(|| std::io::Error::other("delivery failure was not returned"))?;
+
+        assert!(matches!(error, SignalResumeError::Deliver(_)));
+        assert_eq!(handoff.pending_count(&workflow_id)?, 2);
+        assert!(engine.delivered_messages()?.is_empty());
+
+        assert_eq!(handoff.deliver_deferred(engine.as_ref(), &workflow_id)?, 2);
         assert_eq!(
             engine.delivered_messages()?,
             vec![

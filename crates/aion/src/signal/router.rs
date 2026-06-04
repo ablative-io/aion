@@ -124,13 +124,6 @@ enum ResolvedSignalTarget {
 /// Errors returned by [`SignalRouter`].
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum SignalRouterError {
-    /// Deferred resume handoff failed after recording a non-resident signal.
-    #[error("workflow {workflow_id} is not resident")]
-    NonResident {
-        /// Workflow that had no current live process.
-        workflow_id: WorkflowId,
-    },
-
     /// AE reported the workflow is terminal.
     #[error("workflow {workflow_id} is terminal")]
     Terminal {
