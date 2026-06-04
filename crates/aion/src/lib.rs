@@ -16,6 +16,7 @@ pub mod signal;
 pub mod supervision;
 pub mod time;
 
+pub use engine_seam::EngineHandle;
 pub use error::EngineError;
 pub use registry::{Registry, WorkflowHandle};
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
