@@ -15,3 +15,5 @@ pub mod runtime;
 pub mod signal;
 pub mod supervision;
 pub mod time;
+
+pub use error::EngineError;
