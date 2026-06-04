@@ -13,18 +13,14 @@ static DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[tokio::test]
 async fn embedded_replica_sync_round_trips_through_primary() -> Result<(), StoreError> {
-    let primary_url = if let Ok(value) = std::env::var("AION_LIBSQL_TEST_URL") {
-        value
-    } else {
+    let Ok(primary_url) = std::env::var("AION_LIBSQL_TEST_URL") else {
         tracing::info!(
             missing_env_var = "AION_LIBSQL_TEST_URL",
             "skipping embedded-replica sync test"
         );
         return Ok(());
     };
-    let auth_token = if let Ok(value) = std::env::var("AION_LIBSQL_TEST_TOKEN") {
-        value
-    } else {
+    let Ok(auth_token) = std::env::var("AION_LIBSQL_TEST_TOKEN") else {
         tracing::info!(
             missing_env_var = "AION_LIBSQL_TEST_TOKEN",
             "skipping embedded-replica sync test"
