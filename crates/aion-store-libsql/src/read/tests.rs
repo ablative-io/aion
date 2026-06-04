@@ -190,7 +190,7 @@ async fn query_filters_by_start_time_bounds() -> Result<(), StoreError> {
     let summaries = store
         .query(&WorkflowFilter {
             started_after: Some(recorded_at(20)),
-            started_before: Some(recorded_at(30)),
+            started_before: Some(recorded_at(20)),
             ..WorkflowFilter::default()
         })
         .await?;
