@@ -288,8 +288,6 @@ pub(crate) mod test_support {
             /// Recorded event.
             event: Event,
         },
-        /// A fake timer-wheel entry was driven to fire.
-        TimerFired(TimerWheelEntry),
     }
 
     #[derive(Default)]
@@ -327,71 +325,11 @@ pub(crate) mod test_support {
             Ok(())
         }
 
-        /// Enqueues a child-spawn result returned by the next spawn request.
-        pub fn enqueue_child_spawn_response(
-            &self,
-            response: Result<ChildWorkflowSpawnResult, EngineSeamError>,
-        ) -> Result<(), EngineSeamError> {
-            self.state()?.child_spawn_responses.push_back(response);
-            Ok(())
-        }
-
         /// Returns a snapshot of delivered mailbox messages.
         pub fn delivered_messages(
             &self,
         ) -> Result<Vec<(WorkflowProcessHandle, WorkflowMailboxMessage)>, EngineSeamError> {
             Ok(self.state()?.delivered.clone())
-        }
-
-        /// Returns a snapshot of requested child spawns.
-        pub fn child_spawn_requests(
-            &self,
-        ) -> Result<Vec<ChildWorkflowSpawnRequest>, EngineSeamError> {
-            Ok(self.state()?.child_spawn_requests.clone())
-        }
-
-        /// Returns a snapshot of currently armed timer-wheel entries.
-        pub fn armed_timers(&self) -> Result<Vec<TimerWheelEntry>, EngineSeamError> {
-            Ok(self.state()?.armed_timers.clone())
-        }
-
-        /// Returns a snapshot of disarmed timer-wheel entries.
-        pub fn disarmed_timers(
-            &self,
-        ) -> Result<Vec<(WorkflowProcessHandle, TimerId)>, EngineSeamError> {
-            Ok(self.state()?.disarmed_timers.clone())
-        }
-
-        /// Returns a snapshot of events recorded through the seam.
-        pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
-            Ok(self.state()?.recorded_events.clone())
-        }
-
-        /// Returns a snapshot of all fake operations in observed order.
-        pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
-            Ok(self.state()?.operations.clone())
-        }
-
-        /// Drives a fake timer-wheel fire path by removing and returning a matching armed entry.
-        pub fn fire_timer(
-            &self,
-            process: WorkflowProcessHandle,
-            timer_id: &TimerId,
-        ) -> Result<Option<TimerWheelEntry>, EngineSeamError> {
-            let mut state = self.state()?;
-            let position = state
-                .armed_timers
-                .iter()
-                .position(|entry| entry.process == process && &entry.timer_id == timer_id);
-            if let Some(position) = position {
-                let entry = state.armed_timers.remove(position);
-                state
-                    .operations
-                    .push(FakeEngineOperation::TimerFired(entry.clone()));
-                Ok(Some(entry))
-            } else {
-                Ok(None)
-            }
         }
 
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
