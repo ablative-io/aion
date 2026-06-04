@@ -12,4 +12,5 @@ pub mod replay;
 pub mod resolver;
 pub mod seq;
 
+pub use determinism::DeterminismContext;
 pub use error::{DurabilityError, NonDeterminismError};
