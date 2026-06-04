@@ -1,1 +1,1 @@
-fix(store-libsql): hydrate parent links independently for filtered queries
+test(aion-store-libsql): add conformance and reopen persistence coverage
