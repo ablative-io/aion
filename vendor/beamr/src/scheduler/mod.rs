@@ -328,6 +328,36 @@ impl Scheduler {
         .map_err(|_| ExecError::Badarg)
     }
 
+    /// Spawn a linked process that is eligible for the dirty scheduler pool.
+    ///
+    /// The dirty pool implementation is currently scaffolded; this entrypoint
+    /// preserves the scheduling decision at the scheduler boundary while using
+    /// the normal linked-spawn machinery until the pool is wired in.
+    pub fn spawn_link_dirty(
+        &self,
+        parent_pid: u64,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<Term>,
+    ) -> Result<u64, ExecError> {
+        self.spawn_link(parent_pid, entry_module, entry_function, args)
+    }
+
+    /// Enqueue an immediate atom message into a live process mailbox.
+    #[must_use]
+    pub fn enqueue_atom_message(&self, target_pid: u64, atom: Atom) -> bool {
+        let delivered = self
+            .with_process(target_pid, |process| {
+                process.mailbox_mut().push_owned(Term::atom(atom));
+                true
+            })
+            .unwrap_or(false);
+        if delivered {
+            self.wake_process(target_pid);
+        }
+        delivered
+    }
+
     /// Spawn a process at the beginning of a module.
     pub fn spawn_process(&self, module: &Arc<Module>) -> u64 {
         self.enqueue_spawn(Arc::clone(module), 0, Vec::new())

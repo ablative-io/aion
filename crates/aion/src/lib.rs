@@ -18,6 +18,7 @@ pub mod signal;
 pub mod supervision;
 pub mod time;
 
+pub use activity::{dispatch_activity, propagate_activity_outcome, surface_activity_error};
 pub use engine_seam::EngineHandle;
 pub use error::EngineError;
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};

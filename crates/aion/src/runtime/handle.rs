@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use aion_core::{ActivityError, ActivityErrorKind, Payload};
 use beamr::atom::AtomTable;
 use beamr::loader::prepare_module;
 use beamr::module::ModuleRegistry;
@@ -14,6 +15,7 @@ use crate::error::EngineError;
 
 use super::config::RuntimeConfig;
 use super::nif::{Mfa, NifRegistration};
+use super::payload::{payload_to_term, term_to_payload};
 
 /// Local BEAM process identifier exposed by the runtime boundary.
 pub type Pid = u64;
@@ -29,6 +31,29 @@ pub struct RuntimeInput {
 }
 
 impl RuntimeInput {
+    /// Convert one durable payload into the single BEAM argument used by
+    /// in-VM activity dispatch.
+    ///
+    /// The runtime boundary owns this representation. JSON primitives map to
+    /// immediate terms where possible; unsupported structured input is passed as
+    /// `nil` until richer payload term support lands in beamr.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when a JSON number does not fit in an
+    /// immediate small integer.
+    pub fn from_payload(payload: Payload) -> Result<Self, EngineError> {
+        Ok(Self {
+            terms: vec![payload_to_term(payload)?],
+        })
+    }
+
+    /// Number of terms supplied to the BEAM entrypoint.
+    #[must_use]
+    pub fn arity(&self) -> u8 {
+        u8::try_from(self.terms.len()).unwrap_or(u8::MAX)
+    }
+
     fn into_terms(self) -> Vec<Term> {
         self.terms
     }
@@ -40,6 +65,8 @@ pub struct RuntimeHandle {
     atom_table: Arc<AtomTable>,
     module_registry: Arc<ModuleRegistry>,
     native_registry: Arc<BifRegistryImpl>,
+    activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
+    activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
 }
 
 impl RuntimeHandle {
@@ -68,6 +95,8 @@ impl RuntimeHandle {
             atom_table,
             module_registry,
             native_registry,
+            activity_results: Arc::new(dashmap::DashMap::new()),
+            activity_errors: Arc::new(dashmap::DashMap::new()),
         })
     }
 
@@ -152,11 +181,128 @@ impl RuntimeHandle {
         input: RuntimeInput,
     ) -> Result<Pid, EngineError> {
         self.ensure_live_pid(parent_pid)?;
+        let arity = input.arity();
         let module = self.atom_table.intern(deployed_module);
+        let function_atom = self.atom_table.intern(function);
+        if self.is_dirty_with_arity(deployed_module, function, arity) {
+            self.scheduler
+                .spawn_link_dirty(parent_pid, module, function_atom, input.into_terms())
+                .map_err(runtime_error_from_display)
+        } else {
+            self.scheduler
+                .spawn_link(parent_pid, module, function_atom, input.into_terms())
+                .map_err(runtime_error_from_display)
+        }
+    }
+
+    /// Return whether the registered native activity entry is dirty for arity 1.
+    #[must_use]
+    pub fn is_dirty(&self, module: &str, function: &str) -> bool {
+        self.is_dirty_with_arity(module, function, 1)
+    }
+
+    /// Return whether the registered native entry is dirty for the supplied arity.
+    #[must_use]
+    pub fn is_dirty_with_arity(&self, module: &str, function: &str, arity: u8) -> bool {
+        let module = self.atom_table.intern(module);
         let function = self.atom_table.intern(function);
-        self.scheduler
-            .spawn_link(parent_pid, module, function, input.into_terms())
-            .map_err(runtime_error_from_display)
+        self.native_registry
+            .lookup(module, function, arity)
+            .is_some_and(|entry| entry.is_dirty)
+    }
+
+    /// Block until an activity exits, then surface its success or failure to the parent.
+    ///
+    /// Normal returns become typed payload results queued for the workflow and
+    /// abnormal exits become typed activity errors that can be read alongside the
+    /// trapped EXIT message delivered by the runtime link.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the parent is not live, the result
+    /// term cannot be converted to a payload, or mailbox delivery fails.
+    pub fn propagate_activity_outcome(
+        &self,
+        parent_pid: Pid,
+        activity_pid: Pid,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(parent_pid)?;
+        let (reason, result) = self.scheduler.run_until_exit(activity_pid);
+        if reason == ExitReason::Normal {
+            let payload = term_to_payload(result, &self.atom_table)?;
+            self.deliver_activity_result(parent_pid, activity_pid, payload)
+        } else {
+            let error = self
+                .activity_errors
+                .get(&(parent_pid, activity_pid))
+                .map_or_else(
+                    || ActivityError {
+                        kind: ActivityErrorKind::Terminal,
+                        message: format!("activity process {activity_pid} exited: {reason:?}"),
+                        details: None,
+                    },
+                    |entry| entry.clone(),
+                );
+            self.deliver_activity_error(parent_pid, activity_pid, error)
+        }
+    }
+
+    /// Deliver a successful activity result payload to the workflow mailbox surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// mailbox marker cannot be queued.
+    pub fn deliver_activity_result(
+        &self,
+        parent_pid: Pid,
+        activity_pid: Pid,
+        payload: Payload,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(parent_pid)?;
+        self.activity_results
+            .insert((parent_pid, activity_pid), payload);
+        let marker = self.atom_table.intern("aion_activity_result");
+        if self.scheduler.enqueue_atom_message(parent_pid, marker) {
+            Ok(())
+        } else {
+            Err(runtime_error(format!(
+                "failed to deliver activity result from {activity_pid} to {parent_pid}"
+            )))
+        }
+    }
+
+    /// Store a typed activity error for a trapped activity EXIT signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow process is not live.
+    pub fn deliver_activity_error(
+        &self,
+        parent_pid: Pid,
+        activity_pid: Pid,
+        error: ActivityError,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(parent_pid)?;
+        self.activity_errors
+            .insert((parent_pid, activity_pid), error);
+        Ok(())
+    }
+
+    /// Read a previously delivered activity result payload.
+    #[must_use]
+    pub fn activity_result(&self, parent_pid: Pid, activity_pid: Pid) -> Option<Payload> {
+        self.activity_results
+            .get(&(parent_pid, activity_pid))
+            .map(|entry| entry.clone())
+    }
+
+    /// Read a previously delivered activity error associated with a trapped exit.
+    #[must_use]
+    pub fn activity_error(&self, parent_pid: Pid, activity_pid: Pid) -> Option<ActivityError> {
+        self.activity_errors
+            .get(&(parent_pid, activity_pid))
+            .map(|entry| entry.clone())
     }
 
     /// Register transformed BEAM bytes under their already-deployed module name.
@@ -355,7 +501,7 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    fn lookup_native_for_test(
+    pub(crate) fn lookup_native_for_test(
         &self,
         module: &str,
         function: &str,
@@ -387,6 +533,10 @@ fn nif_registration_error(mfa: &Mfa, error: NativeRegistrationError) -> EngineEr
         },
     }
 }
+
+#[cfg(test)]
+#[path = "handle/test_support.rs"]
+mod test_support;
 
 #[cfg(test)]
 mod tests {
