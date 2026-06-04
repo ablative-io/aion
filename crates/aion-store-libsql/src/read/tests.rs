@@ -235,6 +235,26 @@ async fn query_combines_filter_dimensions() -> Result<(), StoreError> {
 }
 
 #[tokio::test]
+async fn query_combines_parent_with_child_filters() -> Result<(), StoreError> {
+    let (store, ids) = seeded_store("query-parent-combined").await?;
+
+    let summaries = store
+        .query(&WorkflowFilter {
+            workflow_type: Some(String::from("checkout")),
+            status: Some(WorkflowStatus::Running),
+            started_after: Some(recorded_at(10)),
+            started_before: Some(recorded_at(10)),
+            parent: Some(ids.parent.clone()),
+        })
+        .await?;
+
+    let summary = one_summary(summaries)?;
+    assert_eq!(summary.workflow_id, ids.running_checkout);
+    assert_eq!(summary.parent, Some(ids.parent));
+    Ok(())
+}
+
+#[tokio::test]
 async fn query_binds_filter_values_with_sql_metacharacters() -> Result<(), StoreError> {
     let store = open_test_store("query-sql-metacharacters").await?;
     let tricky = workflow_id(1);

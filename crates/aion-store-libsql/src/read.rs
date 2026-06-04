@@ -49,7 +49,7 @@ pub(crate) async fn read_history(
 /// Returns `StoreError::Backend` for libSQL failures and `StoreError::Serialization` for malformed
 /// stored event blobs.
 pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<WorkflowId>, StoreError> {
-    let mut active = load_summaries(conn, &WorkflowFilter::default())
+    let mut active = load_summaries(conn, &WorkflowFilter::default(), false)
         .await?
         .into_iter()
         .filter(|summary| summary.status == WorkflowStatus::Running)
@@ -69,7 +69,7 @@ pub(crate) async fn query(
     conn: &libsql::Connection,
     filter: &WorkflowFilter,
 ) -> Result<Vec<WorkflowSummary>, StoreError> {
-    let mut summaries = load_summaries(conn, filter)
+    let mut summaries = load_summaries(conn, filter, true)
         .await?
         .into_iter()
         .filter(|summary| filter.matches(summary))
@@ -81,9 +81,14 @@ pub(crate) async fn query(
 async fn load_summaries(
     conn: &libsql::Connection,
     filter: &WorkflowFilter,
+    include_parents: bool,
 ) -> Result<Vec<WorkflowSummary>, StoreError> {
     let mut histories = load_candidate_histories(conn, filter).await?;
-    let parent_by_child = parent_links(&histories);
+    let parent_by_child = if include_parents {
+        load_parent_links(conn).await?
+    } else {
+        HashMap::new()
+    };
     let mut summaries = Vec::new();
 
     for history in histories.values_mut() {
@@ -177,21 +182,37 @@ impl QueryPlan {
     }
 }
 
-fn parent_links(histories: &HashMap<WorkflowId, Vec<Event>>) -> HashMap<WorkflowId, WorkflowId> {
+async fn load_parent_links(
+    conn: &libsql::Connection,
+) -> Result<HashMap<WorkflowId, WorkflowId>, StoreError> {
+    let mut rows = conn
+        .query(
+            "SELECT event FROM events WHERE event_kind = 'ChildWorkflowStarted' ORDER BY workflow_id ASC, seq ASC",
+            (),
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
     let mut links = HashMap::new();
-    for history in histories.values() {
-        for event in history {
-            if let Event::ChildWorkflowStarted {
-                envelope,
-                child_workflow_id,
-                ..
-            } = event
-            {
-                links.insert(child_workflow_id.clone(), envelope.workflow_id.clone());
-            }
+
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let blob: Vec<u8> = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        if let Event::ChildWorkflowStarted {
+            envelope,
+            child_workflow_id,
+            ..
+        } = decode_event(&blob)?
+        {
+            links.insert(child_workflow_id, envelope.workflow_id);
         }
     }
-    links
+
+    Ok(links)
 }
 
 fn is_projection_event(event: &Event) -> bool {

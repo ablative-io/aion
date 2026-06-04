@@ -1,1 +1,1 @@
-feat(store-libsql): implement read projections and queries
+fix(store-libsql): hydrate parent links independently for filtered queries
