@@ -21,5 +21,5 @@ pub use recorder::Recorder;
 pub use recovery::{
     ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
 };
-pub use resolver::Resolver;
+pub use resolver::{NON_DETERMINISM_WORKFLOW_ERROR_PREFIX, Resolver, fail_on_violation};
 pub use seq::SequenceHead;
