@@ -194,7 +194,12 @@ impl EngineBuilder {
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
     match source {
         WorkflowPackageSource::Path(path) => {
-            Package::load_from_path(path).map_err(EngineError::from)
+            Package::load_from_path(&path).map_err(|error| EngineError::Load {
+                reason: format!(
+                    "failed to load workflow package `{}`: {error}",
+                    path.display()
+                ),
+            })
         }
         WorkflowPackageSource::Package(package) => Ok(*package),
     }
@@ -252,10 +257,13 @@ fn started_workflow_type(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
 
     use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
-    use aion_package::ContentHash;
+    use aion_package::{
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ContentHash, DeclaredActivity, Manifest,
+        ManifestVersion, Package, PackageBuilder,
+    };
     use aion_store::{EventStore, InMemoryStore};
     use chrono::Utc;
     use serde_json::json;
@@ -287,6 +295,60 @@ mod tests {
 
     fn hash(byte: u8) -> ContentHash {
         ContentHash::from_bytes([byte; 32])
+    }
+
+    fn package_manifest() -> Manifest {
+        Manifest {
+            entry_module: "counter".to_owned(),
+            entry_function: "version".to_owned(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "integer" }),
+            timeout: Duration::from_secs(30),
+            activities: vec![DeclaredActivity {
+                activity_type: "activity/test".to_owned(),
+            }],
+            version: ManifestVersion::new("test"),
+            format_version: CURRENT_FORMAT_VERSION,
+        }
+    }
+
+    fn compile_counter_beam() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let temp_dir =
+            std::env::temp_dir().join(format!("aion-engine-builder-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&temp_dir)?;
+        let source_path = temp_dir.join("counter.erl");
+        let beam_path = temp_dir.join("counter.beam");
+        std::fs::write(
+            &source_path,
+            "-module(counter).\n-export([version/0]).\nversion() -> 1.\n",
+        )?;
+        let status = Command::new("erlc")
+            .arg("-o")
+            .arg(&temp_dir)
+            .arg(&source_path)
+            .status()?;
+        if !status.success() {
+            let cleanup_result = std::fs::remove_dir_all(&temp_dir);
+            drop(cleanup_result);
+            return Err(format!("erlc failed with status {status}").into());
+        }
+        let bytes = std::fs::read(beam_path)?;
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(bytes)
+    }
+
+    fn fixture_package() -> Result<Package, Box<dyn std::error::Error>> {
+        let beams = BeamSet::new(vec![BeamModule::new("counter", compile_counter_beam()?)])?;
+        let archive = PackageBuilder::new(package_manifest(), beams).write_to_bytes()?;
+        Ok(Package::load_from_bytes(archive)?)
+    }
+
+    fn write_fixture_package(package: &Package) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let path =
+            std::env::temp_dir().join(format!("aion-engine-builder-{}.aion", uuid::Uuid::new_v4()));
+        PackageBuilder::new(package.manifest().clone(), package.beams().clone())
+            .write_to_path(&path)?;
+        Ok(path)
     }
 
     #[derive(Debug)]
@@ -361,6 +423,48 @@ mod tests {
         assert!(engine.registry().list()?.is_empty());
         assert_eq!(engine.supervision().type_supervisor_count()?, 0);
         assert_eq!(engine.loaded_workflows().iter().count(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_loads_already_loaded_package() -> Result<(), Box<dyn std::error::Error>> {
+        let package = fixture_package()?;
+        let version = package.content_hash().clone();
+        let deployed_entry_module = package.deployed_entry_module();
+
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .load_workflows(package)
+            .build()
+            .await?;
+
+        let loaded = engine
+            .loaded_workflows()
+            .get("counter", &version)
+            .ok_or("loaded package record missing")?;
+        assert_eq!(loaded.deployed_entry_module(), deployed_entry_module);
+        assert!(
+            engine
+                .runtime()
+                .has_registered_module(&deployed_entry_module)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_loads_package_from_path() -> Result<(), Box<dyn std::error::Error>> {
+        let package = fixture_package()?;
+        let version = package.content_hash().clone();
+        let path = write_fixture_package(&package)?;
+
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .load_workflows(path.as_path())
+            .build()
+            .await?;
+        std::fs::remove_file(path)?;
+
+        assert!(engine.loaded_workflows().get("counter", &version).is_some());
         Ok(())
     }
 
