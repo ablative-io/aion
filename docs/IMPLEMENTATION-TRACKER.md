@@ -96,9 +96,9 @@ Both depend on AC types.
 - [x] **AS-002** — libSQL connection and idempotent schema · _landed 349bf27_
 
 ### Wave 10 (3 parallel)
-- [ ] **AP-004** — Content-hash module namespacing scheme · _depends: AP-003_
-- [ ] **AP-005** — PackageBuilder (deterministic write path) · _depends: AP-002, AP-003_
-- [ ] **AS-003** — LibSqlStore struct and EventStore wiring · _depends: AS-002_
+- [x] **AP-004** — Content-hash module namespacing scheme · _landed 48acb73_
+- [x] **AP-005** — PackageBuilder (deterministic write path) · _landed 2b75207_
+- [x] **AS-003** — LibSqlStore struct and EventStore wiring · _landed 73e071f_
 
 ### Wave 11 (3 parallel)
 - [ ] **AP-006** — Package::load (read path, integrity check) · _depends: AP-002, AP-003, AP-004, AP-005_
