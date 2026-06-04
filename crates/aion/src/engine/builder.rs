@@ -13,7 +13,7 @@ use crate::{
     runtime::{NifEntry, NifRegistration},
 };
 
-use super::core::Engine;
+use super::engine::Engine;
 
 /// Source for a workflow package collected before `build()` performs fallible
 /// loading and runtime registration.

@@ -42,6 +42,10 @@ pub enum EngineError {
     #[error("active workflow registry lock was poisoned")]
     RegistryPoisoned,
 
+    /// The engine is already shutting down and no new workflow starts are accepted.
+    #[error("engine is shutting down")]
+    ShuttingDown,
+
     /// No live, durable, or loaded workflow was found for the request.
     #[error("workflow `{workflow_type}` was not found")]
     WorkflowNotFound {
