@@ -128,6 +128,7 @@ mod tests {
     use aion_store::{EventStore as _, InMemoryStore};
 
     use super::{QueryError, QueryService};
+    use crate::Pid;
     use crate::engine_seam::{
         ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
         TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
@@ -279,6 +280,33 @@ mod tests {
                 reason: format!(
                     "fake query engine does not spawn child workflow {}",
                     request.workflow_type
+                ),
+            })
+        }
+
+        fn terminate_linked_child_workflow(
+            &self,
+            parent_workflow_id: &WorkflowId,
+            child_process: WorkflowProcessHandle,
+            correlation: u64,
+        ) -> Result<(), EngineSeamError> {
+            Err(EngineSeamError::ChildTermination {
+                reason: format!(
+                    "fake query engine does not terminate child workflow process {} for parent {parent_workflow_id} with correlation {correlation}",
+                    child_process.pid()
+                ),
+            })
+        }
+
+        fn terminate_linked_activity(
+            &self,
+            parent_workflow_id: &WorkflowId,
+            activity_process: Pid,
+            correlation: u64,
+        ) -> Result<(), EngineSeamError> {
+            Err(EngineSeamError::ChildTermination {
+                reason: format!(
+                    "fake query engine does not terminate activity process {activity_process} for parent {parent_workflow_id} with correlation {correlation}"
                 ),
             })
         }

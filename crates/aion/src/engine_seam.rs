@@ -7,6 +7,8 @@
 //! supervision, or module loading directly.
 
 use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId};
+
+use crate::Pid;
 use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
 
@@ -195,6 +197,13 @@ pub enum EngineSeamError {
         reason: String,
     },
 
+    /// AE could not terminate a linked child process.
+    #[error("linked child termination failed: {reason}")]
+    ChildTermination {
+        /// Human-readable child termination failure reason.
+        reason: String,
+    },
+
     /// AD's single Recorder path could not record the event.
     #[error("workflow recorder failed: {reason}")]
     Recorder {
@@ -241,6 +250,30 @@ pub trait EngineHandle: Send + Sync {
         &self,
         request: ChildWorkflowSpawnRequest,
     ) -> Result<ChildWorkflowSpawnResult, EngineSeamError>;
+
+    /// Terminates a linked child workflow process through AE's process-link boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE cannot send the cancellation exit to the linked child.
+    fn terminate_linked_child_workflow(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        child_process: WorkflowProcessHandle,
+        correlation: u64,
+    ) -> Result<(), EngineSeamError>;
+
+    /// Terminates a linked in-VM activity process through AE's process-link boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE cannot send the cancellation exit to the linked child.
+    fn terminate_linked_activity(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        activity_process: Pid,
+        correlation: u64,
+    ) -> Result<(), EngineSeamError>;
 
     /// Arms a timer-wheel entry for a resident workflow process.
     ///
@@ -303,6 +336,24 @@ pub(crate) mod test_support {
             /// Timer that was disarmed.
             timer_id: TimerId,
         },
+        /// A linked child workflow process was terminated.
+        LinkedChildWorkflowTerminated {
+            /// Parent workflow owning the link.
+            parent_workflow_id: WorkflowId,
+            /// Linked child workflow process.
+            child_process: WorkflowProcessHandle,
+            /// Spawn correlation token.
+            correlation: u64,
+        },
+        /// A linked activity process was terminated.
+        LinkedActivityTerminated {
+            /// Parent workflow owning the link.
+            parent_workflow_id: WorkflowId,
+            /// Linked activity process.
+            activity_process: Pid,
+            /// Spawn correlation token.
+            correlation: u64,
+        },
         /// An event was recorded through the recorder seam.
         EventRecorded {
             /// Workflow whose recorder received the event.
@@ -321,6 +372,8 @@ pub(crate) mod test_support {
         child_spawn_responses: VecDeque<Result<ChildWorkflowSpawnResult, EngineSeamError>>,
         armed_timers: Vec<TimerWheelEntry>,
         disarmed_timers: Vec<(WorkflowProcessHandle, TimerId)>,
+        terminated_child_workflows: Vec<(WorkflowId, WorkflowProcessHandle, u64)>,
+        terminated_activities: Vec<(WorkflowId, Pid, u64)>,
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
         recorder_store: Option<Arc<dyn EventStore>>,
@@ -499,6 +552,20 @@ pub(crate) mod test_support {
             Ok(self.state()?.recorded_events.clone())
         }
 
+        /// Returns linked child workflow termination calls observed by the fake.
+        pub fn terminated_child_workflows(
+            &self,
+        ) -> Result<Vec<(WorkflowId, WorkflowProcessHandle, u64)>, EngineSeamError> {
+            Ok(self.state()?.terminated_child_workflows.clone())
+        }
+
+        /// Returns linked activity termination calls observed by the fake.
+        pub fn terminated_activities(
+            &self,
+        ) -> Result<Vec<(WorkflowId, Pid, u64)>, EngineSeamError> {
+            Ok(self.state()?.terminated_activities.clone())
+        }
+
         /// Simulates AE terminating a parent process and propagating exits to linked children.
         pub fn terminate_parent(&self, parent: &WorkflowId) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
@@ -580,6 +647,50 @@ pub(crate) mod test_support {
                     reason: "fake child spawn response was not queued".to_owned(),
                 })
             }
+        }
+
+        fn terminate_linked_child_workflow(
+            &self,
+            parent_workflow_id: &WorkflowId,
+            child_process: WorkflowProcessHandle,
+            correlation: u64,
+        ) -> Result<(), EngineSeamError> {
+            let mut state = self.state()?;
+            state.terminated_child_workflows.push((
+                parent_workflow_id.clone(),
+                child_process,
+                correlation,
+            ));
+            state
+                .operations
+                .push(FakeEngineOperation::LinkedChildWorkflowTerminated {
+                    parent_workflow_id: parent_workflow_id.clone(),
+                    child_process,
+                    correlation,
+                });
+            Ok(())
+        }
+
+        fn terminate_linked_activity(
+            &self,
+            parent_workflow_id: &WorkflowId,
+            activity_process: Pid,
+            correlation: u64,
+        ) -> Result<(), EngineSeamError> {
+            let mut state = self.state()?;
+            state.terminated_activities.push((
+                parent_workflow_id.clone(),
+                activity_process,
+                correlation,
+            ));
+            state
+                .operations
+                .push(FakeEngineOperation::LinkedActivityTerminated {
+                    parent_workflow_id: parent_workflow_id.clone(),
+                    activity_process,
+                    correlation,
+                });
+            Ok(())
         }
 
         fn arm_timer(&self, entry: TimerWheelEntry) -> Result<(), EngineSeamError> {
