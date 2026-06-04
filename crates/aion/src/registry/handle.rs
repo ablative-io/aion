@@ -1,10 +1,10 @@
 //! `WorkflowHandle` process id, type, version, status, residency, and completion metadata.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aion_core::{Payload, RunId, WorkflowError, WorkflowId, WorkflowStatus};
 use aion_package::ContentHash;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 
 use crate::durability::Recorder;
 
