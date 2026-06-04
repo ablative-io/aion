@@ -105,7 +105,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use aion_core::{Event, EventEnvelope, IdError, TimerId, WorkflowId};
+    use aion_core::{Event, IdError, TimerId, WorkflowId};
     use aion_store::{EventStore, InMemoryStore, StoreError};
     use chrono::{DateTime, Utc};
 
@@ -188,17 +188,9 @@ mod tests {
         assert_eq!(expired[0].timer_id, timer_id);
         assert_eq!(expired[0].fire_at, fire_at);
 
+        // TimerStarted is now recorded by AD's resume-live handoff, not by the timer service.
         let history = history(&store, &workflow_id).await?;
-        assert!(matches!(
-            history.as_slice(),
-            [Event::TimerStarted {
-                envelope,
-                timer_id: recorded,
-                fire_at: recorded_fire_at,
-            }] if envelope.recorded_at == recorded_at()
-                && recorded == &timer_id
-                && recorded_fire_at == &fire_at
-        ));
+        assert!(history.is_empty());
         Ok(())
     }
 
@@ -217,15 +209,16 @@ mod tests {
         assert!(engine.armed_timers()?.is_empty());
         let history = history(&store, &workflow_id).await?;
         assert_eq!(count_cancelled(&history, &timer_id), 1);
+        // TimerStarted is recorded by AD's resume-live handoff, not by the timer service,
+        // so only the TimerCancelled event appears in history.
         assert!(matches!(
             history.as_slice(),
             [
-                Event::TimerStarted { .. },
                 Event::TimerCancelled {
                     envelope,
                     timer_id: recorded,
                 }
-            ] if envelope.seq == 2 && recorded == &timer_id
+            ] if envelope.seq == 1 && recorded == &timer_id
         ));
         assert!(engine.operations()?.iter().any(|operation| matches!(
             operation,
@@ -320,18 +313,9 @@ mod tests {
 
         assert_eq!(scheduled.timer_id, expected_timer_id);
         assert_eq!(scheduled.fire_at, expected_fire_at);
+        // TimerStarted is recorded by AD's resume-live handoff, not by the timer service.
         let history = history(&store, &workflow_id).await?;
-        let expected_recorded_at = recorded_at();
-        assert!(matches!(
-            history.as_slice(),
-            [Event::TimerStarted {
-                envelope: EventEnvelope { recorded_at: event_recorded_at, .. },
-                timer_id: recorded,
-                fire_at: recorded_fire_at,
-            }] if event_recorded_at == &expected_recorded_at
-                && recorded == &expected_timer_id
-                && recorded_fire_at == &expected_fire_at
-        ));
+        assert!(history.is_empty());
         Ok(())
     }
 
