@@ -83,11 +83,11 @@ impl EventStore for LibSqlStore {
         timer_id: &TimerId,
         fire_at: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        crate::timer::schedule_timer(self.connection(), workflow_id, timer_id, fire_at)
+        crate::timer::schedule_timer(self.connection(), workflow_id, timer_id, fire_at).await
     }
 
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
-        crate::timer::expired_timers(self.connection(), as_of)
+        crate::timer::expired_timers(self.connection(), as_of).await
     }
 }
 
