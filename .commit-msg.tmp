@@ -1,1 +1,1 @@
-feat(aion): add dynamic map fan-out primitive
+feat(aion-durability): recover active workflows on startup

@@ -1,16 +1,20 @@
 //! Behavioural replay tests over the in-memory event store.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use aion::durability::{
     Command, CorrelationKey, DurabilityError, LiveActivityOutcome, LiveChildOutcome, LiveExecutor,
-    Recorder, Replay, ReplayOutcome, ReplayStep, ReplayTerminal, Resolution,
+    Recorder, RecoveryDriver, RecoveryOutcome, RecoveryPlan, Replay, ReplayOutcome, ReplayStep,
+    ReplayTerminal, Resolution, recover,
 };
 use aion_core::{
-    ActivityError, ActivityErrorKind, ActivityId, Payload, RunId, TimerId, WorkflowId,
+    ActivityError, ActivityErrorKind, ActivityId, Event, Payload, RunId, TimerId, WorkflowId,
 };
 use aion_store::{EventStore, InMemoryStore};
 use async_trait::async_trait;
@@ -126,6 +130,110 @@ async fn record_full_history(
         .await?;
 
     Ok(store.read_history(&workflow_id()).await?)
+}
+
+async fn record_partial_history_for(
+    store: Arc<dyn EventStore>,
+    workflow_id: WorkflowId,
+    timestamp_base: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut recorder = Recorder::new(workflow_id, store);
+    let activity_id = ActivityId::from_sequence_position(0);
+
+    recorder
+        .record_workflow_started(
+            timestamp(timestamp_base)?,
+            "workflow".to_owned(),
+            payload("input")?,
+        )
+        .await?;
+    recorder
+        .record_activity_scheduled(
+            timestamp(timestamp_base + 10)?,
+            activity_id.clone(),
+            "activity".to_owned(),
+            payload("activity-input")?,
+        )
+        .await?;
+    recorder
+        .record_activity_completed(
+            timestamp(timestamp_base + 20)?,
+            activity_id,
+            payload("activity-result")?,
+        )
+        .await?;
+    Ok(())
+}
+
+async fn record_terminal_history_for(
+    store: Arc<dyn EventStore>,
+    workflow_id: WorkflowId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut recorder = Recorder::new(workflow_id, store);
+    recorder
+        .record_workflow_started(timestamp(200)?, "workflow".to_owned(), payload("input")?)
+        .await?;
+    recorder
+        .record_workflow_completed(timestamp(210)?, payload("workflow-result")?)
+        .await?;
+    Ok(())
+}
+
+async fn record_divergent_history_for(
+    store: Arc<dyn EventStore>,
+    workflow_id: WorkflowId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut recorder = Recorder::new(workflow_id, store);
+    recorder
+        .record_workflow_started(timestamp(300)?, "workflow".to_owned(), payload("input")?)
+        .await?;
+    recorder
+        .record_timer_started(timestamp(310)?, TimerId::anonymous(99), timestamp(400)?)
+        .await?;
+    Ok(())
+}
+
+#[derive(Default)]
+struct StaticRecoveryDriver {
+    plans: HashMap<WorkflowId, RecoveryPlan>,
+}
+
+impl StaticRecoveryDriver {
+    fn insert(
+        &mut self,
+        workflow_id: WorkflowId,
+        commands: Vec<Command>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.plans.insert(
+            workflow_id,
+            RecoveryPlan {
+                run_id: run_id(),
+                commands,
+                failure_recorded_at: timestamp(900)?,
+            },
+        );
+        Ok(())
+    }
+}
+
+impl RecoveryDriver for StaticRecoveryDriver {
+    fn recovery_plan(
+        &self,
+        workflow_id: &WorkflowId,
+        history: &[Event],
+    ) -> Result<RecoveryPlan, DurabilityError> {
+        if history.is_empty() {
+            return Err(DurabilityError::HistoryShape {
+                reason: format!("test recovery driver saw empty history for {workflow_id}"),
+            });
+        }
+        self.plans
+            .get(workflow_id)
+            .cloned()
+            .ok_or_else(|| DurabilityError::HistoryShape {
+                reason: format!("missing test recovery plan for {workflow_id}"),
+            })
+    }
 }
 
 async fn record_partial_history(
@@ -245,6 +353,137 @@ async fn fully_recorded_history_replays_to_terminal_with_zero_live_calls()
         }
     );
     assert_eq!(executor.calls(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recover_replays_only_active_workflows_to_resume_points()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let active_timer = WorkflowId::new(Uuid::from_u128(0x4401));
+    let active_child = WorkflowId::new(Uuid::from_u128(0x4402));
+    let terminal = WorkflowId::new(Uuid::from_u128(0x4403));
+    record_partial_history_for(Arc::clone(&store), active_timer.clone(), 10).await?;
+    record_partial_history_for(Arc::clone(&store), active_child.clone(), 40).await?;
+    record_terminal_history_for(Arc::clone(&store), terminal.clone()).await?;
+
+    let timer_resume = timer_command(TimerId::anonymous(10))?;
+    let child_resume = child_command(0)?;
+    let mut driver = StaticRecoveryDriver::default();
+    driver.insert(
+        active_timer.clone(),
+        vec![activity_command(0)?, timer_resume.clone()],
+    )?;
+    driver.insert(
+        active_child.clone(),
+        vec![activity_command(0)?, child_resume.clone()],
+    )?;
+    let executor = CountingExecutor::default();
+
+    let report = recover(Arc::clone(&store), &executor, &driver).await?;
+
+    assert_eq!(report.len(), 2);
+    assert!(report.iter().all(|entry| entry.workflow_id != terminal));
+    let timer_outcome = report
+        .iter()
+        .find(|entry| entry.workflow_id == active_timer)
+        .map(|entry| &entry.outcome)
+        .ok_or("missing timer workflow recovery report")?;
+    match timer_outcome {
+        RecoveryOutcome::Resumed {
+            resume_point,
+            recorded,
+        } => {
+            assert_eq!(resume_point.command_index, 1);
+            assert_eq!(resume_point.command, timer_resume);
+            assert_eq!(resume_point.head, 3);
+            assert_eq!(
+                recorded,
+                &vec![Resolution::ActivityCompleted(payload("activity-result")?)]
+            );
+        }
+        other => return Err(format!("expected resumed timer workflow, got {other:?}").into()),
+    }
+    let child_outcome = report
+        .iter()
+        .find(|entry| entry.workflow_id == active_child)
+        .map(|entry| &entry.outcome)
+        .ok_or("missing child workflow recovery report")?;
+    match child_outcome {
+        RecoveryOutcome::Resumed { resume_point, .. } => {
+            assert_eq!(resume_point.command_index, 1);
+            assert_eq!(resume_point.command, child_resume);
+            assert_eq!(resume_point.head, 3);
+        }
+        other => return Err(format!("expected resumed child workflow, got {other:?}").into()),
+    }
+    assert_eq!(executor.calls(), 0);
+
+    let mut recorder = Recorder::resume_at(active_timer.clone(), Arc::clone(&store), 3);
+    recorder
+        .record_timer_started(timestamp(500)?, TimerId::anonymous(10), timestamp(600)?)
+        .await?;
+    let timer_history = store.read_history(&active_timer).await?;
+    let appended = timer_history
+        .last()
+        .ok_or("timer history should contain appended event")?;
+    assert_eq!(appended.seq(), 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recover_isolates_divergent_workflow_failure_and_continues()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let clean_timer = WorkflowId::new(Uuid::from_u128(0x5501));
+    let clean_child = WorkflowId::new(Uuid::from_u128(0x5502));
+    let divergent = WorkflowId::new(Uuid::from_u128(0x5503));
+    record_partial_history_for(Arc::clone(&store), clean_timer.clone(), 100).await?;
+    record_partial_history_for(Arc::clone(&store), clean_child.clone(), 130).await?;
+    record_divergent_history_for(Arc::clone(&store), divergent.clone()).await?;
+
+    let mut driver = StaticRecoveryDriver::default();
+    driver.insert(
+        clean_timer.clone(),
+        vec![activity_command(0)?, timer_command(TimerId::anonymous(20))?],
+    )?;
+    driver.insert(
+        clean_child.clone(),
+        vec![activity_command(0)?, child_command(0)?],
+    )?;
+    driver.insert(divergent.clone(), vec![activity_command(0)?])?;
+    let executor = CountingExecutor::default();
+
+    let report = recover(Arc::clone(&store), &executor, &driver).await?;
+
+    let resumed = report
+        .iter()
+        .filter(|entry| matches!(entry.outcome, RecoveryOutcome::Resumed { .. }))
+        .count();
+    assert_eq!(resumed, 2);
+    let failed = report
+        .iter()
+        .find(|entry| entry.workflow_id == divergent)
+        .map(|entry| &entry.outcome)
+        .ok_or("missing divergent workflow recovery report")?;
+    match failed {
+        RecoveryOutcome::Failed {
+            error: DurabilityError::NonDeterminism(violation),
+            failure_recorded,
+        } => {
+            assert_eq!(violation.workflow_id, divergent);
+            assert!(*failure_recorded);
+        }
+        other => return Err(format!("expected non-determinism failure, got {other:?}").into()),
+    }
+    assert_eq!(executor.calls(), 0);
+    let divergent_history = store.read_history(&divergent).await?;
+    let failure_events = divergent_history
+        .iter()
+        .filter(|event| matches!(event, Event::WorkflowFailed { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(failure_events.len(), 1);
+    assert_eq!(failure_events[0].seq(), 3);
     Ok(())
 }
 
