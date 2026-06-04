@@ -7,6 +7,7 @@ pub mod hash;
 pub mod manifest;
 pub mod namespace;
 pub mod package;
+pub mod version;
 
 pub use beam::{BeamModule, BeamSet};
 pub use builder::PackageBuilder;
@@ -18,3 +19,4 @@ pub use namespace::{
     parse_deployed_name,
 };
 pub use package::Package;
+pub use version::WorkflowVersion;

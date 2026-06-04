@@ -11,7 +11,7 @@ use zip::{ZipArchive, result::ZipError};
 
 use crate::{
     BeamModule, BeamSet, ContentHash, Manifest, PackageError, builder::is_safe_logical_name,
-    content_hash, namespace::deployed_name,
+    content_hash, namespace::deployed_name, version::WorkflowVersion,
 };
 
 const MANIFEST_ENTRY: &str = "manifest.json";
@@ -112,6 +112,18 @@ impl Package {
     #[must_use]
     pub const fn content_hash(&self) -> &ContentHash {
         &self.content_hash
+    }
+
+    /// Produces the canonical cross-system version record for this loaded package.
+    #[must_use]
+    pub fn version_record(&self) -> WorkflowVersion {
+        WorkflowVersion {
+            entry_module: self.manifest.entry_module.clone(),
+            content_hash: self.content_hash.clone(),
+            activities: self.manifest.activities.clone(),
+            input_schema: self.manifest.input_schema.clone(),
+            output_schema: self.manifest.output_schema.clone(),
+        }
     }
 
     /// Returns engine-ready deployed module names paired with their beam bytes.
