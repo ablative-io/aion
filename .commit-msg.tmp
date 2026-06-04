@@ -1,1 +1,1 @@
-Harden AD-002 sequence overflow handling in durability recorder
+review(ad-003): harden history cursor replay matching

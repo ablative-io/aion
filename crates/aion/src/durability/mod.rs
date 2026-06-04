@@ -12,6 +12,8 @@ pub mod replay;
 pub mod resolver;
 pub mod seq;
 
+pub use correlation::CorrelationKey;
+pub use cursor::{CursorResolveResult, FoundEventDescriptor, HistoryCursor, RecordedEventFamily};
 pub use error::{DurabilityError, NonDeterminismError};
 pub use recorder::Recorder;
 pub use seq::SequenceHead;

@@ -278,7 +278,6 @@ impl RuntimeHandle {
         self.module_registry.lookup(module).is_some()
     }
 
-<<<<<<< HEAD
     /// Remove a module registered during a failed staged package load.
     pub(crate) fn unregister_module(&self, deployed_name: &str) -> Result<(), EngineError> {
         let module = self.atom_table.intern(deployed_name);
@@ -289,6 +288,70 @@ impl RuntimeHandle {
                 "module `{deployed_name}` was not registered"
             )))
         }
+    }
+
+    /// Spawn an inert test process without module code.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
+    #[cfg(test)]
+    pub fn spawn_test_process(&self) -> Result<Pid, EngineError> {
+        Ok(self.scheduler.spawn_test_process(false))
+    }
+
+    /// Spawn an inert test process with explicit trap-exit state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
+    #[cfg(test)]
+    pub fn spawn_test_process_with_trap_exit(&self, trap_exit: bool) -> Result<Pid, EngineError> {
+        Ok(self.scheduler.spawn_test_process(trap_exit))
+    }
+
+    /// Spawn an inert linked test child without enabling trap-exit on the child.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the parent is not live or beamr
+    /// rejects the linked spawn.
+    #[cfg(test)]
+    pub fn spawn_linked_test_process(&self, parent_pid: Pid) -> Result<Pid, EngineError> {
+        self.ensure_live_pid(parent_pid)?;
+        self.scheduler
+            .spawn_linked_test_process(parent_pid)
+            .map_err(runtime_error_from_display)
+    }
+
+    /// Return true when a live process has a trapped EXIT message from `source_pid`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when `target_pid` is not live.
+    #[cfg(test)]
+    pub fn has_trapped_exit_message(
+        &self,
+        target_pid: Pid,
+        source_pid: Pid,
+    ) -> Result<bool, EngineError> {
+        self.ensure_live_pid(target_pid)?;
+        Ok(self
+            .scheduler
+            .has_trapped_exit_message(target_pid, source_pid)
+            .unwrap_or(false))
+    }
+
+    /// Terminate a test process with a trappable abnormal reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when `pid` is not live.
+    #[cfg(test)]
+    pub fn terminate_test_process_with_error(&self, pid: Pid) -> Result<(), EngineError> {
+        self.ensure_live_pid(pid)?;
+        self.scheduler.terminate_process(pid, ExitReason::Error);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -306,50 +369,6 @@ impl RuntimeHandle {
     #[cfg(test)]
     fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
         self.scheduler.run_until_exit(pid)
-||||||| 89c9d25
-=======
-    /// Spawn an inert test process without module code.
-    #[cfg(test)]
-    pub fn spawn_test_process(&self) -> Result<Pid, EngineError> {
-        Ok(self.scheduler.spawn_test_process(false))
-    }
-
-    /// Spawn an inert test process with explicit trap-exit state.
-    #[cfg(test)]
-    pub fn spawn_test_process_with_trap_exit(&self, trap_exit: bool) -> Result<Pid, EngineError> {
-        Ok(self.scheduler.spawn_test_process(trap_exit))
-    }
-
-    /// Spawn an inert linked test child without enabling trap-exit on the child.
-    #[cfg(test)]
-    pub fn spawn_linked_test_process(&self, parent_pid: Pid) -> Result<Pid, EngineError> {
-        self.ensure_live_pid(parent_pid)?;
-        self.scheduler
-            .spawn_linked_test_process(parent_pid)
-            .map_err(runtime_error_from_display)
-    }
-
-    /// Return true when a live process has a trapped EXIT message from `source_pid`.
-    #[cfg(test)]
-    pub fn has_trapped_exit_message(
-        &self,
-        target_pid: Pid,
-        source_pid: Pid,
-    ) -> Result<bool, EngineError> {
-        self.ensure_live_pid(target_pid)?;
-        Ok(self
-            .scheduler
-            .has_trapped_exit_message(target_pid, source_pid)
-            .unwrap_or(false))
-    }
-
-    /// Terminate a test process with a trappable abnormal reason.
-    #[cfg(test)]
-    pub fn terminate_test_process_with_error(&self, pid: Pid) -> Result<(), EngineError> {
-        self.ensure_live_pid(pid)?;
-        self.scheduler.terminate_process(pid, ExitReason::Error);
-        Ok(())
->>>>>>> workflow/onatopp-dev-norn/504d00e6
     }
 }
 
