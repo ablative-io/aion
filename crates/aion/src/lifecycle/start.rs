@@ -9,7 +9,9 @@ use chrono::Utc;
 use crate::EngineError;
 use crate::durability::Recorder;
 use crate::loader::LoadedWorkflows;
-use crate::registry::{CompletionNotifier, HandleResidency, Registry, WorkflowHandle};
+use crate::registry::{
+    CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
+};
 use crate::runtime::{RuntimeHandle, RuntimeInput};
 use crate::supervision::{SupervisionTree, spawn_workflow_with_policy};
 
@@ -73,17 +75,17 @@ pub async fn start_workflow(
     }
 
     let completion = CompletionNotifier::new();
-    let handle = WorkflowHandle::new(
-        workflow_id.clone(),
-        run_id.clone(),
+    let handle = WorkflowHandle::new(WorkflowHandleParts {
+        workflow_id: workflow_id.clone(),
+        run_id: run_id.clone(),
         pid,
-        loaded.workflow_type(),
-        loaded.version().clone(),
-        WorkflowStatus::Running,
-        HandleResidency::Resident,
+        workflow_type: loaded.workflow_type().to_owned(),
+        loaded_version: loaded.version().clone(),
+        cached_status: WorkflowStatus::Running,
+        residency: HandleResidency::Resident,
         recorder,
         completion,
-    );
+    });
 
     if let Err(error) = context
         .registry
@@ -218,17 +220,17 @@ mod tests {
         let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
         let recorder = crate::durability::Recorder::new(workflow_id.clone(), store);
-        let handle = crate::registry::WorkflowHandle::new(
-            workflow_id.clone(),
-            run_id.clone(),
-            42,
-            "checkout",
-            ContentHash::from_bytes([7; 32]),
-            aion_core::WorkflowStatus::Running,
-            HandleResidency::Resident,
+        let handle = crate::registry::WorkflowHandle::new(crate::registry::WorkflowHandleParts {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            pid: 42,
+            workflow_type: "checkout".to_owned(),
+            loaded_version: ContentHash::from_bytes([7; 32]),
+            cached_status: aion_core::WorkflowStatus::Running,
+            residency: HandleResidency::Resident,
             recorder,
-            crate::registry::CompletionNotifier::new(),
-        );
+            completion: crate::registry::CompletionNotifier::new(),
+        });
 
         assert!(
             registry

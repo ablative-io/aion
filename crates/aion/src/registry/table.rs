@@ -110,7 +110,9 @@ mod tests {
     use serde_json::json;
 
     use crate::EngineError;
-    use crate::registry::handle::{CompletionNotifier, HandleResidency, WorkflowHandle};
+    use crate::registry::handle::{
+        CompletionNotifier, HandleResidency, WorkflowHandle, WorkflowHandleParts,
+    };
 
     use super::Registry;
 
@@ -156,17 +158,17 @@ mod tests {
         let run_id = aion_core::RunId::new_v4();
         let store = Arc::new(aion_store::InMemoryStore::default());
         let recorder = crate::durability::Recorder::new(workflow_id.clone(), store);
-        WorkflowHandle::new(
+        WorkflowHandle::new(WorkflowHandleParts {
             workflow_id,
             run_id,
             pid,
-            "checkout",
-            hash(version_byte),
-            status,
-            HandleResidency::Resident,
+            workflow_type: "checkout".to_owned(),
+            loaded_version: hash(version_byte),
+            cached_status: status,
+            residency: HandleResidency::Resident,
             recorder,
-            CompletionNotifier::new(),
-        )
+            completion: CompletionNotifier::new(),
+        })
     }
 
     fn envelope(workflow_id: &aion_core::WorkflowId, seq: u64) -> EventEnvelope {

@@ -23,6 +23,7 @@ pub use error::EngineError;
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};
 pub use registry::{
     CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
+    WorkflowHandleParts,
 };
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
 pub use supervision::{

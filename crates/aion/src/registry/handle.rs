@@ -79,6 +79,28 @@ impl PartialEq for CompletionNotifier {
 
 impl Eq for CompletionNotifier {}
 
+/// Constructor inputs for a live workflow handle.
+pub struct WorkflowHandleParts {
+    /// Logical workflow identifier assigned at start.
+    pub workflow_id: WorkflowId,
+    /// Concrete run identifier assigned at start.
+    pub run_id: RunId,
+    /// Embedded runtime process identifier.
+    pub pid: u64,
+    /// Logical workflow type selected by the caller.
+    pub workflow_type: String,
+    /// Loaded package version selected by the loader.
+    pub loaded_version: ContentHash,
+    /// Cached projection status initialized from the start event.
+    pub cached_status: WorkflowStatus,
+    /// Engine-internal residency initialized for the live process.
+    pub residency: HandleResidency,
+    /// Single-writer recorder created for this workflow history.
+    pub recorder: Recorder,
+    /// Completion notifier created for result awaiters.
+    pub completion: CompletionNotifier,
+}
+
 /// Live workflow process metadata cached in the active-execution registry.
 ///
 /// The handle stores only the runtime process identifier value, not a runtime
@@ -101,27 +123,17 @@ pub struct WorkflowHandle {
 impl WorkflowHandle {
     /// Creates a workflow handle from process metadata and start-owned resources.
     #[must_use]
-    pub fn new(
-        workflow_id: WorkflowId,
-        run_id: RunId,
-        pid: u64,
-        workflow_type: impl Into<String>,
-        loaded_version: ContentHash,
-        cached_status: WorkflowStatus,
-        residency: HandleResidency,
-        recorder: Recorder,
-        completion: CompletionNotifier,
-    ) -> Self {
+    pub fn new(parts: WorkflowHandleParts) -> Self {
         Self {
-            workflow_id,
-            run_id,
-            pid,
-            workflow_type: workflow_type.into(),
-            loaded_version,
-            cached_status,
-            residency,
-            recorder: Arc::new(Mutex::new(recorder)),
-            completion,
+            workflow_id: parts.workflow_id,
+            run_id: parts.run_id,
+            pid: parts.pid,
+            workflow_type: parts.workflow_type,
+            loaded_version: parts.loaded_version,
+            cached_status: parts.cached_status,
+            residency: parts.residency,
+            recorder: Arc::new(Mutex::new(parts.recorder)),
+            completion: parts.completion,
         }
     }
 
