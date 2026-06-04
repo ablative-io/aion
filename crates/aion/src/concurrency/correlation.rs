@@ -71,6 +71,13 @@ pub enum CorrelationError {
     #[error("mailbox closed before a pending correlated child outcome arrived")]
     MailboxClosed,
 
+    /// Cancellation event sequencing would overflow the parent workflow history.
+    #[error("cancellation event sequence overflow at {seq}")]
+    SequenceOverflow {
+        /// Sequence value that could not be advanced.
+        seq: u64,
+    },
+
     /// AE or AD rejected a seam operation.
     #[error(transparent)]
     Engine(#[from] EngineSeamError),
@@ -518,14 +525,17 @@ impl CancellationRecordingContext {
         }
     }
 
-    fn next_envelope(&mut self) -> EventEnvelope {
+    fn next_envelope(&mut self) -> Result<EventEnvelope, CorrelationError> {
+        let seq = self.next_seq;
         let envelope = EventEnvelope {
-            seq: self.next_seq,
+            seq,
             recorded_at: self.recorded_at,
             workflow_id: self.parent_workflow_id.clone(),
         };
-        self.next_seq = self.next_seq.saturating_add(1);
-        envelope
+        self.next_seq = seq
+            .checked_add(1)
+            .ok_or(CorrelationError::SequenceOverflow { seq })?;
+        Ok(envelope)
     }
 
     fn parent_workflow_id(&self) -> &WorkflowId {
@@ -553,10 +563,10 @@ pub fn cancel_remaining(
             continue;
         }
 
-        terminate_linked_child(engine, recording.parent_workflow_id(), child)?;
-        let event = cancellation_event(recording, &child.child);
+        let event = cancellation_event(recording, &child.child)?;
         engine.record_workflow_event(recording.parent_workflow_id(), event)?;
         table.mark_cancelled(child.index);
+        terminate_linked_child(engine, recording.parent_workflow_id(), child)?;
     }
     Ok(())
 }
@@ -578,16 +588,19 @@ fn terminate_linked_child(
     }
 }
 
-fn cancellation_event(recording: &mut CancellationRecordingContext, child: &LinkedChild) -> Event {
+fn cancellation_event(
+    recording: &mut CancellationRecordingContext,
+    child: &LinkedChild,
+) -> Result<Event, CorrelationError> {
     match child {
-        LinkedChild::Activity { activity_id, .. } => Event::ActivityCancelled {
-            envelope: recording.next_envelope(),
+        LinkedChild::Activity { activity_id, .. } => Ok(Event::ActivityCancelled {
+            envelope: recording.next_envelope()?,
             activity_id: activity_id.clone(),
-        },
-        LinkedChild::Workflow { workflow_id, .. } => Event::ChildWorkflowCancelled {
-            envelope: recording.next_envelope(),
+        }),
+        LinkedChild::Workflow { workflow_id, .. } => Ok(Event::ChildWorkflowCancelled {
+            envelope: recording.next_envelope()?,
             child_workflow_id: workflow_id.clone(),
-        },
+        }),
     }
 }
 
@@ -811,6 +824,39 @@ mod tests {
         );
         assert!(matches!(table.states()[0], CorrelatedSlotState::Cancelled));
         assert_eq!(mailbox.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn sequence_overflow_is_reported_without_recording_or_marking_cancelled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = FakeEngineHandle::new();
+        let parent = WorkflowId::new_v4();
+        let batch = CorrelationBatch::from_base(500, 1)?;
+        let mut table = CorrelatedResultTable::new(batch.clone());
+        let child = InFlightChild::new(
+            0,
+            batch.slots()[0].token(),
+            LinkedChild::Workflow {
+                workflow_id: WorkflowId::new_v4(),
+                process: WorkflowProcessHandle::new(801),
+            },
+        );
+        let recorded_at = Utc
+            .with_ymd_and_hms(2026, 6, 4, 13, 10, 0)
+            .single()
+            .ok_or("invalid test time")?;
+        let mut recording = CancellationRecordingContext::new(parent, u64::MAX, recorded_at);
+
+        let result = cancel_remaining(&engine, &mut recording, &mut table, &[child]);
+
+        assert_eq!(
+            result,
+            Err(CorrelationError::SequenceOverflow { seq: u64::MAX })
+        );
+        assert!(engine.recorded_events()?.is_empty());
+        assert!(engine.terminated_child_workflows()?.is_empty());
+        assert!(matches!(table.states()[0], CorrelatedSlotState::Pending));
         Ok(())
     }
 
