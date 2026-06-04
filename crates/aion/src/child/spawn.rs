@@ -86,6 +86,16 @@ pub enum ChildWorkflowError {
         /// Terminal child failure.
         error: WorkflowError,
     },
+    /// AE returned an invalid child identity for a spawn request.
+    #[error(
+        "child workflow spawn returned invalid child id {child_workflow_id} for parent {parent_workflow_id}"
+    )]
+    InvalidChildIdentity {
+        /// Parent workflow that requested the child.
+        parent_workflow_id: WorkflowId,
+        /// Child workflow identity returned by AE.
+        child_workflow_id: WorkflowId,
+    },
     /// The parent mailbox closed before the awaited child produced an outcome.
     #[error("parent mailbox closed before child workflow {child_workflow_id} completed")]
     MailboxClosed {
@@ -96,24 +106,18 @@ pub enum ChildWorkflowError {
 
 /// Parent mailbox abstraction used by `spawn_and_wait` selective receive.
 pub trait ChildWorkflowMailbox {
-    /// Blocks until a child workflow outcome message is available.
+    /// Blocks until an outcome message for `child_workflow_id` is available.
+    ///
+    /// Implementations must preserve unrelated mailbox messages rather than consuming arbitrary
+    /// parent traffic while selecting the awaited child outcome.
     ///
     /// # Errors
     ///
-    /// Returns [`ChildWorkflowError`] if the mailbox cannot yield another message.
+    /// Returns [`ChildWorkflowError`] if the mailbox cannot yield a matching child outcome.
     fn receive_child_workflow_message(
         &mut self,
+        child_workflow_id: &WorkflowId,
     ) -> Result<WorkflowMailboxMessage, ChildWorkflowError>;
-
-    /// Puts an unrelated message back so the parent does not consume arbitrary mailbox traffic.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChildWorkflowError`] if the mailbox cannot restore the unrelated message.
-    fn requeue_unrelated(
-        &mut self,
-        message: WorkflowMailboxMessage,
-    ) -> Result<(), ChildWorkflowError>;
 }
 
 /// Simple FIFO mailbox useful for tests and embedding contexts that already drained messages.
@@ -141,20 +145,37 @@ impl VecChildWorkflowMailbox {
 impl ChildWorkflowMailbox for VecChildWorkflowMailbox {
     fn receive_child_workflow_message(
         &mut self,
+        child_workflow_id: &WorkflowId,
     ) -> Result<WorkflowMailboxMessage, ChildWorkflowError> {
-        self.messages
-            .pop_front()
-            .ok_or_else(|| ChildWorkflowError::MailboxClosed {
-                child_workflow_id: WorkflowId::new_v4(),
-            })
-    }
+        let mut preserved = VecDeque::with_capacity(self.messages.len());
+        let mut selected = None;
 
-    fn requeue_unrelated(
-        &mut self,
-        message: WorkflowMailboxMessage,
-    ) -> Result<(), ChildWorkflowError> {
-        self.messages.push_back(message);
-        Ok(())
+        while let Some(message) = self.messages.pop_front() {
+            let matches_child = match &message {
+                WorkflowMailboxMessage::ChildWorkflowCompleted {
+                    child_workflow_id: completed_child,
+                    ..
+                }
+                | WorkflowMailboxMessage::ChildWorkflowFailed {
+                    child_workflow_id: completed_child,
+                    ..
+                } => completed_child == child_workflow_id,
+                _ => false,
+            };
+
+            if matches_child {
+                selected = Some(message);
+                break;
+            }
+            preserved.push_back(message);
+        }
+
+        preserved.append(&mut self.messages);
+        self.messages = preserved;
+
+        selected.ok_or_else(|| ChildWorkflowError::MailboxClosed {
+            child_workflow_id: child_workflow_id.clone(),
+        })
     }
 }
 
@@ -242,6 +263,13 @@ fn spawn_with_mode(
         mode,
     };
     let child = SpawnedChildWorkflow::from(engine.spawn_child_workflow(request)?);
+    if child.child_workflow_id == *recording.parent_workflow_id() {
+        return Err(ChildWorkflowError::InvalidChildIdentity {
+            parent_workflow_id: recording.parent_workflow_id().clone(),
+            child_workflow_id: child.child_workflow_id,
+        });
+    }
+
     let event = Event::ChildWorkflowStarted {
         envelope: recording.next_envelope(),
         child_workflow_id: child.child_workflow_id.clone(),
@@ -258,48 +286,39 @@ fn wait_for_child_result(
     mailbox: &mut impl ChildWorkflowMailbox,
     child_workflow_id: &WorkflowId,
 ) -> Result<Payload, ChildWorkflowError> {
-    loop {
-        let message = mailbox.receive_child_workflow_message().map_err(|error| {
-            if matches!(error, ChildWorkflowError::MailboxClosed { .. }) {
-                ChildWorkflowError::MailboxClosed {
-                    child_workflow_id: child_workflow_id.clone(),
-                }
-            } else {
-                error
-            }
-        })?;
-        match message {
-            WorkflowMailboxMessage::ChildWorkflowCompleted {
+    match mailbox.receive_child_workflow_message(child_workflow_id)? {
+        WorkflowMailboxMessage::ChildWorkflowCompleted {
+            child_workflow_id: completed_child,
+            result,
+            ..
+        } if completed_child == *child_workflow_id => {
+            let event = Event::ChildWorkflowCompleted {
+                envelope: recording.next_envelope(),
                 child_workflow_id: completed_child,
-                result,
-                ..
-            } if completed_child == *child_workflow_id => {
-                let event = Event::ChildWorkflowCompleted {
-                    envelope: recording.next_envelope(),
-                    child_workflow_id: completed_child,
-                    result: result.clone(),
-                };
-                engine.record_workflow_event(recording.parent_workflow_id(), event)?;
-                return Ok(result);
-            }
-            WorkflowMailboxMessage::ChildWorkflowFailed {
+                result: result.clone(),
+            };
+            engine.record_workflow_event(recording.parent_workflow_id(), event)?;
+            Ok(result)
+        }
+        WorkflowMailboxMessage::ChildWorkflowFailed {
+            child_workflow_id: failed_child,
+            error,
+            ..
+        } if failed_child == *child_workflow_id => {
+            let event = Event::ChildWorkflowFailed {
+                envelope: recording.next_envelope(),
+                child_workflow_id: failed_child.clone(),
+                error: error.clone(),
+            };
+            engine.record_workflow_event(recording.parent_workflow_id(), event)?;
+            Err(ChildWorkflowError::Failed {
                 child_workflow_id: failed_child,
                 error,
-                ..
-            } if failed_child == *child_workflow_id => {
-                let event = Event::ChildWorkflowFailed {
-                    envelope: recording.next_envelope(),
-                    child_workflow_id: failed_child.clone(),
-                    error: error.clone(),
-                };
-                engine.record_workflow_event(recording.parent_workflow_id(), event)?;
-                return Err(ChildWorkflowError::Failed {
-                    child_workflow_id: failed_child,
-                    error,
-                });
-            }
-            other => mailbox.requeue_unrelated(other)?,
+            })
         }
+        _ => Err(ChildWorkflowError::MailboxClosed {
+            child_workflow_id: child_workflow_id.clone(),
+        }),
     }
 }
 
@@ -379,6 +398,36 @@ mod tests {
     }
 
     #[test]
+    fn spawn_rejects_child_identity_matching_parent_without_recording_start()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = FakeEngineHandle::new();
+        let parent = WorkflowId::new_v4();
+        engine.push_child_spawn_response(Ok(ChildWorkflowSpawnResult {
+            child_workflow_id: parent.clone(),
+            child_process: WorkflowProcessHandle::new(16),
+        }))?;
+        let mut recording = recording(parent.clone())?;
+
+        let observed = spawn(
+            &engine,
+            &mut recording,
+            "child.worker",
+            payload(b"null"),
+            RunId::new_v4(),
+        );
+
+        assert_eq!(
+            observed,
+            Err(ChildWorkflowError::InvalidChildIdentity {
+                parent_workflow_id: parent.clone(),
+                child_workflow_id: parent,
+            })
+        );
+        assert!(engine.recorded_events()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn spawn_and_wait_records_completion_and_returns_result()
     -> Result<(), Box<dyn std::error::Error>> {
         let engine = FakeEngineHandle::new();
@@ -393,8 +442,15 @@ mod tests {
             name: "later".to_owned(),
             payload: payload(b"null"),
         };
+        let other_child = WorkflowId::new_v4();
+        let other_child_result = WorkflowMailboxMessage::ChildWorkflowCompleted {
+            child_workflow_id: other_child,
+            correlation: 98,
+            result: payload(br#"{"other":true}"#),
+        };
         let mut mailbox = VecChildWorkflowMailbox::new(vec![
             unrelated.clone(),
+            other_child_result.clone(),
             WorkflowMailboxMessage::ChildWorkflowCompleted {
                 child_workflow_id: child.clone(),
                 correlation: 99,
@@ -413,7 +469,7 @@ mod tests {
         )?;
 
         assert_eq!(observed, result);
-        assert_eq!(mailbox.messages(), vec![unrelated]);
+        assert_eq!(mailbox.messages(), vec![unrelated, other_child_result]);
         let recorded = engine.recorded_events()?;
         assert_eq!(recorded.len(), 2);
         assert!(matches!(

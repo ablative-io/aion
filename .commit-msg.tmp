@@ -1,1 +1,1 @@
-feat(aion): add child workflow spawn and await mechanics
+fix(aion): harden child workflow spawn await semantics
