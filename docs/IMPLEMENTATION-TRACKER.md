@@ -101,9 +101,9 @@ Both depend on AC types.
 - [x] **AS-003** — LibSqlStore struct and EventStore wiring · _landed 73e071f_
 
 ### Wave 11 (3 parallel)
-- [ ] **AP-006** — Package::load (read path, integrity check) · _depends: AP-002, AP-003, AP-004, AP-005_
-- [ ] **AS-004** — Atomic append with expected-sequence guard · _depends: AS-003_
-- [ ] **AS-006** — Durable timers (schedule/expired) · _depends: AS-003_
+- [x] **AP-006** — Package::load (read path, integrity check) · _landed b9b0053_
+- [x] **AS-004** — Atomic append with expected-sequence guard · _landed bfdf2c8_
+- [x] **AS-006** — Durable timers (schedule/expired) · _landed e7cd99e_
 
 ### Wave 12 (2 parallel)
 - [ ] **AP-007** — Version record and round-trip conformance · _depends: AP-005, AP-006_
