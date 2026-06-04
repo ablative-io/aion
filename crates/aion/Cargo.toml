@@ -23,5 +23,5 @@ tracing = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
 sha2.workspace = true
-rand_chacha = "0.10.0"
-rand_core = "0.10.1"
+rand_chacha.workspace = true
+rand_core.workspace = true

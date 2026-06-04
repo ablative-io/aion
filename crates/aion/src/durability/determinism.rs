@@ -10,7 +10,7 @@
 use aion_core::{RunId, WorkflowId};
 use chrono::{DateTime, Utc};
 use rand_chacha::ChaCha20Rng;
-use rand_core::{SeedableRng, TryRng};
+use rand_core::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 
 /// Domain separator for deterministic workflow random seed derivation.
@@ -20,8 +20,9 @@ const RNG_SEED_DOMAIN: &[u8] = b"aion.durability.determinism.rng.v1.sha256.chach
 ///
 /// The current timestamp is advanced only from recorded event timestamps as
 /// replay consumes history. Random output uses SHA-256 over a fixed domain plus
-/// `WorkflowId` and `RunId` UUID bytes to seed `ChaCha20Rng`; no wall clock,
-/// operating-system RNG, thread-local RNG, or other entropy source participates.
+/// `WorkflowId` and `RunId` UUID bytes to seed `rand_chacha` 0.10
+/// `ChaCha20Rng`; no wall clock, operating-system RNG, thread-local RNG, or
+/// other entropy source participates.
 pub struct DeterminismContext {
     current_recorded_at: DateTime<Utc>,
     rng: ChaCha20Rng,
@@ -60,14 +61,12 @@ impl DeterminismContext {
 
     /// Draws the next deterministic workflow-visible random `u64`.
     ///
-    /// The sequence is produced by `ChaCha20Rng` seeded with SHA-256 as
-    /// documented on [`Self`], and is stable for the same `WorkflowId` + `RunId`
-    /// across replays.
+    /// The sequence is produced by `rand_chacha` 0.10 `ChaCha20Rng` seeded with
+    /// SHA-256 as documented on [`Self`], and is stable for the same
+    /// `WorkflowId` + `RunId` across replays.
     #[must_use]
     pub fn next_random_u64(&mut self) -> u64 {
-        match self.rng.try_next_u64() {
-            Ok(value) => value,
-        }
+        self.rng.next_u64()
     }
 
     /// Fills bytes from the deterministic workflow-visible random stream.
@@ -75,9 +74,7 @@ impl DeterminismContext {
     /// The bytes come from the same seeded `ChaCha20Rng` stream as
     /// [`Self::next_random_u64`].
     pub fn fill_random_bytes(&mut self, destination: &mut [u8]) {
-        match self.rng.try_fill_bytes(destination) {
-            Ok(()) => (),
-        }
+        self.rng.fill_bytes(destination);
     }
 }
 
@@ -98,7 +95,9 @@ mod tests {
 
     use super::DeterminismContext;
 
-    fn timestamp(seconds: i64) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn timestamp(seconds: i64) -> TestResult<DateTime<Utc>> {
         Utc.timestamp_opt(seconds, 0)
             .single()
             .ok_or_else(|| format!("invalid fixed timestamp {seconds}").into())
@@ -117,8 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn now_starts_at_workflow_started_and_advances_with_recorded_events()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn now_starts_at_workflow_started_and_advances_with_recorded_events() -> TestResult {
         let started_at = timestamp(1_700_000_000)?;
         let first_event_at = timestamp(1_700_000_010)?;
         let second_event_at = timestamp(1_700_000_020)?;
@@ -138,8 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_recorded_sequences_have_identical_now_values()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn identical_recorded_sequences_have_identical_now_values() -> TestResult {
         let started_at = timestamp(1_700_100_000)?;
         let events = [
             timestamp(1_700_100_001)?,
@@ -162,8 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn same_workflow_and_run_produce_identical_random_sequence()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn same_workflow_and_run_produce_identical_random_sequence() -> TestResult {
         let started_at = timestamp(1_700_200_000)?;
         let workflow_id = workflow_id();
         let run_id = run_id(0xbbbb_cccc_dddd_eeee_ffff_0000_1111_2222);
@@ -176,8 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn different_run_ids_produce_different_random_sequences()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn different_run_ids_produce_different_random_sequences() -> TestResult {
         let started_at = timestamp(1_700_300_000)?;
         let workflow_id = workflow_id();
         let first_run_id = run_id(0xcccc_dddd_eeee_ffff_0000_1111_2222_3333);
@@ -191,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_random_bytes_are_replay_identical() -> Result<(), Box<dyn std::error::Error>> {
+    fn deterministic_random_bytes_are_replay_identical() -> TestResult {
         let started_at = timestamp(1_700_400_000)?;
         let workflow_id = workflow_id();
         let run_id = run_id(0xeeee_ffff_0000_1111_2222_3333_4444_5555);
