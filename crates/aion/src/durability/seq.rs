@@ -33,11 +33,14 @@ impl SequenceHead {
 
     /// Returns the sequence number for the first event in the next append batch.
     #[must_use]
-    pub const fn next_seq(&self) -> u64 {
-        self.head.saturating_add(1)
+    pub const fn next_seq(&self) -> Option<u64> {
+        self.head.checked_add(1)
     }
 
     /// Marks a successful append and advances the head by the number of appended events.
+    ///
+    /// Advancing by zero is accepted as a no-op because stores may accept empty append batches, but
+    /// the Recorder only records non-empty single-event batches.
     ///
     /// # Errors
     ///
@@ -66,7 +69,7 @@ mod tests {
         let sequence = SequenceHead::new();
 
         assert_eq!(sequence.current(), 0);
-        assert_eq!(sequence.next_seq(), 1);
+        assert_eq!(sequence.next_seq(), Some(1));
     }
 
     #[test]
@@ -74,7 +77,16 @@ mod tests {
         let sequence = SequenceHead::from_head(7);
 
         assert_eq!(sequence.current(), 7);
-        assert_eq!(sequence.next_seq(), 8);
+        assert_eq!(sequence.next_seq(), Some(8));
+    }
+
+    #[test]
+    fn next_sequence_overflow_is_detectable_by_advance() {
+        let mut sequence = SequenceHead::from_head(u64::MAX);
+
+        assert_eq!(sequence.next_seq(), None);
+        assert!(sequence.mark_append_success(1).is_err());
+        assert_eq!(sequence.current(), u64::MAX);
     }
 
     #[test]
@@ -89,7 +101,7 @@ mod tests {
 
         sequence.mark_append_success(2)?;
         assert_eq!(sequence.current(), 5);
-        assert_eq!(sequence.next_seq(), 6);
+        assert_eq!(sequence.next_seq(), Some(6));
         Ok(())
     }
 }

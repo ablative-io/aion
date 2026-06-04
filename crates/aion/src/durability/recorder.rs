@@ -62,8 +62,7 @@ impl Recorder {
         workflow_type: String,
         input: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::WorkflowStarted {
+        self.append_with(recorded_at, |envelope| Event::WorkflowStarted {
             envelope,
             workflow_type,
             input,
@@ -82,9 +81,11 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         result: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::WorkflowCompleted { envelope, result })
-            .await
+        self.append_with(recorded_at, |envelope| Event::WorkflowCompleted {
+            envelope,
+            result,
+        })
+        .await
     }
 
     /// Records terminal workflow failure.
@@ -98,9 +99,11 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         error: WorkflowError,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::WorkflowFailed { envelope, error })
-            .await
+        self.append_with(recorded_at, |envelope| Event::WorkflowFailed {
+            envelope,
+            error,
+        })
+        .await
     }
 
     /// Records workflow cancellation.
@@ -114,9 +117,11 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         reason: String,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::WorkflowCancelled { envelope, reason })
-            .await
+        self.append_with(recorded_at, |envelope| Event::WorkflowCancelled {
+            envelope,
+            reason,
+        })
+        .await
     }
 
     /// Records activity scheduling.
@@ -132,8 +137,7 @@ impl Recorder {
         activity_type: String,
         input: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ActivityScheduled {
+        self.append_with(recorded_at, |envelope| Event::ActivityScheduled {
             envelope,
             activity_id,
             activity_type,
@@ -153,8 +157,7 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         activity_id: ActivityId,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ActivityStarted {
+        self.append_with(recorded_at, |envelope| Event::ActivityStarted {
             envelope,
             activity_id,
         })
@@ -173,8 +176,7 @@ impl Recorder {
         activity_id: ActivityId,
         result: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ActivityCompleted {
+        self.append_with(recorded_at, |envelope| Event::ActivityCompleted {
             envelope,
             activity_id,
             result,
@@ -195,8 +197,7 @@ impl Recorder {
         error: ActivityError,
         attempt: u32,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ActivityFailed {
+        self.append_with(recorded_at, |envelope| Event::ActivityFailed {
             envelope,
             activity_id,
             error,
@@ -217,8 +218,7 @@ impl Recorder {
         timer_id: TimerId,
         fire_at: DateTime<Utc>,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::TimerStarted {
+        self.append_with(recorded_at, |envelope| Event::TimerStarted {
             envelope,
             timer_id,
             fire_at,
@@ -237,9 +237,11 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         timer_id: TimerId,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::TimerFired { envelope, timer_id })
-            .await
+        self.append_with(recorded_at, |envelope| Event::TimerFired {
+            envelope,
+            timer_id,
+        })
+        .await
     }
 
     /// Records timer cancellation.
@@ -253,9 +255,11 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         timer_id: TimerId,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::TimerCancelled { envelope, timer_id })
-            .await
+        self.append_with(recorded_at, |envelope| Event::TimerCancelled {
+            envelope,
+            timer_id,
+        })
+        .await
     }
 
     /// Records signal delivery.
@@ -270,8 +274,7 @@ impl Recorder {
         name: String,
         payload: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::SignalReceived {
+        self.append_with(recorded_at, |envelope| Event::SignalReceived {
             envelope,
             name,
             payload,
@@ -292,8 +295,7 @@ impl Recorder {
         workflow_type: String,
         input: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ChildWorkflowStarted {
+        self.append_with(recorded_at, |envelope| Event::ChildWorkflowStarted {
             envelope,
             child_workflow_id,
             workflow_type,
@@ -314,8 +316,7 @@ impl Recorder {
         child_workflow_id: WorkflowId,
         result: Payload,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ChildWorkflowCompleted {
+        self.append_with(recorded_at, |envelope| Event::ChildWorkflowCompleted {
             envelope,
             child_workflow_id,
             result,
@@ -335,8 +336,7 @@ impl Recorder {
         child_workflow_id: WorkflowId,
         error: WorkflowError,
     ) -> Result<(), DurabilityError> {
-        let envelope = self.next_envelope(recorded_at);
-        self.append_one(Event::ChildWorkflowFailed {
+        self.append_with(recorded_at, |envelope| Event::ChildWorkflowFailed {
             envelope,
             child_workflow_id,
             error,
@@ -344,12 +344,30 @@ impl Recorder {
         .await
     }
 
-    fn next_envelope(&self, recorded_at: DateTime<Utc>) -> EventEnvelope {
-        EventEnvelope {
-            seq: self.sequence.next_seq(),
+    fn next_envelope(&self, recorded_at: DateTime<Utc>) -> Result<EventEnvelope, DurabilityError> {
+        let seq = self
+            .sequence
+            .next_seq()
+            .ok_or_else(|| DurabilityError::HistoryShape {
+                reason: format!(
+                    "sequence head overflow advancing {} by 1",
+                    self.sequence.current()
+                ),
+            })?;
+        Ok(EventEnvelope {
+            seq,
             recorded_at,
             workflow_id: self.workflow_id.clone(),
-        }
+        })
+    }
+
+    async fn append_with(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        build_event: impl FnOnce(EventEnvelope) -> Event,
+    ) -> Result<(), DurabilityError> {
+        let envelope = self.next_envelope(recorded_at)?;
+        self.append_one(build_event(envelope)).await
     }
 
     async fn append_one(&mut self, event: Event) -> Result<(), DurabilityError> {
@@ -513,6 +531,29 @@ mod tests {
         let history = store.read_history(&workflow_id).await?;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].seq(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sequence_overflow_returns_error_without_appending()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(5);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::resume_at(workflow_id.clone(), store.clone(), u64::MAX);
+
+        let error = recorder
+            .record_workflow_completed(recorded_at(1), payload("result")?)
+            .await;
+
+        match error {
+            Err(DurabilityError::HistoryShape { reason }) => {
+                assert!(reason.contains("sequence head overflow"));
+            }
+            Err(other) => return Err(format!("expected sequence overflow, got {other:?}").into()),
+            Ok(()) => return Err("expected sequence overflow".into()),
+        }
+        assert_eq!(recorder.current_head(), u64::MAX);
+        assert!(store.read_history(&workflow_id).await?.is_empty());
         Ok(())
     }
 }

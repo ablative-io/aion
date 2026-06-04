@@ -1,1 +1,1 @@
-feat(aion): add durability recorder sequence authority
+Harden AD-002 sequence overflow handling in durability recorder
