@@ -107,6 +107,39 @@ impl TimerService {
         Ok(())
     }
 
+    /// Cancels a durable named timer that has not already reached a terminal timer state.
+    ///
+    /// Already-fired and already-cancelled timers are treated as idempotent no-ops. For active
+    /// resident timers the live wheel is disarmed through the engine seam before `TimerCancelled` is
+    /// recorded through the workflow recorder seam. Non-resident timers still record the cancellation
+    /// so recovery/replay can suppress a later fire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimerServiceError`] when history inspection, residency resolution, wheel disarming,
+    /// or event recording fails.
+    pub async fn cancel(
+        &self,
+        workflow_id: WorkflowId,
+        timer_id: TimerId,
+    ) -> Result<(), TimerServiceError> {
+        if self.timer_is_terminal(&workflow_id, &timer_id).await? {
+            return Ok(());
+        }
+
+        if let WorkflowResidency::Resident(process) = self.engine.resolve_workflow(&workflow_id)? {
+            self.engine.disarm_timer(process, &timer_id)?;
+        }
+
+        let event = Event::TimerCancelled {
+            envelope: self.next_envelope(&workflow_id).await?,
+            timer_id,
+        };
+        self.engine.record_workflow_event(&workflow_id, event)?;
+
+        Ok(())
+    }
+
     /// Handles a live timer-wheel fire.
     ///
     /// `TimerFired` is recorded before any mailbox delivery. If the workflow is no longer resident,
