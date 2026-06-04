@@ -7,9 +7,9 @@ use aion_package::Package;
 use aion_store::EventStore;
 
 use crate::{
-    EngineError, LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SupervisionTree,
-    WorkflowHandle,
-    durability::{ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery},
+    CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
+    RuntimeHandle, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
+    durability::{ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery, Recorder},
     runtime::{NifEntry, NifRegistration},
 };
 
@@ -173,7 +173,7 @@ impl EngineBuilder {
         let registry = Registry::default();
         let supervision = SupervisionTree::new();
         repopulate_active_workflows(
-            store.as_ref(),
+            Arc::clone(&store),
             &loaded_workflows,
             &registry,
             &supervision,
@@ -206,14 +206,14 @@ fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineE
 }
 
 async fn repopulate_active_workflows(
-    store: &dyn EventStore,
+    store: Arc<dyn EventStore>,
     loaded_workflows: &LoadedWorkflows,
     registry: &Registry,
     supervision: &SupervisionTree,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
-    for workflow_id in store.list_active().await? {
-        let history = store.read_history(&workflow_id).await?;
+    for workflow_id in store.as_ref().list_active().await? {
+        let history = store.as_ref().read_history(&workflow_id).await?;
         let workflow_type = started_workflow_type(&workflow_id, &history)?;
         let projected_status = status_from_events(&history);
         supervision.ensure_type_supervisor(workflow_type.clone())?;
@@ -224,12 +224,24 @@ async fn repopulate_active_workflows(
             &history,
             loaded_workflows,
         )?;
-        let handle = WorkflowHandle::new(
-            recovered.pid,
-            workflow_type.clone(),
-            recovered.loaded_version,
-            projected_status,
+        let history_len = u64::try_from(history.len()).unwrap_or(u64::MAX);
+        let recorder = Recorder::resume_at(
+            workflow_id.clone(),
+            Arc::clone(&store),
+            history_len,
         );
+        let completion = CompletionNotifier::new();
+        let handle = WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id: workflow_id.clone(),
+            run_id: recovered.run_id.clone(),
+            pid: recovered.pid,
+            workflow_type: workflow_type.clone(),
+            loaded_version: recovered.loaded_version,
+            cached_status: projected_status,
+            residency: HandleResidency::Resident,
+            recorder,
+            completion,
+        });
         registry.insert((workflow_id.clone(), recovered.run_id.clone()), handle)?;
         registry.reconcile(&workflow_id, &recovered.run_id, &history)?;
         supervision.place_workflow(workflow_type, recovered.pid)?;
