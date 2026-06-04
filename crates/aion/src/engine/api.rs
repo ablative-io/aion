@@ -255,9 +255,6 @@ impl ShutdownGate {
 
     fn begin_operation(&self) -> Result<LifecycleOperation, EngineError> {
         let mut state = self.state()?;
-        if state.shutting_down {
-            return Err(EngineError::ShuttingDown);
-        }
         state.active_operations += 1;
         Ok(LifecycleOperation {
             inner: Arc::clone(&self.inner),
