@@ -12,9 +12,11 @@ pub mod replay;
 pub mod resolver;
 pub mod seq;
 
+pub use command::{Command, Resolution, ResolveOutcome};
 pub use correlation::CorrelationKey;
 pub use cursor::{CursorResolveResult, FoundEventDescriptor, HistoryCursor, RecordedEventFamily};
 pub use determinism::DeterminismContext;
 pub use error::{DurabilityError, NonDeterminismError};
 pub use recorder::Recorder;
+pub use resolver::Resolver;
 pub use seq::SequenceHead;
