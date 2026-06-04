@@ -1,7 +1,7 @@
 //! Durable timer scheduling and expiry retrieval.
 
 use aion_store::{StoreError, TimerEntry, TimerId, WorkflowId};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 
 const UPSERT_TIMER_SQL: &str = "
 INSERT INTO timers (workflow_id, timer_id, fire_at)
@@ -96,7 +96,7 @@ fn decode_timer_id(value: &str) -> Result<TimerId, StoreError> {
 }
 
 fn encode_fire_at(fire_at: DateTime<Utc>) -> String {
-    fire_at.to_rfc3339()
+    fire_at.to_rfc3339_opts(SecondsFormat::Nanos, true)
 }
 
 fn decode_fire_at(value: &str) -> Result<DateTime<Utc>, StoreError> {
@@ -129,7 +129,8 @@ mod tests {
         schedule_timer(&conn, &workflow_id, &timer_id, original_fire_at).await?;
         schedule_timer(&conn, &workflow_id, &timer_id, replacement_fire_at).await?;
 
-        let (count, stored_fire_at) = stored_timer_count_and_fire_at(&conn).await?;
+        let (count, stored_fire_at) =
+            stored_timer_count_and_fire_at(&conn, &workflow_id, &timer_id).await?;
         assert_eq!(count, 1);
         assert_eq!(decode_fire_at(&stored_fire_at)?, replacement_fire_at);
 
@@ -215,9 +216,16 @@ mod tests {
 
     async fn stored_timer_count_and_fire_at(
         conn: &libsql::Connection,
+        workflow_id: &WorkflowId,
+        timer_id: &TimerId,
     ) -> Result<(i64, String), StoreError> {
+        let workflow_id = super::encode_workflow_id(workflow_id)?;
+        let timer_id = super::encode_timer_id(timer_id)?;
         let mut rows = conn
-            .query("SELECT COUNT(*), MAX(fire_at) FROM timers", ())
+            .query(
+                "SELECT COUNT(*), MAX(fire_at) FROM timers WHERE workflow_id = ?1 AND timer_id = ?2",
+                (workflow_id, timer_id),
+            )
             .await
             .map_err(|error| crate::error::libsql_error(&error))?;
         let row = rows
