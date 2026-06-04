@@ -54,14 +54,14 @@ pub enum QueryError {
 /// points from registered read-only handlers so in-progress workflow steps are not preempted or
 /// mutated.
 #[derive(Debug)]
-pub struct QueryService<H> {
+pub struct QueryService<H: ?Sized> {
     engine: Arc<H>,
     query_timeout: Duration,
 }
 
 impl<H> QueryService<H>
 where
-    H: EngineHandle,
+    H: EngineHandle + ?Sized,
 {
     /// Creates a query service with an engine-configured timeout.
     #[must_use]
