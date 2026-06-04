@@ -154,12 +154,12 @@ Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 - [x] **AT-009** — Concurrency correlation, cancellation · _landed 35c2181_
 
 ### Wave 19 (6 parallel)
-- [ ] **AE-009** — Cancel, complete, fail lifecycle · _depends: AE-008, AD-002_
-- [ ] **AE-010** — Suspend and resume lifecycle · _depends: AE-008_
-- [ ] **AD-005** — Non-determinism violation detection · _depends: AD-004, AD-002_
-- [ ] **AD-007** — Live executor seam, resume-live handoff · _depends: AD-004, AD-002_
-- [ ] **AT-010** — all (fan-out, ordered collect, fail-fast) · _depends: AT-009_
-- [ ] **AT-011** — race (first result, cancel rest) · _depends: AT-009_
+- [x] **AE-009** — Cancel, complete, fail lifecycle · _landed a117878_
+- [x] **AE-010** — Suspend and resume lifecycle · _landed 3bcd084_
+- [x] **AD-005** — Non-determinism violation detection · _landed e70b099_
+- [x] **AD-007** — Live executor seam, resume-live handoff · _landed 47ebfa6_
+- [x] **AT-010** — all (fan-out, ordered collect, fail-fast) · _landed bc3a51c_
+- [x] **AT-011** — race (first result, cancel rest) · _landed 6d3f04f_
 
 ### Wave 20 (3 parallel)
 - [ ] **AE-012** — Engine API (start, cancel, result, list, shutdown) · _depends: AE-008, AE-009, AE-011_
