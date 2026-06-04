@@ -22,7 +22,10 @@ pub use activity::{dispatch_activity, propagate_activity_outcome, surface_activi
 pub use engine_seam::EngineHandle;
 pub use error::EngineError;
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};
-pub use registry::{Registry, WorkflowHandle};
+pub use registry::{
+    CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
+    WorkflowHandleParts,
+};
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
 pub use supervision::{
     EngineSupervisorId, SupervisionTree, TypeSupervisorId, TypeSupervisorNode, WorkflowNode,

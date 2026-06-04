@@ -101,6 +101,30 @@ impl LoadedWorkflows {
         self.registered_modules.contains_key(deployed_name)
     }
 
+    /// Record a loaded workflow entry without runtime registration for lifecycle tests.
+    #[cfg(test)]
+    pub(crate) fn note_loaded_workflow_for_test(
+        &mut self,
+        workflow_type: impl Into<String>,
+        deployed_entry_module: impl Into<String>,
+        entry_function: impl Into<String>,
+        version: ContentHash,
+    ) -> LoadedWorkflow {
+        let record = LoadedWorkflow {
+            workflow_type: workflow_type.into(),
+            deployed_entry_module: deployed_entry_module.into(),
+            entry_function: entry_function.into(),
+            version,
+        };
+        let key = (record.workflow_type.clone(), record.version.clone());
+        self.by_type
+            .entry(record.workflow_type.clone())
+            .or_default()
+            .push(record.version.clone());
+        self.by_version.insert(key, record.clone());
+        record
+    }
+
     /// Force a committed module-name mapping for tests and integration recovery.
     ///
     /// This lets callers reconstruct the loader-side collision index from a

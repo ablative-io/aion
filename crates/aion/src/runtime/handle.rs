@@ -436,6 +436,40 @@ impl RuntimeHandle {
         }
     }
 
+    /// Register a test module whose exported function waits indefinitely.
+    ///
+    /// This keeps lifecycle tests at the runtime boundary while still exercising
+    /// real module lookup and trap-exit workflow spawning.
+    #[cfg(test)]
+    pub fn register_waiting_test_module(&self, deployed_name: &str, function: &str) {
+        use std::collections::HashMap;
+
+        use beamr::loader::Instruction;
+        use beamr::loader::decode::compact::Operand;
+        use beamr::module::Module;
+
+        let module = self.atom_table.intern(deployed_name);
+        let function = self.atom_table.intern(function);
+        let label = 10;
+        self.module_registry.insert(Module {
+            name: module,
+            generation: 0,
+            exports: HashMap::from([((function, 0), label)]),
+            label_index: HashMap::from([(label, 0)]),
+            code: vec![
+                Instruction::Label { label },
+                Instruction::Wait {
+                    fail: Operand::Label(label),
+                },
+            ],
+            literals: Vec::new(),
+            resolved_imports: Vec::new(),
+            lambdas: Vec::new(),
+            string_table: Vec::new(),
+            line_info: Vec::new(),
+        });
+    }
+
     /// Spawn an inert test process without module code.
     ///
     /// # Errors

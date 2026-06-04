@@ -104,13 +104,15 @@ impl Registry {
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::{Event, EventEnvelope, Payload, PayloadError, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, Payload, PayloadError, WorkflowId, WorkflowStatus};
     use aion_package::ContentHash;
     use chrono::Utc;
     use serde_json::json;
 
     use crate::EngineError;
-    use crate::registry::handle::WorkflowHandle;
+    use crate::registry::handle::{
+        CompletionNotifier, HandleResidency, WorkflowHandle, WorkflowHandleParts,
+    };
 
     use super::Registry;
 
@@ -152,7 +154,21 @@ mod tests {
     }
 
     fn handle(pid: u64, version_byte: u8, status: WorkflowStatus) -> WorkflowHandle {
-        WorkflowHandle::new(pid, "checkout", hash(version_byte), status)
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+        let store = Arc::new(aion_store::InMemoryStore::default());
+        let recorder = crate::durability::Recorder::new(workflow_id.clone(), store);
+        WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id,
+            run_id,
+            pid,
+            workflow_type: "checkout".to_owned(),
+            loaded_version: hash(version_byte),
+            cached_status: status,
+            residency: HandleResidency::Resident,
+            recorder,
+            completion: CompletionNotifier::new(),
+        })
     }
 
     fn envelope(workflow_id: &aion_core::WorkflowId, seq: u64) -> EventEnvelope {
