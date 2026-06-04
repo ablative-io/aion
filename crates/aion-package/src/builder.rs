@@ -147,11 +147,12 @@ fn archive_entry_name(
     }
 }
 
-fn is_safe_logical_name(logical_name: &str) -> bool {
+pub(crate) fn is_safe_logical_name(logical_name: &str) -> bool {
     !logical_name.is_empty()
         && !logical_name.starts_with('/')
         && !logical_name.starts_with('\\')
         && !logical_name.contains('\\')
+        && !logical_name.contains(crate::namespace::DEPLOYED_NAME_SEPARATOR)
         && logical_name
             .split('/')
             .all(|component| !component.is_empty() && component != "." && component != "..")
@@ -309,6 +310,21 @@ mod tests {
         assert!(matches!(
             result,
             Err(PackageError::MalformedBeamEntry { entry }) if entry == "../escape"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_logical_names_with_deployed_name_separator() -> Result<(), PackageError> {
+        let beams = BeamSet::new(vec![
+            BeamModule::new("workflow/order", vec![1, 2, 3]),
+            BeamModule::new("workflow/order$bad", vec![1]),
+        ])?;
+        let result = PackageBuilder::new(sample_manifest(), beams).write_to_bytes();
+
+        assert!(matches!(
+            result,
+            Err(PackageError::MalformedBeamEntry { entry }) if entry == "workflow/order$bad"
         ));
         Ok(())
     }
