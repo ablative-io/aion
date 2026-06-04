@@ -537,7 +537,7 @@ mod tests {
             recorded[3].1,
             Event::ChildWorkflowCancelled { .. }
         ));
-        assert_eq!(recorded[3].1.seq(), 64);
+        assert_eq!(recorded[3].1.seq(), 65);
         Ok(())
     }
 
