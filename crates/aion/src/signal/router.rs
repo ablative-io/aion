@@ -46,11 +46,11 @@ impl SignalRouter {
     /// silent mailbox observation without a durable `SignalReceived` event.
     pub fn signal(
         &self,
-        workflow_id: WorkflowId,
+        workflow_id: &WorkflowId,
         name: impl Into<String>,
         payload: Payload,
     ) -> Result<(), SignalRouterError> {
-        let process = match self.engine.resolve_workflow(&workflow_id)? {
+        let process = match self.engine.resolve_workflow(workflow_id)? {
             WorkflowResidency::Resident(process) => process,
             WorkflowResidency::NonResident => {
                 return Err(SignalRouterError::NonResident {
@@ -81,7 +81,7 @@ impl SignalRouter {
         };
 
         self.engine
-            .record_workflow_event(&workflow_id, event)
+            .record_workflow_event(workflow_id, event)
             .map_err(SignalRouterError::Record)?;
 
         self.engine
@@ -153,7 +153,7 @@ mod tests {
         let payload = payload(b"{\"ok\":true}".to_vec());
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
 
-        router.signal(workflow_id.clone(), "wake", payload.clone())?;
+        router.signal(&workflow_id, "wake", payload.clone())?;
 
         let operations = engine.operations()?;
         assert_eq!(operations.len(), 2);
@@ -207,7 +207,7 @@ mod tests {
         }))?;
 
         let error = router
-            .signal(workflow_id, "wake", payload(b"null".to_vec()))
+            .signal(&workflow_id, "wake", payload(b"null".to_vec()))
             .err()
             .ok_or_else(|| std::io::Error::other("record failure was not returned"))?;
 
@@ -227,7 +227,7 @@ mod tests {
         let payload = payload(b"{\"subject\":\"order\"}".to_vec());
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
 
-        router.signal(workflow_id, "approved", payload.clone())?;
+        router.signal(&workflow_id, "approved", payload.clone())?;
 
         assert_eq!(
             engine.delivered_messages()?,
