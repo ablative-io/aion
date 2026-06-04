@@ -1,1 +1,1 @@
-feat(aion): add clippy-clean beamr runtime boundary
+review(aion): harden active registry status mutation boundary

@@ -17,4 +17,5 @@ pub mod supervision;
 pub mod time;
 
 pub use error::EngineError;
+pub use registry::{Registry, WorkflowHandle};
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
