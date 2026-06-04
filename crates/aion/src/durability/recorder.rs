@@ -51,6 +51,11 @@ impl Recorder {
     }
 
     /// Records workflow start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_workflow_started(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -67,6 +72,11 @@ impl Recorder {
     }
 
     /// Records workflow completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_workflow_completed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -78,6 +88,11 @@ impl Recorder {
     }
 
     /// Records terminal workflow failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_workflow_failed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -89,6 +104,11 @@ impl Recorder {
     }
 
     /// Records workflow cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_workflow_cancelled(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -100,6 +120,11 @@ impl Recorder {
     }
 
     /// Records activity scheduling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_activity_scheduled(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -118,6 +143,11 @@ impl Recorder {
     }
 
     /// Records activity start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_activity_started(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -132,6 +162,11 @@ impl Recorder {
     }
 
     /// Records successful activity completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_activity_completed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -148,6 +183,11 @@ impl Recorder {
     }
 
     /// Records failed activity attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_activity_failed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -166,6 +206,11 @@ impl Recorder {
     }
 
     /// Records timer scheduling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_timer_started(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -182,6 +227,11 @@ impl Recorder {
     }
 
     /// Records timer firing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_timer_fired(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -193,6 +243,11 @@ impl Recorder {
     }
 
     /// Records timer cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_timer_cancelled(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -204,6 +259,11 @@ impl Recorder {
     }
 
     /// Records signal delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_signal_received(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -220,6 +280,11 @@ impl Recorder {
     }
 
     /// Records child workflow start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_child_workflow_started(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -238,6 +303,11 @@ impl Recorder {
     }
 
     /// Records child workflow completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_child_workflow_completed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -254,6 +324,11 @@ impl Recorder {
     }
 
     /// Records child workflow failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
     pub async fn record_child_workflow_failed(
         &mut self,
         recorded_at: DateTime<Utc>,
