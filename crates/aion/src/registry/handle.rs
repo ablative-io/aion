@@ -17,6 +17,9 @@ pub enum HandleResidency {
     Suspended,
 }
 
+/// Engine-internal live residency type cached on an active workflow handle.
+pub type Residency = HandleResidency;
+
 /// Terminal outcome delivered to result awaiters by later terminal lifecycle transitions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalOutcome {
@@ -94,7 +97,7 @@ pub struct WorkflowHandleParts {
     /// Cached projection status initialized from the start event.
     pub cached_status: WorkflowStatus,
     /// Engine-internal residency initialized for the live process.
-    pub residency: HandleResidency,
+    pub residency: Residency,
     /// Single-writer recorder created for this workflow history.
     pub recorder: Recorder,
     /// Completion notifier created for result awaiters.
@@ -115,7 +118,7 @@ pub struct WorkflowHandle {
     workflow_type: String,
     loaded_version: ContentHash,
     cached_status: WorkflowStatus,
-    residency: HandleResidency,
+    residency: Residency,
     recorder: Arc<Mutex<Recorder>>,
     completion: CompletionNotifier,
 }
@@ -175,7 +178,7 @@ impl WorkflowHandle {
 
     /// Returns the live residency tracked separately from workflow status.
     #[must_use]
-    pub const fn residency(&self) -> HandleResidency {
+    pub const fn residency(&self) -> Residency {
         self.residency
     }
 
@@ -194,6 +197,11 @@ impl WorkflowHandle {
     /// Replaces the cached status with the durable event projection result.
     pub(in crate::registry) const fn replace_projected_status(&mut self, status: WorkflowStatus) {
         self.cached_status = status;
+    }
+
+    /// Replaces the engine-internal residency without changing projected status.
+    pub(in crate::registry) const fn replace_residency(&mut self, residency: Residency) {
+        self.residency = residency;
     }
 }
 

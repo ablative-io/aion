@@ -7,7 +7,7 @@ use aion_core::{Event, RunId, WorkflowId, status_from_events};
 
 use crate::EngineError;
 
-use super::handle::WorkflowHandle;
+use super::handle::{Residency, WorkflowHandle};
 
 type RegistryKey = (WorkflowId, RunId);
 type HandleMap = HashMap<RegistryKey, WorkflowHandle>;
@@ -69,10 +69,33 @@ impl Registry {
         Ok(handles.values().cloned().collect())
     }
 
+    /// Updates only the engine-internal residency for a live workflow run.
+    ///
+    /// The projected workflow status is not read or changed. If the workflow run
+    /// is not registered, no cache is updated and `Ok(None)` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegistryPoisoned`] if the registry lock was poisoned.
+    pub fn replace_residency(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+        residency: Residency,
+    ) -> Result<Option<WorkflowHandle>, EngineError> {
+        let mut handles = self.handles()?;
+        let Some(handle) = handles.get_mut(&(id.clone(), run.clone())) else {
+            return Ok(None);
+        };
+
+        handle.replace_residency(residency);
+        Ok(Some(handle.clone()))
+    }
+
     /// Reconciles a cached handle status against the core event projection.
     ///
     /// The projected status always wins. If the workflow run is not registered,
-    /// no cache is updated and `Ok(None)` is returned.
+    /// no cache is updated and `Ok(None)` is returned. Residency is not read or changed.
     ///
     /// # Errors
     ///

@@ -24,7 +24,7 @@ pub use engine_seam::EngineHandle;
 pub use error::EngineError;
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};
 pub use registry::{
-    CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
+    CompletionNotifier, HandleResidency, Registry, Residency, TerminalOutcome, WorkflowHandle,
     WorkflowHandleParts,
 };
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
