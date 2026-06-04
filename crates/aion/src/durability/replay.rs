@@ -9,15 +9,22 @@ use aion_core::{Event, Payload, RunId, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{
-    Command, DeterminismContext, DurabilityError, HistoryCursor, LiveExecutor, Recorder,
-    Resolution, ResolvedCommand, Resolver,
+    Command, DeterminismContext, DurabilityError, HistoryCursor, LiveExecutor, NonDeterminismError,
+    Recorder, Resolution, ResolvedCommand, Resolver,
 };
 
 /// Stateful replay driver for one workflow history.
 pub struct Replay {
+    workflow_id: WorkflowId,
     resolver: Resolver,
     determinism: DeterminismContext,
-    terminal: Option<ReplayTerminal>,
+    terminal: Option<TerminalRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalRecord {
+    seq: u64,
+    terminal: ReplayTerminal,
 }
 
 impl Replay {
@@ -33,12 +40,13 @@ impl Replay {
         history: Vec<Event>,
     ) -> Result<Self, DurabilityError> {
         let started_at = workflow_started_at(workflow_id, &history)?;
-        let terminal = terminal_from_history(&history);
+        let terminal = terminal_from_history(workflow_id, &history);
         let cursor = HistoryCursor::new(history)?;
         let resolver = Resolver::new(workflow_id.clone(), cursor);
         let determinism = DeterminismContext::new(started_at, workflow_id, run_id);
 
         Ok(Self {
+            workflow_id: workflow_id.clone(),
             resolver,
             determinism,
             terminal,
@@ -88,7 +96,7 @@ impl Replay {
     ///
     /// Returns resolver errors, including typed non-determinism violations at the mismatch point.
     pub fn step(&mut self, command: Command) -> Result<ReplayStep, DurabilityError> {
-        match self.resolver.resolve_with_consumed(command)? {
+        match self.resolver.resolve_with_consumed(command.clone())? {
             ResolvedCommand::Recorded {
                 resolution,
                 recorded_at,
@@ -100,11 +108,7 @@ impl Replay {
                 if let Some(recorded_at) = recorded_at {
                     self.determinism.advance_to_recorded_at(recorded_at);
                 }
-                if let Some(terminal) = &self.terminal {
-                    Ok(ReplayStep::Terminal(terminal.clone()))
-                } else {
-                    Ok(ReplayStep::ResumeLive)
-                }
+                self.resume_or_terminal(command)
             }
         }
     }
@@ -139,10 +143,35 @@ impl Replay {
         }
 
         if let Some(terminal) = self.terminal.clone() {
-            Ok(ReplayOutcome::Terminal { terminal, recorded })
+            Ok(ReplayOutcome::Terminal {
+                terminal: terminal.terminal,
+                recorded,
+            })
         } else {
             Ok(ReplayOutcome::AwaitingCommand { recorded })
         }
+    }
+
+    fn resume_or_terminal(&self, command: Command) -> Result<ReplayStep, DurabilityError> {
+        let Some(terminal) = &self.terminal else {
+            return Ok(ReplayStep::ResumeLive);
+        };
+
+        if let (Command::CompleteWorkflow { result }, ReplayTerminal::Completed(recorded_result)) =
+            (&command, &terminal.terminal)
+        {
+            if result == recorded_result {
+                return Ok(ReplayStep::Terminal(terminal.terminal.clone()));
+            }
+        }
+
+        Err(NonDeterminismError {
+            workflow_id: self.workflow_id.clone(),
+            seq: terminal.seq,
+            expected: format!("{command:?}"),
+            found: format!("terminal {:?}", terminal.terminal),
+        }
+        .into())
     }
 }
 
@@ -214,13 +243,24 @@ fn workflow_started_at(
         })
 }
 
-fn terminal_from_history(history: &[Event]) -> Option<ReplayTerminal> {
-    history.iter().rev().find_map(|event| match event {
-        Event::WorkflowCompleted { result, .. } => Some(ReplayTerminal::Completed(result.clone())),
-        Event::WorkflowFailed { error, .. } => Some(ReplayTerminal::Failed(error.clone())),
-        Event::WorkflowCancelled { reason, .. } => Some(ReplayTerminal::Cancelled(reason.clone())),
-        Event::WorkflowTimedOut { timeout, .. } => Some(ReplayTerminal::TimedOut(timeout.clone())),
-        _ => None,
+fn terminal_from_history(workflow_id: &WorkflowId, history: &[Event]) -> Option<TerminalRecord> {
+    history.iter().rev().find_map(|event| {
+        if event.workflow_id() != workflow_id {
+            return None;
+        }
+
+        let terminal = match event {
+            Event::WorkflowCompleted { result, .. } => ReplayTerminal::Completed(result.clone()),
+            Event::WorkflowFailed { error, .. } => ReplayTerminal::Failed(error.clone()),
+            Event::WorkflowCancelled { reason, .. } => ReplayTerminal::Cancelled(reason.clone()),
+            Event::WorkflowTimedOut { timeout, .. } => ReplayTerminal::TimedOut(timeout.clone()),
+            _ => return None,
+        };
+
+        Some(TerminalRecord {
+            seq: event.seq(),
+            terminal,
+        })
     })
 }
 
@@ -352,6 +392,78 @@ mod tests {
                 ],
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_terminal_events_for_other_workflows() -> TestResult {
+        let workflow_id = workflow_id();
+        let run_id = run_id();
+        let other_workflow_id = WorkflowId::new(Uuid::from_u128(99));
+        let history = vec![
+            aion_core::Event::WorkflowStarted {
+                envelope: envelope(1, 10)?,
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+            },
+            aion_core::Event::WorkflowCompleted {
+                envelope: EventEnvelope {
+                    seq: 2,
+                    recorded_at: timestamp(20)?,
+                    workflow_id: other_workflow_id,
+                },
+                result: payload("other-workflow-result")?,
+            },
+        ];
+        let mut replay = Replay::new(&workflow_id, &run_id, history)?;
+        let command = activity_command()?;
+
+        let outcome = replay.drive([command.clone()])?;
+
+        assert_eq!(
+            outcome,
+            ReplayOutcome::ResumeLive {
+                command_index: 0,
+                command,
+                recorded: Vec::new(),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_history_accepts_matching_complete_workflow_command() -> TestResult {
+        let workflow_id = workflow_id();
+        let run_id = run_id();
+        let mut replay = Replay::new(&workflow_id, &run_id, history()?)?;
+        replay.step(activity_command()?)?;
+        replay.step(timer_command()?)?;
+
+        let step = replay.step(Command::CompleteWorkflow {
+            result: payload("workflow-result")?,
+        })?;
+
+        assert_eq!(
+            step,
+            ReplayStep::Terminal(ReplayTerminal::Completed(payload("workflow-result")?))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_history_rejects_extra_non_terminal_command() -> TestResult {
+        let workflow_id = workflow_id();
+        let run_id = run_id();
+        let mut replay = Replay::new(&workflow_id, &run_id, history()?)?;
+        replay.step(activity_command()?)?;
+        replay.step(timer_command()?)?;
+
+        let error = replay.step(activity_command()?).err();
+
+        assert!(matches!(
+            error,
+            Some(crate::durability::DurabilityError::NonDeterminism(_))
+        ));
         Ok(())
     }
 }
