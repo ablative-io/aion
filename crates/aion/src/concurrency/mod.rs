@@ -5,6 +5,7 @@ pub mod correlation;
 pub mod map;
 pub mod race;
 
+pub use all::{AllChildWorkflowSpec, AllError, AllRecordingContext, all};
 pub use correlation::{
     CancellationRecordingContext, CorrelatedOutcome, CorrelatedResult, CorrelatedResultTable,
     CorrelatedSlotState, CorrelationBatch, CorrelationError, CorrelationMailbox, CorrelationToken,
