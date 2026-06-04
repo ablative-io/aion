@@ -22,12 +22,12 @@ pub enum WorkflowPackageSource {
     /// Load a package from this `.aion` archive path during `build()`.
     Path(PathBuf),
     /// Use an already-loaded package value.
-    Package(Package),
+    Package(Box<Package>),
 }
 
 impl From<Package> for WorkflowPackageSource {
     fn from(package: Package) -> Self {
-        Self::Package(package)
+        Self::Package(Box::new(package))
     }
 }
 
@@ -196,7 +196,7 @@ fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineE
         WorkflowPackageSource::Path(path) => {
             Package::load_from_path(path).map_err(EngineError::from)
         }
-        WorkflowPackageSource::Package(package) => Ok(package),
+        WorkflowPackageSource::Package(package) => Ok(*package),
     }
 }
 
