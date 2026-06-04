@@ -42,9 +42,9 @@ impl RuntimeInput {
     ///
     /// Returns [`EngineError::Runtime`] when a JSON number does not fit in an
     /// immediate small integer.
-    pub fn from_payload(payload: Payload) -> Result<Self, EngineError> {
+    pub fn from_payload(payload: &Payload) -> Result<Self, EngineError> {
         Ok(Self {
-            terms: vec![payload_to_term(&payload)?],
+            terms: vec![payload_to_term(payload)?],
         })
     }
 

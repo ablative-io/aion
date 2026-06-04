@@ -30,7 +30,7 @@ pub fn dispatch_activity(
         parent_pid,
         deployed_module,
         function,
-        RuntimeInput::from_payload(input)?,
+        RuntimeInput::from_payload(&input)?,
     )
 }
 
