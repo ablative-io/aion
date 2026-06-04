@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use beamr::atom::AtomTable;
 use beamr::module::ModuleRegistry;
-use beamr::native::BifRegistryImpl;
+use beamr::native::{BifRegistryImpl, NativeRegistrationError};
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::Term;
@@ -12,6 +12,7 @@ use beamr::term::Term;
 use crate::error::EngineError;
 
 use super::config::RuntimeConfig;
+use super::nif::{Mfa, NifRegistration};
 
 /// Local BEAM process identifier exposed by the runtime boundary.
 pub type Pid = u64;
@@ -37,6 +38,7 @@ pub struct RuntimeHandle {
     scheduler: Scheduler,
     atom_table: Arc<AtomTable>,
     module_registry: Arc<ModuleRegistry>,
+    native_registry: Arc<BifRegistryImpl>,
 }
 
 impl RuntimeHandle {
@@ -51,11 +53,12 @@ impl RuntimeHandle {
         let scheduler_config = SchedulerConfig {
             thread_count: config.thread_count,
         };
+        let native_registry = Arc::new(BifRegistryImpl::new());
         let scheduler = Scheduler::with_code_server(
             scheduler_config,
             Arc::clone(&module_registry),
             Arc::clone(&atom_table),
-            Arc::new(BifRegistryImpl::new()),
+            Arc::clone(&native_registry),
         )
         .map_err(runtime_error_from_display)?;
 
@@ -63,7 +66,40 @@ impl RuntimeHandle {
             scheduler,
             atom_table,
             module_registry,
+            native_registry,
         })
+    }
+
+    /// Install collected NIF entries into beamr's native registry.
+    ///
+    /// Consumes the registration collection so no caller can append more entries
+    /// after this installation step. Callers must invoke this before loading and
+    /// spawning workflow modules whose imports depend on these NIFs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::NifRegistration`] when beamr rejects an entry,
+    /// including duplicate module/function/arity registrations.
+    pub fn install_nifs(&self, registration: NifRegistration) -> Result<(), EngineError> {
+        for entry in registration.into_entries() {
+            let mfa = entry.mfa;
+            let module = self.atom_table.intern(&mfa.module);
+            let function = self.atom_table.intern(&mfa.function);
+            let result = if entry.is_dirty {
+                self.native_registry.register_dirty_shared(
+                    module,
+                    function,
+                    mfa.arity,
+                    entry.function,
+                )
+            } else {
+                self.native_registry
+                    .register_shared(module, function, mfa.arity, entry.function)
+            };
+            result.map_err(|error| nif_registration_error(&mfa, error))?;
+        }
+
+        Ok(())
     }
 
     /// Spawn a top-level workflow process at a deployed module/function entrypoint.
@@ -181,6 +217,18 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_name);
         self.module_registry.lookup(module).is_some()
     }
+
+    #[cfg(test)]
+    fn lookup_native_for_test(
+        &self,
+        module: &str,
+        function: &str,
+        arity: u8,
+    ) -> Option<beamr::native::NativeEntry> {
+        let module = self.atom_table.intern(module);
+        let function = self.atom_table.intern(function);
+        self.native_registry.lookup(module, function, arity)
+    }
 }
 
 fn runtime_error(reason: String) -> EngineError {
@@ -191,10 +239,30 @@ fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
     runtime_error(reason.to_string())
 }
 
+fn nif_registration_error(mfa: &Mfa, error: NativeRegistrationError) -> EngineError {
+    match error {
+        NativeRegistrationError::DuplicateMfa { .. } => EngineError::NifRegistration {
+            reason: format!("native function already registered for {}", mfa.display()),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use beamr::native::ProcessContext;
+    use beamr::term::Term;
+
     use super::{RuntimeHandle, RuntimeInput};
-    use crate::runtime::RuntimeConfig;
+    use crate::error::EngineError;
+    use crate::runtime::{Mfa, NifEntry, NifRegistration, RuntimeConfig};
+
+    fn forty_two(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+        Ok(Term::small_int(42))
+    }
+
+    fn thirteen(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+        Ok(Term::small_int(13))
+    }
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -219,6 +287,50 @@ mod tests {
 
         let pid = runtime.spawn_workflow("counter", "version", RuntimeInput::default())?;
         assert!(runtime.cancel_pid(pid).is_ok());
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_nif_mfa_returns_typed_error() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mfa = Mfa::new("host", "answer", 0);
+        let mut registration = NifRegistration::new();
+        registration.add_host_nifs([
+            NifEntry::new(mfa.clone(), forty_two),
+            NifEntry::dirty(mfa, thirteen),
+        ]);
+
+        let error = runtime.install_nifs(registration).err();
+
+        assert!(matches!(
+            error,
+            Some(EngineError::NifRegistration { reason })
+                if reason.contains("host:answer/0")
+        ));
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_nifs_are_registered_and_callable() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mut registration = NifRegistration::new();
+        registration.add_host_nifs([
+            NifEntry::new(Mfa::new("host", "answer", 0), forty_two),
+            NifEntry::dirty(Mfa::new("host", "thirteen", 0), thirteen),
+        ]);
+
+        runtime.install_nifs(registration)?;
+
+        let answer = runtime.lookup_native_for_test("host", "answer", 0);
+        let thirteen_entry = runtime.lookup_native_for_test("host", "thirteen", 0);
+        let mut context = ProcessContext::new();
+        assert_eq!(
+            answer.map(|entry| (entry.function)(&[], &mut context)),
+            Some(Ok(Term::small_int(42)))
+        );
+        assert!(thirteen_entry.is_some_and(|entry| entry.is_dirty));
         runtime.shutdown()?;
         Ok(())
     }

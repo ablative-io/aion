@@ -21,10 +21,11 @@ pub mod spawn;
 pub mod stdlib_stubs;
 pub mod supervision;
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::fmt;
+
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 
 use crate::atom::Atom;
 use crate::term::Term;
@@ -93,12 +94,12 @@ pub use crate::loader::{UnresolvedImport, UnresolvedImportReport};
 
 #[derive(Clone, Debug, Default)]
 struct NativeRegistry {
-    entries: HashMap<NativeKey, NativeEntry>,
+    entries: DashMap<NativeKey, NativeEntry>,
 }
 
 impl NativeRegistry {
     fn register(
-        &mut self,
+        &self,
         module: Atom,
         function: Atom,
         arity: u8,
@@ -122,7 +123,9 @@ impl NativeRegistry {
     }
 
     fn lookup(&self, module: Atom, function: Atom, arity: u8) -> Option<NativeEntry> {
-        self.entries.get(&(module, function, arity)).copied()
+        self.entries
+            .get(&(module, function, arity))
+            .map(|entry| *entry)
     }
 }
 
@@ -154,6 +157,30 @@ impl BifRegistryImpl {
     /// Registers a built-in function that should use dirty scheduling later.
     pub fn register_dirty(
         &mut self,
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        native_function: NativeFn,
+    ) -> Result<(), NativeRegistrationError> {
+        self.registry
+            .register(module, function, arity, native_function, true)
+    }
+
+    /// Registers a normal built-in function through shared ownership.
+    pub fn register_shared(
+        &self,
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        native_function: NativeFn,
+    ) -> Result<(), NativeRegistrationError> {
+        self.registry
+            .register(module, function, arity, native_function, false)
+    }
+
+    /// Registers a dirty built-in function through shared ownership.
+    pub fn register_dirty_shared(
+        &self,
         module: Atom,
         function: Atom,
         arity: u8,
