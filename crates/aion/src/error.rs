@@ -13,7 +13,10 @@ pub enum EngineError {
 
     /// A workflow package failed to load or validate for engine registration.
     #[error("workflow package load failed: {reason}")]
-    Load { reason: String },
+    Load {
+        /// Human-readable load failure reason.
+        reason: String,
+    },
 
     /// The configured event store returned an error.
     #[error("store error: {0}")]
@@ -25,7 +28,10 @@ pub enum EngineError {
 
     /// The embedded runtime returned an error.
     #[error("runtime error: {reason}")]
-    Runtime { reason: String },
+    Runtime {
+        /// Human-readable runtime failure reason.
+        reason: String,
+    },
 
     /// The active workflow registry lock was poisoned.
     #[error("active workflow registry lock was poisoned")]
@@ -37,5 +43,8 @@ pub enum EngineError {
 
     /// Native implemented function registration failed.
     #[error("NIF registration failed: {reason}")]
-    NifRegistration { reason: String },
+    NifRegistration {
+        /// Human-readable native implemented function registration failure reason.
+        reason: String,
+    },
 }
