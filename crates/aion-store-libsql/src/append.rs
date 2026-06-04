@@ -46,15 +46,21 @@ pub(crate) async fn append(
         return Ok(());
     }
 
-    validate_contiguous(events, expected_seq)?;
+    if let Err(error) = validate_contiguous(events, expected_seq) {
+        rollback(tx).await?;
+        return Err(error);
+    }
 
     for event in events {
-        insert_event(&tx, workflow_id, event).await?;
+        if let Err(error) = insert_event(&tx, workflow_id, event).await {
+            rollback(tx).await?;
+            return normalize_store_write_error(conn, workflow_id, expected_seq, error).await;
+        }
     }
 
     match tx.commit().await {
         Ok(()) => Ok(()),
-        Err(error) => normalize_write_error(conn, workflow_id, expected_seq, error).await,
+        Err(error) => normalize_libsql_write_error(conn, workflow_id, expected_seq, error).await,
     }
 }
 
@@ -138,13 +144,42 @@ async fn insert_event(
     .map_err(|error| crate::error::libsql_error(&error))
 }
 
-async fn normalize_write_error(
+async fn normalize_store_write_error(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+    expected_seq: u64,
+    error: StoreError,
+) -> Result<(), StoreError> {
+    match error {
+        StoreError::Backend(message) => {
+            conflict_after_store_error(conn, workflow_id, expected_seq, message).await
+        }
+        other => Err(other),
+    }
+}
+
+async fn normalize_libsql_write_error(
     conn: &libsql::Connection,
     workflow_id: &WorkflowId,
     expected_seq: u64,
     error: libsql::Error,
 ) -> Result<(), StoreError> {
-    conflict_after_begin_error(conn, workflow_id, expected_seq, error).await
+    conflict_after_store_error(conn, workflow_id, expected_seq, error.to_string()).await
+}
+
+async fn conflict_after_store_error(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+    expected_seq: u64,
+    message: String,
+) -> Result<(), StoreError> {
+    match advanced_head(conn, workflow_id, expected_seq).await? {
+        Some(found) => Err(StoreError::SequenceConflict {
+            expected: expected_seq,
+            found,
+        }),
+        None => Err(StoreError::Backend(message)),
+    }
 }
 
 async fn conflict_after_begin_error(
@@ -153,15 +188,29 @@ async fn conflict_after_begin_error(
     expected_seq: u64,
     error: libsql::Error,
 ) -> Result<(), StoreError> {
-    let found = current_head_outside_transaction(conn, workflow_id).await?;
-    if found == expected_seq {
-        Err(crate::error::libsql_error(&error))
-    } else {
-        Err(StoreError::SequenceConflict {
+    match advanced_head(conn, workflow_id, expected_seq).await? {
+        Some(found) => Err(StoreError::SequenceConflict {
             expected: expected_seq,
             found,
-        })
+        }),
+        None => Err(crate::error::libsql_error(&error)),
     }
+}
+
+async fn advanced_head(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+    expected_seq: u64,
+) -> Result<Option<u64>, StoreError> {
+    for _ in 0..3 {
+        let found = current_head_outside_transaction(conn, workflow_id).await?;
+        if found != expected_seq {
+            return Ok(Some(found));
+        }
+        std::thread::yield_now();
+    }
+
+    Ok(None)
 }
 
 async fn rollback(tx: Transaction) -> Result<(), StoreError> {
@@ -282,7 +331,7 @@ mod tests {
 
         match store.append(&workflow_id, &events, 0).await {
             Err(StoreError::Backend(message)) => {
-                assert!(message.contains("event sequence must be contiguous"))
+                assert!(message.contains("event sequence must be contiguous"));
             }
             Err(other) => {
                 return Err(StoreError::Backend(format!(

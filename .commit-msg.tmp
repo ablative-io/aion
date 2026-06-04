@@ -1,1 +1,1 @@
-feat(aion-store-libsql): implement atomic append sequence guard
+Harden libSQL append rollback and conflict normalization
