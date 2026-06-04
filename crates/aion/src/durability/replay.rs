@@ -95,7 +95,7 @@ impl Replay {
     /// # Errors
     ///
     /// Returns resolver errors, including typed non-determinism violations at the mismatch point.
-    pub fn step(&mut self, command: Command) -> Result<ReplayStep, DurabilityError> {
+    pub fn step(&mut self, command: &Command) -> Result<ReplayStep, DurabilityError> {
         match self.resolver.resolve_with_consumed(command.clone())? {
             ResolvedCommand::Recorded {
                 resolution,
@@ -127,7 +127,7 @@ impl Replay {
     {
         let mut recorded = Vec::new();
         for (command_index, command) in commands.into_iter().enumerate() {
-            match self.step(command.clone())? {
+            match self.step(&command)? {
                 ReplayStep::Recorded(resolution) => recorded.push(resolution),
                 ReplayStep::ResumeLive => {
                     return Ok(ReplayOutcome::ResumeLive {
@@ -152,13 +152,13 @@ impl Replay {
         }
     }
 
-    fn resume_or_terminal(&self, command: Command) -> Result<ReplayStep, DurabilityError> {
+    fn resume_or_terminal(&self, command: &Command) -> Result<ReplayStep, DurabilityError> {
         let Some(terminal) = &self.terminal else {
             return Ok(ReplayStep::ResumeLive);
         };
 
         if let (Command::CompleteWorkflow { result }, ReplayTerminal::Completed(recorded_result)) =
-            (&command, &terminal.terminal)
+            (command, &terminal.terminal)
         {
             if result == recorded_result {
                 return Ok(ReplayStep::Terminal(terminal.terminal.clone()));
@@ -361,13 +361,13 @@ mod tests {
         assert_eq!(replay.now(), timestamp(10)?);
 
         assert_eq!(
-            replay.step(activity_command()?)?,
+            replay.step(&activity_command()?)?,
             ReplayStep::Recorded(Resolution::ActivityCompleted(payload("activity-result")?))
         );
         assert_eq!(replay.now(), timestamp(30)?);
 
         assert_eq!(
-            replay.step(timer_command()?)?,
+            replay.step(&timer_command()?)?,
             ReplayStep::Recorded(Resolution::TimerFired)
         );
         assert_eq!(replay.now(), timestamp(50)?);
@@ -436,10 +436,10 @@ mod tests {
         let workflow_id = workflow_id();
         let run_id = run_id();
         let mut replay = Replay::new(&workflow_id, &run_id, history()?)?;
-        replay.step(activity_command()?)?;
-        replay.step(timer_command()?)?;
+        replay.step(&activity_command()?)?;
+        replay.step(&timer_command()?)?;
 
-        let step = replay.step(Command::CompleteWorkflow {
+        let step = replay.step(&Command::CompleteWorkflow {
             result: payload("workflow-result")?,
         })?;
 
@@ -455,10 +455,10 @@ mod tests {
         let workflow_id = workflow_id();
         let run_id = run_id();
         let mut replay = Replay::new(&workflow_id, &run_id, history()?)?;
-        replay.step(activity_command()?)?;
-        replay.step(timer_command()?)?;
+        replay.step(&activity_command()?)?;
+        replay.step(&timer_command()?)?;
 
-        let error = replay.step(activity_command()?).err();
+        let error = replay.step(&activity_command()?).err();
 
         assert!(matches!(
             error,

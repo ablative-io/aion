@@ -282,7 +282,7 @@ async fn activity_completed_is_served_from_history_cache_without_live_call()
     let mut replay = Replay::new(&workflow_id, &run_id, history)?;
     let executor = CountingExecutor::default();
 
-    let step = replay.step(activity_command(0)?)?;
+    let step = replay.step(&activity_command(0)?)?;
 
     assert_eq!(
         step,
@@ -326,7 +326,7 @@ async fn terminal_activity_failure_is_served_from_history_cache_without_live_cal
     let mut replay = Replay::new(&workflow_id, &run_id, history)?;
 
     assert_eq!(
-        replay.step(activity_command(0)?)?,
+        replay.step(&activity_command(0)?)?,
         ReplayStep::Recorded(Resolution::ActivityFailedTerminal(terminal_error))
     );
     assert_eq!(executor.calls(), 0);
