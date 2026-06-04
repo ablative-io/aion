@@ -1,1 +1,1 @@
-feat(aion): implement fixed-list race concurrency primitive
+Harden race cleanup paths and add mailbox-close cancellation coverage

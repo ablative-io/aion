@@ -174,7 +174,13 @@ pub fn race(
     let mut table = CorrelatedResultTable::new(batch.clone());
     let children = spawn_linked_children(engine, recording, &batch, specs)?;
 
-    let selected = mailbox.receive_correlated(&table)?;
+    let selected = match mailbox.receive_correlated(&table) {
+        Ok(selected) => selected,
+        Err(error) => {
+            cancel_spawned_children(engine, recording, &batch, &children)?;
+            return Err(RaceError::Correlation(error));
+        }
+    };
     record_winner(engine, recording, &selected.outcome)?;
     let winner = RaceWinner::from(selected.clone());
     table.apply_result(selected);
@@ -202,8 +208,20 @@ fn spawn_linked_children(
             run_id: spec.run_id.clone(),
             mode: ChildWorkflowSpawnMode::Linked,
         };
-        let spawned = engine.spawn_child_workflow(request)?;
+        let spawned = match engine.spawn_child_workflow(request) {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                cancel_spawned_children(engine, recording, batch, &children)?;
+                return Err(RaceError::Engine(error));
+            }
+        };
         if spawned.child_workflow_id == *recording.parent_workflow_id() {
+            engine.terminate_linked_child_workflow(
+                recording.parent_workflow_id(),
+                spawned.child_process,
+                slot.token().value(),
+            )?;
+            cancel_spawned_children(engine, recording, batch, &children)?;
             return Err(RaceError::InvalidChildIdentity {
                 parent_workflow_id: recording.parent_workflow_id().clone(),
                 child_workflow_id: spawned.child_workflow_id,
@@ -215,7 +233,15 @@ fn spawn_linked_children(
             workflow_type: spec.workflow_type.clone(),
             input: spec.input.clone(),
         };
-        engine.record_workflow_event(recording.parent_workflow_id(), event)?;
+        if let Err(error) = engine.record_workflow_event(recording.parent_workflow_id(), event) {
+            engine.terminate_linked_child_workflow(
+                recording.parent_workflow_id(),
+                spawned.child_process,
+                slot.token().value(),
+            )?;
+            cancel_spawned_children(engine, recording, batch, &children)?;
+            return Err(RaceError::Engine(error));
+        }
         children.push(InFlightChild::new(
             slot.index(),
             slot.token(),
@@ -226,6 +252,24 @@ fn spawn_linked_children(
         ));
     }
     Ok(children)
+}
+
+fn cancel_spawned_children(
+    engine: &impl EngineHandle,
+    recording: &mut RaceRecordingContext,
+    batch: &CorrelationBatch,
+    children: &[InFlightChild],
+) -> Result<(), RaceError> {
+    if children.is_empty() {
+        return Ok(());
+    }
+
+    let mut table = CorrelatedResultTable::new(batch.clone());
+    let loser_count = children.len();
+    let mut cancellation_recording = recording.cancellation_recording();
+    cancel_remaining(engine, &mut cancellation_recording, &mut table, children)?;
+    recording.advance_after_cancellations(loser_count)?;
+    Ok(())
 }
 
 fn record_winner(
@@ -274,8 +318,10 @@ mod tests {
     use aion_core::{ContentType, Event, Payload, RunId, WorkflowError, WorkflowId};
     use chrono::DateTime;
 
-    use super::{RaceChildSpec, RaceRecordingContext, RaceWinner, race};
-    use crate::concurrency::{CorrelatedOutcome, CorrelationBatch, VecCorrelationMailbox};
+    use super::{RaceChildSpec, RaceError, RaceRecordingContext, RaceWinner, race};
+    use crate::concurrency::{
+        CorrelatedOutcome, CorrelationBatch, CorrelationError, VecCorrelationMailbox,
+    };
     use crate::engine_seam::test_support::FakeEngineHandle;
     use crate::engine_seam::{
         ChildWorkflowSpawnResult, WorkflowMailboxMessage, WorkflowProcessHandle,
@@ -407,9 +453,65 @@ mod tests {
                 if workflow_id == &parent && envelope.seq == 305 && child_workflow_id == &children[2]
         ));
 
-        let late_events = engine.recorded_events()?;
-        assert_eq!(late_events.len(), 6);
+        assert_eq!(engine.recorded_events()?.len(), 6);
         assert_eq!(mailbox.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn cancels_all_children_when_mailbox_closes_before_a_winner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = WorkflowId::new_v4();
+        let children = [
+            WorkflowId::new_v4(),
+            WorkflowId::new_v4(),
+            WorkflowId::new_v4(),
+        ];
+        let processes = [
+            WorkflowProcessHandle::new(21),
+            WorkflowProcessHandle::new(22),
+            WorkflowProcessHandle::new(23),
+        ];
+        let mut mailbox = VecCorrelationMailbox::new(Vec::new());
+        let engine = FakeEngineHandle::new();
+        for (child, process) in children.iter().cloned().zip(processes) {
+            engine.push_child_spawn_response(Ok(ChildWorkflowSpawnResult {
+                child_workflow_id: child,
+                child_process: process,
+            }))?;
+        }
+        let specs = specs(3);
+        let mut recording = recording(parent.clone(), 400)?;
+
+        let error = match race(&engine, &mut recording, &mut mailbox, &specs) {
+            Ok(winner) => {
+                return Err(
+                    format!("empty mailbox unexpectedly returned winner {winner:?}").into(),
+                );
+            }
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            RaceError::Correlation(CorrelationError::MailboxClosed)
+        ));
+        assert_eq!(
+            engine.terminated_child_workflows()?,
+            vec![
+                (parent.clone(), processes[0], 400),
+                (parent.clone(), processes[1], 401),
+                (parent.clone(), processes[2], 402)
+            ]
+        );
+        let events = engine.recorded_events()?;
+        assert_eq!(events.len(), 6);
+        assert!(
+            events[3..]
+                .iter()
+                .all(|(workflow_id, event)| workflow_id == &parent
+                    && matches!(event, Event::ChildWorkflowCancelled { .. }))
+        );
         Ok(())
     }
 
