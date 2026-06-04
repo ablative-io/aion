@@ -132,16 +132,16 @@ Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 - [x] **AT-001** — Engine seam, module scaffolding · _landed 166c40b_
 
 ### Wave 17 (10 parallel — peak)
-- [ ] **AE-003** — NIF registration surface · _depends: AE-002_
-- [ ] **AE-005** — Module loading, content-hash namespacing · _depends: AE-002_
-- [ ] **AE-006** — Three-level supervision tree · _depends: AE-002_
-- [ ] **AD-002** — Recorder, single-writer append path · _depends: AD-001_
-- [ ] **AD-003** — History cursor, correlation keys · _depends: AD-001_
-- [ ] **AD-006** — Determinism context (recorded-now, seeded RNG) · _depends: AD-001_
-- [ ] **AT-002** — Durable timer service (schedule, wheel, fire) · _depends: AT-001_
-- [ ] **AT-005** — Signal router (record-then-deliver) · _depends: AT-001_
-- [ ] **AT-007** — Query service (non-recording dispatch) · _depends: AT-001_
-- [ ] **AT-008** — Child workflow spawning (linked process) · _depends: AT-001_
+- [x] **AE-003** — NIF registration surface · _landed 4a3d04f_
+- [x] **AE-005** — Module loading, content-hash namespacing · _landed 6414b8d_
+- [x] **AE-006** — Three-level supervision tree · _landed ff79f29_
+- [x] **AD-002** — Recorder, single-writer append path · _landed e4d872a_
+- [x] **AD-003** — History cursor, correlation keys · _landed ff79f29_
+- [x] **AD-006** — Determinism context (recorded-now, seeded RNG) · _landed 10a1685_
+- [x] **AT-002** — Durable timer service (schedule, wheel, fire) · _landed d35049b_
+- [x] **AT-005** — Signal router (record-then-deliver) · _landed 20e99da_
+- [x] **AT-007** — Query service (non-recording dispatch) · _landed 8057adb_
+- [x] **AT-008** — Child workflow spawning (linked process) · _landed cf55daa_
 
 ### Wave 18 (8 parallel)
 - [ ] **AE-007** — In-VM activity dispatch · _depends: AE-002, AE-003, AE-006_
