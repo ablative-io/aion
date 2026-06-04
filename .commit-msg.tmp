@@ -1,1 +1,1 @@
-feat(aion): add runtime NIF registration surface
+review(aion): harden NIF registration tests

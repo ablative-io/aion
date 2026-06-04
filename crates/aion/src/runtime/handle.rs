@@ -229,6 +229,11 @@ impl RuntimeHandle {
         let function = self.atom_table.intern(function);
         self.native_registry.lookup(module, function, arity)
     }
+
+    #[cfg(test)]
+    fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
+        self.scheduler.run_until_exit(pid)
+    }
 }
 
 fn runtime_error(reason: String) -> EngineError {
@@ -249,6 +254,9 @@ fn nif_registration_error(mfa: &Mfa, error: NativeRegistrationError) -> EngineEr
 
 #[cfg(test)]
 mod tests {
+    use beamr::loader::Instruction;
+    use beamr::loader::decode::compact::Operand;
+    use beamr::module::{Module, ResolvedImport, ResolvedImportTarget};
     use beamr::native::ProcessContext;
     use beamr::term::Term;
 
@@ -262,6 +270,45 @@ mod tests {
 
     fn thirteen(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
         Ok(Term::small_int(13))
+    }
+
+    fn native_call_module_for_test(
+        module: beamr::atom::Atom,
+        function: beamr::atom::Atom,
+        target_module: beamr::atom::Atom,
+        target_function: beamr::atom::Atom,
+        native_entry: Option<beamr::native::NativeEntry>,
+    ) -> Module {
+        let label = 1;
+        let code = vec![
+            Instruction::Label { label },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(0),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ];
+        let mut module_data = Module {
+            name: module,
+            generation: 0,
+            exports: std::collections::HashMap::from([((function, 0), label)]),
+            label_index: std::collections::HashMap::from([(label, 0)]),
+            code,
+            literals: Vec::new(),
+            resolved_imports: Vec::new(),
+            lambdas: Vec::new(),
+            string_table: Vec::new(),
+            line_info: Vec::new(),
+        };
+        if let Some(native_entry) = native_entry {
+            module_data.resolved_imports.push(ResolvedImport {
+                module: target_module,
+                function: target_function,
+                arity: 0,
+                target: ResolvedImportTarget::Native(native_entry),
+            });
+        }
+        module_data
     }
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -316,7 +363,7 @@ mod tests {
     fn distinct_nifs_are_registered_and_callable() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
         let mut registration = NifRegistration::new();
-        registration.add_host_nifs([
+        registration.add_engine_nifs().add_host_nifs([
             NifEntry::new(Mfa::new("host", "answer", 0), forty_two),
             NifEntry::dirty(Mfa::new("host", "thirteen", 0), thirteen),
         ]);
@@ -324,13 +371,26 @@ mod tests {
         runtime.install_nifs(registration)?;
 
         let answer = runtime.lookup_native_for_test("host", "answer", 0);
-        let thirteen_entry = runtime.lookup_native_for_test("host", "thirteen", 0);
-        let mut context = ProcessContext::new();
-        assert_eq!(
-            answer.map(|entry| (entry.function)(&[], &mut context)),
-            Some(Ok(Term::small_int(42)))
+        assert!(answer.is_some());
+        assert!(
+            runtime
+                .lookup_native_for_test("host", "thirteen", 0)
+                .is_some_and(|entry| entry.is_dirty)
         );
-        assert!(thirteen_entry.is_some_and(|entry| entry.is_dirty));
+
+        let host_nif_call = native_call_module_for_test(
+            runtime.atom_table.intern("host_nif_call"),
+            runtime.atom_table.intern("answer"),
+            runtime.atom_table.intern("host"),
+            runtime.atom_table.intern("answer"),
+            answer,
+        );
+        runtime.module_registry.insert(host_nif_call);
+        let pid = runtime.spawn_workflow("host_nif_call", "answer", RuntimeInput::default())?;
+        let (reason, result) = runtime.run_until_exit_for_test(pid);
+
+        assert_eq!(reason, beamr::process::ExitReason::Normal);
+        assert_eq!(result, Term::small_int(42));
         runtime.shutdown()?;
         Ok(())
     }
