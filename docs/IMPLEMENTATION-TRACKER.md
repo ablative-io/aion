@@ -123,7 +123,7 @@ All three clusters share the `aion` crate. AE-001 is the common root.
 Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 
 ### Wave 15
-- [ ] **AE-001** — aion crate scaffold, EngineError taxonomy
+- [x] **AE-001** — aion crate scaffold, EngineError taxonomy · _landed a8ff4db_
 
 ### Wave 16 (4 parallel)
 - [ ] **AE-002** — beamr runtime embedding, RuntimeHandle · _depends: AE-001_
