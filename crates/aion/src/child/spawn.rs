@@ -11,6 +11,8 @@ use std::collections::VecDeque;
 use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
 
+#[cfg(test)]
+use crate::engine_seam::test_support::DeliveredWorkflowMessage;
 use crate::engine_seam::{
     ChildWorkflowSpawnMode, ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle,
     EngineSeamError, WorkflowMailboxMessage,
@@ -145,6 +147,16 @@ impl VecChildWorkflowMailbox {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
+    }
+
+    /// Returns a projection of queued messages suitable for equality assertions in tests.
+    #[cfg(test)]
+    #[must_use]
+    pub fn delivered_messages(&self) -> Vec<DeliveredWorkflowMessage> {
+        self.messages
+            .iter()
+            .map(DeliveredWorkflowMessage::from_message)
+            .collect()
     }
 }
 

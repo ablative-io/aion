@@ -207,10 +207,11 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     use super::{TimerService, TimerServiceError};
-    use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
+    use crate::engine_seam::test_support::{
+        DeliveredWorkflowMessage, FakeEngineHandle, FakeEngineOperation,
+    };
     use crate::engine_seam::{
-        EngineHandle, TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle,
-        WorkflowResidency,
+        EngineHandle, TimerWheelEntry, WorkflowProcessHandle, WorkflowResidency,
     };
 
     fn instant(offset_seconds: i64) -> DateTime<Utc> {
@@ -347,7 +348,7 @@ mod tests {
             engine.delivered_messages()?,
             vec![(
                 process,
-                WorkflowMailboxMessage::TimerFired {
+                DeliveredWorkflowMessage::TimerFired {
                     timer_id: timer_id.clone(),
                     fire_at
                 }
@@ -362,7 +363,7 @@ mod tests {
                 },
                 FakeEngineOperation::Delivered {
                     process: delivered_process,
-                    message: WorkflowMailboxMessage::TimerFired { timer_id: delivered_timer_id, .. },
+                    message: DeliveredWorkflowMessage::TimerFired { timer_id: delivered_timer_id, .. },
                 }
             ] if recorded_workflow_id == &workflow_id
                 && recorded_timer_id == &timer_id

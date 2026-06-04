@@ -360,7 +360,7 @@ pub(crate) mod test_support {
     }
 
     impl DeliveredWorkflowMessage {
-        fn from_message(message: &WorkflowMailboxMessage) -> Self {
+        pub(crate) fn from_message(message: &WorkflowMailboxMessage) -> Self {
             match message {
                 WorkflowMailboxMessage::TimerFired { timer_id, fire_at } => Self::TimerFired {
                     timer_id: timer_id.clone(),

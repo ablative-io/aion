@@ -138,11 +138,9 @@ mod tests {
     use aion_store::InMemoryStore;
 
     use super::{SignalRouter, SignalRouterError};
-    use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
     use crate::engine_seam::test_support::DeliveredWorkflowMessage;
-    use crate::engine_seam::{
-        EngineSeamError, WorkflowProcessHandle, WorkflowResidency,
-    };
+    use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
+    use crate::engine_seam::{EngineSeamError, WorkflowProcessHandle, WorkflowResidency};
 
     #[test]
     fn successful_route_records_signal_before_delivering_message()
