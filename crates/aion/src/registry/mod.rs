@@ -3,5 +3,5 @@
 pub mod handle;
 pub mod table;
 
-pub use handle::WorkflowHandle;
+pub use handle::{CompletionNotifier, HandleResidency, TerminalOutcome, WorkflowHandle};
 pub use table::Registry;

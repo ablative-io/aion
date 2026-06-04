@@ -4,6 +4,8 @@ use aion_core::WorkflowId;
 use aion_package::PackageError;
 use aion_store::StoreError;
 
+use crate::durability::DurabilityError;
+
 /// Errors returned by the embedded workflow engine.
 #[derive(thiserror::Error, Debug)]
 pub enum EngineError {
@@ -21,6 +23,10 @@ pub enum EngineError {
     /// The configured event store returned an error.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    /// The durability recorder or replay path returned an error.
+    #[error("durability error: {0}")]
+    Durability(#[from] DurabilityError),
 
     /// A `.aion` package operation returned an error.
     #[error("package error: {0}")]
@@ -40,6 +46,13 @@ pub enum EngineError {
     /// No live or durable workflow was found for the requested identifier.
     #[error("workflow {0} was not found")]
     WorkflowNotFound(WorkflowId),
+
+    /// No loaded workflow package was found for the requested workflow type.
+    #[error("workflow type `{workflow_type}` was not found")]
+    WorkflowTypeNotFound {
+        /// Logical workflow type requested by the caller.
+        workflow_type: String,
+    },
 
     /// Native implemented function registration failed.
     #[error("NIF registration failed: {reason}")]
