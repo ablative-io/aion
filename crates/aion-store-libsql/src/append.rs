@@ -3,6 +3,8 @@
 use aion_store::{Event, StoreError, WorkflowId};
 use libsql::{Transaction, TransactionBehavior, params};
 
+mod metadata;
+
 /// Append `events` for `workflow_id` under the expected-head sequence guard.
 ///
 /// # Errors
@@ -136,8 +138,17 @@ async fn insert_event(
     let seq = event.seq();
 
     tx.execute(
-        "INSERT INTO events (workflow_id, seq, event, recorded_at) VALUES (?1, ?2, ?3, ?4)",
-        params![workflow_id, seq, serialized, recorded_at],
+        "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_projection_event, workflow_type, child_workflow_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            workflow_id,
+            seq,
+            serialized,
+            recorded_at,
+            metadata::event_kind(event),
+            metadata::projection_flag(event),
+            metadata::workflow_type(event),
+            metadata::child_workflow_id(event)
+        ],
     )
     .await
     .map(|_| ())

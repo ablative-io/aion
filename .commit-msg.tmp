@@ -1,1 +1,1 @@
-review AP-007 version record and round-trip conformance hardening
+fix(store-libsql): hydrate parent links independently for filtered queries
