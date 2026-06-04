@@ -292,7 +292,7 @@ mod tests {
         store.append(&workflow_id, &first, 0).await?;
         let result = store.append(&workflow_id, &stale, 0).await;
 
-        assert_sequence_conflict(result, 0, 1)?;
+        assert_sequence_conflict(&result, 0, 1)?;
         assert_eq!(
             event_stats(store.connection(), &workflow_id).await?,
             EventStats { count: 1, head: 1 }
@@ -312,7 +312,7 @@ mod tests {
 
         let result = store.append(&workflow_id, &events, 2).await;
 
-        assert_sequence_conflict(result, 2, 0)?;
+        assert_sequence_conflict(&result, 2, 0)?;
         assert_eq!(
             event_stats(store.connection(), &workflow_id).await?,
             EventStats { count: 0, head: 0 }
@@ -402,11 +402,11 @@ mod tests {
     }
 
     fn assert_sequence_conflict(
-        result: Result<(), StoreError>,
+        result: &Result<(), StoreError>,
         expected: u64,
         found: u64,
     ) -> Result<(), StoreError> {
-        if is_sequence_conflict(&result, expected, found) {
+        if is_sequence_conflict(result, expected, found) {
             Ok(())
         } else {
             Err(StoreError::Backend(format!(
