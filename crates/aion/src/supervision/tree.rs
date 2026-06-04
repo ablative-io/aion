@@ -145,6 +145,26 @@ impl SupervisionTree {
     ) -> Result<TypeSupervisorId, EngineError> {
         let workflow_type = workflow_type.into();
         let mut state = self.state()?;
+
+        if let Some(existing) = state.workflows.get(&workflow_pid) {
+            if existing.workflow_type != workflow_type {
+                return Err(tree_runtime_error(format!(
+                    "workflow process {workflow_pid} is already placed under workflow type `{}`",
+                    existing.workflow_type
+                )));
+            }
+
+            let supervisor = state
+                .type_supervisors
+                .entry(workflow_type.clone())
+                .or_insert_with(|| TypeSupervisorNode {
+                    id: TypeSupervisorId { workflow_type },
+                    workflow_processes: BTreeSet::new(),
+                });
+            supervisor.workflow_processes.insert(workflow_pid);
+            return Ok(supervisor.id.clone());
+        }
+
         let supervisor = state
             .type_supervisors
             .entry(workflow_type.clone())
@@ -182,15 +202,21 @@ impl SupervisionTree {
         activity_pid: Pid,
     ) -> Result<(), EngineError> {
         let mut state = self.state()?;
-        let workflow =
-            state
-                .workflows
-                .get_mut(&workflow_pid)
-                .ok_or_else(|| EngineError::Runtime {
-                    reason: format!(
-                        "workflow process {workflow_pid} is not in the supervision tree"
-                    ),
-                })?;
+        if workflow_pid == activity_pid {
+            return Err(tree_runtime_error(format!(
+                "workflow process {workflow_pid} cannot be its own activity child"
+            )));
+        }
+        if state.workflows.contains_key(&activity_pid) {
+            return Err(tree_runtime_error(format!(
+                "process {activity_pid} is already placed as a workflow process"
+            )));
+        }
+        let workflow = state.workflows.get_mut(&workflow_pid).ok_or_else(|| {
+            tree_runtime_error(format!(
+                "workflow process {workflow_pid} is not in the supervision tree"
+            ))
+        })?;
         workflow.activity_children.insert(activity_pid);
         Ok(())
     }
@@ -225,6 +251,10 @@ impl SupervisionTree {
     fn state(&self) -> Result<MutexGuard<'_, TreeState>, EngineError> {
         self.state.lock().map_err(|_| EngineError::RegistryPoisoned)
     }
+}
+
+fn tree_runtime_error(reason: String) -> EngineError {
+    EngineError::Runtime { reason }
 }
 
 #[cfg(test)]
@@ -299,6 +329,48 @@ mod tests {
         let error = tree.record_activity_child(99, 20);
 
         assert!(matches!(error, Err(EngineError::Runtime { .. })));
+    }
+
+    #[test]
+    fn placing_existing_workflow_is_idempotent_and_preserves_children() -> Result<(), EngineError> {
+        let tree = SupervisionTree::new();
+
+        let first = tree.place_workflow("checkout", 10)?;
+        tree.record_activity_child(10, 20)?;
+        let second = tree.place_workflow("checkout", 10)?;
+
+        assert_eq!(first, second);
+        assert_eq!(tree.type_supervisor_count()?, 1);
+        let workflow = tree.workflow(10)?;
+        assert!(workflow.is_some());
+        if let Some(workflow) = workflow {
+            assert!(workflow.has_activity_child(20));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_pid_cannot_move_between_type_supervisors() -> Result<(), EngineError> {
+        let tree = SupervisionTree::new();
+
+        tree.place_workflow("checkout", 10)?;
+        let error = tree.place_workflow("billing", 10);
+
+        assert!(matches!(error, Err(EngineError::Runtime { .. })));
+        assert_eq!(tree.type_supervisor_count()?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn activity_child_cannot_alias_workflow_process() -> Result<(), EngineError> {
+        let tree = SupervisionTree::new();
+
+        tree.place_workflow("checkout", 10)?;
+        assert!(matches!(
+            tree.record_activity_child(10, 10),
+            Err(EngineError::Runtime { .. })
+        ));
+        Ok(())
     }
 
     #[test]
