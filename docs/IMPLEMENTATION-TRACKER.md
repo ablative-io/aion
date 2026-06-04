@@ -126,10 +126,10 @@ Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 - [x] **AE-001** — aion crate scaffold, EngineError taxonomy · _landed a8ff4db_
 
 ### Wave 16 (4 parallel)
-- [ ] **AE-002** — beamr runtime embedding, RuntimeHandle · _depends: AE-001_
-- [ ] **AE-004** — Active-execution registry, WorkflowHandle · _depends: AE-001_
-- [ ] **AD-001** — Durability module scaffold, error taxonomy · _depends: AE-001_
-- [ ] **AT-001** — Engine seam, module scaffolding · _depends: AE-001_
+- [x] **AE-002** — beamr runtime embedding, RuntimeHandle · _landed 01ef6bc_
+- [x] **AE-004** — Active-execution registry, WorkflowHandle · _landed a531e3e_
+- [x] **AD-001** — Durability module scaffold, error taxonomy · _landed 9609ec6_
+- [x] **AT-001** — Engine seam, module scaffolding · _landed 166c40b_
 
 ### Wave 17 (10 parallel — peak)
 - [ ] **AE-003** — NIF registration surface · _depends: AE-002_
