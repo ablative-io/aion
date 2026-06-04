@@ -1,1 +1,1 @@
-Harden libSQL append rollback and conflict normalization
+fix(aion-store-libsql): harden durable timer timestamp encoding
