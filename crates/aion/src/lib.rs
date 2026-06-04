@@ -17,3 +17,4 @@ pub mod supervision;
 pub mod time;
 
 pub use error::EngineError;
+pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
