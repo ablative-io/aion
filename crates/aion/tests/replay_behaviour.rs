@@ -10,7 +10,7 @@ use aion::durability::{
     Recorder, Replay, ReplayOutcome, ReplayStep, ReplayTerminal, Resolution,
 };
 use aion_core::{
-    ActivityError, ActivityErrorKind, ActivityId, Payload, RunId, TimerId, WorkflowId,
+    ActivityError, ActivityErrorKind, ActivityId, Event, Payload, RunId, TimerId, WorkflowId,
 };
 use aion_store::{EventStore, InMemoryStore};
 use async_trait::async_trait;
@@ -193,6 +193,42 @@ async fn record_round_trip_history(
     Ok(store.read_history(&workflow_id()).await?)
 }
 
+fn assert_round_trip_history_shape(
+    history: &[Event],
+) -> Result<Vec<DateTime<Utc>>, Box<dyn std::error::Error>> {
+    assert_eq!(history.len(), 9);
+    let recorded_timestamps = history
+        .iter()
+        .map(|event| *event.recorded_at())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded_timestamps,
+        vec![
+            timestamp(10)?,
+            timestamp(20)?,
+            timestamp(30)?,
+            timestamp(40)?,
+            timestamp(50)?,
+            timestamp(60)?,
+            timestamp(70)?,
+            timestamp(80)?,
+            timestamp(90)?,
+        ]
+    );
+
+    assert!(matches!(history[0], Event::WorkflowStarted { .. }));
+    assert!(matches!(history[1], Event::ActivityScheduled { .. }));
+    assert!(matches!(history[2], Event::ActivityCompleted { .. }));
+    assert!(matches!(history[3], Event::ActivityScheduled { .. }));
+    assert!(matches!(history[4], Event::ActivityCompleted { .. }));
+    assert!(matches!(history[5], Event::TimerStarted { .. }));
+    assert!(matches!(history[6], Event::TimerFired { .. }));
+    assert!(matches!(history[7], Event::SignalReceived { .. }));
+    assert!(matches!(history[8], Event::WorkflowCompleted { .. }));
+
+    Ok(recorded_timestamps)
+}
+
 async fn record_partial_history(
     store: Arc<dyn EventStore>,
 ) -> Result<Vec<aion_core::Event>, Box<dyn std::error::Error>> {
@@ -318,6 +354,7 @@ async fn record_then_replay_round_trip_reaches_terminal_without_resume_live()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let history = record_round_trip_history(store).await?;
+    assert_round_trip_history_shape(&history)?;
     let workflow_id = workflow_id();
     let run_id = run_id();
     let mut replay = Replay::new(&workflow_id, &run_id, history)?;
@@ -350,6 +387,7 @@ async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let history = record_round_trip_history(store).await?;
     let workflow_id = workflow_id();
+    let recorded_timestamps = assert_round_trip_history_shape(&history)?;
     let run_id = run_id();
     let mut replay = Replay::new(&workflow_id, &run_id, history.clone())?;
 
@@ -380,21 +418,26 @@ async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
     assert_eq!(replay.now(), timestamp(80)?);
 
     let mut first_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
+    assert_eq!(first_replay.now(), recorded_timestamps[0]);
     let mut second_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
-    let same_run_draws = (0..8)
-        .map(|_| first_replay.determinism_mut().next_random_u64())
-        .collect::<Vec<_>>();
-    let repeated_same_run_draws = (0..8)
-        .map(|_| second_replay.determinism_mut().next_random_u64())
-        .collect::<Vec<_>>();
-    assert_eq!(same_run_draws, repeated_same_run_draws);
+    assert_eq!(second_replay.now(), recorded_timestamps[0]);
+    let mut same_run_bytes = [0_u8; 64];
+    let mut repeated_same_run_bytes = [0_u8; 64];
+    first_replay
+        .determinism_mut()
+        .fill_random_bytes(&mut same_run_bytes);
+    second_replay
+        .determinism_mut()
+        .fill_random_bytes(&mut repeated_same_run_bytes);
+    assert_eq!(same_run_bytes, repeated_same_run_bytes);
 
     let different_run_id = different_run_id();
     let mut different_run_replay = Replay::new(&workflow_id, &different_run_id, history)?;
-    let different_run_draws = (0..8)
-        .map(|_| different_run_replay.determinism_mut().next_random_u64())
-        .collect::<Vec<_>>();
-    assert_ne!(same_run_draws, different_run_draws);
+    let mut different_run_bytes = [0_u8; 64];
+    different_run_replay
+        .determinism_mut()
+        .fill_random_bytes(&mut different_run_bytes);
+    assert_ne!(same_run_bytes, different_run_bytes);
     Ok(())
 }
 

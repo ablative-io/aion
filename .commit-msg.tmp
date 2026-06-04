@@ -1,1 +1,1 @@
-test(aion): add durability record replay round trip
+test(aion): harden AD-010 replay round-trip coverage
