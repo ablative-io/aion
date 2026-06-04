@@ -1,12 +1,20 @@
 //! Resolver: recorded/resume-live/violation decision.
 
-use aion_core::{Event, WorkflowId};
+use aion_core::{Event, WorkflowError, WorkflowId};
+use chrono::{DateTime, Utc};
 
 use crate::durability::{
     Command, CorrelationKey, CursorResolveResult, DurabilityError, HistoryCursor,
-    NonDeterminismError, RecordedEventFamily, Resolution, ResolveOutcome,
+    NonDeterminismError, RecordedEventFamily, Recorder, Resolution, ResolveOutcome,
     cursor::FoundEventDescriptor,
 };
+
+/// Stable [`WorkflowError::message`] prefix used when a replay violation fails a workflow.
+///
+/// Until `aion-core` grows a dedicated workflow-error classification enum, AE can surface this
+/// prefix as the non-determinism failure classification for terminal [`Event::WorkflowFailed`]
+/// records produced by [`fail_on_violation`].
+pub const NON_DETERMINISM_WORKFLOW_ERROR_PREFIX: &str = "non-determinism violation";
 
 /// Single durability chokepoint that resolves workflow commands against recorded history.
 #[derive(Clone, Debug)]
@@ -66,6 +74,29 @@ impl Resolver {
             ),
         }
     }
+}
+
+/// Records the deterministic terminal failure caused by a replay non-determinism violation.
+///
+/// The supplied [`Recorder`] remains the only append path, preserving the single-writer sequence
+/// discipline. The caller supplies `recorded_at`; this helper does not read the wall clock for a
+/// workflow-visible terminal event. Call this once at the violation handling site so one violation
+/// produces exactly one [`Event::WorkflowFailed`].
+///
+/// # Errors
+///
+/// Returns [`DurabilityError`] if the recorder cannot append the terminal failure event.
+pub async fn fail_on_violation(
+    recorder: &mut Recorder,
+    recorded_at: DateTime<Utc>,
+    violation: &NonDeterminismError,
+) -> Result<(), DurabilityError> {
+    let error = WorkflowError {
+        message: format!("{NON_DETERMINISM_WORKFLOW_ERROR_PREFIX}: {violation}"),
+        details: None,
+    };
+
+    recorder.record_workflow_failed(recorded_at, error).await
 }
 
 fn family_and_key(command: Command) -> Option<(RecordedEventFamily, CorrelationKey)> {
