@@ -62,19 +62,19 @@ impl EventStore for LibSqlStore {
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError> {
-        crate::append::append(self.connection(), workflow_id, events, expected_seq).await
+        crate::append::append(self.connection(), workflow_id, events, expected_seq)
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
-        crate::read::read_history(self.connection(), workflow_id).await
+        crate::read::read_history(self.connection(), workflow_id)
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
-        crate::read::list_active(self.connection()).await
+        crate::read::list_active(self.connection())
     }
 
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
-        crate::read::query(self.connection(), filter).await
+        crate::read::query(self.connection(), filter)
     }
 
     async fn schedule_timer(
@@ -83,11 +83,11 @@ impl EventStore for LibSqlStore {
         timer_id: &TimerId,
         fire_at: DateTime<Utc>,
     ) -> Result<(), StoreError> {
-        crate::timer::schedule_timer(self.connection(), workflow_id, timer_id, fire_at).await
+        crate::timer::schedule_timer(self.connection(), workflow_id, timer_id, fire_at)
     }
 
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
-        crate::timer::expired_timers(self.connection(), as_of).await
+        crate::timer::expired_timers(self.connection(), as_of)
     }
 }
 

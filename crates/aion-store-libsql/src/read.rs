@@ -3,7 +3,7 @@
 use aion_store::{Event, StoreError, WorkflowFilter, WorkflowId, WorkflowSummary};
 
 /// History reads are wired through `LibSqlStore`; AS-005 replaces this placeholder with SQL.
-pub(crate) async fn read_history(
+pub(crate) fn read_history(
     conn: &libsql::Connection,
     workflow_id: &WorkflowId,
 ) -> Result<Vec<Event>, StoreError> {
@@ -14,7 +14,7 @@ pub(crate) async fn read_history(
 }
 
 /// Active workflow listing is wired through `LibSqlStore`; AS-005 replaces this placeholder.
-pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<WorkflowId>, StoreError> {
+pub(crate) fn list_active(conn: &libsql::Connection) -> Result<Vec<WorkflowId>, StoreError> {
     let _ = conn;
     Err(StoreError::Backend(String::from(
         "LibSqlStore::list_active is wired; active listing is implemented by AS-005",
@@ -22,7 +22,7 @@ pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<Workflo
 }
 
 /// Workflow summary queries are wired through `LibSqlStore`; AS-005 replaces this placeholder.
-pub(crate) async fn query(
+pub(crate) fn query(
     conn: &libsql::Connection,
     filter: &WorkflowFilter,
 ) -> Result<Vec<WorkflowSummary>, StoreError> {

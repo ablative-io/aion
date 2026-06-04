@@ -4,7 +4,7 @@ use aion_store::{StoreError, TimerEntry, TimerId, WorkflowId};
 use chrono::{DateTime, Utc};
 
 /// Timer scheduling is wired through `LibSqlStore`; AS-006 replaces this placeholder with SQL.
-pub(crate) async fn schedule_timer(
+pub(crate) fn schedule_timer(
     conn: &libsql::Connection,
     workflow_id: &WorkflowId,
     timer_id: &TimerId,
@@ -17,7 +17,7 @@ pub(crate) async fn schedule_timer(
 }
 
 /// Due timer reads are wired through `LibSqlStore`; AS-006 replaces this placeholder with SQL.
-pub(crate) async fn expired_timers(
+pub(crate) fn expired_timers(
     conn: &libsql::Connection,
     as_of: DateTime<Utc>,
 ) -> Result<Vec<TimerEntry>, StoreError> {

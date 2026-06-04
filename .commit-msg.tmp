@@ -1,1 +1,1 @@
-feat(aion-store-libsql): wire LibSqlStore construction and EventStore impl
+fix(aion-store-libsql): remove async from placeholder module helpers

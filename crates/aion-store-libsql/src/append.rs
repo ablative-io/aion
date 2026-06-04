@@ -3,7 +3,7 @@
 use aion_store::{Event, StoreError, WorkflowId};
 
 /// Append is wired through `LibSqlStore`; AS-004 replaces this placeholder with atomic SQL.
-pub(crate) async fn append(
+pub(crate) fn append(
     conn: &libsql::Connection,
     workflow_id: &WorkflowId,
     events: &[Event],
