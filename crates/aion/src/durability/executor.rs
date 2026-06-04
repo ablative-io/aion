@@ -13,7 +13,7 @@ use crate::durability::{
 pub enum LiveActivityOutcome {
     /// The activity completed successfully with an opaque result payload.
     Completed(Payload),
-    /// The activity reached its terminal failure state.
+    /// The activity reached its terminal failure state after live retry policy was exhausted.
     Failed(ActivityError),
 }
 
@@ -182,6 +182,7 @@ async fn execute_live_and_record(
                     )))
                 }
                 LiveActivityOutcome::Failed(error) => {
+                    ensure_terminal_activity_error(&error)?;
                     recorder
                         .record_activity_failed(recorded_at, activity_id, error.clone(), 1)
                         .await?;
@@ -193,10 +194,10 @@ async fn execute_live_and_record(
         }
         Command::StartTimer { key, fire_at } => {
             let timer_id = timer_id_from_key(&key)?;
-            executor.start_timer(timer_id.clone(), fire_at).await?;
             recorder
-                .record_timer_started(recorded_at, timer_id, fire_at)
+                .record_timer_started(recorded_at, timer_id.clone(), fire_at)
                 .await?;
+            executor.start_timer(timer_id, fire_at).await?;
             Ok(HandoffOutcome::Resolved(Resolution::TimerFired))
         }
         Command::AwaitSignal { key } => {
@@ -239,6 +240,17 @@ async fn execute_live_and_record(
             Ok(HandoffOutcome::WorkflowCompleted)
         }
     }
+}
+
+fn ensure_terminal_activity_error(error: &ActivityError) -> Result<(), DurabilityError> {
+    if error.is_retryable() {
+        return Err(DurabilityError::HistoryShape {
+            reason: "live activity failure must be terminal before AD can record a terminal \
+                     resolution"
+                .to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn activity_id_from_key(key: &CorrelationKey) -> Result<ActivityId, DurabilityError> {

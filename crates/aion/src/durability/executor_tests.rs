@@ -3,7 +3,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use aion_core::{ActivityId, Event, EventEnvelope, Payload, TimerId, WorkflowId};
+use aion_core::{
+    ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, Payload, TimerId,
+    WorkflowId,
+};
 use aion_store::{EventStore, InMemoryStore};
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::json;
@@ -238,6 +241,49 @@ impl LiveExecutor for RecordingExecutor {
     }
 }
 
+struct RetryableFailureExecutor;
+
+#[async_trait::async_trait]
+impl LiveExecutor for RetryableFailureExecutor {
+    async fn run_activity(
+        &self,
+        _activity_type: String,
+        _input: Payload,
+    ) -> Result<LiveActivityOutcome, DurabilityError> {
+        Ok(LiveActivityOutcome::Failed(ActivityError {
+            kind: ActivityErrorKind::Retryable,
+            message: "retryable live failure must not be recorded as terminal".to_owned(),
+            details: None,
+        }))
+    }
+
+    async fn start_timer(
+        &self,
+        _timer_id: TimerId,
+        _fire_at: DateTime<Utc>,
+    ) -> Result<(), DurabilityError> {
+        Err(DurabilityError::HistoryShape {
+            reason: "retryable failure executor does not support timers".to_owned(),
+        })
+    }
+
+    async fn await_signal(&self, _name: String, _index: usize) -> Result<Payload, DurabilityError> {
+        Err(DurabilityError::HistoryShape {
+            reason: "retryable failure executor does not support signals".to_owned(),
+        })
+    }
+
+    async fn spawn_child(
+        &self,
+        _workflow_type: String,
+        _input: Payload,
+    ) -> Result<LiveChildOutcome, DurabilityError> {
+        Err(DurabilityError::HistoryShape {
+            reason: "retryable failure executor does not support children".to_owned(),
+        })
+    }
+}
+
 #[test]
 fn live_executor_is_object_safe() {
     let _: Option<Arc<dyn LiveExecutor>> = None;
@@ -318,6 +364,40 @@ async fn recorded_history_returns_resolutions_without_live_calls()
         )
         .await?,
         HandoffOutcome::Resolved(Resolution::ChildCompleted(child_result))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_live_activity_rejects_retryable_failure_without_recording_terminal_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(InMemoryStore::default());
+    let workflow_id = workflow_id();
+    let store_for_recorder: Arc<dyn EventStore> = store.clone();
+    let mut resolver = resolver_for(Vec::new())?;
+    let mut recorder = Recorder::new(workflow_id.clone(), store_for_recorder);
+    let executor = RetryableFailureExecutor;
+
+    let error = resolve_or_execute_live(
+        &mut resolver,
+        &mut recorder,
+        &executor,
+        run_activity_command(0)?,
+        timestamp(50)?,
+    )
+    .await
+    .err()
+    .ok_or_else(|| "retryable failure was unexpectedly accepted".to_owned())?;
+
+    assert!(matches!(error, DurabilityError::HistoryShape { .. }));
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[0], Event::ActivityScheduled { .. }));
+    assert!(matches!(history[1], Event::ActivityStarted { .. }));
+    assert!(
+        history
+            .iter()
+            .all(|event| !matches!(event, Event::ActivityFailed { .. }))
     );
     Ok(())
 }
