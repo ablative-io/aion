@@ -206,9 +206,7 @@ mod tests {
                 assert_eq!(workflow_type, "checkout");
                 assert_eq!(recorded_input, &input);
             }
-            other => {
-                return Err(format!("expected WorkflowStarted, found {other:?}").into())
-            }
+            other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
         }
         assert_eq!(registry.list()?.len(), 0);
         runtime.shutdown()?;
@@ -264,9 +262,7 @@ mod tests {
                 assert_eq!(workflow_type, "checkout");
                 assert_eq!(recorded_input, &input);
             }
-            other => {
-                return Err(format!("expected WorkflowStarted, found {other:?}").into())
-            }
+            other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
         }
         runtime.shutdown()?;
         Ok(())

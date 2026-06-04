@@ -225,11 +225,7 @@ async fn repopulate_active_workflows(
             loaded_workflows,
         )?;
         let history_len = u64::try_from(history.len()).unwrap_or(u64::MAX);
-        let recorder = Recorder::resume_at(
-            workflow_id.clone(),
-            Arc::clone(&store),
-            history_len,
-        );
+        let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_len);
         let completion = CompletionNotifier::new();
         let handle = WorkflowHandle::new(WorkflowHandleParts {
             workflow_id: workflow_id.clone(),

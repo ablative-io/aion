@@ -52,10 +52,11 @@ impl CompletionNotifier {
 
     /// Publishes the terminal outcome to all current and future subscribers.
     ///
-    /// Returns true when at least one receiver observed or can observe the value.
-    #[must_use]
-    pub fn notify(&self, outcome: TerminalOutcome) -> bool {
-        self.sender.send(Some(outcome)).is_ok()
+    /// The value is stored even when no result waiter is currently subscribed, so
+    /// a waiter that subscribed from a still-held handle before deregistration can
+    /// observe the terminal outcome instead of hanging on an unfulfilled channel.
+    pub fn notify(&self, outcome: TerminalOutcome) {
+        drop(self.sender.send_replace(Some(outcome)));
     }
 
     /// Returns true once a terminal outcome has been published.
@@ -228,3 +229,33 @@ impl PartialEq for WorkflowHandle {
 }
 
 impl Eq for WorkflowHandle {}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{CompletionNotifier, TerminalOutcome};
+
+    fn payload(label: &str) -> Result<aion_core::Payload, aion_core::PayloadError> {
+        aion_core::Payload::from_json(&json!({ "label": label }))
+    }
+
+    #[test]
+    fn completion_notifier_stores_outcome_without_active_receiver()
+    -> Result<(), aion_core::PayloadError> {
+        let notifier = CompletionNotifier::new();
+        let receiver = notifier.subscribe();
+        drop(receiver);
+        let result = payload("completed")?;
+
+        notifier.notify(TerminalOutcome::Completed(result.clone()));
+        let late_receiver = notifier.subscribe();
+
+        assert_eq!(
+            late_receiver.borrow().clone(),
+            Some(TerminalOutcome::Completed(result))
+        );
+        assert!(notifier.is_completed());
+        Ok(())
+    }
+}
