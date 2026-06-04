@@ -1,1 +1,1 @@
-harden(aion): support dyn engine handles in query service
+fix(aion): harden child workflow spawn await semantics
