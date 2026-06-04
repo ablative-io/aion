@@ -9,8 +9,9 @@ use chrono::Utc;
 use crate::engine_seam::{
     EngineHandle, EngineSeamError, WorkflowMailboxMessage, WorkflowResidency,
 };
+use crate::signal::resume::{SignalResumeError, SignalResumeHandoff};
 
-/// Routes durable signals into resident workflow mailboxes.
+/// Routes durable signals into resident workflow mailboxes or resume handoff queues.
 ///
 /// The router consumes AE/AD's engine seam for residency resolution, recorder access, and mailbox
 /// delivery. It keeps the configured event store handle as part of the durable interaction service,
@@ -19,15 +20,27 @@ use crate::engine_seam::{
 pub struct SignalRouter {
     engine: Arc<dyn EngineHandle>,
     event_store: Arc<dyn EventStore>,
+    resume_handoff: Arc<SignalResumeHandoff>,
 }
 
 impl SignalRouter {
     /// Creates a signal router backed by the engine seam and configured event store.
     #[must_use]
     pub fn new(engine: Arc<dyn EngineHandle>, event_store: Arc<dyn EventStore>) -> Self {
+        Self::with_resume_handoff(engine, event_store, Arc::new(SignalResumeHandoff::new()))
+    }
+
+    /// Creates a signal router with a caller-supplied deferred resume handoff registry.
+    #[must_use]
+    pub fn with_resume_handoff(
+        engine: Arc<dyn EngineHandle>,
+        event_store: Arc<dyn EventStore>,
+        resume_handoff: Arc<SignalResumeHandoff>,
+    ) -> Self {
         Self {
             engine,
             event_store,
+            resume_handoff,
         }
     }
 
@@ -37,26 +50,29 @@ impl SignalRouter {
         Arc::clone(&self.event_store)
     }
 
-    /// Records a signal observation and then delivers it to a resident workflow mailbox.
+    /// Returns the deferred resume handoff registry used by this router.
+    #[must_use]
+    pub fn resume_handoff(&self) -> Arc<SignalResumeHandoff> {
+        Arc::clone(&self.resume_handoff)
+    }
+
+    /// Records a signal observation and delivers or defers it according to workflow residency.
     ///
     /// # Errors
     ///
-    /// Returns [`SignalRouterError`] when the target workflow is not resident, recorder append fails,
-    /// or mailbox delivery fails. Recorder failure returns before delivery, guaranteeing there is no
-    /// silent mailbox observation without a durable `SignalReceived` event.
+    /// Returns [`SignalRouterError`] when the target workflow is terminal or unknown, recorder append
+    /// fails, deferred registration fails, or mailbox delivery fails. Recorder failure returns before
+    /// delivery or deferral, guaranteeing there is no silent observation without a durable
+    /// `SignalReceived` event.
     pub fn signal(
         &self,
         workflow_id: &WorkflowId,
         name: impl Into<String>,
         payload: Payload,
     ) -> Result<(), SignalRouterError> {
-        let process = match self.engine.resolve_workflow(workflow_id)? {
-            WorkflowResidency::Resident(process) => process,
-            WorkflowResidency::NonResident => {
-                return Err(SignalRouterError::NonResident {
-                    workflow_id: workflow_id.clone(),
-                });
-            }
+        let residency = match self.engine.resolve_workflow(workflow_id)? {
+            WorkflowResidency::Resident(process) => ResolvedSignalTarget::Resident(process),
+            WorkflowResidency::NonResident => ResolvedSignalTarget::NonResident,
             WorkflowResidency::Terminal => {
                 return Err(SignalRouterError::Terminal {
                     workflow_id: workflow_id.clone(),
@@ -84,25 +100,30 @@ impl SignalRouter {
             .record_workflow_event(workflow_id, event)
             .map_err(SignalRouterError::Record)?;
 
-        self.engine
-            .deliver_workflow_message(
-                process,
-                WorkflowMailboxMessage::SignalReceived { name, payload },
-            )
-            .map_err(SignalRouterError::Deliver)
+        match residency {
+            ResolvedSignalTarget::Resident(process) => self
+                .engine
+                .deliver_workflow_message(
+                    process,
+                    WorkflowMailboxMessage::SignalReceived { name, payload },
+                )
+                .map_err(SignalRouterError::Deliver),
+            ResolvedSignalTarget::NonResident => self
+                .resume_handoff
+                .defer(workflow_id.clone(), name, payload)
+                .map_err(SignalRouterError::Defer),
+        }
     }
+}
+
+enum ResolvedSignalTarget {
+    Resident(crate::engine_seam::WorkflowProcessHandle),
+    NonResident,
 }
 
 /// Errors returned by [`SignalRouter`].
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum SignalRouterError {
-    /// AE reported the workflow is known but currently not resident.
-    #[error("workflow {workflow_id} is not resident")]
-    NonResident {
-        /// Workflow that had no current live process.
-        workflow_id: WorkflowId,
-    },
-
     /// AE reported the workflow is terminal.
     #[error("workflow {workflow_id} is terminal")]
     Terminal {
@@ -128,6 +149,10 @@ pub enum SignalRouterError {
     /// Delivering an already-recorded signal to the mailbox failed.
     #[error("signal delivery failed: {0}")]
     Deliver(EngineSeamError),
+
+    /// Registering an already-recorded signal for resume handoff failed.
+    #[error("signal resume handoff failed: {0}")]
+    Defer(SignalResumeError),
 }
 
 #[cfg(test)]
@@ -238,6 +263,103 @@ mod tests {
                 },
             )]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn non_resident_signal_records_defers_and_handoff_delivers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = Arc::new(FakeEngineHandle::new());
+        let router = SignalRouter::new(engine.clone(), Arc::new(InMemoryStore::default()));
+        let handoff = router.resume_handoff();
+        let workflow_id = WorkflowId::new_v4();
+        let process = WorkflowProcessHandle::new(123);
+        let payload = payload(b"{\"resume\":true}".to_vec());
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::NonResident)?;
+
+        router.signal(&workflow_id, "resume", payload.clone())?;
+
+        assert_eq!(handoff.pending_count(&workflow_id)?, 1);
+        assert!(engine.delivered_messages()?.is_empty());
+        let recorded = engine.recorded_events()?;
+        assert_eq!(recorded.len(), 1);
+        if let Event::SignalReceived {
+            name,
+            payload: recorded_payload,
+            envelope,
+        } = &recorded[0].1
+        {
+            assert_eq!(recorded[0].0, workflow_id);
+            assert_eq!(envelope.workflow_id, workflow_id);
+            assert_eq!(name, "resume");
+            assert_eq!(recorded_payload, &payload);
+        } else {
+            return Err(std::io::Error::other("SignalReceived was not recorded").into());
+        }
+
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        assert_eq!(handoff.deliver_deferred(engine.as_ref(), &workflow_id)?, 1);
+
+        assert_eq!(
+            engine.delivered_messages()?,
+            vec![(
+                process,
+                DeliveredWorkflowMessage::SignalReceived {
+                    name: "resume".to_owned(),
+                    payload,
+                },
+            )]
+        );
+        assert_eq!(handoff.pending_count(&workflow_id)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_signal_returns_typed_error_and_records_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = Arc::new(FakeEngineHandle::new());
+        let router = SignalRouter::new(engine.clone(), Arc::new(InMemoryStore::default()));
+        let workflow_id = WorkflowId::new_v4();
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Terminal)?;
+
+        let error = router
+            .signal(&workflow_id, "ignored", payload(b"null".to_vec()))
+            .err()
+            .ok_or_else(|| std::io::Error::other("terminal workflow was not rejected"))?;
+
+        assert_eq!(
+            error,
+            SignalRouterError::Terminal {
+                workflow_id: workflow_id.clone()
+            }
+        );
+        assert!(engine.recorded_events()?.is_empty());
+        assert!(engine.operations()?.is_empty());
+        assert!(engine.delivered_messages()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_signal_returns_typed_error_and_records_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = Arc::new(FakeEngineHandle::new());
+        let router = SignalRouter::new(engine.clone(), Arc::new(InMemoryStore::default()));
+        let workflow_id = WorkflowId::new_v4();
+
+        let error = router
+            .signal(&workflow_id, "ignored", payload(b"null".to_vec()))
+            .err()
+            .ok_or_else(|| std::io::Error::other("unknown workflow was not rejected"))?;
+
+        assert_eq!(
+            error,
+            SignalRouterError::Unknown {
+                workflow_id: workflow_id.clone()
+            }
+        );
+        assert!(engine.recorded_events()?.is_empty());
+        assert!(engine.operations()?.is_empty());
+        assert!(engine.delivered_messages()?.is_empty());
         Ok(())
     }
 
