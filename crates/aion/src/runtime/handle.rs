@@ -41,6 +41,10 @@ pub struct RuntimeHandle {
 
 impl RuntimeHandle {
     /// Construct and start an embedded runtime from builder-supplied config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when beamr cannot start its scheduler.
     pub fn new(config: RuntimeConfig) -> Result<Self, EngineError> {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let module_registry = Arc::new(ModuleRegistry::new());
@@ -53,7 +57,7 @@ impl RuntimeHandle {
             Arc::clone(&atom_table),
             Arc::new(BifRegistryImpl::new()),
         )
-        .map_err(runtime_error)?;
+        .map_err(runtime_error_from_display)?;
 
         Ok(Self {
             scheduler,
@@ -63,6 +67,11 @@ impl RuntimeHandle {
     }
 
     /// Spawn a top-level workflow process at a deployed module/function entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the module/function/arity cannot be
+    /// resolved or beamr rejects the spawn request.
     pub fn spawn_workflow(
         &self,
         deployed_module: &str,
@@ -73,6 +82,12 @@ impl RuntimeHandle {
     }
 
     /// Spawn an activity child process linked to its workflow parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the parent process is not live, the
+    /// module/function/arity cannot be resolved, or beamr rejects the linked
+    /// spawn request.
     pub fn spawn_activity(
         &self,
         parent_pid: Pid,
@@ -85,10 +100,16 @@ impl RuntimeHandle {
         let function = self.atom_table.intern(function);
         self.scheduler
             .spawn_link(parent_pid, module, function, input.into_terms())
-            .map_err(runtime_error)
+            .map_err(runtime_error_from_display)
     }
 
     /// Register transformed BEAM bytes under their already-deployed module name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when beamr cannot load the module bytes,
+    /// cannot resolve the loaded module name, or the loaded name does not match
+    /// `deployed_name`.
     pub fn register_module(
         &self,
         deployed_name: &str,
@@ -97,7 +118,7 @@ impl RuntimeHandle {
         let loaded = self
             .scheduler
             .hot_load_module(beam_bytes)
-            .map_err(runtime_error)?;
+            .map_err(runtime_error_from_display)?;
         let loaded_name = self
             .atom_table
             .resolve(loaded.module_name)
@@ -113,6 +134,10 @@ impl RuntimeHandle {
     }
 
     /// Cancel a live process by PID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when `pid` is not live.
     pub fn cancel_pid(&self, pid: Pid) -> Result<(), EngineError> {
         self.ensure_live_pid(pid)?;
         self.scheduler.terminate_process(pid, ExitReason::Kill);
@@ -120,6 +145,10 @@ impl RuntimeHandle {
     }
 
     /// Shut down the embedded scheduler and wait for worker threads to stop.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
         self.scheduler.shutdown();
         Ok(())
@@ -135,7 +164,7 @@ impl RuntimeHandle {
         let function = self.atom_table.intern(function);
         self.scheduler
             .spawn(module, function, input.into_terms())
-            .map_err(runtime_error)
+            .map_err(runtime_error_from_display)
     }
 
     fn ensure_live_pid(&self, pid: Pid) -> Result<(), EngineError> {
@@ -154,10 +183,12 @@ impl RuntimeHandle {
     }
 }
 
-fn runtime_error(reason: impl ToString) -> EngineError {
-    EngineError::Runtime {
-        reason: reason.to_string(),
-    }
+fn runtime_error(reason: String) -> EngineError {
+    EngineError::Runtime { reason }
+}
+
+fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
+    runtime_error(reason.to_string())
 }
 
 #[cfg(test)]
@@ -167,13 +198,13 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
-    fn fixture(name: &str) -> Vec<u8> {
+    fn fixture(name: &str) -> std::io::Result<Vec<u8>> {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
             .join("runtime")
             .join(name);
-        std::fs::read(path).unwrap_or_else(|error| panic!("read fixture {name}: {error}"))
+        std::fs::read(path)
     }
 
     #[test]
@@ -182,19 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn registers_spawns_and_shuts_down() {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))
-            .unwrap_or_else(|error| panic!("runtime starts: {error}"));
-        runtime
-            .register_module("counter", &fixture("counter_v1.beam"))
-            .unwrap_or_else(|error| panic!("module registers: {error}"));
+    fn registers_spawns_and_shuts_down() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        runtime.register_module("counter", &fixture("counter_v1.beam")?)?;
 
-        let pid = runtime
-            .spawn_workflow("counter", "version", RuntimeInput::default())
-            .unwrap_or_else(|error| panic!("workflow spawns: {error}"));
+        let pid = runtime.spawn_workflow("counter", "version", RuntimeInput::default())?;
         assert!(runtime.cancel_pid(pid).is_ok());
-        runtime
-            .shutdown()
-            .unwrap_or_else(|error| panic!("runtime shuts down: {error}"));
+        runtime.shutdown()?;
+        Ok(())
     }
 }

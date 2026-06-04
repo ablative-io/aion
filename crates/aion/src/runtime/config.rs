@@ -1,7 +1,7 @@
 //! Builder-supplied scheduler configuration for the embedded runtime.
 
 /// Configuration used when constructing the embedded BEAM runtime.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeConfig {
     /// Optional scheduler thread count supplied by the engine builder.
     ///
