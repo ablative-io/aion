@@ -6,3 +6,4 @@ pub mod nif;
 
 pub use config::RuntimeConfig;
 pub use handle::{Pid, RuntimeHandle, RuntimeInput};
+pub use nif::{Mfa, NifEntry, NifRegistration};
