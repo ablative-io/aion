@@ -13,3 +13,5 @@ pub mod resolver;
 pub mod seq;
 
 pub use error::{DurabilityError, NonDeterminismError};
+pub use recorder::Recorder;
+pub use seq::SequenceHead;
