@@ -144,14 +144,14 @@ Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 - [x] **AT-008** — Child workflow spawning (linked process) · _landed cf55daa_
 
 ### Wave 18 (8 parallel)
-- [ ] **AE-007** — In-VM activity dispatch · _depends: AE-002, AE-003, AE-006_
-- [ ] **AE-008** — Workflow start lifecycle · _depends: AE-004, AE-005, AE-006, AD-002_
-- [ ] **AE-011** — EngineBuilder and build() · _depends: AE-003, AE-004, AE-005, AE-006_
-- [ ] **AD-004** — Command, Resolution, Resolver · _depends: AD-003_
-- [ ] **AT-003** — Timer recovery (startup sweep, periodic tick) · _depends: AT-002_
-- [ ] **AT-004** — Named cancellable timers, anonymous sleeps · _depends: AT-002_
-- [ ] **AT-006** — Non-resident signal delivery, terminal handling · _depends: AT-005_
-- [ ] **AT-009** — Concurrency correlation, cancellation · _depends: AT-008_
+- [x] **AE-007** — In-VM activity dispatch · _landed a58093c_
+- [x] **AE-008** — Workflow start lifecycle · _landed a814752_
+- [x] **AE-011** — EngineBuilder and build() · _landed 2525dac_
+- [x] **AD-004** — Command, Resolution, Resolver · _landed 830ad43_
+- [x] **AT-003** — Timer recovery (startup sweep, periodic tick) · _landed cfc2806_
+- [x] **AT-004** — Named cancellable timers, anonymous sleeps · _landed 42d6e75_
+- [x] **AT-006** — Non-resident signal delivery, terminal handling · _landed c5e72eb_
+- [x] **AT-009** — Concurrency correlation, cancellation · _landed 35c2181_
 
 ### Wave 19 (6 parallel)
 - [ ] **AE-009** — Cancel, complete, fail lifecycle · _depends: AE-008, AD-002_
