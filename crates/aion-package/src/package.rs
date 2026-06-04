@@ -114,6 +114,26 @@ impl Package {
         &self.content_hash
     }
 
+    /// Constructs a package from already-validated parts.
+    ///
+    /// This is intended for crates that need to exercise defensive handling of
+    /// impossible-on-disk states after the normal package loader has run.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_validated_parts(
+        manifest: Manifest,
+        beams: BeamSet,
+        source: BTreeMap<String, Vec<u8>>,
+        content_hash: ContentHash,
+    ) -> Self {
+        Self {
+            manifest,
+            beams,
+            source,
+            content_hash,
+        }
+    }
+
     /// Produces the canonical cross-system version record for this loaded package.
     #[must_use]
     pub fn version_record(&self) -> WorkflowVersion {

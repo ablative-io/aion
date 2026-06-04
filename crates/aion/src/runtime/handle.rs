@@ -181,6 +181,18 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_name);
         self.module_registry.lookup(module).is_some()
     }
+
+    /// Remove a module registered during a failed staged package load.
+    pub(crate) fn unregister_module(&self, deployed_name: &str) -> Result<(), EngineError> {
+        let module = self.atom_table.intern(deployed_name);
+        if self.module_registry.delete_module(module) {
+            Ok(())
+        } else {
+            Err(runtime_error(format!(
+                "module `{deployed_name}` was not registered"
+            )))
+        }
+    }
 }
 
 fn runtime_error(reason: String) -> EngineError {
