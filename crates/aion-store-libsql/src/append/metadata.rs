@@ -37,8 +37,8 @@ pub(super) fn projection_flag(event: &Event) -> i64 {
 
 pub(super) fn workflow_type(event: &Event) -> Option<&str> {
     match event {
-        Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.as_str()),
-        Event::ChildWorkflowStarted { workflow_type, .. } => Some(workflow_type.as_str()),
+        Event::WorkflowStarted { workflow_type, .. }
+        | Event::ChildWorkflowStarted { workflow_type, .. } => Some(workflow_type.as_str()),
         _ => None,
     }
 }
