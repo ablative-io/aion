@@ -33,7 +33,7 @@ pub struct StartWorkflowContext<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`EngineError::WorkflowTypeNotFound`] before appending anything when
+/// Returns [`EngineError::WorkflowNotFound`] before appending anything when
 /// `workflow_type` is not loaded. Recorder failures surface as
 /// [`EngineError::Durability`] and stop before any process is spawned. Runtime,
 /// supervision, and registry failures surface as their typed [`EngineError`]
@@ -46,7 +46,7 @@ pub async fn start_workflow(
     let loaded = context
         .loaded_workflows
         .latest(workflow_type)
-        .ok_or_else(|| EngineError::WorkflowTypeNotFound {
+        .ok_or_else(|| EngineError::WorkflowNotFound {
             workflow_type: workflow_type.to_owned(),
         })?;
 
@@ -165,7 +165,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(EngineError::WorkflowTypeNotFound { workflow_type }) if workflow_type == "checkout"
+            Err(EngineError::WorkflowNotFound { workflow_type }) if workflow_type == "checkout"
         ));
         assert_eq!(store.list_active().await?, Vec::new());
         assert_eq!(registry.list()?.len(), 0);
@@ -213,35 +213,58 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn start_handle_registers_running_resident_handle_with_notifier() {
+    #[tokio::test]
+    async fn successful_start_appends_spawns_places_registers_and_returns_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
         let store = Arc::new(InMemoryStore::default());
+        let deployed_module = "checkout__deployed";
+        let loaded = load_without_runtime_registration("checkout");
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        runtime.register_waiting_test_module(deployed_module, "run");
+        let supervision = SupervisionTree::new();
         let registry = Registry::default();
-        let workflow_id = aion_core::WorkflowId::new_v4();
-        let run_id = aion_core::RunId::new_v4();
-        let recorder = crate::durability::Recorder::new(workflow_id.clone(), store);
-        let handle = crate::registry::WorkflowHandle::new(crate::registry::WorkflowHandleParts {
-            workflow_id: workflow_id.clone(),
-            run_id: run_id.clone(),
-            pid: 42,
-            workflow_type: "checkout".to_owned(),
-            loaded_version: ContentHash::from_bytes([7; 32]),
-            cached_status: aion_core::WorkflowStatus::Running,
-            residency: HandleResidency::Resident,
-            recorder,
-            completion: crate::registry::CompletionNotifier::new(),
-        });
+        let input = payload("input")?;
 
-        assert!(
-            registry
-                .insert((workflow_id.clone(), run_id.clone()), handle.clone())
-                .is_ok()
-        );
-        let registered = registry.get(&workflow_id, &run_id);
+        let handle = start_workflow(
+            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            "checkout",
+            input.clone(),
+        )
+        .await?;
 
-        assert!(matches!(registered, Ok(Some(ref value)) if value == &handle));
+        assert_eq!(handle.workflow_type(), "checkout");
+        assert_eq!(handle.loaded_version(), &ContentHash::from_bytes([3; 32]));
         assert_eq!(handle.cached_status(), aion_core::WorkflowStatus::Running);
         assert_eq!(handle.residency(), HandleResidency::Resident);
         assert!(!handle.completion().is_completed());
+        assert!(runtime.trap_exit(handle.pid())?);
+        assert_eq!(
+            supervision
+                .workflow(handle.pid())?
+                .map(|node| node.workflow_pid()),
+            Some(handle.pid())
+        );
+
+        let registered = registry.get(handle.workflow_id(), handle.run_id())?;
+        assert_eq!(registered, Some(handle.clone()));
+        let active = store.list_active().await?;
+        assert_eq!(active, vec![handle.workflow_id().clone()]);
+        let history = store.read_history(handle.workflow_id()).await?;
+        assert_eq!(history.len(), 1);
+        match &history[0] {
+            Event::WorkflowStarted {
+                envelope,
+                workflow_type,
+                input: recorded_input,
+            } => {
+                assert_eq!(envelope.seq, 1);
+                assert_eq!(&envelope.workflow_id, handle.workflow_id());
+                assert_eq!(workflow_type, "checkout");
+                assert_eq!(recorded_input, &input);
+            }
+            other => panic!("expected WorkflowStarted, found {other:?}"),
+        }
+        runtime.shutdown()?;
+        Ok(())
     }
 }

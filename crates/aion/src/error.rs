@@ -1,6 +1,5 @@
 //! Engine error taxonomy.
 
-use aion_core::WorkflowId;
 use aion_package::PackageError;
 use aion_store::StoreError;
 
@@ -43,13 +42,9 @@ pub enum EngineError {
     #[error("active workflow registry lock was poisoned")]
     RegistryPoisoned,
 
-    /// No live or durable workflow was found for the requested identifier.
-    #[error("workflow {0} was not found")]
-    WorkflowNotFound(WorkflowId),
-
-    /// No loaded workflow package was found for the requested workflow type.
-    #[error("workflow type `{workflow_type}` was not found")]
-    WorkflowTypeNotFound {
+    /// No live, durable, or loaded workflow was found for the request.
+    #[error("workflow `{workflow_type}` was not found")]
+    WorkflowNotFound {
         /// Logical workflow type requested by the caller.
         workflow_type: String,
     },
