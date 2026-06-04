@@ -17,6 +17,9 @@ pub use correlation::CorrelationKey;
 pub use cursor::{CursorResolveResult, FoundEventDescriptor, HistoryCursor, RecordedEventFamily};
 pub use determinism::DeterminismContext;
 pub use error::{DurabilityError, NonDeterminismError};
+pub use executor::{
+    HandoffOutcome, LiveActivityOutcome, LiveChildOutcome, LiveExecutor, resolve_or_execute_live,
+};
 pub use recorder::Recorder;
 pub use recovery::{
     ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,

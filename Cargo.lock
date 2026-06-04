@@ -58,6 +58,7 @@ dependencies = [
  "aion-core",
  "aion-package",
  "aion-store",
+ "async-trait",
  "beamr",
  "chrono",
  "dashmap",
