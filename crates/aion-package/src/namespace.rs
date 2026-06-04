@@ -56,6 +56,12 @@ pub enum NamespaceError {
     #[error("deployed module name has an empty logical module component")]
     EmptyLogicalName,
 
+    /// The logical module-name component contained the mandated separator.
+    #[error(
+        "deployed module name has a logical module component containing the '$' namespace separator"
+    )]
+    SeparatorInLogicalName,
+
     /// The hash component was not a valid content-hash textual form.
     #[error("deployed module name has an invalid content hash: {source}")]
     InvalidHash {
@@ -77,24 +83,28 @@ pub fn deployed_name(logical: &str, hash: &ContentHash) -> String {
 
 /// Parses a deployed module name back into its logical module name and hash.
 ///
-/// The parser uses the final [`DEPLOYED_NAME_SEPARATOR`] as the boundary. Valid
-/// Gleam logical module names do not contain the separator, and using the final
-/// boundary also keeps the inverse total for already-namespaced strings that
-/// contain extra separator-like text before the hash component.
+/// The parser accepts exactly one [`DEPLOYED_NAME_SEPARATOR`] boundary. Valid
+/// Gleam logical module names do not contain the separator, so any additional
+/// separator before the hash component is rejected as malformed rather than being
+/// silently folded into the logical name.
 ///
 /// # Errors
 ///
 /// Returns [`NamespaceError::MissingSeparator`] when the separator is absent,
-/// [`NamespaceError::EmptyLogicalName`] when the logical component is empty, and
-/// [`NamespaceError::InvalidHash`] when the trailing component is not a valid
-/// [`ContentHash`] textual form.
+/// [`NamespaceError::EmptyLogicalName`] when the logical component is empty,
+/// [`NamespaceError::SeparatorInLogicalName`] when the logical component contains
+/// another separator, and [`NamespaceError::InvalidHash`] when the trailing
+/// component is not a valid [`ContentHash`] textual form.
 pub fn parse_deployed_name(deployed: &str) -> Result<ParsedDeployedName, NamespaceError> {
-    let Some((logical, hash_text)) = deployed.rsplit_once(DEPLOYED_NAME_SEPARATOR) else {
+    let Some((logical, hash_text)) = deployed.split_once(DEPLOYED_NAME_SEPARATOR) else {
         return Err(NamespaceError::MissingSeparator);
     };
 
     if logical.is_empty() {
         return Err(NamespaceError::EmptyLogicalName);
+    }
+    if hash_text.contains(DEPLOYED_NAME_SEPARATOR) {
+        return Err(NamespaceError::SeparatorInLogicalName);
     }
 
     let hash = ContentHash::from_str(hash_text)
@@ -156,7 +166,7 @@ mod tests {
             ("order_workflow", hash(0x00)),
             ("workflow_with_underscores", hash(0x11)),
             ("nested/module/name", hash(0x7f)),
-            ("foo$bar", hash(0xff)),
+            ("workflow_123", hash(0xff)),
         ];
 
         for (logical, hash) in cases {
@@ -179,11 +189,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_uses_final_separator_for_unambiguous_hash_boundary() -> Result<(), NamespaceError> {
-        let original = deployed_name("logical$name_with_dollar", &hash(0x33));
+    fn parse_preserves_separator_neighbouring_chars() -> Result<(), NamespaceError> {
+        let original = deployed_name("logical_name_with_underscores", &hash(0x33));
         let parsed = parse_deployed_name(&original)?;
 
-        assert_eq!(parsed.logical(), "logical$name_with_dollar");
+        assert_eq!(parsed.logical(), "logical_name_with_underscores");
         assert_eq!(deployed_name(parsed.logical(), parsed.hash()), original);
         Ok(())
     }
@@ -205,6 +215,12 @@ mod tests {
             Err(NamespaceError::InvalidHash {
                 source: ContentHashParseError::InvalidLength { found: 10 }
             })
+        );
+        assert_eq!(
+            parse_deployed_name(
+                "workflow$nested$0000000000000000000000000000000000000000000000000000000000000000"
+            ),
+            Err(NamespaceError::SeparatorInLogicalName)
         );
     }
 
