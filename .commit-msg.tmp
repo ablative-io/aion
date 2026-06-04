@@ -1,1 +1,1 @@
-feat(aion): add durability command resolver seam
+fix(aion): satisfy clippy in durability resolver

@@ -36,7 +36,7 @@ impl Resolver {
     /// mismatch, or [`DurabilityError::HistoryShape`] when matched history lacks one of AD-004's
     /// recorded terminal outcomes.
     pub fn resolve(&mut self, command: Command) -> Result<ResolveOutcome, DurabilityError> {
-        let Some((family, key)) = family_and_key(&command) else {
+        let Some((family, key)) = family_and_key(command) else {
             return Ok(ResolveOutcome::ResumeLive);
         };
 
@@ -46,15 +46,15 @@ impl Resolver {
             CursorResolveResult::Mismatch {
                 expected_key,
                 found,
-            } => Err(self.mismatch_error(family, expected_key, found).into()),
+            } => Err(self.mismatch_error(family, &expected_key, &found).into()),
         }
     }
 
     fn mismatch_error(
         &self,
         expected_family: RecordedEventFamily,
-        expected_key: CorrelationKey,
-        found: FoundEventDescriptor,
+        expected_key: &CorrelationKey,
+        found: &FoundEventDescriptor,
     ) -> NonDeterminismError {
         NonDeterminismError {
             workflow_id: self.workflow_id.clone(),
@@ -68,12 +68,12 @@ impl Resolver {
     }
 }
 
-fn family_and_key(command: &Command) -> Option<(RecordedEventFamily, CorrelationKey)> {
+fn family_and_key(command: Command) -> Option<(RecordedEventFamily, CorrelationKey)> {
     match command {
-        Command::RunActivity { key, .. } => Some((RecordedEventFamily::Activity, key.clone())),
-        Command::AwaitSignal { key } => Some((RecordedEventFamily::Signal, key.clone())),
-        Command::StartTimer { key, .. } => Some((RecordedEventFamily::Timer, key.clone())),
-        Command::SpawnChild { key, .. } => Some((RecordedEventFamily::Child, key.clone())),
+        Command::RunActivity { key, .. } => Some((RecordedEventFamily::Activity, key)),
+        Command::AwaitSignal { key } => Some((RecordedEventFamily::Signal, key)),
+        Command::StartTimer { key, .. } => Some((RecordedEventFamily::Timer, key)),
+        Command::SpawnChild { key, .. } => Some((RecordedEventFamily::Child, key)),
         Command::CompleteWorkflow { .. } => None,
     }
 }
