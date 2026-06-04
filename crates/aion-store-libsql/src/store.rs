@@ -66,15 +66,15 @@ impl EventStore for LibSqlStore {
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
-        crate::read::read_history(self.connection(), workflow_id)
+        crate::read::read_history(self.connection(), workflow_id).await
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
-        crate::read::list_active(self.connection())
+        crate::read::list_active(self.connection()).await
     }
 
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
-        crate::read::query(self.connection(), filter)
+        crate::read::query(self.connection(), filter).await
     }
 
     async fn schedule_timer(
