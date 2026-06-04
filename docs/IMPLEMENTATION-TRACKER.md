@@ -162,9 +162,9 @@ Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 - [x] **AT-011** — race (first result, cancel rest) · _landed 6d3f04f_
 
 ### Wave 20 (3 parallel)
-- [ ] **AE-012** — Engine API (start, cancel, result, list, shutdown) · _depends: AE-008, AE-009, AE-011_
-- [ ] **AD-008** — Replay driver, activity-result caching · _depends: AD-004, AD-006, AD-007_
-- [ ] **AT-012** — map (dynamic fan-out) · _depends: AT-010_
+- [x] **AE-012** — Engine API (start, cancel, result, list, shutdown) · _landed d3e503c_
+- [x] **AD-008** — Replay driver, activity-result caching · _landed d7b59e0_
+- [x] **AT-012** — map (dynamic fan-out) · _landed 0985a50_
 
 ### Wave 21 (3 parallel)
 - [ ] **AE-013** — Delegated signal, query, subscribe · _depends: AE-012_
