@@ -79,23 +79,41 @@ impl AllRecordingContext {
         ))
     }
 
-    fn cancellation_context(&self, len: usize) -> Result<CancellationRecordingContext, AllError> {
-        let offset = u64::try_from(len).map_err(|_| AllError::SequenceOverflow {
-            base_sequence_position: self.base_sequence_position,
-            index: len,
+    fn cancellation_context(
+        &self,
+        len: usize,
+        observed_outcomes: usize,
+    ) -> Result<CancellationRecordingContext, AllError> {
+        let after_starts = self.sequence_after_offset(len)?;
+        let observed_offset =
+            u64::try_from(observed_outcomes).map_err(|_| AllError::SequenceOverflow {
+                base_sequence_position: self.base_sequence_position,
+                index: len.saturating_add(observed_outcomes),
+            })?;
+        let next_seq = after_starts.checked_add(observed_offset).ok_or_else(|| {
+            AllError::SequenceOverflow {
+                base_sequence_position: self.base_sequence_position,
+                index: len.saturating_add(observed_outcomes),
+            }
         })?;
-        let next_seq =
-            self.base_sequence_position
-                .checked_add(offset)
-                .ok_or(AllError::SequenceOverflow {
-                    base_sequence_position: self.base_sequence_position,
-                    index: len,
-                })?;
         Ok(CancellationRecordingContext::new(
             self.parent_workflow_id.clone(),
             next_seq,
             self.recorded_at,
         ))
+    }
+
+    fn sequence_after_offset(&self, index: usize) -> Result<u64, AllError> {
+        let offset = u64::try_from(index).map_err(|_| AllError::SequenceOverflow {
+            base_sequence_position: self.base_sequence_position,
+            index,
+        })?;
+        self.base_sequence_position
+            .checked_add(offset)
+            .ok_or(AllError::SequenceOverflow {
+                base_sequence_position: self.base_sequence_position,
+                index,
+            })
     }
 }
 
@@ -129,6 +147,14 @@ pub enum AllError {
         base_sequence_position: u64,
         /// Fan-out index that overflowed.
         index: usize,
+    },
+    /// Child spawning failed and cleanup of already-started children also failed.
+    #[error("child spawn failed with {spawn_error}; cleanup also failed with {cleanup_error}")]
+    SpawnCleanupFailed {
+        /// Original spawn/start-recording failure.
+        spawn_error: ChildWorkflowError,
+        /// Failure observed while cancelling children that had already started.
+        cleanup_error: CorrelationError,
     },
     /// The result table reported success without every input slot being populated.
     #[error("all completed without a result for input index {index}")]
@@ -179,14 +205,28 @@ pub fn all(
                 child_workflow_id,
                 error,
             } => {
-                cancel_in_flight(engine, recording, specs.len(), &mut table, &children)?;
+                cancel_in_flight(
+                    engine,
+                    recording,
+                    specs.len(),
+                    settled,
+                    &mut table,
+                    &children,
+                )?;
                 return Err(AllError::ChildFailed {
                     child_workflow_id,
                     error,
                 });
             }
             CorrelatedOutcome::ChildWorkflowCancelled { child_workflow_id } => {
-                cancel_in_flight(engine, recording, specs.len(), &mut table, &children)?;
+                cancel_in_flight(
+                    engine,
+                    recording,
+                    specs.len(),
+                    settled,
+                    &mut table,
+                    &children,
+                )?;
                 return Err(AllError::ChildCancelled { child_workflow_id });
             }
         }
@@ -204,13 +244,25 @@ fn spawn_children(
     let mut children = Vec::with_capacity(specs.len());
     for (spec, slot) in specs.iter().zip(batch.slots()) {
         let mut start_recording = recording.start_context_for(slot.index())?;
-        let spawned = spawn(
+        let spawned = match spawn(
             engine,
             &mut start_recording,
             spec.workflow_type.clone(),
             spec.input.clone(),
             spec.run_id.clone(),
-        )?;
+        ) {
+            Ok(spawned) => spawned,
+            Err(spawn_error) => {
+                cleanup_started_after_spawn_failure(
+                    engine,
+                    recording,
+                    batch,
+                    &children,
+                    spawn_error.clone(),
+                )?;
+                return Err(AllError::ChildWorkflow(spawn_error));
+            }
+        };
         children.push(InFlightChild::new(
             slot.index(),
             slot.token(),
@@ -223,14 +275,35 @@ fn spawn_children(
     Ok(children)
 }
 
+fn cleanup_started_after_spawn_failure(
+    engine: &impl EngineHandle,
+    recording: &AllRecordingContext,
+    batch: &CorrelationBatch,
+    children: &[InFlightChild],
+    spawn_error: ChildWorkflowError,
+) -> Result<(), AllError> {
+    if children.is_empty() {
+        return Ok(());
+    }
+    let mut table = CorrelatedResultTable::new(batch.clone());
+    let mut cancellation = recording.cancellation_context(batch.len(), 0)?;
+    cancel_remaining(engine, &mut cancellation, &mut table, children).map_err(|cleanup_error| {
+        AllError::SpawnCleanupFailed {
+            spawn_error,
+            cleanup_error,
+        }
+    })
+}
+
 fn cancel_in_flight(
     engine: &impl EngineHandle,
     recording: &AllRecordingContext,
     len: usize,
+    observed_outcomes: usize,
     table: &mut CorrelatedResultTable,
     children: &[InFlightChild],
 ) -> Result<(), AllError> {
-    let mut cancellation = recording.cancellation_context(len)?;
+    let mut cancellation = recording.cancellation_context(len, observed_outcomes)?;
     cancel_remaining(engine, &mut cancellation, table, children)?;
     Ok(())
 }
@@ -253,7 +326,7 @@ mod tests {
     use crate::concurrency::VecCorrelationMailbox;
     use crate::engine_seam::test_support::FakeEngineHandle;
     use crate::engine_seam::{
-        ChildWorkflowSpawnMode, ChildWorkflowSpawnResult, WorkflowMailboxMessage,
+        ChildWorkflowSpawnMode, ChildWorkflowSpawnResult, EngineSeamError, WorkflowMailboxMessage,
         WorkflowProcessHandle,
     };
 
@@ -390,6 +463,7 @@ mod tests {
                 error: failure,
             })
         );
+        assert!(mailbox.is_empty());
         let terminated = engine.terminated_child_workflows()?;
         assert_eq!(
             terminated,
@@ -404,10 +478,12 @@ mod tests {
             recorded[3].1,
             Event::ChildWorkflowCancelled { .. }
         ));
+        assert_eq!(recorded[3].1.seq(), 54);
         assert!(matches!(
             recorded[4].1,
             Event::ChildWorkflowCancelled { .. }
         ));
+        assert_eq!(recorded[4].1.seq(), 55);
         Ok(())
     }
 
@@ -455,6 +531,40 @@ mod tests {
             engine.terminated_child_workflows()?,
             vec![(parent, processes[1], 61)]
         );
+        let recorded = engine.recorded_events()?;
+        assert_eq!(recorded.len(), 4);
+        assert!(matches!(
+            recorded[3].1,
+            Event::ChildWorkflowCancelled { .. }
+        ));
+        assert_eq!(recorded[3].1.seq(), 64);
+        Ok(())
+    }
+
+    #[test]
+    fn all_propagates_spawn_error_without_returning_partial_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = FakeEngineHandle::new();
+        let parent = WorkflowId::new_v4();
+        engine.push_child_spawn_response(Err(EngineSeamError::ChildSpawn {
+            reason: "capacity unavailable".to_owned(),
+        }))?;
+        let specs = vec![spec(br#"{"input":0}"#)];
+        let recording = AllRecordingContext::new(parent, 80, timestamp()?);
+        let mut mailbox = VecCorrelationMailbox::new(Vec::new());
+
+        let error = all(&engine, &recording, &mut mailbox, &specs);
+
+        assert_eq!(
+            error,
+            Err(AllError::ChildWorkflow(
+                crate::child::ChildWorkflowError::Engine(EngineSeamError::ChildSpawn {
+                    reason: "capacity unavailable".to_owned(),
+                })
+            ))
+        );
+        assert!(engine.recorded_events()?.is_empty());
+        assert!(engine.terminated_child_workflows()?.is_empty());
         Ok(())
     }
 }
