@@ -1,1 +1,1 @@
-fix(aion): harden child workflow spawn await semantics
+feat(aion): defer non-resident signal delivery until resume
