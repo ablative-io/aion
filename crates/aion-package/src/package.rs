@@ -10,8 +10,8 @@ use std::{
 use zip::{ZipArchive, result::ZipError};
 
 use crate::{
-    BeamModule, BeamSet, ContentHash, Manifest, PackageError, content_hash,
-    namespace::deployed_name,
+    BeamModule, BeamSet, ContentHash, Manifest, PackageError, builder::is_safe_logical_name,
+    content_hash, namespace::deployed_name,
 };
 
 const MANIFEST_ENTRY: &str = "manifest.json";
@@ -218,16 +218,6 @@ fn logical_name_from_entry(
     }
 }
 
-fn is_safe_logical_name(logical_name: &str) -> bool {
-    !logical_name.is_empty()
-        && !logical_name.starts_with('/')
-        && !logical_name.starts_with('\\')
-        && !logical_name.contains('\\')
-        && logical_name
-            .split('/')
-            .all(|component| !component.is_empty() && component != "." && component != "..")
-}
-
 fn read_entry_bytes<R>(file: &mut zip::read::ZipFile<'_, R>) -> Result<Vec<u8>, PackageError>
 where
     R: Read,
@@ -374,6 +364,84 @@ mod tests {
         assert!(matches!(
             result,
             Err(PackageError::MalformedBeamEntry { entry }) if entry == "beam/workflow/order.txt"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn beam_entry_with_deployed_name_separator_returns_malformed_entry() -> Result<(), PackageError>
+    {
+        let beams = sample_beams()?;
+        let mut manifest = sample_manifest();
+        manifest.version = ManifestVersion::new(content_hash(&beams).to_string());
+        let manifest_bytes = serde_json::to_vec(&manifest)
+            .map_err(|source| PackageError::ManifestSerialise { source })?;
+        let bytes = write_zip([
+            ("manifest.json", manifest_bytes),
+            ("beam/workflow/order$bad.beam", vec![1, 2, 3]),
+        ])?;
+        let result = Package::load_from_bytes(bytes);
+
+        assert!(matches!(
+            result,
+            Err(PackageError::MalformedBeamEntry { entry }) if entry == "beam/workflow/order$bad.beam"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_source_entry_returns_malformed_entry() -> Result<(), PackageError> {
+        let beams = sample_beams()?;
+        let mut manifest = sample_manifest();
+        manifest.version = ManifestVersion::new(content_hash(&beams).to_string());
+        let mut entries = vec![
+            (
+                "manifest.json".to_owned(),
+                serde_json::to_vec(&manifest)
+                    .map_err(|source| PackageError::ManifestSerialise { source })?,
+            ),
+            ("src/workflow/order.gleam".to_owned(), b"first".to_vec()),
+            ("src/workflow/order.gleam".to_owned(), b"second".to_vec()),
+        ];
+        entries.extend(beams.iter().map(|module| {
+            (
+                format!("beam/{}.beam", module.name()),
+                module.bytes().to_vec(),
+            )
+        }));
+        let result = Package::load_from_bytes(write_zip(entries)?);
+
+        assert!(matches!(
+            result,
+            Err(PackageError::MalformedBeamEntry { entry }) if entry == "src/workflow/order.gleam"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_source_entry_returns_malformed_entry() -> Result<(), PackageError> {
+        let beams = sample_beams()?;
+        let mut manifest = sample_manifest();
+        manifest.version = ManifestVersion::new(content_hash(&beams).to_string());
+        let mut entries = vec![
+            (
+                "manifest.json".to_owned(),
+                serde_json::to_vec(&manifest)
+                    .map_err(|source| PackageError::ManifestSerialise { source })?,
+            ),
+            ("src/workflow/order.txt".to_owned(), b"source".to_vec()),
+        ];
+        entries.extend(beams.iter().map(|module| {
+            (
+                format!("beam/{}.beam", module.name()),
+                module.bytes().to_vec(),
+            )
+        }));
+        let result = Package::load_from_bytes(write_zip(entries)?);
+
+        assert!(matches!(
+            result,
+            Err(PackageError::MalformedBeamEntry { entry }) if entry == "src/workflow/order.txt"
         ));
         Ok(())
     }

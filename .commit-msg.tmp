@@ -1,1 +1,1 @@
-feat(aion-package): implement package load integrity path
+review(aion-package): harden AP-006 package loading
