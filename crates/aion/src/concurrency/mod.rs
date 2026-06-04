@@ -11,4 +11,5 @@ pub use correlation::{
     CorrelatedSlotState, CorrelationBatch, CorrelationError, CorrelationMailbox, CorrelationToken,
     InFlightChild, LinkedChild, SpawnSlot, VecCorrelationMailbox, cancel_remaining, derive_batch,
 };
+pub use map::{child_specs_from_items, map};
 pub use race::{RaceChildSpec, RaceError, RaceRecordingContext, RaceWinner, race};
