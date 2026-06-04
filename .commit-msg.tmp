@@ -1,1 +1,7 @@
+<<<<<<< HEAD
 Harden AE-005 loader registration and package test support
+||||||| 89c9d25
+feat(aion): define engine seam for workflow interactions
+=======
+Harden AE-006 supervision tree edge cases
+>>>>>>> workflow/onatopp-dev-norn/504d00e6

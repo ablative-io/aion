@@ -21,3 +21,6 @@ pub use error::EngineError;
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};
 pub use registry::{Registry, WorkflowHandle};
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
+pub use supervision::{
+    EngineSupervisorId, SupervisionTree, TypeSupervisorId, TypeSupervisorNode, WorkflowNode,
+};
