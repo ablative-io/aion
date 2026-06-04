@@ -104,7 +104,9 @@ mod tests {
             sync_interval_seconds: None,
         };
 
-        open_connection(&config).await
+        open_connection(&config)
+            .await
+            .map(|opened| opened.connection)
     }
 
     async fn assert_schema_object(

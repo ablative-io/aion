@@ -209,7 +209,9 @@ mod tests {
             synchronous: None,
             sync_interval_seconds: None,
         };
-        let conn = crate::connection::open_connection(&config).await?;
+        let conn = crate::connection::open_connection(&config)
+            .await?
+            .connection;
         crate::schema::ensure_schema(&conn).await?;
         Ok(conn)
     }

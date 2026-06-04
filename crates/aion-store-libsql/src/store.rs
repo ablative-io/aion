@@ -14,6 +14,7 @@ use crate::config::{LibSqlConfig, LibSqlMode};
 #[derive(Clone)]
 pub struct LibSqlStore {
     conn: libsql::Connection,
+    db: std::sync::Arc<libsql::Database>,
 }
 
 impl LibSqlStore {
@@ -24,10 +25,14 @@ impl LibSqlStore {
     /// Returns `StoreError::Backend` when the connection cannot be opened or when the idempotent
     /// schema DDL cannot be applied.
     pub async fn connect(config: LibSqlConfig) -> Result<Self, StoreError> {
-        let conn = crate::connection::open_connection(&config).await?;
+        let opened = crate::connection::open_connection(&config).await?;
+        let conn = opened.connection;
         crate::schema::ensure_schema(&conn).await?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            db: std::sync::Arc::new(opened.database),
+        })
     }
 
     /// Open an embedded local-file store at `path`.
@@ -46,6 +51,20 @@ impl LibSqlStore {
             sync_interval_seconds: None,
         })
         .await
+    }
+
+    /// Trigger and await a libSQL replica synchronization cycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` when the current libSQL database mode does not support sync or
+    /// when the replica sync operation fails.
+    pub async fn sync(&self) -> Result<(), StoreError> {
+        self.db
+            .sync()
+            .await
+            .map(|_| ())
+            .map_err(|error| crate::error::libsql_error(&error))
     }
 
     /// Borrow the shared libSQL connection used by append, read, and timer modules.

@@ -7,7 +7,15 @@ use aion_store::StoreError;
 
 use crate::config::{LibSqlConfig, LibSqlMode};
 
-/// Open the configured libSQL database and return a mode-agnostic connection.
+/// Opened libSQL database handle and its mode-agnostic connection.
+pub struct OpenedConnection {
+    /// Database handle used to create the connection and to trigger replica sync.
+    pub database: libsql::Database,
+    /// Connection used by the event-store implementation.
+    pub connection: libsql::Connection,
+}
+
+/// Open the configured libSQL database and return its handle and connection.
 ///
 /// Operator-provided journal and synchronous settings are applied only when present on the
 /// configuration. This crate intentionally does not choose durability defaults for omitted
@@ -17,8 +25,8 @@ use crate::config::{LibSqlConfig, LibSqlMode};
 ///
 /// Returns `StoreError::Backend` when libSQL cannot build/connect the database or when applying an
 /// explicitly configured PRAGMA fails.
-pub async fn open_connection(config: &LibSqlConfig) -> Result<libsql::Connection, StoreError> {
-    let conn = match &config.mode {
+pub async fn open_connection(config: &LibSqlConfig) -> Result<OpenedConnection, StoreError> {
+    let opened = match &config.mode {
         LibSqlMode::Embedded { path } => open_embedded(path).await?,
         LibSqlMode::EmbeddedReplica {
             path,
@@ -36,23 +44,29 @@ pub async fn open_connection(config: &LibSqlConfig) -> Result<libsql::Connection
     };
 
     apply_pragmas(
-        &conn,
+        &opened.connection,
         config.journal_mode.as_deref(),
         config.synchronous.as_deref(),
     )
     .await?;
 
-    Ok(conn)
+    Ok(opened)
 }
 
-async fn open_embedded(path: &Path) -> Result<libsql::Connection, StoreError> {
-    let db = libsql::Builder::new_local(path)
+async fn open_embedded(path: &Path) -> Result<OpenedConnection, StoreError> {
+    let database = libsql::Builder::new_local(path)
         .build()
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
-    db.connect()
-        .map_err(|error| crate::error::libsql_error(&error))
+    let connection = database
+        .connect()
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    Ok(OpenedConnection {
+        database,
+        connection,
+    })
 }
 
 async fn open_embedded_replica(
@@ -60,7 +74,7 @@ async fn open_embedded_replica(
     primary_url: String,
     auth_token: String,
     sync_interval_seconds: Option<u64>,
-) -> Result<libsql::Connection, StoreError> {
+) -> Result<OpenedConnection, StoreError> {
     let mut builder = libsql::Builder::new_remote_replica(path, primary_url, auth_token);
     if let Some(seconds) = sync_interval_seconds {
         builder = builder.sync_interval(Duration::from_secs(seconds));
@@ -71,8 +85,14 @@ async fn open_embedded_replica(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
-    db.connect()
-        .map_err(|error| crate::error::libsql_error(&error))
+    let connection = db
+        .connect()
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    Ok(OpenedConnection {
+        database: db,
+        connection,
+    })
 }
 
 async fn apply_pragmas(
@@ -140,7 +160,8 @@ mod tests {
             sync_interval_seconds: None,
         };
 
-        let conn = open_connection(&config).await?;
+        let opened = open_connection(&config).await?;
+        let conn = opened.connection;
         let mut rows = conn
             .query("SELECT 1", ())
             .await

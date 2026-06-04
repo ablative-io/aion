@@ -18,4 +18,5 @@ chrono = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing.workspace = true
 uuid = { workspace = true }
