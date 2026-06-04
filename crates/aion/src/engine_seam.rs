@@ -8,6 +8,7 @@
 
 use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
+use tokio::sync::oneshot;
 
 /// Narrow live-process handle used by AT services after AE resolves workflow residency.
 ///
@@ -45,8 +46,15 @@ pub enum WorkflowResidency {
     Unknown,
 }
 
+/// One-shot reply path carried by read-only query mailbox messages.
+///
+/// Workflow processes answer query messages at yield points from registered read-only handlers.
+/// Queries are distinct from signals, do not mutate deterministic workflow state, and never record
+/// events; the reply sender carries either the handler payload or a typed query error.
+pub type QueryReplySender = oneshot::Sender<crate::query::service::QueryResult>;
+
 /// Message kinds AT may ask AE to deliver to a workflow process mailbox.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum WorkflowMailboxMessage {
     /// A durable timer fired and has been recorded.
     TimerFired {
@@ -68,8 +76,8 @@ pub enum WorkflowMailboxMessage {
         name: String,
         /// Opaque query input payload.
         payload: Payload,
-        /// Engine-assigned correlation token for the reply path.
-        correlation: u64,
+        /// One-shot channel for the workflow query handler's reply.
+        reply_to: QueryReplySender,
     },
     /// A linked child workflow completed successfully and has been recorded.
     ChildWorkflowCompleted {
@@ -267,8 +275,8 @@ pub(crate) mod test_support {
         Delivered {
             /// Target process handle.
             process: WorkflowProcessHandle,
-            /// Delivered message.
-            message: WorkflowMailboxMessage,
+            /// Delivered message projection.
+            message: DeliveredWorkflowMessage,
         },
         /// A child spawn was requested.
         ChildSpawnRequested(ChildWorkflowSpawnRequest),
@@ -293,13 +301,92 @@ pub(crate) mod test_support {
     #[derive(Default)]
     struct FakeEngineState {
         residency: HashMap<WorkflowId, WorkflowResidency>,
-        delivered: Vec<(WorkflowProcessHandle, WorkflowMailboxMessage)>,
+        delivered: Vec<(WorkflowProcessHandle, DeliveredWorkflowMessage)>,
         child_spawn_requests: Vec<ChildWorkflowSpawnRequest>,
         child_spawn_responses: VecDeque<Result<ChildWorkflowSpawnResult, EngineSeamError>>,
         armed_timers: Vec<TimerWheelEntry>,
         disarmed_timers: Vec<(WorkflowProcessHandle, TimerId)>,
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
+    }
+
+    /// Cloneable projection of delivered mailbox messages for seam tests.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum DeliveredWorkflowMessage {
+        /// A timer-fired delivery was observed.
+        TimerFired {
+            timer_id: TimerId,
+            fire_at: DateTime<Utc>,
+        },
+        /// A signal delivery was observed.
+        SignalReceived { name: String, payload: Payload },
+        /// A query delivery was observed; the one-shot sender is intentionally not retained.
+        Query { name: String, payload: Payload },
+        /// A child completion delivery was observed.
+        ChildWorkflowCompleted {
+            child_workflow_id: WorkflowId,
+            correlation: u64,
+            result: Payload,
+        },
+        /// A child failure delivery was observed.
+        ChildWorkflowFailed {
+            child_workflow_id: WorkflowId,
+            correlation: u64,
+            error: WorkflowError,
+        },
+        /// A child cancellation delivery was observed.
+        ChildWorkflowCancelled {
+            child_workflow_id: WorkflowId,
+            correlation: u64,
+        },
+    }
+
+    impl DeliveredWorkflowMessage {
+        fn from_message(message: &WorkflowMailboxMessage) -> Self {
+            match message {
+                WorkflowMailboxMessage::TimerFired { timer_id, fire_at } => Self::TimerFired {
+                    timer_id: timer_id.clone(),
+                    fire_at: *fire_at,
+                },
+                WorkflowMailboxMessage::SignalReceived { name, payload } => Self::SignalReceived {
+                    name: name.clone(),
+                    payload: payload.clone(),
+                },
+                WorkflowMailboxMessage::Query {
+                    name,
+                    payload,
+                    reply_to: _,
+                } => Self::Query {
+                    name: name.clone(),
+                    payload: payload.clone(),
+                },
+                WorkflowMailboxMessage::ChildWorkflowCompleted {
+                    child_workflow_id,
+                    correlation,
+                    result,
+                } => Self::ChildWorkflowCompleted {
+                    child_workflow_id: child_workflow_id.clone(),
+                    correlation: *correlation,
+                    result: result.clone(),
+                },
+                WorkflowMailboxMessage::ChildWorkflowFailed {
+                    child_workflow_id,
+                    correlation,
+                    error,
+                } => Self::ChildWorkflowFailed {
+                    child_workflow_id: child_workflow_id.clone(),
+                    correlation: *correlation,
+                    error: error.clone(),
+                },
+                WorkflowMailboxMessage::ChildWorkflowCancelled {
+                    child_workflow_id,
+                    correlation,
+                } => Self::ChildWorkflowCancelled {
+                    child_workflow_id: child_workflow_id.clone(),
+                    correlation: *correlation,
+                },
+            }
+        }
     }
 
     /// Test-only fake implementation of [`EngineHandle`].
@@ -328,7 +415,8 @@ pub(crate) mod test_support {
         /// Returns a snapshot of delivered mailbox messages.
         pub fn delivered_messages(
             &self,
-        ) -> Result<Vec<(WorkflowProcessHandle, WorkflowMailboxMessage)>, EngineSeamError> {
+        ) -> Result<Vec<(WorkflowProcessHandle, DeliveredWorkflowMessage)>, EngineSeamError>
+        {
             Ok(self.state()?.delivered.clone())
         }
 
@@ -358,10 +446,12 @@ pub(crate) mod test_support {
             message: WorkflowMailboxMessage,
         ) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
-            state.delivered.push((process, message.clone()));
-            state
-                .operations
-                .push(FakeEngineOperation::Delivered { process, message });
+            let delivered = DeliveredWorkflowMessage::from_message(&message);
+            state.delivered.push((process, delivered.clone()));
+            state.operations.push(FakeEngineOperation::Delivered {
+                process,
+                message: delivered,
+            });
             Ok(())
         }
 
@@ -431,7 +521,7 @@ pub(crate) mod test_support {
 mod tests {
     use aion_core::{ContentType, Payload, WorkflowId};
 
-    use super::test_support::FakeEngineHandle;
+    use super::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
     use super::{EngineHandle, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency};
 
     #[test]
@@ -445,13 +535,23 @@ mod tests {
         let resolved = engine.resolve_workflow(&workflow_id)?;
         assert_eq!(resolved, WorkflowResidency::Resident(process));
 
+        let payload = Payload::new(ContentType::Json, b"null".to_vec());
         let message = WorkflowMailboxMessage::SignalReceived {
             name: "wake".to_owned(),
-            payload: Payload::new(ContentType::Json, b"null".to_vec()),
+            payload: payload.clone(),
         };
-        engine.deliver_workflow_message(process, message.clone())?;
+        engine.deliver_workflow_message(process, message)?;
 
-        assert_eq!(engine.delivered_messages()?, vec![(process, message)]);
+        assert_eq!(
+            engine.delivered_messages()?,
+            vec![(
+                process,
+                DeliveredWorkflowMessage::SignalReceived {
+                    name: "wake".to_owned(),
+                    payload,
+                }
+            )]
+        );
         Ok(())
     }
 }
