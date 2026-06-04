@@ -193,12 +193,20 @@ pub enum EngineSeamError {
 /// not append directly to the event store.
 pub trait EngineHandle: Send + Sync {
     /// Resolves a workflow identifier to its current residency state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE cannot inspect residency for the requested workflow.
     fn resolve_workflow(
         &self,
         workflow_id: &WorkflowId,
     ) -> Result<WorkflowResidency, EngineSeamError>;
 
     /// Delivers a message to a resident workflow process mailbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE cannot enqueue the message on the target mailbox.
     fn deliver_workflow_message(
         &self,
         process: WorkflowProcessHandle,
@@ -206,15 +214,27 @@ pub trait EngineHandle: Send + Sync {
     ) -> Result<(), EngineSeamError>;
 
     /// Requests AE to spawn a child workflow execution linked to the parent process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE rejects or fails the linked child-spawn request.
     fn spawn_child_workflow(
         &self,
         request: ChildWorkflowSpawnRequest,
     ) -> Result<ChildWorkflowSpawnResult, EngineSeamError>;
 
     /// Arms a timer-wheel entry for a resident workflow process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE cannot register the timer with the live wheel.
     fn arm_timer(&self, entry: TimerWheelEntry) -> Result<(), EngineSeamError>;
 
     /// Disarms a timer-wheel entry for a resident workflow process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when AE cannot remove the timer from the live wheel.
     fn disarm_timer(
         &self,
         process: WorkflowProcessHandle,
@@ -222,6 +242,10 @@ pub trait EngineHandle: Send + Sync {
     ) -> Result<(), EngineSeamError>;
 
     /// Records an event through the target workflow's single AD Recorder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineSeamError`] when the target workflow's Recorder cannot append the event.
     fn record_workflow_event(
         &self,
         workflow_id: &WorkflowId,
