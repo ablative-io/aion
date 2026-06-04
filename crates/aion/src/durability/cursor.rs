@@ -1,1 +1,500 @@
 //! `HistoryCursor` over recorded events.
+
+use aion_core::{ActivityId, Event};
+
+use crate::durability::{
+    correlation::{CorrelationKey, key_for_event},
+    error::DurabilityError,
+};
+
+/// Event families that can satisfy world-touching workflow commands during replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RecordedEventFamily {
+    /// Activity scheduling and its recorded outcome.
+    Activity,
+    /// Timer scheduling and its recorded outcome.
+    Timer,
+    /// Signal delivery.
+    Signal,
+    /// Child workflow scheduling and its recorded outcome.
+    Child,
+}
+
+/// Data describing the recorded event found at the cursor's current position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundEventDescriptor {
+    /// Sequence number of the recorded event.
+    pub seq: u64,
+    /// Replay family for the recorded event, if it is matchable by the cursor.
+    pub family: Option<RecordedEventFamily>,
+    /// Correlation key derived for the recorded event, if it starts a matchable command.
+    pub key: Option<CorrelationKey>,
+    /// Stable event-variant name for diagnostics.
+    pub kind: &'static str,
+}
+
+/// Outcome of asking the cursor to resolve the next recorded command outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CursorResolveResult {
+    /// The recorded command stream matched; contained events were consumed in order.
+    Matched(Vec<Event>),
+    /// The cursor has no remaining recorded event to consider.
+    Exhausted,
+    /// The next recorded event exists, but its family or key differs from the command.
+    Mismatch {
+        /// Correlation key the workflow command expected to replay.
+        expected_key: CorrelationKey,
+        /// Descriptor for the recorded event actually at the cursor position.
+        found: FoundEventDescriptor,
+    },
+}
+
+/// Ordered cursor over a workflow's recorded history.
+#[derive(Clone, Debug)]
+pub struct HistoryCursor {
+    events: Vec<Event>,
+    position: usize,
+}
+
+impl HistoryCursor {
+    /// Builds a cursor from ordered read-history output.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError::HistoryShape`] when event sequence numbers decrease.
+    pub fn new(events: Vec<Event>) -> Result<Self, DurabilityError> {
+        for pair in events.windows(2) {
+            let prior = pair[0].seq();
+            let next = pair[1].seq();
+            if next < prior {
+                return Err(DurabilityError::HistoryShape {
+                    reason: format!("history sequence order decreased from {prior} to {next}"),
+                });
+            }
+        }
+
+        Ok(Self {
+            events,
+            position: 0,
+        })
+    }
+
+    /// Returns the sequence number at the current cursor position, or `None` when exhausted.
+    #[must_use]
+    pub fn current_sequence(&self) -> Option<u64> {
+        self.events.get(self.position).map(Event::seq)
+    }
+
+    /// Returns the current zero-based index into the owned history.
+    #[must_use]
+    pub const fn position_index(&self) -> usize {
+        self.position
+    }
+
+    /// Resolves the next recorded outcome for the expected family and correlation key.
+    #[must_use]
+    pub fn resolve_next(
+        &mut self,
+        family: RecordedEventFamily,
+        expected_key: CorrelationKey,
+    ) -> CursorResolveResult {
+        let Some(event) = self.events.get(self.position) else {
+            return CursorResolveResult::Exhausted;
+        };
+
+        let found = self.descriptor_at(self.position, event);
+        if found.family != Some(family) || found.key.as_ref() != Some(&expected_key) {
+            return CursorResolveResult::Mismatch {
+                expected_key,
+                found,
+            };
+        }
+
+        match family {
+            RecordedEventFamily::Activity => self.resolve_activity(expected_key),
+            RecordedEventFamily::Timer | RecordedEventFamily::Child => {
+                self.resolve_started_with_immediate_outcome(expected_key)
+            }
+            RecordedEventFamily::Signal => self.consume_one(),
+        }
+    }
+
+    fn resolve_activity(&mut self, expected_key: CorrelationKey) -> CursorResolveResult {
+        let Some(Event::ActivityScheduled { activity_id, .. }) = self.events.get(self.position)
+        else {
+            return self.mismatch_at_current(expected_key);
+        };
+        let activity_id = activity_id.clone();
+        let start = self.position;
+        let mut index = self.position + 1;
+
+        while let Some(event) = self.events.get(index) {
+            match event {
+                Event::ActivityStarted {
+                    activity_id: event_activity_id,
+                    ..
+                } if event_activity_id == &activity_id => {
+                    index += 1;
+                }
+                Event::ActivityFailed {
+                    activity_id: event_activity_id,
+                    ..
+                } if event_activity_id == &activity_id => {
+                    if self.has_later_activity_attempt_or_outcome(index + 1, &activity_id) {
+                        index += 1;
+                    } else {
+                        return self.consume_range(start, index + 1);
+                    }
+                }
+                Event::ActivityCompleted {
+                    activity_id: event_activity_id,
+                    ..
+                }
+                | Event::ActivityCancelled {
+                    activity_id: event_activity_id,
+                    ..
+                } if event_activity_id == &activity_id => {
+                    return self.consume_range(start, index + 1);
+                }
+                _ => return self.mismatch_at_current(expected_key),
+            }
+        }
+
+        CursorResolveResult::Exhausted
+    }
+
+    fn resolve_started_with_immediate_outcome(
+        &mut self,
+        expected_key: CorrelationKey,
+    ) -> CursorResolveResult {
+        let start = self.position;
+        let next = self.position + 1;
+        if self
+            .events
+            .get(next)
+            .is_some_and(|event| self.is_outcome_for_start_key(event, &expected_key))
+        {
+            self.consume_range(start, next + 1)
+        } else {
+            self.consume_one()
+        }
+    }
+
+    fn consume_one(&mut self) -> CursorResolveResult {
+        self.consume_range(self.position, self.position + 1)
+    }
+
+    fn consume_range(&mut self, start: usize, end: usize) -> CursorResolveResult {
+        let consumed = self.events[start..end].to_vec();
+        self.position = end;
+        CursorResolveResult::Matched(consumed)
+    }
+
+    fn mismatch_at_current(&self, expected_key: CorrelationKey) -> CursorResolveResult {
+        match self.events.get(self.position) {
+            Some(event) => CursorResolveResult::Mismatch {
+                expected_key,
+                found: self.descriptor_at(self.position, event),
+            },
+            None => CursorResolveResult::Exhausted,
+        }
+    }
+
+    fn descriptor_at(&self, index: usize, event: &Event) -> FoundEventDescriptor {
+        FoundEventDescriptor {
+            seq: event.seq(),
+            family: family_for_event(event),
+            key: key_for_event(&self.events, index),
+            kind: event_kind(event),
+        }
+    }
+
+    fn has_later_activity_attempt_or_outcome(
+        &self,
+        start: usize,
+        activity_id: &ActivityId,
+    ) -> bool {
+        self.events.iter().skip(start).any(|event| {
+            matches!(
+                event,
+                Event::ActivityStarted {
+                    activity_id: event_activity_id,
+                    ..
+                } | Event::ActivityFailed {
+                    activity_id: event_activity_id,
+                    ..
+                } | Event::ActivityCompleted {
+                    activity_id: event_activity_id,
+                    ..
+                } if event_activity_id == activity_id
+            )
+        })
+    }
+
+    fn is_outcome_for_start_key(&self, event: &Event, expected_key: &CorrelationKey) -> bool {
+        match (event, expected_key) {
+            (
+                Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. },
+                CorrelationKey::Timer(expected_timer_id),
+            ) => timer_id == expected_timer_id,
+            (
+                Event::ChildWorkflowCompleted {
+                    child_workflow_id, ..
+                }
+                | Event::ChildWorkflowFailed {
+                    child_workflow_id, ..
+                }
+                | Event::ChildWorkflowCancelled {
+                    child_workflow_id, ..
+                },
+                CorrelationKey::Child(_),
+            ) => self.events.get(self.position).is_some_and(|start| {
+                matches!(
+                    start,
+                    Event::ChildWorkflowStarted {
+                        child_workflow_id: start_child_workflow_id,
+                        ..
+                    } if start_child_workflow_id == child_workflow_id
+                )
+            }),
+            _ => false,
+        }
+    }
+}
+
+fn family_for_event(event: &Event) -> Option<RecordedEventFamily> {
+    match event {
+        Event::ActivityScheduled { .. } => Some(RecordedEventFamily::Activity),
+        Event::TimerStarted { .. } => Some(RecordedEventFamily::Timer),
+        Event::SignalReceived { .. } => Some(RecordedEventFamily::Signal),
+        Event::ChildWorkflowStarted { .. } => Some(RecordedEventFamily::Child),
+        _ => None,
+    }
+}
+
+fn event_kind(event: &Event) -> &'static str {
+    match event {
+        Event::WorkflowStarted { .. } => "WorkflowStarted",
+        Event::WorkflowCompleted { .. } => "WorkflowCompleted",
+        Event::WorkflowFailed { .. } => "WorkflowFailed",
+        Event::WorkflowCancelled { .. } => "WorkflowCancelled",
+        Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
+        Event::ActivityScheduled { .. } => "ActivityScheduled",
+        Event::ActivityStarted { .. } => "ActivityStarted",
+        Event::ActivityCompleted { .. } => "ActivityCompleted",
+        Event::ActivityFailed { .. } => "ActivityFailed",
+        Event::ActivityCancelled { .. } => "ActivityCancelled",
+        Event::TimerStarted { .. } => "TimerStarted",
+        Event::TimerFired { .. } => "TimerFired",
+        Event::TimerCancelled { .. } => "TimerCancelled",
+        Event::SignalReceived { .. } => "SignalReceived",
+        Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",
+        Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
+        Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",
+        Event::ChildWorkflowCancelled { .. } => "ChildWorkflowCancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aion_core::{
+        ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, Payload, TimerId,
+        WorkflowId,
+    };
+    use chrono::{DateTime, TimeZone, Utc};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{CursorResolveResult, HistoryCursor, RecordedEventFamily};
+    use crate::durability::correlation::CorrelationKey;
+
+    fn timestamp() -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+        Utc.timestamp_opt(0, 0)
+            .single()
+            .ok_or_else(|| "invalid timestamp".into())
+    }
+
+    fn envelope(seq: u64) -> Result<EventEnvelope, Box<dyn std::error::Error>> {
+        Ok(EventEnvelope {
+            seq,
+            recorded_at: timestamp()?,
+            workflow_id: WorkflowId::new(Uuid::nil()),
+        })
+    }
+
+    fn payload() -> Result<Payload, Box<dyn std::error::Error>> {
+        Ok(Payload::from_json(&json!(null))?)
+    }
+
+    fn scheduled(seq: u64, ordinal: u64) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ActivityScheduled {
+            envelope: envelope(seq)?,
+            activity_id: ActivityId::from_sequence_position(ordinal),
+            activity_type: "activity".to_owned(),
+            input: payload()?,
+        })
+    }
+
+    fn started(seq: u64, ordinal: u64) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ActivityStarted {
+            envelope: envelope(seq)?,
+            activity_id: ActivityId::from_sequence_position(ordinal),
+        })
+    }
+
+    fn completed(seq: u64, ordinal: u64) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ActivityCompleted {
+            envelope: envelope(seq)?,
+            activity_id: ActivityId::from_sequence_position(ordinal),
+            result: payload()?,
+        })
+    }
+
+    fn failed(
+        seq: u64,
+        ordinal: u64,
+        attempt: u32,
+        kind: ActivityErrorKind,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ActivityFailed {
+            envelope: envelope(seq)?,
+            activity_id: ActivityId::from_sequence_position(ordinal),
+            error: ActivityError {
+                kind,
+                message: "activity failed".to_owned(),
+                details: None,
+            },
+            attempt,
+        })
+    }
+
+    #[test]
+    fn new_accepts_in_order_history_and_exposes_starting_sequence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cursor = HistoryCursor::new(vec![scheduled(7, 0)?, completed(8, 0)?])?;
+
+        assert_eq!(cursor.current_sequence(), Some(7));
+        assert_eq!(cursor.position_index(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn new_rejects_decreasing_sequence_order() -> Result<(), Box<dyn std::error::Error>> {
+        let error = HistoryCursor::new(vec![scheduled(9, 0)?, completed(8, 0)?])
+            .map(|_| "unexpected success")
+            .err();
+
+        assert!(error.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_activity_match_then_reports_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![scheduled(1, 0)?, completed(2, 0)?])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 2);
+                assert_eq!(cursor.current_sequence(), None);
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("activity should match recorded history".into());
+            }
+        }
+
+        assert_eq!(
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(1),),
+            CursorResolveResult::Exhausted
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reports_mismatch_for_different_next_family() -> Result<(), Box<dyn std::error::Error>> {
+        let timer_id = TimerId::anonymous(1);
+        let mut cursor = HistoryCursor::new(vec![Event::TimerStarted {
+            envelope: envelope(1)?,
+            timer_id: timer_id.clone(),
+            fire_at: timestamp()?,
+        }])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Mismatch {
+                expected_key,
+                found,
+            } => {
+                assert_eq!(expected_key, CorrelationKey::Activity(0));
+                assert_eq!(found.family, Some(RecordedEventFamily::Timer));
+                assert_eq!(found.key, Some(CorrelationKey::Timer(timer_id)));
+            }
+            CursorResolveResult::Matched(_) | CursorResolveResult::Exhausted => {
+                return Err("different next family should be a mismatch".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn walks_retry_failures_to_eventual_activity_success() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Retryable)?,
+            started(3, 0)?,
+            failed(4, 0, 2, ActivityErrorKind::Retryable)?,
+            completed(5, 0)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 5);
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityCompleted { .. })
+                ));
+                assert_eq!(cursor.current_sequence(), None);
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("retry history should resolve to eventual completion".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn returns_terminal_activity_failure_as_recorded_outcome()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Retryable)?,
+            failed(3, 0, 2, ActivityErrorKind::Terminal)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 3);
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityFailed { error, .. }) if error.kind == ActivityErrorKind::Terminal
+                ));
+                assert_eq!(cursor.current_sequence(), None);
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("terminal failure should be the recorded outcome".into());
+            }
+        }
+        Ok(())
+    }
+}
