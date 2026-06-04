@@ -1,8 +1,8 @@
 //! pub mod + re-exports only
 
+pub mod api;
 pub mod builder;
 pub mod delegated;
-pub mod engine;
 
+pub use api::Engine;
 pub use builder::EngineBuilder;
-pub use engine::Engine;
