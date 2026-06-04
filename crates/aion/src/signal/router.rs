@@ -139,8 +139,9 @@ mod tests {
 
     use super::{SignalRouter, SignalRouterError};
     use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
+    use crate::engine_seam::test_support::DeliveredWorkflowMessage;
     use crate::engine_seam::{
-        EngineSeamError, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
+        EngineSeamError, WorkflowProcessHandle, WorkflowResidency,
     };
 
     #[test]
@@ -182,7 +183,7 @@ mod tests {
             assert_eq!(*delivered_process, process);
             assert_eq!(
                 message,
-                &WorkflowMailboxMessage::SignalReceived {
+                &DeliveredWorkflowMessage::SignalReceived {
                     name: "wake".to_owned(),
                     payload,
                 }
@@ -233,7 +234,7 @@ mod tests {
             engine.delivered_messages()?,
             vec![(
                 process,
-                WorkflowMailboxMessage::SignalReceived {
+                DeliveredWorkflowMessage::SignalReceived {
                     name: "approved".to_owned(),
                     payload,
                 },

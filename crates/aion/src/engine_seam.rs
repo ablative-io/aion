@@ -455,11 +455,6 @@ pub(crate) mod test_support {
             Ok(self.state()?.armed_timers.clone())
         }
 
-        /// Returns a snapshot of recorded events.
-        pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
-            Ok(self.state()?.recorded_events.clone())
-        }
-
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
             self.state.lock().map_err(|_| EngineSeamError::Recorder {
                 reason: "fake engine state lock was poisoned".to_owned(),
