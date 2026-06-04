@@ -20,17 +20,17 @@ pub struct TimerService {
     engine: Arc<dyn EngineHandle>,
     store: Arc<dyn EventStore>,
     recorded_at: fn() -> DateTime<Utc>,
-    firing: DashSet<(WorkflowId, TimerId)>,
+    terminal_updates: DashSet<(WorkflowId, TimerId)>,
 }
 
-struct FireSlot<'a> {
-    firing: &'a DashSet<(WorkflowId, TimerId)>,
+struct TerminalUpdateSlot<'a> {
+    terminal_updates: &'a DashSet<(WorkflowId, TimerId)>,
     key: (WorkflowId, TimerId),
 }
 
-impl Drop for FireSlot<'_> {
+impl Drop for TerminalUpdateSlot<'_> {
     fn drop(&mut self) {
-        self.firing.remove(&self.key);
+        self.terminal_updates.remove(&self.key);
     }
 }
 
@@ -44,6 +44,13 @@ pub enum TimerServiceError {
     /// Engine seam operation failed.
     #[error("timer engine operation failed: {0}")]
     Engine(#[from] EngineSeamError),
+
+    /// Anonymous sleep timers are cancelled by cancelling the owning workflow.
+    #[error("anonymous sleep timers cannot be cancelled separately: {timer_id}")]
+    AnonymousTimerNotCancellable {
+        /// Anonymous timer that was passed to the named-timer cancellation API.
+        timer_id: TimerId,
+    },
 }
 
 impl TimerService {
@@ -64,7 +71,7 @@ impl TimerService {
             engine,
             store,
             recorded_at,
-            firing: DashSet::new(),
+            terminal_updates: DashSet::new(),
         }
     }
 
@@ -107,6 +114,56 @@ impl TimerService {
         Ok(())
     }
 
+    /// Cancels a durable named timer that has not already reached a terminal timer state.
+    ///
+    /// Already-fired and already-cancelled timers are treated as idempotent no-ops. For active
+    /// resident timers the live wheel is disarmed through the engine seam before `TimerCancelled` is
+    /// recorded through the workflow recorder seam. Non-resident timers still record the cancellation
+    /// so recovery/replay can suppress a later fire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimerServiceError`] when history inspection, residency resolution, wheel disarming,
+    /// or event recording fails.
+    pub async fn cancel(
+        &self,
+        workflow_id: WorkflowId,
+        timer_id: TimerId,
+    ) -> Result<(), TimerServiceError> {
+        if timer_id.name().is_none() {
+            return Err(TimerServiceError::AnonymousTimerNotCancellable { timer_id });
+        }
+
+        let key = (workflow_id.clone(), timer_id.clone());
+        let terminal_update_slot = self.wait_for_terminal_update_slot(key).await;
+
+        let result = self.cancel_guarded(workflow_id, timer_id).await;
+        drop(terminal_update_slot);
+        result
+    }
+
+    async fn cancel_guarded(
+        &self,
+        workflow_id: WorkflowId,
+        timer_id: TimerId,
+    ) -> Result<(), TimerServiceError> {
+        if self.timer_is_terminal(&workflow_id, &timer_id).await? {
+            return Ok(());
+        }
+
+        if let WorkflowResidency::Resident(process) = self.engine.resolve_workflow(&workflow_id)? {
+            self.engine.disarm_timer(process, &timer_id)?;
+        }
+
+        let event = Event::TimerCancelled {
+            envelope: self.next_envelope(&workflow_id).await?,
+            timer_id,
+        };
+        self.engine.record_workflow_event(&workflow_id, event)?;
+
+        Ok(())
+    }
+
     /// Handles a live timer-wheel fire.
     ///
     /// `TimerFired` is recorded before any mailbox delivery. If the workflow is no longer resident,
@@ -123,20 +180,23 @@ impl TimerService {
         fire_at: DateTime<Utc>,
     ) -> Result<(), TimerServiceError> {
         let key = (workflow_id.clone(), timer_id.clone());
-        let fire_slot = self.wait_for_fire_slot(key).await;
+        let terminal_update_slot = self.wait_for_terminal_update_slot(key).await;
 
         let result = self
             .fire_timer_guarded(workflow_id, timer_id, fire_at)
             .await;
-        drop(fire_slot);
+        drop(terminal_update_slot);
         result
     }
 
-    async fn wait_for_fire_slot(&self, key: (WorkflowId, TimerId)) -> FireSlot<'_> {
+    async fn wait_for_terminal_update_slot(
+        &self,
+        key: (WorkflowId, TimerId),
+    ) -> TerminalUpdateSlot<'_> {
         loop {
-            if self.firing.insert(key.clone()) {
-                return FireSlot {
-                    firing: &self.firing,
+            if self.terminal_updates.insert(key.clone()) {
+                return TerminalUpdateSlot {
+                    terminal_updates: &self.terminal_updates,
                     key,
                 };
             }
