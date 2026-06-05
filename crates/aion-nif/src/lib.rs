@@ -2,6 +2,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod context;
 pub mod declare;
 pub mod descriptor;
 pub mod error;
@@ -11,6 +12,7 @@ pub mod registry;
 pub mod term;
 pub mod term_collection;
 
+pub use context::NifContext;
 pub use declare::{
     ActivityWakeHandle, activity_descriptor, pure_descriptor, request_activity_suspend,
 };

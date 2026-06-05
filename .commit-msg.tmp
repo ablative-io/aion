@@ -1,1 +1,1 @@
-fix(aion-server): enforce namespace checks before start/list decode
+refactor(aion-nif): scope retained term storage to nif context

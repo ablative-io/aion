@@ -12,7 +12,7 @@ use beamr::{
     term::{Term, binary::Binary, boxed::Float},
 };
 
-use crate::{TermError, raw};
+use crate::{NifContext, TermError, raw};
 
 /// Decodes a beamr term into a Rust value for a typed NIF argument.
 ///
@@ -40,7 +40,7 @@ pub trait IntoTerm {
     ///
     /// Returns [`TermError`] when heap allocation or atom interning support is
     /// unavailable.
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError>;
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError>;
 }
 
 /// Owned atom name used for typed atom conversion.
@@ -113,9 +113,9 @@ pub(crate) fn mismatch(expected: &'static str, term: Term) -> TermError {
     }
 }
 
-fn small_int_term(value: i64, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+fn small_int_term(value: i64, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
     Term::try_small_int(value)
-        .map(|term| ctx.allocate_term(term))
+        .map(|term| ctx.process_mut().allocate_term(term))
         .ok_or(TermError::HeapAllocation { shape: "integer" })
 }
 
@@ -126,7 +126,7 @@ impl FromTerm for i64 {
 }
 
 impl IntoTerm for i64 {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         small_int_term(self, ctx)
     }
 }
@@ -141,7 +141,7 @@ impl FromTerm for u64 {
 }
 
 impl IntoTerm for u64 {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         let value =
             i64::try_from(self).map_err(|_| TermError::HeapAllocation { shape: "integer" })?;
         small_int_term(value, ctx)
@@ -157,8 +157,8 @@ impl FromTerm for f64 {
 }
 
 impl IntoTerm for f64 {
-    fn into_term(self, _ctx: &mut ProcessContext) -> Result<Term, TermError> {
-        raw::owned_float_term(self)
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+        raw::owned_float_term(ctx, self)
     }
 }
 
@@ -173,9 +173,9 @@ impl FromTerm for bool {
 }
 
 impl IntoTerm for bool {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         let atom = if self { Atom::TRUE } else { Atom::FALSE };
-        Ok(ctx.allocate_term(Term::atom(atom)))
+        Ok(ctx.process_mut().allocate_term(Term::atom(atom)))
     }
 }
 
@@ -188,8 +188,8 @@ impl FromTerm for Vec<u8> {
 }
 
 impl IntoTerm for Vec<u8> {
-    fn into_term(self, _ctx: &mut ProcessContext) -> Result<Term, TermError> {
-        raw::owned_binary_term(&self)
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+        raw::owned_binary_term(ctx, &self)
     }
 }
 
@@ -201,8 +201,8 @@ impl FromTerm for String {
 }
 
 impl IntoTerm for String {
-    fn into_term(self, _ctx: &mut ProcessContext) -> Result<Term, TermError> {
-        raw::owned_binary_term(self.as_bytes())
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+        raw::owned_binary_term(ctx, self.as_bytes())
     }
 }
 
@@ -223,14 +223,15 @@ impl FromTerm for AtomName {
 }
 
 impl IntoTerm for AtomName {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         let atom = {
             let table = ctx
+                .process()
                 .atom_table()
                 .ok_or_else(|| table_missing(self.0.clone()))?;
             table.intern(&self.0)
         };
-        Ok(ctx.allocate_term(Term::atom(atom)))
+        Ok(ctx.process_mut().allocate_term(Term::atom(atom)))
     }
 }
 
@@ -252,26 +253,34 @@ mod tests {
     #[test]
     fn primitive_values_round_trip() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
 
-        let signed = i64::from_term((-42_i64).into_term(&mut ctx)?, &ctx)?;
+        let signed = i64::from_term((-42_i64).into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert_eq!(signed, -42);
 
-        let unsigned = u64::from_term(42_u64.into_term(&mut ctx)?, &ctx)?;
+        let unsigned = u64::from_term(42_u64.into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert_eq!(unsigned, 42);
 
-        let float = f64::from_term(3.5_f64.into_term(&mut ctx)?, &ctx)?;
+        let float = f64::from_term(3.5_f64.into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert_eq!(float.to_bits(), 3.5_f64.to_bits());
 
-        let flag = bool::from_term(true.into_term(&mut ctx)?, &ctx)?;
+        let flag = bool::from_term(true.into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert!(flag);
 
-        let text = String::from_term("hello".to_owned().into_term(&mut ctx)?, &ctx)?;
+        let text = String::from_term(
+            "hello".to_owned().into_term(&mut nif_ctx)?,
+            nif_ctx.process(),
+        )?;
         assert_eq!(text, "hello");
 
-        let bytes = Vec::<u8>::from_term(vec![1_u8, 2, 3].into_term(&mut ctx)?, &ctx)?;
+        let bytes =
+            Vec::<u8>::from_term(vec![1_u8, 2, 3].into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert_eq!(bytes, vec![1, 2, 3]);
 
-        let atom = AtomName::from_term(AtomName::from("ready").into_term(&mut ctx)?, &ctx)?;
+        let atom = AtomName::from_term(
+            AtomName::from("ready").into_term(&mut nif_ctx)?,
+            nif_ctx.process(),
+        )?;
         assert_eq!(atom, AtomName::from("ready"));
 
         Ok(())
