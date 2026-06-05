@@ -23,7 +23,9 @@
     "lint": "eslint src --ext .ts"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@types/node": "^20.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "typescript": "^5.5.0"
   },

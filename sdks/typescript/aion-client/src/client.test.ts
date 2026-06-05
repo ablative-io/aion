@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mapTransportError, mapWireError } from "./errors.js";
+import {
+  QueryFailedError,
+  ServerError,
+  mapTransportError,
+  mapWireError,
+} from "./errors.js";
 import { fromPayload, toPayload } from "./payload.js";
 import { type SubscribeRequest, eventStream } from "./stream.js";
 
@@ -42,6 +47,41 @@ test("resuming event stream yields every event once after a transient drop", asy
 
   assert.deepEqual(yielded, [1, 2, 3]);
   assert.deepEqual(transport.resumeRequests, [undefined, 3]);
+});
+
+test("terminal stream failures throw out of the async iterator", async () => {
+  const transport = {
+    async *subscribe(): AsyncIterable<unknown> {
+      yield frame(1);
+      yield {
+        error: { code: "query_failed", message: "workflow terminal failure" },
+      };
+    },
+  };
+
+  const iterator = eventStream({
+    transport,
+    request: { namespace: "default", workflowId: "workflow" },
+  })[Symbol.asyncIterator]();
+
+  assert.equal((await iterator.next()).value.seq, 1);
+  await assert.rejects(async () => iterator.next(), QueryFailedError);
+});
+
+test("invalid stream frames fail terminally instead of reconnecting forever", async () => {
+  const transport = {
+    async *subscribe(): AsyncIterable<unknown> {
+      yield { event: { namespace: "default" } };
+    },
+  };
+
+  const iterator = eventStream({
+    transport,
+    request: { namespace: "default", workflowId: "workflow" },
+    maxReconnects: 1,
+  })[Symbol.asyncIterator]();
+
+  await assert.rejects(async () => iterator.next(), ServerError);
 });
 
 class StubSubscribeTransport {

@@ -29,7 +29,7 @@ export abstract class AionClientError extends Error {
   abstract readonly kind: AionErrorKind;
   readonly detail?: ErrorDetail;
 
-  protected constructor(message: string, detail?: ErrorDetail) {
+  constructor(message: string, detail?: ErrorDetail) {
     super(message);
     this.name = new.target.name;
     this.detail = detail;

@@ -9,7 +9,7 @@ const client = await connect({
   endpoint: "https://aion.example.com",
   namespace: "default",
   auth: {
-    bearerToken: process.env.AION_TOKEN,
+    bearerToken: "replace-with-aion-token",
     subject: "frontend",
     namespaces: ["default"],
   },

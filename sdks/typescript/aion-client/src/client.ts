@@ -1,4 +1,5 @@
 import {
+  InvalidArgumentError,
   mapHttpResponseError,
   mapTransportError,
   mapWireError,
@@ -373,12 +374,21 @@ class HttpWorkflowTransport implements WorkflowTransport {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
+    let requestBody: string;
+    try {
+      requestBody = JSON.stringify(body);
+    } catch (error) {
+      throw new InvalidArgumentError("Failed to serialize request body", {
+        cause: error,
+      });
+    }
+
     let response: Response;
     try {
       response = await this.fetchImpl(new URL(path, `${this.endpoint}/`), {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify(body),
+        body: requestBody,
       });
     } catch (error) {
       throw mapTransportError(error);
@@ -389,7 +399,11 @@ class HttpWorkflowTransport implements WorkflowTransport {
     }
 
     try {
-      return (await response.json()) as T;
+      const text = await response.text();
+      if (text.length === 0) {
+        return undefined as T;
+      }
+      return JSON.parse(text) as T;
     } catch (error) {
       throw mapWireError({
         code: "server",
@@ -417,7 +431,14 @@ class HttpWorkflowTransport implements WorkflowTransport {
 }
 
 function normalizeEndpoint(endpoint: string, tls?: TlsOptions): string {
-  const url = new URL(endpoint);
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch (error) {
+    throw new InvalidArgumentError("Client endpoint must be an absolute URL", {
+      cause: error,
+    });
+  }
   if (tls?.enabled === true && url.protocol === "http:") {
     url.protocol = "https:";
   }

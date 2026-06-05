@@ -1,1 +1,1 @@
-feat(ts-client): add caller SDK client, payloads, errors, and streams
+Harden TypeScript SDK client error handling, stream tests, and lint config
