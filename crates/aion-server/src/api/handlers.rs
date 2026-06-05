@@ -13,6 +13,11 @@ use aion_proto::{
 use crate::{CallerIdentity, NamespaceGuard, NamespaceOperation, ServerError, WorkflowTarget};
 
 /// Handles a decoded start-workflow request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the payload is missing or malformed, namespace scoping fails,
+/// the engine start call fails, or namespace ownership metadata cannot be recorded.
 pub async fn start(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -40,6 +45,11 @@ pub async fn start(
 }
 
 /// Handles a decoded signal request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs or payloads are missing or malformed, namespace scoping
+/// fails, or the engine signal call fails.
 pub async fn signal(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -64,6 +74,11 @@ pub async fn signal(
 }
 
 /// Handles a decoded query request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs are missing or malformed, namespace scoping fails, or the
+/// engine query call fails.
 pub async fn query(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -89,6 +104,11 @@ pub async fn query(
 }
 
 /// Handles a decoded cancel request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs are missing or malformed, namespace scoping fails, or the
+/// engine cancel call fails.
 pub async fn cancel(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -112,6 +132,11 @@ pub async fn cancel(
 }
 
 /// Handles a decoded list-workflows request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the filter envelope is malformed, namespace scoping fails, the
+/// engine list call fails, or summaries cannot be encoded.
 pub async fn list(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -139,6 +164,11 @@ pub async fn list(
 }
 
 /// Handles a decoded describe-workflow request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs are missing or malformed, namespace scoping fails, store
+/// history reading fails, the workflow has no summary, or response envelopes cannot be encoded.
 pub async fn describe(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
