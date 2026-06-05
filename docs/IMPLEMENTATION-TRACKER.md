@@ -192,11 +192,11 @@ These three tracks run concurrently.
 - [x] **AW-002** — Common wire types, proto conversions · _landed 9be04f2_
 
 ### Wave 25 (5 parallel)
-- [ ] **AF-003** — Error taxonomy (ActivityError, engine failures) · _Lemmy · depends: AF-002_
-- [ ] **AN-003** — Payload and JSON bridge · _Lemmy · depends: AN-002_
-- [ ] **AW-003** — Workflow-management service definition · _Max Power · depends: AW-002_
-- [ ] **AW-004** — Event-streaming wire shape · _Max Power · depends: AW-002_
-- [ ] **AW-005** — Remote-worker protocol definition · _Max Power · depends: AW-002_
+- [x] **AF-003** — Error taxonomy (ActivityError, engine failures) · _landed f44671b_
+- [x] **AN-003** — Payload and JSON bridge · _landed 2108712_
+- [x] **AW-003** — Workflow-management service definition · _landed c8ae5a2_
+- [x] **AW-004** — Event-streaming wire shape · _landed 62aff91_
+- [x] **AW-005** — Remote-worker protocol definition · _landed 013dc59_
 
 ### Wave 26 (3 parallel)
 - [ ] **AF-004** — Activities (typed Activity, RetryPolicy) · _Lemmy · depends: AF-003_
