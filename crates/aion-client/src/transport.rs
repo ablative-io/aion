@@ -66,7 +66,7 @@ pub trait WorkflowTransport: Send + Sync {
 /// One transport-level event subscription attempt.
 pub struct SubscriptionAttempt {
     /// Decoded events for this attempt. A transient disconnect is represented by
-    /// an [`Err(ClientError::Unavailable)`] item.
+    /// an `Err(ClientError::Unavailable)` item.
     pub events: BoxStream<'static, Result<Event, ClientError>>,
 }
 
@@ -397,10 +397,10 @@ fn embedded_event_filter(
                 family: None,
             })
         }
-        Some(aion_proto::subscription_request::Subscription::Filtered(_))
-        | Some(aion_proto::subscription_request::Subscription::Firehose(_)) => {
-            Ok(aion::EventFilter::default())
-        }
+        Some(
+            aion_proto::subscription_request::Subscription::Filtered(_)
+            | aion_proto::subscription_request::Subscription::Firehose(_),
+        ) => Ok(aion::EventFilter::default()),
         None => Err(ClientError::InvalidArgument),
     }
 }
