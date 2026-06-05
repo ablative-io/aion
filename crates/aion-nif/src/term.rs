@@ -253,20 +253,20 @@ mod tests {
     fn primitive_values_round_trip() -> Result<(), TermError> {
         let mut ctx = context();
 
-        let i = i64::from_term((-42_i64).into_term(&mut ctx)?, &ctx)?;
-        assert_eq!(i, -42);
+        let signed = i64::from_term((-42_i64).into_term(&mut ctx)?, &ctx)?;
+        assert_eq!(signed, -42);
 
-        let u = u64::from_term(42_u64.into_term(&mut ctx)?, &ctx)?;
-        assert_eq!(u, 42);
+        let unsigned = u64::from_term(42_u64.into_term(&mut ctx)?, &ctx)?;
+        assert_eq!(unsigned, 42);
 
-        let f = f64::from_term(3.5_f64.into_term(&mut ctx)?, &ctx)?;
-        assert_eq!(f.to_bits(), 3.5_f64.to_bits());
+        let float = f64::from_term(3.5_f64.into_term(&mut ctx)?, &ctx)?;
+        assert_eq!(float.to_bits(), 3.5_f64.to_bits());
 
-        let b = bool::from_term(true.into_term(&mut ctx)?, &ctx)?;
-        assert!(b);
+        let flag = bool::from_term(true.into_term(&mut ctx)?, &ctx)?;
+        assert!(flag);
 
-        let s = String::from_term("hello".to_owned().into_term(&mut ctx)?, &ctx)?;
-        assert_eq!(s, "hello");
+        let text = String::from_term("hello".to_owned().into_term(&mut ctx)?, &ctx)?;
+        assert_eq!(text, "hello");
 
         let bytes = Vec::<u8>::from_term(vec![1_u8, 2, 3].into_term(&mut ctx)?, &ctx)?;
         assert_eq!(bytes, vec![1, 2, 3]);
