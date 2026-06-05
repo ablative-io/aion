@@ -187,9 +187,9 @@ These three tracks run concurrently.
 - [x] **AW-001** — aion-proto scaffold, tonic-build wiring · _landed e80330a_
 
 ### Wave 24 (3 parallel)
-- [ ] **AF-002** — Codec and Duration primitives · _Lemmy · depends: AF-001_
-- [ ] **AN-002** — FromTerm/IntoTerm conversion · _Lemmy · depends: AN-001_
-- [ ] **AW-002** — Common wire types, proto conversions · _Max Power · depends: AW-001_
+- [x] **AF-002** — Codec and Duration primitives · _landed 7d723cc_
+- [x] **AN-002** — FromTerm/IntoTerm conversion · _landed b6dc933_
+- [x] **AW-002** — Common wire types, proto conversions · _landed 9be04f2_
 
 ### Wave 25 (5 parallel)
 - [ ] **AF-003** — Error taxonomy (ActivityError, engine failures) · _Lemmy · depends: AF-002_
