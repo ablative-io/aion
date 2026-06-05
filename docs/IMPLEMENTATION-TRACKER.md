@@ -182,9 +182,9 @@ AF, AN, and AW are independent of each other. All depend on Phase 3 (engine core
 These three tracks run concurrently.
 
 ### Wave 23 (3 parallel)
-- [ ] **AF-001** — Package scaffold, @external binding layer · _Lemmy_
-- [ ] **AN-001** — aion-nif scaffold, error taxonomy, FFI seam · _Lemmy_
-- [ ] **AW-001** — aion-proto scaffold, tonic-build wiring · _Max Power_
+- [x] **AF-001** — Package scaffold, @external binding layer · _landed 0a4d9d1_
+- [x] **AN-001** — aion-nif scaffold, error taxonomy, FFI seam · _landed 228822e_
+- [x] **AW-001** — aion-proto scaffold, tonic-build wiring · _landed e80330a_
 
 ### Wave 24 (3 parallel)
 - [ ] **AF-002** — Codec and Duration primitives · _Lemmy · depends: AF-001_
