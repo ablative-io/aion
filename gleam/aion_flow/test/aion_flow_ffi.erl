@@ -36,6 +36,8 @@ random() ->
 random_int(_Min, _Max) ->
     {ok, <<"4">>}.
 
+sleep(<<"-", _Rest/binary>>) ->
+    {error, <<"invalid duration">>};
 sleep(_Duration) ->
     {ok, <<"fired">>}.
 
@@ -44,6 +46,8 @@ start_timer(<<"error", _Rest/binary>>, _Duration) ->
 start_timer(TimerId, _Duration) ->
     {ok, TimerId}.
 
+cancel_timer(<<"cancel-error">>) ->
+    {error, <<"timer cancellation failed">>};
 cancel_timer(_TimerId) ->
     {ok, <<"cancelled-or-no-op">>}.
 
