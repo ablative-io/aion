@@ -52,6 +52,11 @@ pub const fn binary_word_len(byte_len: usize) -> usize {
 /// This is the allocation path used by [`crate::IntoTerm`], whose signature does
 /// not expose caller-owned heap storage. The storage is retained so returned
 /// heap-backed terms remain readable after conversion returns.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the binary layout cannot be
+/// written or retained storage cannot be locked.
 pub fn owned_binary_term(bytes: &[u8]) -> Result<Term, TermError> {
     keep_owned_term(binary_word_len(bytes.len()), "binary", |heap| {
         binary_term(heap, bytes)
@@ -80,6 +85,11 @@ pub fn tuple_term(heap: &mut [u64], elements: &[Term]) -> Result<Term, TermError
 }
 
 /// Builds a tuple term backed by storage retained by the raw allocation seam.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the tuple layout cannot be
+/// written or retained storage cannot be locked.
 pub fn owned_tuple_term(elements: &[Term]) -> Result<Term, TermError> {
     keep_owned_term(tuple_word_len(elements.len()), "tuple", |heap| {
         tuple_term(heap, elements)
@@ -93,11 +103,21 @@ pub const fn float_word_len() -> usize {
 }
 
 /// Builds a float term in caller-provided process-heap words.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the supplied heap slice is too
+/// small for the float layout.
 pub fn float_term(heap: &mut [u64], value: f64) -> Result<Term, TermError> {
     boxed::write_float(heap, value).ok_or(TermError::HeapAllocation { shape: "float" })
 }
 
 /// Builds a float term backed by storage retained by the raw allocation seam.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the float layout cannot be
+/// written or retained storage cannot be locked.
 pub fn owned_float_term(value: f64) -> Result<Term, TermError> {
     keep_owned_term(float_word_len(), "float", |heap| float_term(heap, value))
 }
@@ -124,6 +144,11 @@ pub fn cons_term(words: &mut [u64], head: Term, tail: Term) -> Result<Term, Term
 }
 
 /// Builds a cons cell backed by storage retained by the raw allocation seam.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the cons layout cannot be written
+/// or retained storage cannot be locked.
 pub fn owned_cons_term(head: Term, tail: Term) -> Result<Term, TermError> {
     keep_owned_term(cons_word_len(), "cons", |heap| cons_term(heap, head, tail))
 }
@@ -158,6 +183,11 @@ pub fn list_term(heap: &mut [u64], elements: &[Term]) -> Result<Term, TermError>
 }
 
 /// Builds a proper list backed by storage retained by the raw allocation seam.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the list layout cannot be written
+/// or retained storage cannot be locked.
 pub fn owned_list_term(elements: &[Term]) -> Result<Term, TermError> {
     keep_owned_term(list_word_len(elements.len()), "list", |heap| {
         list_term(heap, elements)
@@ -171,11 +201,21 @@ pub const fn map_word_len(len: usize) -> usize {
 }
 
 /// Builds a map term in caller-provided process-heap words.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the supplied heap slice is too
+/// small for the map layout or key/value counts differ.
 pub fn map_term(heap: &mut [u64], keys: &[Term], values: &[Term]) -> Result<Term, TermError> {
     boxed::write_map(heap, keys, values).ok_or(TermError::HeapAllocation { shape: "map" })
 }
 
 /// Builds a map term backed by storage retained by the raw allocation seam.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the map layout cannot be written
+/// or retained storage cannot be locked.
 pub fn owned_map_term(keys: &[Term], values: &[Term]) -> Result<Term, TermError> {
     keep_owned_term(map_word_len(keys.len()), "map", |heap| {
         map_term(heap, keys, values)
