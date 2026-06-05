@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// validate that the bytes match the tag on construction. Validation
 /// happens on read (e.g. [`Payload::to_json`] returns `Result`).
 /// Use [`Payload::from_json`] for a validated construction path.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
     content_type: ContentType,
     bytes: Vec<u8>,
@@ -65,7 +65,7 @@ impl Payload {
 }
 
 /// Stable tag describing the encoding used for a payload's bytes.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ContentType {
     /// A `serde_json::Value` serialized as UTF-8 JSON bytes.
     Json,

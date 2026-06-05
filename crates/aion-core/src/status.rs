@@ -9,7 +9,7 @@ use crate::Event;
 /// Status must be obtained only by projecting from event history with
 /// [`status_from_events`], never assigned directly or stored as an independent
 /// mutable field. Event history remains authoritative for every workflow state.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkflowStatus {
     /// The workflow has not recorded a terminal lifecycle event.
     Running,

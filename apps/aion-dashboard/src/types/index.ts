@@ -1,1 +1,17 @@
-// local view types + re-export of generated wire types
+export type {
+  ActivityError,
+  ActivityErrorKind,
+  ActivityId,
+  ContentType,
+  Event,
+  EventEnvelope,
+  Namespace,
+  Payload,
+  RunId,
+  TimerId,
+  WorkflowError,
+  WorkflowFilter,
+  WorkflowId,
+  WorkflowStatus,
+  WorkflowSummary,
+} from './generated';

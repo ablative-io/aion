@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Identifier for a logical workflow.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WorkflowId(Uuid);
 
 impl WorkflowId {
@@ -36,7 +36,7 @@ impl fmt::Display for WorkflowId {
 }
 
 /// Identifier for an activity scheduled within a workflow history.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActivityId(u64);
 
 impl ActivityId {
@@ -68,7 +68,7 @@ pub enum IdError {
 }
 
 /// Identifier for a timer scheduled by workflow code or by the engine.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TimerId(TimerIdKind);
 
 impl TimerId {
@@ -122,7 +122,7 @@ impl fmt::Display for TimerId {
 }
 
 /// Backing representation for timer identifiers.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 enum TimerIdKind {
     /// Author-assigned timer name.
     Named(String),
@@ -131,7 +131,7 @@ enum TimerIdKind {
 }
 
 /// Identifier for a concrete run of a logical workflow.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RunId(Uuid);
 
 impl RunId {

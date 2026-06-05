@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ActivityError, ActivityId, Payload, TimerId, WorkflowError, WorkflowId};
 
 /// Metadata recorded with every workflow history event.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 pub struct EventEnvelope {
     /// Monotonic sequence number within the owning workflow history.
     pub seq: u64,
@@ -23,7 +23,7 @@ pub struct EventEnvelope {
 ///
 /// User data is carried as opaque [`Payload`] values, while failures use the closed workflow and
 /// activity error types from this crate.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", content = "data")]
 pub enum Event {
     /// A workflow execution started with a type name and input payload.

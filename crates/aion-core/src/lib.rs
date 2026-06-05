@@ -3,6 +3,8 @@
 pub mod error;
 pub mod event;
 pub mod filter;
+#[cfg(test)]
+mod generated_types;
 pub mod ids;
 pub mod payload;
 pub mod status;
