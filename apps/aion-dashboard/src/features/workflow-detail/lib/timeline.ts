@@ -69,6 +69,44 @@ export function eventEnvelope(event: Event): EventEnvelope {
   return event.data.envelope;
 }
 
+export function mergeEventsBySequence(
+  history: readonly Event[],
+  live: readonly Event[]
+): Event[] {
+  const eventsBySequence = new Map<number, Event>();
+
+  for (const event of [...history, ...live]) {
+    const sequence = eventSequence(event);
+
+    if (!eventsBySequence.has(sequence)) {
+      eventsBySequence.set(sequence, event);
+    }
+  }
+
+  return [...eventsBySequence.values()].sort(
+    (left, right) => eventSequence(left) - eventSequence(right)
+  );
+}
+
+export function terminalOutcomeForEvents(events: readonly Event[]): LifecycleOutcome | null {
+  const terminalEvent = mergeEventsBySequence(events, [])
+    .filter(isTerminalWorkflowEvent)
+    .at(-1);
+
+  return terminalEvent ? lifecycleOutcome(terminalEvent) : null;
+}
+
+export function isTerminalWorkflowEvent(
+  event: Event
+): event is Extract<Event, { type: TerminalLifecycleType }> {
+  return (
+    event.type === 'WorkflowCompleted' ||
+    event.type === 'WorkflowFailed' ||
+    event.type === 'WorkflowCancelled' ||
+    event.type === 'WorkflowTimedOut'
+  );
+}
+
 export function payloadSummary(payload: unknown): string {
   const decodedPayload = decodePayload(payload);
 
@@ -449,6 +487,7 @@ type LifecycleType =
   | 'WorkflowFailed'
   | 'WorkflowCancelled'
   | 'WorkflowTimedOut';
+type TerminalLifecycleType = Exclude<LifecycleType, 'WorkflowStarted'>;
 type ActivityType =
   | 'ActivityScheduled'
   | 'ActivityStarted'
