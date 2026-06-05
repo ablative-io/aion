@@ -54,7 +54,7 @@ impl WorkerSession for FakeSession {
         activity_id: ActivityId,
         result: Payload,
     ) -> Result<(), WorkerError> {
-        drop(workflow_id);
+        let _ = workflow_id;
         self.reports
             .push(RecordedReport::Completed(activity_id, result));
         Ok(())
@@ -66,7 +66,7 @@ impl WorkerSession for FakeSession {
         activity_id: ActivityId,
         failure: ActivityError,
     ) -> Result<(), WorkerError> {
-        drop(workflow_id);
+        let _ = workflow_id;
         self.reports
             .push(RecordedReport::Failed(activity_id, failure));
         Ok(())
@@ -268,7 +268,7 @@ impl WorkerSession for ChannelSession {
         activity_id: ActivityId,
         result: Payload,
     ) -> Result<(), WorkerError> {
-        drop(workflow_id);
+        let _ = workflow_id;
         self.reports
             .push(RecordedReport::Completed(activity_id, result));
         Ok(())
@@ -280,7 +280,7 @@ impl WorkerSession for ChannelSession {
         activity_id: ActivityId,
         failure: ActivityError,
     ) -> Result<(), WorkerError> {
-        drop(workflow_id);
+        let _ = workflow_id;
         self.reports
             .push(RecordedReport::Failed(activity_id, failure));
         Ok(())
