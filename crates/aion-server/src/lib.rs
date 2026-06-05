@@ -8,3 +8,8 @@ pub mod namespace;
 pub mod state;
 pub mod stream;
 pub mod worker;
+
+pub use config::ServerConfig;
+pub use error::{ServerError, StreamFailure};
+pub use namespace::resolver::NamespaceResolver;
+pub use state::ServerState;
