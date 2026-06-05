@@ -15,9 +15,7 @@ function normalizeBasePath(basePath: string | undefined): string {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const base = normalizeBasePath(
-    env.AION_DASHBOARD_BASE_PATH ?? env.VITE_AION_DASHBOARD_BASE_PATH
-  );
+  const base = normalizeBasePath(env.AION_DASHBOARD_BASE_PATH ?? env.VITE_AION_DASHBOARD_BASE_PATH);
 
   return {
     base,
