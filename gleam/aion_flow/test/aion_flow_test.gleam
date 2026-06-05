@@ -7,10 +7,12 @@ import aion/duration
 import aion/error
 import aion/query
 import aion/signal
+import aion/testing
 import aion/workflow
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None, Some}
+import gleam/result
 import gleeunit
 import gleeunit/should
 
@@ -32,6 +34,25 @@ pub type ChargeRequest {
 
 pub type ChargeReceipt {
   ChargeReceipt(id: String, approved: Bool)
+}
+
+pub type ExampleOrder {
+  ExampleOrder(id: String, cents: Int)
+}
+
+pub type ExampleDecision {
+  ExampleDecision(approved: Bool)
+}
+
+pub type ExampleSummary {
+  ExampleSummary(
+    order_id: String,
+    run_receipt_id: String,
+    child_receipt_id: String,
+    fanout_receipt_ids: List(String),
+    approved: Bool,
+    observed_at_milliseconds: Int,
+  )
 }
 
 pub fn codec_round_trips_record_test() {
@@ -682,6 +703,65 @@ pub fn workflow_define_carries_entry_contract_test() {
   |> should.equal(Ok(ChargeReceipt(id: "receipt-order-entry", approved: True)))
 }
 
+pub fn canonical_example_workflow_runs_under_harness_test() {
+  case testing.new() {
+    Ok(env) -> {
+      let run_activity =
+        example_charge_activity("example-charge", "order-example", 2400)
+      let fanout_activity =
+        example_charge_activity("example-fanout", "order-example-a", 2400)
+      let approval_signal = example_decision_signal()
+      let definition =
+        workflow.define(
+          "canonical-example",
+          example_order_codec(),
+          example_summary_codec(),
+          workflow_error_codec(),
+          canonical_example_workflow,
+        )
+
+      testing.mock_activity(env, run_activity, fn(request) {
+        Ok(ChargeReceipt(id: "run-" <> request.order_id, approved: True))
+      })
+      |> should.equal(Ok(env))
+
+      testing.mock_activity(env, fanout_activity, fn(request) {
+        Ok(ChargeReceipt(id: "fanout-" <> request.order_id, approved: True))
+      })
+      |> should.equal(Ok(env))
+
+      signal.send(
+        "workflow-canonical-example",
+        approval_signal,
+        ExampleDecision(approved: True),
+      )
+      |> should.equal(Ok(Nil))
+
+      let entry = workflow.entry_fn(definition)
+      let result = entry(ExampleOrder(id: "order-example", cents: 2400))
+
+      testing.advance(env, duration.minutes(5))
+      |> should.equal(Ok(env))
+
+      result
+      |> should.equal(
+        Ok(ExampleSummary(
+          order_id: "order-example",
+          run_receipt_id: "run-order-example",
+          child_receipt_id: "child-receipt-order-example",
+          fanout_receipt_ids: [
+            "fanout-order-example-a",
+            "fanout-order-example-b",
+          ],
+          approved: True,
+          observed_at_milliseconds: 1_700_000_000_000,
+        )),
+      )
+    }
+    Error(_) -> should.fail()
+  }
+}
+
 fn increment_count(
   count: Result(Int, error.QueryError),
 ) -> Result(Int, error.QueryError) {
@@ -715,6 +795,115 @@ fn charge_payment(
   Ok(ChargeReceipt(id: "receipt-" <> request.order_id, approved: True))
 }
 
+fn canonical_example_workflow(
+  input: ExampleOrder,
+) -> Result(ExampleSummary, String) {
+  use observed_at <- result.try(workflow.now() |> result_map_engine_error)
+  use run_receipt <- result.try(
+    workflow.run(example_charge_activity(
+      "example-charge",
+      input.id,
+      input.cents,
+    ))
+    |> result_map_activity_error,
+  )
+  use _slept <- result.try(
+    workflow.sleep(duration.minutes(5)) |> result_map_engine_error,
+  )
+  use decision <- result.try(
+    workflow.receive(example_decision_signal()) |> result_map_receive_error,
+  )
+  use handle <- result.try(
+    workflow.spawn(
+      "checkout-child",
+      checkout_workflow,
+      ChargeRequest(order_id: input.id, cents: input.cents),
+      charge_request_codec(),
+      charge_receipt_codec(),
+      workflow_error_codec(),
+    )
+    |> result_map_engine_error,
+  )
+  use child_receipt <- result.try(child.await(handle) |> result_map_child_error)
+  use fanout_receipts <- result.try(
+    workflow.all([
+      example_charge_activity("example-fanout", input.id <> "-a", input.cents),
+      example_charge_activity("example-fanout", input.id <> "-b", input.cents),
+    ])
+    |> result_map_activity_error,
+  )
+
+  Ok(ExampleSummary(
+    order_id: input.id,
+    run_receipt_id: run_receipt.id,
+    child_receipt_id: child_receipt.id,
+    fanout_receipt_ids: receipt_ids(fanout_receipts),
+    approved: decision.approved,
+    observed_at_milliseconds: workflow.timestamp_to_milliseconds(observed_at),
+  ))
+}
+
+fn example_decision_signal() -> signal.SignalRef(ExampleDecision) {
+  signal.new("example-approval", example_decision_codec())
+}
+
+fn receipt_ids(receipts: List(ChargeReceipt)) -> List(String) {
+  case receipts {
+    [] -> []
+    [first, ..rest] -> [first.id, ..receipt_ids(rest)]
+  }
+}
+
+fn result_map_engine_error(
+  value: Result(inner, error.EngineError),
+) -> Result(inner, String) {
+  case value {
+    Ok(inner) -> Ok(inner)
+    Error(_) -> Error("engine failure")
+  }
+}
+
+fn result_map_activity_error(
+  value: Result(inner, error.ActivityError),
+) -> Result(inner, String) {
+  case value {
+    Ok(inner) -> Ok(inner)
+    Error(_) -> Error("activity failure")
+  }
+}
+
+fn result_map_receive_error(
+  value: Result(inner, error.ReceiveError),
+) -> Result(inner, String) {
+  case value {
+    Ok(inner) -> Ok(inner)
+    Error(_) -> Error("receive failure")
+  }
+}
+
+fn result_map_child_error(
+  value: Result(inner, error.ChildError(String)),
+) -> Result(inner, String) {
+  case value {
+    Ok(inner) -> Ok(inner)
+    Error(_) -> Error("child failure")
+  }
+}
+
+fn example_charge_activity(
+  name: String,
+  order_id: String,
+  cents: Int,
+) -> activity.Activity(ChargeRequest, ChargeReceipt) {
+  activity.new(
+    name,
+    ChargeRequest(order_id: order_id, cents: cents),
+    charge_request_codec(),
+    charge_receipt_codec(),
+    charge_payment,
+  )
+}
+
 fn charge_activity(
   name: String,
   order_id: String,
@@ -734,6 +923,74 @@ fn checkout_workflow(request: ChargeRequest) -> Result(ChargeReceipt, String) {
 
 fn charge_request_codec() -> codec.Codec(ChargeRequest) {
   codec.json_codec(charge_request_to_json, charge_request_decoder())
+}
+
+fn example_order_codec() -> codec.Codec(ExampleOrder) {
+  codec.json_codec(example_order_to_json, example_order_decoder())
+}
+
+fn example_order_to_json(order: ExampleOrder) -> json.Json {
+  json.object([
+    #("id", json.string(order.id)),
+    #("cents", json.int(order.cents)),
+  ])
+}
+
+fn example_order_decoder() -> decode.Decoder(ExampleOrder) {
+  use id <- decode.field("id", decode.string)
+  use cents <- decode.field("cents", decode.int)
+  decode.success(ExampleOrder(id: id, cents: cents))
+}
+
+fn example_decision_codec() -> codec.Codec(ExampleDecision) {
+  codec.json_codec(example_decision_to_json, example_decision_decoder())
+}
+
+fn example_decision_to_json(decision: ExampleDecision) -> json.Json {
+  json.object([#("approved", json.bool(decision.approved))])
+}
+
+fn example_decision_decoder() -> decode.Decoder(ExampleDecision) {
+  use approved <- decode.field("approved", decode.bool)
+  decode.success(ExampleDecision(approved: approved))
+}
+
+fn example_summary_codec() -> codec.Codec(ExampleSummary) {
+  codec.json_codec(example_summary_to_json, example_summary_decoder())
+}
+
+fn example_summary_to_json(summary: ExampleSummary) -> json.Json {
+  json.object([
+    #("order_id", json.string(summary.order_id)),
+    #("run_receipt_id", json.string(summary.run_receipt_id)),
+    #("child_receipt_id", json.string(summary.child_receipt_id)),
+    #("fanout_receipt_ids", json.array(summary.fanout_receipt_ids, json.string)),
+    #("approved", json.bool(summary.approved)),
+    #("observed_at_milliseconds", json.int(summary.observed_at_milliseconds)),
+  ])
+}
+
+fn example_summary_decoder() -> decode.Decoder(ExampleSummary) {
+  use order_id <- decode.field("order_id", decode.string)
+  use run_receipt_id <- decode.field("run_receipt_id", decode.string)
+  use child_receipt_id <- decode.field("child_receipt_id", decode.string)
+  use fanout_receipt_ids <- decode.field(
+    "fanout_receipt_ids",
+    decode.list(decode.string),
+  )
+  use approved <- decode.field("approved", decode.bool)
+  use observed_at_milliseconds <- decode.field(
+    "observed_at_milliseconds",
+    decode.int,
+  )
+  decode.success(ExampleSummary(
+    order_id: order_id,
+    run_receipt_id: run_receipt_id,
+    child_receipt_id: child_receipt_id,
+    fanout_receipt_ids: fanout_receipt_ids,
+    approved: approved,
+    observed_at_milliseconds: observed_at_milliseconds,
+  ))
 }
 
 fn charge_request_to_json(request: ChargeRequest) -> json.Json {
