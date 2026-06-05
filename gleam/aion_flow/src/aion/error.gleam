@@ -122,6 +122,7 @@ pub type QueryError {
   UnknownQuery(name: String)
   QueryCancelled(CancellationError)
   QueryNonDeterministic(NonDeterminismError)
+  QueryEngineFailure(message: String)
 }
 
 /// A timeout wrapper for primitives that can either finish or expire.

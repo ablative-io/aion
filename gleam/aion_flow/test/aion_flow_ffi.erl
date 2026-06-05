@@ -16,7 +16,11 @@
     cancel_timer/1,
     with_timeout/2,
     receive_signal/2,
-    send_signal/3
+    send_signal/3,
+    register_query/3,
+    reply_query/2,
+    dispatch_query/2,
+    query_recorded_observations/0
 ]).
 
 run_activity(<<"charge-payment">>, Input, _Config) ->
@@ -79,6 +83,24 @@ send_signal(_WorkflowId, Name, Payload) ->
     end,
     erlang:put(Key, Queue ++ [Payload]),
     {ok, <<"delivered">>}.
+
+register_query(Name, Handler, _Config) ->
+    Key = {aion_query, self(), Name},
+    erlang:put(Key, Handler),
+    {ok, <<"registered">>}.
+
+reply_query(_QueryId, Payload) ->
+    {ok, Payload}.
+
+dispatch_query(Name, _Config) ->
+    Key = {aion_query, self(), Name},
+    case erlang:get(Key) of
+        undefined -> {error, <<"unknown:", Name/binary>>};
+        Handler -> Handler(<<"query-1">>)
+    end.
+
+query_recorded_observations() ->
+    {ok, <<"0">>}.
 
 extract_string(Json, Field) ->
     Pattern = <<"\"", Field/binary, "\":\"">>,
