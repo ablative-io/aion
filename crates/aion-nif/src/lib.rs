@@ -1,10 +1,6 @@
-//! Rust helper crate for writing and registering NIFs that Gleam activities call. Deterministic helpers and recorded light in-VM activities, with the split enforced by type.
+//! Rust helpers for declaring native functions for Gleam and Elixir workflows.
 
-pub mod declare;
-pub mod descriptor;
 pub mod error;
-pub mod payload;
 pub mod raw;
-pub mod registry;
-pub mod term;
-pub mod term_collection;
+
+pub use error::{NifDeclError, TermError};
