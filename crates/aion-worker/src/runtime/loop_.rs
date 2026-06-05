@@ -91,28 +91,37 @@ where
             break;
         }
 
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(WorkerError::registration)?;
-        let Some(event) = stream.next().await else {
-            drop(permit);
-            break;
-        };
-        if !handle_session_event(
-            event,
-            SessionEventContext {
-                permit,
-                dispatcher: Arc::clone(&dispatcher),
-                result_sender: &result_sender,
-                heartbeat_sender: &heartbeat_sender,
-                heartbeat_bookkeeper: &heartbeat_bookkeeper,
-                in_flight: &mut in_flight,
-                pending_error: &mut pending_error,
-            },
-        )? {
-            break;
+        tokio::select! {
+            biased;
+            event = stream.next() => {
+                let Some(event) = event else { break; };
+                match event {
+                    Ok(WorkerSessionEvent::Cancel { workflow_id, activity_id }) => {
+                        deliver_cancellation(workflow_id, &activity_id, &in_flight);
+                    }
+                    other => {
+                        let permit = semaphore
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .map_err(WorkerError::registration)?;
+                        if !handle_session_event(
+                            other,
+                            SessionEventContext {
+                                permit,
+                                dispatcher: Arc::clone(&dispatcher),
+                                result_sender: &result_sender,
+                                heartbeat_sender: &heartbeat_sender,
+                                heartbeat_bookkeeper: &heartbeat_bookkeeper,
+                                in_flight: &mut in_flight,
+                                pending_error: &mut pending_error,
+                            },
+                        )? {
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -172,12 +181,8 @@ where
             )?;
             Ok(true)
         }
-        Ok(WorkerSessionEvent::Cancel {
-            workflow_id,
-            activity_id,
-        }) => {
+        Ok(WorkerSessionEvent::Cancel { .. }) => {
             drop(ctx.permit);
-            deliver_cancellation(workflow_id, &activity_id, ctx.in_flight);
             Ok(true)
         }
         Err(error) => {
