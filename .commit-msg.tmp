@@ -1,1 +1,1 @@
-fix(aion-nif): preserve incoming terms before clearing retained NIF heap
+feat(aion-nif): add side-effectful activity NIF declarations

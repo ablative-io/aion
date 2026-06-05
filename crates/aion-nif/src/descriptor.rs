@@ -30,7 +30,7 @@ pub struct Nif {
 impl Nif {
     /// Creates a descriptor for a native function declaration.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         module: impl Into<String>,
         function: impl Into<String>,
         arity: u8,
@@ -46,6 +46,35 @@ impl Nif {
             dirty,
             determinism,
         }
+    }
+
+    /// Creates a pure deterministic helper descriptor.
+    #[must_use]
+    pub fn pure(
+        module: impl Into<String>,
+        function: impl Into<String>,
+        arity: u8,
+        native: NativeFn,
+    ) -> Self {
+        Self::new(module, function, arity, native, false, Determinism::Pure)
+    }
+
+    /// Creates a side-effectful activity descriptor that should run dirty.
+    #[must_use]
+    pub fn side_effectful(
+        module: impl Into<String>,
+        function: impl Into<String>,
+        arity: u8,
+        native: NativeFn,
+    ) -> Self {
+        Self::new(
+            module,
+            function,
+            arity,
+            native,
+            true,
+            Determinism::SideEffectful,
+        )
     }
 
     /// Gleam or Elixir module atom-name.
@@ -98,14 +127,7 @@ mod tests {
 
     #[test]
     fn descriptor_exposes_identity_dirty_flag_and_determinism() {
-        let nif = Nif::new(
-            "example/module",
-            "identity",
-            1,
-            identity_native,
-            false,
-            Determinism::Pure,
-        );
+        let nif = Nif::pure("example/module", "identity", 1, identity_native);
 
         assert_eq!(nif.module(), "example/module");
         assert_eq!(nif.function(), "identity");

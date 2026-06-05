@@ -10,7 +10,9 @@ pub mod raw;
 pub mod term;
 pub mod term_collection;
 
-pub use declare::pure_descriptor;
+pub use declare::{
+    ActivityWakeHandle, activity_descriptor, pure_descriptor, request_activity_suspend,
+};
 pub use descriptor::{Determinism, Nif};
 pub use error::{NifDeclError, TermError};
 pub use payload::{
