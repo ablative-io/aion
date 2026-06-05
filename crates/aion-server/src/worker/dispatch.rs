@@ -319,7 +319,9 @@ mod tests {
         let error = ProtoActivityError {
             kind: ProtoActivityErrorKind::Retryable as i32,
             message: String::from("temporary outage"),
-            details: Some(ProtoPayload::from(payload(&json!({"retry_after_ms": 500}))?)),
+            details: Some(ProtoPayload::from(payload(
+                &json!({"retry_after_ms": 500}),
+            )?)),
         };
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
