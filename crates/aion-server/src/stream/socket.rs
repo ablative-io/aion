@@ -59,7 +59,7 @@ pub async fn forward_subscription(
         mut frames,
         lagged,
         reader_done,
-    } = spawn_encoded_event_stream(namespace, workflow_target, events, outbound_buffer_bound);
+    } = spawn_encoded_event_stream(namespace, workflow_target, events, outbound_buffer_bound)?;
     let (mut socket_tx, mut socket_rx) = socket.split();
     tokio::pin!(lagged);
     let mut lag_error = None;
@@ -143,13 +143,18 @@ pub struct EncodedEventStream {
 /// The reader uses `try_send` into the bounded per-connection channel; it never
 /// awaits capacity from socket I/O and therefore never back-pressures the engine
 /// event tail for a slow consumer.
-#[must_use]
 pub fn spawn_encoded_event_stream(
     namespace: String,
     workflow_target: Option<WorkflowId>,
     mut events: BoxStream<'static, Event>,
     outbound_buffer_bound: usize,
-) -> EncodedEventStream {
+) -> Result<EncodedEventStream, ServerError> {
+    if outbound_buffer_bound == 0 {
+        return Err(ServerError::Config {
+            message: "websocket.outbound_buffer_bound must be greater than zero".to_owned(),
+        });
+    }
+
     let (frames_tx, frames) = mpsc::channel(outbound_buffer_bound);
     let (lag_tx, lagged) = oneshot::channel();
     let reader_done = tokio::spawn(async move {
@@ -187,11 +192,11 @@ pub fn spawn_encoded_event_stream(
         }
     });
 
-    EncodedEventStream {
+    Ok(EncodedEventStream {
         frames,
         lagged,
         reader_done,
-    }
+    })
 }
 
 fn encode_frame(namespace: &str, event: &Event) -> Result<EncodedFrame, WireError> {
@@ -273,7 +278,7 @@ mod tests {
         ])
         .boxed();
         let mut stream =
-            spawn_encoded_event_stream("tenant-a".to_owned(), Some(workflow_id), events, 4);
+            spawn_encoded_event_stream("tenant-a".to_owned(), Some(workflow_id), events, 4)?;
 
         let first = next_frame(&mut stream.frames).await?;
         let second = next_frame(&mut stream.frames).await?;
@@ -290,7 +295,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
         let events = stream::iter([started(1, &workflow_id)?, started(2, &workflow_id)?]).boxed();
-        let stream = spawn_encoded_event_stream("tenant-a".to_owned(), None, events, 1);
+        let stream = spawn_encoded_event_stream("tenant-a".to_owned(), None, events, 1)?;
         drop(stream.frames);
 
         tokio::time::timeout(Duration::from_secs(1), stream.reader_done).await??;
@@ -311,13 +316,13 @@ mod tests {
             None,
             stream::iter(events.clone()).boxed(),
             1,
-        );
+        )?;
         let mut fast = spawn_encoded_event_stream(
             "tenant-a".to_owned(),
             None,
             stream::iter(events).boxed(),
             4,
-        );
+        )?;
 
         let lag = tokio::time::timeout(Duration::from_secs(1), slow.lagged).await??;
         assert_eq!(lag.code, WireErrorCode::Lagged);
