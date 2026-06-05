@@ -1,1 +1,1 @@
-feat(aion-server): add grpc and http workflow transports
+fix(aion-proto): shield generated tonic stubs from workspace lints
