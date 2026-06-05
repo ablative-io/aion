@@ -80,7 +80,8 @@ fn receive_error(raw: String) -> error.ReceiveError {
     True -> error.UnknownSignal(name: string.drop_start(raw, 8))
     False ->
       case string.starts_with(raw, "cancelled:") {
-        True -> error.ReceiveCancelled(error.Cancelled(string.drop_start(raw, 10)))
+        True ->
+          error.ReceiveCancelled(error.Cancelled(string.drop_start(raw, 10)))
         False ->
           case string.starts_with(raw, "non_determinism:") {
             True ->

@@ -66,7 +66,9 @@ pub fn with_timeout(
   timer.with_timeout(operation, deadline)
 }
 
-pub fn receive(reference: SignalRef(payload)) -> Result(payload, error.ReceiveError) {
+pub fn receive(
+  reference: SignalRef(payload),
+) -> Result(payload, error.ReceiveError) {
   signal.receive(reference)
 }
 

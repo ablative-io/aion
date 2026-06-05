@@ -386,20 +386,26 @@ pub fn workflow_receive_decode_failure_is_typed_data_test() {
     Error(error.ReceiveDecodeFailed(decode_error)) ->
       decode_error
       |> should.equal(
-        codec.DecodeError(reason: "Expected String, found Int", path: ["order_id"]),
+        codec.DecodeError(reason: "Expected String, found Int", path: [
+          "order_id",
+        ]),
       )
     Error(_) -> should.fail()
   }
 }
 
 pub fn workflow_receive_composes_with_timeout_test() {
-  let payment_signal = signal.new("payment-with-timeout", charge_request_codec())
+  let payment_signal =
+    signal.new("payment-with-timeout", charge_request_codec())
   let payload = ChargeRequest(order_id: "order-signal-timeout", cents: 4400)
 
   signal.send("workflow-1", payment_signal, payload)
   |> should.equal(Ok(Nil))
 
-  workflow.with_timeout(fn() { workflow.receive(payment_signal) }, duration.seconds(1))
+  workflow.with_timeout(
+    fn() { workflow.receive(payment_signal) },
+    duration.seconds(1),
+  )
   |> should.equal(Ok(payload))
 }
 
