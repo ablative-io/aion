@@ -25,3 +25,11 @@
 //// - `aion/codec` for payload codecs and decode errors.
 //// - `aion/duration` for canonical workflow durations.
 //// - `aion/testing` for simulated time, activity mocks, and replay assertions.
+
+/// Marker declaration for the documentation-only package root.
+///
+/// Author-facing APIs live in the documented modules above; this type keeps the
+/// root module declaration-only while avoiding an empty-module warning.
+pub type PackageRoot {
+  PackageRoot
+}

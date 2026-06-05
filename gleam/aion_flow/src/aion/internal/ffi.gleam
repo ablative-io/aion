@@ -64,10 +64,19 @@ pub fn spawn_child(
 pub fn await_child(child_id: String) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "collect_all")
-pub fn collect_all(collection_id: String, items: List(String)) -> Result(String, String)
+pub fn collect_all(
+  collection_id: String,
+  items: List(String),
+) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "collect_race")
-pub fn collect_race(collection_id: String, items: List(String)) -> Result(String, String)
+pub fn collect_race(
+  collection_id: String,
+  items: List(String),
+) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "collect_map")
-pub fn collect_map(collection_id: String, items: List(String)) -> Result(String, String)
+pub fn collect_map(
+  collection_id: String,
+  items: List(String),
+) -> Result(String, String)
