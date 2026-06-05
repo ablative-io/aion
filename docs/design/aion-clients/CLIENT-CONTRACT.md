@@ -2,7 +2,7 @@
 
 This document is the language-neutral behavioural contract for the caller-side Aion SDKs. It defines the observable SDK surface for Rust, Python, TypeScript, and Gleam clients that connect to an `aion-server` deployment and drive workflows as callers.
 
-The contract covers eight client operations: `connect`, `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`. The design shorthand calls these the caller SDK's seven workflow operations plus `connect`; SDKs must still expose and document all eight entries named here.
+The contract covers the caller SDK operation catalogue: `connect`, `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`. Project shorthand sometimes calls this the seven workflow operations plus `connect`; SDKs must expose and document every entry named here.
 
 ## Scope and AW boundary
 

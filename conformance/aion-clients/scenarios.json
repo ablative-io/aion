@@ -28,7 +28,8 @@
     "containsWorkflowRef": "collection contains an item matching workflowId and optionally runId",
     "statusIn": "status is one of the listed workflow statuses",
     "eventsInclude": "stream contains events matching all listed event predicates",
-    "sequenceContiguousUnique": "delivered event sequence numbers contain no gaps and no duplicates after resume"
+    "sequenceContiguousUnique": "delivered event sequence numbers contain no gaps and no duplicates after resume",
+    "sameHandleAs": "returned handle has the same workflowId and runId as the referenced start step"
   },
   "fixtures": {
     "workflowType": "conformance.echo",
@@ -285,6 +286,7 @@
           "expect": {
             "ok": {
               "kind": "handle",
+              "sameHandleAs": "$idempotency-conflict.first-start",
               "workflowId": "$idempotency-conflict.first-start.workflowId",
               "runId": "$idempotency-conflict.first-start.runId"
             }
