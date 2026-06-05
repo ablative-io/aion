@@ -1,1 +1,1 @@
-feat(aion): add dynamic map fan-out primitive
+feat(aion-flow): scaffold package and ffi binding layer
