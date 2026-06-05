@@ -65,7 +65,7 @@ impl ActivityContext {
     /// # Errors
     ///
     /// Returns [`WorkerError`] when an installed heartbeat seam has been closed.
-    pub async fn heartbeat(&self, detail: Option<Payload>) -> Result<(), WorkerError> {
+    pub fn heartbeat(&self, detail: Option<Payload>) -> Result<(), WorkerError> {
         if let Some(sender) = &self.heartbeat_sender {
             sender
                 .send(HeartbeatRequest {

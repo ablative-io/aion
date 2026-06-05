@@ -23,6 +23,12 @@ use crate::runtime::loop_::{ActivityDispatcher, DispatchOutcome};
 pub type HandlerFuture<'context, Output> =
     Pin<Box<dyn Future<Output = Result<Output, ActivityFailure>> + Send + 'context>>;
 
+type BoxedHandler<Input, Output> = Box<
+    dyn for<'context> Fn(Input, &'context ActivityContext) -> HandlerFuture<'context, Output>
+        + Send
+        + Sync,
+>;
+
 /// Minimal typed dispatcher registry for executing activity handlers.
 #[derive(Default)]
 pub struct TypedActivityDispatcher {
@@ -106,11 +112,7 @@ trait ErasedActivityHandler: Send + Sync {
 }
 
 struct TypedHandler<Input, Output> {
-    handler: Box<
-        dyn for<'context> Fn(Input, &'context ActivityContext) -> HandlerFuture<'context, Output>
-            + Send
-            + Sync,
-    >,
+    handler: BoxedHandler<Input, Output>,
 }
 
 impl<Input, Output> TypedHandler<Input, Output> {

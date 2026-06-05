@@ -1,1 +1,1 @@
-feat(aion-worker): add activity context and typed dispatch
+fix(aion-worker): satisfy clippy for activity context dispatch
