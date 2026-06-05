@@ -1,8 +1,35 @@
 {
-  "name": "@aion/client-typescript",
+  "name": "aion-client-typescript",
   "version": "0.1.0",
   "type": "module",
+  "description": "The TypeScript caller SDK for starting, signalling, querying, cancelling, listing, describing, and subscribing to Aion workflows.",
   "main": "dist/index.js",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
-  "description": "The TypeScript caller SDK for starting, signalling, querying, and cancelling workflows."
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/**/*.test.js",
+    "lint": "eslint src --ext .ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }
