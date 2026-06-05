@@ -221,6 +221,11 @@ impl TryFrom<ProtoWorkflowStatus> for aion_core::WorkflowStatus {
 ///
 /// This helper is used for core `Event`, `WorkflowFilter`, and
 /// `WorkflowSummary` values without declaring wire-clone structs for them.
+///
+/// # Errors
+///
+/// Returns [`WireError`] with code `backend` if the core value cannot be
+/// serialized by serde JSON.
 pub fn encode_core_value<T>(
     namespace: impl Into<String>,
     request_id: Option<String>,
@@ -245,6 +250,12 @@ where
 ///
 /// Callers choose the target aion-core type, such as `Event`,
 /// `WorkflowFilter`, or `WorkflowSummary`.
+///
+/// # Errors
+///
+/// Returns [`WireError`] with code `backend` if the envelope payload is
+/// missing, uses an unknown content type, or cannot be deserialized as the
+/// requested core type.
 pub fn decode_core_value<T>(envelope: &WireEnvelope) -> Result<T, WireError>
 where
     T: DeserializeOwned,

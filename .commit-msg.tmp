@@ -1,1 +1,1 @@
-feat(aion-proto): add common wire conversions and errors
+fix(aion-proto): document fallible envelope helpers
