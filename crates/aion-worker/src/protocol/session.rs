@@ -471,7 +471,16 @@ mod tests {
 
     #[tokio::test]
     async fn fake_session_records_handshake_and_registration() -> Result<(), WorkerError> {
-        let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 4, None);
+        let config = WorkerConfig::new(
+            "http://127.0.0.1:50051",
+            "payments",
+            "worker-a",
+            4,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(20),
+            3,
+            None,
+        );
         let activity_types = vec![String::from("charge-card"), String::from("send-email")];
         let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
         let mut session = FakeSession::default();

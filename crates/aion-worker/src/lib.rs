@@ -17,5 +17,5 @@ pub use protocol::{
 };
 pub use runtime::{
     ActivityDispatcher, DispatchOutcome, TypedActivityDispatcher, decode_payload, encode_payload,
-    serve_activity_tasks,
+    serve_activity_tasks, serve_activity_tasks_with_reconnect, serve_activity_tasks_with_tracker,
 };

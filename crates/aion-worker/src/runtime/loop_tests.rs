@@ -169,7 +169,16 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
         ]),
         dispatched: Mutex::new(Vec::new()),
     });
-    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 2, None);
+    let config = WorkerConfig::new(
+        "http://127.0.0.1:50051",
+        "payments",
+        "worker-a",
+        2,
+        Duration::from_millis(5),
+        Duration::from_millis(20),
+        3,
+        None,
+    );
 
     serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher)).await?;
 
@@ -212,7 +221,16 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
         started: AtomicUsize::new(0),
         release: AtomicBool::new(false),
     });
-    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 2, None);
+    let config = WorkerConfig::new(
+        "http://127.0.0.1:50051",
+        "payments",
+        "worker-a",
+        2,
+        Duration::from_millis(5),
+        Duration::from_millis(20),
+        3,
+        None,
+    );
     let worker = tokio::spawn({
         let dispatcher = Arc::clone(&dispatcher);
         async move {

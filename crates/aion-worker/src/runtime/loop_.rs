@@ -7,11 +7,14 @@ use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
 use async_trait::async_trait;
 use futures::StreamExt;
 use tokio::sync::{Semaphore, mpsc};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::WorkerConfig;
 use crate::error::WorkerError;
-use crate::protocol::{ActivityTask, WorkerSession};
+use crate::protocol::{
+    ActivityTask, PendingActivityReport, UnackedResultTracker, WorkerSession, re_report_unacked,
+    reconnect_with_backoff,
+};
 
 /// Dispatch seam used by the receive loop to execute decoded activity tasks.
 ///
@@ -65,6 +68,74 @@ where
     S: WorkerSession,
     D: ActivityDispatcher,
 {
+    let mut tracker = UnackedResultTracker::new();
+    serve_activity_tasks_with_tracker(config, session, dispatcher, &mut tracker).await
+}
+
+/// Runs the worker receive loop using the supplied un-acked result tracker.
+///
+/// # Errors
+///
+/// Returns [`WorkerError`] when task decode, dispatch, or result reporting fails.
+/// Runs serving across reconnects, re-registering and re-reporting backlog first.
+///
+/// # Errors
+///
+/// Returns [`WorkerError`] when serving or reconnecting fails permanently.
+pub async fn serve_activity_tasks_with_reconnect<S, D, F, Fut>(
+    config: &WorkerConfig,
+    mut session: S,
+    dispatcher: Arc<D>,
+    mut connect: F,
+) -> Result<(), WorkerError>
+where
+    S: WorkerSession,
+    D: ActivityDispatcher,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, WorkerError>>,
+{
+    let mut tracker = UnackedResultTracker::new();
+    let available_handlers = dispatcher.activity_types();
+    let activity_types = available_handlers.iter().cloned().collect::<Vec<_>>();
+
+    loop {
+        re_report_unacked(&tracker, &mut session).await?;
+        match serve_activity_tasks_with_tracker(
+            config,
+            &mut session,
+            Arc::clone(&dispatcher),
+            &mut tracker,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => warn!(error = %error, "worker session dropped; reconnecting"),
+        }
+        session = reconnect_with_backoff(
+            config,
+            activity_types.clone(),
+            &available_handlers,
+            &mut connect,
+        )
+        .await?;
+    }
+}
+
+/// Runs the worker receive loop using a caller-owned un-acked result tracker.
+///
+/// # Errors
+///
+/// Returns [`WorkerError`] when task decode, dispatch, or result reporting fails.
+pub async fn serve_activity_tasks_with_tracker<S, D>(
+    config: &WorkerConfig,
+    session: &mut S,
+    dispatcher: Arc<D>,
+    tracker: &mut UnackedResultTracker,
+) -> Result<(), WorkerError>
+where
+    S: WorkerSession,
+    D: ActivityDispatcher,
+{
     if config.max_concurrency == 0 {
         return Err(WorkerError::registration(InvalidMaxConcurrency));
     }
@@ -79,6 +150,7 @@ where
     while intake_open {
         drain_finished_reports(
             session,
+            tracker,
             &mut result_receiver,
             &mut in_flight,
             &mut pending_error,
@@ -95,6 +167,7 @@ where
             .map_err(WorkerError::registration)?;
         drain_finished_reports(
             session,
+            tracker,
             &mut result_receiver,
             &mut in_flight,
             &mut pending_error,
@@ -157,7 +230,7 @@ where
     while in_flight > 0 {
         match result_receiver.recv().await {
             Some(finished) => {
-                report_finished(session, finished, &mut pending_error).await;
+                report_finished(session, tracker, finished, &mut pending_error).await;
                 in_flight = in_flight.saturating_sub(1);
             }
             None => break,
@@ -173,6 +246,7 @@ where
 
 async fn drain_finished_reports<S>(
     session: &mut S,
+    tracker: &mut UnackedResultTracker,
     result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
     in_flight: &mut usize,
     pending_error: &mut Option<WorkerError>,
@@ -180,13 +254,14 @@ async fn drain_finished_reports<S>(
     S: WorkerSession,
 {
     while let Ok(finished) = result_receiver.try_recv() {
-        report_finished(session, finished, pending_error).await;
+        report_finished(session, tracker, finished, pending_error).await;
         *in_flight = in_flight.saturating_sub(1);
     }
 }
 
 async fn report_finished<S>(
     session: &mut S,
+    tracker: &mut UnackedResultTracker,
     finished: DispatchFinished,
     pending_error: &mut Option<WorkerError>,
 ) where
@@ -195,7 +270,14 @@ async fn report_finished<S>(
     match finished.outcome {
         Ok(outcome) => record_first_error(
             pending_error,
-            report_outcome(session, finished.workflow_id, finished.activity_id, outcome).await,
+            report_outcome(
+                session,
+                tracker,
+                finished.workflow_id,
+                finished.activity_id,
+                outcome,
+            )
+            .await,
         ),
         Err(error) => {
             if pending_error.is_none() {
@@ -207,6 +289,7 @@ async fn report_finished<S>(
 
 async fn report_outcome<S>(
     session: &mut S,
+    tracker: &mut UnackedResultTracker,
     workflow_id: WorkflowId,
     activity_id: ActivityId,
     outcome: DispatchOutcome,
@@ -220,6 +303,11 @@ where
     );
     match outcome {
         DispatchOutcome::Completed { output } => {
+            tracker.record(PendingActivityReport::Completed {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id.clone(),
+                output: output.clone(),
+            });
             session
                 .report_result(workflow_id, activity_id.clone(), output)
                 .await?;
@@ -229,6 +317,11 @@ where
             );
         }
         DispatchOutcome::Failed { failure } => {
+            tracker.record(PendingActivityReport::Failed {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id.clone(),
+                failure: failure.clone(),
+            });
             session
                 .report_failure(workflow_id, activity_id.clone(), failure)
                 .await?;
