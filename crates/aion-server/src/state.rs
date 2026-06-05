@@ -102,14 +102,14 @@ async fn connect_store(config: StoreConfig) -> Result<LibSqlStore, ServerError> 
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, path::PathBuf, time::Duration};
+    use std::{net::SocketAddr, time::Duration};
 
     use aion_store::InMemoryStore;
 
     use super::ServerState;
     use crate::config::{
-        AuthConfig, DashboardConfig, ListenConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
-        WebSocketConfig, WorkerConfig,
+        AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, NamespaceConfig,
+        NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
     };
 
     fn runtime_config() -> RuntimeConfig {
@@ -123,7 +123,7 @@ mod tests {
                 bearer_token: "test-token".to_owned(),
             },
             dashboard: DashboardConfig {
-                asset_path: PathBuf::from("dist"),
+                source: DashboardAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,

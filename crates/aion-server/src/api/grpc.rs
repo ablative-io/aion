@@ -351,7 +351,7 @@ fn encode_describe_response(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+    use std::{net::SocketAddr, sync::Arc};
 
     use aion::EngineBuilder;
     use aion_core::{Event, EventEnvelope, Payload, WorkflowFilter, WorkflowId, WorkflowStatus};
@@ -369,8 +369,8 @@ mod tests {
     use crate::{
         NamespaceResolver, WorkflowOwnership,
         config::{
-            AuthConfig, DashboardConfig, ListenConfig, NamespaceConfig, NamespaceMode,
-            RuntimeConfig, WebSocketConfig, WorkerConfig,
+            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, NamespaceConfig,
+            NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
         },
     };
 
@@ -465,7 +465,7 @@ mod tests {
                 bearer_token: TOKEN.to_owned(),
             },
             dashboard: DashboardConfig {
-                asset_path: PathBuf::from("dist"),
+                source: DashboardAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,
