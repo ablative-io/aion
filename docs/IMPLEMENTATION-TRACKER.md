@@ -204,9 +204,9 @@ These three tracks run concurrently.
 - [x] **AW-006** — aion-server scaffold, config, shared state · _landed 0dc87ed_
 
 ### Wave 27 (3 parallel)
-- [ ] **AF-005** — Workflow core (run, now, random, entry) · _Lemmy · depends: AF-004_
-- [ ] **AN-005** — activity_nif (side-effectful path) · _Lemmy · depends: AN-004_
-- [ ] **AW-007** — Namespace isolation and guard · _Max Power · depends: AW-006_
+- [x] **AF-005** — Workflow core (run, now, random, entry) · _landed dcf082d_
+- [x] **AN-005** — activity_nif (side-effectful path) · _landed c256148_
+- [x] **AW-007** — Namespace isolation and guard · _landed 8fc9598_
 
 ### Wave 28 (5 parallel)
 - [ ] **AF-006** — Timers (sleep, start_timer, cancel_timer) · _Lemmy · depends: AF-005_
