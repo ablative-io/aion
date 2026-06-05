@@ -381,7 +381,6 @@ mod tests {
     async fn in_process_tonic_start_and_list_use_shared_handlers()
     -> Result<(), Box<dyn std::error::Error>> {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-        store.append(&workflow_id(), &[started_event()?], 0).await?;
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(Arc::clone(&store))
@@ -389,6 +388,7 @@ mod tests {
                 .build()
                 .await?,
         );
+        store.append(&workflow_id(), &[started_event()?], 0).await?;
         let ownership = WorkflowOwnership::default();
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,

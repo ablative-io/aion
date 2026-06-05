@@ -196,7 +196,6 @@ mod tests {
     async fn http_start_and_list_match_handler_outcomes() -> Result<(), Box<dyn std::error::Error>>
     {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-        store.append(&workflow_id(), &[started_event()?], 0).await?;
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(Arc::clone(&store))
@@ -204,6 +203,7 @@ mod tests {
                 .build()
                 .await?,
         );
+        store.append(&workflow_id(), &[started_event()?], 0).await?;
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
