@@ -16,42 +16,58 @@ async fn main() -> Result<()> {
 
     let grpc_address = state.runtime_config().listen.grpc;
     let http_address = state.runtime_config().listen.http;
-    let grpc = serve_grpc(state.clone(), grpc_address);
-    let http = serve_http(state.clone(), http_address);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let grpc = serve_grpc(state.clone(), grpc_address, shutdown_rx.clone());
+    let http = serve_http(state.clone(), http_address, shutdown_rx);
 
     tokio::select! {
         result = grpc => result.context("gRPC transport stopped")?,
         result = http => result.context("HTTP transport stopped")?,
-        result = shutdown_signal() => result?,
+        result = shutdown_signal() => {
+            result?;
+            let _receiver_count = shutdown_tx.send(true);
+        },
     }
 
     state.shutdown()?;
     Ok(())
 }
 
-async fn serve_grpc(state: ServerState, address: SocketAddr) -> Result<()> {
+async fn serve_grpc(
+    state: ServerState,
+    address: SocketAddr,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
     let service = api::grpc::workflow_service(state);
     TonicServer::builder()
         .add_service(service)
-        .serve_with_shutdown(address, async {
-            drop(shutdown_signal().await);
-        })
+        .serve_with_shutdown(address, shutdown_requested(shutdown))
         .await
         .map_err(|source| transport_bind("grpc", address, source))?;
     Ok(())
 }
 
-async fn serve_http(state: ServerState, address: SocketAddr) -> Result<()> {
+async fn serve_http(
+    state: ServerState,
+    address: SocketAddr,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
     let listener = TcpListener::bind(address)
         .await
         .map_err(|source| transport_bind("http", address, source))?;
     axum::serve(listener, api::http::workflow_router(state))
-        .with_graceful_shutdown(async {
-            drop(shutdown_signal().await);
-        })
+        .with_graceful_shutdown(shutdown_requested(shutdown))
         .await
         .map_err(|source| transport_bind("http", address, source))?;
     Ok(())
+}
+
+async fn shutdown_requested(mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    while !*shutdown.borrow_and_update() {
+        if shutdown.changed().await.is_err() {
+            break;
+        }
+    }
 }
 
 async fn shutdown_signal() -> Result<()> {
