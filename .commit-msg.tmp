@@ -1,1 +1,1 @@
-fix(aion-client): satisfy clippy for error mappings
+Harden aion-client AL-002 unsupported option handling

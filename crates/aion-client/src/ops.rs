@@ -20,12 +20,17 @@ pub struct StartOptions {
     pub namespace: Option<String>,
     /// Caller-supplied idempotency key reserved by the contract.
     ///
-    /// The current AW protobuf has not added this field yet, so AL-002 keeps the
-    /// option at the SDK boundary without inventing a client-owned wire field.
+    /// The current AW protobuf has not added this field yet, so AL-002 rejects a
+    /// populated key with [`ClientError::InvalidArgument`] instead of inventing a
+    /// client-owned wire field or silently dropping retry-safety semantics.
     pub idempotency_key: Option<String>,
 }
 
 /// Pagination options accepted by [`Client::list`].
+///
+/// The current AW protobuf carries `request_id` through the filter envelope,
+/// but not `limit` or `cursor`; populated `limit`/`cursor` values return
+/// [`ClientError::InvalidArgument`] instead of being silently ignored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListPage {
     /// Caller request identifier carried in the current filter envelope.
@@ -57,6 +62,7 @@ impl Client {
         input: Payload,
         opts: StartOptions,
     ) -> Result<(WorkflowId, RunId), ClientError> {
+        validate_start_options(&opts)?;
         let namespace = operation_namespace(self, opts.namespace);
         let response = self
             .transport
@@ -97,9 +103,9 @@ impl Client {
 
     /// Queries the latest run, or `run_id` when supplied, with a local deadline.
     ///
-    /// The current AW protobuf does not yet carry query argument payloads, so
-    /// `args` is accepted at the SDK boundary but is not serialized until AW adds
-    /// the contract field.
+    /// The current AW protobuf does not yet carry query argument payloads, so a
+    /// non-empty `args` payload returns [`ClientError::InvalidArgument`] instead
+    /// of being silently dropped.
     ///
     /// # Errors
     ///
@@ -109,9 +115,10 @@ impl Client {
         workflow_id: &WorkflowId,
         run_id: Option<&RunId>,
         name: impl Into<String>,
-        _args: Payload,
+        args: Payload,
         deadline: Duration,
     ) -> Result<Payload, ClientError> {
+        validate_query_args(&args)?;
         let response = tokio::time::timeout(
             deadline,
             self.transport.query(ProtoQueryRequest {
@@ -168,6 +175,7 @@ impl Client {
         filter: &WorkflowFilter,
         page: ListPage,
     ) -> Result<Vec<WorkflowSummary>, ClientError> {
+        validate_list_page(&page)?;
         let namespace = self.namespace().to_owned();
         let filter = encode_workflow_filter(namespace.clone(), page.request_id, filter)
             .map_err(ClientError::from_wire_error)?;
@@ -225,6 +233,27 @@ impl Client {
 
 fn operation_namespace(client: &Client, namespace: Option<String>) -> String {
     namespace.unwrap_or_else(|| client.namespace().to_owned())
+}
+
+fn validate_start_options(opts: &StartOptions) -> Result<(), ClientError> {
+    if opts.idempotency_key.is_some() {
+        return Err(ClientError::InvalidArgument);
+    }
+    Ok(())
+}
+
+fn validate_query_args(args: &Payload) -> Result<(), ClientError> {
+    if !args.bytes().is_empty() {
+        return Err(ClientError::InvalidArgument);
+    }
+    Ok(())
+}
+
+fn validate_list_page(page: &ListPage) -> Result<(), ClientError> {
+    if page.limit.is_some() || page.cursor.is_some() {
+        return Err(ClientError::InvalidArgument);
+    }
+    Ok(())
 }
 
 fn decode_required_workflow_id(
@@ -386,6 +415,10 @@ mod tests {
         )
     }
 
+    fn empty_payload() -> Payload {
+        Payload::new(ContentType::Json, Vec::new())
+    }
+
     fn summary() -> aion_core::WorkflowSummary {
         aion_core::WorkflowSummary {
             workflow_id: workflow_id(),
@@ -405,6 +438,16 @@ mod tests {
         let result = client
             .start("checkout", payload("input"), StartOptions::default())
             .await?;
+        let unsupported_key = client
+            .start(
+                "checkout",
+                payload("input"),
+                StartOptions {
+                    namespace: None,
+                    idempotency_key: Some(String::from("retry-key")),
+                },
+            )
+            .await;
 
         let recorded = stub.last_start.lock().await.clone();
         assert!(recorded.is_some());
@@ -413,6 +456,7 @@ mod tests {
         assert_eq!(request.workflow_type, "checkout");
         assert!(request.input.is_some());
         assert_ne!(result.0, WorkflowId::new(uuid::Uuid::nil()));
+        assert_eq!(unsupported_key, Err(ClientError::InvalidArgument));
         Ok(())
     }
 
@@ -428,13 +472,9 @@ mod tests {
         assert_eq!(result, Err(ClientError::NotFound));
         let recorded = stub.last_signal.lock().await.clone();
         assert!(recorded.is_some());
-        let request = recorded.unwrap_or_else(|| aion_proto::ProtoSignalRequest {
-            namespace: String::new(),
-            workflow_id: None,
-            run_id: Some(ProtoRunId::from(run_id())),
-            signal_name: String::new(),
-            payload: None,
-        });
+        let Some(request) = recorded else {
+            return;
+        };
         assert!(request.run_id.is_none());
     }
 
@@ -454,12 +494,16 @@ mod tests {
                 &id,
                 Some(&run_id()),
                 "state",
-                payload("args"),
+                empty_payload(),
                 Duration::from_secs(1),
             )
             .await;
+        let unsupported_args = client
+            .query(&id, None, "state", payload("args"), Duration::from_secs(1))
+            .await;
 
         assert_eq!(result, Err(ClientError::QueryTimeout));
+        assert_eq!(unsupported_args, Err(ClientError::InvalidArgument));
         let recorded = stub.last_query.lock().await.clone();
         assert!(recorded.is_some());
         let request = recorded.ok_or_else(|| ClientError::server("missing query"))?;
