@@ -1,0 +1,6 @@
+{
+  "name": "aion-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "sdks/typescript/*"]
+}
