@@ -3,6 +3,7 @@
 import aion/codec
 import aion/duration
 import aion/error
+import gleam/option.{type Option, None, Some}
 
 /// Backoff strategy carried with an explicit retry policy.
 ///

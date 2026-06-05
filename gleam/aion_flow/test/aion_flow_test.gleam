@@ -6,6 +6,7 @@ import aion/duration
 import aion/error
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option.{None, Some}
 import gleeunit
 import gleeunit/should
 
@@ -167,7 +168,9 @@ pub fn activity_new_carries_typed_fields_test() {
 
   let run = activity.runner(charge)
   run(request)
-  |> should.equal(Ok(ChargeReceipt(id: "receipt-order-activity-1", approved: True)))
+  |> should.equal(
+    Ok(ChargeReceipt(id: "receipt-order-activity-1", approved: True)),
+  )
 }
 
 pub fn activity_decorators_compose_and_carry_config_test() {
@@ -217,22 +220,18 @@ pub fn activity_backoff_variants_and_retry_policy_carry_values_test() {
   let policy = activity.RetryPolicy(max_attempts: 6, backoff: exponential)
 
   exponential
-  |> should.equal(
-    activity.Exponential(
-      initial: duration.seconds(1),
-      multiplier: 2.0,
-      max: duration.seconds(60),
-    ),
-  )
+  |> should.equal(activity.Exponential(
+    initial: duration.seconds(1),
+    multiplier: 2.0,
+    max: duration.seconds(60),
+  ))
 
   linear
-  |> should.equal(
-    activity.Linear(
-      initial: duration.milliseconds(1000),
-      increment: duration.seconds(3),
-      max: duration.seconds(30),
-    ),
-  )
+  |> should.equal(activity.Linear(
+    initial: duration.milliseconds(1000),
+    increment: duration.seconds(3),
+    max: duration.seconds(30),
+  ))
 
   fixed
   |> should.equal(activity.Fixed(delay: duration.milliseconds(5000)))
