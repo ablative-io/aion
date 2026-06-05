@@ -135,7 +135,7 @@ impl NamespaceResolver {
     ///
     /// Returns [`ServerError::Namespace`] when the caller is not authorized for
     /// the namespace selected by the wire request.
-    pub(crate) fn resolve(
+    pub(super) fn resolve(
         &self,
         caller: &CallerIdentity,
         requested_namespace: &str,
@@ -154,10 +154,7 @@ impl NamespaceResolver {
                 Ok(self.scoped(requested_namespace))
             }
             NamespaceMode::SingleTenant { .. } | NamespaceMode::SharedEngine => {
-                Err(ServerError::namespace_denied(format!(
-                    "caller `{}` is not authorized for namespace `{requested_namespace}`",
-                    caller.subject()
-                )))
+                Err(namespace_denied(caller, requested_namespace))
             }
         }
     }
@@ -184,6 +181,13 @@ impl NamespaceResolver {
             ownership: self.ownership.clone(),
         }
     }
+}
+
+fn namespace_denied(caller: &CallerIdentity, requested_namespace: &str) -> ServerError {
+    ServerError::namespace_denied(format!(
+        "caller `{}` is not authorized for namespace `{requested_namespace}`",
+        caller.subject()
+    ))
 }
 
 /// Server-side workflow namespace ownership metadata.
@@ -255,6 +259,32 @@ mod tests {
         let caller = CallerIdentity::new("alice", [String::from("tenant-a")]);
 
         let denied = resolver.resolve(&caller, "tenant-b");
+
+        assert!(denied.is_err());
+    }
+
+    #[test]
+    fn single_tenant_authorizes_only_configured_namespace() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let resolver = resolver(NamespaceMode::SingleTenant {
+            namespace: String::from("tenant-a"),
+        });
+        let caller = CallerIdentity::new("alice", [String::from("tenant-b")]);
+
+        let scoped = resolver.resolve(&caller, "tenant-a")?;
+        let denied = resolver.resolve(&caller, "tenant-b");
+
+        assert_eq!(scoped.namespace(), "tenant-a");
+        assert!(denied.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn empty_namespace_is_denied_before_scoping() {
+        let resolver = resolver(NamespaceMode::SharedEngine);
+        let caller = CallerIdentity::new("alice", [String::new()]);
+
+        let denied = resolver.resolve(&caller, "");
 
         assert!(denied.is_err());
     }

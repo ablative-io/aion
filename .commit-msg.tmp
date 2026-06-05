@@ -1,1 +1,1 @@
-fix(aion-server): satisfy namespace clippy lints
+Harden namespace guard boundary and subscription ownership checks

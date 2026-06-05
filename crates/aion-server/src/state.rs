@@ -9,7 +9,7 @@ use aion_store_libsql::LibSqlStore;
 use crate::{
     config::{RuntimeConfig, ServerConfig, StoreConfig},
     error::ServerError,
-    namespace::resolver::NamespaceResolver,
+    namespace::{NamespaceGuard, resolver::NamespaceResolver},
 };
 
 /// Cloneable shared state passed to all server transports.
@@ -19,7 +19,7 @@ pub struct ServerState {
 }
 
 struct ServerStateInner {
-    namespace_resolver: NamespaceResolver,
+    namespace_guard: NamespaceGuard,
     runtime: RuntimeConfig,
 }
 
@@ -56,16 +56,16 @@ impl ServerState {
     pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
         Self {
             inner: Arc::new(ServerStateInner {
-                namespace_resolver,
+                namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
             }),
         }
     }
 
-    /// Borrow the namespace resolver shared by all transports.
+    /// Borrow the namespace guard shared by all transports.
     #[must_use]
-    pub fn namespace_resolver(&self) -> &NamespaceResolver {
-        &self.inner.namespace_resolver
+    pub fn namespace_guard(&self) -> &NamespaceGuard {
+        &self.inner.namespace_guard
     }
 
     /// Borrow non-secret runtime settings needed by transports.
@@ -123,7 +123,7 @@ mod tests {
         let state =
             ServerState::build_with_store(InMemoryStore::default(), runtime_config()).await?;
 
-        std::hint::black_box(state.namespace_resolver());
+        std::hint::black_box(state.namespace_guard());
 
         Ok(())
     }
