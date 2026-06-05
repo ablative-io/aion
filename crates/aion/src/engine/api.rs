@@ -162,6 +162,41 @@ impl Engine {
             .registry
             .get(id, run)?
             .ok_or_else(|| workflow_not_found(id, run))?;
+        let runtime_outcome = self.runtime.workflow_outcome(handle.pid())?;
+        match runtime_outcome {
+            Ok(payload) => {
+                terminate::complete(
+                    TerminateWorkflowContext {
+                        runtime: &self.runtime,
+                        registry: &self.registry,
+                    },
+                    id,
+                    run,
+                    payload,
+                )
+                .await?;
+            }
+            Err(error) => {
+                terminate::fail(
+                    TerminateWorkflowContext {
+                        runtime: &self.runtime,
+                        registry: &self.registry,
+                    },
+                    id,
+                    run,
+                    error,
+                )
+                .await?;
+            }
+        }
+        if let Some(outcome) = terminal_outcome_from_history(&self.store.read_history(id).await?) {
+            return Ok(outcome_to_result(outcome));
+        }
+
+        let handle = self
+            .registry
+            .get(id, run)?
+            .ok_or_else(|| workflow_not_found(id, run))?;
         let mut receiver = handle.completion().subscribe();
         loop {
             if let Some(outcome) = receiver.borrow().clone() {

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use aion_core::{ActivityError, ActivityErrorKind, Payload};
 use beamr::atom::AtomTable;
-use beamr::loader::prepare_module;
 use beamr::module::ModuleRegistry;
 use beamr::native::{BifRegistryImpl, NativeRegistrationError};
 use beamr::process::ExitReason;
@@ -61,10 +60,10 @@ impl RuntimeInput {
 
 /// Handle to the embedded beamr scheduler and code-server state.
 pub struct RuntimeHandle {
-    scheduler: Scheduler,
-    atom_table: Arc<AtomTable>,
-    module_registry: Arc<ModuleRegistry>,
-    native_registry: Arc<BifRegistryImpl>,
+    pub(super) scheduler: Scheduler,
+    pub(super) atom_table: Arc<AtomTable>,
+    pub(super) module_registry: Arc<ModuleRegistry>,
+    pub(super) native_registry: Arc<BifRegistryImpl>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
 }
@@ -305,37 +304,6 @@ impl RuntimeHandle {
             .map(|entry| entry.clone())
     }
 
-    /// Register transformed BEAM bytes under their already-deployed module name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::Runtime`] when beamr cannot prepare the module bytes
-    /// or when the deployed name still has retained old code in the registry.
-    pub fn register_module(
-        &self,
-        deployed_name: &str,
-        beam_bytes: &[u8],
-    ) -> Result<(), EngineError> {
-        let deployed_atom = self.atom_table.intern(deployed_name);
-        if self.module_registry.lookup_old(deployed_atom).is_some() {
-            return Err(runtime_error(format!(
-                "cannot register deployed module `{deployed_name}` while old code is still retained"
-            )));
-        }
-
-        let (mut module, _unresolved) = prepare_module(
-            beam_bytes,
-            &self.atom_table,
-            &self.module_registry,
-            self.native_registry.as_ref(),
-        )
-        .map_err(runtime_error_from_display)?;
-        module.name = deployed_atom;
-        self.module_registry.insert(module);
-
-        Ok(())
-    }
-
     /// Cancel a live process by PID.
     ///
     /// # Errors
@@ -414,25 +382,6 @@ impl RuntimeHandle {
             Ok(())
         } else {
             Err(runtime_error(format!("process {pid} is not live")))
-        }
-    }
-
-    /// Return true when a module has been registered in the embedded module registry.
-    #[must_use]
-    pub fn has_registered_module(&self, deployed_name: &str) -> bool {
-        let module = self.atom_table.intern(deployed_name);
-        self.module_registry.lookup(module).is_some()
-    }
-
-    /// Remove a module registered during a failed staged package load.
-    pub(crate) fn unregister_module(&self, deployed_name: &str) -> Result<(), EngineError> {
-        let module = self.atom_table.intern(deployed_name);
-        if self.module_registry.delete_module(module) {
-            Ok(())
-        } else {
-            Err(runtime_error(format!(
-                "module `{deployed_name}` was not registered"
-            )))
         }
     }
 
