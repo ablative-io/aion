@@ -243,7 +243,7 @@ class Client:
         request.reason = reason
         await self._call("cancel", self._transport.cancel(request, self._metadata))
 
-    async def list(self, *, namespace: str | None = None, filter: Any | None = None) -> list[Any]:
+    async def list(self, *, namespace: str | None = None, workflow_filter: Any | None = None) -> list[Any]:
         """List workflow summaries in the namespace.
 
         Raises:
@@ -252,8 +252,8 @@ class Client:
 
         request = self._message("ListWorkflowsRequest")
         request.namespace = namespace or self.namespace
-        if filter is not None:
-            _assign_wire_envelope(request.filter, namespace or self.namespace, filter)
+        if workflow_filter is not None:
+            _assign_wire_envelope(request.filter, namespace or self.namespace, workflow_filter)
         response = await self._call("list", self._transport.list_workflows(request, self._metadata))
         return list(getattr(response, "summaries", []))
 

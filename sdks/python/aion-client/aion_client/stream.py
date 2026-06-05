@@ -150,7 +150,10 @@ class EventStream(Generic[T]):
 
 
 def _subscription_request(namespace: str, workflow_id: str, resume_from: int | None) -> dict[str, object]:
-    del resume_from
+    if resume_from is not None:
+        raise InvalidArgument(
+            "resume_from is not yet supported by the server wire protocol"
+        )
     return {
         "per_workflow": {
             "namespace": namespace,
