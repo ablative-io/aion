@@ -9,6 +9,7 @@ import aion/activity.{type Activity}
 import aion/codec.{type Codec}
 import aion/duration
 import aion/error
+import aion/signal
 import aion/workflow/define as definition
 import aion/workflow/run as dispatch
 import aion/workflow/timer
@@ -21,6 +22,9 @@ pub type WorkflowDefinition(input, output, workflow_error) =
 
 pub type TimerRef =
   timer.TimerRef
+
+pub type SignalRef(payload) =
+  signal.SignalRef(payload)
 
 pub fn run(
   activity: Activity(input, output),
@@ -60,6 +64,12 @@ pub fn with_timeout(
   deadline: duration.Duration,
 ) -> Result(value, error.TimeoutResultError(inner_error)) {
   timer.with_timeout(operation, deadline)
+}
+
+pub fn receive(
+  reference: SignalRef(payload),
+) -> Result(payload, error.ReceiveError) {
+  signal.receive(reference)
 }
 
 pub fn timer_id(reference: TimerRef) -> String {
