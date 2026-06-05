@@ -107,7 +107,6 @@ version = "0.1.0"
 dependencies = [
  "aion-core",
  "beamr",
- "thiserror 2.0.18",
 ]
 
 [[package]]

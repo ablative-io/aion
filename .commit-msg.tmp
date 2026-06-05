@@ -1,1 +1,1 @@
-docs(aion-nif): document raw allocation errors
+fix(aion-nif): keep term errors std-only and document raw allocation errors
