@@ -119,7 +119,9 @@ mod tests {
         let mut mailbox = VecCorrelationMailbox::new(Vec::new());
         let items: [u8; 0] = [];
 
-        let results = map(&engine, &recording, &mut mailbox, &items, |&item| spec_from_item(item))?;
+        let results = map(&engine, &recording, &mut mailbox, &items, |&item| {
+            spec_from_item(item)
+        })?;
 
         assert_eq!(results, Vec::<Payload>::new());
         assert!(engine.child_spawn_requests()?.is_empty());
@@ -162,7 +164,9 @@ mod tests {
             },
         ]);
 
-        let results = map(&engine, &recording, &mut mailbox, &items, |&item| spec_from_item(item))?;
+        let results = map(&engine, &recording, &mut mailbox, &items, |&item| {
+            spec_from_item(item)
+        })?;
 
         assert_eq!(results, vec![result_a, result_b, result_c]);
         assert!(mailbox.is_empty());
@@ -209,7 +213,9 @@ mod tests {
                 error: failure.clone(),
             }]);
 
-        let error = map(&engine, &recording, &mut mailbox, &items, |&item| spec_from_item(item));
+        let error = map(&engine, &recording, &mut mailbox, &items, |&item| {
+            spec_from_item(item)
+        });
 
         assert_eq!(
             error,

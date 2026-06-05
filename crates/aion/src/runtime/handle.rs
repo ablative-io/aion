@@ -115,12 +115,8 @@ impl RuntimeHandle {
             let module = self.atom_table.intern(&mfa.module);
             let function = self.atom_table.intern(&mfa.function);
             let result = if entry.is_dirty {
-                self.native_registry.register_dirty(
-                    module,
-                    function,
-                    mfa.arity,
-                    entry.function,
-                )
+                self.native_registry
+                    .register_dirty(module, function, mfa.arity, entry.function)
             } else {
                 self.native_registry
                     .register(module, function, mfa.arity, entry.function)
