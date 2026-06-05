@@ -1,1 +1,1 @@
-fix(aion-server): enforce namespace checks before start/list decode
+feat(aion-server): track worker heartbeats and lost tasks

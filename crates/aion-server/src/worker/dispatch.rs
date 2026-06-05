@@ -1,6 +1,6 @@
 //! Push dispatch for remote activity workers and result handoff to the engine contract.
 
-use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
+use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload, WorkflowId};
 use aion_proto::{
     ProtoActivityId, ProtoActivityResult, ProtoActivityTask, ProtoPayload, ProtoWorkflowId,
     WireError, proto_activity_result,
@@ -159,6 +159,20 @@ pub fn handle_activity_result(
     result: ProtoActivityResult,
 ) -> Result<(), ServerError> {
     sink.complete_activity(ActivityCompletion::try_from(result)?)
+}
+
+/// Build the retryable failure reported when a worker loses ownership of an in-flight task.
+///
+/// The retryable classification models worker loss as infrastructure failure: aion-server
+/// only reports the failure to the engine activity contract; the engine remains responsible
+/// for applying the activity retry policy.
+#[must_use]
+pub fn lost_worker_error(worker_id: crate::worker::registry::WorkerId) -> ActivityError {
+    ActivityError {
+        kind: ActivityErrorKind::Retryable,
+        message: format!("worker {worker_id:?} lost before reporting activity result"),
+        details: None,
+    }
 }
 
 fn wire_error(message: &'static str) -> ServerError {

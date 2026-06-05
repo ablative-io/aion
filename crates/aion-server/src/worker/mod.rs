@@ -8,4 +8,7 @@ pub use dispatch::{
     ActivityCompletion, ActivityCompletionOutcome, ActivityCompletionSink, ActivityDispatcher,
     ScheduledActivity, handle_activity_result,
 };
+pub use heartbeat::{
+    HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport, TaskLiveness,
+};
 pub use registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerId, WorkerRegistration};

@@ -16,3 +16,6 @@ pub use namespace::{
     SubscriptionScope, WorkflowOwnership, WorkflowTarget,
 };
 pub use state::ServerState;
+pub use worker::{
+    HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport, TaskLiveness,
+};
