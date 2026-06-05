@@ -235,7 +235,7 @@ These three tracks run concurrently.
 - [x] **AF-011** — Test harness (simulated time, mocking) · _landed b2790e6_
 
 ### Wave 34
-- [ ] **AF-012** — Type-safety verification, end-to-end example · _Lemmy · depends: AF-011_
+- [x] **AF-012** — Type-safety verification, end-to-end example · _landed 859308d_
 
 ---
 
@@ -266,13 +266,13 @@ Three independent tracks running concurrently.
 - [x] **AU-006** — Namespace selection, query scoping · _landed 747fa28_
 
 ### Wave 38 (7 parallel — peak)
-- [ ] **AR-004** — Heartbeat and cancellation · _depends: AR-003_
-- [ ] **AR-005** — Reconnect and re-report · _depends: AR-003_
-- [ ] **AL-007** — Cross-language conformance harnesses · _depends: AL-001..006_
-- [ ] **AL-008** — Packaging, metadata, READMEs, examples · _depends: AL-003..006_
-- [ ] **AU-007** — App shell (routing, providers, layout) · _depends: AU-003..006_
-- [ ] **AU-008** — Shared components (badge, icon, states) · _depends: AU-001, AU-003_
-- [ ] **AU-009** — Live updates (list, timeline, resync) · _depends: AU-003..005_
+- [x] **AR-004** — Heartbeat and cancellation · _landed a2c94a4_
+- [x] **AR-005** — Reconnect and re-report · _landed 36c353d_
+- [ ] **AL-007** — Cross-language conformance harnesses · _Gleam harness rework pending_
+- [ ] **AL-008** — Packaging, metadata, READMEs, examples · _version field fix pending_
+- [x] **AU-007** — App shell (routing, providers, layout) · _landed 1efc5ef_
+- [x] **AU-008** — Shared components (badge, icon, states) · _landed 52cb834_
+- [x] **AU-009** — Live updates (list, timeline, resync) · _landed 5de4ae1_
 
 ### Wave 39
 - [ ] **AR-006** — Typed Activity, Worker builder · _depends: AR-002..005_
