@@ -1,14 +1,29 @@
-import { Activity, Bell, CheckCircle2, CircleSlash, GitBranch, Timer, XCircle } from 'lucide-react';
+import {
+  Activity,
+  Bell,
+  CheckCircle2,
+  CircleSlash,
+  GitBranch,
+  type LucideIcon,
+  Timer,
+  XCircle,
+} from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
-type EventIconKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
+export type EventIconKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
 
-type EventIconTone = 'neutral' | 'success' | 'danger' | 'warning' | 'info';
+export type EventIconTone = 'neutral' | 'success' | 'danger' | 'warning' | 'info';
 
 type EventIconProps = {
   kind: EventIconKind;
   tone?: EventIconTone;
+};
+
+type EventIconMetadata = {
+  label: string;
+  className: string;
+  Icon: LucideIcon;
 };
 
 const toneClasses: Record<EventIconTone, string> = {
@@ -19,50 +34,71 @@ const toneClasses: Record<EventIconTone, string> = {
   info: 'bg-sky-500/15 text-sky-400',
 };
 
+const EVENT_ICON_METADATA: Record<EventIconKind, EventIconMetadata> = {
+  lifecycle: {
+    label: 'Workflow lifecycle event',
+    className: 'ring-emerald-400/20',
+    Icon: CheckCircle2,
+  },
+  activity: {
+    label: 'Activity event',
+    className: 'ring-violet-400/20',
+    Icon: Activity,
+  },
+  timer: {
+    label: 'Timer event',
+    className: 'ring-sky-400/20',
+    Icon: Timer,
+  },
+  signal: {
+    label: 'Signal event',
+    className: 'ring-fuchsia-400/20',
+    Icon: Bell,
+  },
+  child: {
+    label: 'Child workflow event',
+    className: 'ring-cyan-400/20',
+    Icon: GitBranch,
+  },
+};
+
 function EventIcon({ kind, tone = 'neutral' }: EventIconProps) {
-  const Icon = iconForKind(kind, tone);
+  const metadata = iconMetadataForKind(kind, tone);
+  const Icon = metadata.Icon;
 
   return (
     <span
-      aria-hidden="true"
+      aria-label={metadata.label}
       className={cn(
-        'inline-flex size-10 items-center justify-center rounded-full',
-        toneClasses[tone]
+        'inline-flex size-10 items-center justify-center rounded-full ring-1',
+        toneClasses[tone],
+        metadata.className
       )}
+      data-event-kind={kind}
+      data-event-tone={tone}
+      role="img"
     >
-      <Icon className="size-5" />
+      <Icon aria-hidden="true" className="size-5" />
     </span>
   );
 }
 
-function iconForKind(kind: EventIconKind, tone: EventIconTone) {
+function iconMetadataForKind(kind: EventIconKind, tone: EventIconTone): EventIconMetadata {
   if (kind === 'lifecycle') {
     if (tone === 'success') {
-      return CheckCircle2;
+      return { ...EVENT_ICON_METADATA.lifecycle, Icon: CheckCircle2 };
     }
 
     if (tone === 'danger') {
-      return XCircle;
+      return { ...EVENT_ICON_METADATA.lifecycle, Icon: XCircle };
     }
 
     if (tone === 'warning') {
-      return CircleSlash;
+      return { ...EVENT_ICON_METADATA.lifecycle, Icon: CircleSlash };
     }
   }
 
-  switch (kind) {
-    case 'activity':
-      return Activity;
-    case 'timer':
-      return Timer;
-    case 'signal':
-      return Bell;
-    case 'child':
-      return GitBranch;
-    case 'lifecycle':
-      return CheckCircle2;
-  }
+  return EVENT_ICON_METADATA[kind];
 }
 
-export type { EventIconKind, EventIconTone };
-export { EventIcon };
+export { EVENT_ICON_METADATA, EventIcon, iconMetadataForKind };
