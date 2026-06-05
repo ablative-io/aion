@@ -209,14 +209,15 @@ These three tracks run concurrently.
 - [x] **AW-007** — Namespace isolation and guard · _landed 8fc9598_
 
 ### Wave 28 (5 parallel)
-- [ ] **AF-006** — Timers (sleep, start_timer, cancel_timer) · _Lemmy · depends: AF-005_
-- [ ] **AN-006** — NifSet registration, illustrative set · _Lemmy · depends: AN-004, AN-005_
-- [ ] **AW-008** — Workflow-management handler layer · _Max Power · depends: AW-007_
-- [ ] **AW-010** — WebSocket event streaming · _Max Power · depends: AW-007, AW-004_
-- [ ] **AW-011** — Remote-worker registry, task dispatch · _Max Power · depends: AW-007, AW-005_
+- [x] **AF-006** — Timers (sleep, start_timer, cancel_timer) · _landed ae63545_
+- [x] **AN-006** — NifSet registration, illustrative set · _landed 5215d4e_
+- [x] **AW-008** — Workflow-management handler layer · _landed 2c3e04b_
+- [x] **AW-010** — WebSocket event streaming · _landed 4047adc_
+- [x] **AW-011** — Remote-worker registry, task dispatch · _landed 25855e2_
 
-### Wave 29 (3 parallel)
+### Wave 29 (4 parallel)
 - [ ] **AF-007** — Signals (SignalRef, typed receive/send) · _Lemmy · depends: AF-006_
+- [ ] **AN-007** — NifContext scoped storage · _Lemmy · depends: AN-005, AN-006_
 - [ ] **AW-009** — gRPC and HTTP transports · _Max Power · depends: AW-008_
 - [ ] **AW-012** — Worker heartbeats, lost-worker handling · _Max Power · depends: AW-011_
 
