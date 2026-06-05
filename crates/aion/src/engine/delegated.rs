@@ -429,15 +429,16 @@ mod tests {
             )
             .await?;
 
-        let calls = signal
-            .calls
-            .lock()
-            .map_err(|_| EngineError::RegistryPoisoned)?;
-        assert_eq!(
-            calls.as_slice(),
-            &[(handle.pid(), "approve".to_owned(), sent_payload)]
-        );
-        drop(calls);
+        {
+            let calls = signal
+                .calls
+                .lock()
+                .map_err(|_| EngineError::RegistryPoisoned)?;
+            assert_eq!(
+                calls.as_slice(),
+                &[(handle.pid(), "approve".to_owned(), sent_payload)]
+            );
+        }
         let unknown = engine
             .signal(
                 &WorkflowId::new_v4(),
