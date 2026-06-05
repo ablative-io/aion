@@ -1,1 +1,1 @@
-feat(aion-server): serve dashboard static assets
+fix(aion-server): use case-insensitive dashboard asset extensions

@@ -132,15 +132,16 @@ fn is_reserved_public_path(path: &str) -> bool {
 }
 
 fn content_type(path: &str) -> HeaderValue {
-    if path.ends_with(".html") {
+    let extension = std::path::Path::new(path).extension();
+    if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("html")) {
         HeaderValue::from_static("text/html; charset=utf-8")
-    } else if path.ends_with(".js") {
+    } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("js")) {
         HeaderValue::from_static("text/javascript; charset=utf-8")
-    } else if path.ends_with(".css") {
+    } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("css")) {
         HeaderValue::from_static("text/css; charset=utf-8")
-    } else if path.ends_with(".json") {
+    } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
         HeaderValue::from_static("application/json")
-    } else if path.ends_with(".svg") {
+    } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
         HeaderValue::from_static("image/svg+xml")
     } else {
         HeaderValue::from_static("application/octet-stream")
