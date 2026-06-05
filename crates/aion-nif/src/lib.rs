@@ -2,5 +2,8 @@
 
 pub mod error;
 pub mod raw;
+pub mod term;
+pub mod term_collection;
 
 pub use error::{NifDeclError, TermError};
+pub use term::{AtomName, FromTerm, IntoTerm};
