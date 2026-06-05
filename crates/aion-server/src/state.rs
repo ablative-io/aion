@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use aion::{Engine, EngineBuilder};
+use aion::EngineBuilder;
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 
 use crate::{
     config::{RuntimeConfig, ServerConfig, StoreConfig},
     error::ServerError,
-    namespace::resolver::NamespaceResolver,
+    namespace::{NamespaceGuard, resolver::NamespaceResolver},
 };
 
 /// Cloneable shared state passed to all server transports.
@@ -19,8 +19,7 @@ pub struct ServerState {
 }
 
 struct ServerStateInner {
-    engine: Arc<Engine>,
-    namespace_resolver: NamespaceResolver,
+    namespace_guard: NamespaceGuard,
     runtime: RuntimeConfig,
 }
 
@@ -46,42 +45,27 @@ impl ServerState {
     where
         S: EventStore,
     {
-        let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone());
         let engine = EngineBuilder::new().store(store).build().await?;
-        Ok(Self::from_parts(
-            Arc::new(engine),
-            namespace_resolver,
-            runtime,
-        ))
+        let engine = Arc::new(engine);
+        let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
+        Ok(Self::from_parts(namespace_resolver, runtime))
     }
 
     /// Build shared state from explicit parts.
     #[must_use]
-    pub fn from_parts(
-        engine: Arc<Engine>,
-        namespace_resolver: NamespaceResolver,
-        runtime: RuntimeConfig,
-    ) -> Self {
+    pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
         Self {
             inner: Arc::new(ServerStateInner {
-                engine,
-                namespace_resolver,
+                namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
             }),
         }
     }
 
-    /// Borrow the engine handle. Handlers in later briefs should only use this
-    /// after namespace resolution at the adapter boundary.
+    /// Borrow the namespace guard shared by all transports.
     #[must_use]
-    pub fn engine(&self) -> &Arc<Engine> {
-        &self.inner.engine
-    }
-
-    /// Borrow the namespace resolver shared by all transports.
-    #[must_use]
-    pub fn namespace_resolver(&self) -> &NamespaceResolver {
-        &self.inner.namespace_resolver
+    pub fn namespace_guard(&self) -> &NamespaceGuard {
+        &self.inner.namespace_guard
     }
 
     /// Borrow non-secret runtime settings needed by transports.
@@ -139,8 +123,7 @@ mod tests {
         let state =
             ServerState::build_with_store(InMemoryStore::default(), runtime_config()).await?;
 
-        std::hint::black_box(state.engine());
-        std::hint::black_box(state.namespace_resolver());
+        std::hint::black_box(state.namespace_guard());
 
         Ok(())
     }
