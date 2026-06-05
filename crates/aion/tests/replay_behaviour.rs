@@ -238,6 +238,8 @@ impl RecoveryDriver for StaticRecoveryDriver {
                 reason: format!("missing test recovery plan for {workflow_id}"),
             })
     }
+}
+
 async fn record_round_trip_history(
     store: Arc<dyn EventStore>,
 ) -> Result<Vec<aion_core::Event>, Box<dyn std::error::Error>> {
@@ -583,6 +585,10 @@ async fn recover_isolates_divergent_workflow_failure_and_continues()
         .collect::<Vec<_>>();
     assert_eq!(failure_events.len(), 1);
     assert_eq!(failure_events[0].seq(), 3);
+    Ok(())
+}
+
+#[tokio::test]
 async fn record_then_replay_round_trip_reaches_terminal_without_resume_live()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
