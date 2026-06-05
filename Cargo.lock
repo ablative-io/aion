@@ -146,6 +146,7 @@ name = "aion-server"
 version = "0.1.0"
 dependencies = [
  "aion",
+ "aion-core",
  "aion-proto",
  "aion-store",
  "aion-store-libsql",
@@ -156,6 +157,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonic 0.14.6",
+ "uuid",
 ]
 
 [[package]]

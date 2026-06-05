@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use aion::{Engine, EngineBuilder};
+use aion::EngineBuilder;
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 
@@ -19,7 +19,6 @@ pub struct ServerState {
 }
 
 struct ServerStateInner {
-    engine: Arc<Engine>,
     namespace_resolver: NamespaceResolver,
     runtime: RuntimeConfig,
 }
@@ -46,36 +45,21 @@ impl ServerState {
     where
         S: EventStore,
     {
-        let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone());
         let engine = EngineBuilder::new().store(store).build().await?;
-        Ok(Self::from_parts(
-            Arc::new(engine),
-            namespace_resolver,
-            runtime,
-        ))
+        let engine = Arc::new(engine);
+        let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
+        Ok(Self::from_parts(namespace_resolver, runtime))
     }
 
     /// Build shared state from explicit parts.
     #[must_use]
-    pub fn from_parts(
-        engine: Arc<Engine>,
-        namespace_resolver: NamespaceResolver,
-        runtime: RuntimeConfig,
-    ) -> Self {
+    pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
         Self {
             inner: Arc::new(ServerStateInner {
-                engine,
                 namespace_resolver,
                 runtime,
             }),
         }
-    }
-
-    /// Borrow the engine handle. Handlers in later briefs should only use this
-    /// after namespace resolution at the adapter boundary.
-    #[must_use]
-    pub fn engine(&self) -> &Arc<Engine> {
-        &self.inner.engine
     }
 
     /// Borrow the namespace resolver shared by all transports.
@@ -139,7 +123,6 @@ mod tests {
         let state =
             ServerState::build_with_store(InMemoryStore::default(), runtime_config()).await?;
 
-        std::hint::black_box(state.engine());
         std::hint::black_box(state.namespace_resolver());
 
         Ok(())

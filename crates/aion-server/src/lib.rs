@@ -11,5 +11,8 @@ pub mod worker;
 
 pub use config::ServerConfig;
 pub use error::{ServerError, StreamFailure};
-pub use namespace::resolver::NamespaceResolver;
+pub use namespace::{
+    CallerIdentity, NamespaceGuard, NamespaceOperation, NamespaceResolver, ScopedEngine,
+    SubscriptionScope, WorkflowOwnership, WorkflowTarget,
+};
 pub use state::ServerState;
