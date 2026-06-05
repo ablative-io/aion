@@ -1,42 +1,44 @@
 import { useEffect } from 'react';
 
 import { isSelectedNamespace, requireSelectedNamespace, useNamespace } from '@/features/namespace';
-import { aionWebSocketManager, type EventSubscriptionManager } from '@/lib/api/websocket';
+import { aionEventSocket, type AionEventWebSocketManager } from '@/lib/api';
+import type { AionEventHandler, AionEventSubscriptionFilter } from '@/lib/api/websocket';
 import type { Event, Namespace } from '@/types';
 
-type NamespaceScopedSubscriptionInput<TFilter extends object> = {
+type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilter> = {
   afterSeq?: number;
-  filter: TFilter;
+  filter: Omit<TFilter, 'namespace'>;
+  manager?: Pick<AionEventWebSocketManager, 'subscribe'>;
   onEvent: (event: Event) => void;
-  manager?: EventSubscriptionManager;
 };
 
-export function namespaceSubscriptionFilter<TFilter extends object>(
+export function namespaceSubscriptionFilter<TFilter extends AionEventSubscriptionFilter>(
   namespace: Namespace,
-  filter: TFilter,
-  afterSeq?: number
-): TFilter & { namespace: Namespace; afterSeq?: number } {
+  filter: Omit<TFilter, 'namespace'>
+): TFilter {
   const selectedNamespace = requireSelectedNamespace(namespace, 'subscribing to events');
 
-  return afterSeq === undefined
-    ? { ...filter, namespace: selectedNamespace }
-    : { ...filter, afterSeq, namespace: selectedNamespace };
+  return { ...filter, namespace: selectedNamespace } as TFilter;
 }
 
-export function subscribeToNamespaceFilter<TFilter extends object>(
-  manager: EventSubscriptionManager,
+export function subscribeToNamespaceFilter<TFilter extends AionEventSubscriptionFilter>(
+  manager: Pick<AionEventWebSocketManager, 'subscribe'>,
   namespace: Namespace,
-  filter: TFilter,
+  filter: Omit<TFilter, 'namespace'>,
   onEvent: (event: Event) => void,
   afterSeq?: number
 ) {
-  return manager.subscribe(namespaceSubscriptionFilter(namespace, filter, afterSeq), onEvent);
+  const handler: AionEventHandler = (event) => onEvent(event);
+
+  return manager.subscribe(namespaceSubscriptionFilter<TFilter>(namespace, filter), handler, {
+    lastSeenSequence: afterSeq,
+  });
 }
 
-export function useEventSubscription<TFilter extends object>({
+export function useEventSubscription<TFilter extends AionEventSubscriptionFilter>({
   afterSeq,
   filter,
-  manager = aionWebSocketManager,
+  manager = aionEventSocket,
   onEvent,
 }: NamespaceScopedSubscriptionInput<TFilter>) {
   const { selectedNamespace } = useNamespace();
@@ -46,6 +48,12 @@ export function useEventSubscription<TFilter extends object>({
       return;
     }
 
-    return subscribeToNamespaceFilter(manager, selectedNamespace, filter, onEvent, afterSeq);
+    return subscribeToNamespaceFilter<TFilter>(
+      manager,
+      selectedNamespace,
+      filter,
+      onEvent,
+      afterSeq
+    );
   }, [afterSeq, filter, manager, onEvent, selectedNamespace]);
 }

@@ -17,7 +17,7 @@ type WorkflowDetailContentProps = WorkflowDetailProps & {
 };
 
 function WorkflowDetail({ workflowId, namespace }: WorkflowDetailProps) {
-  const historyQuery = useWorkflowHistory(namespace, workflowId);
+  const historyQuery = useWorkflowHistory({ workflowId });
 
   return (
     <WorkflowDetailContent

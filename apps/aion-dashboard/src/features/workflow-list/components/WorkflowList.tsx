@@ -19,7 +19,7 @@ import { Pagination } from './Pagination';
 import { WorkflowRow } from './WorkflowRow';
 
 export type WorkflowListProps = {
-  namespace: Namespace;
+  namespace: Namespace | null;
   client?: ApiClient;
   initialFilterState?: WorkflowListFilterState;
   pageLimit?: number;
@@ -35,12 +35,11 @@ export function WorkflowList({
   const [pagination, setPagination] = useState(FIRST_WORKFLOW_LIST_PAGE);
   const [filter, setFilter] = useState(() => workflowFilterFromState(initialFilterState));
   const normalizedPageLimit = useMemo(() => normalizePageLimit(pageLimit), [pageLimit]);
-  const query = useWorkflowQuery(
-    namespace,
+  const query = useWorkflowQuery({
+    apiClient: client,
     filter,
-    { cursor: pagination.cursor, limit: normalizedPageLimit },
-    { client }
-  );
+    page: { cursor: pagination.cursor, limit: normalizedPageLimit },
+  });
 
   function handleFilterChange(nextFilter: WorkflowFilter, state: WorkflowListFilterState) {
     setFilterState(state);
@@ -71,6 +70,15 @@ export function WorkflowList({
         previousCursors,
       };
     });
+  }
+
+  if (namespace === null) {
+    return (
+      <EmptyState
+        description="Select a namespace to scope the workflow query."
+        title="No namespace selected"
+      />
+    );
   }
 
   return (
