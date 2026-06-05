@@ -1,40 +1,37 @@
 //! receive->dispatch->report worker loop + bounded concurrency
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
 use async_trait::async_trait;
 use futures::StreamExt;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
-use tracing::{debug, info, warn};
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinHandle;
+use tracing::{debug, info};
 
 use crate::config::WorkerConfig;
+use crate::context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 use crate::error::WorkerError;
 use crate::protocol::{
-    ActivityTask, PendingActivityReport, UnackedResultTracker, WorkerSession, re_report_unacked,
-    reconnect_with_backoff,
+    ActivityExecutionKey, ActivityTask, HeartbeatBookkeeper, WorkerSession, WorkerSessionEvent,
 };
 
 /// Dispatch seam used by the receive loop to execute decoded activity tasks.
-///
-/// AR-003 fills this seam with typed handler invocation and failure
-/// classification. This loop only owns task intake, bounded concurrency, and
-/// outcome reporting.
 #[async_trait]
 pub trait ActivityDispatcher: Send + Sync + 'static {
-    /// Executes one decoded activity task and returns the outcome to report.
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError>;
+    /// Executes one decoded activity task with the provided handler context.
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError>;
 
     /// Activity type names this dispatcher can serve.
     fn activity_types(&self) -> BTreeSet<String>;
 }
 
 /// Activity execution outcome returned by the dispatch seam.
-///
-/// Correlation identifiers are deliberately not part of this outcome: the loop
-/// reports using the [`ActivityTask`] ids it decoded from the wire so a
-/// dispatcher cannot accidentally report an outcome for the wrong task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
     /// Activity completed with an output payload.
@@ -51,86 +48,18 @@ pub enum DispatchOutcome {
 
 /// Runs the worker receive loop until the session's task stream completes.
 ///
-/// The loop acquires execution capacity before polling the receive stream so a
-/// saturated worker applies backpressure to the transport instead of buffering
-/// tasks unboundedly. Once intake closes, in-flight dispatches are drained and
-/// reported before returning.
+/// The loop only forwards explicit handler heartbeats and cancellation flags. It
+/// never emits automatic heartbeats, never enforces heartbeat timeouts, and never
+/// aborts running handler tasks on cancellation.
 ///
 /// # Errors
 ///
-/// Returns [`WorkerError`] when task decode, dispatch, or result reporting fails.
+/// Returns [`WorkerError`] when task decode, dispatch, heartbeat send, or result
+/// reporting fails.
 pub async fn serve_activity_tasks<S, D>(
     config: &WorkerConfig,
     session: &mut S,
     dispatcher: Arc<D>,
-) -> Result<(), WorkerError>
-where
-    S: WorkerSession,
-    D: ActivityDispatcher,
-{
-    let mut tracker = UnackedResultTracker::new();
-    serve_activity_tasks_with_tracker(config, session, dispatcher, &mut tracker).await
-}
-
-/// Runs the worker receive loop using the supplied un-acked result tracker.
-///
-/// # Errors
-///
-/// Returns [`WorkerError`] when task decode, dispatch, or result reporting fails.
-/// Runs serving across reconnects, re-registering and re-reporting backlog first.
-///
-/// # Errors
-///
-/// Returns [`WorkerError`] when serving or reconnecting fails permanently.
-pub async fn serve_activity_tasks_with_reconnect<S, D, F, Fut>(
-    config: &WorkerConfig,
-    mut session: S,
-    dispatcher: Arc<D>,
-    mut connect: F,
-) -> Result<(), WorkerError>
-where
-    S: WorkerSession,
-    D: ActivityDispatcher,
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<S, WorkerError>>,
-{
-    let mut tracker = UnackedResultTracker::new();
-    let available_handlers = dispatcher.activity_types();
-    let activity_types = available_handlers.iter().cloned().collect::<Vec<_>>();
-
-    loop {
-        re_report_unacked(&tracker, &mut session).await?;
-        match serve_activity_tasks_with_tracker(
-            config,
-            &mut session,
-            Arc::clone(&dispatcher),
-            &mut tracker,
-        )
-        .await
-        {
-            Ok(()) => return Ok(()),
-            Err(error) => warn!(error = %error, "worker session dropped; reconnecting"),
-        }
-        session = reconnect_with_backoff(
-            config,
-            activity_types.clone(),
-            &available_handlers,
-            &mut connect,
-        )
-        .await?;
-    }
-}
-
-/// Runs the worker receive loop using a caller-owned un-acked result tracker.
-///
-/// # Errors
-///
-/// Returns [`WorkerError`] when task decode, dispatch, or result reporting fails.
-pub async fn serve_activity_tasks_with_tracker<S, D>(
-    config: &WorkerConfig,
-    session: &mut S,
-    dispatcher: Arc<D>,
-    tracker: &mut UnackedResultTracker,
 ) -> Result<(), WorkerError>
 where
     S: WorkerSession,
@@ -142,15 +71,17 @@ where
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
     let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
+    let (heartbeat_sender, mut heartbeat_receiver) = mpsc::unbounded_channel();
+    let heartbeat_bookkeeper = HeartbeatBookkeeper::default();
     let mut stream = session.receive_tasks();
-    let mut in_flight = 0usize;
-    let mut intake_open = true;
+    let mut in_flight = HashMap::<ActivityExecutionKey, InFlightActivity>::new();
     let mut pending_error = None;
 
-    while intake_open {
-        drain_finished_reports(
+    while pending_error.is_none() {
+        drain_runtime_events(
             session,
-            tracker,
+            &heartbeat_bookkeeper,
+            &mut heartbeat_receiver,
             &mut result_receiver,
             &mut in_flight,
             &mut pending_error,
@@ -160,74 +91,118 @@ where
             break;
         }
 
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(WorkerError::registration)?;
-        drain_finished_reports(
-            session,
-            tracker,
-            &mut result_receiver,
-            &mut in_flight,
-            &mut pending_error,
-        )
-        .await;
-        if pending_error.is_some() {
-            drop(permit);
-            break;
-        }
-
-        match stream.next().await {
-            Some(Ok(proto_task)) => {
-                let task = match ActivityTask::try_from(proto_task) {
-                    Ok(task) => task,
-                    Err(error) => {
-                        drop(permit);
-                        pending_error = Some(error);
-                        intake_open = false;
-                        continue;
+        tokio::select! {
+            biased;
+            event = stream.next() => {
+                let Some(event) = event else { break; };
+                match event {
+                    Ok(WorkerSessionEvent::Cancel { workflow_id, activity_id }) => {
+                        deliver_cancellation(workflow_id, &activity_id, &in_flight);
                     }
-                };
-                spawn_dispatch(task, Arc::clone(&dispatcher), result_sender.clone(), permit);
-                in_flight += 1;
-            }
-            Some(Err(error)) => {
-                drop(permit);
-                pending_error = Some(error);
-                intake_open = false;
-            }
-            None => {
-                drop(permit);
-                intake_open = false;
+                    other => {
+                        let permit = semaphore
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .map_err(WorkerError::registration)?;
+                        if !handle_session_event(
+                            other,
+                            SessionEventContext {
+                                permit,
+                                dispatcher: Arc::clone(&dispatcher),
+                                result_sender: &result_sender,
+                                heartbeat_sender: &heartbeat_sender,
+                                heartbeat_bookkeeper: &heartbeat_bookkeeper,
+                                in_flight: &mut in_flight,
+                                pending_error: &mut pending_error,
+                            },
+                        )? {
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
 
     drop(result_sender);
-    while in_flight > 0 {
-        match result_receiver.recv().await {
-            Some(finished) => {
-                report_finished(session, tracker, finished, &mut pending_error).await;
-                in_flight = in_flight.saturating_sub(1);
-            }
-            None => break,
-        }
-    }
+    drop(heartbeat_sender);
+    drain_remaining(
+        session,
+        &heartbeat_bookkeeper,
+        &mut heartbeat_receiver,
+        &mut result_receiver,
+        &mut in_flight,
+        &mut pending_error,
+    )
+    .await;
 
     if let Some(error) = pending_error {
         return Err(error);
     }
-
     Ok(())
 }
 
-fn spawn_dispatch<D>(
+struct SessionEventContext<'a, D> {
+    permit: tokio::sync::OwnedSemaphorePermit,
+    dispatcher: Arc<D>,
+    result_sender: &'a mpsc::UnboundedSender<DispatchFinished>,
+    heartbeat_sender: &'a mpsc::UnboundedSender<HeartbeatRequest>,
+    heartbeat_bookkeeper: &'a HeartbeatBookkeeper,
+    in_flight: &'a mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    pending_error: &'a mut Option<WorkerError>,
+}
+
+fn handle_session_event<D>(
+    event: Result<WorkerSessionEvent, WorkerError>,
+    ctx: SessionEventContext<'_, D>,
+) -> Result<bool, WorkerError>
+where
+    D: ActivityDispatcher,
+{
+    match event {
+        Ok(WorkerSessionEvent::Task(proto_task)) => {
+            let task = match ActivityTask::try_from(proto_task) {
+                Ok(task) => task,
+                Err(error) => {
+                    drop(ctx.permit);
+                    *ctx.pending_error = Some(error);
+                    return Ok(false);
+                }
+            };
+            spawn_activity(
+                task,
+                ctx.permit,
+                ctx.dispatcher,
+                ctx.result_sender.clone(),
+                ctx.heartbeat_sender.clone(),
+                ctx.heartbeat_bookkeeper,
+                ctx.in_flight,
+            )?;
+            Ok(true)
+        }
+        Ok(WorkerSessionEvent::Cancel { .. }) => {
+            drop(ctx.permit);
+            Ok(true)
+        }
+        Err(error) => {
+            drop(ctx.permit);
+            *ctx.pending_error = Some(error);
+            Ok(false)
+        }
+    }
+}
+
+fn spawn_activity<D>(
     task: ActivityTask,
+    permit: tokio::sync::OwnedSemaphorePermit,
     dispatcher: Arc<D>,
     result_sender: mpsc::UnboundedSender<DispatchFinished>,
-    permit: OwnedSemaphorePermit,
-) where
+    heartbeat_sender: mpsc::UnboundedSender<HeartbeatRequest>,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+) -> Result<(), WorkerError>
+where
     D: ActivityDispatcher,
 {
     info!(
@@ -237,53 +212,162 @@ fn spawn_dispatch<D>(
         attempt = task.attempt,
         "received activity task"
     );
-    let workflow_id = task.workflow_id.clone();
-    let activity_id = task.activity_id.clone();
-    tokio::spawn(async move {
-        let outcome = dispatcher.dispatch(task).await;
-        let finished = DispatchFinished {
-            workflow_id,
-            activity_id,
-            outcome,
-        };
-        if result_sender.send(finished).is_err() {
+    let key = ActivityExecutionKey::new(task.workflow_id.clone(), task.activity_id.clone());
+    heartbeat_bookkeeper.register(task.activity_id.clone())?;
+    let (context, cancellation_handle) = ActivityContext::for_workflow(
+        Some(task.workflow_id.clone()),
+        task.activity_id.clone(),
+        task.attempt,
+        Some(heartbeat_sender),
+    );
+    let finished_key = key.clone();
+    let join_handle = tokio::spawn(async move {
+        let outcome = dispatcher.dispatch(task, context).await;
+        if result_sender
+            .send(DispatchFinished {
+                key: finished_key,
+                outcome,
+            })
+            .is_err()
+        {
             debug!("worker loop stopped before dispatch outcome could be delivered");
         }
         drop(permit);
     });
+    in_flight.insert(
+        key,
+        InFlightActivity {
+            cancellation_handle,
+            join_handle,
+        },
+    );
+    Ok(())
 }
 
-async fn drain_finished_reports<S>(
+fn deliver_cancellation(
+    workflow_id: WorkflowId,
+    activity_id: &ActivityId,
+    in_flight: &HashMap<ActivityExecutionKey, InFlightActivity>,
+) {
+    let key = ActivityExecutionKey::new(workflow_id, activity_id.clone());
+    if let Some(in_flight_activity) = in_flight.get(&key) {
+        in_flight_activity.cancellation_handle.cancel();
+        info!(
+            activity_id = activity_id.sequence_position(),
+            "delivered cooperative activity cancellation"
+        );
+    }
+}
+
+async fn drain_remaining<S>(
     session: &mut S,
-    tracker: &mut UnackedResultTracker,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
     result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
-    in_flight: &mut usize,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
     pending_error: &mut Option<WorkerError>,
 ) where
     S: WorkerSession,
 {
+    while !in_flight.is_empty() {
+        match result_receiver.recv().await {
+            Some(finished) => {
+                report_finished(
+                    session,
+                    heartbeat_bookkeeper,
+                    finished,
+                    in_flight,
+                    pending_error,
+                )
+                .await;
+                drain_heartbeats(
+                    session,
+                    heartbeat_bookkeeper,
+                    heartbeat_receiver,
+                    pending_error,
+                )
+                .await;
+            }
+            None => break,
+        }
+    }
+    drain_heartbeats(
+        session,
+        heartbeat_bookkeeper,
+        heartbeat_receiver,
+        pending_error,
+    )
+    .await;
+}
+
+async fn drain_runtime_events<S>(
+    session: &mut S,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
+    result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    pending_error: &mut Option<WorkerError>,
+) where
+    S: WorkerSession,
+{
+    drain_heartbeats(
+        session,
+        heartbeat_bookkeeper,
+        heartbeat_receiver,
+        pending_error,
+    )
+    .await;
     while let Ok(finished) = result_receiver.try_recv() {
-        report_finished(session, tracker, finished, pending_error).await;
-        *in_flight = in_flight.saturating_sub(1);
+        report_finished(
+            session,
+            heartbeat_bookkeeper,
+            finished,
+            in_flight,
+            pending_error,
+        )
+        .await;
+    }
+}
+
+async fn drain_heartbeats<S>(
+    session: &mut S,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
+    pending_error: &mut Option<WorkerError>,
+) where
+    S: WorkerSession,
+{
+    while let Ok(request) = heartbeat_receiver.try_recv() {
+        record_first_error(
+            pending_error,
+            crate::protocol::send_heartbeat(session, heartbeat_bookkeeper, request).await,
+        );
     }
 }
 
 async fn report_finished<S>(
     session: &mut S,
-    tracker: &mut UnackedResultTracker,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
     finished: DispatchFinished,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
     pending_error: &mut Option<WorkerError>,
 ) where
     S: WorkerSession,
 {
+    if let Some(in_flight_activity) = in_flight.remove(&finished.key) {
+        let _ = in_flight_activity.join_handle.await;
+        record_first_error(
+            pending_error,
+            heartbeat_bookkeeper.remove(&finished.key.activity_id),
+        );
+    }
     match finished.outcome {
         Ok(outcome) => record_first_error(
             pending_error,
             report_outcome(
                 session,
-                tracker,
-                finished.workflow_id,
-                finished.activity_id,
+                finished.key.workflow_id,
+                finished.key.activity_id,
                 outcome,
             )
             .await,
@@ -298,7 +382,6 @@ async fn report_finished<S>(
 
 async fn report_outcome<S>(
     session: &mut S,
-    tracker: &mut UnackedResultTracker,
     workflow_id: WorkflowId,
     activity_id: ActivityId,
     outcome: DispatchOutcome,
@@ -312,11 +395,6 @@ where
     );
     match outcome {
         DispatchOutcome::Completed { output } => {
-            tracker.record(PendingActivityReport::Completed {
-                workflow_id: workflow_id.clone(),
-                activity_id: activity_id.clone(),
-                output: output.clone(),
-            });
             session
                 .report_result(workflow_id, activity_id.clone(), output)
                 .await?;
@@ -326,11 +404,6 @@ where
             );
         }
         DispatchOutcome::Failed { failure } => {
-            tracker.record(PendingActivityReport::Failed {
-                workflow_id: workflow_id.clone(),
-                activity_id: activity_id.clone(),
-                failure: failure.clone(),
-            });
             session
                 .report_failure(workflow_id, activity_id.clone(), failure)
                 .await?;
@@ -344,9 +417,13 @@ where
 }
 
 struct DispatchFinished {
-    workflow_id: WorkflowId,
-    activity_id: ActivityId,
+    key: ActivityExecutionKey,
     outcome: Result<DispatchOutcome, WorkerError>,
+}
+
+struct InFlightActivity {
+    cancellation_handle: ActivityCancellationHandle,
+    join_handle: JoinHandle<()>,
 }
 
 fn record_first_error(pending_error: &mut Option<WorkerError>, result: Result<(), WorkerError>) {

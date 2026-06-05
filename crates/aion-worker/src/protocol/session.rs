@@ -21,7 +21,26 @@ type GeneratedClient = aion_proto::generated::worker_protocol_client::WorkerProt
 
 /// Boxed receive stream returned by worker sessions.
 pub type WorkerTaskStream =
-    Pin<Box<dyn Stream<Item = Result<ProtoActivityTask, WorkerError>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<WorkerSessionEvent, WorkerError>> + Send>>;
+
+/// Event pushed by the worker session receive stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerSessionEvent {
+    /// A new activity task to execute.
+    Task(ProtoActivityTask),
+    /// Cooperative cancellation for an in-flight activity.
+    ///
+    /// The current AW worker proto in this worktree does not yet carry this
+    /// frame, but fake sessions can emit it and the runtime handles it without
+    /// forcing task termination. When AW lands the wire variant,
+    /// `decode_server_message` should map it to this event.
+    Cancel {
+        /// Workflow owning the activity.
+        workflow_id: WorkflowId,
+        /// Activity to mark cancelled.
+        activity_id: ActivityId,
+    },
+}
 
 /// Transport abstraction for the AW-owned worker protocol.
 ///
@@ -304,9 +323,11 @@ impl WorkerSession for GrpcWorkerSession {
 
 fn decode_server_message(
     message: aion_proto::generated::ServerToWorker,
-) -> Result<ProtoActivityTask, WorkerError> {
+) -> Result<WorkerSessionEvent, WorkerError> {
     match message.message {
-        Some(aion_proto::generated::server_to_worker::Message::Task(task)) => Ok(proto_task(task)),
+        Some(aion_proto::generated::server_to_worker::Message::Task(task)) => {
+            Ok(WorkerSessionEvent::Task(proto_task(task)))
+        }
         None => Err(WorkerError::decode(SessionStateError {
             message: String::from("server-to-worker message was empty"),
         })),
@@ -401,9 +422,9 @@ mod tests {
     use async_trait::async_trait;
     use futures::{StreamExt, stream};
 
-    use super::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
+    use super::{WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers};
+    use crate::WorkerConfig;
     use crate::error::WorkerError;
-    use crate::{ReconnectConfig, WorkerConfig};
 
     #[derive(Default)]
     struct FakeSession {
@@ -430,12 +451,14 @@ mod tests {
         }
 
         fn receive_tasks(&mut self) -> WorkerTaskStream {
-            Box::pin(stream::iter([Ok(ProtoActivityTask {
-                workflow_id: None,
-                activity_id: None,
-                activity_type: String::from("charge-card"),
-                input: None,
-            })]))
+            Box::pin(stream::iter([Ok(WorkerSessionEvent::Task(
+                ProtoActivityTask {
+                    workflow_id: None,
+                    activity_id: None,
+                    activity_type: String::from("charge-card"),
+                    input: None,
+                },
+            ))]))
         }
 
         async fn report_result(
@@ -471,18 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn fake_session_records_handshake_and_registration() -> Result<(), WorkerError> {
-        let config = WorkerConfig::new(
-            "http://127.0.0.1:50051",
-            "payments",
-            "worker-a",
-            4,
-            ReconnectConfig::new(
-                std::time::Duration::from_millis(5),
-                std::time::Duration::from_millis(20),
-                3,
-            ),
-            None,
-        );
+        let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 4, None);
         let activity_types = vec![String::from("charge-card"), String::from("send-email")];
         let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
         let mut session = FakeSession::default();

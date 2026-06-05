@@ -1,8 +1,8 @@
 //! Tests for the receive loop and bounded concurrency.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId};
@@ -12,16 +12,17 @@ use futures::stream;
 use serde_json::json;
 use tokio::sync::{Mutex, mpsc};
 
-use super::{
-    ActivityDispatcher, DispatchOutcome, serve_activity_tasks, serve_activity_tasks_with_reconnect,
-};
+use super::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
+use crate::WorkerConfig;
+use crate::context::ActivityContext;
 use crate::error::WorkerError;
-use crate::protocol::{ActivityTask, WorkerSession, WorkerTaskStream, validate_activity_handlers};
-use crate::{ReconnectConfig, WorkerConfig};
+use crate::protocol::{
+    ActivityTask, WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers,
+};
 
 #[derive(Default)]
 struct FakeSession {
-    tasks: Vec<Result<ProtoActivityTask, WorkerError>>,
+    tasks: Vec<Result<WorkerSessionEvent, WorkerError>>,
     reports: Vec<RecordedReport>,
 }
 
@@ -92,8 +93,13 @@ struct RecordingDispatcher {
 
 #[async_trait]
 impl ActivityDispatcher for RecordingDispatcher {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
         self.dispatched.lock().await.push(task.activity_id.clone());
+        drop(context);
         let mut outcomes = self.outcomes.lock().await;
         if outcomes.is_empty() {
             return Err(WorkerError::decode(NoOutcome));
@@ -115,7 +121,11 @@ struct SlowDispatcher {
 
 #[async_trait]
 impl ActivityDispatcher for SlowDispatcher {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
         let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
         update_peak(&self.peak, now);
         self.started.fetch_add(1, Ordering::SeqCst);
@@ -123,7 +133,7 @@ impl ActivityDispatcher for SlowDispatcher {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         self.current.fetch_sub(1, Ordering::SeqCst);
-        drop(task);
+        drop((task, context));
         Ok(DispatchOutcome::Completed {
             output: Payload::new(ContentType::Json, b"{}".to_vec()),
         })
@@ -134,99 +144,30 @@ impl ActivityDispatcher for SlowDispatcher {
     }
 }
 
-struct SingleOutcomeDispatcher {
-    outcome: DispatchOutcome,
-    events: Arc<StdMutex<Vec<LoopEvent>>>,
+struct CancellingDispatcher {
+    started: tokio::sync::Notify,
+    observed_cancelled: AtomicBool,
 }
 
 #[async_trait]
-impl ActivityDispatcher for SingleOutcomeDispatcher {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
-        push_loop_event(
-            &self.events,
-            LoopEvent::Dispatch(task.activity_id.sequence_position()),
-        )?;
-        Ok(self.outcome.clone())
+impl ActivityDispatcher for CancellingDispatcher {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
+        drop(task);
+        self.started.notify_waiters();
+        context.cancelled().await;
+        self.observed_cancelled
+            .store(context.is_cancelled(), Ordering::SeqCst);
+        Ok(DispatchOutcome::Completed {
+            output: Payload::new(ContentType::Json, b"{}".to_vec()),
+        })
     }
 
     fn activity_types(&self) -> BTreeSet<String> {
-        [String::from("charge-card")].into_iter().collect()
-    }
-}
-
-struct ReconnectOrderingSession {
-    name: &'static str,
-    tasks: Vec<Result<ProtoActivityTask, WorkerError>>,
-    events: Arc<StdMutex<Vec<LoopEvent>>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum LoopEvent {
-    Handshake(&'static str),
-    Register(&'static str),
-    ReceiveTasks(&'static str),
-    Dispatch(u64),
-    ReportResult(&'static str, u64),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("loop event log mutex poisoned")]
-struct PoisonedEventLog;
-
-#[async_trait]
-impl WorkerSession for ReconnectOrderingSession {
-    async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
-        let _ = config;
-        push_loop_event(&self.events, LoopEvent::Handshake(self.name))
-    }
-
-    async fn register(
-        &mut self,
-        activity_types: Vec<String>,
-        available_handlers: &BTreeSet<String>,
-    ) -> Result<(), WorkerError> {
-        validate_activity_handlers(&activity_types, available_handlers)?;
-        push_loop_event(&self.events, LoopEvent::Register(self.name))
-    }
-
-    fn receive_tasks(&mut self) -> WorkerTaskStream {
-        if push_loop_event(&self.events, LoopEvent::ReceiveTasks(self.name)).is_err() {
-            return Box::pin(stream::iter([Err(WorkerError::decode(PoisonedEventLog))]));
-        }
-        Box::pin(stream::iter(std::mem::take(&mut self.tasks)))
-    }
-
-    async fn report_result(
-        &mut self,
-        workflow_id: WorkflowId,
-        activity_id: ActivityId,
-        result: Payload,
-    ) -> Result<(), WorkerError> {
-        drop((workflow_id, result));
-        push_loop_event(
-            &self.events,
-            LoopEvent::ReportResult(self.name, activity_id.sequence_position()),
-        )
-    }
-
-    async fn report_failure(
-        &mut self,
-        workflow_id: WorkflowId,
-        activity_id: ActivityId,
-        failure: ActivityError,
-    ) -> Result<(), WorkerError> {
-        drop((workflow_id, activity_id, failure));
-        Ok(())
-    }
-
-    async fn send_heartbeat(
-        &mut self,
-        workflow_id: WorkflowId,
-        activity_id: ActivityId,
-        progress: Option<Payload>,
-    ) -> Result<(), WorkerError> {
-        drop((workflow_id, activity_id, progress));
-        Ok(())
+        [String::from("cancellable")].into_iter().collect()
     }
 }
 
@@ -243,16 +184,16 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
     };
     let mut session = FakeSession {
         tasks: vec![
-            Ok(proto_task(
+            Ok(WorkerSessionEvent::Task(proto_task(
                 workflow_id.clone(),
                 first_activity.clone(),
                 "charge-card",
-            )),
-            Ok(proto_task(
+            ))),
+            Ok(WorkerSessionEvent::Task(proto_task(
                 workflow_id.clone(),
                 second_activity.clone(),
                 "charge-card",
-            )),
+            ))),
         ],
         reports: Vec::new(),
     };
@@ -267,14 +208,7 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
         ]),
         dispatched: Mutex::new(Vec::new()),
     });
-    let config = WorkerConfig::new(
-        "http://127.0.0.1:50051",
-        "payments",
-        "worker-a",
-        2,
-        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
-        None,
-    );
+    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 2, None);
 
     serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher)).await?;
 
@@ -302,11 +236,11 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
     };
     for position in 1..=5 {
         task_sender
-            .send(Ok(proto_task(
+            .send(Ok(WorkerSessionEvent::Task(proto_task(
                 workflow_id.clone(),
                 ActivityId::from_sequence_position(position),
                 "slow",
-            )))
+            ))))
             .await
             .map_err(WorkerError::decode)?;
     }
@@ -317,14 +251,7 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
         started: AtomicUsize::new(0),
         release: AtomicBool::new(false),
     });
-    let config = WorkerConfig::new(
-        "http://127.0.0.1:50051",
-        "payments",
-        "worker-a",
-        2,
-        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
-        None,
-    );
+    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 2, None);
     let worker = tokio::spawn({
         let dispatcher = Arc::clone(&dispatcher);
         async move {
@@ -348,80 +275,58 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
 }
 
 #[tokio::test]
-async fn reconnect_re_reports_backlog_before_receiving_new_tasks() -> Result<(), WorkerError> {
+async fn cancellation_event_flips_context_without_suppressing_result() -> Result<(), WorkerError> {
     let workflow_id = WorkflowId::new_v4();
-    let first_activity = ActivityId::from_sequence_position(1);
-    let second_activity = ActivityId::from_sequence_position(2);
-    let events = Arc::new(StdMutex::new(Vec::new()));
-    let first_session = ReconnectOrderingSession {
-        name: "first",
-        tasks: vec![
-            Ok(proto_task(
-                workflow_id.clone(),
-                first_activity,
-                "charge-card",
-            )),
-            Err(WorkerError::Transport {
-                source: tonic::Status::unavailable("disconnect before ack"),
-            }),
-        ],
-        events: Arc::clone(&events),
+    let activity_id = ActivityId::from_sequence_position(9);
+    let (event_sender, event_receiver) = mpsc::channel(2);
+    let mut session = ChannelSession {
+        receiver: Some(event_receiver),
+        reports: Vec::new(),
     };
-    let reconnect_events = Arc::clone(&events);
-    let reconnect_workflow = workflow_id.clone();
-    let reconnect_activity = second_activity;
-    let dispatcher = Arc::new(SingleOutcomeDispatcher {
-        outcome: DispatchOutcome::Completed {
-            output: Payload::new(ContentType::Json, b"{}".to_vec()),
-        },
-        events: Arc::clone(&events),
+    event_sender
+        .send(Ok(WorkerSessionEvent::Task(proto_task(
+            workflow_id.clone(),
+            activity_id.clone(),
+            "cancellable",
+        ))))
+        .await
+        .map_err(WorkerError::decode)?;
+    let dispatcher = Arc::new(CancellingDispatcher {
+        started: tokio::sync::Notify::new(),
+        observed_cancelled: AtomicBool::new(false),
     });
-    let config = WorkerConfig::new(
-        "http://127.0.0.1:50051",
-        "payments",
-        "worker-a",
-        2,
-        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 2),
-        None,
-    );
-
-    serve_activity_tasks_with_reconnect(&config, first_session, dispatcher, move || {
-        let reconnect_events = Arc::clone(&reconnect_events);
-        let reconnect_workflow = reconnect_workflow.clone();
-        let reconnect_activity = reconnect_activity.clone();
+    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 1, None);
+    let worker = tokio::spawn({
+        let dispatcher = Arc::clone(&dispatcher);
         async move {
-            Ok(ReconnectOrderingSession {
-                name: "second",
-                tasks: vec![Ok(proto_task(
-                    reconnect_workflow,
-                    reconnect_activity,
-                    "charge-card",
-                ))],
-                events: reconnect_events,
-            })
+            let result = serve_activity_tasks(&config, &mut session, dispatcher).await;
+            (result, session)
         }
-    })
-    .await?;
+    });
 
-    assert_eq!(
-        loop_events(&events)?,
-        vec![
-            LoopEvent::ReceiveTasks("first"),
-            LoopEvent::Dispatch(1),
-            LoopEvent::ReportResult("first", 1),
-            LoopEvent::Handshake("second"),
-            LoopEvent::Register("second"),
-            LoopEvent::ReportResult("second", 1),
-            LoopEvent::ReceiveTasks("second"),
-            LoopEvent::Dispatch(2),
-            LoopEvent::ReportResult("second", 2),
-        ]
-    );
+    dispatcher.started.notified().await;
+    event_sender
+        .send(Ok(WorkerSessionEvent::Cancel {
+            workflow_id,
+            activity_id: activity_id.clone(),
+        }))
+        .await
+        .map_err(WorkerError::decode)?;
+    drop(event_sender);
+    let (result, session) = worker.await.map_err(WorkerError::decode)?;
+    result?;
+
+    assert!(dispatcher.observed_cancelled.load(Ordering::SeqCst));
+    assert_eq!(session.reports.len(), 1);
+    assert!(matches!(
+        &session.reports[0],
+        RecordedReport::Completed(reported_id, _) if reported_id == &activity_id
+    ));
     Ok(())
 }
 
 struct ChannelSession {
-    receiver: Option<mpsc::Receiver<Result<ProtoActivityTask, WorkerError>>>,
+    receiver: Option<mpsc::Receiver<Result<WorkerSessionEvent, WorkerError>>>,
     reports: Vec<RecordedReport>,
 }
 
@@ -496,24 +401,6 @@ fn proto_task(
             b"{}".to_vec(),
         ))),
     }
-}
-
-fn push_loop_event(
-    events: &Arc<StdMutex<Vec<LoopEvent>>>,
-    event: LoopEvent,
-) -> Result<(), WorkerError> {
-    events
-        .lock()
-        .map_err(|_| WorkerError::decode(PoisonedEventLog))?
-        .push(event);
-    Ok(())
-}
-
-fn loop_events(events: &Arc<StdMutex<Vec<LoopEvent>>>) -> Result<Vec<LoopEvent>, WorkerError> {
-    Ok(events
-        .lock()
-        .map_err(|_| WorkerError::decode(PoisonedEventLog))?
-        .clone())
 }
 
 async fn wait_until_started(started: &AtomicUsize, expected: usize) {

@@ -16,7 +16,8 @@ pub use config::{
 pub use context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 pub use error::{MissingActivityHandler, WorkerError};
 pub use protocol::{
-    ActivityTask, GrpcWorkerSession, WorkerSession, WorkerTaskStream, validate_activity_handlers,
+    ActivityTask, GrpcWorkerSession, WorkerSession, WorkerSessionEvent, WorkerTaskStream,
+    validate_activity_handlers,
 };
 pub use runtime::{
     ActivityDispatcher, DispatchOutcome, TypedActivityDispatcher, decode_payload, encode_payload,

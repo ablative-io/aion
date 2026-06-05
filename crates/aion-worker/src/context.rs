@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use aion_core::{ActivityId, Payload};
+use aion_core::{ActivityId, Payload, WorkflowId};
 use tokio::sync::{Notify, mpsc};
 
 use crate::error::WorkerError;
@@ -11,6 +11,7 @@ use crate::error::WorkerError;
 /// Handler-facing context for one activity execution.
 #[derive(Clone, Debug)]
 pub struct ActivityContext {
+    workflow_id: Option<WorkflowId>,
     activity_id: ActivityId,
     attempt: u32,
     cancellation: Arc<CancellationState>,
@@ -26,6 +27,8 @@ pub struct ActivityCancellationHandle {
 /// Heartbeat request emitted by [`ActivityContext::heartbeat`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeartbeatRequest {
+    /// Workflow owning the activity whose progress is being reported.
+    pub workflow_id: WorkflowId,
     /// Activity whose progress is being reported.
     pub activity_id: ActivityId,
     /// Opaque progress detail supplied by the handler.
@@ -59,16 +62,23 @@ impl ActivityContext {
 
     /// Emits a cooperative heartbeat request for this activity.
     ///
-    /// AR-004 wires this seam to the transport session. Until then, contexts
-    /// without a heartbeat sender treat heartbeats as a no-op.
+    /// Only explicit handler calls enqueue heartbeats. Contexts created without a
+    /// live heartbeat sender remain no-op contexts for isolated unit tests.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkerError`] when an installed heartbeat seam has been closed.
+    /// Returns [`WorkerError`] when an installed heartbeat seam has been closed
+    /// or when the context lacks the workflow id required by the live session.
     pub fn heartbeat(&self, detail: Option<Payload>) -> Result<(), WorkerError> {
         if let Some(sender) = &self.heartbeat_sender {
+            let workflow_id = self.workflow_id.clone().ok_or_else(|| {
+                WorkerError::registration(HeartbeatMissingWorkflow {
+                    activity_id: self.activity_id.clone(),
+                })
+            })?;
             sender
                 .send(HeartbeatRequest {
+                    workflow_id,
                     activity_id: self.activity_id.clone(),
                     detail,
                 })
@@ -95,11 +105,21 @@ impl ActivityContext {
         attempt: u32,
         heartbeat_sender: Option<mpsc::UnboundedSender<HeartbeatRequest>>,
     ) -> (Self, ActivityCancellationHandle) {
+        Self::for_workflow(None, activity_id, attempt, heartbeat_sender)
+    }
+
+    pub(crate) fn for_workflow(
+        workflow_id: Option<WorkflowId>,
+        activity_id: ActivityId,
+        attempt: u32,
+        heartbeat_sender: Option<mpsc::UnboundedSender<HeartbeatRequest>>,
+    ) -> (Self, ActivityCancellationHandle) {
         let cancellation = Arc::new(CancellationState {
             cancelled: AtomicBool::new(false),
             notify: Notify::new(),
         });
         let context = Self {
+            workflow_id,
             activity_id,
             attempt,
             cancellation: Arc::clone(&cancellation),
@@ -124,6 +144,12 @@ impl ActivityCancellationHandle {
 #[error("activity heartbeat seam is closed: {source}")]
 struct HeartbeatSeamClosed {
     source: mpsc::error::SendError<HeartbeatRequest>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("activity {activity_id} heartbeat is missing workflow id")]
+struct HeartbeatMissingWorkflow {
+    activity_id: ActivityId,
 }
 
 #[cfg(test)]
