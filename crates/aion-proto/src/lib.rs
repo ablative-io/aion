@@ -2,3 +2,9 @@
 
 pub mod convert;
 pub mod error;
+
+pub use convert::{
+    ProtoActivityId, ProtoPayload, ProtoRunId, ProtoTimerId, ProtoWorkflowId, ProtoWorkflowStatus,
+    WireEnvelope, decode_core_value, encode_core_value,
+};
+pub use error::{ProtoWireError, ProtoWireErrorCode, WireError, WireErrorCode};
