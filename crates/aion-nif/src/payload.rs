@@ -27,7 +27,7 @@ use beamr::{
     term::{Term, json},
 };
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde_json::{Number, Value};
 
 use crate::{FromTerm, IntoTerm, TermError, raw};
 
@@ -148,11 +148,41 @@ fn value_into_term(value: &Value, ctx: &mut ProcessContext) -> Result<Term, Term
             let values = pairs.iter().map(|(_, value)| *value).collect::<Vec<_>>();
             raw::owned_map_term(&keys, &values)
         }
-        scalar => json::value_to_term(scalar, ctx).map_err(|error| TermError::Conversion {
-            context: "json value to term",
-            message: error.to_string(),
-        }),
+        Value::Bool(value) => {
+            let atom = if *value { Atom::TRUE } else { Atom::FALSE };
+            Ok(ctx.allocate_term(Term::atom(atom)))
+        }
+        Value::Number(number) => number_into_term(number, ctx),
+        Value::String(string) => raw::owned_binary_term(string.as_bytes()),
     }
+}
+
+fn number_into_term(number: &Number, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    if let Some(value) = number.as_i64() {
+        if let Some(term) = Term::try_small_int(value) {
+            return Ok(ctx.allocate_term(term));
+        }
+        let limbs = limbs_from_u128(u128::from(value.unsigned_abs()));
+        return raw::owned_bigint_term(value.is_negative(), &limbs);
+    }
+
+    if let Some(value) = number.as_u64() {
+        if let Some(term) = i64::try_from(value).ok().and_then(Term::try_small_int) {
+            return Ok(ctx.allocate_term(term));
+        }
+        let limbs = limbs_from_u128(u128::from(value));
+        return raw::owned_bigint_term(false, &limbs);
+    }
+
+    let value = number.as_f64().ok_or_else(|| TermError::Conversion {
+        context: "json number to term",
+        message: format!("unsupported JSON number {number}"),
+    })?;
+    raw::owned_float_term(value)
+}
+
+fn limbs_from_u128(value: u128) -> [u64; 2] {
+    [value as u64, (value >> u64::BITS) as u64]
 }
 
 impl FromTerm for Payload {
@@ -221,6 +251,27 @@ mod tests {
             assert_eq!(decoded_value, value);
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn payload_large_integer_round_trips_without_beamr_json_encoder() -> Result<(), TermError> {
+        let value = serde_json::json!({"large": u64::MAX});
+        let mut ctx = context();
+        let payload =
+            aion_core::Payload::from_json(&value).map_err(|error| TermError::Conversion {
+                context: "test json large integer to payload",
+                message: error.to_string(),
+            })?;
+
+        let term = payload_into_term(&payload, &mut ctx)?;
+        let decoded = payload_from_term(term, &ctx)?;
+        let decoded_value = decoded.to_json().map_err(|error| TermError::Conversion {
+            context: "test payload to json value",
+            message: error.to_string(),
+        })?;
+
+        assert_eq!(decoded_value, value);
         Ok(())
     }
 

@@ -1,1 +1,1 @@
-feat(aion-nif): add payload term json bridge
+harden(aion-nif): make payload JSON term encoding leak-safe

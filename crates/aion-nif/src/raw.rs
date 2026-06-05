@@ -9,7 +9,7 @@
 //! path. AN-004 replaces this global storage with a scoped `NifContext` that owns
 //! term storage per NIF invocation.
 
-use beamr::term::{Term, binary, boxed};
+use beamr::term::{Term, binary, boxed, boxed::write_bigint};
 use std::sync::{Mutex, OnceLock};
 
 use crate::TermError;
@@ -139,6 +139,39 @@ pub fn owned_float_term(value: f64) -> Result<Term, TermError> {
     keep_owned_term(float_word_len(), "float", |heap| float_term(heap, value))
 }
 
+/// Returns the number of heap words required for [`bigint_term`].
+#[must_use]
+pub const fn bigint_word_len(limb_count: usize) -> usize {
+    3 + limb_count
+}
+
+/// Builds a big integer term in caller-provided process-heap words.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the supplied heap slice is too
+/// small for the bigint layout.
+pub fn bigint_term(heap: &mut [u64], negative: bool, limbs: &[u64]) -> Result<Term, TermError> {
+    write_bigint(heap, negative, limbs).ok_or(TermError::HeapAllocation { shape: "bigint" })
+}
+
+/// Builds a big integer term backed by storage retained by the raw allocation seam.
+///
+/// # Errors
+///
+/// Returns [`TermError::HeapAllocation`] when the bigint layout cannot be
+/// written or retained storage cannot be locked.
+pub fn owned_bigint_term(negative: bool, limbs: &[u64]) -> Result<Term, TermError> {
+    let len = limbs
+        .iter()
+        .rposition(|limb| *limb != 0)
+        .map_or(0, |index| index + 1);
+    let normalized = &limbs[..len];
+    keep_owned_term(bigint_word_len(normalized.len()), "bigint", |heap| {
+        bigint_term(heap, negative, normalized)
+    })
+}
+
 /// Returns the number of heap words required for one [`cons_term`].
 #[must_use]
 pub const fn cons_word_len() -> usize {
@@ -241,11 +274,15 @@ pub fn owned_map_term(keys: &[Term], values: &[Term]) -> Result<Term, TermError>
 
 #[cfg(test)]
 mod tests {
-    use beamr::term::{Term, binary::Binary, boxed::Cons, boxed::Float, boxed::Map, boxed::Tuple};
+    use beamr::term::{
+        Term,
+        binary::Binary,
+        boxed::{BigInt, Cons, Float, Map, Tuple},
+    };
 
     use super::{
-        binary_term, binary_word_len, float_term, float_word_len, list_term, list_word_len,
-        map_term, map_word_len, tuple_term, tuple_word_len,
+        bigint_term, bigint_word_len, binary_term, binary_word_len, float_term, float_word_len,
+        list_term, list_word_len, map_term, map_word_len, tuple_term, tuple_word_len,
     };
 
     #[test]
@@ -295,6 +332,19 @@ mod tests {
         let float = Float::new(term).ok_or("float accessor should accept float term")?;
 
         assert_eq!(float.value().to_bits(), 3.5_f64.to_bits());
+
+        Ok(())
+    }
+
+    #[test]
+    fn bigint_wrapper_round_trips_limbs() -> Result<(), Box<dyn std::error::Error>> {
+        let limbs = [1_u64, 2_u64];
+        let mut heap = vec![0_u64; bigint_word_len(limbs.len())];
+        let term = bigint_term(&mut heap, true, &limbs)?;
+        let bigint = BigInt::new(term).ok_or("bigint accessor should accept bigint term")?;
+
+        assert!(bigint.is_negative());
+        assert_eq!(bigint.limbs(), limbs);
 
         Ok(())
     }
