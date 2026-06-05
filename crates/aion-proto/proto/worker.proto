@@ -2,4 +2,75 @@ syntax = "proto3";
 
 package aion;
 
-// register/task/result/heartbeat bidi service
+import "common.proto";
+
+// WorkerProtocol is one long-lived gRPC bidirectional stream. A worker sends
+// RegisterWorker first, then ActivityResult and Heartbeat messages. The server
+// pushes ActivityTask messages down the same stream; there is no polling RPC.
+service WorkerProtocol {
+  rpc StreamWorker(stream WorkerToServer) returns (stream ServerToWorker);
+}
+
+// Messages sent by a worker to the server over the bidirectional stream.
+message WorkerToServer {
+  oneof message {
+    RegisterWorker register = 1;
+    ActivityResult result = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+// Messages sent by the server to a worker over the bidirectional stream.
+message ServerToWorker {
+  oneof message {
+    ActivityTask task = 1;
+  }
+}
+
+// Initial worker advertisement. A registration scopes this stream and worker to
+// exactly one namespace; server-side partitioning and authorization are handled
+// by the server worker endpoint.
+message RegisterWorker {
+  string namespace = 1;
+  repeated string activity_types = 2;
+}
+
+// Activity invocation pushed by the server to a registered worker.
+message ActivityTask {
+  WorkflowId workflow_id = 1;
+  ActivityId activity_id = 2;
+  string activity_type = 3;
+  Payload input = 4;
+}
+
+// Activity completion or failure reported by a worker.
+message ActivityResult {
+  WorkflowId workflow_id = 1;
+  ActivityId activity_id = 2;
+  oneof outcome {
+    Payload result = 3;
+    ActivityError error = 4;
+  }
+}
+
+// Explicit retryability classification for an activity failure.
+enum ActivityErrorKind {
+  ACTIVITY_ERROR_KIND_UNSPECIFIED = 0;
+  ACTIVITY_ERROR_KIND_RETRYABLE = 1;
+  ACTIVITY_ERROR_KIND_TERMINAL = 2;
+}
+
+// Failure shape mirroring aion-core ActivityError without inferring retryability
+// from the message string.
+message ActivityError {
+  ActivityErrorKind kind = 1;
+  string message = 2;
+  optional Payload details = 3;
+}
+
+// Worker liveness for an in-flight activity. Progress is opaque and optional.
+message Heartbeat {
+  WorkflowId workflow_id = 1;
+  ActivityId activity_id = 2;
+  optional Payload progress = 3;
+}
