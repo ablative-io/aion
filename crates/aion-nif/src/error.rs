@@ -38,6 +38,14 @@ pub enum TermError {
         /// Term shape being allocated.
         shape: &'static str,
     },
+
+    /// A structured conversion through JSON or payload encoding failed.
+    Conversion {
+        /// Conversion boundary that failed.
+        context: &'static str,
+        /// Human-readable conversion failure reason.
+        message: String,
+    },
 }
 
 impl fmt::Display for TermError {
@@ -58,6 +66,9 @@ impl fmt::Display for TermError {
                     "failed to allocate {shape} term on the process heap"
                 )
             }
+            Self::Conversion { context, message } => {
+                write!(formatter, "{context} conversion failed: {message}")
+            }
         }
     }
 }
@@ -68,7 +79,8 @@ impl Error for TermError {
             Self::ArgumentDecode { source, .. } => Some(source.as_ref()),
             Self::TypeMismatch { .. }
             | Self::AtomResolution { .. }
-            | Self::HeapAllocation { .. } => None,
+            | Self::HeapAllocation { .. }
+            | Self::Conversion { .. } => None,
         }
     }
 }
@@ -156,6 +168,15 @@ mod tests {
         assert_eq!(
             heap_allocation.to_string(),
             "failed to allocate tuple term on the process heap"
+        );
+
+        let conversion = TermError::Conversion {
+            context: "payload",
+            message: "invalid json".to_owned(),
+        };
+        assert_eq!(
+            conversion.to_string(),
+            "payload conversion failed: invalid json"
         );
     }
 

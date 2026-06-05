@@ -9,4 +9,6 @@ workspace = true
 
 [dependencies]
 aion-core = { path = "../aion-core" }
-beamr = { workspace = true }
+beamr = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
