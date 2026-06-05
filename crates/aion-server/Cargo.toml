@@ -13,7 +13,7 @@ aion-proto = { path = "../aion-proto" }
 aion-store-libsql = { path = "../aion-store-libsql" }
 aion-store = { path = "../aion-store" }
 tokio = { workspace = true, features = ["full"] }
-axum = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -21,3 +21,5 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 aion-core = { version = "0.1.0", path = "../aion-core" }
 uuid.workspace = true
+futures.workspace = true
+chrono = { workspace = true, features = ["serde"] }
