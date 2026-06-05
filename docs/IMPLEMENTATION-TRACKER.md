@@ -229,7 +229,7 @@ These three tracks run concurrently.
 - [x] **AF-009** — Child workflows (ChildHandle, spawn, await) · _landed ad408e6_
 
 ### Wave 32
-- [ ] **AF-010** — Concurrency (all, race, map) · _Lemmy · depends: AF-009_
+- [x] **AF-010** — Concurrency (all, race, map) · _landed 802dfdd_
 
 ### Wave 33
 - [ ] **AF-011** — Test harness (simulated time, mocking) · _Lemmy · depends: AF-010_
@@ -250,12 +250,12 @@ Three independent tracks running concurrently.
 - [x] **AU-001** — Dashboard app scaffold · _landed a44f1b6_
 
 ### Wave 36 (6 parallel)
-- [ ] **AR-002** — Task loop and concurrency · _depends: AR-001_
-- [ ] **AL-002** — aion-client (Rust): scaffold, operations, errors · _depends: AL-001_
-- [ ] **AL-004** — aion-client-python: Client, handle, payloads · _depends: AL-001_
-- [ ] **AL-005** — aion-client-typescript: Client, handle, generics · _depends: AL-001_
-- [ ] **AL-006** — aion_client (Gleam): operations, payloads · _depends: AL-001_
-- [ ] **AU-002** — Generated wire types, typed REST client · _depends: AU-001_
+- [x] **AR-002** — Task loop and concurrency · _landed f6c9a75_
+- [x] **AL-002** — aion-client (Rust): scaffold, operations, errors · _landed 4b1fe8f_
+- [x] **AL-004** — aion-client-python: Client, handle, payloads · _landed d472150_
+- [x] **AL-005** — aion-client-typescript: Client, handle, generics · _landed 9d3c595_
+- [x] **AL-006** — aion_client (Gleam): operations, payloads · _landed b318cf5_
+- [x] **AU-002** — Generated wire types, typed REST client · _landed 5fdcde9_
 
 ### Wave 37 (6 parallel)
 - [ ] **AR-003** — Dispatch and failure classification · _depends: AR-002_

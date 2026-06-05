@@ -23,6 +23,10 @@ __pycache__
 # Aion build artifacts
 *.aion
 
+# Worktrees and workflow artifacts
+.yggdrasil-worktrees/
+.commit-msg.tmp
+
 # OS / editor
 .DS_Store
 *.swp
