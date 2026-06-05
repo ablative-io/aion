@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::Payload;
 
 /// Classification for an activity failure.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 pub enum ActivityErrorKind {
     /// The activity failure may be retried according to the activity's retry policy.
     Retryable,
@@ -17,7 +17,7 @@ pub enum ActivityErrorKind {
 ///
 /// The engine consults [`ActivityError::is_retryable`] to decide whether to
 /// apply the activity's retry policy or fail the workflow.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct ActivityError {
     /// Explicit retryability classification for this activity failure.
@@ -37,7 +37,7 @@ impl ActivityError {
 }
 
 /// Terminal failure reported by a workflow execution.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct WorkflowError {
     /// Human-readable error message.

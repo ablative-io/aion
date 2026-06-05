@@ -8,7 +8,7 @@ use crate::{Event, WorkflowId, WorkflowStatus, status_from_events};
 /// Query input for listing workflow executions.
 ///
 /// A default filter has every field unset and matches all workflow summaries.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkflowFilter {
     /// Match workflows with this workflow type exactly.
     pub workflow_type: Option<String>,
@@ -61,7 +61,7 @@ impl WorkflowFilter {
 }
 
 /// Lightweight projection of a workflow execution for query results.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 pub struct WorkflowSummary {
     /// Workflow execution identifier.
     pub workflow_id: WorkflowId,
