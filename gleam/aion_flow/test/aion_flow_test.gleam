@@ -1,7 +1,8 @@
-//// AF-002 codec and duration primitive tests.
+//// aion_flow foundational primitive tests.
 
 import aion/codec
 import aion/duration
+import aion/error
 import gleam/dynamic/decode
 import gleam/json
 import gleeunit
@@ -68,6 +69,47 @@ pub fn codec_schema_error_carries_path_test() {
       reason |> should.equal("Expected Int, found String")
       path |> should.equal(["items", "0", "quantity"])
     }
+  }
+}
+
+pub fn activity_error_constructors_preserve_classification_test() {
+  let retryable =
+    error.retryable_with_details("network failed", "{\"attempt\":1}")
+  let terminal =
+    error.terminal_with_details("invalid order", "{\"field\":\"id\"}")
+
+  case retryable {
+    error.Retryable(message: message, details: details) -> {
+      message |> should.equal("network failed")
+      details |> should.equal("{\"attempt\":1}")
+    }
+    error.Terminal(_, _) -> should.fail()
+  }
+
+  case terminal {
+    error.Terminal(message: message, details: details) -> {
+      message |> should.equal("invalid order")
+      details |> should.equal("{\"field\":\"id\"}")
+    }
+    error.Retryable(_, _) -> should.fail()
+  }
+}
+
+pub fn activity_error_helpers_use_empty_details_test() {
+  case error.retryable("temporary outage") {
+    error.Retryable(message: message, details: details) -> {
+      message |> should.equal("temporary outage")
+      details |> should.equal("")
+    }
+    error.Terminal(_, _) -> should.fail()
+  }
+
+  case error.terminal("bad request") {
+    error.Terminal(message: message, details: details) -> {
+      message |> should.equal("bad request")
+      details |> should.equal("")
+    }
+    error.Retryable(_, _) -> should.fail()
   }
 }
 
