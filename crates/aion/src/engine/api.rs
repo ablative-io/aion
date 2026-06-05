@@ -13,6 +13,8 @@ use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
 use crate::registry::{TerminalOutcome, WorkflowHandle};
 use crate::{EngineError, LoadedWorkflows, Registry, RuntimeHandle, SupervisionTree};
 
+use super::delegated::DelegatedSeams;
+
 /// Live embedded workflow engine assembled by [`crate::EngineBuilder`].
 pub struct Engine {
     store: Arc<dyn EventStore>,
@@ -20,6 +22,7 @@ pub struct Engine {
     loaded_workflows: LoadedWorkflows,
     registry: Registry,
     supervision: SupervisionTree,
+    delegated: DelegatedSeams,
     shutdown_gate: ShutdownGate,
 }
 
@@ -32,6 +35,7 @@ impl Engine {
         loaded_workflows: LoadedWorkflows,
         registry: Registry,
         supervision: SupervisionTree,
+        delegated: DelegatedSeams,
     ) -> Self {
         Self {
             store,
@@ -39,6 +43,7 @@ impl Engine {
             loaded_workflows,
             registry,
             supervision,
+            delegated,
             shutdown_gate: ShutdownGate::default(),
         }
     }
@@ -71,6 +76,12 @@ impl Engine {
     #[must_use]
     pub const fn supervision(&self) -> &SupervisionTree {
         &self.supervision
+    }
+
+    /// Delegated signal/query/subscribe seams installed for AT/AD integration.
+    #[must_use]
+    pub const fn delegated(&self) -> &DelegatedSeams {
+        &self.delegated
     }
 
     /// Start a loaded workflow type as a new BEAM process.
@@ -335,7 +346,7 @@ fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError>
     }
 }
 
-fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
+pub(crate) fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
     EngineError::WorkflowNotFound {
         workflow_type: format!("{id}/{run}"),
     }
@@ -350,7 +361,7 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
-    use super::Engine;
+    use super::{DelegatedSeams, Engine};
     use crate::durability::Recorder;
     use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
     use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandleParts};
@@ -394,6 +405,7 @@ mod tests {
             loaded_workflows(workflow_type, deployed_module),
             Registry::default(),
             SupervisionTree::new(),
+            DelegatedSeams::default(),
         ))
     }
 

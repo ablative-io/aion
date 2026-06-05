@@ -6,3 +6,7 @@ pub mod delegated;
 
 pub use api::Engine;
 pub use builder::EngineBuilder;
+pub use delegated::{
+    DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams,
+    EventFamily, EventFilter, EventPublisher, QueryService, SignalRouter,
+};

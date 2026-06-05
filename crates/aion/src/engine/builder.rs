@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::api::Engine;
+use super::delegated::{DelegatedSeams, EventPublisher, QueryService, SignalRouter};
 
 /// Source for a workflow package collected before `build()` performs fallible
 /// loading and runtime registration.
@@ -62,6 +63,7 @@ pub struct EngineBuilder {
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
     recovery: Arc<dyn ActiveWorkflowRecoverySeam>,
+    delegated: DelegatedSeams,
 }
 
 impl Default for EngineBuilder {
@@ -81,6 +83,7 @@ impl EngineBuilder {
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
             recovery: Arc::new(DeferredActiveWorkflowRecovery),
+            delegated: DelegatedSeams::default(),
         }
     }
 
@@ -143,6 +146,39 @@ impl EngineBuilder {
         self
     }
 
+    /// Override the AT signal-routing seam.
+    #[must_use]
+    pub fn signal_router(mut self, signal_router: Arc<dyn SignalRouter>) -> Self {
+        self.delegated = DelegatedSeams::new(
+            signal_router,
+            self.delegated.query_service_arc(),
+            self.delegated.event_publisher_arc(),
+        );
+        self
+    }
+
+    /// Override the AT query-dispatch seam.
+    #[must_use]
+    pub fn query_service(mut self, query_service: Arc<dyn QueryService>) -> Self {
+        self.delegated = DelegatedSeams::new(
+            self.delegated.signal_router_arc(),
+            query_service,
+            self.delegated.event_publisher_arc(),
+        );
+        self
+    }
+
+    /// Override the AD/AT live event-publisher seam.
+    #[must_use]
+    pub fn event_publisher(mut self, event_publisher: Arc<dyn EventPublisher>) -> Self {
+        self.delegated = DelegatedSeams::new(
+            self.delegated.signal_router_arc(),
+            self.delegated.query_service_arc(),
+            event_publisher,
+        );
+        self
+    }
+
     /// Inspect the configured scheduler thread count.
     #[must_use]
     pub const fn scheduler_thread_count(&self) -> Option<usize> {
@@ -187,6 +223,7 @@ impl EngineBuilder {
             loaded_workflows,
             registry,
             supervision,
+            self.delegated,
         ))
     }
 }

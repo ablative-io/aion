@@ -1,1 +1,1 @@
-feat(aion): add dynamic map fan-out primitive
+review: harden AE-013 delegated signal/query/subscribe seams
