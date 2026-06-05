@@ -16,18 +16,57 @@ pub struct NifSet {
     nifs: Vec<Nif>,
 }
 
-/// Builder for a [`NifSet`].
-#[derive(Clone, Debug)]
-pub struct NifSetBuilder {
-    module: String,
-    nifs: Vec<Nif>,
-}
+/// Builder type for a [`NifSet`].
+pub type NifSetBuilder = NifSet;
 
 impl NifSet {
-    /// Starts a new builder for declarations under `module`.
+    /// Starts a new declaration set for NIFs under `module`.
     #[must_use]
-    pub fn new(module: impl Into<String>) -> NifSetBuilder {
-        NifSetBuilder::new(module)
+    pub fn new(module: impl Into<String>) -> Self {
+        Self {
+            module: module.into(),
+            nifs: Vec::new(),
+        }
+    }
+
+    /// Appends a declared NIF descriptor.
+    ///
+    /// Descriptors are accumulated without overwriting. Duplicate
+    /// module/function/arity triples are rejected by [`Self::build`].
+    #[must_use]
+    pub fn with_nif(mut self, nif: Nif) -> Self {
+        self.nifs.push(nif);
+        self
+    }
+
+    /// Validates the declarations and produces a [`NifSet`].
+    ///
+    /// Duplicate module/function/arity triples are rejected before the engine's
+    /// beamr registration boundary is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NifDeclError::Duplicate`] when more than one descriptor has the
+    /// same module/function/arity identity.
+    pub fn build(self) -> Result<Self, NifDeclError> {
+        let mut identities = BTreeSet::new();
+
+        for nif in &self.nifs {
+            let identity = (
+                nif.module().to_owned(),
+                nif.function().to_owned(),
+                nif.arity(),
+            );
+            if !identities.insert(identity) {
+                return Err(NifDeclError::Duplicate {
+                    module: nif.module().to_owned(),
+                    function: nif.function().to_owned(),
+                    arity: nif.arity(),
+                });
+            }
+        }
+
+        Ok(self)
     }
 
     /// Module name this set declares NIFs for.
@@ -51,55 +90,6 @@ impl NifSet {
     #[must_use]
     pub fn into_nifs(self) -> Vec<Nif> {
         self.nifs
-    }
-}
-
-impl NifSetBuilder {
-    /// Starts a builder for declarations under `module`.
-    #[must_use]
-    pub fn new(module: impl Into<String>) -> Self {
-        Self {
-            module: module.into(),
-            nifs: Vec::new(),
-        }
-    }
-
-    /// Appends a declared NIF descriptor.
-    ///
-    /// Descriptors are accumulated without overwriting. Duplicate
-    /// module/function/arity triples are rejected by [`Self::build`].
-    #[must_use]
-    pub fn add(mut self, nif: Nif) -> Self {
-        self.nifs.push(nif);
-        self
-    }
-
-    /// Validates the declarations and produces a [`NifSet`].
-    ///
-    /// Duplicate module/function/arity triples are rejected before the engine's
-    /// beamr registration boundary is reached.
-    pub fn build(self) -> Result<NifSet, NifDeclError> {
-        let mut identities = BTreeSet::new();
-
-        for nif in &self.nifs {
-            let identity = (
-                nif.module().to_owned(),
-                nif.function().to_owned(),
-                nif.arity(),
-            );
-            if !identities.insert(identity) {
-                return Err(NifDeclError::Duplicate {
-                    module: nif.module().to_owned(),
-                    function: nif.function().to_owned(),
-                    arity: nif.arity(),
-                });
-            }
-        }
-
-        Ok(NifSet {
-            module: self.module,
-            nifs: self.nifs,
-        })
     }
 }
 
@@ -138,8 +128,8 @@ mod tests {
         let activity = Nif::side_effectful("example/module", "read", 1, identity_native);
 
         let set = NifSet::new("example/module")
-            .add(pure)
-            .add(activity)
+            .with_nif(pure)
+            .with_nif(activity)
             .build()?;
 
         assert_eq!(set.module(), "example/module");
@@ -161,7 +151,11 @@ mod tests {
         let first = Nif::pure("example/module", "extract", 1, identity_native);
         let second = Nif::side_effectful("example/module", "extract", 1, identity_native);
 
-        match NifSet::new("example/module").add(first).add(second).build() {
+        match NifSet::new("example/module")
+            .with_nif(first)
+            .with_nif(second)
+            .build()
+        {
             Err(error) => assert_eq!(
                 error,
                 NifDeclError::Duplicate {
@@ -180,8 +174,8 @@ mod tests {
         let binary = Nif::pure("example/module", "format", 2, identity_native);
 
         let set = NifSet::new("example/module")
-            .add(unary)
-            .add(binary)
+            .with_nif(unary)
+            .with_nif(binary)
             .build()?;
 
         assert_eq!(set.nifs().len(), 2);

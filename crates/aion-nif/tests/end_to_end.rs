@@ -39,9 +39,9 @@ fn illustrative_nif_set_exposes_descriptors_and_dispatches() -> Result<(), TermE
     );
 
     let set = NifSet::new("example/module")
-        .add(pure)
-        .add(activity)
-        .add(activity_failure)
+        .with_nif(pure)
+        .with_nif(activity)
+        .with_nif(activity_failure)
         .build()
         .map_err(decl_error_to_term_error)?;
 
