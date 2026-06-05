@@ -216,10 +216,10 @@ These three tracks run concurrently.
 - [x] **AW-011** — Remote-worker registry, task dispatch · _landed 25855e2_
 
 ### Wave 29 (4 parallel)
-- [ ] **AF-007** — Signals (SignalRef, typed receive/send) · _Lemmy · depends: AF-006_
-- [ ] **AN-007** — NifContext scoped storage · _Lemmy · depends: AN-005, AN-006_
-- [ ] **AW-009** — gRPC and HTTP transports · _Max Power · depends: AW-008_
-- [ ] **AW-012** — Worker heartbeats, lost-worker handling · _Max Power · depends: AW-011_
+- [x] **AF-007** — Signals (SignalRef, typed receive/send) · _landed c0f7b26_
+- [x] **AN-007** — NifContext scoped storage · _landed 8f83d33_
+- [x] **AW-009** — gRPC and HTTP transports · _landed 7694383_
+- [x] **AW-012** — Worker heartbeats, lost-worker handling · _landed 341a864_
 
 ### Wave 30 (2 parallel)
 - [ ] **AF-008** — Queries (handler registration, reply) · _Lemmy · depends: AF-007_
