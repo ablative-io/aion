@@ -343,6 +343,15 @@ pub fn workflow_now_and_random_are_deterministic_bindings_test() {
   |> should.equal(Ok(4))
 }
 
+pub fn workflow_random_int_rejects_invalid_range_before_dispatch_test() {
+  workflow.random_int(10, 1)
+  |> should.equal(
+    Error(error.EngineFailure(
+      message: "Invalid deterministic random_int range: min is greater than max",
+    )),
+  )
+}
+
 pub fn workflow_define_carries_entry_contract_test() {
   let definition =
     workflow.define(

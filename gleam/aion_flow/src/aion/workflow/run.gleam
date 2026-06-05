@@ -82,9 +82,16 @@ pub fn random() -> Result(Float, error.EngineError) {
 /// Values come from AD's seeded RNG through the FFI boundary; no wall-clock or
 /// ambient entropy binding is exposed by the SDK.
 pub fn random_int(min: Int, max: Int) -> Result(Int, error.EngineError) {
-  case ffi.random_int(int.to_string(min), int.to_string(max)) {
-    Ok(raw_random) -> parse_int(raw_random, "random_int")
-    Error(raw_error) -> Error(error.EngineFailure(message: raw_error))
+  case min > max {
+    True ->
+      Error(error.EngineFailure(
+        message: "Invalid deterministic random_int range: min is greater than max",
+      ))
+    False ->
+      case ffi.random_int(int.to_string(min), int.to_string(max)) {
+        Ok(raw_random) -> parse_int(raw_random, "random_int")
+        Error(raw_error) -> Error(error.EngineFailure(message: raw_error))
+      }
   }
 }
 
