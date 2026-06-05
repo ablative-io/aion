@@ -18,6 +18,9 @@ thiserror.workspace = true
 uuid.workspace = true
 tonic-prost = "=0.14.5"
 
+[features]
+generated = []
+
 [build-dependencies]
 tonic-build = { workspace = true }
 tonic-prost-build = "=0.14.5"

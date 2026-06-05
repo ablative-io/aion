@@ -208,7 +208,7 @@ mod tests {
             activity_types: vec![String::from("charge-card"), String::from("send-email")],
         };
 
-        assert_json_and_proto_round_trip(registration)
+        assert_json_and_proto_round_trip(&registration)
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
             )?)),
         };
 
-        assert_json_and_proto_round_trip(task)
+        assert_json_and_proto_round_trip(&task)
     }
 
     #[test]
@@ -241,7 +241,7 @@ mod tests {
             ))),
         };
 
-        assert_json_and_proto_round_trip(result)
+        assert_json_and_proto_round_trip(&result)
     }
 
     #[test]
@@ -261,7 +261,7 @@ mod tests {
             )),
         };
 
-        assert_json_and_proto_round_trip(result)
+        assert_json_and_proto_round_trip(&result)
     }
 
     #[test]
@@ -276,10 +276,10 @@ mod tests {
             )?)),
         };
 
-        assert_json_and_proto_round_trip(heartbeat)
+        assert_json_and_proto_round_trip(&heartbeat)
     }
 
-    fn assert_json_and_proto_round_trip<T>(value: T) -> Result<(), Box<dyn std::error::Error>>
+    fn assert_json_and_proto_round_trip<T>(value: &T) -> Result<(), Box<dyn std::error::Error>>
     where
         T: Message
             + Default
@@ -289,10 +289,10 @@ mod tests {
             + std::fmt::Debug,
     {
         assert_eq!(
-            serde_json::from_str::<T>(&serde_json::to_string(&value)?)?,
-            value
+            serde_json::from_str::<T>(&serde_json::to_string(value)?)?,
+            *value
         );
-        assert_eq!(prost_round_trip(&value)?, value);
+        assert_eq!(prost_round_trip(value)?, *value);
         Ok(())
     }
 

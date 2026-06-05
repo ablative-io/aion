@@ -2,6 +2,7 @@
 
 pub mod convert;
 pub mod error;
+#[cfg(feature = "generated")]
 pub mod generated {
     //! Generated protobuf and gRPC service bindings.
 
