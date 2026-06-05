@@ -14,12 +14,15 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
 use crate::WorkerConfig;
+use crate::context::ActivityContext;
 use crate::error::WorkerError;
-use crate::protocol::{ActivityTask, WorkerSession, WorkerTaskStream, validate_activity_handlers};
+use crate::protocol::{
+    ActivityTask, WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers,
+};
 
 #[derive(Default)]
 struct FakeSession {
-    tasks: Vec<Result<ProtoActivityTask, WorkerError>>,
+    tasks: Vec<Result<WorkerSessionEvent, WorkerError>>,
     reports: Vec<RecordedReport>,
 }
 
@@ -90,8 +93,13 @@ struct RecordingDispatcher {
 
 #[async_trait]
 impl ActivityDispatcher for RecordingDispatcher {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
         self.dispatched.lock().await.push(task.activity_id.clone());
+        drop(context);
         let mut outcomes = self.outcomes.lock().await;
         if outcomes.is_empty() {
             return Err(WorkerError::decode(NoOutcome));
@@ -113,7 +121,11 @@ struct SlowDispatcher {
 
 #[async_trait]
 impl ActivityDispatcher for SlowDispatcher {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
         let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
         update_peak(&self.peak, now);
         self.started.fetch_add(1, Ordering::SeqCst);
@@ -121,7 +133,7 @@ impl ActivityDispatcher for SlowDispatcher {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         self.current.fetch_sub(1, Ordering::SeqCst);
-        drop(task);
+        drop((task, context));
         Ok(DispatchOutcome::Completed {
             output: Payload::new(ContentType::Json, b"{}".to_vec()),
         })
@@ -129,6 +141,33 @@ impl ActivityDispatcher for SlowDispatcher {
 
     fn activity_types(&self) -> BTreeSet<String> {
         [String::from("slow")].into_iter().collect()
+    }
+}
+
+struct CancellingDispatcher {
+    started: tokio::sync::Notify,
+    observed_cancelled: AtomicBool,
+}
+
+#[async_trait]
+impl ActivityDispatcher for CancellingDispatcher {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
+        drop(task);
+        self.started.notify_waiters();
+        context.cancelled().await;
+        self.observed_cancelled
+            .store(context.is_cancelled(), Ordering::SeqCst);
+        Ok(DispatchOutcome::Completed {
+            output: Payload::new(ContentType::Json, b"{}".to_vec()),
+        })
+    }
+
+    fn activity_types(&self) -> BTreeSet<String> {
+        [String::from("cancellable")].into_iter().collect()
     }
 }
 
@@ -145,16 +184,16 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
     };
     let mut session = FakeSession {
         tasks: vec![
-            Ok(proto_task(
+            Ok(WorkerSessionEvent::Task(proto_task(
                 workflow_id.clone(),
                 first_activity.clone(),
                 "charge-card",
-            )),
-            Ok(proto_task(
+            ))),
+            Ok(WorkerSessionEvent::Task(proto_task(
                 workflow_id.clone(),
                 second_activity.clone(),
                 "charge-card",
-            )),
+            ))),
         ],
         reports: Vec::new(),
     };
@@ -197,11 +236,11 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
     };
     for position in 1..=5 {
         task_sender
-            .send(Ok(proto_task(
+            .send(Ok(WorkerSessionEvent::Task(proto_task(
                 workflow_id.clone(),
                 ActivityId::from_sequence_position(position),
                 "slow",
-            )))
+            ))))
             .await
             .map_err(WorkerError::decode)?;
     }
@@ -235,8 +274,59 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
     Ok(())
 }
 
+#[tokio::test]
+async fn cancellation_event_flips_context_without_suppressing_result() -> Result<(), WorkerError> {
+    let workflow_id = WorkflowId::new_v4();
+    let activity_id = ActivityId::from_sequence_position(9);
+    let (event_sender, event_receiver) = mpsc::channel(2);
+    let mut session = ChannelSession {
+        receiver: Some(event_receiver),
+        reports: Vec::new(),
+    };
+    event_sender
+        .send(Ok(WorkerSessionEvent::Task(proto_task(
+            workflow_id.clone(),
+            activity_id.clone(),
+            "cancellable",
+        ))))
+        .await
+        .map_err(WorkerError::decode)?;
+    let dispatcher = Arc::new(CancellingDispatcher {
+        started: tokio::sync::Notify::new(),
+        observed_cancelled: AtomicBool::new(false),
+    });
+    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 1, None);
+    let worker = tokio::spawn({
+        let dispatcher = Arc::clone(&dispatcher);
+        async move {
+            let result = serve_activity_tasks(&config, &mut session, dispatcher).await;
+            (result, session)
+        }
+    });
+
+    dispatcher.started.notified().await;
+    event_sender
+        .send(Ok(WorkerSessionEvent::Cancel {
+            workflow_id,
+            activity_id: activity_id.clone(),
+        }))
+        .await
+        .map_err(WorkerError::decode)?;
+    drop(event_sender);
+    let (result, session) = worker.await.map_err(WorkerError::decode)?;
+    result?;
+
+    assert!(dispatcher.observed_cancelled.load(Ordering::SeqCst));
+    assert_eq!(session.reports.len(), 1);
+    assert!(matches!(
+        &session.reports[0],
+        RecordedReport::Completed(reported_id, _) if reported_id == &activity_id
+    ));
+    Ok(())
+}
+
 struct ChannelSession {
-    receiver: Option<mpsc::Receiver<Result<ProtoActivityTask, WorkerError>>>,
+    receiver: Option<mpsc::Receiver<Result<WorkerSessionEvent, WorkerError>>>,
     reports: Vec<RecordedReport>,
 }
 

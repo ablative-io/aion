@@ -65,13 +65,17 @@ impl TypedActivityDispatcher {
 
 #[async_trait]
 impl ActivityDispatcher for TypedActivityDispatcher {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
         let Some(handler) = self.handlers.get(&task.activity_type) else {
             return Err(WorkerError::registration(MissingActivityHandler {
                 activity_type: task.activity_type,
             }));
         };
-        handler.dispatch(task).await
+        handler.dispatch(task, context).await
     }
 
     fn activity_types(&self) -> BTreeSet<String> {
@@ -108,7 +112,11 @@ where
 
 #[async_trait]
 trait ErasedActivityHandler: Send + Sync {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError>;
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError>;
 }
 
 struct TypedHandler<Input, Output> {
@@ -137,7 +145,11 @@ where
     Input: DeserializeOwned + Send + Sync + 'static,
     Output: Serialize + Send + Sync + 'static,
 {
-    async fn dispatch(&self, task: ActivityTask) -> Result<DispatchOutcome, WorkerError> {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
         let input = match decode_payload::<Input>(&task.input) {
             Ok(input) => input,
             Err(error) => {
@@ -155,24 +167,22 @@ where
                 });
             }
         };
-        let (context, cancellation_handle) =
-            ActivityContext::new(task.activity_id.clone(), task.attempt);
-        drop(cancellation_handle);
         let handler_future =
             match std::panic::catch_unwind(AssertUnwindSafe(|| (self.handler)(input, &context))) {
                 Ok(handler_future) => handler_future,
                 Err(panic) => return Ok(panic_failure(&task, &panic)),
             };
         let handler_result = AssertUnwindSafe(handler_future).catch_unwind().await;
-        match handler_result {
-            Ok(Ok(output)) => Ok(DispatchOutcome::Completed {
+        let outcome = match handler_result {
+            Ok(Ok(output)) => DispatchOutcome::Completed {
                 output: encode_payload(&output)?,
-            }),
-            Ok(Err(failure)) => Ok(DispatchOutcome::Failed {
+            },
+            Ok(Err(failure)) => DispatchOutcome::Failed {
                 failure: ActivityError::from(failure),
-            }),
-            Err(panic) => Ok(panic_failure(&task, &panic)),
-        }
+            },
+            Err(panic) => panic_failure(&task, &panic),
+        };
+        Ok(outcome)
     }
 }
 
@@ -220,7 +230,7 @@ mod tests {
     use crate::activity::ActivityFailure;
     use crate::config::WorkerConfig;
     use crate::error::WorkerError;
-    use crate::protocol::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
+    use crate::protocol::{WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers};
     use crate::runtime::serve_activity_tasks;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,7 +245,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakeSession {
-        tasks: Vec<Result<ProtoActivityTask, WorkerError>>,
+        tasks: Vec<Result<WorkerSessionEvent, WorkerError>>,
         reports: Vec<RecordedReport>,
     }
 
@@ -505,7 +515,7 @@ mod tests {
     ) -> Result<FakeSession, WorkerError> {
         let payload = Payload::from_json(input).map_err(WorkerError::encode)?;
         Ok(FakeSession {
-            tasks: vec![Ok(ProtoActivityTask {
+            tasks: vec![Ok(WorkerSessionEvent::Task(ProtoActivityTask {
                 workflow_id: Some(ProtoWorkflowId::from(WorkflowId::new_v4())),
                 activity_id: Some(ProtoActivityId::from(activity_id)),
                 activity_type: activity_type.to_owned(),
