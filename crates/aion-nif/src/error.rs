@@ -1,16 +1,15 @@
 //! Typed errors for term conversion and NIF declaration.
 
-use thiserror::Error;
+use std::{error::Error, fmt};
 
 /// Describes failures while converting between beamr terms and Rust values.
 ///
 /// `TermError` replaces beamr's bare `badarg` with a typed, descriptive
 /// failure so NIF authors and the engine can report which conversion failed and
 /// why.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermError {
     /// A term had a different runtime kind than the conversion expected.
-    #[error("expected term kind {expected}, found {found}")]
     TypeMismatch {
         /// The expected beamr term kind.
         expected: &'static str,
@@ -19,17 +18,14 @@ pub enum TermError {
     },
 
     /// Decoding a positional NIF argument failed.
-    #[error("failed to decode argument {index}: {source}")]
     ArgumentDecode {
         /// Zero-based argument index.
         index: usize,
         /// Underlying term-conversion failure.
-        #[source]
         source: Box<TermError>,
     },
 
     /// Resolving an atom name through the process atom table failed.
-    #[error("failed to resolve atom {atom}: {reason}")]
     AtomResolution {
         /// Atom name or identifier that could not be resolved.
         atom: String,
@@ -38,18 +34,49 @@ pub enum TermError {
     },
 
     /// Allocating a term on the process heap failed.
-    #[error("failed to allocate {shape} term on the process heap")]
     HeapAllocation {
         /// Term shape being allocated.
         shape: &'static str,
     },
 }
 
+impl fmt::Display for TermError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TypeMismatch { expected, found } => {
+                write!(formatter, "expected term kind {expected}, found {found}")
+            }
+            Self::ArgumentDecode { index, source } => {
+                write!(formatter, "failed to decode argument {index}: {source}")
+            }
+            Self::AtomResolution { atom, reason } => {
+                write!(formatter, "failed to resolve atom {atom}: {reason}")
+            }
+            Self::HeapAllocation { shape } => {
+                write!(
+                    formatter,
+                    "failed to allocate {shape} term on the process heap"
+                )
+            }
+        }
+    }
+}
+
+impl Error for TermError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ArgumentDecode { source, .. } => Some(source.as_ref()),
+            Self::TypeMismatch { .. }
+            | Self::AtomResolution { .. }
+            | Self::HeapAllocation { .. } => None,
+        }
+    }
+}
+
 /// Describes invalid NIF declarations before engine registration.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NifDeclError {
     /// A NIF set contains the same module/function/arity more than once.
-    #[error("duplicate NIF declaration for {module}:{function}/{arity}")]
     Duplicate {
         /// Gleam or Elixir module name.
         module: String,
@@ -60,7 +87,6 @@ pub enum NifDeclError {
     },
 
     /// A NIF arity cannot be represented by the beamr native registration API.
-    #[error("invalid arity for {module}:{function}/{arity}")]
     InvalidArity {
         /// Gleam or Elixir module name.
         module: String,
@@ -70,6 +96,28 @@ pub enum NifDeclError {
         arity: usize,
     },
 }
+
+impl fmt::Display for NifDeclError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Duplicate {
+                module,
+                function,
+                arity,
+            } => write!(
+                formatter,
+                "duplicate NIF declaration for {module}:{function}/{arity}"
+            ),
+            Self::InvalidArity {
+                module,
+                function,
+                arity,
+            } => write!(formatter, "invalid arity for {module}:{function}/{arity}"),
+        }
+    }
+}
+
+impl Error for NifDeclError {}
 
 #[cfg(test)]
 mod tests {
