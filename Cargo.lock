@@ -107,6 +107,8 @@ version = "0.1.0"
 dependencies = [
  "aion-core",
  "beamr",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -387,11 +389,13 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e3105a44f73a9a93122f2b703f39e6596da8860d4ba16149cc7406c52e79e3"
 dependencies = [
+ "base64 0.22.1",
  "crossbeam-deque",
  "crossbeam-queue",
  "dashmap",
  "flate2",
  "rand 0.10.1",
+ "serde_json",
 ]
 
 [[package]]

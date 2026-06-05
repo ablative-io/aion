@@ -1,1 +1,1 @@
-review(aion-proto): harden wire serde derives
+feat(aion-nif): add payload term json bridge
