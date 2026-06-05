@@ -29,3 +29,4 @@ async-trait.workspace = true
 
 [dev-dependencies]
 aion-package = { path = "../aion-package", features = ["test-support"] }
+beamr = { workspace = true, features = ["test-support"] }

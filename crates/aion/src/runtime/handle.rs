@@ -116,7 +116,7 @@ impl RuntimeHandle {
             let module = self.atom_table.intern(&mfa.module);
             let function = self.atom_table.intern(&mfa.function);
             let result = if entry.is_dirty {
-                self.native_registry.register_dirty_shared(
+                self.native_registry.register_dirty(
                     module,
                     function,
                     mfa.arity,
@@ -124,7 +124,7 @@ impl RuntimeHandle {
                 )
             } else {
                 self.native_registry
-                    .register_shared(module, function, mfa.arity, entry.function)
+                    .register(module, function, mfa.arity, entry.function)
             };
             result.map_err(|error| nif_registration_error(&mfa, error))?;
         }

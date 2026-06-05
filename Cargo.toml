@@ -56,4 +56,4 @@ axum = "0.8"
 tower = "0.5"
 futures = "0.3"
 dashmap = "6.2"
-beamr = { path = "vendor/beamr" }
+beamr = "0.3.1"
