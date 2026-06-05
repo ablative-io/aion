@@ -1,13 +1,20 @@
 //! Per-invocation context for typed NIF term conversion.
 //!
 //! `NifContext` wraps beamr's [`ProcessContext`] and owns heap slices retained
-//! while a generated NIF shim is running. Dropping the context drops every
-//! retained slice, so heap-backed terms produced by `IntoTerm` are scoped to one
-//! native invocation instead of global process state.
+//! while a generated NIF shim is running. On drop, the retained heap is parked
+//! in thread-local storage so the returned term remains valid until beamr copies
+//! it. The next `NifContext::new` drains the parked heap, bounding accumulation
+//! to one call's worth of storage.
+
+use std::cell::RefCell;
 
 use beamr::{native::ProcessContext, term::Term};
 
 use crate::TermError;
+
+thread_local! {
+    static PARKED_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Scoped context used by generated NIF shims during one native invocation.
 pub struct NifContext<'ctx> {
@@ -16,9 +23,10 @@ pub struct NifContext<'ctx> {
 }
 
 impl<'ctx> NifContext<'ctx> {
-    /// Creates a context whose retained heap storage is dropped with `self`.
+    /// Creates a context, draining any parked heap from the previous invocation.
     #[must_use]
-    pub const fn new(process: &'ctx mut ProcessContext) -> Self {
+    pub fn new(process: &'ctx mut ProcessContext) -> Self {
+        PARKED_HEAP.with_borrow_mut(Vec::clear);
         Self {
             process,
             retained_heap: Vec::new(),
@@ -55,6 +63,16 @@ impl<'ctx> NifContext<'ctx> {
     #[cfg(test)]
     pub(crate) fn retained_heap_count(&self) -> usize {
         self.retained_heap.len()
+    }
+}
+
+impl Drop for NifContext<'_> {
+    fn drop(&mut self) {
+        if !self.retained_heap.is_empty() {
+            PARKED_HEAP.with_borrow_mut(|parked| {
+                parked.append(&mut self.retained_heap);
+            });
+        }
     }
 }
 
