@@ -142,9 +142,11 @@ impl ServerConfig {
     /// Returns [`ServerError::Config`] when parsing fails or required fields are
     /// absent.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ServerError> {
-        serde_json::from_slice(bytes).map_err(|source| ServerError::Config {
+        let config = serde_json::from_slice(bytes).map_err(|source| ServerError::Config {
             message: format!("invalid server config: {source}"),
-        })
+        })?;
+        validate(&config)?;
+        Ok(config)
     }
 
     /// Split store configuration from non-secret runtime settings.
@@ -161,6 +163,48 @@ impl ServerConfig {
         };
         (self.store, runtime)
     }
+}
+
+fn validate(config: &ServerConfig) -> Result<(), ServerError> {
+    if config.listen.grpc.port() == 0 {
+        return Err(ServerError::Config {
+            message: "listen.grpc must use an explicit non-zero port".to_owned(),
+        });
+    }
+
+    if config.listen.http.port() == 0 {
+        return Err(ServerError::Config {
+            message: "listen.http must use an explicit non-zero port".to_owned(),
+        });
+    }
+
+    if config.auth.bearer_token.is_empty() {
+        return Err(ServerError::Config {
+            message: "auth.bearer_token must not be empty".to_owned(),
+        });
+    }
+
+    if let NamespaceMode::SingleTenant { namespace } = &config.namespace.mode {
+        if namespace.is_empty() {
+            return Err(ServerError::Config {
+                message: "namespace.mode.SingleTenant.namespace must not be empty".to_owned(),
+            });
+        }
+    }
+
+    if config.worker.heartbeat_window.is_zero() {
+        return Err(ServerError::Config {
+            message: "worker.heartbeat_window must be greater than zero".to_owned(),
+        });
+    }
+
+    if config.websocket.outbound_buffer_bound == 0 {
+        return Err(ServerError::Config {
+            message: "websocket.outbound_buffer_bound must be greater than zero".to_owned(),
+        });
+    }
+
+    Ok(())
 }
 
 mod duration_millis {
@@ -192,6 +236,37 @@ mod tests {
                 "namespace": { "mode": "SharedEngine" },
                 "worker": { "heartbeat_window": 30000 },
                 "websocket": {}
+            }"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_operational_bounds_are_config_errors() {
+        let result = ServerConfig::from_slice(
+            br#"{
+                "store": { "libsql": { "mode": { "Embedded": { "path": "aion.db" } } } },
+                "listen": { "grpc": "127.0.0.1:50051", "http": "127.0.0.1:8080" },
+                "auth": { "bearer_token": "secret" },
+                "dashboard": { "asset_path": "dist" },
+                "namespace": { "mode": "SharedEngine" },
+                "worker": { "heartbeat_window": 0 },
+                "websocket": { "outbound_buffer_bound": 32 }
+            }"#,
+        );
+
+        assert!(result.is_err());
+
+        let result = ServerConfig::from_slice(
+            br#"{
+                "store": { "libsql": { "mode": { "Embedded": { "path": "aion.db" } } } },
+                "listen": { "grpc": "127.0.0.1:50051", "http": "127.0.0.1:8080" },
+                "auth": { "bearer_token": "secret" },
+                "dashboard": { "asset_path": "dist" },
+                "namespace": { "mode": "SharedEngine" },
+                "worker": { "heartbeat_window": 30000 },
+                "websocket": { "outbound_buffer_bound": 0 }
             }"#,
         );
 

@@ -1,1 +1,1 @@
-feat(aion-server): scaffold server config error and state
+harden(aion-server): validate operator config bounds
