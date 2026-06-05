@@ -1,1 +1,577 @@
-{}
+{
+  "schemaVersion": 1,
+  "contract": "docs/design/aion-clients/CLIENT-CONTRACT.md",
+  "errorTaxonomy": [
+    "NotFound",
+    "AlreadyExists",
+    "QueryFailed",
+    "QueryTimeout",
+    "Cancelled",
+    "Unavailable",
+    "Unauthenticated",
+    "InvalidArgument",
+    "Server"
+  ],
+  "defaults": {
+    "endpoint": "${AION_SERVER_URL}",
+    "namespace": "conformance",
+    "auth": "${AION_AUTH_TOKEN}",
+    "tls": "system-roots",
+    "deadlineMs": 5000,
+    "payloadEncoding": "application/json"
+  },
+  "assertionVocabulary": {
+    "anyString": "value is a non-empty string",
+    "handle": "value contains workflowId and runId identifiers",
+    "accepted": "operation returned successful acknowledgement",
+    "payloadEquals": "decoded payload equals the provided JSON value",
+    "containsWorkflowRef": "collection contains an item matching workflowId and optionally runId",
+    "statusIn": "status is one of the listed workflow statuses",
+    "eventsInclude": "stream contains events matching all listed event predicates",
+    "sequenceContiguousUnique": "delivered event sequence numbers contain no gaps and no duplicates after resume",
+    "sameHandleAs": "returned handle has the same workflowId and runId as the referenced start step"
+  },
+  "fixtures": {
+    "workflowType": "conformance.echo",
+    "slowQueryWorkflowType": "conformance.slow-query",
+    "signals": {
+      "record": "record"
+    },
+    "queries": {
+      "state": "state",
+      "slow": "slow"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "happy-path",
+      "description": "Exercises the full observable caller surface in order: start -> signal -> query -> list -> describe -> cancel -> subscribe.",
+      "requires": [
+        "A real aion-server reachable at defaults.endpoint.",
+        "Fixture workflow conformance.echo starts, records the record signal, returns state from the state query, accepts cooperative cancellation, and emits lifecycle/signal events."
+      ],
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "start",
+          "operation": "start",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "workflowType": "${fixtures.workflowType}",
+            "idempotencyKey": "happy-path-start-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "message": "hello",
+                "counter": 1
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "handle",
+              "workflowId": "anyString",
+              "runId": "anyString"
+            }
+          }
+        },
+        {
+          "id": "signal",
+          "operation": "signal",
+          "input": {
+            "workflowId": "$happy-path.start.workflowId",
+            "runId": "$happy-path.start.runId",
+            "signalName": "${fixtures.signals.record}",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "value": "signal-observed"
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "accepted"
+            }
+          }
+        },
+        {
+          "id": "query",
+          "operation": "query",
+          "input": {
+            "workflowId": "$happy-path.start.workflowId",
+            "runId": "$happy-path.start.runId",
+            "queryName": "${fixtures.queries.state}",
+            "deadlineMs": 5000
+          },
+          "expect": {
+            "ok": {
+              "kind": "payload",
+              "payloadEquals": {
+                "message": "hello",
+                "counter": 1,
+                "lastSignal": "signal-observed"
+              }
+            }
+          }
+        },
+        {
+          "id": "list",
+          "operation": "list",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "filter": {
+              "workflowType": "${fixtures.workflowType}",
+              "status": "RUNNING",
+              "startedAfter": "${scenario.startedAt}",
+              "startedBefore": "${scenario.now}",
+              "parent": null
+            },
+            "pagination": {
+              "pageSize": 50,
+              "pageToken": null
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "workflowSummaryPage",
+              "containsWorkflowRef": {
+                "workflowId": "$happy-path.start.workflowId"
+              },
+              "pagination": "language-neutral-page-or-empty-continuation"
+            }
+          }
+        },
+        {
+          "id": "describe",
+          "operation": "describe",
+          "input": {
+            "workflowId": "$happy-path.start.workflowId",
+            "runId": "$happy-path.start.runId",
+            "includeHistory": true
+          },
+          "expect": {
+            "ok": {
+              "kind": "workflowDescription",
+              "workflowId": "$happy-path.start.workflowId",
+              "runId": "$happy-path.start.runId",
+              "statusIn": [
+                "RUNNING",
+                "CANCELLED",
+                "COMPLETED"
+              ],
+              "history": "present"
+            }
+          }
+        },
+        {
+          "id": "cancel",
+          "operation": "cancel",
+          "input": {
+            "workflowId": "$happy-path.start.workflowId",
+            "runId": "$happy-path.start.runId",
+            "reason": "conformance happy path cleanup"
+          },
+          "expect": {
+            "ok": {
+              "kind": "accepted",
+              "meaning": "cancel request recorded; workflow may not have stopped yet"
+            }
+          }
+        },
+        {
+          "id": "subscribe",
+          "operation": "subscribe",
+          "input": {
+            "selector": {
+              "kind": "perWorkflow",
+              "workflowId": "$happy-path.start.workflowId"
+            },
+            "collectUntil": {
+              "eventTypes": [
+                "WorkflowStarted",
+                "WorkflowCancellationRequested"
+              ],
+              "timeoutMs": 10000
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "eventStream",
+              "eventsInclude": [
+                {
+                  "type": "WorkflowStarted",
+                  "workflowId": "$happy-path.start.workflowId"
+                },
+                {
+                  "type": "WorkflowCancellationRequested",
+                  "workflowId": "$happy-path.start.workflowId"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "idempotency-conflict",
+      "description": "A reused start idempotency key returns the original handle for an identical request and AlreadyExists for a different request.",
+      "requires": [
+        "AW/server exposes start idempotency through the owned StartWorkflowRequest field or request metadata."
+      ],
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "first-start",
+          "operation": "start",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "workflowType": "${fixtures.workflowType}",
+            "idempotencyKey": "idempotency-conflict-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "message": "same-request"
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "handle",
+              "workflowId": "anyString",
+              "runId": "anyString"
+            }
+          }
+        },
+        {
+          "id": "identical-retry",
+          "operation": "start",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "workflowType": "${fixtures.workflowType}",
+            "idempotencyKey": "idempotency-conflict-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "message": "same-request"
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "handle",
+              "sameHandleAs": "$idempotency-conflict.first-start",
+              "workflowId": "$idempotency-conflict.first-start.workflowId",
+              "runId": "$idempotency-conflict.first-start.runId"
+            }
+          }
+        },
+        {
+          "id": "conflicting-reuse",
+          "operation": "start",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "workflowType": "${fixtures.workflowType}",
+            "idempotencyKey": "idempotency-conflict-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "message": "different-request"
+              }
+            }
+          },
+          "expect": {
+            "error": "AlreadyExists"
+          }
+        }
+      ]
+    },
+    {
+      "id": "query-timeout",
+      "description": "A synchronous query exceeding the caller deadline raises QueryTimeout.",
+      "requires": [
+        "Fixture workflow conformance.slow-query has a slow query handler that exceeds the supplied deadline without completing first."
+      ],
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "start",
+          "operation": "start",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "workflowType": "${fixtures.slowQueryWorkflowType}",
+            "idempotencyKey": "query-timeout-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "delayMs": 10000
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "handle",
+              "workflowId": "anyString",
+              "runId": "anyString"
+            }
+          }
+        },
+        {
+          "id": "slow-query",
+          "operation": "query",
+          "input": {
+            "workflowId": "$query-timeout.start.workflowId",
+            "runId": "$query-timeout.start.runId",
+            "queryName": "${fixtures.queries.slow}",
+            "deadlineMs": 50
+          },
+          "expect": {
+            "error": "QueryTimeout"
+          }
+        }
+      ]
+    },
+    {
+      "id": "not-found",
+      "description": "Operations against an unknown workflow surface NotFound rather than a generic failure.",
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "describe-unknown",
+          "operation": "describe",
+          "input": {
+            "workflowId": "00000000-0000-0000-0000-000000000404",
+            "runId": "00000000-0000-0000-0000-000000000405",
+            "includeHistory": false
+          },
+          "expect": {
+            "error": "NotFound"
+          }
+        },
+        {
+          "id": "signal-unknown",
+          "operation": "signal",
+          "input": {
+            "workflowId": "00000000-0000-0000-0000-000000000404",
+            "runId": "00000000-0000-0000-0000-000000000405",
+            "signalName": "${fixtures.signals.record}",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "value": "not-found"
+              }
+            }
+          },
+          "expect": {
+            "error": "NotFound"
+          }
+        }
+      ]
+    },
+    {
+      "id": "disconnect-resume",
+      "description": "Subscription resumes after a forced reconnect from the last delivered per-workflow sequence number without gaps or duplicates.",
+      "requires": [
+        "AW/server exposes a subscription resume cursor based on aion-core EventEnvelope.seq.",
+        "Harness can force a transient WebSocket disconnect without stopping the server.",
+        "Fixture workflow conformance.echo emits multiple ordered events after signals."
+      ],
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "start",
+          "operation": "start",
+          "input": {
+            "namespace": "${defaults.namespace}",
+            "workflowType": "${fixtures.workflowType}",
+            "idempotencyKey": "disconnect-resume-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "message": "resume"
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "handle",
+              "workflowId": "anyString",
+              "runId": "anyString"
+            }
+          }
+        },
+        {
+          "id": "subscribe",
+          "operation": "subscribe",
+          "input": {
+            "selector": {
+              "kind": "perWorkflow",
+              "workflowId": "$disconnect-resume.start.workflowId"
+            },
+            "collect": {
+              "minimumEventsBeforeDisconnect": 1,
+              "minimumEventsAfterReconnect": 2,
+              "timeoutMs": 15000
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "eventStreamStarted"
+            }
+          }
+        },
+        {
+          "id": "signal-before-disconnect",
+          "operation": "signal",
+          "input": {
+            "workflowId": "$disconnect-resume.start.workflowId",
+            "runId": "$disconnect-resume.start.runId",
+            "signalName": "${fixtures.signals.record}",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "value": "before-disconnect"
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "accepted"
+            }
+          }
+        },
+        {
+          "id": "force-disconnect",
+          "operation": "harness.forceDisconnect",
+          "input": {
+            "stream": "$disconnect-resume.subscribe",
+            "mode": "transient-websocket-drop"
+          },
+          "expect": {
+            "ok": {
+              "kind": "disconnectInjected"
+            }
+          }
+        },
+        {
+          "id": "signal-after-disconnect",
+          "operation": "signal",
+          "input": {
+            "workflowId": "$disconnect-resume.start.workflowId",
+            "runId": "$disconnect-resume.start.runId",
+            "signalName": "${fixtures.signals.record}",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "value": "after-disconnect"
+              }
+            }
+          },
+          "expect": {
+            "ok": {
+              "kind": "accepted"
+            }
+          }
+        },
+        {
+          "id": "assert-resumed-stream",
+          "operation": "harness.assertStream",
+          "input": {
+            "stream": "$disconnect-resume.subscribe",
+            "workflowId": "$disconnect-resume.start.workflowId",
+            "timeoutMs": 15000
+          },
+          "expect": {
+            "ok": {
+              "kind": "eventStream",
+              "sequenceContiguousUnique": true,
+              "eventsInclude": [
+                {
+                  "type": "WorkflowStarted",
+                  "workflowId": "$disconnect-resume.start.workflowId"
+                },
+                {
+                  "type": "WorkflowSignalled",
+                  "payloadContains": {
+                    "value": "before-disconnect"
+                  }
+                },
+                {
+                  "type": "WorkflowSignalled",
+                  "payloadContains": {
+                    "value": "after-disconnect"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
