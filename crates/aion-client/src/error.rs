@@ -50,15 +50,14 @@ impl ClientError {
     #[must_use]
     pub fn from_proto_wire_error(error: ProtoWireError) -> Self {
         match WireError::try_from(error) {
-            Ok(error) => Self::from_wire_error(error),
-            Err(error) => Self::from_wire_error(error),
+            Ok(error) | Err(error) => Self::from_wire_error(error),
         }
     }
 
     /// Converts a tonic status into the client SDK taxonomy.
     #[must_use]
-    pub fn from_status(status: tonic::Status) -> Self {
-        if let Some(error) = decode_status_details(&status) {
+    pub fn from_status(status: &tonic::Status) -> Self {
+        if let Some(error) = decode_status_details(status) {
             return Self::from_proto_wire_error(error);
         }
 
@@ -72,9 +71,6 @@ impl ClientError {
             Code::InvalidArgument | Code::FailedPrecondition | Code::PermissionDenied => {
                 Self::InvalidArgument
             }
-            Code::Internal | Code::Unknown | Code::DataLoss | Code::Unimplemented => Self::Server {
-                detail: status.message().to_owned(),
-            },
             _ => Self::Server {
                 detail: status.message().to_owned(),
             },
@@ -107,9 +103,10 @@ fn decode_status_details(status: &tonic::Status) -> Option<ProtoWireError> {
 fn map_wire_parts(code: WireErrorCode, detail: String) -> ClientError {
     match code {
         WireErrorCode::NotFound => ClientError::NotFound,
-        WireErrorCode::NamespaceDenied => ClientError::InvalidArgument,
+        WireErrorCode::NamespaceDenied
+        | WireErrorCode::UnknownQuery
+        | WireErrorCode::NotRunning => ClientError::InvalidArgument,
         WireErrorCode::SequenceConflict => ClientError::AlreadyExists,
-        WireErrorCode::UnknownQuery | WireErrorCode::NotRunning => ClientError::InvalidArgument,
         WireErrorCode::QueryTimeout => ClientError::QueryTimeout,
         WireErrorCode::Lagged => ClientError::Unavailable,
         WireErrorCode::Backend => ClientError::Server { detail },
@@ -158,21 +155,25 @@ mod tests {
         assert!(encode_result.is_ok());
         let status = Status::with_details(Code::NotFound, "missing", details.into());
 
-        assert_eq!(ClientError::from_status(status), ClientError::NotFound);
+        assert_eq!(ClientError::from_status(&status), ClientError::NotFound);
     }
 
     #[test]
     fn maps_tonic_status_fallbacks() {
+        let unavailable = Status::new(Code::Unavailable, "down");
+        let unauthenticated = Status::new(Code::Unauthenticated, "bad token");
+        let deadline = Status::new(Code::DeadlineExceeded, "slow");
+
         assert_eq!(
-            ClientError::from_status(Status::new(Code::Unavailable, "down")),
+            ClientError::from_status(&unavailable),
             ClientError::Unavailable
         );
         assert_eq!(
-            ClientError::from_status(Status::new(Code::Unauthenticated, "bad token")),
+            ClientError::from_status(&unauthenticated),
             ClientError::Unauthenticated
         );
         assert_eq!(
-            ClientError::from_status(Status::new(Code::DeadlineExceeded, "slow")),
+            ClientError::from_status(&deadline),
             ClientError::QueryTimeout
         );
     }

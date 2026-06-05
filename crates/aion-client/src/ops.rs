@@ -247,8 +247,7 @@ fn decode_required_run_id(value: Option<ProtoRunId>, context: &str) -> Result<Ru
 fn query_error(error: aion_proto::ProtoWireError) -> ClientError {
     match WireError::try_from(error) {
         Ok(error) if error.code == WireErrorCode::Backend => ClientError::QueryFailed,
-        Ok(error) => ClientError::from_wire_error(error),
-        Err(error) => ClientError::from_wire_error(error),
+        Ok(error) | Err(error) => ClientError::from_wire_error(error),
     }
 }
 

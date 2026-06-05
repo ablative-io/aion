@@ -101,7 +101,7 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .client()
             .start_workflow(self.request(encode_start_request(request))?)
             .await
-            .map_err(ClientError::from_status)?;
+            .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_start_response(response.into_inner()))
     }
 
@@ -113,7 +113,7 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .client()
             .signal(self.request(encode_signal_request(request))?)
             .await
-            .map_err(ClientError::from_status)?;
+            .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_signal_response(response.into_inner()))
     }
 
@@ -125,7 +125,7 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .client()
             .query(self.request(encode_query_request(request))?)
             .await
-            .map_err(ClientError::from_status)?;
+            .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_query_response(response.into_inner()))
     }
 
@@ -137,7 +137,7 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .client()
             .cancel(self.request(encode_cancel_request(request))?)
             .await
-            .map_err(ClientError::from_status)?;
+            .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_cancel_response(response.into_inner()))
     }
 
@@ -149,7 +149,7 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .client()
             .list_workflows(self.request(encode_list_request(request))?)
             .await
-            .map_err(ClientError::from_status)?;
+            .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_list_response(response.into_inner()))
     }
 
@@ -161,7 +161,7 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .client()
             .describe_workflow(self.request(encode_describe_request(request))?)
             .await
-            .map_err(ClientError::from_status)?;
+            .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_describe_response(response.into_inner()))
     }
 }

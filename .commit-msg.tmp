@@ -1,1 +1,1 @@
-feat(aion-client): add Rust caller SDK unary client scaffold
+fix(aion-client): satisfy clippy for error mappings
