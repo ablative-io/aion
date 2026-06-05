@@ -4,16 +4,16 @@ import {
   CheckCircle2,
   CircleSlash,
   GitBranch,
+  type LucideIcon,
   Timer,
   XCircle,
-  type LucideIcon,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
-type EventIconKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
+export type EventIconKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
 
-type EventIconTone = 'neutral' | 'success' | 'danger' | 'warning' | 'info';
+export type EventIconTone = 'neutral' | 'success' | 'danger' | 'warning' | 'info';
 
 type EventIconProps = {
   kind: EventIconKind;
@@ -101,5 +101,4 @@ function iconMetadataForKind(kind: EventIconKind, tone: EventIconTone): EventIco
   return EVENT_ICON_METADATA[kind];
 }
 
-export type { EventIconKind, EventIconTone };
-export { EventIcon, EVENT_ICON_METADATA, iconMetadataForKind };
+export { EVENT_ICON_METADATA, EventIcon, iconMetadataForKind };

@@ -13,9 +13,7 @@ function ErrorState({ title, error, message, actionLabel = 'Retry', onRetry }: E
     <div className="rounded-xl border border-[var(--destructive)]/40 bg-[var(--destructive)]/5 p-6">
       <div className="space-y-2">
         <h2 className="font-medium text-[var(--text-primary)] text-lg">{title}</h2>
-        <p className="text-[var(--text-muted)] text-sm">
-          {message ?? errorMessage(error)}
-        </p>
+        <p className="text-[var(--text-muted)] text-sm">{message ?? errorMessage(error)}</p>
       </div>
       {onRetry === undefined ? null : (
         <Button className="mt-4" onClick={onRetry} size="sm" type="button" variant="outline">

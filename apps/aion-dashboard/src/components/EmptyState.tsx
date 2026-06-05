@@ -18,9 +18,7 @@ function EmptyState({ title, message, description, icon }: EmptyStateProps) {
         </div>
       )}
       <h2 className="font-medium text-[var(--text-primary)] text-lg">{title}</h2>
-      {body === undefined ? null : (
-        <p className="mt-2 text-[var(--text-muted)] text-sm">{body}</p>
-      )}
+      {body === undefined ? null : <p className="mt-2 text-[var(--text-muted)] text-sm">{body}</p>}
     </div>
   );
 }

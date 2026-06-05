@@ -18,7 +18,13 @@ const workflowStatuses = [
   'TimedOut',
 ] satisfies WorkflowStatus[];
 
-const eventIconKinds = ['lifecycle', 'activity', 'timer', 'signal', 'child'] satisfies EventIconKind[];
+const eventIconKinds = [
+  'lifecycle',
+  'activity',
+  'timer',
+  'signal',
+  'child',
+] satisfies EventIconKind[];
 
 describe('StatusBadge', () => {
   test('renders a distinct badge for every generated workflow status', () => {
@@ -37,9 +43,7 @@ describe('StatusBadge', () => {
 
 describe('EventIcon', () => {
   test('renders a distinct icon and colour affordance for every event category kind', () => {
-    const markups = eventIconKinds.map((kind) =>
-      renderToStaticMarkup(<EventIcon kind={kind} />)
-    );
+    const markups = eventIconKinds.map((kind) => renderToStaticMarkup(<EventIcon kind={kind} />));
 
     expect(new Set(markups).size).toBe(eventIconKinds.length);
     for (const kind of eventIconKinds) {
@@ -70,9 +74,7 @@ describe('shared async state panels', () => {
     const onRetry = () => {
       retryCount += 1;
     };
-    const element = (
-      <ErrorState error="server unavailable" onRetry={onRetry} title="Load failed" />
-    );
+    const element = <ErrorState error="server unavailable" onRetry={onRetry} title="Load failed" />;
     const markup = renderToStaticMarkup(element);
 
     expect(markup).toContain('Load failed');

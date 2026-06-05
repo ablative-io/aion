@@ -1,4 +1,4 @@
-import { Cloud, CloudOff, RefreshCcw, type LucideIcon } from 'lucide-react';
+import { Cloud, CloudOff, type LucideIcon, RefreshCcw } from 'lucide-react';
 
 import type { ConnectionStatus } from '@/lib/api';
 import { cn } from '@/lib/utils';

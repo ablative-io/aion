@@ -12,11 +12,7 @@ mock.module('../hooks/useConnectionStatus', () => ({
 describe('ConnectionIndicator', () => {
   test('renders distinct connected, reconnecting, and disconnected states', async () => {
     const { ConnectionIndicator } = await import('./ConnectionIndicator');
-    const statuses = [
-      'connected',
-      'reconnecting',
-      'disconnected',
-    ] satisfies ConnectionStatus[];
+    const statuses = ['connected', 'reconnecting', 'disconnected'] satisfies ConnectionStatus[];
     const markups = statuses.map((status) => {
       currentStatus = status;
       return renderToStaticMarkup(<ConnectionIndicator />);

@@ -26,9 +26,7 @@ function LoadingSkeleton({ rows = 4, label, variant = 'timeline' }: LoadingSkele
 
 function ListSkeletonRow() {
   return (
-    <div
-      className="grid gap-3 rounded-xl border border-[var(--border-default)] p-4 md:grid-cols-[1.4fr_1fr_0.7fr_1fr_1fr]"
-    >
+    <div className="grid gap-3 rounded-xl border border-[var(--border-default)] p-4 md:grid-cols-[1.4fr_1fr_0.7fr_1fr_1fr]">
       <Skeleton className="h-4 w-44" />
       <Skeleton className="h-4 w-32" />
       <Skeleton className="h-5 w-20 rounded-full" />
