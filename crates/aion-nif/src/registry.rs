@@ -162,25 +162,26 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_duplicate_module_function_arity() {
+    fn build_rejects_duplicate_module_function_arity() -> Result<(), String> {
         let first = Nif::pure("example/module", "extract", 1, identity_native);
         let second = Nif::side_effectful("example/module", "extract", 1, identity_native);
 
-        match NifSet::builder("example/module")
+        let error = NifSet::builder("example/module")
             .with_nif(first)
             .with_nif(second)
             .build()
-        {
-            Err(error) => assert_eq!(
-                error,
-                NifDeclError::Duplicate {
-                    module: "example/module".to_owned(),
-                    function: "extract".to_owned(),
-                    arity: 1,
-                }
-            ),
-            Ok(set) => panic!("duplicate build unexpectedly succeeded with {set:?}"),
-        }
+            .err()
+            .ok_or("duplicate build unexpectedly succeeded")?;
+
+        assert_eq!(
+            error,
+            NifDeclError::Duplicate {
+                module: "example/module".to_owned(),
+                function: "extract".to_owned(),
+                arity: 1,
+            }
+        );
+        Ok(())
     }
 
     #[test]

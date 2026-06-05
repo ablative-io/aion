@@ -43,7 +43,7 @@ fn illustrative_nif_set_exposes_descriptors_and_dispatches() -> Result<(), TermE
         .with_nif(activity)
         .with_nif(activity_failure)
         .build()
-        .map_err(decl_error_to_term_error)?;
+        .map_err(|e| decl_error_to_term_error(&e))?;
 
     assert_eq!(set.module(), "example/module");
     assert_eq!(set.nifs().len(), 3);
@@ -93,7 +93,7 @@ fn illustrative_nif_set_exposes_descriptors_and_dispatches() -> Result<(), TermE
     Ok(())
 }
 
-fn decl_error_to_term_error(error: NifDeclError) -> TermError {
+fn decl_error_to_term_error(error: &NifDeclError) -> TermError {
     TermError::Conversion {
         context: "illustrative NifSet declaration",
         message: error.to_string(),
