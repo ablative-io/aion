@@ -1,5 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
 [project]
 name = "aion-client-python"
 version = "0.1.0"
 requires-python = ">=3.10"
-description = "The Python caller SDK for starting, signalling, querying, and cancelling workflows."
+description = "The Python caller SDK for starting, signalling, querying, and cancelling Aion workflows."
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Aion Contributors" }]
+keywords = ["aion", "workflow", "sdk", "client"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "grpcio>=1.62",
+  "protobuf>=4.25",
+  "websockets>=12",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "mypy>=1.10",
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+]
+pydantic = ["pydantic>=2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["aion_client"]
+
+[tool.hatch.build.targets.sdist]
+include = ["aion_client", "README.md", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
