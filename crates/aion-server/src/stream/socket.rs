@@ -143,6 +143,10 @@ pub struct EncodedEventStream {
 /// The reader uses `try_send` into the bounded per-connection channel; it never
 /// awaits capacity from socket I/O and therefore never back-pressures the engine
 /// event tail for a slow consumer.
+///
+/// # Errors
+///
+/// Returns `ServerError::Config` if `outbound_buffer_bound` is zero.
 pub fn spawn_encoded_event_stream(
     namespace: String,
     workflow_target: Option<WorkflowId>,
