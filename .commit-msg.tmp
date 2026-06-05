@@ -1,1 +1,1 @@
-review(aion-proto): harden wire serde derives
+feat(aion-proto): add workflow management wire service

@@ -2,4 +2,79 @@ syntax = "proto3";
 
 package aion;
 
-// start/signal/query/cancel/list/describe service
+import "common.proto";
+
+// Workflow-management API shared by clients and the managed server.
+service WorkflowService {
+  rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse);
+  rpc Signal(SignalRequest) returns (SignalResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  rpc DescribeWorkflow(DescribeWorkflowRequest) returns (DescribeWorkflowResponse);
+}
+
+message StartWorkflowRequest {
+  string namespace = 1;
+  string workflow_type = 2;
+  Payload input = 3;
+}
+
+message StartWorkflowResponse {
+  WorkflowId workflow_id = 1;
+  RunId run_id = 2;
+}
+
+message SignalRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  RunId run_id = 3;
+  string signal_name = 4;
+  Payload payload = 5;
+}
+
+message SignalResponse {}
+
+message QueryRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  RunId run_id = 3;
+  string query_name = 4;
+}
+
+message QueryResponse {
+  oneof outcome {
+    Payload result = 1;
+    WireError error = 2;
+  }
+}
+
+message CancelRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  RunId run_id = 3;
+  string reason = 4;
+}
+
+message CancelResponse {}
+
+message ListWorkflowsRequest {
+  string namespace = 1;
+  WireEnvelope filter = 2;
+}
+
+message ListWorkflowsResponse {
+  repeated WireEnvelope summaries = 1;
+}
+
+message DescribeWorkflowRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  RunId run_id = 3;
+  bool include_history = 4;
+}
+
+message DescribeWorkflowResponse {
+  WireEnvelope summary = 1;
+  repeated WireEnvelope history = 2;
+}

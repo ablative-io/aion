@@ -281,6 +281,52 @@ where
         .map_err(|_| WireError::backend("core value decode failed"))
 }
 
+/// Serializes a workflow filter into a thin wire envelope.
+pub fn encode_workflow_filter(
+    namespace: impl Into<String>,
+    request_id: Option<String>,
+    filter: &aion_core::WorkflowFilter,
+) -> Result<WireEnvelope, WireError> {
+    encode_core_value(namespace, request_id, filter)
+}
+
+/// Deserializes a workflow filter from a thin wire envelope.
+pub fn decode_workflow_filter(
+    envelope: &WireEnvelope,
+) -> Result<aion_core::WorkflowFilter, WireError> {
+    decode_core_value(envelope)
+}
+
+/// Serializes a workflow summary into a thin wire envelope.
+pub fn encode_workflow_summary(
+    namespace: impl Into<String>,
+    request_id: Option<String>,
+    summary: &aion_core::WorkflowSummary,
+) -> Result<WireEnvelope, WireError> {
+    encode_core_value(namespace, request_id, summary)
+}
+
+/// Deserializes a workflow summary from a thin wire envelope.
+pub fn decode_workflow_summary(
+    envelope: &WireEnvelope,
+) -> Result<aion_core::WorkflowSummary, WireError> {
+    decode_core_value(envelope)
+}
+
+/// Serializes a workflow event into a thin wire envelope.
+pub fn encode_event(
+    namespace: impl Into<String>,
+    request_id: Option<String>,
+    event: &aion_core::Event,
+) -> Result<WireEnvelope, WireError> {
+    encode_core_value(namespace, request_id, event)
+}
+
+/// Deserializes a workflow event from a thin wire envelope.
+pub fn decode_event(envelope: &WireEnvelope) -> Result<aion_core::Event, WireError> {
+    decode_core_value(envelope)
+}
+
 fn parse_uuid(value: &str, label: &str) -> Result<Uuid, WireError> {
     Uuid::parse_str(value).map_err(|_| WireError::backend(format!("{label} uuid is malformed")))
 }
