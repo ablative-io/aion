@@ -54,5 +54,8 @@ test('subscription scoping rejects an empty namespace before subscribing', () =>
 });
 
 function firehoseFilter(namespace: string): FirehoseEventSubscriptionFilter {
-  return { kind: 'firehose', namespace: requireSelectedNamespace(namespace, 'subscribing to events') };
+  return {
+    kind: 'firehose',
+    namespace: requireSelectedNamespace(namespace, 'subscribing to events'),
+  };
 }

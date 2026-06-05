@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-
-import { aionEventSocket, type AionEventWebSocketManager } from '@/lib/api';
 import type {
   AionEventContext,
   AionEventHandler,
   AionEventSubscriptionFilter,
   ResyncContext,
 } from '@/lib/api';
+import { type AionEventWebSocketManager, aionEventSocket } from '@/lib/api';
 import type { Event } from '@/types';
 
 export type EventSubscriptionManager = Pick<AionEventWebSocketManager, 'subscribe'>;

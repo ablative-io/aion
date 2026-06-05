@@ -1,9 +1,8 @@
-import { useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-
-import { isSelectedNamespace, useNamespace } from '@/features/namespace';
+import { useMemo } from 'react';
 import type { EventSubscriptionManager } from '@/features/live-feed';
 import { useEventSubscription } from '@/features/live-feed';
+import { isSelectedNamespace, useNamespace } from '@/features/namespace';
 import type { FilteredEventSubscriptionFilter, WorkflowPage, WorkflowPageRequest } from '@/lib/api';
 import type { Event, WorkflowFilter, WorkflowStatus, WorkflowSummary } from '@/types';
 import { workflowListQueryKey } from './useWorkflowQuery';
@@ -43,7 +42,12 @@ export function useLiveListUpdates({ filter, manager, page = {} }: LiveListUpdat
         return;
       }
 
-      const patched = patchWorkflowPage(queryClient.getQueryData(queryKey), event, filter, page.limit);
+      const patched = patchWorkflowPage(
+        queryClient.getQueryData(queryKey),
+        event,
+        filter,
+        page.limit
+      );
 
       if (patched === null) {
         void queryClient.invalidateQueries({ queryKey });

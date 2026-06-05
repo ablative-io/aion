@@ -104,7 +104,12 @@ describe('WorkflowRow', () => {
 describe('live workflow list updates', () => {
   test('patches status transitions and inserts newly matching started workflows', () => {
     const filter = workflowFilterFromState(EMPTY_WORKFLOW_LIST_FILTER_STATE);
-    const completed = patchWorkflowPage(page, workflowCompleted(2, workflow.workflow_id), filter, 50);
+    const completed = patchWorkflowPage(
+      page,
+      workflowCompleted(2, workflow.workflow_id),
+      filter,
+      50
+    );
 
     expect(completed?.items[0]?.status).toBe('Completed');
     expect(completed?.items[0]?.ended_at).toBe('2026-06-05T20:02:00Z');

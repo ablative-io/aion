@@ -88,7 +88,9 @@ function WorkflowDetailContent({
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-[var(--text-muted)] text-sm">Namespace {namespace}</p>
-          <h1 className="font-semibold text-2xl text-[var(--text-primary)]">Workflow {workflowId}</h1>
+          <h1 className="font-semibold text-2xl text-[var(--text-primary)]">
+            Workflow {workflowId}
+          </h1>
           {isTerminal && terminalOutcome !== null ? (
             <p className="text-[var(--text-muted)] text-sm">Terminal outcome: {terminalOutcome}</p>
           ) : null}

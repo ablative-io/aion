@@ -69,10 +69,7 @@ export function eventEnvelope(event: Event): EventEnvelope {
   return event.data.envelope;
 }
 
-export function mergeEventsBySequence(
-  history: readonly Event[],
-  live: readonly Event[]
-): Event[] {
+export function mergeEventsBySequence(history: readonly Event[], live: readonly Event[]): Event[] {
   const eventsBySequence = new Map<number, Event>();
 
   for (const event of [...history, ...live]) {
@@ -89,9 +86,7 @@ export function mergeEventsBySequence(
 }
 
 export function terminalOutcomeForEvents(events: readonly Event[]): LifecycleOutcome | null {
-  const terminalEvent = mergeEventsBySequence(events, [])
-    .filter(isTerminalWorkflowEvent)
-    .at(-1);
+  const terminalEvent = mergeEventsBySequence(events, []).filter(isTerminalWorkflowEvent).at(-1);
 
   return terminalEvent ? lifecycleOutcome(terminalEvent) : null;
 }

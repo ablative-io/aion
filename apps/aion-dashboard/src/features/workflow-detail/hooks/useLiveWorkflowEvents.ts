@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useMemo, useRef, useState } from 'react';
 
-import { useEventSubscription, type EventSubscriptionManager } from '@/features/live-feed';
+import { type EventSubscriptionManager, useEventSubscription } from '@/features/live-feed';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
 import type { WorkflowEventSubscriptionFilter } from '@/lib/api';
 import type { Event, WorkflowId } from '@/types';
@@ -39,13 +39,19 @@ export function useLiveWorkflowEvents({
 }: LiveWorkflowEventsOptions): LiveWorkflowEvents {
   const { selectedNamespace } = useNamespace();
   const queryClient = useQueryClient();
+  const resetKey = `${selectedNamespace ?? ''}:${workflowId}:${history.length}`;
   const [liveEvents, setLiveEvents] = useState<Event[]>([]);
+  const lastResetKey = useRef(resetKey);
 
-  useEffect(() => {
+  if (lastResetKey.current !== resetKey) {
+    lastResetKey.current = resetKey;
     setLiveEvents([]);
-  }, [history, selectedNamespace, workflowId]);
+  }
 
-  const mergedEvents = useMemo(() => mergeEventsBySequence(history, liveEvents), [history, liveEvents]);
+  const mergedEvents = useMemo(
+    () => mergeEventsBySequence(history, liveEvents),
+    [history, liveEvents]
+  );
   const terminalOutcome = useMemo(() => terminalOutcomeForEvents(mergedEvents), [mergedEvents]);
   const lastSeenSequence = useMemo(() => latestSequence(mergedEvents), [mergedEvents]);
   const subscriptionFilter = useMemo<WorkflowEventSubscriptionFilter | null>(() => {

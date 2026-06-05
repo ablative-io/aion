@@ -2,12 +2,16 @@ import { useMemo, useState } from 'react';
 
 import { EmptyState } from '@/components/EmptyState';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
-import { eventRecordedAt, eventSequence, mergeEventsBySequence } from '@/features/workflow-detail/lib/timeline';
+import {
+  eventRecordedAt,
+  eventSequence,
+  mergeEventsBySequence,
+} from '@/features/workflow-detail/lib/timeline';
 import type { FirehoseEventSubscriptionFilter } from '@/lib/api';
 import type { Event } from '@/types';
-import { ConnectionIndicatorContent } from './ConnectionIndicator';
 import { useConnectionStatus } from '../hooks/useConnectionStatus';
-import { useEventSubscription, type EventSubscriptionManager } from '../hooks/useEventSubscription';
+import { type EventSubscriptionManager, useEventSubscription } from '../hooks/useEventSubscription';
+import { ConnectionIndicatorContent } from './ConnectionIndicator';
 
 export type FirehoseFeedProps = {
   manager?: EventSubscriptionManager;
@@ -85,9 +89,13 @@ export function FirehoseFeedContent({ events, namespace, status }: FirehoseFeedC
               key={eventSequence(event)}
             >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-                <span className="font-mono text-[var(--text-muted)]">seq {eventSequence(event)}</span>
+                <span className="font-mono text-[var(--text-muted)]">
+                  seq {eventSequence(event)}
+                </span>
                 <span className="font-medium text-[var(--text-primary)]">{event.type}</span>
-                <span className="text-[var(--text-muted)]">workflow {event.data.envelope.workflow_id}</span>
+                <span className="text-[var(--text-muted)]">
+                  workflow {event.data.envelope.workflow_id}
+                </span>
               </div>
               <time className="text-[var(--text-muted)] text-xs" dateTime={eventRecordedAt(event)}>
                 {eventRecordedAt(event)}

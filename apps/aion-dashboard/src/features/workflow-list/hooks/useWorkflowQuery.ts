@@ -49,6 +49,7 @@ export function useWorkflowQuery({
   return useQuery({
     enabled: selectedNamespace !== null && selectedNamespace.trim().length > 0,
     queryKey: workflowListQueryKey(selectedNamespace, filter, page),
-    queryFn: () => queryWorkflowPage(apiClient, requireWorkflowQueryNamespace(selectedNamespace), filter, page),
+    queryFn: () =>
+      queryWorkflowPage(apiClient, requireWorkflowQueryNamespace(selectedNamespace), filter, page),
   });
 }
