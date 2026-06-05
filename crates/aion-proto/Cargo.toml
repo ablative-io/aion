@@ -7,6 +7,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+generated = []
+
 [dependencies]
 aion-core = { path = "../aion-core" }
 tonic = { workspace = true }
@@ -16,6 +20,9 @@ serde_json = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 uuid.workspace = true
+tonic-prost = "=0.14.5"
 
 [build-dependencies]
+protoc-bin-vendored = "3.2.0"
 tonic-build = { workspace = true }
+tonic-prost-build = "=0.14.5"
