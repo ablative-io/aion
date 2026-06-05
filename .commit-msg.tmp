@@ -1,1 +1,1 @@
-docs(aion-server): document workflow handler errors
+fix(aion-server): enforce namespace checks before start/list decode

@@ -23,10 +23,10 @@ pub async fn start(
     caller: &CallerIdentity,
     request: ProtoStartWorkflowRequest,
 ) -> Result<ProtoStartWorkflowResponse, WireError> {
-    let input = required_payload(request.input.clone())?;
     let scoped = guard
         .scope(caller, &NamespaceOperation::start(&request))
         .map_err(|error| error.to_wire_error())?;
+    let input = required_payload(request.input.clone())?;
     let handle = scoped
         .engine()
         .map_err(|error| error.to_wire_error())?
@@ -142,10 +142,11 @@ pub async fn list(
     caller: &CallerIdentity,
     request: ProtoListWorkflowsRequest,
 ) -> Result<ProtoListWorkflowsResponse, WireError> {
-    let filter = decode_filter(request.filter.as_ref())?;
+    let scope_filter = WorkflowFilter::default();
     let scoped = guard
-        .scope(caller, &NamespaceOperation::list(&request, &filter))
+        .scope(caller, &NamespaceOperation::list(&request, &scope_filter))
         .map_err(|error| error.to_wire_error())?;
+    let filter = decode_filter(request.filter.as_ref())?;
 
     let summaries = scoped
         .engine()
@@ -404,6 +405,50 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn denied_start_does_not_decode_missing_payload_before_namespace_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (guard, caller) = denied_guard();
+        let request = ProtoStartWorkflowRequest {
+            namespace: NAMESPACE.to_owned(),
+            workflow_type: "fixture".to_owned(),
+            input: None,
+        };
+
+        let error = start(&guard, &caller, request).await;
+
+        assert_eq!(
+            error.err().map(|error| error.code),
+            Some(WireErrorCode::NamespaceDenied)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_list_does_not_decode_malformed_filter_before_namespace_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (guard, caller) = denied_guard();
+        let request = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: Some(aion_proto::WireEnvelope {
+                namespace: NAMESPACE.to_owned(),
+                request_id: None,
+                payload: Some(ProtoPayload {
+                    content_type: "application/octet-stream".to_owned(),
+                    bytes: Vec::new(),
+                }),
+            }),
+        };
+
+        let error = list(&guard, &caller, request).await;
+
+        assert_eq!(
+            error.err().map(|error| error.code),
+            Some(WireErrorCode::NamespaceDenied)
+        );
+        Ok(())
+    }
+
     struct TestContext {
         guard: NamespaceGuard,
         caller: CallerIdentity,
@@ -436,6 +481,15 @@ mod tests {
             ownership,
             store,
         }
+    }
+
+    fn denied_guard() -> (NamespaceGuard, CallerIdentity) {
+        let ownership = WorkflowOwnership::default();
+        let resolver =
+            NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
+        let guard = NamespaceGuard::new(resolver);
+        let caller = CallerIdentity::new("alice", [String::from("tenant-b")]);
+        (guard, caller)
     }
 
     async fn append_started(store: &dyn EventStore) -> Result<(), Box<dyn std::error::Error>> {
