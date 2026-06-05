@@ -63,8 +63,20 @@ pub struct AuthConfig {
 /// Dashboard static asset configuration.
 #[derive(Clone, Deserialize)]
 pub struct DashboardConfig {
-    /// Directory containing the built dashboard bundle.
-    pub asset_path: PathBuf,
+    /// Operator-selected bundle source.
+    pub source: DashboardAssetSource,
+}
+
+/// Static dashboard bundle source.
+#[derive(Clone, Deserialize)]
+pub enum DashboardAssetSource {
+    /// Serve the built bundle from an operator-supplied directory.
+    FileSystem {
+        /// Directory containing `index.html` and built asset files.
+        asset_path: PathBuf,
+    },
+    /// Serve the compile-time embedded bundle.
+    Embedded,
 }
 
 /// Namespace resolver construction mode.
@@ -184,6 +196,14 @@ fn validate(config: &ServerConfig) -> Result<(), ServerError> {
         });
     }
 
+    if let DashboardAssetSource::FileSystem { asset_path } = &config.dashboard.source {
+        if asset_path.as_os_str().is_empty() {
+            return Err(ServerError::Config {
+                message: "dashboard.source.FileSystem.asset_path must not be empty".to_owned(),
+            });
+        }
+    }
+
     if let NamespaceMode::SingleTenant { namespace } = &config.namespace.mode {
         if namespace.is_empty() {
             return Err(ServerError::Config {
@@ -232,7 +252,7 @@ mod tests {
                 "store": { "libsql": { "mode": { "Embedded": { "path": "aion.db" } } } },
                 "listen": { "grpc": "127.0.0.1:50051", "http": "127.0.0.1:8080" },
                 "auth": { "bearer_token": "secret" },
-                "dashboard": { "asset_path": "dist" },
+                "dashboard": { "source": { "FileSystem": { "asset_path": "dist" } } },
                 "namespace": { "mode": "SharedEngine" },
                 "worker": { "heartbeat_window": 30000 },
                 "websocket": {}
@@ -249,7 +269,7 @@ mod tests {
                 "store": { "libsql": { "mode": { "Embedded": { "path": "aion.db" } } } },
                 "listen": { "grpc": "127.0.0.1:50051", "http": "127.0.0.1:8080" },
                 "auth": { "bearer_token": "secret" },
-                "dashboard": { "asset_path": "dist" },
+                "dashboard": { "source": { "FileSystem": { "asset_path": "dist" } } },
                 "namespace": { "mode": "SharedEngine" },
                 "worker": { "heartbeat_window": 0 },
                 "websocket": { "outbound_buffer_bound": 32 }
@@ -263,7 +283,7 @@ mod tests {
                 "store": { "libsql": { "mode": { "Embedded": { "path": "aion.db" } } } },
                 "listen": { "grpc": "127.0.0.1:50051", "http": "127.0.0.1:8080" },
                 "auth": { "bearer_token": "secret" },
-                "dashboard": { "asset_path": "dist" },
+                "dashboard": { "source": { "FileSystem": { "asset_path": "dist" } } },
                 "namespace": { "mode": "SharedEngine" },
                 "worker": { "heartbeat_window": 30000 },
                 "websocket": { "outbound_buffer_bound": 0 }

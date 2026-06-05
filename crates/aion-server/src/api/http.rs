@@ -14,7 +14,18 @@ use axum::{
     routing::post,
 };
 
-use crate::{CallerIdentity, ServerState, api::handlers};
+use crate::{CallerIdentity, ServerError, ServerState, api::handlers, dashboard::assets};
+
+/// Build the public HTTP application: workflow-management routes first, then
+/// the dashboard static asset fallback. The dashboard adds no data API.
+///
+/// # Errors
+///
+/// Returns [`ServerError::Config`] when dashboard assets are misconfigured.
+pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
+    let dashboard = assets::dashboard_router(&state.runtime_config().dashboard)?;
+    Ok(workflow_router(state).merge(dashboard))
+}
 
 /// Build the public workflow-management HTTP router.
 pub fn workflow_router(state: ServerState) -> Router {
@@ -165,7 +176,7 @@ fn http_status(code: WireErrorCode) -> StatusCode {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+    use std::{fs, net::SocketAddr, sync::Arc};
 
     use aion::EngineBuilder;
     use aion_core::{Event, EventEnvelope, Payload, WorkflowFilter, WorkflowId, WorkflowStatus};
@@ -184,8 +195,8 @@ mod tests {
     use crate::{
         NamespaceResolver, WorkflowOwnership,
         config::{
-            AuthConfig, DashboardConfig, ListenConfig, NamespaceConfig, NamespaceMode,
-            RuntimeConfig, WebSocketConfig, WorkerConfig,
+            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, NamespaceConfig,
+            NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
         },
     };
 
@@ -248,6 +259,79 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn dashboard_assets_serve_index_asset_and_do_not_shadow_public_api()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = tempfile::tempdir()?;
+        fs::write(
+            bundle.path().join("index.html"),
+            "<!doctype html><title>Aion</title><script src=\"/app.js\"></script>",
+        )?;
+        fs::write(bundle.path().join("app.js"), "window.AION = true;")?;
+
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(Arc::clone(&store))
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            WorkflowOwnership::default(),
+        );
+        let mut config = runtime_config();
+        config.dashboard = DashboardConfig {
+            source: DashboardAssetSource::FileSystem {
+                asset_path: bundle.path().to_path_buf(),
+            },
+        };
+        let router = http_router(ServerState::from_parts(resolver, config))?;
+
+        let root = router
+            .clone()
+            .oneshot(Request::builder().uri("/").body(body::Body::empty())?)
+            .await?;
+        assert_eq!(root.status(), StatusCode::OK);
+        assert!(read_text(root).await?.contains("<title>Aion</title>"));
+
+        let asset = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/app.js")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(read_text(asset).await?, "window.AION = true;");
+
+        let spa = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/workflows/demo")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(spa.status(), StatusCode::OK);
+        assert!(read_text(spa).await?.contains("<title>Aion</title>"));
+
+        let list = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: None,
+        };
+        let list_response = router
+            .oneshot(json_request("/workflows/list", &list)?)
+            .await?;
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
+        assert!(list_body.summaries.is_empty());
+        Ok(())
+    }
+
     fn json_request<T>(
         path: &str,
         value: &T,
@@ -274,6 +358,11 @@ mod tests {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    async fn read_text(response: Response) -> Result<String, Box<dyn std::error::Error>> {
+        let bytes = body::to_bytes(response.into_body(), usize::MAX).await?;
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
     fn runtime_config() -> RuntimeConfig {
         RuntimeConfig {
             listen: ListenConfig {
@@ -285,7 +374,7 @@ mod tests {
                 bearer_token: TOKEN.to_owned(),
             },
             dashboard: DashboardConfig {
-                asset_path: PathBuf::from("dist"),
+                source: DashboardAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,

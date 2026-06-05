@@ -55,7 +55,7 @@ async fn serve_http(
     let listener = TcpListener::bind(address)
         .await
         .map_err(|source| transport_bind("http", address, source))?;
-    axum::serve(listener, api::http::workflow_router(state))
+    axum::serve(listener, api::http::http_router(state)?)
         .with_graceful_shutdown(shutdown_requested(shutdown))
         .await
         .map_err(|source| transport_bind("http", address, source))?;
