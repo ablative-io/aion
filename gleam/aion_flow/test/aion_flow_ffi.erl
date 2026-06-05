@@ -6,7 +6,16 @@
 %% live engine, store, replay loop, or Rust NIF.
 -module(aion_flow_ffi).
 
--export([run_activity/3, now/0, random/0, random_int/2]).
+-export([
+    run_activity/3,
+    now/0,
+    random/0,
+    random_int/2,
+    sleep/1,
+    start_timer/2,
+    cancel_timer/1,
+    with_timeout/2
+]).
 
 run_activity(<<"charge-payment">>, Input, _Config) ->
     OrderId = extract_string(Input, <<"order_id">>),
@@ -26,6 +35,27 @@ random() ->
 
 random_int(_Min, _Max) ->
     {ok, <<"4">>}.
+
+sleep(<<"-", _Rest/binary>>) ->
+    {error, <<"invalid duration">>};
+sleep(_Duration) ->
+    {ok, <<"fired">>}.
+
+start_timer(<<"error", _Rest/binary>>, _Duration) ->
+    {error, <<"invalid timer">>};
+start_timer(TimerId, _Duration) ->
+    {ok, TimerId}.
+
+cancel_timer(<<"cancel-error">>) ->
+    {error, <<"timer cancellation failed">>};
+cancel_timer(_TimerId) ->
+    {ok, <<"cancelled-or-no-op">>}.
+
+with_timeout(Duration, Operation) ->
+    case Duration of
+        <<"0">> -> {error, <<"timeout:deadline expired">>};
+        _ -> {ok, Operation()}
+    end.
 
 extract_string(Json, Field) ->
     Pattern = <<"\"", Field/binary, "\":\"">>,

@@ -37,6 +37,12 @@ pub fn start_timer(timer_id: String, duration: String) -> Result(String, String)
 @external(erlang, "aion_flow_ffi", "cancel_timer")
 pub fn cancel_timer(timer_id: String) -> Result(String, String)
 
+@external(erlang, "aion_flow_ffi", "with_timeout")
+pub fn with_timeout(
+  duration: String,
+  operation: fn() -> Result(value, inner_error),
+) -> Result(Result(value, inner_error), String)
+
 @external(erlang, "aion_flow_ffi", "receive_signal")
 pub fn receive_signal(name: String, config: String) -> Result(String, String)
 
