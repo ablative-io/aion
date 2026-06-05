@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
 
-import { payloadSummary } from '../lib/timeline';
+import { decodePayload, payloadSummary } from '../lib/timeline';
 
 type PayloadViewProps = {
   payload: unknown;
@@ -40,10 +40,12 @@ function PayloadView({ payload, label = 'Payload' }: PayloadViewProps) {
 }
 
 function stringifyPayload(payload: unknown): string {
+  const decodedPayload = decodePayload(payload);
+
   try {
-    return JSON.stringify(payload, null, 2) ?? String(payload);
+    return JSON.stringify(decodedPayload, null, 2) ?? String(decodedPayload);
   } catch {
-    return String(payload);
+    return String(decodedPayload);
   }
 }
 

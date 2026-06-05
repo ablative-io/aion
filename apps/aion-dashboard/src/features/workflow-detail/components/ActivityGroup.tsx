@@ -1,8 +1,6 @@
 import { ChevronRight } from 'lucide-react';
 import { useState } from 'react';
-
-import { Badge } from '@/components/ui';
-import { Button } from '@/components/ui';
+import { Badge, Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
 
 import type { ActivityTimelineEntry } from '../types';

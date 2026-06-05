@@ -10,7 +10,9 @@ type EventTimelineProps = {
 };
 
 function EventTimeline({ events, entries }: EventTimelineProps) {
-  const timelineEntries = entries ?? projectTimeline(events ?? []);
+  const timelineEntries = (entries ?? projectTimeline(events ?? [])).toSorted(
+    (left, right) => left.sequence - right.sequence
+  );
 
   return (
     <ol aria-label="Workflow event timeline" className="space-y-0">

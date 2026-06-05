@@ -17,7 +17,9 @@ export function projectTimeline(events: readonly Event[]): TimelineEntry[] {
   const timers = new Map<string, TimerTimelineEntry>();
   const children = new Map<string, ChildWorkflowTimelineEntry>();
 
-  for (const event of [...events].sort((left, right) => eventSequence(left) - eventSequence(right))) {
+  for (const event of [...events].sort(
+    (left, right) => eventSequence(left) - eventSequence(right)
+  )) {
     switch (event.type) {
       case 'WorkflowStarted':
       case 'WorkflowCompleted':
@@ -68,26 +70,46 @@ export function eventEnvelope(event: Event): EventEnvelope {
 }
 
 export function payloadSummary(payload: unknown): string {
-  if (payload === null) {
+  const decodedPayload = decodePayload(payload);
+
+  if (decodedPayload === null) {
     return 'null';
   }
 
-  if (payload === undefined) {
+  if (decodedPayload === undefined) {
     return 'none';
   }
 
-  if (typeof payload === 'string' || typeof payload === 'number' || typeof payload === 'boolean') {
-    return String(payload);
-  }
-
-  if (isPayloadBytes(payload)) {
-    return `${payload.content_type} payload (${payload.bytes.length} bytes)`;
+  if (
+    typeof decodedPayload === 'string' ||
+    typeof decodedPayload === 'number' ||
+    typeof decodedPayload === 'boolean'
+  ) {
+    return String(decodedPayload);
   }
 
   try {
-    return JSON.stringify(payload);
+    return JSON.stringify(decodedPayload);
   } catch {
-    return String(payload);
+    return String(decodedPayload);
+  }
+}
+
+export function decodePayload(payload: unknown): unknown {
+  if (!isPayloadBytes(payload)) {
+    return payload;
+  }
+
+  const text = new TextDecoder().decode(Uint8Array.from(payload.bytes));
+
+  if (payload.content_type !== 'Json') {
+    return text;
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
   }
 }
 
@@ -215,11 +237,16 @@ function patchTimer(
 
   entry.status = entry.cancelled ? 'cancelled' : entry.fired ? 'fired' : 'started';
   entry.summary = `Timer ${timerId} ${entry.status}`;
-  entry.payload = entry.started ? { timer_id: timerId, fire_at: entry.started.data.fire_at } : undefined;
+  entry.payload = entry.started
+    ? { timer_id: timerId, fire_at: entry.started.data.fire_at }
+    : undefined;
   entry.recordedAt = eventRecordedAt(event);
 }
 
-function newTimerEntry(timerId: string, event: Extract<Event, { type: TimerType }>): TimerTimelineEntry {
+function newTimerEntry(
+  timerId: string,
+  event: Extract<Event, { type: TimerType }>
+): TimerTimelineEntry {
   return {
     id: `timer:${timerId}`,
     kind: 'timer',
@@ -314,7 +341,8 @@ function refreshChild(entry: ChildWorkflowTimelineEntry): void {
         ? 'completed'
         : 'started';
   entry.summary = `Child workflow ${entry.workflowType ?? entry.childWorkflowId} ${entry.status}`;
-  entry.payload = entry.completed?.data.result ?? entry.failed?.data.error ?? entry.started?.data.input;
+  entry.payload =
+    entry.completed?.data.result ?? entry.failed?.data.error ?? entry.started?.data.input;
   entry.recordedAt = latest ? eventRecordedAt(latest) : entry.recordedAt;
 }
 
@@ -398,13 +426,17 @@ function stringifyTimerId(timerId: TimerId): string {
   return 'Named' in timerId ? timerId.Named : `anonymous-${timerId.Anonymous}`;
 }
 
-function isPayloadBytes(value: unknown): value is { content_type: string; bytes: unknown[] } {
+function isPayloadBytes(value: unknown): value is { content_type: string; bytes: number[] } {
   if (typeof value !== 'object' || value === null || !('bytes' in value)) {
     return false;
   }
 
   const maybePayload = value as { content_type?: unknown; bytes?: unknown };
-  return typeof maybePayload.content_type === 'string' && Array.isArray(maybePayload.bytes);
+  return (
+    typeof maybePayload.content_type === 'string' &&
+    Array.isArray(maybePayload.bytes) &&
+    maybePayload.bytes.every((byte) => typeof byte === 'number')
+  );
 }
 
 function assertNever(value: never): never {

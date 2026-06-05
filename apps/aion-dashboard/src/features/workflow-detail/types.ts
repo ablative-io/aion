@@ -1,4 +1,4 @@
-import type { Event, EventEnvelope, Payload, WorkflowId } from '@/types';
+import type { Event, EventEnvelope, WorkflowId } from '@/types';
 
 export type TimelineEntryKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
 
@@ -80,5 +80,3 @@ export type WorkflowDetailProps = {
   workflowId: WorkflowId;
   namespace: string | null;
 };
-
-export type PayloadLike = Payload | unknown;

@@ -106,4 +106,4 @@ function formatRecordedAt(value: string): string {
   return date.toLocaleString();
 }
 
-export { TimelineEntry, formatRecordedAt };
+export { formatRecordedAt, TimelineEntry };

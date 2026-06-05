@@ -1,12 +1,4 @@
-import {
-  Activity,
-  Bell,
-  CheckCircle2,
-  CircleSlash,
-  GitBranch,
-  Timer,
-  XCircle,
-} from 'lucide-react';
+import { Activity, Bell, CheckCircle2, CircleSlash, GitBranch, Timer, XCircle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
@@ -33,7 +25,10 @@ function EventIcon({ kind, tone = 'neutral' }: EventIconProps) {
   return (
     <span
       aria-hidden="true"
-      className={cn('inline-flex size-10 items-center justify-center rounded-full', toneClasses[tone])}
+      className={cn(
+        'inline-flex size-10 items-center justify-center rounded-full',
+        toneClasses[tone]
+      )}
     >
       <Icon className="size-5" />
     </span>
@@ -69,5 +64,5 @@ function iconForKind(kind: EventIconKind, tone: EventIconTone) {
   }
 }
 
-export { EventIcon };
 export type { EventIconKind, EventIconTone };
+export { EventIcon };

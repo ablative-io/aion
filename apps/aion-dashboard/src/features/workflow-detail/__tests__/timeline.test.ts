@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 
 import type { Event, Payload } from '@/types';
 
-import { projectTimeline } from '../lib/timeline';
+import { payloadSummary, projectTimeline } from '../lib/timeline';
 
 const workflowId = 'workflow-1';
 const jsonPayload: Payload = { content_type: 'Json', bytes: [123, 125] };
@@ -23,6 +23,10 @@ test('projectTimeline orders by sequence and groups logical lifecycle families',
     'ActivityStarted',
     'ActivityCompleted',
   ]);
+});
+
+test('payloadSummary decodes generated JSON payload bytes', () => {
+  expect(payloadSummary(jsonPayload)).toBe('{}');
 });
 
 test('projectTimeline records activity retry history and child workflow links', () => {
@@ -70,7 +74,12 @@ function workflowStarted(seq: number): Event {
 function activityScheduled(seq: number): Event {
   return {
     type: 'ActivityScheduled',
-    data: { envelope: envelope(seq), activity_id: 7, activity_type: 'charge-card', input: jsonPayload },
+    data: {
+      envelope: envelope(seq),
+      activity_id: 7,
+      activity_type: 'charge-card',
+      input: jsonPayload,
+    },
   };
 }
 

@@ -4,8 +4,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { Event, Payload } from '@/types';
 
 import { EventTimeline } from '../components/EventTimeline';
-import { PayloadView } from '../components/PayloadView';
+import { PayloadView, stringifyPayload } from '../components/PayloadView';
 import { WorkflowDetailContent } from '../components/WorkflowDetail';
+import { projectTimeline } from '../lib/timeline';
 
 const payload: Payload = { content_type: 'Json', bytes: [123, 125] };
 const workflowId = 'workflow-1';
@@ -16,6 +17,10 @@ test('PayloadView renders collapsed payload summary by default', () => {
   expect(markup).toContain('aria-expanded="false"');
   expect(markup).toContain('hidden-detail');
   expect(markup).not.toContain('<pre');
+});
+
+test('PayloadView formats generated JSON payload bytes as decoded data', () => {
+  expect(stringifyPayload(payload)).toBe('{}');
 });
 
 test('WorkflowDetailContent renders loading, empty, and error states', () => {
@@ -69,10 +74,20 @@ test('WorkflowDetailContent renders empty namespace state without an unscoped qu
 });
 
 test('static timeline renders child workflow links and sequence metadata', () => {
-  const markup = renderToStaticMarkup(<EventTimeline events={[childStarted(2), workflowStarted(1)]} />);
+  const markup = renderToStaticMarkup(
+    <EventTimeline events={[childStarted(2), workflowStarted(1)]} />
+  );
 
   expect(markup).toContain('seq 1');
   expect(markup).toContain('/workflows/child-1');
+});
+
+test('static timeline sorts projected entries passed directly by sequence', () => {
+  const markup = renderToStaticMarkup(
+    <EventTimeline entries={projectTimeline([childStarted(2), workflowStarted(1)]).toReversed()} />
+  );
+
+  expect(markup.indexOf('seq 1')).toBeLessThan(markup.indexOf('seq 2'));
 });
 
 function envelope(seq: number) {
