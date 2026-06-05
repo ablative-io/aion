@@ -222,8 +222,8 @@ These three tracks run concurrently.
 - [x] **AW-012** — Worker heartbeats, lost-worker handling · _landed 341a864_
 
 ### Wave 30 (2 parallel)
-- [ ] **AF-008** — Queries (handler registration, reply) · _Lemmy · depends: AF-007_
-- [ ] **AW-013** — Dashboard hosting (static assets) · _Max Power · depends: AW-009, AW-010_
+- [x] **AF-008** — Queries (handler registration, reply) · _landed 6d52fa6_
+- [x] **AW-013** — Dashboard hosting (static assets) · _landed b78cff9_
 
 ### Wave 31
 - [ ] **AF-009** — Child workflows (ChildHandle, spawn, await) · _Lemmy · depends: AF-008_
