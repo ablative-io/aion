@@ -95,12 +95,15 @@ export type AionEventWebSocketManagerOptions = {
   webSocketImpl?: WebSocketConstructor;
   scheduler?: Scheduler;
   reconnect?: Partial<ReconnectOptions>;
+  warn?: WarningLogger;
 };
 
 type JsonRecord = Record<string, unknown>;
+type ConsoleLike = { warn(message: string, error: unknown): void };
 type Unsubscribe = () => void;
 type StatusListener = (status: ConnectionStatus) => void;
 type TransitionListener = () => void;
+type WarningLogger = (message: string, error: unknown) => void;
 type WebSocketMessage = { data: unknown };
 type WebSocketClose = { code?: number; reason?: string; wasClean: boolean };
 type WebSocketEventHandler<T> = ((event: T) => void) | null;
@@ -123,6 +126,12 @@ type Scheduler = {
   clearTimeout(handle: TimeoutHandle): void;
 };
 
+const globalConsole = globalThis.console as ConsoleLike;
+
+const consoleWarn: WarningLogger = (message, error) => {
+  globalConsole.warn(message, error);
+};
+
 type SubscriptionRecord = {
   id: string;
   filter: AionEventSubscriptionFilter;
@@ -136,6 +145,7 @@ export class AionEventWebSocketManager {
   private readonly webSocketImpl: WebSocketConstructor;
   private readonly scheduler: Scheduler;
   private readonly reconnect: ReconnectOptions;
+  private readonly warn: WarningLogger;
   private readonly subscriptions = new Map<string, SubscriptionRecord>();
   private readonly statusListeners = new Set<StatusListener>();
   private readonly connectListeners = new Set<TransitionListener>();
@@ -155,11 +165,16 @@ export class AionEventWebSocketManager {
       clearTimeout: (handle) => clearTimeout(handle),
     };
     this.reconnect = { ...DEFAULT_RECONNECT, ...options.reconnect };
+    this.warn = options.warn ?? consoleWarn;
   }
 
   connect(): void {
     if (this.socket !== null && this.socket.readyState < SOCKET_CLOSING) {
       return;
+    }
+
+    if (this.status === 'disconnected') {
+      this.reconnectAttempts = 0;
     }
 
     this.intentionalClose = false;
@@ -261,8 +276,13 @@ export class AionEventWebSocketManager {
 
   private openSocket(): void {
     this.clearReconnectTimer();
-    this.socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl));
-    this.socket.onopen = () => {
+    const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl));
+    this.socket = socket;
+    socket.onopen = () => {
+      if (this.socket !== socket) {
+        return;
+      }
+
       const recoveredFromDrop = this.status === 'reconnecting';
       this.reconnectAttempts = 0;
       this.setStatus('connected');
@@ -273,25 +293,35 @@ export class AionEventWebSocketManager {
         this.notifyResyncHandlers();
       }
     };
-    this.socket.onmessage = (message) => {
+    socket.onmessage = (message) => {
+      if (this.socket !== socket) {
+        return;
+      }
+
       this.handleMessage(message.data);
     };
-    this.socket.onclose = () => {
-      this.handleUnexpectedDisconnect();
+    socket.onclose = () => {
+      this.handleUnexpectedDisconnect(socket);
     };
-    this.socket.onerror = () => {
-      this.handleUnexpectedDisconnect();
+    socket.onerror = () => {
+      this.handleUnexpectedDisconnect(socket);
+      socket.close();
     };
   }
 
-  private handleUnexpectedDisconnect(): void {
-    if (this.intentionalClose) {
+  private handleUnexpectedDisconnect(socket: ManagedWebSocket): void {
+    if (this.intentionalClose || this.socket !== socket) {
       return;
     }
 
     this.socket = null;
-    this.setStatus('reconnecting');
-    this.notifyListeners(this.disconnectListeners);
+    const wasAlreadyReconnecting = this.status === 'reconnecting';
+
+    if (!wasAlreadyReconnecting) {
+      this.setStatus('reconnecting');
+      this.notifyListeners(this.disconnectListeners);
+    }
+
     this.scheduleReconnect();
   }
 
@@ -348,7 +378,7 @@ export class AionEventWebSocketManager {
       const frame = parseFrame(data);
       this.dispatch(frame.namespace, frame.event);
     } catch (error) {
-      console.warn('Unable to parse Aion event WebSocket frame', error);
+      this.warn('Unable to parse Aion event WebSocket frame', error);
     }
   }
 
@@ -441,7 +471,8 @@ function buildSubscriptionRequest(subscription: SubscriptionRecord): JsonRecord 
         [AW_WEBSOCKET_CONTRACT.requestKeys.filtered]: withAfterSequence(
           {
             [AW_WEBSOCKET_CONTRACT.requestKeys.namespace]: subscription.filter.namespace,
-            [AW_WEBSOCKET_CONTRACT.requestKeys.workflowType]: subscription.filter.workflowType ?? null,
+            [AW_WEBSOCKET_CONTRACT.requestKeys.workflowType]:
+              subscription.filter.workflowType ?? null,
             [AW_WEBSOCKET_CONTRACT.requestKeys.status]: subscription.filter.status ?? null,
           },
           afterSequence
@@ -487,8 +518,12 @@ function parseFrame(data: unknown): { namespace: Namespace; event: Event } {
     ? frame[AW_WEBSOCKET_CONTRACT.frameKeys.namespace]
     : undefined;
 
+  if (typeof namespaceValue !== 'string') {
+    throw new Error('frame does not contain a namespace');
+  }
+
   return {
-    namespace: typeof namespaceValue === 'string' ? namespaceValue : event.data.envelope.workflow_id,
+    namespace: namespaceValue,
     event,
   };
 }
@@ -547,11 +582,11 @@ function readEnvelopePayload(value: unknown): unknown {
   const bytes = payload[AW_WEBSOCKET_CONTRACT.frameKeys.payloadBytes];
 
   if (Array.isArray(bytes)) {
-    return JSON.parse(String.fromCharCode(...bytes)) as unknown;
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(bytes))) as unknown;
   }
 
   if (typeof bytes === 'string') {
-    return JSON.parse(decodeBase64(bytes)) as unknown;
+    return JSON.parse(new TextDecoder().decode(decodeBase64Bytes(bytes))) as unknown;
   }
 
   return value;
@@ -572,7 +607,8 @@ function matchesSubscription(
     case 'filtered':
       return filter.workflowType === undefined && filter.status === undefined
         ? true
-        : matchesWorkflowType(filter.workflowType, event) && matchesWorkflowStatus(filter.status, event);
+        : matchesWorkflowType(filter.workflowType, event) &&
+            matchesWorkflowStatus(filter.status, event);
     case 'firehose':
       return true;
   }
@@ -649,12 +685,9 @@ function stripTrailingSlash(value: string): string {
   return value.endsWith('/') ? value.slice(0, -1) : value;
 }
 
-function decodeBase64(value: string): string {
-  if (typeof atob !== 'function') {
-    throw new Error('base64 payload decoding requires atob');
-  }
-
-  return atob(value);
+function decodeBase64Bytes(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
 function browserWebSocketConstructor(): WebSocketConstructor {

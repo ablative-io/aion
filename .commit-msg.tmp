@@ -1,1 +1,1 @@
-feat(aion-dashboard): add event websocket manager
+review(aion-dashboard): harden AU-003 websocket manager

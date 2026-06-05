@@ -1,14 +1,26 @@
-import { expect, test } from 'bun:test';
+import { expect, mock, test } from 'bun:test';
 
 import { createAionEventWebSocketManager } from '@/lib/api';
 
-import { useConnectionStatus } from './useConnectionStatus';
+mock.module('react', () => ({
+  useSyncExternalStore: (
+    subscribe: (notify: () => void) => () => void,
+    getSnapshot: () => string
+  ) => {
+    const cleanup = subscribe(() => undefined);
+    cleanup();
+    return getSnapshot();
+  },
+}));
 
 const namespace = 'default';
 const workflowId = '00000000-0000-0000-0000-000000000001';
 
-test('useConnectionStatus is exported as a hook function', () => {
+test('useConnectionStatus is exported as a hook function', async () => {
+  const { useConnectionStatus } = await import('./useConnectionStatus');
+
   expect(typeof useConnectionStatus).toBe('function');
+  expect(useConnectionStatus()).toBe('disconnected');
 });
 
 test('manager status store reports connect, drop, and reconnect sequence consumed by the hook', () => {
@@ -23,6 +35,7 @@ test('manager status store reports connect, drop, and reconnect sequence consume
   const cleanup = manager.onStatusChange(() => {
     statuses.push(manager.getStatus());
   });
+  const afterCleanupStatuses: string[] = [];
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined);
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
@@ -32,13 +45,18 @@ test('manager status store reports connect, drop, and reconnect sequence consume
   const secondSocket = socketFactory.sockets[1] as FakeSocket;
   secondSocket.open();
   cleanup();
+  manager.onStatusChange((status) => afterCleanupStatuses.push(status));
+  secondSocket.drop();
 
   expect(statuses).toEqual(['disconnected', 'connected', 'reconnecting', 'connected']);
+  expect(afterCleanupStatuses).toEqual(['reconnecting']);
 });
 
 class FakeSocketFactory {
   readonly sockets: FakeSocket[] = [];
-  readonly ctor: new (url: string) => FakeSocket;
+  readonly ctor: new (
+    url: string
+  ) => FakeSocket;
 
   constructor() {
     const sockets = this.sockets;

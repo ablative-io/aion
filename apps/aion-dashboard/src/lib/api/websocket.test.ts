@@ -32,9 +32,8 @@ test('subscribe sends a per-workflow request and dispatches streamed typed event
   });
   const received: AionEvent[] = [];
 
-  const unsubscribe = manager.subscribe(
-    { kind: 'workflow', namespace, workflowId },
-    (nextEvent) => received.push(nextEvent)
+  const unsubscribe = manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) =>
+    received.push(nextEvent)
   );
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
@@ -86,24 +85,39 @@ test('streamed wire-envelope payload bytes are decoded before dispatch', () => {
 
 test('malformed frames are logged instead of thrown into subscribers', () => {
   const socketFactory = new FakeSocketFactory();
-  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
-  const originalWarn = console.warn;
   const warnings: unknown[][] = [];
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    warn: (...args) => warnings.push(args),
+  });
 
-  try {
-    manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => {
-      throw new Error('handler should not run');
-    });
-    const socket = socketFactory.sockets[0] as FakeSocket;
-    socket.open();
-    socket.message('{not-json');
-  } finally {
-    console.warn = originalWarn;
-  }
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => {
+    throw new Error('handler should not run');
+  });
+  const socket = socketFactory.sockets[0] as FakeSocket;
+  socket.open();
+  socket.message('{not-json');
 
+  expect(warnings).toHaveLength(1);
+});
+
+test('frames without namespace are logged instead of guessed from workflow id', () => {
+  const socketFactory = new FakeSocketFactory();
+  const warnings: unknown[][] = [];
+  const received: AionEvent[] = [];
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    warn: (...args) => warnings.push(args),
+  });
+
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) => {
+    received.push(nextEvent);
+  });
+  const socket = socketFactory.sockets[0] as FakeSocket;
+  socket.open();
+  socket.message(JSON.stringify({ event }));
+
+  expect(received).toEqual([]);
   expect(warnings).toHaveLength(1);
 });
 
@@ -119,11 +133,10 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
   const resyncs: ResyncContext[] = [];
   manager.onStatusChange((status) => statuses.push(status));
 
-  manager.subscribe(
-    { kind: 'workflow', namespace, workflowId },
-    () => undefined,
-    { lastSeenSequence: 41, onResync: (context) => resyncs.push(context) }
-  );
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined, {
+    lastSeenSequence: 41,
+    onResync: (context) => resyncs.push(context),
+  });
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
   firstSocket.open();
   firstSocket.drop();
@@ -158,6 +171,45 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
   ]);
 });
 
+test('socket error schedules a single reconnect attempt', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 3 },
+  });
+  const disconnects: string[] = [];
+  manager.onDisconnect(() => disconnects.push('disconnected'));
+
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined);
+  const socket = socketFactory.sockets[0] as FakeSocket;
+  socket.open();
+  socket.error();
+
+  expect(disconnects).toEqual(['disconnected']);
+  expect(scheduler.delays).toEqual([10]);
+});
+
+test('manual connect after bounded reconnect exhaustion starts a fresh attempt', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+  });
+
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined);
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).drop();
+  scheduler.runNext();
+  (socketFactory.sockets[1] as FakeSocket).drop();
+  manager.connect();
+
+  expect(socketFactory.sockets).toHaveLength(3);
+});
+
 test('filtered subscriptions only dispatch matching namespace and workflow filters', () => {
   const socketFactory = new FakeSocketFactory();
   const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
@@ -185,7 +237,9 @@ test('filtered subscriptions only dispatch matching namespace and workflow filte
 
 class FakeSocketFactory {
   readonly sockets: FakeSocket[] = [];
-  readonly ctor: new (url: string) => FakeSocket;
+  readonly ctor: new (
+    url: string
+  ) => FakeSocket;
 
   constructor() {
     const sockets = this.sockets;
@@ -230,6 +284,11 @@ class FakeSocket {
   drop(): void {
     this.readyState = 3;
     this.onclose?.({ wasClean: false });
+  }
+
+  error(): void {
+    this.readyState = 3;
+    this.onerror?.({} as Event);
   }
 }
 
