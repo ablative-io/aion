@@ -20,7 +20,9 @@
     register_query/3,
     reply_query/2,
     dispatch_query/2,
-    query_recorded_observations/0
+    query_recorded_observations/0,
+    spawn_child/3,
+    await_child/1
 ]).
 
 run_activity(<<"charge-payment">>, Input, _Config) ->
@@ -100,7 +102,51 @@ dispatch_query(Name, _Config) ->
     end.
 
 query_recorded_observations() ->
-    {ok, <<"0">>}.
+    Count = case erlang:get({aion_observations, self()}) of
+        undefined -> 0;
+        Existing -> Existing
+    end,
+    {ok, integer_to_binary(Count)}.
+
+spawn_child(Name, Input, _Config) ->
+    observe(),
+    ChildId = next_child_id(),
+    Result = child_result(Name, Input),
+    erlang:put({aion_child_result, self(), ChildId}, Result),
+    {ok, ChildId}.
+
+await_child(ChildId) ->
+    case erlang:get({aion_child_result, self(), ChildId}) of
+        undefined -> {error, <<"unknown child">>};
+        Result -> Result
+    end.
+
+child_result(<<"checkout-child">>, Input) ->
+    OrderId = extract_string(Input, <<"order_id">>),
+    {ok, <<"ok:{\"id\":\"child-receipt-", OrderId/binary, "\",\"approved\":true}">>};
+child_result(<<"declining-child">>, _Input) ->
+    {ok, <<"error:\"declined\"">>};
+child_result(<<"malformed-child">>, _Input) ->
+    {ok, <<"ok:{\"id\":1,\"approved\":true}">>};
+child_result(_Name, _Input) ->
+    {error, <<"unknown child workflow">>}.
+
+next_child_id() ->
+    Key = {aion_child_counter, self()},
+    Next = case erlang:get(Key) of
+        undefined -> 1;
+        Existing -> Existing + 1
+    end,
+    erlang:put(Key, Next),
+    integer_to_binary(Next).
+
+observe() ->
+    Key = {aion_observations, self()},
+    Count = case erlang:get(Key) of
+        undefined -> 0;
+        Existing -> Existing
+    end,
+    erlang:put(Key, Count + 1).
 
 extract_string(Json, Field) ->
     Pattern = <<"\"", Field/binary, "\":\"">>,

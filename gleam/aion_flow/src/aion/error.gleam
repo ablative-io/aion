@@ -125,6 +125,21 @@ pub type QueryError {
   QueryEngineFailure(message: String)
 }
 
+/// A child-workflow await failure.
+///
+/// A completed child returns `Ok(output)`. A child workflow failure returns
+/// `ChildWorkflowFailed(workflow_error)`, preserving the child workflow's typed
+/// error. Decode, cancellation, non-determinism, and engine failures are separate
+/// typed variants so boundary failures are never swallowed or raised as panics.
+pub type ChildError(workflow_error) {
+  ChildWorkflowFailed(workflow_error)
+  ChildOutputDecodeFailed(codec.DecodeError)
+  ChildErrorDecodeFailed(codec.DecodeError)
+  ChildCancelled(CancellationError)
+  ChildNonDeterministic(NonDeterminismError)
+  ChildEngineFailure(message: String)
+}
+
 /// A timeout wrapper for primitives that can either finish or expire.
 pub type TimeoutResultError(error) {
   TimedOutError(TimeoutError)

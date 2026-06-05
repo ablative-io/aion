@@ -1,6 +1,7 @@
 //// aion_flow foundational primitive tests.
 
 import aion/activity
+import aion/child
 import aion/codec
 import aion/duration
 import aion/error
@@ -460,6 +461,120 @@ pub fn query_dispatch_records_no_observation_test() {
   |> should.equal(Ok(0))
 }
 
+pub fn workflow_spawn_returns_typed_child_handle_and_records_started_test() {
+  let before = query.recorded_observations()
+  let request = ChargeRequest(order_id: "order-child-spawn", cents: 2500)
+
+  case
+    workflow.spawn(
+      "checkout-child",
+      checkout_workflow,
+      request,
+      charge_request_codec(),
+      charge_receipt_codec(),
+      workflow_error_codec(),
+    )
+  {
+    Ok(handle) -> {
+      handle
+      |> child.child_id
+      |> should.equal("1")
+
+      let typed_handle: workflow.ChildHandle(ChargeReceipt, String) = handle
+      child.output_codec(typed_handle).encode(ChargeReceipt(
+        id: "typed-child",
+        approved: True,
+      ))
+      |> should.equal("{\"id\":\"typed-child\",\"approved\":true}")
+    }
+    Error(_) -> should.fail()
+  }
+
+  query.recorded_observations()
+  |> should.equal(increment_count(before))
+}
+
+pub fn child_await_decodes_completed_child_result_test() {
+  let request = ChargeRequest(order_id: "order-child-await", cents: 3100)
+
+  case
+    workflow.spawn(
+      "checkout-child",
+      checkout_workflow,
+      request,
+      charge_request_codec(),
+      charge_receipt_codec(),
+      workflow_error_codec(),
+    )
+  {
+    Ok(handle) ->
+      child.await(handle)
+      |> should.equal(Ok(ChargeReceipt(
+        id: "child-receipt-order-child-await",
+        approved: True,
+      )))
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn workflow_spawn_and_wait_returns_decoded_ok_test() {
+  let request = ChargeRequest(order_id: "order-child-wait", cents: 4100)
+
+  workflow.spawn_and_wait(
+    "checkout-child",
+    checkout_workflow,
+    request,
+    charge_request_codec(),
+    charge_receipt_codec(),
+    workflow_error_codec(),
+  )
+  |> should.equal(Ok(ChargeReceipt(
+    id: "child-receipt-order-child-wait",
+    approved: True,
+  )))
+}
+
+pub fn workflow_spawn_and_wait_returns_decoded_child_error_test() {
+  let request = ChargeRequest(order_id: "order-child-fail", cents: 5100)
+
+  workflow.spawn_and_wait(
+    "declining-child",
+    checkout_workflow,
+    request,
+    charge_request_codec(),
+    charge_receipt_codec(),
+    workflow_error_codec(),
+  )
+  |> should.equal(Error(error.ChildWorkflowFailed("declined")))
+}
+
+pub fn child_await_decode_failure_is_typed_data_test() {
+  let request = ChargeRequest(order_id: "order-child-malformed", cents: 6100)
+
+  case
+    workflow.spawn(
+      "malformed-child",
+      checkout_workflow,
+      request,
+      charge_request_codec(),
+      charge_receipt_codec(),
+      workflow_error_codec(),
+    )
+  {
+    Ok(handle) ->
+      case child.await(handle) {
+        Ok(_) -> should.fail()
+        Error(error.ChildOutputDecodeFailed(decode_error)) ->
+          decode_error
+          |> should.equal(
+            codec.DecodeError(reason: "Expected String, found Int", path: ["id"]),
+          )
+        Error(_) -> should.fail()
+      }
+    Error(_) -> should.fail()
+  }
+}
+
 pub fn workflow_define_carries_entry_contract_test() {
   let definition =
     workflow.define(
@@ -491,6 +606,13 @@ pub fn workflow_define_carries_entry_contract_test() {
   let entry = workflow.entry_fn(definition)
   entry(ChargeRequest(order_id: "order-entry", cents: 1200))
   |> should.equal(Ok(ChargeReceipt(id: "receipt-order-entry", approved: True)))
+}
+
+fn increment_count(count: Result(Int, error.QueryError)) -> Result(Int, error.QueryError) {
+  case count {
+    Ok(value) -> Ok(value + 1)
+    Error(error) -> Error(error)
+  }
 }
 
 fn order_to_json(order: Order) -> json.Json {

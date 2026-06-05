@@ -6,6 +6,7 @@
 //// and random values come from AD through `aion/internal/ffi`.
 
 import aion/activity.{type Activity}
+import aion/child
 import aion/codec.{type Codec}
 import aion/duration
 import aion/error
@@ -25,6 +26,9 @@ pub type TimerRef =
 
 pub type SignalRef(payload) =
   signal.SignalRef(payload)
+
+pub type ChildHandle(output, workflow_error) =
+  child.ChildHandle(output, workflow_error)
 
 pub fn run(
   activity: Activity(input, output),
@@ -74,6 +78,48 @@ pub fn receive(
 
 pub fn timer_id(reference: TimerRef) -> String {
   timer.timer_id(reference)
+}
+
+pub fn spawn(
+  name: String,
+  workflow_fn: fn(input) -> Result(output, workflow_error),
+  input: input,
+  input_codec: Codec(input),
+  output_codec: Codec(output),
+  error_codec: Codec(workflow_error),
+) -> Result(ChildHandle(output, workflow_error), error.EngineError) {
+  child.spawn(
+    name,
+    workflow_fn,
+    input,
+    input_codec,
+    output_codec,
+    error_codec,
+  )
+}
+
+pub fn spawn_and_wait(
+  name: String,
+  workflow_fn: fn(input) -> Result(output, workflow_error),
+  input: input,
+  input_codec: Codec(input),
+  output_codec: Codec(output),
+  error_codec: Codec(workflow_error),
+) -> Result(output, error.ChildError(workflow_error)) {
+  case
+    spawn(
+      name,
+      workflow_fn,
+      input,
+      input_codec,
+      output_codec,
+      error_codec,
+    )
+  {
+    Ok(handle) -> child.await(handle)
+    Error(error.EngineFailure(message: message)) ->
+      Error(error.ChildEngineFailure(message: message))
+  }
 }
 
 pub fn timestamp_to_milliseconds(timestamp: Timestamp) -> Int {
