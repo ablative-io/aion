@@ -7,7 +7,7 @@ export default [
     ignores: ["dist/**"],
   },
   {
-    files: ["src/**/*.ts"],
+    files: ["src/**/*.ts", "examples/**/*.ts"],
     languageOptions: {
       ecmaVersion: "latest",
       parser: tsParser,

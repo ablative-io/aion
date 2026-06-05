@@ -66,10 +66,10 @@ let assert Ok(handle) =
 ## signal
 
 ```gleam
-import aion_client/handle
+import aion_client/handle as workflow_handle
 
 let assert Ok(Nil) =
-  handle.signal(handle, "record", "signal-observed", fn(value) {
+  workflow_handle.signal(handle, "record", "signal-observed", fn(value) {
     json.object([#("value", json.string(value))])
   })
 ```
@@ -80,7 +80,7 @@ let assert Ok(Nil) =
 import gleam/dynamic/decode
 
 let assert Ok(last_signal) =
-  handle.query(handle, "state", Nil, fn(_) { json.null() }, decode.string)
+  workflow_handle.query(handle, "state", Nil, fn(_) { json.null() }, decode.string)
 ```
 
 ## list
@@ -93,7 +93,7 @@ let assert Ok(summaries) =
 ## describe
 
 ```gleam
-let assert Ok(description) = handle.describe(handle)
+let assert Ok(description) = workflow_handle.describe(handle)
 ```
 
 ## cancel
@@ -101,7 +101,7 @@ let assert Ok(description) = handle.describe(handle)
 Cancellation is a cooperative request: success means the server accepted the request.
 
 ```gleam
-let assert Ok(Nil) = handle.cancel(handle, "caller requested cancellation")
+let assert Ok(Nil) = workflow_handle.cancel(handle, "caller requested cancellation")
 ```
 
 ## subscribe
@@ -111,7 +111,7 @@ let assert Ok(Nil) = handle.cancel(handle, "caller requested cancellation")
 ```gleam
 import aion_client/stream
 
-let events = handle.subscribe(handle, decode.string) |> stream.collect
+let events = workflow_handle.subscribe(handle, decode.string) |> stream.collect
 ```
 
 ## Typed and raw payloads
@@ -122,7 +122,7 @@ Typed operations accept encoders/decoders from `gleam/json` and `gleam/dynamic/d
 import aion_client/payload
 
 let raw = payload.Payload(content_type: payload.json_content_type, bytes: "{\"value\":\"raw\"}")
-let assert Ok(Nil) = handle.signal_raw(handle, "record", raw)
+let assert Ok(Nil) = workflow_handle.signal_raw(handle, "record", raw)
 ```
 
 ## Branching on errors
@@ -131,8 +131,9 @@ All operations return `Result(_, error.Error)`, so callers can branch on the sha
 
 ```gleam
 import aion_client/error
+import gleam/io
 
-case handle.query(handle, "state", Nil, fn(_) { json.null() }, decode.string) {
+case workflow_handle.query(handle, "state", Nil, fn(_) { json.null() }, decode.string) {
   Ok(state) -> io.println(state)
   Error(error.QueryTimeout) -> io.println("query timed out; use a longer timeout")
   Error(error.AlreadyExists) -> io.println("idempotency key conflict")

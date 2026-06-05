@@ -26,10 +26,11 @@ See [`examples/seven_operations.py`](examples/seven_operations.py) for a complet
 import os
 from aion_client import Client, TLSConfig
 
+endpoint = os.environ["AION_SERVER_URL"]
 client = await Client.connect(
-    os.environ["AION_SERVER_URL"],
+    endpoint,
     auth=os.environ.get("AION_AUTH_TOKEN"),
-    tls=TLSConfig(enabled=True),
+    tls=TLSConfig(enabled=endpoint.startswith(("https://", "grpcs://"))),
     namespace="conformance",
 )
 ```

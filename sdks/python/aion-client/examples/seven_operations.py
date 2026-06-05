@@ -21,11 +21,18 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+def _tls_enabled(endpoint: str) -> bool:
+    if os.environ.get("AION_INSECURE") == "1":
+        return False
+    return endpoint.startswith("https://") or endpoint.startswith("grpcs://")
+
+
 async def run() -> None:
+    endpoint = _endpoint()
     async with await Client.connect(
-        _endpoint(),
+        endpoint,
         auth=os.environ.get("AION_AUTH_TOKEN"),
-        tls=TLSConfig(enabled=os.environ.get("AION_INSECURE") != "1"),
+        tls=TLSConfig(enabled=_tls_enabled(endpoint)),
         namespace="conformance",
     ) as client:
         handle = await client.start(

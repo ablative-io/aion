@@ -27,7 +27,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/**/*.test.js",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src examples --ext .ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

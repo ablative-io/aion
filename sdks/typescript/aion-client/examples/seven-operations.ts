@@ -1,6 +1,7 @@
 import {
   AlreadyExistsError,
   QueryTimeoutError,
+  type SubscribeRequest,
   type SubscribeTransport,
   UnavailableError,
   connect,
@@ -8,13 +9,6 @@ import {
 
 type EchoState = {
   readonly lastSignal?: string;
-};
-
-type SubscribeRequest = {
-  readonly namespace: string;
-  readonly workflowId: string;
-  readonly runId?: string;
-  readonly resumeFrom?: number;
 };
 
 class HttpSubscribeTransport implements SubscribeTransport {
