@@ -226,7 +226,7 @@ These three tracks run concurrently.
 - [x] **AW-013** — Dashboard hosting (static assets) · _landed b78cff9_
 
 ### Wave 31
-- [ ] **AF-009** — Child workflows (ChildHandle, spawn, await) · _Lemmy · depends: AF-008_
+- [x] **AF-009** — Child workflows (ChildHandle, spawn, await) · _landed ad408e6_
 
 ### Wave 32
 - [ ] **AF-010** — Concurrency (all, race, map) · _Lemmy · depends: AF-009_
@@ -245,9 +245,9 @@ Workers, clients, and dashboard. All depend on AW wire types.
 Three independent tracks running concurrently.
 
 ### Wave 35 (3 parallel)
-- [ ] **AR-001** — aion-worker (Rust) scaffold, config, session
-- [ ] **AL-001** — Shared client contract, conformance scenarios
-- [ ] **AU-001** — Dashboard app scaffold
+- [x] **AR-001** — aion-worker (Rust) scaffold, config, session · _landed 71cc32f_
+- [x] **AL-001** — Shared client contract, conformance scenarios · _landed 32ca436_
+- [x] **AU-001** — Dashboard app scaffold · _landed a44f1b6_
 
 ### Wave 36 (6 parallel)
 - [ ] **AR-002** — Task loop and concurrency · _depends: AR-001_
