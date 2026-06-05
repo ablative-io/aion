@@ -2,9 +2,12 @@
 //!
 //! This module is the crate's FFI seam for heap-backed beamr terms. It exposes
 //! safe Rust functions and currently relies only on beamr's public safe APIs.
-//! aion-nif intentionally avoids permanent per-call heap leaks here: that is the
-//! beamr-meridian limitation this crate supersedes, and any future raw allocation
-//! path must remain isolated behind this module's documented wrappers.
+//!
+//! The `owned_*` functions retain heap allocations in process-scoped storage that
+//! must be cleared at NIF-call boundaries via [`clear_term_storage`]. The
+//! non-owned functions with caller-provided heap slices remain the zero-overhead
+//! path. AN-004 replaces this global storage with a scoped `NifContext` that owns
+//! term storage per NIF invocation.
 
 use beamr::term::{Term, binary, boxed};
 use std::sync::{Mutex, OnceLock};
@@ -25,6 +28,20 @@ where
         .map_err(|_| TermError::HeapAllocation { shape })?
         .push(heap);
     Ok(term)
+}
+
+/// Releases all heap allocations retained by `owned_*` functions.
+///
+/// The AN-004 declaration shim must call this after each NIF invocation to bound
+/// storage to one call's worth of allocations. This is an interim mechanism — AN-004
+/// introduces `NifContext` which owns term storage per invocation and eliminates this
+/// global entirely.
+pub fn clear_term_storage() {
+    if let Some(storage) = TERM_STORAGE.get() {
+        if let Ok(mut guard) = storage.lock() {
+            guard.clear();
+        }
+    }
 }
 
 /// Builds a binary term in caller-provided process-heap words.
@@ -294,6 +311,15 @@ mod tests {
         assert_eq!(map.get(Term::small_int(1)), Some(Term::small_int(10)));
         assert_eq!(map.get(Term::small_int(2)), Some(Term::small_int(20)));
 
+        Ok(())
+    }
+
+    #[test]
+    fn clear_term_storage_releases_retained_allocations() -> Result<(), crate::TermError> {
+        super::owned_tuple_term(&[Term::small_int(1)])?;
+        super::clear_term_storage();
+        super::owned_tuple_term(&[Term::small_int(2)])?;
+        super::clear_term_storage();
         Ok(())
     }
 }
