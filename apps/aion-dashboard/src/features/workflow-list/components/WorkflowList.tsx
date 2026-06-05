@@ -115,8 +115,7 @@ export function WorkflowListBody({
     return (
       <ErrorState
         title="Could not load workflows"
-        message={errorMessage(query.error)}
-        actionLabel="Retry"
+        error={query.error}
         onRetry={() => void query.refetch()}
       />
     );
@@ -167,8 +166,4 @@ function normalizePageLimit(limit: number): number {
   }
 
   return Math.max(1, Math.floor(limit));
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

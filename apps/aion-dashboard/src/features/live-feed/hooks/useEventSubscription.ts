@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 
 import { isSelectedNamespace, requireSelectedNamespace, useNamespace } from '@/features/namespace';
-import { aionEventSocket, type AionEventWebSocketManager } from '@/lib/api';
+import { type AionEventWebSocketManager, aionEventSocket } from '@/lib/api';
 import type { AionEventHandler, AionEventSubscriptionFilter } from '@/lib/api/websocket';
 import type { Event, Namespace } from '@/types';
 

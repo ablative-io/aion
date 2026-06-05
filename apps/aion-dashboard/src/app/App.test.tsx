@@ -1,5 +1,5 @@
-import { QueryClient } from '@tanstack/react-query';
 import { expect, test } from 'bun:test';
+import { QueryClient } from '@tanstack/react-query';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createMemoryRouter } from 'react-router';
 
@@ -43,7 +43,7 @@ test('renders the detail route and can create a list router again for back navig
   const listMarkup = renderApp('/');
 
   expect(detailMarkup).toContain('Workflow workflow-1');
-  expect(detailMarkup).toContain('WorkflowStarted');
+  expect(detailMarkup).toContain('Workflow started: EmailDigest');
   expect(listMarkup).toContain('workflow-1');
 });
 
@@ -94,5 +94,8 @@ function seedList(queryClient: QueryClient) {
 }
 
 function seedHistory(queryClient: QueryClient) {
-  queryClient.setQueryData(['workflow-history', 'default', workflow.workflow_id], [workflowStartedEvent]);
+  queryClient.setQueryData(
+    ['workflow-history', 'default', workflow.workflow_id],
+    [workflowStartedEvent]
+  );
 }

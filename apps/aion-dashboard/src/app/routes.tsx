@@ -1,4 +1,4 @@
-import { createBrowserRouter, generatePath, useParams, type RouteObject } from 'react-router';
+import { createBrowserRouter, generatePath, type RouteObject, useParams } from 'react-router';
 
 import { useNamespace } from '@/features/namespace';
 import { WorkflowDetail } from '@/features/workflow-detail';
@@ -26,7 +26,7 @@ export function workflowDetailHref(workflowId: string) {
   return generatePath(workflowDetailPath, { id: workflowId });
 }
 
-export function routerBasenameFromBaseUrl(baseUrl = import.meta.env.BASE_URL) {
+export function routerBasenameFromBaseUrl(baseUrl = import.meta.env.BASE_URL ?? '/') {
   if (baseUrl === '' || baseUrl === '/') {
     return '/';
   }

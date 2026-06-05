@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { NamespaceProvider } from '@/features/namespace';
-import { aionEventSocket, type AionEventWebSocketManager, type ApiClient } from '@/lib/api';
+import { type AionEventWebSocketManager, type ApiClient, aionEventSocket } from '@/lib/api';
 import type { Namespace } from '@/types';
 
 const QUERY_STALE_TIME_MS = 30_000;

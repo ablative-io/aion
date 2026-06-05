@@ -1,10 +1,10 @@
-export { WorkflowList } from './components/WorkflowList';
 export type { WorkflowListProps } from './components/WorkflowList';
+export { WorkflowList } from './components/WorkflowList';
 export type { WorkflowQueryOptions } from './hooks/useWorkflowQuery';
 export {
+  queryWorkflowPage,
   requireWorkflowQueryNamespace,
   useWorkflowQuery,
-  queryWorkflowPage,
   workflowListQueryKey,
   workflowQueryKey,
   workflowQueryRequestOptions,

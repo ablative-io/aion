@@ -1,8 +1,8 @@
 import { Wifi, WifiOff } from 'lucide-react';
 
 import { Badge } from '@/components/ui';
-import { cn } from '@/lib/utils';
 import type { ConnectionStatus } from '@/lib/api';
+import { cn } from '@/lib/utils';
 
 import { useConnectionStatus } from '../hooks/useConnectionStatus';
 

@@ -1,9 +1,15 @@
 import { Skeleton } from '@/components/ui';
 
-function LoadingSkeleton() {
+type LoadingSkeletonProps = {
+  label?: string;
+  rows?: number;
+};
+
+function LoadingSkeleton({ label = 'Loading timeline', rows = 4 }: LoadingSkeletonProps) {
   return (
-    <div aria-label="Loading timeline" className="space-y-4" role="status">
-      {Array.from({ length: 4 }, (_, index) => (
+    <div aria-label={label} className="space-y-4" role="status">
+      <span className="sr-only">{label}</span>
+      {Array.from({ length: rows }, (_, index) => (
         <div className="flex gap-4" key={index.toString()}>
           <Skeleton className="mt-1 size-10 rounded-full" />
           <div className="flex-1 space-y-3 rounded-xl border border-[var(--border-default)] p-4">
