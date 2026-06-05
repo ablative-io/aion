@@ -58,6 +58,19 @@ pub enum ServerError {
         failure: StreamFailure,
     },
 
+    /// A scheduled activity could not be pushed to a worker.
+    #[error(
+        "worker dispatch failed for namespace {namespace}, activity type {activity_type}: {reason}"
+    )]
+    WorkerDispatch {
+        /// Namespace scoped before dispatch.
+        namespace: String,
+        /// Activity type requested by the engine.
+        activity_type: String,
+        /// Redacted dispatch failure reason.
+        reason: String,
+    },
+
     /// A lock was poisoned and the protected state cannot be trusted.
     #[error("{resource} lock was poisoned")]
     LockPoisoned {
@@ -87,6 +100,12 @@ pub enum StreamFailure {
     UpstreamClosed,
 }
 
+impl From<WireError> for ServerError {
+    fn from(wire: WireError) -> Self {
+        Self::Wire { wire }
+    }
+}
+
 impl ServerError {
     /// Convert a server error that crosses a transport boundary into the stable
     /// public wire taxonomy.
@@ -96,6 +115,7 @@ impl ServerError {
             Self::Config { .. } | Self::TransportBind { .. } | Self::LockPoisoned { .. } => {
                 WireError::backend("server backend failure")
             }
+            Self::WorkerDispatch { .. } => WireError::backend("worker dispatch failed"),
             Self::Namespace { .. } => WireError::namespace_denied("namespace access denied"),
             Self::EngineCall { source } => wire_from_engine(source),
             Self::StoreBackend { source } => wire_from_store(source),
@@ -122,6 +142,20 @@ impl ServerError {
     pub const fn lagged_stream() -> Self {
         Self::Stream {
             failure: StreamFailure::Lagged,
+        }
+    }
+
+    /// Construct a worker-dispatch error.
+    #[must_use]
+    pub fn worker_dispatch(
+        namespace: impl Into<String>,
+        activity_type: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::WorkerDispatch {
+            namespace: namespace.into(),
+            activity_type: activity_type.into(),
+            reason: reason.into(),
         }
     }
 

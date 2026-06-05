@@ -3,3 +3,9 @@
 pub mod dispatch;
 pub mod heartbeat;
 pub mod registry;
+
+pub use dispatch::{
+    ActivityCompletion, ActivityCompletionOutcome, ActivityCompletionSink, ActivityDispatcher,
+    ScheduledActivity, handle_activity_result,
+};
+pub use registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerId, WorkerRegistration};
