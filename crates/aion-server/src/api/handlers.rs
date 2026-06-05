@@ -57,11 +57,11 @@ pub async fn signal(
 ) -> Result<ProtoSignalResponse, WireError> {
     let workflow_id = required_workflow_id(request.workflow_id.clone())?;
     let run_id = required_run_id(request.run_id.clone())?;
-    let payload = required_payload(request.payload.clone())?;
     let target = WorkflowTarget::with_run(&workflow_id, &run_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::signal(&request, target))
         .map_err(|error| error.to_wire_error())?;
+    let payload = required_payload(request.payload.clone())?;
 
     scoped
         .engine()
@@ -269,7 +269,7 @@ mod tests {
 
         assert_eq!(
             error.err().map(|error| error.code),
-            Some(WireErrorCode::Backend)
+            Some(WireErrorCode::NotFound)
         );
         Ok(())
     }
@@ -441,6 +441,27 @@ mod tests {
         };
 
         let error = list(&guard, &caller, request).await;
+
+        assert_eq!(
+            error.err().map(|error| error.code),
+            Some(WireErrorCode::NamespaceDenied)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_signal_does_not_decode_missing_payload_before_namespace_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (guard, caller) = denied_guard();
+        let request = ProtoSignalRequest {
+            namespace: NAMESPACE.to_owned(),
+            workflow_id: Some(workflow_id().into()),
+            run_id: Some(run_id().into()),
+            signal_name: "poke".to_owned(),
+            payload: None,
+        };
+
+        let error = signal(&guard, &caller, request).await;
 
         assert_eq!(
             error.err().map(|error| error.code),
