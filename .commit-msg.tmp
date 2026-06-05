@@ -1,1 +1,1 @@
-review(aion-proto): harden wire serde derives
+feat(aion-flow): define typed error taxonomy
