@@ -1,1 +1,1 @@
-review(aion-dashboard): harden AU-002 generated types and REST errors
+feat(aion-worker): add activity context and typed dispatch

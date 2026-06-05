@@ -8,9 +8,14 @@ pub mod protocol;
 pub mod runtime;
 pub mod worker;
 
+pub use activity::{ActivityFailure, Classification};
 pub use config::{TransportCredentials, WorkerConfig, WorkerConfigBuildError, WorkerConfigBuilder};
+pub use context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 pub use error::{MissingActivityHandler, WorkerError};
 pub use protocol::{
     ActivityTask, GrpcWorkerSession, WorkerSession, WorkerTaskStream, validate_activity_handlers,
 };
-pub use runtime::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
+pub use runtime::{
+    ActivityDispatcher, DispatchOutcome, TypedActivityDispatcher, decode_payload, encode_payload,
+    serve_activity_tasks,
+};
