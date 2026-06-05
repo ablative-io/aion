@@ -1,1 +1,1 @@
-// barrel
+export { useConnectionStatus } from './hooks/useConnectionStatus';
