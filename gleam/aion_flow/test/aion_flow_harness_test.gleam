@@ -52,6 +52,9 @@ pub fn simulated_now_reflects_advanced_time_test() {
           |> should.equal(1_700_000_090_000)
         Error(_) -> should.fail()
       }
+
+      testing.new()
+      |> should.equal(Ok(env))
     }
     Error(_) -> should.fail()
   }
@@ -195,8 +198,11 @@ pub fn non_deterministic_replay_assertion_fails_with_diagnostic_test() {
           }
         })
       {
-        Error(replay.ObservationMismatch(recorded: recorded, replayed: replayed)) ->
-          recorded == replayed |> should.equal(False)
+        Error(replay.ObservationMismatch(recorded: recorded, replayed: replayed)) -> {
+          should.be_true(recorded != replayed)
+          testing.new()
+          |> should.equal(Ok(env))
+        }
         _ -> should.fail()
       }
     }

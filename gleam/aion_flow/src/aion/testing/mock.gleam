@@ -5,7 +5,7 @@
 //// `workflow.run` will use. The test-only FFI double stores a type-erased
 //// wrapper in process-scoped state and intercepts activity dispatch by name.
 
-import aion/activity as activity_sdk.{type Activity}
+import aion/activity.{type Activity, input_codec, name, output_codec}
 import aion/error
 import aion/internal/ffi
 
@@ -18,9 +18,9 @@ pub fn activity(
   activity_value: Activity(input, output),
   handler: fn(input) -> Result(output, error.ActivityError),
 ) -> Result(env, error.EngineError) {
-  let input_codec = activity_sdk.input_codec(activity_value)
-  let output_codec = activity_sdk.output_codec(activity_value)
-  let name = activity_sdk.name(activity_value)
+  let input_codec = input_codec(activity_value)
+  let output_codec = output_codec(activity_value)
+  let name = name(activity_value)
   let raw_handler = fn(raw_input: String) {
     case input_codec.decode(raw_input) {
       Ok(typed_input) ->
