@@ -2,6 +2,11 @@
 
 pub mod convert;
 pub mod error;
+pub mod generated {
+    //! Generated protobuf and gRPC service bindings.
+
+    tonic::include_proto!("aion");
+}
 pub mod worker;
 
 pub use convert::{

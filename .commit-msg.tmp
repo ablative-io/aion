@@ -1,1 +1,1 @@
-feat(aion-proto): add remote worker bidi protocol
+review(aion-proto): expose generated worker service bindings
