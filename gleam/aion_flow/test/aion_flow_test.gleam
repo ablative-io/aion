@@ -73,8 +73,10 @@ pub fn codec_schema_error_carries_path_test() {
 }
 
 pub fn activity_error_constructors_preserve_classification_test() {
-  let retryable = error.retryable_with_details("network failed", "{\"attempt\":1}")
-  let terminal = error.terminal_with_details("invalid order", "{\"field\":\"id\"}")
+  let retryable =
+    error.retryable_with_details("network failed", "{\"attempt\":1}")
+  let terminal =
+    error.terminal_with_details("invalid order", "{\"field\":\"id\"}")
 
   case retryable {
     error.Retryable(message: message, details: details) -> {

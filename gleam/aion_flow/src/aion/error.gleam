@@ -29,10 +29,7 @@ pub fn retryable(message: String) -> ActivityError {
 }
 
 /// Construct a retryable activity failure with an encoded detail payload.
-pub fn retryable_with_details(
-  message: String,
-  details: String,
-) -> ActivityError {
+pub fn retryable_with_details(message: String, details: String) -> ActivityError {
   Retryable(message: message, details: details)
 }
 
