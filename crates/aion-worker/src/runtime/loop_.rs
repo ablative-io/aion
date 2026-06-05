@@ -102,16 +102,16 @@ where
         };
         if !handle_session_event(
             event,
-            permit,
-            Arc::clone(&dispatcher),
-            &result_sender,
-            &heartbeat_sender,
-            &heartbeat_bookkeeper,
-            &mut in_flight,
-            &mut pending_error,
-        )
-        .await?
-        {
+            SessionEventContext {
+                permit,
+                dispatcher: Arc::clone(&dispatcher),
+                result_sender: &result_sender,
+                heartbeat_sender: &heartbeat_sender,
+                heartbeat_bookkeeper: &heartbeat_bookkeeper,
+                in_flight: &mut in_flight,
+                pending_error: &mut pending_error,
+            },
+        )? {
             break;
         }
     }
@@ -134,15 +134,19 @@ where
     Ok(())
 }
 
-async fn handle_session_event<D>(
-    event: Result<WorkerSessionEvent, WorkerError>,
+struct SessionEventContext<'a, D> {
     permit: tokio::sync::OwnedSemaphorePermit,
     dispatcher: Arc<D>,
-    result_sender: &mpsc::UnboundedSender<DispatchFinished>,
-    heartbeat_sender: &mpsc::UnboundedSender<HeartbeatRequest>,
-    heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
-    pending_error: &mut Option<WorkerError>,
+    result_sender: &'a mpsc::UnboundedSender<DispatchFinished>,
+    heartbeat_sender: &'a mpsc::UnboundedSender<HeartbeatRequest>,
+    heartbeat_bookkeeper: &'a HeartbeatBookkeeper,
+    in_flight: &'a mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    pending_error: &'a mut Option<WorkerError>,
+}
+
+fn handle_session_event<D>(
+    event: Result<WorkerSessionEvent, WorkerError>,
+    ctx: SessionEventContext<'_, D>,
 ) -> Result<bool, WorkerError>
 where
     D: ActivityDispatcher,
@@ -152,19 +156,19 @@ where
             let task = match ActivityTask::try_from(proto_task) {
                 Ok(task) => task,
                 Err(error) => {
-                    drop(permit);
-                    *pending_error = Some(error);
+                    drop(ctx.permit);
+                    *ctx.pending_error = Some(error);
                     return Ok(false);
                 }
             };
             spawn_activity(
                 task,
-                permit,
-                dispatcher,
-                result_sender.clone(),
-                heartbeat_sender.clone(),
-                heartbeat_bookkeeper,
-                in_flight,
+                ctx.permit,
+                ctx.dispatcher,
+                ctx.result_sender.clone(),
+                ctx.heartbeat_sender.clone(),
+                ctx.heartbeat_bookkeeper,
+                ctx.in_flight,
             )?;
             Ok(true)
         }
@@ -172,13 +176,13 @@ where
             workflow_id,
             activity_id,
         }) => {
-            drop(permit);
-            deliver_cancellation(workflow_id, activity_id, in_flight);
+            drop(ctx.permit);
+            deliver_cancellation(workflow_id, &activity_id, ctx.in_flight);
             Ok(true)
         }
         Err(error) => {
-            drop(permit);
-            *pending_error = Some(error);
+            drop(ctx.permit);
+            *ctx.pending_error = Some(error);
             Ok(false)
         }
     }
@@ -237,7 +241,7 @@ where
 
 fn deliver_cancellation(
     workflow_id: WorkflowId,
-    activity_id: ActivityId,
+    activity_id: &ActivityId,
     in_flight: &HashMap<ActivityExecutionKey, InFlightActivity>,
 ) {
     let key = ActivityExecutionKey::new(workflow_id, activity_id.clone());
