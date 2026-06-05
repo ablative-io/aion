@@ -1,1 +1,1 @@
-feat(aion-proto): define event subscription wire types
+review(aion-proto): harden event wire tests

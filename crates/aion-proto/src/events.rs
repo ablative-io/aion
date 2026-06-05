@@ -180,6 +180,16 @@ mod tests {
                 )),
             },
             SubscriptionRequest {
+                subscription: Some(subscription_request::Subscription::Filtered(
+                    FilteredSubscription {
+                        namespace: String::from("tenant-a"),
+                        workflow_type: None,
+                        status: None,
+                        namespace_selector: None,
+                    },
+                )),
+            },
+            SubscriptionRequest {
                 subscription: Some(subscription_request::Subscription::Firehose(
                     FirehoseSubscription {
                         namespace: String::from("tenant-a"),
@@ -237,6 +247,19 @@ mod tests {
         assert_eq!(
             frame.decode_event(),
             Err(WireError::backend("streamed event namespace mismatch"))
+        );
+    }
+
+    #[test]
+    fn streamed_event_rejects_missing_envelope() {
+        let frame = StreamedEvent {
+            namespace: String::from("tenant-a"),
+            event: None,
+        };
+
+        assert_eq!(
+            frame.decode_event(),
+            Err(WireError::backend("streamed event envelope is missing"))
         );
     }
 }
