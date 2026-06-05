@@ -21,3 +21,6 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 aion-core = { version = "0.1.0", path = "../aion-core" }
 uuid.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
