@@ -40,12 +40,14 @@ pub type RetryPolicy {
 /// A typed activity invocation value.
 ///
 /// `i` is the statically-known input type and `o` is the statically-known output
-/// type. The output codec is carried so later workflow dispatch can decode the
-/// type-erased engine payload back to `o` without reflection.
+/// type. The input and output codecs are carried so workflow dispatch can encode
+/// the author value and decode the type-erased engine payload without
+/// reflection.
 pub opaque type Activity(i, o) {
   Activity(
     name: String,
     input: i,
+    input_codec: codec.Codec(i),
     output_codec: codec.Codec(o),
     runner: fn(i) -> Result(o, error.ActivityError),
     retry_policy: Option(RetryPolicy),
@@ -62,12 +64,14 @@ pub opaque type Activity(i, o) {
 pub fn new(
   name: String,
   input: i,
+  input_codec: codec.Codec(i),
   output_codec: codec.Codec(o),
   run: fn(i) -> Result(o, error.ActivityError),
 ) -> Activity(i, o) {
   Activity(
     name: name,
     input: input,
+    input_codec: input_codec,
     output_codec: output_codec,
     runner: run,
     retry_policy: None,
@@ -84,6 +88,7 @@ pub fn retry(activity: Activity(i, o), policy: RetryPolicy) -> Activity(i, o) {
   Activity(
     name: activity.name,
     input: activity.input,
+    input_codec: activity.input_codec,
     output_codec: activity.output_codec,
     runner: activity.runner,
     retry_policy: Some(policy),
@@ -100,6 +105,7 @@ pub fn timeout(
   Activity(
     name: activity.name,
     input: activity.input,
+    input_codec: activity.input_codec,
     output_codec: activity.output_codec,
     runner: activity.runner,
     retry_policy: activity.retry_policy,
@@ -116,6 +122,7 @@ pub fn heartbeat(
   Activity(
     name: activity.name,
     input: activity.input,
+    input_codec: activity.input_codec,
     output_codec: activity.output_codec,
     runner: activity.runner,
     retry_policy: activity.retry_policy,
@@ -132,6 +139,11 @@ pub fn name(activity: Activity(i, o)) -> String {
 /// Return the typed input captured by the activity value.
 pub fn input(activity: Activity(i, o)) -> i {
   activity.input
+}
+
+/// Return the typed input codec captured by the activity value.
+pub fn input_codec(activity: Activity(i, o)) -> codec.Codec(i) {
+  activity.input_codec
 }
 
 /// Return the typed output codec captured by the activity value.

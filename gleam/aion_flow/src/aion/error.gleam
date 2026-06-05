@@ -8,12 +8,17 @@
 
 import aion/codec
 
-/// An activity decision returned by author activity code.
+/// An activity dispatch failure returned through `workflow.run`.
 ///
-/// This is the Gleam mirror of aion-core's retryable/terminal activity-error
-/// classification (aion-core C21). The engine retries `Retryable` failures
-/// according to the activity's `RetryPolicy` until its attempts are exhausted,
-/// and fails immediately for `Terminal` failures.
+/// `Retryable` and `Terminal` are the Gleam mirror of aion-core's retryable /
+/// terminal activity-error classification (aion-core C21). The engine retries
+/// `Retryable` failures according to the activity's explicit `RetryPolicy` until
+/// its attempts are exhausted, and fails immediately for `Terminal` failures.
+///
+/// Engine-originated failures that can occur while dispatching or decoding an
+/// activity result are also represented here so `workflow.run(Activity(i, o))`
+/// remains a single typed `Result(o, ActivityError)` boundary. Decode failures
+/// preserve the typed codec error and are never swallowed or raised as panics.
 ///
 /// `details` carries structured detail data encoded by the author-facing codec
 /// layer. The SDK keeps it as an opaque string here so activity authors do not
@@ -21,6 +26,11 @@ import aion/codec
 pub type ActivityError {
   Retryable(message: String, details: String)
   Terminal(message: String, details: String)
+  ActivityDecodeFailed(codec.DecodeError)
+  ActivityTimedOut(TimeoutError)
+  ActivityCancelled(CancellationError)
+  ActivityNonDeterministic(NonDeterminismError)
+  ActivityEngineFailure(message: String)
 }
 
 /// Construct a retryable activity failure with no detail payload.
@@ -47,8 +57,8 @@ pub fn terminal_with_details(message: String, details: String) -> ActivityError 
 ///
 /// Later workflow primitives such as `with_timeout`, timers, and activity
 /// timeout handling use this type when the engine decides that a deadline has
-/// expired. This is separate from `ActivityError` because authors must not
-/// classify an engine timeout as an activity retry decision.
+/// expired. This is separate from author retry/terminal decisions because
+/// authors must not classify an engine timeout as an activity retry decision.
 pub type TimeoutError {
   TimedOut(message: String)
 }
@@ -65,9 +75,20 @@ pub type CancellationError {
 ///
 /// This corresponds to AD's `NonDeterminismError`: the workflow command stream
 /// produced during replay did not match recorded history. Workflow code handles
-/// it as an engine-originated failure, never as an `ActivityError`.
+/// it as an engine-originated failure, never as an author retry/terminal
+/// decision.
 pub type NonDeterminismError {
   NonDeterminismViolation(message: String)
+}
+
+/// A generic engine-originated primitive failure.
+///
+/// Deterministic primitives such as `workflow.now` and `workflow.random` are
+/// bound to AD through the FFI layer. If the engine reports an unavailable
+/// context or malformed deterministic value, the SDK returns this data rather
+/// than panicking.
+pub type EngineError {
+  EngineFailure(message: String)
 }
 
 /// A boundary decode failure for workflow primitives.

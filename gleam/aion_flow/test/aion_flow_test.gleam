@@ -4,6 +4,7 @@ import aion/activity
 import aion/codec
 import aion/duration
 import aion/error
+import aion/workflow
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None, Some}
@@ -93,7 +94,7 @@ pub fn activity_error_constructors_preserve_classification_test() {
       message |> should.equal("network failed")
       details |> should.equal("{\"attempt\":1}")
     }
-    error.Terminal(_, _) -> should.fail()
+    _ -> should.fail()
   }
 
   case terminal {
@@ -101,7 +102,7 @@ pub fn activity_error_constructors_preserve_classification_test() {
       message |> should.equal("invalid order")
       details |> should.equal("{\"field\":\"id\"}")
     }
-    error.Retryable(_, _) -> should.fail()
+    _ -> should.fail()
   }
 }
 
@@ -111,7 +112,7 @@ pub fn activity_error_helpers_use_empty_details_test() {
       message |> should.equal("temporary outage")
       details |> should.equal("")
     }
-    error.Terminal(_, _) -> should.fail()
+    _ -> should.fail()
   }
 
   case error.terminal("bad request") {
@@ -119,7 +120,7 @@ pub fn activity_error_helpers_use_empty_details_test() {
       message |> should.equal("bad request")
       details |> should.equal("")
     }
-    error.Retryable(_, _) -> should.fail()
+    _ -> should.fail()
   }
 }
 
@@ -150,9 +151,16 @@ pub fn duration_equivalent_days_and_hours_are_canonical_test() {
 
 pub fn activity_new_carries_typed_fields_test() {
   let request = ChargeRequest(order_id: "order-activity-1", cents: 4200)
+  let request_codec = charge_request_codec()
   let receipt_codec = charge_receipt_codec()
   let charge =
-    activity.new("charge-payment", request, receipt_codec, charge_payment)
+    activity.new(
+      "charge-payment",
+      request,
+      request_codec,
+      receipt_codec,
+      charge_payment,
+    )
 
   charge
   |> activity.name
@@ -161,6 +169,10 @@ pub fn activity_new_carries_typed_fields_test() {
   charge
   |> activity.input
   |> should.equal(request)
+
+  let input_codec = activity.input_codec(charge)
+  input_codec.encode(request)
+  |> should.equal("{\"order_id\":\"order-activity-1\",\"cents\":4200}")
 
   let codec = activity.output_codec(charge)
   codec.encode(ChargeReceipt(id: "receipt-1", approved: True))
@@ -183,6 +195,7 @@ pub fn activity_decorators_compose_and_carry_config_test() {
     activity.new(
       "charge-payment",
       ChargeRequest(order_id: "order-activity-2", cents: 1200),
+      charge_request_codec(),
       charge_receipt_codec(),
       charge_payment,
     )
@@ -245,6 +258,7 @@ pub fn activity_new_has_no_default_policy_or_timing_config_test() {
     activity.new(
       "charge-payment",
       ChargeRequest(order_id: "order-activity-3", cents: 900),
+      charge_request_codec(),
       charge_receipt_codec(),
       charge_payment,
     )
@@ -260,6 +274,115 @@ pub fn activity_new_has_no_default_policy_or_timing_config_test() {
   charge
   |> activity.heartbeat_interval
   |> should.equal(None)
+}
+
+pub fn workflow_run_returns_decoded_typed_result_test() {
+  let charge =
+    activity.new(
+      "charge-payment",
+      ChargeRequest(order_id: "order-run-1", cents: 700),
+      charge_request_codec(),
+      charge_receipt_codec(),
+      charge_payment,
+    )
+
+  charge
+  |> workflow.run
+  |> should.equal(Ok(ChargeReceipt(id: "receipt-order-run-1", approved: True)))
+}
+
+pub fn workflow_run_returns_typed_activity_error_test() {
+  let failing =
+    activity.new(
+      "fail-retryable",
+      ChargeRequest(order_id: "order-run-2", cents: 700),
+      charge_request_codec(),
+      charge_receipt_codec(),
+      charge_payment,
+    )
+
+  failing
+  |> workflow.run
+  |> should.equal(Error(error.Retryable(message: "mock retry", details: "")))
+}
+
+pub fn workflow_run_decode_failure_is_typed_data_test() {
+  let malformed =
+    activity.new(
+      "malformed-receipt",
+      ChargeRequest(order_id: "order-run-3", cents: 700),
+      charge_request_codec(),
+      charge_receipt_codec(),
+      charge_payment,
+    )
+
+  case workflow.run(malformed) {
+    Ok(_) -> should.fail()
+    Error(error.ActivityDecodeFailed(decode_error)) ->
+      decode_error
+      |> should.equal(
+        codec.DecodeError(reason: "Expected String, found Int", path: ["id"]),
+      )
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn workflow_now_and_random_are_deterministic_bindings_test() {
+  case workflow.now() {
+    Ok(timestamp) ->
+      timestamp
+      |> workflow.timestamp_to_milliseconds
+      |> should.equal(1_700_000_000_000)
+    Error(_) -> should.fail()
+  }
+
+  workflow.random()
+  |> should.equal(Ok(0.25))
+
+  workflow.random_int(1, 10)
+  |> should.equal(Ok(4))
+}
+
+pub fn workflow_random_int_rejects_invalid_range_before_dispatch_test() {
+  workflow.random_int(10, 1)
+  |> should.equal(
+    Error(error.EngineFailure(
+      message: "Invalid deterministic random_int range: min is greater than max",
+    )),
+  )
+}
+
+pub fn workflow_define_carries_entry_contract_test() {
+  let definition =
+    workflow.define(
+      "checkout",
+      charge_request_codec(),
+      charge_receipt_codec(),
+      workflow_error_codec(),
+      checkout_workflow,
+    )
+
+  definition
+  |> workflow.name
+  |> should.equal("checkout")
+
+  workflow.input_codec(definition).encode(ChargeRequest(
+    order_id: "order-define",
+    cents: 1000,
+  ))
+  |> should.equal("{\"order_id\":\"order-define\",\"cents\":1000}")
+
+  workflow.output_codec(definition).decode(
+    "{\"id\":\"receipt-define\",\"approved\":true}",
+  )
+  |> should.equal(Ok(ChargeReceipt(id: "receipt-define", approved: True)))
+
+  workflow.error_codec(definition).decode("\"declined\"")
+  |> should.equal(Ok("declined"))
+
+  let entry = workflow.entry_fn(definition)
+  entry(ChargeRequest(order_id: "order-entry", cents: 1200))
+  |> should.equal(Ok(ChargeReceipt(id: "receipt-order-entry", approved: True)))
 }
 
 fn order_to_json(order: Order) -> json.Json {
@@ -284,6 +407,31 @@ fn charge_payment(
   request: ChargeRequest,
 ) -> Result(ChargeReceipt, error.ActivityError) {
   Ok(ChargeReceipt(id: "receipt-" <> request.order_id, approved: True))
+}
+
+fn checkout_workflow(request: ChargeRequest) -> Result(ChargeReceipt, String) {
+  Ok(ChargeReceipt(id: "receipt-" <> request.order_id, approved: True))
+}
+
+fn charge_request_codec() -> codec.Codec(ChargeRequest) {
+  codec.json_codec(charge_request_to_json, charge_request_decoder())
+}
+
+fn charge_request_to_json(request: ChargeRequest) -> json.Json {
+  json.object([
+    #("order_id", json.string(request.order_id)),
+    #("cents", json.int(request.cents)),
+  ])
+}
+
+fn charge_request_decoder() -> decode.Decoder(ChargeRequest) {
+  use order_id <- decode.field("order_id", decode.string)
+  use cents <- decode.field("cents", decode.int)
+  decode.success(ChargeRequest(order_id: order_id, cents: cents))
+}
+
+fn workflow_error_codec() -> codec.Codec(String) {
+  codec.json_codec(json.string, decode.string)
 }
 
 fn charge_receipt_codec() -> codec.Codec(ChargeReceipt) {
