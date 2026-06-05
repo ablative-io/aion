@@ -1,9 +1,9 @@
-import type { WorkflowFilter, WorkflowStatus } from '@/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui';
+import type { WorkflowFilter, WorkflowStatus } from '@/types';
 
 import {
-  type WorkflowListFilterState,
   WORKFLOW_STATUS_OPTIONS,
+  type WorkflowListFilterState,
   workflowFilterFromState,
 } from '../types';
 
@@ -31,8 +31,8 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
           onChange={(event) => update({ ...value, workflowType: event.currentTarget.value })}
         />
       </label>
-      <label className="flex flex-col gap-2 text-sm font-medium">
-        Status
+      <div className="flex flex-col gap-2 text-sm font-medium">
+        <span>Status</span>
         <Select
           value={value.status ?? ALL_STATUSES_VALUE}
           onValueChange={(status) => update({ ...value, status: statusFromSelectValue(status) })}
@@ -49,7 +49,7 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
             ))}
           </SelectContent>
         </Select>
-      </label>
+      </div>
       <label className="flex flex-col gap-2 text-sm font-medium">
         Started after
         <input

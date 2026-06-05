@@ -6,18 +6,17 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui';
 import type { ApiClient } from '@/lib/api';
 import type { Namespace, WorkflowFilter } from '@/types';
-
-import { FilterBar } from './FilterBar';
-import { Pagination } from './Pagination';
-import { WorkflowRow } from './WorkflowRow';
 import { useWorkflowQuery } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
   FIRST_WORKFLOW_LIST_PAGE,
-  type WorkflowListFilterState,
   WORKFLOW_PAGE_LIMIT,
+  type WorkflowListFilterState,
   workflowFilterFromState,
 } from '../types';
+import { FilterBar } from './FilterBar';
+import { Pagination } from './Pagination';
+import { WorkflowRow } from './WorkflowRow';
 
 export type WorkflowListProps = {
   namespace: Namespace;

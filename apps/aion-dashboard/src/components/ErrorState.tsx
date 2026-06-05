@@ -7,12 +7,7 @@ export type ErrorStateProps = {
   onRetry?: () => void;
 };
 
-export function ErrorState({
-  title,
-  message,
-  actionLabel = 'Retry',
-  onRetry,
-}: ErrorStateProps) {
+export function ErrorState({ title, message, actionLabel = 'Retry', onRetry }: ErrorStateProps) {
   return (
     <div className="rounded-lg border border-[var(--destructive)]/40 p-6">
       <p className="font-medium text-[var(--destructive)]">{title}</p>

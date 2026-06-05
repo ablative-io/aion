@@ -7,9 +7,9 @@ export type LoadingSkeletonProps = {
 
 export function LoadingSkeleton({ rows = 3, label = 'Loading' }: LoadingSkeletonProps) {
   return (
-    <div className="space-y-3" aria-label={label} aria-busy="true">
+    <div className="space-y-3" role="status" aria-label={label} aria-busy="true">
       {Array.from({ length: rows }, (_, index) => (
-        <div className="grid grid-cols-5 gap-3" key={index}>
+        <div className="grid grid-cols-5 gap-3" key={`skeleton-row-${String(index)}`}>
           <Skeleton className="h-9" />
           <Skeleton className="h-9" />
           <Skeleton className="h-9" />

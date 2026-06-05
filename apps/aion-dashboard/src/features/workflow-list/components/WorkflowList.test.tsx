@@ -3,15 +3,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ApiClient, type WorkflowPage } from '@/lib/api';
 import type { Namespace, WorkflowFilter, WorkflowSummary } from '@/types';
-
-import { WorkflowListBody } from './WorkflowList';
-import { WorkflowRow } from './WorkflowRow';
 import { queryWorkflowPage, workflowQueryKey } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
   type WorkflowListPaginationState,
   workflowFilterFromState,
 } from '../types';
+import { WorkflowListBody } from './WorkflowList';
+import { WorkflowRow } from './WorkflowRow';
 
 const workflow: WorkflowSummary = {
   workflow_id: 'workflow-1',
