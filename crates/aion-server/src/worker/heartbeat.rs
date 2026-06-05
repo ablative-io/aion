@@ -56,11 +56,7 @@ pub struct LostWorkerReport {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct TaskKey {
-    worker_id: WorkerId,
-    workflow_id: WorkflowId,
-    activity_id: ActivityId,
-}
+struct TaskKey(WorkerId, WorkflowId, ActivityId);
 
 #[derive(Debug, Default)]
 struct HeartbeatState {
@@ -235,7 +231,7 @@ impl HeartbeatTracker {
         let keys = state
             .tasks
             .keys()
-            .filter(|key| key.worker_id == worker_id)
+            .filter(|key| key.worker_id() == worker_id)
             .cloned()
             .collect::<Vec<_>>();
         let mut tasks = Vec::with_capacity(keys.len());
@@ -259,11 +255,11 @@ impl HeartbeatTracker {
 
 impl TaskKey {
     fn new(worker_id: WorkerId, workflow_id: WorkflowId, activity_id: ActivityId) -> Self {
-        Self {
-            worker_id,
-            workflow_id,
-            activity_id,
-        }
+        Self(worker_id, workflow_id, activity_id)
+    }
+
+    const fn worker_id(&self) -> WorkerId {
+        self.0
     }
 }
 
