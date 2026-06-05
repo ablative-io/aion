@@ -24,11 +24,12 @@ use crate::stream::{EventStream, SubscribeTarget, event_stream};
 pub struct StartOptions {
     /// Namespace override for this start request.
     pub namespace: Option<String>,
-    /// Caller-supplied idempotency key reserved by the contract.
+    /// Caller-supplied idempotency key for safe local retry replay.
     ///
-    /// The current AW protobuf has not added this field yet, so AL-002 rejects a
-    /// populated key with [`ClientError::InvalidArgument`] instead of inventing a
-    /// client-owned wire field or silently dropping retry-safety semantics.
+    /// The current AW protobuf has not added an idempotency field yet, so this is
+    /// enforced at the SDK boundary without inventing a client-owned wire field.
+    /// Reusing a key for a different start request returns
+    /// [`ClientError::AlreadyExists`].
     pub idempotency_key: Option<String>,
 }
 
@@ -222,7 +223,13 @@ impl Client {
         R: DeserializeOwned,
     {
         let payload = self
-            .query(workflow_id, run_id, name, to_payload(args)?, deadline)
+            .query(
+                workflow_id,
+                run_id,
+                name,
+                query_args_payload(args)?,
+                deadline,
+            )
             .await?;
         from_payload(&payload)
     }
@@ -400,6 +407,18 @@ fn validate_query_args(args: &Payload) -> Result<(), ClientError> {
         return Err(ClientError::InvalidArgument);
     }
     Ok(())
+}
+
+fn query_args_payload<T>(args: &T) -> Result<Payload, ClientError>
+where
+    T: Serialize + ?Sized,
+{
+    let payload = to_payload(args)?;
+    if payload.bytes() == b"null" {
+        Ok(Payload::new(payload.content_type().clone(), Vec::new()))
+    } else {
+        Ok(payload)
+    }
 }
 
 fn validate_list_page(page: &ListPage) -> Result<(), ClientError> {
@@ -684,6 +703,51 @@ mod tests {
         let request = recorded.ok_or_else(|| ClientError::server("missing query"))?;
         assert!(request.run_id.is_some());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_typed_decodes_no_arg_query_result() -> Result<(), ClientError> {
+        #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
+        struct QueryResult {
+            label: String,
+        }
+
+        let stub = Arc::new(StubTransport::default());
+        let client = client_with(Arc::clone(&stub));
+        let id = workflow_id();
+
+        let result: QueryResult = client
+            .query_typed(&id, Some(&run_id()), "state", &(), Duration::from_secs(1))
+            .await?;
+
+        assert_eq!(
+            result,
+            QueryResult {
+                label: String::from("result")
+            }
+        );
+        assert!(stub.last_query.lock().await.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_typed_rejects_non_empty_args_without_silent_drop() {
+        let stub = Arc::new(StubTransport::default());
+        let client = client_with(Arc::clone(&stub));
+        let id = workflow_id();
+
+        let result = client
+            .query_typed::<_, serde_json::Value>(
+                &id,
+                Some(&run_id()),
+                "state",
+                &serde_json::json!({ "filter": "open" }),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert_eq!(result, Err(ClientError::InvalidArgument));
+        assert!(stub.last_query.lock().await.is_none());
     }
 
     #[tokio::test]

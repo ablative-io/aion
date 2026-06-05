@@ -1,1 +1,1 @@
-fix(aion-client): gate embedded-only stream import
+fix(aion-client): harden typed query and idempotency docs
