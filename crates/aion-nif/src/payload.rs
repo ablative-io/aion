@@ -182,7 +182,12 @@ fn number_into_term(number: &Number, ctx: &mut ProcessContext) -> Result<Term, T
 }
 
 fn limbs_from_u128(value: u128) -> [u64; 2] {
-    [value as u64, (value >> u64::BITS) as u64]
+    let le = value.to_le_bytes();
+    let mut low = [0_u8; 8];
+    let mut high = [0_u8; 8];
+    low.copy_from_slice(&le[..8]);
+    high.copy_from_slice(&le[8..]);
+    [u64::from_le_bytes(low), u64::from_le_bytes(high)]
 }
 
 impl FromTerm for Payload {
