@@ -128,6 +128,22 @@ impl NamespaceResolver {
         &self.mode
     }
 
+    /// Shut down the engine owned by this resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Config`] when no engine is attached, or [`ServerError::EngineCall`]
+    /// when the engine rejects shutdown.
+    pub fn shutdown_engine(&self) -> Result<(), ServerError> {
+        self.engine
+            .as_ref()
+            .ok_or_else(|| ServerError::Config {
+                message: "namespace resolver has no engine handle".to_owned(),
+            })?
+            .shutdown()
+            .map_err(ServerError::from)
+    }
+
     /// Authorize a caller for a requested namespace and return scoped engine
     /// access if allowed.
     ///

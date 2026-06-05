@@ -9,7 +9,7 @@ workspace = true
 
 [dependencies]
 aion = { path = "../aion" }
-aion-proto = { path = "../aion-proto" }
+aion-proto = { path = "../aion-proto", features = ["generated"] }
 aion-store-libsql = { path = "../aion-store-libsql" }
 aion-store = { path = "../aion-store" }
 tokio = { workspace = true, features = ["full"] }
@@ -23,3 +23,5 @@ aion-core = { version = "0.1.0", path = "../aion-core" }
 uuid.workspace = true
 futures.workspace = true
 chrono = { workspace = true, features = ["serde"] }
+prost.workspace = true
+tower = { workspace = true, features = ["util"] }

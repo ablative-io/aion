@@ -154,11 +154,13 @@ dependencies = [
  "axum 0.8.9",
  "chrono",
  "futures",
+ "prost 0.14.3",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonic 0.14.6",
+ "tower 0.5.3",
  "uuid",
 ]
 
