@@ -64,7 +64,7 @@ pub fn payload_from_term(term: Term, ctx: &ProcessContext) -> Result<Payload, Te
 ///
 /// Returns [`TermError`] when the payload is not valid JSON for its content tag
 /// or beamr cannot encode the JSON value as a term.
-pub fn payload_into_term(payload: Payload, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+pub fn payload_into_term(payload: &Payload, ctx: &mut ProcessContext) -> Result<Term, TermError> {
     let value = payload.to_json().map_err(|error| TermError::Conversion {
         context: "payload to json value",
         message: error.to_string(),
@@ -114,7 +114,7 @@ where
         message: error.to_string(),
     })?;
 
-    payload_into_term(payload, ctx)
+    payload_into_term(&payload, ctx)
 }
 
 fn value_into_term(value: &Value, ctx: &mut ProcessContext) -> Result<Term, TermError> {
@@ -163,7 +163,7 @@ impl FromTerm for Payload {
 
 impl IntoTerm for Payload {
     fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
-        payload_into_term(self, ctx)
+        payload_into_term(&self, ctx)
     }
 }
 
@@ -211,7 +211,7 @@ mod tests {
                     message: error.to_string(),
                 })?;
 
-            let term = payload_into_term(payload, &mut ctx)?;
+            let term = payload_into_term(&payload, &mut ctx)?;
             let decoded = payload_from_term(term, &ctx)?;
             let decoded_value = decoded.to_json().map_err(|error| TermError::Conversion {
                 context: "test payload to json value",
@@ -233,7 +233,7 @@ mod tests {
                 message: error.to_string(),
             })?;
 
-        let term = payload_into_term(payload, &mut ctx)?;
+        let term = payload_into_term(&payload, &mut ctx)?;
         let atom_table = ctx.atom_table().ok_or_else(|| TermError::AtomResolution {
             atom: "nil".to_owned(),
             reason: "atom table is unavailable".to_owned(),
