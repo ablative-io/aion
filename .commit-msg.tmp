@@ -1,1 +1,1 @@
-fix(aion-worker): satisfy clippy for activity context dispatch
+Harden AR-003 dispatch panic handling

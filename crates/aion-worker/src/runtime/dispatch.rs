@@ -158,9 +158,12 @@ where
         let (context, cancellation_handle) =
             ActivityContext::new(task.activity_id.clone(), task.attempt);
         drop(cancellation_handle);
-        let handler_result = AssertUnwindSafe((self.handler)(input, &context))
-            .catch_unwind()
-            .await;
+        let handler_future =
+            match std::panic::catch_unwind(AssertUnwindSafe(|| (self.handler)(input, &context))) {
+                Ok(handler_future) => handler_future,
+                Err(panic) => return Ok(panic_failure(&task, &panic)),
+            };
+        let handler_result = AssertUnwindSafe(handler_future).catch_unwind().await;
         match handler_result {
             Ok(Ok(output)) => Ok(DispatchOutcome::Completed {
                 output: encode_payload(&output)?,
@@ -168,22 +171,24 @@ where
             Ok(Err(failure)) => Ok(DispatchOutcome::Failed {
                 failure: ActivityError::from(failure),
             }),
-            Err(panic) => {
-                let message = panic_message(&panic);
-                error!(
-                    activity_type = %task.activity_type,
-                    activity_id = task.activity_id.sequence_position(),
-                    attempt = task.attempt,
-                    panic = %message,
-                    "activity handler panicked; reporting retryable activity failure"
-                );
-                Ok(DispatchOutcome::Failed {
-                    failure: ActivityError::from(ActivityFailure::retryable(format!(
-                        "activity handler panicked: {message}"
-                    ))),
-                })
-            }
+            Err(panic) => Ok(panic_failure(&task, &panic)),
         }
+    }
+}
+
+fn panic_failure(task: &ActivityTask, panic: &Box<dyn Any + Send>) -> DispatchOutcome {
+    let message = panic_message(panic);
+    error!(
+        activity_type = %task.activity_type,
+        activity_id = task.activity_id.sequence_position(),
+        attempt = task.attempt,
+        panic = %message,
+        "activity handler panicked; reporting retryable activity failure"
+    );
+    DispatchOutcome::Failed {
+        failure: ActivityError::from(ActivityFailure::retryable(format!(
+            "activity handler panicked: {message}"
+        ))),
     }
 }
 
@@ -444,6 +449,33 @@ mod tests {
             &activity_id,
             ActivityErrorKind::Retryable,
             "activity handler panicked: boom",
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn synchronous_handler_panic_reports_retryable_failure_and_loop_survives()
+    -> Result<(), WorkerError> {
+        let activity_id = ActivityId::from_sequence_position(6);
+        let mut session =
+            session_with_task(activity_id.clone(), "sync-panic", json!({"value": 1}))?;
+        let dispatcher = TypedActivityDispatcher::new().register(
+            "sync-panic",
+            |input: TestInput, context| -> super::HandlerFuture<TestOutput> {
+                drop((input, context));
+                std::panic::panic_any("sync boom");
+            },
+        );
+        let config = test_config();
+
+        serve_activity_tasks(&config, &mut session, Arc::new(dispatcher)).await?;
+
+        assert_eq!(session.reports.len(), 1);
+        assert_failure(
+            &session.reports[0],
+            &activity_id,
+            ActivityErrorKind::Retryable,
+            "activity handler panicked: sync boom",
         );
         Ok(())
     }
