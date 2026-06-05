@@ -199,9 +199,9 @@ These three tracks run concurrently.
 - [x] **AW-005** — Remote-worker protocol definition · _landed 013dc59_
 
 ### Wave 26 (3 parallel)
-- [ ] **AF-004** — Activities (typed Activity, RetryPolicy) · _Lemmy · depends: AF-003_
-- [ ] **AN-004** — Nif descriptor, deterministic_nif declaration · _Lemmy · depends: AN-002, AN-003_
-- [ ] **AW-006** — aion-server scaffold, config, shared state · _Max Power · depends: AW-003, AW-004, AW-005_
+- [x] **AF-004** — Activities (typed Activity, RetryPolicy) · _landed a2c94a0_
+- [x] **AN-004** — Nif descriptor, deterministic_nif declaration · _landed 64c3cfb_
+- [x] **AW-006** — aion-server scaffold, config, shared state · _landed 0dc87ed_
 
 ### Wave 27 (3 parallel)
 - [ ] **AF-005** — Workflow core (run, now, random, entry) · _Lemmy · depends: AF-004_
