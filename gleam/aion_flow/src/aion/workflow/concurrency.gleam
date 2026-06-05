@@ -19,7 +19,9 @@ import gleam/string
 /// payloads are decoded one-by-one with the homogeneous output `Codec`. AT owns
 /// selective receive, fail-fast behaviour, correlation, and cancellation of
 /// remaining activities when any activity fails.
-pub fn all(activities: List(Activity(i, o))) -> Result(List(o), error.ActivityError) {
+pub fn all(
+  activities: List(Activity(i, o)),
+) -> Result(List(o), error.ActivityError) {
   case activities {
     [] -> Ok([])
     [first, ..] -> {
@@ -41,7 +43,10 @@ pub fn all(activities: List(Activity(i, o))) -> Result(List(o), error.ActivityEr
 /// AT records that winner and cancels the losers.
 pub fn race(activities: List(Activity(i, o))) -> Result(o, error.ActivityError) {
   case activities {
-    [] -> Error(error.ActivityEngineFailure(message: "race requires at least one activity"))
+    [] ->
+      Error(error.ActivityEngineFailure(
+        message: "race requires at least one activity",
+      ))
     [first, ..] -> {
       let output_codec = activity.output_codec(first)
       let specs = activity_specs(activities)
@@ -92,9 +97,10 @@ fn decode_many(
   output_codec: codec.Codec(o),
 ) -> Result(List(o), error.ActivityError) {
   case json.parse(payloads, decode.list(decode.string)) {
-    Ok(encoded_payloads) -> list.try_map(encoded_payloads, fn(payload) {
-      decode_one(payload, output_codec)
-    })
+    Ok(encoded_payloads) ->
+      list.try_map(encoded_payloads, fn(payload) {
+        decode_one(payload, output_codec)
+      })
     Error(_) ->
       Error(error.ActivityEngineFailure(
         message: "Invalid collect_all result envelope: " <> payloads,

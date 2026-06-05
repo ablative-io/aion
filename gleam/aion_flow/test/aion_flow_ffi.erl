@@ -28,18 +28,24 @@
 ]).
 
 run_activity(<<"charge-payment">>, Input, _Config) ->
+    observe(),
     OrderId = extract_string(Input, <<"order_id">>),
     {ok, <<"{\"id\":\"receipt-", OrderId/binary, "\",\"approved\":true}">>};
 run_activity(<<"slow-charge-payment">>, Input, _Config) ->
+    observe(),
     OrderId = extract_string(Input, <<"order_id">>),
     {ok, <<"{\"id\":\"slow-receipt-", OrderId/binary, "\",\"approved\":true}">>};
 run_activity(<<"race-fail-fast">>, _Input, _Config) ->
+    observe(),
     {error, <<"terminal:race failed first">>};
 run_activity(<<"fail-retryable">>, _Input, _Config) ->
+    observe(),
     {error, <<"retryable:mock retry">>};
 run_activity(<<"malformed-receipt">>, _Input, _Config) ->
+    observe(),
     {ok, <<"{\"id\":1,\"approved\":true}">>};
 run_activity(_Name, _Input, _Config) ->
+    observe(),
     {error, <<"terminal:unknown activity">>}.
 
 now() ->
@@ -135,11 +141,9 @@ collect_race(_CollectionId, Items) ->
     case Items of
         [] -> {error, <<"empty race">>};
         _ ->
-            Results = [activity_result(Spec) || Spec <- Items],
-            {Delay, Result} = lists:min([{activity_delay(Spec), Result} || {Spec, Result} <- lists:zip(Items, Results)]),
+            Winner = earliest_activity(Items),
             erlang:put({aion_race_cancelled, self()}, length(Items) - 1),
-            _ = Delay,
-            Result
+            activity_result(Winner)
     end.
 
 collect_all_loop([], Acc) ->
@@ -157,6 +161,18 @@ activity_result(Spec) ->
     Name = extract_string(Spec, <<"name">>),
     Input = extract_string(Spec, <<"input">>),
     run_activity(Name, Input, <<"{}">>).
+
+earliest_activity([First | Rest]) ->
+    lists:foldl(
+        fun(Spec, Current) ->
+            case activity_delay(Spec) < activity_delay(Current) of
+                true -> Spec;
+                false -> Current
+            end
+        end,
+        First,
+        Rest
+    ).
 
 activity_delay(Spec) ->
     Name = extract_string(Spec, <<"name">>),
