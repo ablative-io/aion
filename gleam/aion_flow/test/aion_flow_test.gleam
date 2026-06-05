@@ -309,6 +309,84 @@ pub fn workflow_run_returns_typed_activity_error_test() {
   |> should.equal(Error(error.Retryable(message: "mock retry", details: "")))
 }
 
+pub fn workflow_all_returns_ordered_typed_results_test() {
+  let activities = [
+    charge_activity("charge-payment", "order-all-1"),
+    charge_activity("charge-payment", "order-all-2"),
+    charge_activity("charge-payment", "order-all-3"),
+  ]
+
+  workflow.all(activities)
+  |> should.equal(
+    Ok([
+      ChargeReceipt(id: "receipt-order-all-1", approved: True),
+      ChargeReceipt(id: "receipt-order-all-2", approved: True),
+      ChargeReceipt(id: "receipt-order-all-3", approved: True),
+    ]),
+  )
+}
+
+pub fn workflow_all_single_failure_fails_collection_test() {
+  let activities = [
+    charge_activity("charge-payment", "order-all-ok"),
+    charge_activity("fail-retryable", "order-all-fail"),
+    charge_activity("charge-payment", "order-all-cancelled"),
+  ]
+
+  workflow.all(activities)
+  |> should.equal(Error(error.Retryable(message: "mock retry", details: "")))
+}
+
+pub fn workflow_race_first_success_wins_and_loser_is_cancelled_test() {
+  let before = query.recorded_observations()
+  let activities = [
+    charge_activity("slow-charge-payment", "order-race-slow"),
+    charge_activity("charge-payment", "order-race-fast"),
+  ]
+
+  workflow.race(activities)
+  |> should.equal(
+    Ok(ChargeReceipt(id: "receipt-order-race-fast", approved: True)),
+  )
+
+  query.recorded_observations()
+  |> should.equal(increment_count(before))
+}
+
+pub fn workflow_race_first_failure_wins_test() {
+  let before = query.recorded_observations()
+  let activities = [
+    charge_activity("race-fail-fast", "order-race-fail"),
+    charge_activity("charge-payment", "order-race-loser"),
+  ]
+
+  workflow.race(activities)
+  |> should.equal(
+    Error(error.Terminal(message: "race failed first", details: "")),
+  )
+
+  query.recorded_observations()
+  |> should.equal(increment_count(before))
+}
+
+pub fn workflow_map_dynamic_fanout_returns_ordered_results_test() {
+  ["order-map-1", "order-map-2", "order-map-3"]
+  |> workflow.map(fn(order_id) { charge_activity("charge-payment", order_id) })
+  |> should.equal(
+    Ok([
+      ChargeReceipt(id: "receipt-order-map-1", approved: True),
+      ChargeReceipt(id: "receipt-order-map-2", approved: True),
+      ChargeReceipt(id: "receipt-order-map-3", approved: True),
+    ]),
+  )
+}
+
+pub fn workflow_map_empty_returns_empty_result_test() {
+  []
+  |> workflow.map(fn(order_id) { charge_activity("charge-payment", order_id) })
+  |> should.equal(Ok([]))
+}
+
 pub fn workflow_run_decode_failure_is_typed_data_test() {
   let malformed =
     activity.new(
@@ -447,9 +525,7 @@ pub fn query_decode_failure_is_typed_data_test() {
 
 pub fn query_dispatch_records_no_observation_test() {
   let state = ChargeReceipt(id: "receipt-no-event", approved: True)
-
-  query.recorded_observations()
-  |> should.equal(Ok(0))
+  let before = query.recorded_observations()
 
   query.handler("no-event-state", charge_receipt_codec(), fn() { state })
   |> should.equal(Ok(Nil))
@@ -458,7 +534,7 @@ pub fn query_dispatch_records_no_observation_test() {
   |> should.equal(Ok(state))
 
   query.recorded_observations()
-  |> should.equal(Ok(0))
+  |> should.equal(before)
 }
 
 pub fn workflow_spawn_returns_typed_child_handle_and_records_started_test() {
@@ -637,6 +713,19 @@ fn charge_payment(
   request: ChargeRequest,
 ) -> Result(ChargeReceipt, error.ActivityError) {
   Ok(ChargeReceipt(id: "receipt-" <> request.order_id, approved: True))
+}
+
+fn charge_activity(
+  name: String,
+  order_id: String,
+) -> activity.Activity(ChargeRequest, ChargeReceipt) {
+  activity.new(
+    name,
+    ChargeRequest(order_id: order_id, cents: 700),
+    charge_request_codec(),
+    charge_receipt_codec(),
+    charge_payment,
+  )
 }
 
 fn checkout_workflow(request: ChargeRequest) -> Result(ChargeReceipt, String) {

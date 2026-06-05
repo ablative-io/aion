@@ -11,6 +11,7 @@ import aion/codec.{type Codec}
 import aion/duration
 import aion/error
 import aion/signal
+import aion/workflow/concurrency
 import aion/workflow/define as definition
 import aion/workflow/run as dispatch
 import aion/workflow/timer
@@ -34,6 +35,25 @@ pub fn run(
   activity: Activity(input, output),
 ) -> Result(output, error.ActivityError) {
   dispatch.run(activity)
+}
+
+pub fn all(
+  activities: List(Activity(input, output)),
+) -> Result(List(output), error.ActivityError) {
+  concurrency.all(activities)
+}
+
+pub fn race(
+  activities: List(Activity(input, output)),
+) -> Result(output, error.ActivityError) {
+  concurrency.race(activities)
+}
+
+pub fn map(
+  items: List(value),
+  to_activity: fn(value) -> Activity(input, output),
+) -> Result(List(output), error.ActivityError) {
+  concurrency.map(items, to_activity)
 }
 
 pub fn now() -> Result(Timestamp, error.EngineError) {

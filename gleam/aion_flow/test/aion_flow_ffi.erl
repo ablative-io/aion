@@ -22,17 +22,30 @@
     dispatch_query/2,
     query_recorded_observations/0,
     spawn_child/3,
-    await_child/1
+    await_child/1,
+    collect_all/2,
+    collect_race/2
 ]).
 
 run_activity(<<"charge-payment">>, Input, _Config) ->
+    observe(),
     OrderId = extract_string(Input, <<"order_id">>),
     {ok, <<"{\"id\":\"receipt-", OrderId/binary, "\",\"approved\":true}">>};
+run_activity(<<"slow-charge-payment">>, Input, _Config) ->
+    observe(),
+    OrderId = extract_string(Input, <<"order_id">>),
+    {ok, <<"{\"id\":\"slow-receipt-", OrderId/binary, "\",\"approved\":true}">>};
+run_activity(<<"race-fail-fast">>, _Input, _Config) ->
+    observe(),
+    {error, <<"terminal:race failed first">>};
 run_activity(<<"fail-retryable">>, _Input, _Config) ->
+    observe(),
     {error, <<"retryable:mock retry">>};
 run_activity(<<"malformed-receipt">>, _Input, _Config) ->
+    observe(),
     {ok, <<"{\"id\":1,\"approved\":true}">>};
 run_activity(_Name, _Input, _Config) ->
+    observe(),
     {error, <<"terminal:unknown activity">>}.
 
 now() ->
@@ -121,6 +134,68 @@ await_child(ChildId) ->
         Result -> Result
     end.
 
+collect_all(_CollectionId, Items) ->
+    collect_all_loop(Items, []).
+
+collect_race(_CollectionId, Items) ->
+    case Items of
+        [] -> {error, <<"empty race">>};
+        _ ->
+            Winner = earliest_activity(Items),
+            erlang:put({aion_race_cancelled, self()}, length(Items) - 1),
+            activity_result(Winner)
+    end.
+
+collect_all_loop([], Acc) ->
+    Payloads = lists:reverse(Acc),
+    {ok, json_string_array(Payloads)};
+collect_all_loop([Spec | Rest], Acc) ->
+    case activity_result(Spec) of
+        {ok, Payload} -> collect_all_loop(Rest, [Payload | Acc]);
+        {error, Reason} ->
+            erlang:put({aion_all_cancelled, self()}, length(Rest)),
+            {error, Reason}
+    end.
+
+activity_result(Spec) ->
+    Name = extract_string(Spec, <<"name">>),
+    Input = extract_string(Spec, <<"input">>),
+    run_activity(Name, Input, <<"{}">>).
+
+earliest_activity([First | Rest]) ->
+    lists:foldl(
+        fun(Spec, Current) ->
+            case activity_delay(Spec) < activity_delay(Current) of
+                true -> Spec;
+                false -> Current
+            end
+        end,
+        First,
+        Rest
+    ).
+
+activity_delay(Spec) ->
+    Name = extract_string(Spec, <<"name">>),
+    case Name of
+        <<"slow-charge-payment">> -> 20;
+        <<"race-fail-fast">> -> 1;
+        _ -> 10
+    end.
+
+json_string_array(Items) ->
+    Escaped = [json_string(Item) || Item <- Items],
+    <<"[", (join(Escaped, <<",">>))/binary, "]">>.
+
+json_string(Value) ->
+    Escaped = binary:replace(Value, <<"\\">>, <<"\\\\">>, [global]),
+    Escaped2 = binary:replace(Escaped, <<"\"">>, <<"\\\"">>, [global]),
+    <<"\"", Escaped2/binary, "\"">>.
+
+join([], _Separator) ->
+    <<>>;
+join([First | Rest], Separator) ->
+    lists:foldl(fun(Item, Acc) -> <<Acc/binary, Separator/binary, Item/binary>> end, First, Rest).
+
 child_result(<<"checkout-child">>, Input) ->
     OrderId = extract_string(Input, <<"order_id">>),
     {ok, <<"ok:{\"id\":\"child-receipt-", OrderId/binary, "\",\"approved\":true}">>};
@@ -151,9 +226,17 @@ observe() ->
 extract_string(Json, Field) ->
     Pattern = <<"\"", Field/binary, "\":\"">>,
     case binary:split(Json, Pattern) of
-        [_Before, AfterField] ->
-            [Value | _Rest] = binary:split(AfterField, <<"\"">>),
-            Value;
-        _ ->
-            <<>>
+        [_Before, AfterField] -> extract_json_string_value(AfterField, <<>>);
+        _ -> <<>>
     end.
+
+extract_json_string_value(<<>>, Acc) ->
+    Acc;
+extract_json_string_value(<<"\\\"", Rest/binary>>, Acc) ->
+    extract_json_string_value(Rest, <<Acc/binary, "\"">>);
+extract_json_string_value(<<"\\\\", Rest/binary>>, Acc) ->
+    extract_json_string_value(Rest, <<Acc/binary, "\\">>);
+extract_json_string_value(<<"\"", _Rest/binary>>, Acc) ->
+    Acc;
+extract_json_string_value(<<Char, Rest/binary>>, Acc) ->
+    extract_json_string_value(Rest, <<Acc/binary, Char>>).
