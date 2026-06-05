@@ -321,7 +321,7 @@ mod tests {
     #[tokio::test]
     async fn ok_handler_reports_completion_with_encoded_payload() -> Result<(), WorkerError> {
         let activity_id = ActivityId::from_sequence_position(1);
-        let mut session = session_with_task(activity_id.clone(), "double", json!({"value": 21}))?;
+        let mut session = session_with_task(activity_id.clone(), "double", &json!({"value": 21}))?;
         let dispatcher =
             TypedActivityDispatcher::new().register("double", |input: TestInput, context| {
                 Box::pin(async move {
@@ -346,11 +346,11 @@ mod tests {
     #[tokio::test]
     async fn retryable_handler_error_reports_retryable_failure() -> Result<(), WorkerError> {
         let activity_id = ActivityId::from_sequence_position(2);
-        let mut session = session_with_task(activity_id.clone(), "flaky", json!({"value": 1}))?;
+        let mut session = session_with_task(activity_id.clone(), "flaky", &json!({"value": 1}))?;
         let dispatcher =
             TypedActivityDispatcher::new().register("flaky", |input: TestInput, context| {
                 Box::pin(async move {
-                    drop((input, context));
+                    let _ = (input, context);
                     Err::<TestOutput, ActivityFailure>(ActivityFailure::retryable("try again"))
                 })
             });
@@ -362,7 +362,7 @@ mod tests {
         assert_failure(
             &session.reports[0],
             &activity_id,
-            ActivityErrorKind::Retryable,
+            &ActivityErrorKind::Retryable,
             "try again",
         );
         Ok(())
@@ -371,11 +371,11 @@ mod tests {
     #[tokio::test]
     async fn terminal_handler_error_reports_terminal_failure() -> Result<(), WorkerError> {
         let activity_id = ActivityId::from_sequence_position(3);
-        let mut session = session_with_task(activity_id.clone(), "invalid", json!({"value": 1}))?;
+        let mut session = session_with_task(activity_id.clone(), "invalid", &json!({"value": 1}))?;
         let dispatcher =
             TypedActivityDispatcher::new().register("invalid", |input: TestInput, context| {
                 Box::pin(async move {
-                    drop((input, context));
+                    let _ = (input, context);
                     Err::<TestOutput, ActivityFailure>(ActivityFailure::terminal("bad request"))
                 })
             });
@@ -387,7 +387,7 @@ mod tests {
         assert_failure(
             &session.reports[0],
             &activity_id,
-            ActivityErrorKind::Terminal,
+            &ActivityErrorKind::Terminal,
             "bad request",
         );
         Ok(())
@@ -397,7 +397,7 @@ mod tests {
     async fn decode_failure_reports_terminal_failure() -> Result<(), WorkerError> {
         let activity_id = ActivityId::from_sequence_position(4);
         let mut session =
-            session_with_task(activity_id.clone(), "double", json!({"value": "wrong"}))?;
+            session_with_task(activity_id.clone(), "double", &json!({"value": "wrong"}))?;
         let dispatcher =
             TypedActivityDispatcher::new().register("double", |input: TestInput, context| {
                 Box::pin(async move {
@@ -415,7 +415,7 @@ mod tests {
         assert_failure(
             &session.reports[0],
             &activity_id,
-            ActivityErrorKind::Terminal,
+            &ActivityErrorKind::Terminal,
             "failed to decode activity input",
         );
         Ok(())
@@ -425,17 +425,17 @@ mod tests {
     async fn panicking_handler_reports_retryable_failure_and_loop_survives()
     -> Result<(), WorkerError> {
         let activity_id = ActivityId::from_sequence_position(5);
-        let mut session = session_with_task(activity_id.clone(), "panic", json!({"value": 1}))?;
+        let mut session = session_with_task(activity_id.clone(), "panic", &json!({"value": 1}))?;
         let dispatcher = TypedActivityDispatcher::new().register(
             "panic",
             |input: TestInput, context| -> super::HandlerFuture<TestOutput> {
-                drop((input, context));
+                let _ = (input, context);
                 Box::pin(futures::future::poll_fn(|context| {
                     let _ = context;
                     if std::env::var_os("AION_WORKER_TEST_DO_NOT_PANIC").is_some() {
                         return std::task::Poll::Ready(Ok(TestOutput { doubled: 0 }));
                     }
-                    std::panic::panic_any(String::from("boom"));
+                    std::panic::resume_unwind(Box::new(String::from("boom")));
                 }))
             },
         );
@@ -447,7 +447,7 @@ mod tests {
         assert_failure(
             &session.reports[0],
             &activity_id,
-            ActivityErrorKind::Retryable,
+            &ActivityErrorKind::Retryable,
             "activity handler panicked: boom",
         );
         Ok(())
@@ -458,12 +458,12 @@ mod tests {
     -> Result<(), WorkerError> {
         let activity_id = ActivityId::from_sequence_position(6);
         let mut session =
-            session_with_task(activity_id.clone(), "sync-panic", json!({"value": 1}))?;
+            session_with_task(activity_id.clone(), "sync-panic", &json!({"value": 1}))?;
         let dispatcher = TypedActivityDispatcher::new().register(
             "sync-panic",
             |input: TestInput, context| -> super::HandlerFuture<TestOutput> {
-                drop((input, context));
-                std::panic::panic_any("sync boom");
+                let _ = (input, context);
+                std::panic::resume_unwind(Box::new(String::from("sync boom")));
             },
         );
         let config = test_config();
@@ -474,7 +474,7 @@ mod tests {
         assert_failure(
             &session.reports[0],
             &activity_id,
-            ActivityErrorKind::Retryable,
+            &ActivityErrorKind::Retryable,
             "activity handler panicked: sync boom",
         );
         Ok(())
@@ -483,25 +483,27 @@ mod tests {
     fn assert_failure(
         report: &RecordedReport,
         activity_id: &ActivityId,
-        kind: ActivityErrorKind,
+        kind: &ActivityErrorKind,
         message_contains: &str,
     ) {
-        match report {
-            RecordedReport::Failed(reported_id, failure) => {
-                assert_eq!(reported_id, activity_id);
-                assert_eq!(failure.kind, kind);
-                assert!(failure.message.contains(message_contains));
-            }
-            RecordedReport::Completed(_, _) => panic!("expected failure report"),
-        }
+        let RecordedReport::Failed(reported_id, failure) = report else {
+            assert!(
+                matches!(report, RecordedReport::Failed(..)),
+                "expected failure report"
+            );
+            return;
+        };
+        assert_eq!(reported_id, activity_id);
+        assert_eq!(&failure.kind, kind);
+        assert!(failure.message.contains(message_contains));
     }
 
     fn session_with_task(
         activity_id: ActivityId,
         activity_type: &str,
-        input: serde_json::Value,
+        input: &serde_json::Value,
     ) -> Result<FakeSession, WorkerError> {
-        let payload = Payload::from_json(&input).map_err(WorkerError::encode)?;
+        let payload = Payload::from_json(input).map_err(WorkerError::encode)?;
         Ok(FakeSession {
             tasks: vec![Ok(ProtoActivityTask {
                 workflow_id: Some(ProtoWorkflowId::from(WorkflowId::new_v4())),
