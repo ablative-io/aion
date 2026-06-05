@@ -1,1 +1,1 @@
-feat(aion-nif): add side-effectful activity NIF declarations
+review-hardening: preserve ActivityError shape for activity shim decode failures

@@ -86,10 +86,16 @@ pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut ProcessContext
     term_error_to_term(&error, ctx)
 }
 
-/// Encodes a conversion error as a typed NIF error term.
+/// Encodes a conversion error as a typed deterministic NIF error term.
 #[doc(hidden)]
 pub fn term_error_to_term(error: &TermError, ctx: &mut ProcessContext) -> Term {
     error_message_to_term(error.to_string(), ctx)
+}
+
+/// Encodes a conversion error as a terminal activity failure term.
+#[doc(hidden)]
+pub fn activity_term_error_to_term(error: &TermError, ctx: &mut ProcessContext) -> Term {
+    activity_error_to_term(term_error_activity(error), ctx)
 }
 
 /// Invokes a deterministic author body and converts success, conversion failure,
@@ -260,6 +266,20 @@ macro_rules! __aion_nif_decode_argument {
     };
 }
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __aion_nif_decode_activity_argument {
+    ($args:expr, $ctx:expr, $index:expr, $ty:ty) => {
+        match $crate::declare::decode_argument::<$ty>($args[$index], $ctx, $index) {
+            Ok(value) => value,
+            Err(error) => {
+                $crate::declare::begin_nif_call();
+                return Err($crate::declare::activity_term_error_to_term(&error, $ctx));
+            }
+        }
+    };
+}
+
 /// Declares a pure deterministic NIF from a typed Rust body.
 ///
 /// Determinism is a type-level declaration choice: this macro can only produce
@@ -381,7 +401,13 @@ macro_rules! activity_nif {
         ) -> Result<beamr::term::Term, beamr::term::Term> {
             if args.len() != 0 {
                 $crate::declare::begin_nif_call();
-                return Err($crate::declare::arity_error_term(0, args.len(), ctx));
+                return Err($crate::declare::activity_term_error_to_term(
+                    &$crate::TermError::Conversion {
+                        context: "nif arity",
+                        message: format!("expected {} arguments, received {}", 0, args.len()),
+                    },
+                    ctx,
+                ));
             }
             $crate::declare::begin_nif_call();
             $crate::declare::invoke_activity(ctx, || -> $ret { $($body)* })
@@ -396,9 +422,15 @@ macro_rules! activity_nif {
         ) -> Result<beamr::term::Term, beamr::term::Term> {
             if args.len() != 1 {
                 $crate::declare::begin_nif_call();
-                return Err($crate::declare::arity_error_term(1, args.len(), ctx));
+                return Err($crate::declare::activity_term_error_to_term(
+                    &$crate::TermError::Conversion {
+                        context: "nif arity",
+                        message: format!("expected {} arguments, received {}", 1, args.len()),
+                    },
+                    ctx,
+                ));
             }
-            let $arg = $crate::__aion_nif_decode_argument!(args, ctx, 0, $arg_ty);
+            let $arg = $crate::__aion_nif_decode_activity_argument!(args, ctx, 0, $arg_ty);
             $crate::declare::begin_nif_call();
             $crate::declare::invoke_activity(ctx, || -> $ret { $($body)* })
         }
@@ -416,10 +448,16 @@ macro_rules! activity_nif {
         ) -> Result<beamr::term::Term, beamr::term::Term> {
             if args.len() != 2 {
                 $crate::declare::begin_nif_call();
-                return Err($crate::declare::arity_error_term(2, args.len(), ctx));
+                return Err($crate::declare::activity_term_error_to_term(
+                    &$crate::TermError::Conversion {
+                        context: "nif arity",
+                        message: format!("expected {} arguments, received {}", 2, args.len()),
+                    },
+                    ctx,
+                ));
             }
-            let $left = $crate::__aion_nif_decode_argument!(args, ctx, 0, $left_ty);
-            let $right = $crate::__aion_nif_decode_argument!(args, ctx, 1, $right_ty);
+            let $left = $crate::__aion_nif_decode_activity_argument!(args, ctx, 0, $left_ty);
+            let $right = $crate::__aion_nif_decode_activity_argument!(args, ctx, 1, $right_ty);
             $crate::declare::begin_nif_call();
             $crate::declare::invoke_activity(ctx, || -> $ret { $($body)* })
         }
@@ -586,6 +624,11 @@ mod tests {
 
     #[test]
     fn activity_nif_encodes_retryable_and_terminal_activity_errors() -> Result<(), TermError> {
+        let decode_failure =
+            activity_nif!("example/module", "bad_decode", |name: String| -> Result<
+                String,
+                ActivityError,
+            > { Ok(name) });
         let retryable = activity_nif!(
             "example/module", "fail", retryable_activity_body, () -> Result<String, ActivityError>
         );
@@ -602,6 +645,12 @@ mod tests {
         );
 
         let mut ctx = context();
+        let bad_arg = 42_i64.into_term(&mut ctx)?;
+        let decode_error = (decode_failure.native())(&[bad_arg], &mut ctx)
+            .err()
+            .ok_or(TermError::HeapAllocation { shape: "test" })?;
+        let decoded_decode_error = decode_activity_error(decode_error, &ctx)?;
+
         let retryable_error = (retryable.native())(&[], &mut ctx)
             .err()
             .ok_or(TermError::HeapAllocation { shape: "test" })?;
@@ -612,6 +661,12 @@ mod tests {
             .ok_or(TermError::HeapAllocation { shape: "test" })?;
         let decoded_terminal = decode_activity_error(terminal_error, &ctx)?;
 
+        assert_eq!(decoded_decode_error.kind, ActivityErrorKind::Terminal);
+        assert!(
+            decoded_decode_error
+                .message
+                .contains("failed to decode argument 0")
+        );
         assert_eq!(decoded_retryable.kind, ActivityErrorKind::Retryable);
         assert!(decoded_retryable.is_retryable());
         assert_eq!(decoded_retryable.message, "classified failure");
