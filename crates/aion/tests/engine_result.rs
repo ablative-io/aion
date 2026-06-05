@@ -14,7 +14,7 @@ async fn completing_workflow_records_and_returns_result() -> Result<(), Box<dyn 
     let handle = engine
         .start_workflow(FIXTURE_MODULE, input_payload()?)
         .await?;
-    let expected = payload(json!(42))?;
+    let expected = payload(&json!(42))?;
 
     let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
 

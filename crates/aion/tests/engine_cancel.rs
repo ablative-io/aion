@@ -40,7 +40,7 @@ async fn cancel_tears_down_linked_activity_and_appends_cancellation()
         handle.pid(),
         &deployed_module,
         "activity",
-        &payload(json!(null))?,
+        &payload(&json!(null))?,
     )?;
 
     assert!(engine.runtime().is_live(activity));

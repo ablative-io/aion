@@ -24,7 +24,7 @@ fn fixture_beam_registers_and_entry_function_resolves() -> Result<(), Box<dyn st
     assert!(runtime.has_registered_module(&deployed));
     let pid = runtime.spawn_workflow(&deployed, "complete", aion::RuntimeInput::default())?;
     assert!(runtime.is_live(pid));
-    assert_eq!(runtime.workflow_outcome(pid)?, Ok(payload(json!(42))?));
+    assert_eq!(runtime.workflow_outcome(pid)?, Ok(payload(&json!(42))?));
     runtime.shutdown()?;
     Ok(())
 }

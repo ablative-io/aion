@@ -16,12 +16,12 @@ pub const FIXTURE_MODULE: &str = "aion_fixture_workflow";
 const FIXTURE_BEAM: &[u8] = include_bytes!("../fixtures/aion_fixture_workflow.beam");
 const FIXTURE_SOURCE: &[u8] = include_bytes!("../fixtures/aion_fixture_workflow.erl");
 
-pub fn payload(value: serde_json::Value) -> Result<Payload, aion_core::PayloadError> {
-    Payload::from_json(&value)
+pub fn payload(value: &serde_json::Value) -> Result<Payload, aion_core::PayloadError> {
+    Payload::from_json(value)
 }
 
 pub fn input_payload() -> Result<Payload, aion_core::PayloadError> {
-    payload(json!({ "fixture": "input" }))
+    payload(&json!({ "fixture": "input" }))
 }
 
 pub fn fixture_package(entry_function: &str) -> Result<Package, Box<dyn std::error::Error>> {
