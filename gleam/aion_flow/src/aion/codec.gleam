@@ -10,10 +10,7 @@ import gleam/json
 /// turn that string payload back into the expected Gleam value and report a
 /// typed `DecodeError` on malformed input or schema mismatch.
 pub type Codec(a) {
-  Codec(
-    encode: fn(a) -> String,
-    decode: fn(String) -> Result(a, DecodeError),
-  )
+  Codec(encode: fn(a) -> String, decode: fn(String) -> Result(a, DecodeError))
 }
 
 /// A typed boundary decode failure.

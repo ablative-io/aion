@@ -4,7 +4,12 @@ import aion/codec
 import aion/duration
 import gleam/dynamic/decode
 import gleam/json
+import gleeunit
 import gleeunit/should
+
+pub fn main() {
+  gleeunit.main()
+}
 
 pub type LineItem {
   LineItem(sku: String, quantity: Int)
@@ -23,7 +28,8 @@ pub fn codec_round_trips_record_test() {
 }
 
 pub fn codec_round_trips_list_test() {
-  let numbers_codec = codec.json_codec(int_list_to_json, decode.list(decode.int))
+  let numbers_codec =
+    codec.json_codec(int_list_to_json, decode.list(decode.int))
   let numbers = [1, 2, 3, 5, 8]
 
   numbers_codec.decode(numbers_codec.encode(numbers))
@@ -32,10 +38,11 @@ pub fn codec_round_trips_list_test() {
 
 pub fn codec_round_trips_nested_value_test() {
   let order_codec = codec.json_codec(order_to_json, order_decoder())
-  let order = Order(
-    id: "order-2",
-    items: [LineItem(sku: "sku-2", quantity: 1), LineItem(sku: "sku-3", quantity: 4)],
-  )
+  let order =
+    Order(id: "order-2", items: [
+      LineItem(sku: "sku-2", quantity: 1),
+      LineItem(sku: "sku-3", quantity: 4),
+    ])
 
   order_codec.decode(order_codec.encode(order))
   |> should.equal(Ok(order))
@@ -45,12 +52,15 @@ pub fn codec_malformed_json_returns_decode_error_test() {
   let order_codec = codec.json_codec(order_to_json, order_decoder())
 
   order_codec.decode("{")
-  |> should.equal(Error(codec.DecodeError(reason: "Unexpected end of input", path: [])))
+  |> should.equal(
+    Error(codec.DecodeError(reason: "Unexpected end of input", path: [])),
+  )
 }
 
 pub fn codec_schema_error_carries_path_test() {
   let order_codec = codec.json_codec(order_to_json, order_decoder())
-  let malformed = "{\"id\":\"order-3\",\"items\":[{\"sku\":\"sku-4\",\"quantity\":\"many\"}]}"
+  let malformed =
+    "{\"id\":\"order-3\",\"items\":[{\"sku\":\"sku-4\",\"quantity\":\"many\"}]}"
 
   case order_codec.decode(malformed) {
     Ok(_) -> should.fail()
@@ -105,13 +115,13 @@ fn int_list_to_json(values: List(Int)) -> json.Json {
 }
 
 fn order_decoder() -> decode.Decoder(Order) {
-  decode.into(Order)
-  |> decode.field("id", decode.string)
-  |> decode.field("items", decode.list(line_item_decoder()))
+  use id <- decode.field("id", decode.string)
+  use items <- decode.field("items", decode.list(line_item_decoder()))
+  decode.success(Order(id: id, items: items))
 }
 
 fn line_item_decoder() -> decode.Decoder(LineItem) {
-  decode.into(LineItem)
-  |> decode.field("sku", decode.string)
-  |> decode.field("quantity", decode.int)
+  use sku <- decode.field("sku", decode.string)
+  use quantity <- decode.field("quantity", decode.int)
+  decode.success(LineItem(sku: sku, quantity: quantity))
 }
