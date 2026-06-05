@@ -1,1 +1,1 @@
-fix(aion-proto): satisfy clippy for workflow wire service
+fix(aion-proto): harden workflow wire service exports
