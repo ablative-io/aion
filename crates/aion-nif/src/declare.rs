@@ -29,9 +29,9 @@ pub fn pure_descriptor(
 /// Releases retained heap storage from the previous generated NIF invocation.
 ///
 /// The raw seam retains heap-backed return terms long enough for the caller to
-/// consume them. Until a scoped per-invocation owner exists, generated shims clear
-/// old retained storage at the start of the next invocation rather than before
-/// returning the current term.
+/// consume them. Until a scoped per-invocation owner exists, generated shims keep
+/// incoming terms alive through arity and argument decoding, then clear old
+/// retained storage immediately before encoding this invocation's result or error.
 #[doc(hidden)]
 pub fn begin_nif_call() {
     raw::clear_term_storage();
@@ -142,10 +142,11 @@ macro_rules! deterministic_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
-            $crate::declare::begin_nif_call();
             if args.len() != 0 {
+                $crate::declare::begin_nif_call();
                 return Err($crate::declare::arity_error_term(0, args.len(), ctx));
             }
+            $crate::declare::begin_nif_call();
             $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
         }
 
@@ -156,14 +157,18 @@ macro_rules! deterministic_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
-            $crate::declare::begin_nif_call();
             if args.len() != 1 {
+                $crate::declare::begin_nif_call();
                 return Err($crate::declare::arity_error_term(1, args.len(), ctx));
             }
             let $arg = match $crate::declare::decode_argument::<$arg_ty>(args[0], ctx, 0) {
                 Ok(value) => value,
-                Err(error) => return Err($crate::declare::term_error_to_term(&error, ctx)),
+                Err(error) => {
+                    $crate::declare::begin_nif_call();
+                    return Err($crate::declare::term_error_to_term(&error, ctx));
+                }
             };
+            $crate::declare::begin_nif_call();
             $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
         }
 
@@ -178,18 +183,25 @@ macro_rules! deterministic_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
-            $crate::declare::begin_nif_call();
             if args.len() != 2 {
+                $crate::declare::begin_nif_call();
                 return Err($crate::declare::arity_error_term(2, args.len(), ctx));
             }
             let $left = match $crate::declare::decode_argument::<$left_ty>(args[0], ctx, 0) {
                 Ok(value) => value,
-                Err(error) => return Err($crate::declare::term_error_to_term(&error, ctx)),
+                Err(error) => {
+                    $crate::declare::begin_nif_call();
+                    return Err($crate::declare::term_error_to_term(&error, ctx));
+                }
             };
             let $right = match $crate::declare::decode_argument::<$right_ty>(args[1], ctx, 1) {
                 Ok(value) => value,
-                Err(error) => return Err($crate::declare::term_error_to_term(&error, ctx)),
+                Err(error) => {
+                    $crate::declare::begin_nif_call();
+                    return Err($crate::declare::term_error_to_term(&error, ctx));
+                }
             };
+            $crate::declare::begin_nif_call();
             $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
         }
 

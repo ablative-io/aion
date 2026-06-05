@@ -1,1 +1,1 @@
-feat(aion-nif): add deterministic nif descriptors
+fix(aion-nif): preserve incoming terms before clearing retained NIF heap
