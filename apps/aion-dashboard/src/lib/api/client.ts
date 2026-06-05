@@ -205,12 +205,12 @@ export class ApiClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
-    const json = await readJson(response);
-
     if (!response.ok) {
-      throw apiErrorFromResponse(response.status, json);
+      const errorBody = await readJson(response).catch(() => null);
+      throw apiErrorFromResponse(response.status, errorBody);
     }
 
+    const json = await readJson(response);
     return json as T;
   }
 
@@ -316,7 +316,8 @@ function apiErrorFromResponse(status: number, body: unknown): ApiError {
   if (isRecord(body)) {
     const maybeCode = body.code;
     const maybeMessage = body.message;
-    const message = typeof maybeMessage === 'string' ? maybeMessage : `Request failed with ${status}`;
+    const message =
+      typeof maybeMessage === 'string' ? maybeMessage : `Request failed with ${status}`;
     const code = typeof maybeCode === 'string' ? maybeCode : null;
 
     return new ApiError(status, message, code);
@@ -352,7 +353,10 @@ function mergeCredentials(
   };
 }
 
-function mergeHeaderInputs(base: HeadersInit | undefined, override: HeadersInit | undefined): Headers {
+function mergeHeaderInputs(
+  base: HeadersInit | undefined,
+  override: HeadersInit | undefined,
+): Headers {
   const headers = new Headers(base);
   appendHeaders(headers, override);
   return headers;

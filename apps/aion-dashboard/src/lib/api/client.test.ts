@@ -118,6 +118,21 @@ test('non-success responses throw ApiError with status, code, and message', asyn
   }
 });
 
+test('malformed failure bodies still throw typed ApiError', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () => new Response('not json', { status: 502 }),
+  });
+
+  try {
+    await client.listNamespaces();
+    throw new Error('expected listNamespaces to throw');
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(502);
+    expect((error as ApiError).message).toBe('Request failed with 502');
+  }
+});
+
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
     headers: { 'content-type': 'application/json' },

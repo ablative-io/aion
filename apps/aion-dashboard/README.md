@@ -12,8 +12,7 @@ view models.
 Regenerate after changing exported Aion wire shapes:
 
 ```sh
-TS_RS_EXPORT_DIR=apps/aion-dashboard/src/types/generated TS_RS_LARGE_INT=number \
-  cargo test -p aion-core export_dashboard_wire_types
+cargo test -p aion-core export_dashboard_wire_types
 ```
 
 The repository-level `just gen-types` task should call the same ts-rs export path when the house

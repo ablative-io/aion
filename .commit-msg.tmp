@@ -1,1 +1,1 @@
-feat(aion-dashboard): add generated wire types and REST client
+review(aion-dashboard): harden AU-002 generated types and REST errors
