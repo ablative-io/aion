@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 
-import { useNamespace } from '@/features/namespace';
+import { isSelectedNamespace, requireSelectedNamespace, useNamespace } from '@/features/namespace';
 import { aionWebSocketManager, type EventSubscriptionManager } from '@/lib/api/websocket';
 import type { Event, Namespace } from '@/types';
 
@@ -16,9 +16,11 @@ export function namespaceSubscriptionFilter<TFilter extends object>(
   filter: TFilter,
   afterSeq?: number
 ): TFilter & { namespace: Namespace; afterSeq?: number } {
+  const selectedNamespace = requireSelectedNamespace(namespace, 'subscribing to events');
+
   return afterSeq === undefined
-    ? { ...filter, namespace }
-    : { ...filter, afterSeq, namespace };
+    ? { ...filter, namespace: selectedNamespace }
+    : { ...filter, afterSeq, namespace: selectedNamespace };
 }
 
 export function subscribeToNamespaceFilter<TFilter extends object>(
@@ -40,7 +42,7 @@ export function useEventSubscription<TFilter extends object>({
   const { selectedNamespace } = useNamespace();
 
   useEffect(() => {
-    if (selectedNamespace === null) {
+    if (!isSelectedNamespace(selectedNamespace)) {
       return;
     }
 

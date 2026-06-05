@@ -1,1 +1,1 @@
-feat(aion-dashboard): add namespace context and scoped queries
+Harden namespace selection and namespace-scoped query/subscription guards

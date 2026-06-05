@@ -80,7 +80,9 @@ export function NamespaceSelector({ className }: NamespaceSelectorProps) {
         Namespace
       </label>
       <Select
-        onValueChange={(namespace) => applyNamespaceSelection(setSelectedNamespace, namespace)}
+        onValueChange={(namespace) =>
+          applyNamespaceSelection(setSelectedNamespace, namespace, namespaces)
+        }
         value={selectedNamespace ?? undefined}
       >
         <SelectTrigger aria-label="Namespace" className="w-48" id="namespace-selector">

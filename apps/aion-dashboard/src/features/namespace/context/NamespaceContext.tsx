@@ -1,5 +1,13 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
+import { type UseQueryResult, useQuery } from '@tanstack/react-query';
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 
 import { ApiClient, type ApiCredentials } from '@/lib/api';
 import type { Namespace } from '@/types';
@@ -33,14 +41,21 @@ export function NamespaceProvider({
   credentials,
   initialNamespace,
 }: NamespaceProviderProps) {
-  const [selectedNamespace, setSelectedNamespace] = useState<Namespace | null>(
-    initialNamespace ?? null
+  const [selectedNamespace, setSelectedNamespaceState] = useState<Namespace | null>(
+    isSelectedNamespace(initialNamespace) ? initialNamespace : null
   );
   const namespaceQuery = useQuery<Namespace[], Error>({
     queryKey: namespaceQueryKey,
     queryFn: () => apiClient.listNamespaces({ credentials }),
   });
   const namespaces = namespaceQuery.data ?? [];
+
+  const setSelectedNamespace = useCallback(
+    (namespace: Namespace) => {
+      setSelectedNamespaceState(selectNamespace(namespace, namespaces));
+    },
+    [namespaces]
+  );
 
   useEffect(() => {
     if (selectedNamespace !== null || namespaces.length === 0) {
@@ -49,7 +64,7 @@ export function NamespaceProvider({
 
     const [firstNamespace] = namespaces;
     if (firstNamespace !== undefined) {
-      setSelectedNamespace(firstNamespace);
+      setSelectedNamespaceState(firstNamespace);
     }
   }, [namespaces, selectedNamespace]);
 
@@ -60,7 +75,7 @@ export function NamespaceProvider({
 
     if (!namespaces.includes(selectedNamespace)) {
       const [firstNamespace] = namespaces;
-      setSelectedNamespace(firstNamespace ?? null);
+      setSelectedNamespaceState(firstNamespace ?? null);
     }
   }, [namespaces, selectedNamespace]);
 
@@ -83,6 +98,7 @@ export function NamespaceProvider({
       namespaceQuery.refetch,
       namespaces,
       selectedNamespace,
+      setSelectedNamespace,
     ]
   );
 
@@ -99,13 +115,40 @@ export function useNamespace(): NamespaceContextValue {
   return value;
 }
 
-export function selectNamespace(nextNamespace: Namespace): Namespace {
-  return nextNamespace;
+export function isSelectedNamespace(
+  namespace: Namespace | null | undefined
+): namespace is Namespace {
+  return typeof namespace === 'string' && namespace.trim().length > 0;
+}
+
+export function requireSelectedNamespace(
+  namespace: Namespace | null | undefined,
+  surface: string
+): Namespace {
+  if (!isSelectedNamespace(namespace)) {
+    throw new Error(`A namespace must be selected before ${surface}.`);
+  }
+
+  return namespace;
+}
+
+export function selectNamespace(
+  nextNamespace: Namespace,
+  availableNamespaces: readonly Namespace[] = []
+): Namespace {
+  const namespace = requireSelectedNamespace(nextNamespace, 'selecting a namespace');
+
+  if (availableNamespaces.length > 0 && !availableNamespaces.includes(namespace)) {
+    throw new Error(`Namespace ${namespace} is not available in the loaded namespace list.`);
+  }
+
+  return namespace;
 }
 
 export function applyNamespaceSelection(
   setSelectedNamespace: (namespace: Namespace) => void,
-  nextNamespace: Namespace
+  nextNamespace: Namespace,
+  availableNamespaces: readonly Namespace[] = []
 ) {
-  setSelectedNamespace(selectNamespace(nextNamespace));
+  setSelectedNamespace(selectNamespace(nextNamespace, availableNamespaces));
 }

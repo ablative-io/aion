@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 
-import { useNamespace } from '@/features/namespace';
+import { requireSelectedNamespace, useNamespace } from '@/features/namespace';
 import { ApiClient, type WorkflowPageRequest } from '@/lib/api';
 import type { Namespace, WorkflowFilter } from '@/types';
 
@@ -20,15 +20,11 @@ export function workflowListQueryKey(
   return ['workflows', namespace, filter, page] as const;
 }
 
-export function requireWorkflowQueryNamespace(namespace: Namespace | null): Namespace {
-  if (namespace === null) {
-    throw new Error('A namespace must be selected before querying workflows.');
-  }
-
-  return namespace;
+export function requireWorkflowQueryNamespace(namespace: Namespace | null | undefined): Namespace {
+  return requireSelectedNamespace(namespace, 'querying workflows');
 }
 
-export function workflowQueryRequestOptions(namespace: Namespace | null) {
+export function workflowQueryRequestOptions(namespace: Namespace | null | undefined) {
   return { namespace: requireWorkflowQueryNamespace(namespace) };
 }
 
@@ -40,7 +36,7 @@ export function useWorkflowQuery({
   const { selectedNamespace } = useNamespace();
 
   return useQuery({
-    enabled: selectedNamespace !== null,
+    enabled: selectedNamespace !== null && selectedNamespace.trim().length > 0,
     queryKey: workflowListQueryKey(selectedNamespace, filter, page),
     queryFn: () =>
       apiClient.queryWorkflows(filter, page, workflowQueryRequestOptions(selectedNamespace)),

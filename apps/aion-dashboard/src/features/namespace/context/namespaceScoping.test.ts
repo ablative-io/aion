@@ -32,7 +32,9 @@ test('workflow list and history query keys include the selected namespace', () =
 
 test('query request helpers reject missing namespaces instead of issuing unscoped calls', () => {
   expect(() => workflowQueryRequestOptions(null)).toThrow('namespace must be selected');
+  expect(() => workflowQueryRequestOptions('')).toThrow('namespace must be selected');
   expect(() => workflowHistoryRequestOptions(null)).toThrow('namespace must be selected');
+  expect(() => workflowHistoryRequestOptions('')).toThrow('namespace must be selected');
 });
 
 test('switching namespace produces re-scoped query keys and subscription filters', () => {
@@ -54,6 +56,12 @@ test('subscription scoping preserves filters while carrying namespace and replay
     mode: 'filtered',
     namespace: 'tenant-b',
   });
+});
+
+test('subscription scoping rejects an empty namespace before subscribing', () => {
+  expect(() => namespaceSubscriptionFilter('', { mode: 'firehose' })).toThrow(
+    'namespace must be selected'
+  );
 });
 
 test('switching namespace re-establishes the subscription with the new namespace', () => {
