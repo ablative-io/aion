@@ -1,1 +1,1 @@
-feat(aion-server): add remote worker registry and dispatch
+review(aion-server): harden worker dispatch failover

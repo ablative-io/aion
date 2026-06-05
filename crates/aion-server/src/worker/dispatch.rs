@@ -7,7 +7,7 @@ use aion_proto::{
 };
 
 use crate::error::ServerError;
-use crate::worker::registry::ConnectedWorkerRegistry;
+use crate::worker::registry::{ConnectedWorkerRegistry, WorkerHandle};
 
 /// Scheduled remote activity that must be placed with a connected worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,26 +57,30 @@ impl ActivityDispatcher {
     /// Returns a typed dispatch error if no worker is available or the selected
     /// stream is closed; returns lock poison if registry access cannot be trusted.
     pub async fn dispatch(&self, activity: &ScheduledActivity) -> Result<(), ServerError> {
-        let Some(worker) = self
+        let mut workers = self
             .registry
-            .select_worker(&activity.namespace, &activity.activity_type)?
-        else {
+            .workers_for(&activity.namespace, &activity.activity_type)?;
+        workers.sort_by_key(WorkerHandle::id);
+
+        if workers.is_empty() {
             return Err(ServerError::worker_dispatch(
                 activity.namespace.clone(),
                 activity.activity_type.clone(),
                 "no connected worker for activity type",
             ));
-        };
-
-        if worker.sender().send(activity.to_task()).await.is_ok() {
-            return Ok(());
         }
 
-        self.registry.deregister(worker.id())?;
+        for worker in workers {
+            if worker.sender().send(activity.to_task()).await.is_ok() {
+                return Ok(());
+            }
+            self.registry.deregister(worker.id())?;
+        }
+
         Err(ServerError::worker_dispatch(
             activity.namespace.clone(),
             activity.activity_type.clone(),
-            "worker stream closed before task could be delivered",
+            "all matching worker streams closed before task could be delivered",
         ))
     }
 }
@@ -230,6 +234,37 @@ mod tests {
 
         let result = dispatcher.dispatch(&scheduled).await;
         assert!(matches!(result, Err(ServerError::WorkerDispatch { .. })));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dispatch_skips_closed_worker_and_uses_next_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let (closed_tx, closed_rx) = tokio::sync::mpsc::channel(1);
+        let (live_tx, mut live_rx) = tokio::sync::mpsc::channel(1);
+        let activity_types = [String::from("charge-card")];
+        let closed_registration =
+            registry.register("tenant-a", activity_types.iter(), closed_tx)?;
+        let live_registration = registry.register("tenant-a", activity_types.iter(), live_tx)?;
+        drop(closed_rx);
+
+        let dispatcher = ActivityDispatcher::new(registry.clone());
+        let scheduled = ScheduledActivity {
+            namespace: String::from("tenant-a"),
+            activity_type: String::from("charge-card"),
+            workflow_id: workflow_id(),
+            activity_id: activity_id(),
+            input: Payload::new(ContentType::Json, b"{}".to_vec()),
+        };
+
+        dispatcher.dispatch(&scheduled).await?;
+
+        assert!(live_rx.recv().await.is_some());
+        assert_eq!(registry.workers_for("tenant-a", "charge-card")?.len(), 1);
+
+        closed_registration.deregister()?;
+        live_registration.deregister()?;
         Ok(())
     }
 
