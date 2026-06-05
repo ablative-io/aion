@@ -14,7 +14,9 @@
     sleep/1,
     start_timer/2,
     cancel_timer/1,
-    with_timeout/2
+    with_timeout/2,
+    receive_signal/2,
+    send_signal/3
 ]).
 
 run_activity(<<"charge-payment">>, Input, _Config) ->
@@ -56,6 +58,27 @@ with_timeout(Duration, Operation) ->
         <<"0">> -> {error, <<"timeout:deadline expired">>};
         _ -> {ok, Operation()}
     end.
+
+receive_signal(<<"malformed-signal">>, _Config) ->
+    {ok, <<"{\"order_id\":1,\"cents\":700}">>};
+receive_signal(Name, _Config) ->
+    Key = {aion_signal, self(), Name},
+    case erlang:get(Key) of
+        undefined -> {error, <<"unknown:", Name/binary>>};
+        [] -> {error, <<"unknown:", Name/binary>>};
+        [Payload | Rest] ->
+            erlang:put(Key, Rest),
+            {ok, Payload}
+    end.
+
+send_signal(_WorkflowId, Name, Payload) ->
+    Key = {aion_signal, self(), Name},
+    Queue = case erlang:get(Key) of
+        undefined -> [];
+        Existing -> Existing
+    end,
+    erlang:put(Key, Queue ++ [Payload]),
+    {ok, <<"delivered">>}.
 
 extract_string(Json, Field) ->
     Pattern = <<"\"", Field/binary, "\":\"">>,

@@ -109,6 +109,7 @@ pub type ReceiveError {
   UnknownSignal(name: String)
   ReceiveCancelled(CancellationError)
   ReceiveNonDeterministic(NonDeterminismError)
+  ReceiveEngineFailure(message: String)
 }
 
 /// A query failure.

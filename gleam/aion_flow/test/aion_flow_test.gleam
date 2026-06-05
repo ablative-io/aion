@@ -4,6 +4,7 @@ import aion/activity
 import aion/codec
 import aion/duration
 import aion/error
+import aion/signal
 import aion/workflow
 import gleam/dynamic/decode
 import gleam/json
@@ -350,6 +351,56 @@ pub fn workflow_random_int_rejects_invalid_range_before_dispatch_test() {
       message: "Invalid deterministic random_int range: min is greater than max",
     )),
   )
+}
+
+pub fn signal_new_carries_typed_name_and_codec_test() {
+  let payment_signal = signal.new("payment-authorized", charge_request_codec())
+
+  payment_signal
+  |> signal.name
+  |> should.equal("payment-authorized")
+
+  signal.codec(payment_signal).encode(ChargeRequest(
+    order_id: "order-signal-ref",
+    cents: 5100,
+  ))
+  |> should.equal("{\"order_id\":\"order-signal-ref\",\"cents\":5100}")
+}
+
+pub fn signal_send_and_workflow_receive_return_typed_payload_test() {
+  let payment_signal = signal.new("payment-received", charge_request_codec())
+  let payload = ChargeRequest(order_id: "order-signal-receive", cents: 3300)
+
+  signal.send("workflow-1", payment_signal, payload)
+  |> should.equal(Ok(Nil))
+
+  workflow.receive(payment_signal)
+  |> should.equal(Ok(payload))
+}
+
+pub fn workflow_receive_decode_failure_is_typed_data_test() {
+  let payment_signal = signal.new("malformed-signal", charge_request_codec())
+
+  case workflow.receive(payment_signal) {
+    Ok(_) -> should.fail()
+    Error(error.ReceiveDecodeFailed(decode_error)) ->
+      decode_error
+      |> should.equal(
+        codec.DecodeError(reason: "Expected String, found Int", path: ["order_id"]),
+      )
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn workflow_receive_composes_with_timeout_test() {
+  let payment_signal = signal.new("payment-with-timeout", charge_request_codec())
+  let payload = ChargeRequest(order_id: "order-signal-timeout", cents: 4400)
+
+  signal.send("workflow-1", payment_signal, payload)
+  |> should.equal(Ok(Nil))
+
+  workflow.with_timeout(fn() { workflow.receive(payment_signal) }, duration.seconds(1))
+  |> should.equal(Ok(payload))
 }
 
 pub fn workflow_define_carries_entry_contract_test() {
