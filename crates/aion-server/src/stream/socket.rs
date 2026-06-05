@@ -84,8 +84,7 @@ pub async fn forward_subscription(
                         lag_error = Some(ServerError::lagged_stream());
                         break;
                     }
-                    Err(closed) => {
-                        drop(closed);
+                    Err(_closed) => {
                         lag_closed = true;
                     }
                 }

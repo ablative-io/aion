@@ -1,1 +1,1 @@
-feat(aion-server): add websocket event subscription forwarding
+fix(aion-server): avoid dropping oneshot recv error explicitly
