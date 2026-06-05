@@ -96,3 +96,21 @@ pub fn collect_map(
   collection_id: String,
   items: List(String),
 ) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "testing_reset")
+pub fn testing_reset() -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "testing_advance")
+pub fn testing_advance(duration: String) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "testing_register_activity_mock")
+pub fn testing_register_activity_mock(
+  name: String,
+  handler: fn(String) -> Result(String, String),
+) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "testing_clear_observations")
+pub fn testing_clear_observations() -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "testing_observations")
+pub fn testing_observations() -> Result(String, String)
