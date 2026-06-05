@@ -402,8 +402,8 @@ mod tests {
     use futures::{StreamExt, stream};
 
     use super::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
-    use crate::WorkerConfig;
     use crate::error::WorkerError;
+    use crate::{ReconnectConfig, WorkerConfig};
 
     #[derive(Default)]
     struct FakeSession {
@@ -476,9 +476,11 @@ mod tests {
             "payments",
             "worker-a",
             4,
-            std::time::Duration::from_millis(5),
-            std::time::Duration::from_millis(20),
-            3,
+            ReconnectConfig::new(
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(20),
+                3,
+            ),
             None,
         );
         let activity_types = vec![String::from("charge-card"), String::from("send-email")];

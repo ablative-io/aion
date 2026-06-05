@@ -6,7 +6,7 @@ use std::sync::Arc;
 use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
 use async_trait::async_trait;
 use futures::StreamExt;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::config::WorkerConfig;
@@ -189,30 +189,8 @@ where
                         continue;
                     }
                 };
-                info!(
-                    activity_type = %task.activity_type,
-                    activity_id = task.activity_id.sequence_position(),
-                    workflow_id = %task.workflow_id,
-                    attempt = task.attempt,
-                    "received activity task"
-                );
-                let task_dispatcher = Arc::clone(&dispatcher);
-                let task_result_sender = result_sender.clone();
-                let workflow_id = task.workflow_id.clone();
-                let activity_id = task.activity_id.clone();
+                spawn_dispatch(task, Arc::clone(&dispatcher), result_sender.clone(), permit);
                 in_flight += 1;
-                tokio::spawn(async move {
-                    let outcome = task_dispatcher.dispatch(task).await;
-                    let finished = DispatchFinished {
-                        workflow_id,
-                        activity_id,
-                        outcome,
-                    };
-                    if task_result_sender.send(finished).is_err() {
-                        debug!("worker loop stopped before dispatch outcome could be delivered");
-                    }
-                    drop(permit);
-                });
             }
             Some(Err(error)) => {
                 drop(permit);
@@ -242,6 +220,37 @@ where
     }
 
     Ok(())
+}
+
+fn spawn_dispatch<D>(
+    task: ActivityTask,
+    dispatcher: Arc<D>,
+    result_sender: mpsc::UnboundedSender<DispatchFinished>,
+    permit: OwnedSemaphorePermit,
+) where
+    D: ActivityDispatcher,
+{
+    info!(
+        activity_type = %task.activity_type,
+        activity_id = task.activity_id.sequence_position(),
+        workflow_id = %task.workflow_id,
+        attempt = task.attempt,
+        "received activity task"
+    );
+    let workflow_id = task.workflow_id.clone();
+    let activity_id = task.activity_id.clone();
+    tokio::spawn(async move {
+        let outcome = dispatcher.dispatch(task).await;
+        let finished = DispatchFinished {
+            workflow_id,
+            activity_id,
+            outcome,
+        };
+        if result_sender.send(finished).is_err() {
+            debug!("worker loop stopped before dispatch outcome could be delivered");
+        }
+        drop(permit);
+    });
 }
 
 async fn drain_finished_reports<S>(

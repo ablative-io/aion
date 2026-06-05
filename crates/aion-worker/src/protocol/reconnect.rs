@@ -110,32 +110,32 @@ impl ReconnectBackoff {
     ///
     /// Returns [`WorkerError::Registration`] if delays or attempt counts are zero.
     pub fn from_config(config: &WorkerConfig) -> Result<Self, WorkerError> {
-        if config.reconnect_initial_backoff.is_zero() {
+        if config.reconnect.initial_backoff.is_zero() {
             return Err(WorkerError::registration(InvalidReconnectBackoff {
-                message: String::from("reconnect_initial_backoff must be greater than zero"),
+                message: String::from("reconnect initial_backoff must be greater than zero"),
             }));
         }
-        if config.reconnect_max_backoff.is_zero() {
+        if config.reconnect.max_backoff.is_zero() {
             return Err(WorkerError::registration(InvalidReconnectBackoff {
-                message: String::from("reconnect_max_backoff must be greater than zero"),
+                message: String::from("reconnect max_backoff must be greater than zero"),
             }));
         }
-        if config.reconnect_max_attempts == 0 {
+        if config.reconnect.max_attempts == 0 {
             return Err(WorkerError::registration(InvalidReconnectBackoff {
-                message: String::from("reconnect_max_attempts must be greater than zero"),
+                message: String::from("reconnect max_attempts must be greater than zero"),
             }));
         }
         Ok(Self {
-            initial: config.reconnect_initial_backoff,
-            max: config.reconnect_max_backoff,
-            attempts: config.reconnect_max_attempts,
+            initial: config.reconnect.initial_backoff,
+            max: config.reconnect.max_backoff,
+            attempts: config.reconnect.max_attempts,
         })
     }
 
     fn delay_for_attempt(&self, completed_failures: usize) -> Duration {
-        let factor = 1_u32
-            .checked_shl(completed_failures.saturating_sub(1).min(31) as u32)
-            .unwrap_or(u32::MAX);
+        let bounded_shift = completed_failures.saturating_sub(1).min(31);
+        let shift = u32::try_from(bounded_shift).map_or(31, |shift| shift);
+        let factor = 1_u32.checked_shl(shift).map_or(u32::MAX, |factor| factor);
         self.initial.saturating_mul(factor).min(self.max)
     }
 
@@ -340,9 +340,9 @@ mod tests {
     use super::{
         PendingActivityReport, UnackedResultTracker, re_report_unacked, reconnect_with_sleep,
     };
-    use crate::WorkerConfig;
     use crate::error::WorkerError;
     use crate::protocol::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
+    use crate::{ReconnectConfig, WorkerConfig};
 
     #[test]
     fn tracker_records_reports_and_acknowledges_by_activity_id() {
@@ -509,9 +509,7 @@ mod tests {
             "payments",
             "worker-a",
             2,
-            Duration::from_millis(5),
-            Duration::from_millis(20),
-            3,
+            ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
             None,
         )
     }

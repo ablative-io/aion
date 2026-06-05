@@ -9,7 +9,10 @@ pub mod runtime;
 pub mod worker;
 
 pub use activity::{ActivityFailure, Classification};
-pub use config::{TransportCredentials, WorkerConfig, WorkerConfigBuildError, WorkerConfigBuilder};
+pub use config::{
+    ReconnectConfig, TransportCredentials, WorkerConfig, WorkerConfigBuildError,
+    WorkerConfigBuilder,
+};
 pub use context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 pub use error::{MissingActivityHandler, WorkerError};
 pub use protocol::{

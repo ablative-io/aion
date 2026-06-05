@@ -38,6 +38,33 @@ impl fmt::Debug for TransportCredentials {
     }
 }
 
+/// Operator-supplied reconnect backoff settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconnectConfig {
+    /// Initial reconnect backoff delay. Must be non-zero before reconnecting.
+    pub initial_backoff: Duration,
+    /// Maximum reconnect backoff delay cap. Must be non-zero before reconnecting.
+    pub max_backoff: Duration,
+    /// Maximum reconnect attempts before surfacing the last connection error.
+    pub max_attempts: usize,
+}
+
+impl ReconnectConfig {
+    /// Creates reconnect settings with every field supplied explicitly.
+    #[must_use]
+    pub const fn new(
+        initial_backoff: Duration,
+        max_backoff: Duration,
+        max_attempts: usize,
+    ) -> Self {
+        Self {
+            initial_backoff,
+            max_backoff,
+            max_attempts,
+        }
+    }
+}
+
 /// Operator-supplied worker connection and serving configuration.
 ///
 /// No tunable field has a default. In particular, `max_concurrency` is provided
@@ -53,12 +80,8 @@ pub struct WorkerConfig {
     pub identity: String,
     /// Maximum concurrent activities this worker may serve.
     pub max_concurrency: usize,
-    /// Initial reconnect backoff delay. Must be non-zero before reconnecting.
-    pub reconnect_initial_backoff: Duration,
-    /// Maximum reconnect backoff delay cap. Must be non-zero before reconnecting.
-    pub reconnect_max_backoff: Duration,
-    /// Maximum reconnect attempts before surfacing the last connection error.
-    pub reconnect_max_attempts: usize,
+    /// Operator-supplied reconnect settings.
+    pub reconnect: ReconnectConfig,
     /// Opaque credentials for the transport implementation.
     pub transport_credentials: Option<TransportCredentials>,
 }
@@ -78,9 +101,7 @@ impl WorkerConfig {
         task_queue: impl Into<String>,
         identity: impl Into<String>,
         max_concurrency: usize,
-        reconnect_initial_backoff: Duration,
-        reconnect_max_backoff: Duration,
-        reconnect_max_attempts: usize,
+        reconnect: ReconnectConfig,
         transport_credentials: Option<TransportCredentials>,
     ) -> Self {
         Self {
@@ -88,9 +109,7 @@ impl WorkerConfig {
             task_queue: task_queue.into(),
             identity: identity.into(),
             max_concurrency,
-            reconnect_initial_backoff,
-            reconnect_max_backoff,
-            reconnect_max_attempts,
+            reconnect,
             transport_credentials,
         }
     }
@@ -200,15 +219,17 @@ impl WorkerConfigBuilder {
             max_concurrency: self
                 .max_concurrency
                 .ok_or(WorkerConfigBuildError::MissingMaxConcurrency)?,
-            reconnect_initial_backoff: self
-                .reconnect_initial_backoff
-                .ok_or(WorkerConfigBuildError::MissingReconnectInitialBackoff)?,
-            reconnect_max_backoff: self
-                .reconnect_max_backoff
-                .ok_or(WorkerConfigBuildError::MissingReconnectMaxBackoff)?,
-            reconnect_max_attempts: self
-                .reconnect_max_attempts
-                .ok_or(WorkerConfigBuildError::MissingReconnectMaxAttempts)?,
+            reconnect: ReconnectConfig {
+                initial_backoff: self
+                    .reconnect_initial_backoff
+                    .ok_or(WorkerConfigBuildError::MissingReconnectInitialBackoff)?,
+                max_backoff: self
+                    .reconnect_max_backoff
+                    .ok_or(WorkerConfigBuildError::MissingReconnectMaxBackoff)?,
+                max_attempts: self
+                    .reconnect_max_attempts
+                    .ok_or(WorkerConfigBuildError::MissingReconnectMaxAttempts)?,
+            },
             transport_credentials: self.transport_credentials,
         })
     }
@@ -264,9 +285,9 @@ mod tests {
         assert_eq!(config.task_queue, "payments");
         assert_eq!(config.identity, "worker-a");
         assert_eq!(config.max_concurrency, 7);
-        assert_eq!(config.reconnect_initial_backoff, Duration::from_millis(10));
-        assert_eq!(config.reconnect_max_backoff, Duration::from_millis(100));
-        assert_eq!(config.reconnect_max_attempts, 3);
+        assert_eq!(config.reconnect.initial_backoff, Duration::from_millis(10));
+        assert_eq!(config.reconnect.max_backoff, Duration::from_millis(100));
+        assert_eq!(config.reconnect.max_attempts, 3);
         assert_eq!(config.transport_credentials, Some(credentials));
         assert!(!format!("{config:?}").contains("secret-token"));
 

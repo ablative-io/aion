@@ -218,7 +218,7 @@ mod tests {
 
     use super::{TypedActivityDispatcher, decode_payload, encode_payload};
     use crate::activity::ActivityFailure;
-    use crate::config::WorkerConfig;
+    use crate::config::{ReconnectConfig, WorkerConfig};
     use crate::error::WorkerError;
     use crate::protocol::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
     use crate::runtime::serve_activity_tasks;
@@ -521,9 +521,11 @@ mod tests {
             "payments",
             "worker-a",
             1,
-            std::time::Duration::from_millis(5),
-            std::time::Duration::from_millis(20),
-            3,
+            ReconnectConfig::new(
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(20),
+                3,
+            ),
             None,
         )
     }

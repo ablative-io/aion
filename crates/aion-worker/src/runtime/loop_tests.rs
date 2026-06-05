@@ -13,9 +13,9 @@ use serde_json::json;
 use tokio::sync::{Mutex, mpsc};
 
 use super::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
-use crate::WorkerConfig;
 use crate::error::WorkerError;
 use crate::protocol::{ActivityTask, WorkerSession, WorkerTaskStream, validate_activity_handlers};
+use crate::{ReconnectConfig, WorkerConfig};
 
 #[derive(Default)]
 struct FakeSession {
@@ -174,9 +174,7 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
         "payments",
         "worker-a",
         2,
-        Duration::from_millis(5),
-        Duration::from_millis(20),
-        3,
+        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
         None,
     );
 
@@ -226,9 +224,7 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
         "payments",
         "worker-a",
         2,
-        Duration::from_millis(5),
-        Duration::from_millis(20),
-        3,
+        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
         None,
     );
     let worker = tokio::spawn({
