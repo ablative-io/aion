@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import type { WorkflowPage } from '@/lib/api';
-import type { WorkflowFilter, WorkflowSummary } from '@/types';
+import { ApiClient, type WorkflowPage } from '@/lib/api';
+import type { Namespace, WorkflowFilter, WorkflowSummary } from '@/types';
 
 import { WorkflowListBody } from './WorkflowList';
 import { WorkflowRow } from './WorkflowRow';
+import { queryWorkflowPage, workflowQueryKey } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
   type WorkflowListPaginationState,
@@ -97,6 +98,59 @@ describe('WorkflowRow', () => {
     );
 
     expect(markup).toContain('/workflows/workflow-1');
+  });
+});
+
+describe('workflow list query path', () => {
+  test('query helper requests namespaced summary pages with generated filter and pagination', async () => {
+    const namespace = 'default' as Namespace;
+    const filter = workflowFilterFromState({
+      ...EMPTY_WORKFLOW_LIST_FILTER_STATE,
+      workflowType: 'EmailDigest',
+      status: 'Failed',
+      startedAfter: '2026-06-05T20:00',
+    });
+    const requests: unknown[] = [];
+    const client = new ApiClient({
+      fetchImpl: async (_input, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return Response.json({ items: [workflow], next_cursor: null, has_more: false });
+      },
+    });
+
+    const result = await queryWorkflowPage(client, namespace, filter, {
+      cursor: 'cursor-1',
+      limit: 25,
+    });
+
+    expect(requests).toEqual([
+      {
+        namespace,
+        filter: {
+          workflow_type: 'EmailDigest',
+          status: 'Failed',
+          started_after: '2026-06-05T20:00',
+          started_before: null,
+          parent: null,
+        } satisfies WorkflowFilter,
+        cursor: 'cursor-1',
+        limit: 25,
+      },
+    ]);
+    expect(result.items).toEqual([workflow]);
+  });
+
+  test('query key includes namespace, filter, and pagination', () => {
+    const namespace = 'tenant-a' as Namespace;
+    const filter = workflowFilterFromState(EMPTY_WORKFLOW_LIST_FILTER_STATE);
+    const pageRequest = { cursor: undefined, limit: 50 };
+
+    expect(workflowQueryKey(namespace, filter, pageRequest)).toEqual([
+      'workflows',
+      namespace,
+      filter,
+      pageRequest,
+    ]);
   });
 });
 

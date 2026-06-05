@@ -37,10 +37,39 @@ export function useWorkflowQuery(
   options: UseWorkflowQueryOptions = {}
 ): UseQueryResult<WorkflowPage<WorkflowSummary>, Error> {
   const client = options.client ?? defaultClient;
+  const normalizedPage = normalizeWorkflowPageRequest(page);
 
   return useQuery({
-    queryKey: workflowQueryKey(namespace, filter, page),
-    queryFn: () => client.queryWorkflows(filter, page, { namespace }),
+    queryKey: workflowQueryKey(namespace, filter, normalizedPage),
+    queryFn: () => queryWorkflowPage(client, namespace, filter, normalizedPage),
     enabled: options.enabled ?? namespace.length > 0,
   });
+}
+
+export function queryWorkflowPage(
+  client: ApiClient,
+  namespace: Namespace,
+  filter: WorkflowFilter,
+  page: WorkflowPageRequest
+): Promise<WorkflowPage<WorkflowSummary>> {
+  return client.queryWorkflows(filter, page, { namespace });
+}
+
+function normalizeWorkflowPageRequest(page: WorkflowPageRequest): WorkflowPageRequest {
+  return {
+    cursor: page.cursor,
+    limit: normalizePageLimit(page.limit),
+  };
+}
+
+function normalizePageLimit(limit: number | undefined): number | undefined {
+  if (limit === undefined) {
+    return undefined;
+  }
+
+  if (!Number.isFinite(limit)) {
+    return undefined;
+  }
+
+  return Math.max(1, Math.floor(limit));
 }

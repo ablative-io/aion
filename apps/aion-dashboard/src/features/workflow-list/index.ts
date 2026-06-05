@@ -2,7 +2,7 @@ export { FilterBar } from './components/FilterBar';
 export { Pagination } from './components/Pagination';
 export { WorkflowList, WorkflowListBody } from './components/WorkflowList';
 export { WorkflowRow } from './components/WorkflowRow';
-export { useWorkflowQuery, workflowQueryKey } from './hooks/useWorkflowQuery';
+export { queryWorkflowPage, useWorkflowQuery, workflowQueryKey } from './hooks/useWorkflowQuery';
 export type { FilterBarProps } from './components/FilterBar';
 export type { PaginationProps } from './components/Pagination';
 export type { WorkflowListProps } from './components/WorkflowList';

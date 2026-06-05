@@ -34,17 +34,18 @@ export function WorkflowList({
 }: WorkflowListProps) {
   const [filterState, setFilterState] = useState(initialFilterState);
   const [pagination, setPagination] = useState(FIRST_WORKFLOW_LIST_PAGE);
-  const filter = useMemo(() => workflowFilterFromState(filterState), [filterState]);
+  const [filter, setFilter] = useState(() => workflowFilterFromState(initialFilterState));
+  const normalizedPageLimit = useMemo(() => normalizePageLimit(pageLimit), [pageLimit]);
   const query = useWorkflowQuery(
     namespace,
     filter,
-    { cursor: pagination.cursor, limit: pageLimit },
+    { cursor: pagination.cursor, limit: normalizedPageLimit },
     { client }
   );
 
-  function handleFilterChange(filter: WorkflowFilter, state: WorkflowListFilterState) {
-    void filter;
+  function handleFilterChange(nextFilter: WorkflowFilter, state: WorkflowListFilterState) {
     setFilterState(state);
+    setFilter(nextFilter);
     setPagination(FIRST_WORKFLOW_LIST_PAGE);
   }
 
@@ -144,13 +145,21 @@ export function WorkflowListBody({
       </Table>
       <Pagination
         canGoPrevious={canGoPrevious}
-        canGoNext={page.hasMore && page.nextCursor !== null}
+        canGoNext={page.hasMore && page.nextCursor !== null && page.nextCursor.length > 0}
         isFetching={query.isFetching}
         onPrevious={onPrevious}
         onNext={onNext}
       />
     </div>
   );
+}
+
+function normalizePageLimit(limit: number): number {
+  if (!Number.isFinite(limit)) {
+    return WORKFLOW_PAGE_LIMIT;
+  }
+
+  return Math.max(1, Math.floor(limit));
 }
 
 function errorMessage(error: unknown): string {
