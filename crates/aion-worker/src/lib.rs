@@ -11,5 +11,6 @@ pub mod worker;
 pub use config::{TransportCredentials, WorkerConfig, WorkerConfigBuildError, WorkerConfigBuilder};
 pub use error::{MissingActivityHandler, WorkerError};
 pub use protocol::{
-    GrpcWorkerSession, WorkerSession, WorkerTaskStream, validate_activity_handlers,
+    ActivityTask, GrpcWorkerSession, WorkerSession, WorkerTaskStream, validate_activity_handlers,
 };
+pub use runtime::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
