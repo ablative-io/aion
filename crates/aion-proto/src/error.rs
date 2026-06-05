@@ -138,7 +138,7 @@ impl WireError {
 }
 
 /// Proto representation of [`WireErrorCode`]. Zero is invalid on decode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, prost::Enumeration)]
 #[repr(i32)]
 pub enum ProtoWireErrorCode {
     /// Missing/invalid code.
@@ -162,7 +162,7 @@ pub enum ProtoWireErrorCode {
 }
 
 /// Proto representation of [`WireError`].
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, prost::Message)]
 pub struct ProtoWireError {
     /// Stable client-branchable code.
     #[prost(enumeration = "ProtoWireErrorCode", tag = "1")]

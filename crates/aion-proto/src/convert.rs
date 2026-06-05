@@ -8,7 +8,7 @@ use crate::error::WireError;
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 /// Proto representation of `WorkflowId`.
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoWorkflowId {
     /// UUID encoded in canonical string form.
     #[prost(string, tag = "1")]
@@ -16,7 +16,7 @@ pub struct ProtoWorkflowId {
 }
 
 /// Proto representation of `RunId`.
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoRunId {
     /// UUID encoded in canonical string form.
     #[prost(string, tag = "1")]
@@ -24,7 +24,7 @@ pub struct ProtoRunId {
 }
 
 /// Proto representation of `ActivityId`.
-#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoActivityId {
     /// Scheduling sequence position.
     #[prost(uint64, tag = "1")]
@@ -32,7 +32,7 @@ pub struct ProtoActivityId {
 }
 
 /// Proto representation of `TimerId`.
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoTimerId {
     /// Timer identifier kind.
     #[prost(oneof = "proto_timer_id::Kind", tags = "1, 2")]
@@ -42,7 +42,7 @@ pub struct ProtoTimerId {
 /// Types nested under [`ProtoTimerId`].
 pub mod proto_timer_id {
     /// Proto oneof for named and anonymous timer identifiers.
-    #[derive(Clone, PartialEq, Eq, prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Oneof)]
     pub enum Kind {
         /// Author-assigned timer name.
         #[prost(string, tag = "1")]
@@ -54,7 +54,7 @@ pub mod proto_timer_id {
 }
 
 /// Proto representation of `Payload`.
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoPayload {
     /// Stable content type tag.
     #[prost(string, tag = "1")]
@@ -65,7 +65,17 @@ pub struct ProtoPayload {
 }
 
 /// Proto representation of `WorkflowStatus`. Zero is invalid on decode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    prost::Enumeration,
+)]
 #[repr(i32)]
 pub enum ProtoWorkflowStatus {
     /// Missing/invalid status.
@@ -83,7 +93,7 @@ pub enum ProtoWorkflowStatus {
 }
 
 /// Thin proto envelope carrying a serde-encoded aion-core value.
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct WireEnvelope {
     /// Namespace that scopes the enclosed value.
     #[prost(string, tag = "1")]
