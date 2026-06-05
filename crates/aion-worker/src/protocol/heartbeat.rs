@@ -23,6 +23,10 @@ pub struct HeartbeatBookkeeper {
 
 impl HeartbeatBookkeeper {
     /// Marks an activity as in flight without recording a heartbeat yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError`] if the in-memory bookkeeping mutex is poisoned.
     pub fn register(&self, activity_id: ActivityId) -> Result<(), WorkerError> {
         let mut last_heartbeats = self.lock_last_heartbeats()?;
         last_heartbeats.entry(activity_id).or_insert(None);
@@ -30,6 +34,10 @@ impl HeartbeatBookkeeper {
     }
 
     /// Removes bookkeeping for a completed activity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError`] if the in-memory bookkeeping mutex is poisoned.
     pub fn remove(&self, activity_id: &ActivityId) -> Result<(), WorkerError> {
         let mut last_heartbeats = self.lock_last_heartbeats()?;
         last_heartbeats.remove(activity_id);

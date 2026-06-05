@@ -75,10 +75,9 @@ where
     let heartbeat_bookkeeper = HeartbeatBookkeeper::default();
     let mut stream = session.receive_tasks();
     let mut in_flight = HashMap::<ActivityExecutionKey, InFlightActivity>::new();
-    let mut intake_open = true;
     let mut pending_error = None;
 
-    while intake_open {
+    while pending_error.is_none() {
         drain_runtime_events(
             session,
             &heartbeat_bookkeeper,
@@ -97,115 +96,186 @@ where
             .acquire_owned()
             .await
             .map_err(WorkerError::registration)?;
-        drain_runtime_events(
-            session,
+        let Some(event) = stream.next().await else {
+            drop(permit);
+            break;
+        };
+        if !handle_session_event(
+            event,
+            permit,
+            Arc::clone(&dispatcher),
+            &result_sender,
+            &heartbeat_sender,
             &heartbeat_bookkeeper,
-            &mut heartbeat_receiver,
-            &mut result_receiver,
             &mut in_flight,
             &mut pending_error,
         )
-        .await;
-        if pending_error.is_some() {
-            drop(permit);
+        .await?
+        {
             break;
-        }
-
-        match stream.next().await {
-            Some(Ok(WorkerSessionEvent::Task(proto_task))) => {
-                let task = match ActivityTask::try_from(proto_task) {
-                    Ok(task) => task,
-                    Err(error) => {
-                        drop(permit);
-                        pending_error = Some(error);
-                        intake_open = false;
-                        continue;
-                    }
-                };
-                info!(
-                    activity_type = %task.activity_type,
-                    activity_id = task.activity_id.sequence_position(),
-                    workflow_id = %task.workflow_id,
-                    attempt = task.attempt,
-                    "received activity task"
-                );
-                let key =
-                    ActivityExecutionKey::new(task.workflow_id.clone(), task.activity_id.clone());
-                heartbeat_bookkeeper.register(task.activity_id.clone())?;
-                let (context, cancellation_handle) = ActivityContext::for_workflow(
-                    Some(task.workflow_id.clone()),
-                    task.activity_id.clone(),
-                    task.attempt,
-                    Some(heartbeat_sender.clone()),
-                );
-                let task_dispatcher = Arc::clone(&dispatcher);
-                let task_result_sender = result_sender.clone();
-                let finished_key = key.clone();
-                let join_handle = tokio::spawn(async move {
-                    let outcome = task_dispatcher.dispatch(task, context).await;
-                    if task_result_sender
-                        .send(DispatchFinished {
-                            key: finished_key,
-                            outcome,
-                        })
-                        .is_err()
-                    {
-                        debug!("worker loop stopped before dispatch outcome could be delivered");
-                    }
-                    drop(permit);
-                });
-                in_flight.insert(
-                    key,
-                    InFlightActivity {
-                        cancellation_handle,
-                        join_handle,
-                    },
-                );
-            }
-            Some(Ok(WorkerSessionEvent::Cancel {
-                workflow_id,
-                activity_id,
-            })) => {
-                drop(permit);
-                let key = ActivityExecutionKey::new(workflow_id, activity_id.clone());
-                if let Some(in_flight_activity) = in_flight.get(&key) {
-                    in_flight_activity.cancellation_handle.cancel();
-                    info!(
-                        activity_id = activity_id.sequence_position(),
-                        "delivered cooperative activity cancellation"
-                    );
-                }
-            }
-            Some(Err(error)) => {
-                drop(permit);
-                pending_error = Some(error);
-                intake_open = false;
-            }
-            None => {
-                drop(permit);
-                intake_open = false;
-            }
         }
     }
 
     drop(result_sender);
     drop(heartbeat_sender);
+    drain_remaining(
+        session,
+        &heartbeat_bookkeeper,
+        &mut heartbeat_receiver,
+        &mut result_receiver,
+        &mut in_flight,
+        &mut pending_error,
+    )
+    .await;
+
+    if let Some(error) = pending_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn handle_session_event<D>(
+    event: Result<WorkerSessionEvent, WorkerError>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    dispatcher: Arc<D>,
+    result_sender: &mpsc::UnboundedSender<DispatchFinished>,
+    heartbeat_sender: &mpsc::UnboundedSender<HeartbeatRequest>,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    pending_error: &mut Option<WorkerError>,
+) -> Result<bool, WorkerError>
+where
+    D: ActivityDispatcher,
+{
+    match event {
+        Ok(WorkerSessionEvent::Task(proto_task)) => {
+            let task = match ActivityTask::try_from(proto_task) {
+                Ok(task) => task,
+                Err(error) => {
+                    drop(permit);
+                    *pending_error = Some(error);
+                    return Ok(false);
+                }
+            };
+            spawn_activity(
+                task,
+                permit,
+                dispatcher,
+                result_sender.clone(),
+                heartbeat_sender.clone(),
+                heartbeat_bookkeeper,
+                in_flight,
+            )?;
+            Ok(true)
+        }
+        Ok(WorkerSessionEvent::Cancel {
+            workflow_id,
+            activity_id,
+        }) => {
+            drop(permit);
+            deliver_cancellation(workflow_id, activity_id, in_flight);
+            Ok(true)
+        }
+        Err(error) => {
+            drop(permit);
+            *pending_error = Some(error);
+            Ok(false)
+        }
+    }
+}
+
+fn spawn_activity<D>(
+    task: ActivityTask,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    dispatcher: Arc<D>,
+    result_sender: mpsc::UnboundedSender<DispatchFinished>,
+    heartbeat_sender: mpsc::UnboundedSender<HeartbeatRequest>,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+) -> Result<(), WorkerError>
+where
+    D: ActivityDispatcher,
+{
+    info!(
+        activity_type = %task.activity_type,
+        activity_id = task.activity_id.sequence_position(),
+        workflow_id = %task.workflow_id,
+        attempt = task.attempt,
+        "received activity task"
+    );
+    let key = ActivityExecutionKey::new(task.workflow_id.clone(), task.activity_id.clone());
+    heartbeat_bookkeeper.register(task.activity_id.clone())?;
+    let (context, cancellation_handle) = ActivityContext::for_workflow(
+        Some(task.workflow_id.clone()),
+        task.activity_id.clone(),
+        task.attempt,
+        Some(heartbeat_sender),
+    );
+    let finished_key = key.clone();
+    let join_handle = tokio::spawn(async move {
+        let outcome = dispatcher.dispatch(task, context).await;
+        if result_sender
+            .send(DispatchFinished {
+                key: finished_key,
+                outcome,
+            })
+            .is_err()
+        {
+            debug!("worker loop stopped before dispatch outcome could be delivered");
+        }
+        drop(permit);
+    });
+    in_flight.insert(
+        key,
+        InFlightActivity {
+            cancellation_handle,
+            join_handle,
+        },
+    );
+    Ok(())
+}
+
+fn deliver_cancellation(
+    workflow_id: WorkflowId,
+    activity_id: ActivityId,
+    in_flight: &HashMap<ActivityExecutionKey, InFlightActivity>,
+) {
+    let key = ActivityExecutionKey::new(workflow_id, activity_id.clone());
+    if let Some(in_flight_activity) = in_flight.get(&key) {
+        in_flight_activity.cancellation_handle.cancel();
+        info!(
+            activity_id = activity_id.sequence_position(),
+            "delivered cooperative activity cancellation"
+        );
+    }
+}
+
+async fn drain_remaining<S>(
+    session: &mut S,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
+    result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    pending_error: &mut Option<WorkerError>,
+) where
+    S: WorkerSession,
+{
     while !in_flight.is_empty() {
         match result_receiver.recv().await {
             Some(finished) => {
                 report_finished(
                     session,
-                    &heartbeat_bookkeeper,
+                    heartbeat_bookkeeper,
                     finished,
-                    &mut in_flight,
-                    &mut pending_error,
+                    in_flight,
+                    pending_error,
                 )
                 .await;
                 drain_heartbeats(
                     session,
-                    &heartbeat_bookkeeper,
-                    &mut heartbeat_receiver,
-                    &mut pending_error,
+                    heartbeat_bookkeeper,
+                    heartbeat_receiver,
+                    pending_error,
                 )
                 .await;
             }
@@ -214,17 +284,11 @@ where
     }
     drain_heartbeats(
         session,
-        &heartbeat_bookkeeper,
-        &mut heartbeat_receiver,
-        &mut pending_error,
+        heartbeat_bookkeeper,
+        heartbeat_receiver,
+        pending_error,
     )
     .await;
-
-    if let Some(error) = pending_error {
-        return Err(error);
-    }
-
-    Ok(())
 }
 
 async fn drain_runtime_events<S>(
