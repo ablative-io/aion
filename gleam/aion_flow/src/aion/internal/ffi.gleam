@@ -54,10 +54,20 @@ pub fn send_signal(
 ) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "register_query")
-pub fn register_query(name: String, config: String) -> Result(String, String)
+pub fn register_query(
+  name: String,
+  handler: fn(String) -> Result(String, String),
+  config: String,
+) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "reply_query")
 pub fn reply_query(query_id: String, payload: String) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "dispatch_query")
+pub fn dispatch_query(name: String, config: String) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "query_recorded_observations")
+pub fn query_recorded_observations() -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "spawn_child")
 pub fn spawn_child(

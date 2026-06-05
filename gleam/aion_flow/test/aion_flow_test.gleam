@@ -4,6 +4,7 @@ import aion/activity
 import aion/codec
 import aion/duration
 import aion/error
+import aion/query
 import aion/signal
 import aion/workflow
 import gleam/dynamic/decode
@@ -407,6 +408,56 @@ pub fn workflow_receive_composes_with_timeout_test() {
     duration.seconds(1),
   )
   |> should.equal(Ok(payload))
+}
+
+pub fn query_handler_returns_typed_decoded_value_test() {
+  let state = ChargeReceipt(id: "receipt-query", approved: True)
+
+  query.handler("checkout-state", charge_receipt_codec(), fn() { state })
+  |> should.equal(Ok(Nil))
+
+  query.dispatch("checkout-state", charge_receipt_codec())
+  |> should.equal(Ok(state))
+}
+
+pub fn query_unknown_name_returns_typed_error_test() {
+  query.dispatch("missing-query", charge_receipt_codec())
+  |> should.equal(Error(error.UnknownQuery("missing-query")))
+}
+
+pub fn query_decode_failure_is_typed_data_test() {
+  query.handler("malformed-query-reply", charge_receipt_codec(), fn() {
+    ChargeReceipt(id: "receipt-query", approved: True)
+  })
+  |> should.equal(Ok(Nil))
+
+  case query.dispatch("malformed-query-reply", charge_request_codec()) {
+    Ok(_) -> should.fail()
+    Error(error.QueryDecodeFailed(decode_error)) ->
+      decode_error
+      |> should.equal(
+        codec.DecodeError(reason: "Expected Field, found Nothing", path: [
+          "order_id",
+        ]),
+      )
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn query_dispatch_records_no_observation_test() {
+  let state = ChargeReceipt(id: "receipt-no-event", approved: True)
+
+  query.recorded_observations()
+  |> should.equal(Ok(0))
+
+  query.handler("no-event-state", charge_receipt_codec(), fn() { state })
+  |> should.equal(Ok(Nil))
+
+  query.dispatch("no-event-state", charge_receipt_codec())
+  |> should.equal(Ok(state))
+
+  query.recorded_observations()
+  |> should.equal(Ok(0))
 }
 
 pub fn workflow_define_carries_entry_contract_test() {
