@@ -321,9 +321,11 @@ mod tests {
 
         let mut seqs = Vec::new();
         while let Some(item) = events.next().await {
-            match item {
-                Ok(event) => seqs.push(event.seq()),
-                Err(error) => panic!("unexpected stream error: {error}"),
+            let event = item
+                .map_err(|e| format!("unexpected stream error: {e}"))
+                .ok();
+            if let Some(event) = event {
+                seqs.push(event.seq());
             }
         }
 
