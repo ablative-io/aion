@@ -799,40 +799,39 @@ fn canonical_example_workflow(
   input: ExampleOrder,
 ) -> Result(ExampleSummary, String) {
   use observed_at <- result.try(workflow.now() |> result_map_engine_error)
-  use run_receipt <-
-    result.try(
-      workflow.run(example_charge_activity(
-        "example-charge",
-        input.id,
-        input.cents,
-      ))
-      |> result_map_activity_error,
+  use run_receipt <- result.try(
+    workflow.run(example_charge_activity(
+      "example-charge",
+      input.id,
+      input.cents,
+    ))
+    |> result_map_activity_error,
+  )
+  use _slept <- result.try(
+    workflow.sleep(duration.minutes(5)) |> result_map_engine_error,
+  )
+  use decision <- result.try(
+    workflow.receive(example_decision_signal()) |> result_map_receive_error,
+  )
+  use handle <- result.try(
+    workflow.spawn(
+      "checkout-child",
+      checkout_workflow,
+      ChargeRequest(order_id: input.id, cents: input.cents),
+      charge_request_codec(),
+      charge_receipt_codec(),
+      workflow_error_codec(),
     )
-  use _slept <- result.try(workflow.sleep(duration.minutes(5)) |> result_map_engine_error)
-  use decision <-
-    result.try(workflow.receive(example_decision_signal()) |> result_map_receive_error)
-  use handle <-
-    result.try(
-      workflow.spawn(
-        "checkout-child",
-        checkout_workflow,
-        ChargeRequest(order_id: input.id, cents: input.cents),
-        charge_request_codec(),
-        charge_receipt_codec(),
-        workflow_error_codec(),
-      )
-      |> result_map_engine_error,
-    )
-  use child_receipt <-
-    result.try(child.await(handle) |> result_map_child_error)
-  use fanout_receipts <-
-    result.try(
-      workflow.all([
-        example_charge_activity("example-fanout", input.id <> "-a", input.cents),
-        example_charge_activity("example-fanout", input.id <> "-b", input.cents),
-      ])
-      |> result_map_activity_error,
-    )
+    |> result_map_engine_error,
+  )
+  use child_receipt <- result.try(child.await(handle) |> result_map_child_error)
+  use fanout_receipts <- result.try(
+    workflow.all([
+      example_charge_activity("example-fanout", input.id <> "-a", input.cents),
+      example_charge_activity("example-fanout", input.id <> "-b", input.cents),
+    ])
+    |> result_map_activity_error,
+  )
 
   Ok(ExampleSummary(
     order_id: input.id,
@@ -975,11 +974,15 @@ fn example_summary_decoder() -> decode.Decoder(ExampleSummary) {
   use order_id <- decode.field("order_id", decode.string)
   use run_receipt_id <- decode.field("run_receipt_id", decode.string)
   use child_receipt_id <- decode.field("child_receipt_id", decode.string)
-  use fanout_receipt_ids <-
-    decode.field("fanout_receipt_ids", decode.list(decode.string))
+  use fanout_receipt_ids <- decode.field(
+    "fanout_receipt_ids",
+    decode.list(decode.string),
+  )
   use approved <- decode.field("approved", decode.bool)
-  use observed_at_milliseconds <-
-    decode.field("observed_at_milliseconds", decode.int)
+  use observed_at_milliseconds <- decode.field(
+    "observed_at_milliseconds",
+    decode.int,
+  )
   decode.success(ExampleSummary(
     order_id: order_id,
     run_receipt_id: run_receipt_id,

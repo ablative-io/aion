@@ -1,0 +1,37 @@
+import aion/activity
+import aion/codec
+import aion/error
+
+pub type Order {
+  Order(id: String)
+}
+
+pub type Receipt {
+  Receipt(id: String)
+}
+
+fn order_codec() -> codec.Codec(Order) {
+  codec.Codec(encode: fn(_order) { "{}" }, decode: fn(_payload) {
+    Ok(Order(id: "decoded"))
+  })
+}
+
+fn receipt_codec() -> codec.Codec(Receipt) {
+  codec.Codec(encode: fn(_receipt) { "{}" }, decode: fn(_payload) {
+    Ok(Receipt(id: "decoded"))
+  })
+}
+
+fn run_order(_order: Order) -> Result(Receipt, error.ActivityError) {
+  Ok(Receipt(id: "receipt"))
+}
+
+pub fn valid_activity_input() {
+  activity.new(
+    "charge",
+    Order(id: "order-1"),
+    order_codec(),
+    receipt_codec(),
+    run_order,
+  )
+}

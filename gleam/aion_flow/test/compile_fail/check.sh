@@ -34,7 +34,7 @@ EOF
 
 check_positive() {
   fixture="$1"
-  project_dir=$(make_project "$SCRIPT_DIR/${fixture}_positive.gleam")
+  project_dir=$(make_project "$SCRIPT_DIR/${fixture}_positive.gleam.fixture")
   if output=$(cd "$project_dir" && gleam check 2>&1); then
     printf 'ok: %s_positive.gleam type-checks\n' "$fixture"
   else
@@ -45,7 +45,7 @@ check_positive() {
 
 check_negative() {
   fixture="$1"
-  project_dir=$(make_project "$SCRIPT_DIR/${fixture}_negative.gleam")
+  project_dir=$(make_project "$SCRIPT_DIR/${fixture}_negative.gleam.fixture")
   expected=$(expected_substring "$fixture")
   if output=$(cd "$project_dir" && gleam check 2>&1); then
     printf 'not ok: %s_negative.gleam unexpectedly type-checked\n' "$fixture" >&2
