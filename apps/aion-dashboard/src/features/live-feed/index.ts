@@ -1,3 +1,4 @@
+export { ConnectionIndicator } from './components/ConnectionIndicator';
 export {
   namespaceSubscriptionFilter,
   subscribeToNamespaceFilter,

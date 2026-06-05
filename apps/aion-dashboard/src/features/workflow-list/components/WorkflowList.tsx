@@ -100,7 +100,7 @@ export function WorkflowListBody({
   onNext,
 }: WorkflowListBodyProps) {
   if (query.isPending) {
-    return <LoadingSkeleton rows={6} label="Loading workflow summaries" />;
+    return <LoadingSkeleton label="Loading workflow summaries" rows={6} variant="list" />;
   }
 
   if (query.isError) {
@@ -117,7 +117,7 @@ export function WorkflowListBody({
   const page = query.data;
 
   if (page === undefined) {
-    return <LoadingSkeleton rows={6} label="Loading workflow summaries" />;
+    return <LoadingSkeleton label="Loading workflow summaries" rows={6} variant="list" />;
   }
 
   if (page.items.length === 0) {
