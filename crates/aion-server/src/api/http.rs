@@ -17,7 +17,6 @@ use axum::{
 use crate::{CallerIdentity, ServerState, api::handlers};
 
 /// Build the public workflow-management HTTP router.
-#[must_use]
 pub fn workflow_router(state: ServerState) -> Router {
     Router::new()
         .route("/workflows/start", post(start_workflow))
