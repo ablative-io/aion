@@ -23,6 +23,7 @@ type WorkflowDetailContentProps = WorkflowDetailProps & {
 function WorkflowDetail({ workflowId, namespace }: WorkflowDetailProps) {
   const historyQuery = useWorkflowHistory({ workflowId });
   const liveEvents = useLiveWorkflowEvents({
+    enabled: historyQuery.isSuccess,
     history: historyQuery.data ?? [],
     onResync: () => void historyQuery.refetch(),
     workflowId,

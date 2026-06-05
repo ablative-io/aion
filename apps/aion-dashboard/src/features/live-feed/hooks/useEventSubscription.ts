@@ -34,6 +34,7 @@ export function useEventSubscription({
   onResync,
 }: EventSubscriptionInput): EventSubscriptionState {
   const eventHandlerRef = useRef(onEvent);
+  const lastSeenSequenceRef = useRef(lastSeenSequence);
   const resyncHandlerRef = useRef(onResync);
   const [resyncState, setResyncState] = useState<EventSubscriptionState>({
     resyncContext: null,
@@ -41,6 +42,7 @@ export function useEventSubscription({
   });
 
   eventHandlerRef.current = onEvent;
+  lastSeenSequenceRef.current = lastSeenSequence;
   resyncHandlerRef.current = onResync;
 
   useEffect(() => {
@@ -54,17 +56,23 @@ export function useEventSubscription({
         eventHandlerRef.current(event, context);
       },
       {
-        lastSeenSequence,
+        lastSeenSequence: lastSeenSequenceRef.current,
         onResync: (context) => {
           setResyncState((current) => ({
-            resyncContext: context,
+            resyncContext: {
+              ...context,
+              lastSeenSequence: lastSeenSequenceRef.current ?? context.lastSeenSequence,
+            },
             resyncCount: current.resyncCount + 1,
           }));
-          resyncHandlerRef.current?.(context);
+          resyncHandlerRef.current?.({
+            ...context,
+            lastSeenSequence: lastSeenSequenceRef.current ?? context.lastSeenSequence,
+          });
         },
       }
     );
-  }, [enabled, filter, lastSeenSequence, manager]);
+  }, [enabled, filter, manager]);
 
   return useMemo(() => resyncState, [resyncState]);
 }

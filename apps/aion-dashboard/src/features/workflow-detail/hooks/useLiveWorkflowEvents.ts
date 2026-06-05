@@ -15,6 +15,7 @@ import type { LifecycleOutcome, TimelineEntry } from '../types';
 import { workflowHistoryQueryKey } from './useWorkflowHistory';
 
 export type LiveWorkflowEventsOptions = {
+  enabled?: boolean;
   history: readonly Event[];
   manager?: EventSubscriptionManager;
   onResync?: () => void;
@@ -30,6 +31,7 @@ export type LiveWorkflowEvents = {
 };
 
 export function useLiveWorkflowEvents({
+  enabled = true,
   history,
   manager,
   onResync,
@@ -47,12 +49,12 @@ export function useLiveWorkflowEvents({
   const terminalOutcome = useMemo(() => terminalOutcomeForEvents(mergedEvents), [mergedEvents]);
   const lastSeenSequence = useMemo(() => latestSequence(mergedEvents), [mergedEvents]);
   const subscriptionFilter = useMemo<WorkflowEventSubscriptionFilter | null>(() => {
-    if (!isSelectedNamespace(selectedNamespace) || terminalOutcome !== null) {
+    if (!enabled || !isSelectedNamespace(selectedNamespace) || terminalOutcome !== null) {
       return null;
     }
 
     return { kind: 'workflow', namespace: selectedNamespace, workflowId };
-  }, [selectedNamespace, terminalOutcome, workflowId]);
+  }, [enabled, selectedNamespace, terminalOutcome, workflowId]);
 
   useEventSubscription({
     enabled: subscriptionFilter !== null,
