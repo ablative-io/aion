@@ -240,7 +240,11 @@ impl WorkerSession for GrpcWorkerSession {
                     Err(source) => Err(WorkerError::Transport { source }),
                 })
             })),
-            None => Box::pin(futures::stream::empty()),
+            None => Box::pin(futures::stream::iter([Err(WorkerError::Transport {
+                source: tonic::Status::failed_precondition(
+                    "worker receive stream has not been opened",
+                ),
+            })])),
         }
     }
 
