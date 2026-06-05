@@ -10,8 +10,14 @@ use aion_proto::{
     proto_query_response,
 };
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use crate::client::Client;
 use crate::error::ClientError;
+use crate::handle::WorkflowHandle;
+use crate::payload::{from_payload, to_payload};
+use crate::stream::{EventStream, SubscribeTarget, event_stream};
 
 /// Options accepted by [`Client::start`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,20 +67,57 @@ impl Client {
         workflow_type: impl Into<String>,
         input: Payload,
         opts: StartOptions,
-    ) -> Result<(WorkflowId, RunId), ClientError> {
+    ) -> Result<WorkflowHandle, ClientError> {
         validate_start_options(&opts)?;
+        let idempotency_key = opts.idempotency_key.clone();
         let namespace = operation_namespace(self, opts.namespace);
+        let workflow_type = workflow_type.into();
+        let fingerprint = idempotency_key.as_ref().map(|key| {
+            StartFingerprint::new(
+                namespace.clone(),
+                workflow_type.clone(),
+                &input,
+                key.clone(),
+            )
+        });
+        if let Some(fingerprint) = &fingerprint {
+            if let Some(handle) = self.cached_start(fingerprint).await? {
+                return Ok(handle);
+            }
+        }
         let response = self
             .transport
             .start_workflow(ProtoStartWorkflowRequest {
                 namespace,
-                workflow_type: workflow_type.into(),
+                workflow_type,
                 input: Some(ProtoPayload::from(input)),
             })
             .await?;
         let workflow_id = decode_required_workflow_id(response.workflow_id, "start response")?;
         let run_id = decode_required_run_id(response.run_id, "start response")?;
-        Ok((workflow_id, run_id))
+        let handle = WorkflowHandle::from_ids(self.clone(), workflow_id, run_id);
+        if let Some(fingerprint) = fingerprint {
+            self.record_start(fingerprint, handle.clone()).await?;
+        }
+        Ok(handle)
+    }
+
+    /// Starts a workflow after serializing `input` as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::InvalidArgument`] when serialization fails, or the
+    /// delegated start error otherwise.
+    pub async fn start_typed<T>(
+        &self,
+        workflow_type: impl Into<String>,
+        input: &T,
+        opts: StartOptions,
+    ) -> Result<WorkflowHandle, ClientError>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.start(workflow_type, to_payload(input)?, opts).await
     }
 
     /// Sends a signal to the latest run, or to `run_id` when supplied.
@@ -99,6 +142,26 @@ impl Client {
             })
             .await?;
         Ok(())
+    }
+
+    /// Serializes `value` as JSON and sends it as a signal payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::InvalidArgument`] when serialization fails, or the
+    /// delegated signal error otherwise.
+    pub async fn signal_typed<T>(
+        &self,
+        workflow_id: &WorkflowId,
+        run_id: Option<&RunId>,
+        name: impl Into<String>,
+        value: &T,
+    ) -> Result<(), ClientError>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.signal(workflow_id, run_id, name, to_payload(value)?)
+            .await
     }
 
     /// Queries the latest run, or `run_id` when supplied, with a local deadline.
@@ -138,6 +201,30 @@ impl Client {
             Some(proto_query_response::Outcome::Error(error)) => Err(query_error(error)),
             None => Err(ClientError::server("query response outcome is missing")),
         }
+    }
+
+    /// Serializes `args` as JSON, queries a workflow, and deserializes the JSON result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::InvalidArgument`] when serialization or result
+    /// decoding fails, or the delegated query error otherwise.
+    pub async fn query_typed<A, R>(
+        &self,
+        workflow_id: &WorkflowId,
+        run_id: Option<&RunId>,
+        name: impl Into<String>,
+        args: &A,
+        deadline: Duration,
+    ) -> Result<R, ClientError>
+    where
+        A: Serialize + ?Sized,
+        R: DeserializeOwned,
+    {
+        let payload = self
+            .query(workflow_id, run_id, name, to_payload(args)?, deadline)
+            .await?;
+        from_payload(&payload)
     }
 
     /// Requests cancellation of the latest run, or `run_id` when supplied.
@@ -229,6 +316,68 @@ impl Client {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(WorkflowDescription { summary, history })
     }
+
+    /// Subscribes to events for a workflow.
+    #[must_use]
+    pub fn subscribe_workflow(&self, workflow_id: &WorkflowId) -> EventStream {
+        event_stream(
+            self.transport.clone(),
+            self.namespace().to_owned(),
+            SubscribeTarget::Workflow {
+                workflow_id: workflow_id.clone(),
+            },
+        )
+    }
+
+    /// Subscribes to events selected by the supplied workflow filter.
+    #[must_use]
+    pub fn subscribe(&self, filter: WorkflowFilter) -> EventStream {
+        event_stream(
+            self.transport.clone(),
+            self.namespace().to_owned(),
+            SubscribeTarget::Filtered { filter },
+        )
+    }
+
+    /// Subscribes to every event visible to this client namespace.
+    #[must_use]
+    pub fn subscribe_firehose(&self) -> EventStream {
+        event_stream(
+            self.transport.clone(),
+            self.namespace().to_owned(),
+            SubscribeTarget::Firehose,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StartFingerprint {
+    namespace: String,
+    workflow_type: String,
+    content_type: aion_core::ContentType,
+    bytes: Vec<u8>,
+    idempotency_key: String,
+}
+
+impl StartFingerprint {
+    fn new(
+        namespace: String,
+        workflow_type: String,
+        input: &Payload,
+        idempotency_key: String,
+    ) -> Self {
+        Self {
+            namespace,
+            workflow_type,
+            content_type: input.content_type().clone(),
+            bytes: input.bytes().to_vec(),
+            idempotency_key,
+        }
+    }
+
+    pub(crate) fn key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 fn operation_namespace(client: &Client, namespace: Option<String>) -> String {
@@ -236,7 +385,11 @@ fn operation_namespace(client: &Client, namespace: Option<String>) -> String {
 }
 
 fn validate_start_options(opts: &StartOptions) -> Result<(), ClientError> {
-    if opts.idempotency_key.is_some() {
+    if opts
+        .idempotency_key
+        .as_ref()
+        .is_some_and(std::string::String::is_empty)
+    {
         return Err(ClientError::InvalidArgument);
     }
     Ok(())
@@ -293,12 +446,14 @@ mod tests {
     };
     use async_trait::async_trait;
     use chrono::Utc;
+    use futures::StreamExt;
+    use futures::stream;
     use tokio::sync::Mutex;
 
     use super::{ListPage, StartOptions};
     use crate::client::{Client, ClientBuilder, ClientConfig};
     use crate::error::ClientError;
-    use crate::transport::WorkflowTransport;
+    use crate::transport::{SubscriptionAttempt, WorkflowTransport};
 
     #[derive(Default)]
     struct StubTransport {
@@ -389,6 +544,14 @@ mod tests {
                 history: Vec::new(),
             })
         }
+
+        async fn subscribe(
+            &self,
+            _: aion_proto::SubscriptionRequest,
+            _: Option<u64>,
+        ) -> Result<SubscriptionAttempt, ClientError> {
+            Ok(SubscriptionAttempt::new(stream::empty().boxed()))
+        }
     }
 
     fn client_with(stub: Arc<StubTransport>) -> Client {
@@ -431,23 +594,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_maps_request_and_returns_ids() -> Result<(), ClientError> {
+    async fn start_maps_request_and_returns_handle() -> Result<(), ClientError> {
         let stub = Arc::new(StubTransport::default());
         let client = client_with(Arc::clone(&stub));
 
         let result = client
             .start("checkout", payload("input"), StartOptions::default())
             .await?;
-        let unsupported_key = client
-            .start(
-                "checkout",
-                payload("input"),
-                StartOptions {
-                    namespace: None,
-                    idempotency_key: Some(String::from("retry-key")),
-                },
-            )
-            .await;
 
         let recorded = stub.last_start.lock().await.clone();
         assert!(recorded.is_some());
@@ -455,8 +608,30 @@ mod tests {
         assert_eq!(request.namespace, "tenant-a");
         assert_eq!(request.workflow_type, "checkout");
         assert!(request.input.is_some());
-        assert_ne!(result.0, WorkflowId::new(uuid::Uuid::nil()));
-        assert_eq!(unsupported_key, Err(ClientError::InvalidArgument));
+        assert_ne!(result.workflow_id(), &WorkflowId::new(uuid::Uuid::nil()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_idempotency_replays_identical_and_rejects_conflicts() -> Result<(), ClientError>
+    {
+        let stub = Arc::new(StubTransport::default());
+        let client = client_with(Arc::clone(&stub));
+        let opts = StartOptions {
+            namespace: None,
+            idempotency_key: Some(String::from("retry-key")),
+        };
+
+        let original = client
+            .start("checkout", payload("input"), opts.clone())
+            .await?;
+        let replayed = client
+            .start("checkout", payload("input"), opts.clone())
+            .await?;
+        let conflict = client.start("checkout", payload("other"), opts).await;
+
+        assert_eq!(replayed, original);
+        assert_eq!(conflict, Err(ClientError::AlreadyExists));
         Ok(())
     }
 

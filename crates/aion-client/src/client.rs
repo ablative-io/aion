@@ -1,9 +1,14 @@
 //! `Client` and `ClientBuilder` connection, auth, and TLS support.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
 use crate::error::ClientError;
+use crate::handle::WorkflowHandle;
+use crate::ops::StartFingerprint;
 use crate::transport::{GrpcWorkflowTransport, WorkflowTransport};
 
 /// Reusable caller-side SDK client for an `aion-server` deployment.
@@ -29,6 +34,7 @@ use crate::transport::{GrpcWorkflowTransport, WorkflowTransport};
 pub struct Client {
     pub(crate) transport: Arc<dyn WorkflowTransport>,
     pub(crate) config: ClientConfig,
+    idempotent_starts: Arc<Mutex<HashMap<String, (StartFingerprint, WorkflowHandle)>>>,
 }
 
 impl Client {
@@ -42,11 +48,64 @@ impl Client {
         config: ClientConfig,
         transport: Arc<dyn WorkflowTransport>,
     ) -> Self {
-        Self { transport, config }
+        Self {
+            transport,
+            config,
+            idempotent_starts: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[cfg(feature = "embedded")]
+    /// Creates a client backed by an in-process embedded engine.
+    #[must_use]
+    pub fn embedded(engine: Arc<aion::Engine>) -> Self {
+        let config = ClientConfig {
+            endpoint: String::from("embedded://engine"),
+            auth: None,
+            tls: None,
+            namespace: String::from("default"),
+            subject: None,
+            authorized_namespaces: Vec::new(),
+        };
+        Self::from_transport(
+            config,
+            Arc::new(crate::transport::EmbeddedWorkflowTransport::new(engine)),
+        )
     }
 
     pub(crate) fn namespace(&self) -> &str {
         &self.config.namespace
+    }
+
+    pub(crate) async fn cached_start(
+        &self,
+        fingerprint: &StartFingerprint,
+    ) -> Result<Option<WorkflowHandle>, ClientError> {
+        let cache = self.idempotent_starts.lock().await;
+        let Some((cached_fingerprint, handle)) = cache.get(fingerprint.key()) else {
+            return Ok(None);
+        };
+        if cached_fingerprint == fingerprint {
+            Ok(Some(handle.clone()))
+        } else {
+            Err(ClientError::AlreadyExists)
+        }
+    }
+
+    pub(crate) async fn record_start(
+        &self,
+        fingerprint: StartFingerprint,
+        handle: WorkflowHandle,
+    ) -> Result<(), ClientError> {
+        let mut cache = self.idempotent_starts.lock().await;
+        match cache.get(fingerprint.key()) {
+            Some((cached_fingerprint, _)) if cached_fingerprint == &fingerprint => Ok(()),
+            Some(_) => Err(ClientError::AlreadyExists),
+            None => {
+                cache.insert(fingerprint.key().to_owned(), (fingerprint, handle));
+                Ok(())
+            }
+        }
     }
 }
 

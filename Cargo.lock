@@ -79,6 +79,7 @@ dependencies = [
 name = "aion-client"
 version = "0.1.0"
 dependencies = [
+ "aion",
  "aion-core",
  "aion-proto",
  "async-trait",

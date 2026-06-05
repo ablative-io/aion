@@ -1,1 +1,1 @@
-review(aion-dashboard): harden AU-002 generated types and REST errors
+feat(aion-client): add workflow handles typed payloads streams and embedded transport

@@ -21,3 +21,8 @@ async-trait = { workspace = true }
 http = "1.4.1"
 chrono.workspace = true
 uuid.workspace = true
+aion = { version = "0.1.0", path = "../aion", optional = true }
+
+[features]
+default = []
+embedded = ["dep:aion"]

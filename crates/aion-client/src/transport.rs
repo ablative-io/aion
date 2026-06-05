@@ -1,6 +1,9 @@
 //! Network transport over the AW-owned `aion-proto` workflow service.
 
+use aion_core::Event;
 use async_trait::async_trait;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
@@ -46,6 +49,32 @@ pub trait WorkflowTransport: Send + Sync {
         &self,
         request: aion_proto::ProtoDescribeWorkflowRequest,
     ) -> Result<aion_proto::ProtoDescribeWorkflowResponse, ClientError>;
+
+    /// Opens an event subscription attempt.
+    ///
+    /// `resume_from_sequence` is carried at the transport seam so SDK-level
+    /// resumption is observable in tests and can be mapped directly once AW adds
+    /// the server-owned cursor field.
+    async fn subscribe(
+        &self,
+        request: aion_proto::SubscriptionRequest,
+        resume_from_sequence: Option<u64>,
+    ) -> Result<SubscriptionAttempt, ClientError>;
+}
+
+/// One transport-level event subscription attempt.
+pub struct SubscriptionAttempt {
+    /// Decoded events for this attempt. A transient disconnect is represented by
+    /// an [`Err(ClientError::Unavailable)`] item.
+    pub events: BoxStream<'static, Result<Event, ClientError>>,
+}
+
+impl SubscriptionAttempt {
+    /// Creates a subscription attempt from an event stream.
+    #[must_use]
+    pub fn new(events: BoxStream<'static, Result<Event, ClientError>>) -> Self {
+        Self { events }
+    }
 }
 
 /// Cloneable gRPC transport backed by tonic's reusable channel.
@@ -163,6 +192,224 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .await
             .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_describe_response(response.into_inner()))
+    }
+
+    async fn subscribe(
+        &self,
+        _: aion_proto::SubscriptionRequest,
+        _: Option<u64>,
+    ) -> Result<SubscriptionAttempt, ClientError> {
+        Err(ClientError::Unavailable)
+    }
+}
+
+#[cfg(feature = "embedded")]
+/// Transport backed by an in-process [`aion::Engine`].
+pub struct EmbeddedWorkflowTransport {
+    engine: std::sync::Arc<aion::Engine>,
+}
+
+#[cfg(feature = "embedded")]
+impl EmbeddedWorkflowTransport {
+    /// Creates an embedded transport for `engine`.
+    #[must_use]
+    pub fn new(engine: std::sync::Arc<aion::Engine>) -> Self {
+        Self { engine }
+    }
+}
+
+#[cfg(feature = "embedded")]
+#[async_trait]
+impl WorkflowTransport for EmbeddedWorkflowTransport {
+    async fn start_workflow(
+        &self,
+        request: aion_proto::ProtoStartWorkflowRequest,
+    ) -> Result<aion_proto::ProtoStartWorkflowResponse, ClientError> {
+        let input = request
+            .input
+            .ok_or(ClientError::InvalidArgument)
+            .and_then(|payload| {
+                aion_core::Payload::try_from(payload).map_err(ClientError::from_wire_error)
+            })?;
+        let handle = self
+            .engine
+            .start_workflow(&request.workflow_type, input)
+            .await
+            .map_err(map_engine_error)?;
+        Ok(aion_proto::ProtoStartWorkflowResponse {
+            workflow_id: Some(aion_proto::ProtoWorkflowId::from(
+                handle.workflow_id().clone(),
+            )),
+            run_id: Some(aion_proto::ProtoRunId::from(handle.run_id().clone())),
+        })
+    }
+
+    async fn signal(
+        &self,
+        request: aion_proto::ProtoSignalRequest,
+    ) -> Result<aion_proto::ProtoSignalResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let run_id = decode_required_run_id(request.run_id)?;
+        let payload = request
+            .payload
+            .ok_or(ClientError::InvalidArgument)
+            .and_then(|payload| {
+                aion_core::Payload::try_from(payload).map_err(ClientError::from_wire_error)
+            })?;
+        self.engine
+            .signal(&workflow_id, &run_id, request.signal_name, payload)
+            .await
+            .map_err(map_engine_error)?;
+        Ok(aion_proto::ProtoSignalResponse {})
+    }
+
+    async fn query(
+        &self,
+        request: aion_proto::ProtoQueryRequest,
+    ) -> Result<aion_proto::ProtoQueryResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let run_id = decode_required_run_id(request.run_id)?;
+        let payload = self
+            .engine
+            .query(&workflow_id, &run_id, request.query_name)
+            .await
+            .map_err(map_engine_error)?;
+        Ok(aion_proto::ProtoQueryResponse {
+            outcome: Some(aion_proto::proto_query_response::Outcome::Result(
+                aion_proto::ProtoPayload::from(payload),
+            )),
+        })
+    }
+
+    async fn cancel(
+        &self,
+        request: aion_proto::ProtoCancelRequest,
+    ) -> Result<aion_proto::ProtoCancelResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let run_id = decode_required_run_id(request.run_id)?;
+        self.engine
+            .cancel(&workflow_id, &run_id, request.reason)
+            .await
+            .map_err(map_engine_error)?;
+        Ok(aion_proto::ProtoCancelResponse {})
+    }
+
+    async fn list_workflows(
+        &self,
+        request: aion_proto::ProtoListWorkflowsRequest,
+    ) -> Result<aion_proto::ProtoListWorkflowsResponse, ClientError> {
+        let filter = match request.filter.as_ref() {
+            Some(filter) => {
+                aion_proto::decode_workflow_filter(filter).map_err(ClientError::from_wire_error)?
+            }
+            None => aion_core::WorkflowFilter::default(),
+        };
+        let summaries = self
+            .engine
+            .list_workflows(filter)
+            .await
+            .map_err(map_engine_error)?
+            .iter()
+            .map(|summary| {
+                aion_proto::encode_workflow_summary(request.namespace.clone(), None, summary)
+            })
+            .map(|result| result.map_err(ClientError::from_wire_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(aion_proto::ProtoListWorkflowsResponse { summaries })
+    }
+
+    async fn describe_workflow(
+        &self,
+        request: aion_proto::ProtoDescribeWorkflowRequest,
+    ) -> Result<aion_proto::ProtoDescribeWorkflowResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let history = self
+            .engine
+            .store()
+            .read_history(&workflow_id)
+            .await
+            .map_err(|error| ClientError::server(error.to_string()))?;
+        let Some(summary) = aion_core::WorkflowSummary::from_history(&history) else {
+            return Err(ClientError::NotFound);
+        };
+        let summary = Some(
+            aion_proto::encode_workflow_summary(request.namespace.clone(), None, &summary)
+                .map_err(ClientError::from_wire_error)?,
+        );
+        let history = if request.include_history {
+            history
+                .iter()
+                .map(|event| aion_proto::encode_event(request.namespace.clone(), None, event))
+                .map(|result| result.map_err(ClientError::from_wire_error))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        Ok(aion_proto::ProtoDescribeWorkflowResponse { summary, history })
+    }
+
+    async fn subscribe(
+        &self,
+        request: aion_proto::SubscriptionRequest,
+        _: Option<u64>,
+    ) -> Result<SubscriptionAttempt, ClientError> {
+        let filter = embedded_event_filter(request)?;
+        Ok(SubscriptionAttempt::new(
+            self.engine.subscribe(filter).map(Ok).boxed(),
+        ))
+    }
+}
+
+#[cfg(feature = "embedded")]
+fn decode_required_workflow_id(
+    value: Option<aion_proto::ProtoWorkflowId>,
+) -> Result<aion_core::WorkflowId, ClientError> {
+    value
+        .ok_or(ClientError::InvalidArgument)?
+        .try_into()
+        .map_err(ClientError::from_wire_error)
+}
+
+#[cfg(feature = "embedded")]
+fn decode_required_run_id(
+    value: Option<aion_proto::ProtoRunId>,
+) -> Result<aion_core::RunId, ClientError> {
+    value
+        .ok_or(ClientError::InvalidArgument)?
+        .try_into()
+        .map_err(ClientError::from_wire_error)
+}
+
+#[cfg(feature = "embedded")]
+fn embedded_event_filter(
+    request: aion_proto::SubscriptionRequest,
+) -> Result<aion::EventFilter, ClientError> {
+    match request.subscription {
+        Some(aion_proto::subscription_request::Subscription::PerWorkflow(subscription)) => {
+            Ok(aion::EventFilter {
+                workflow_id: subscription
+                    .workflow_id
+                    .map(aion_core::WorkflowId::try_from)
+                    .transpose()
+                    .map_err(ClientError::from_wire_error)?,
+                run: None,
+                family: None,
+            })
+        }
+        Some(aion_proto::subscription_request::Subscription::Filtered(_))
+        | Some(aion_proto::subscription_request::Subscription::Firehose(_)) => {
+            Ok(aion::EventFilter::default())
+        }
+        None => Err(ClientError::InvalidArgument),
+    }
+}
+
+#[cfg(feature = "embedded")]
+fn map_engine_error(error: aion::EngineError) -> ClientError {
+    match error {
+        aion::EngineError::WorkflowNotFound { .. } => ClientError::NotFound,
+        aion::EngineError::ShuttingDown => ClientError::Unavailable,
+        other => ClientError::server(other.to_string()),
     }
 }
 
