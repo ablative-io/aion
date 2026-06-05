@@ -167,12 +167,12 @@ Cross-cluster bridge: AE-008 depends on AD-002 (Recorder).
 - [x] **AT-012** — map (dynamic fan-out) · _landed 0985a50_
 
 ### Wave 21 (3 parallel)
-- [ ] **AE-013** — Delegated signal, query, subscribe · _depends: AE-012_
-- [ ] **AD-009** — Recovery on startup · _depends: AD-008, AD-002_
-- [ ] **AD-010** — End-to-end record-then-replay round-trip · _depends: AD-008, AD-006, AD-005_
+- [x] **AE-013** — Delegated signal, query, subscribe · _landed 5075284_
+- [x] **AD-009** — Recovery on startup · _landed 6182997_
+- [x] **AD-010** — End-to-end record-then-replay round-trip · _landed ed5792d_
 
 ### Wave 22
-- [ ] **AE-014** — End-to-end integration tests · _depends: AE-012, AE-007_
+- [x] **AE-014** — End-to-end integration tests · _landed 1e9a01c_
 
 ---
 
