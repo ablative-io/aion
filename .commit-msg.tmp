@@ -1,1 +1,1 @@
-feat(aion-worker): add activity task receive loop
+Harden AR-002 worker loop report correlation

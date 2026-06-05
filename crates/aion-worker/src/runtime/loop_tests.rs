@@ -121,9 +121,8 @@ impl ActivityDispatcher for SlowDispatcher {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         self.current.fetch_sub(1, Ordering::SeqCst);
+        drop(task);
         Ok(DispatchOutcome::Completed {
-            workflow_id: task.workflow_id,
-            activity_id: task.activity_id,
             output: Payload::new(ContentType::Json, b"{}".to_vec()),
         })
     }
@@ -162,13 +161,9 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
     let dispatcher = Arc::new(RecordingDispatcher {
         outcomes: Mutex::new(vec![
             DispatchOutcome::Completed {
-                workflow_id: workflow_id.clone(),
-                activity_id: first_activity.clone(),
                 output: first_output.clone(),
             },
             DispatchOutcome::Failed {
-                workflow_id,
-                activity_id: second_activity.clone(),
                 failure: failure.clone(),
             },
         ]),

@@ -28,34 +28,22 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
 }
 
 /// Activity execution outcome returned by the dispatch seam.
+///
+/// Correlation identifiers are deliberately not part of this outcome: the loop
+/// reports using the [`ActivityTask`] ids it decoded from the wire so a
+/// dispatcher cannot accidentally report an outcome for the wrong task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
     /// Activity completed with an output payload.
     Completed {
-        /// Owning workflow id.
-        workflow_id: WorkflowId,
-        /// Completed activity id.
-        activity_id: ActivityId,
         /// Opaque output payload.
         output: Payload,
     },
     /// Activity failed with explicit classification.
     Failed {
-        /// Owning workflow id.
-        workflow_id: WorkflowId,
-        /// Failed activity id.
-        activity_id: ActivityId,
         /// Classified activity failure.
         failure: ActivityError,
     },
-}
-
-impl DispatchOutcome {
-    fn activity_id(&self) -> &ActivityId {
-        match self {
-            Self::Completed { activity_id, .. } | Self::Failed { activity_id, .. } => activity_id,
-        }
-    }
 }
 
 /// Runs the worker receive loop until the session's task stream completes.
@@ -95,7 +83,7 @@ where
             &mut in_flight,
             &mut pending_error,
         )
-        .await?;
+        .await;
         if pending_error.is_some() {
             break;
         }
@@ -111,7 +99,7 @@ where
             &mut in_flight,
             &mut pending_error,
         )
-        .await?;
+        .await;
         if pending_error.is_some() {
             drop(permit);
             break;
@@ -119,7 +107,15 @@ where
 
         match stream.next().await {
             Some(Ok(proto_task)) => {
-                let task = ActivityTask::try_from(proto_task)?;
+                let task = match ActivityTask::try_from(proto_task) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        drop(permit);
+                        pending_error = Some(error);
+                        intake_open = false;
+                        continue;
+                    }
+                };
                 info!(
                     activity_type = %task.activity_type,
                     activity_id = task.activity_id.sequence_position(),
@@ -129,12 +125,18 @@ where
                 );
                 let task_dispatcher = Arc::clone(&dispatcher);
                 let task_result_sender = result_sender.clone();
+                let workflow_id = task.workflow_id.clone();
+                let activity_id = task.activity_id.clone();
                 in_flight += 1;
                 tokio::spawn(async move {
                     let outcome = task_dispatcher.dispatch(task).await;
-                    let finished = DispatchFinished { outcome };
+                    let finished = DispatchFinished {
+                        workflow_id,
+                        activity_id,
+                        outcome,
+                    };
                     if task_result_sender.send(finished).is_err() {
-                        debug!("worker loop stopped before dispatch result could be delivered");
+                        debug!("worker loop stopped before dispatch outcome could be delivered");
                     }
                     drop(permit);
                 });
@@ -155,8 +157,8 @@ where
     while in_flight > 0 {
         match result_receiver.recv().await {
             Some(finished) => {
-                in_flight -= 1;
-                report_finished(session, finished, &mut pending_error).await?;
+                report_finished(session, finished, &mut pending_error).await;
+                in_flight = in_flight.saturating_sub(1);
             }
             None => break,
         }
@@ -174,50 +176,50 @@ async fn drain_finished_reports<S>(
     result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
     in_flight: &mut usize,
     pending_error: &mut Option<WorkerError>,
-) -> Result<(), WorkerError>
-where
+) where
     S: WorkerSession,
 {
     while let Ok(finished) = result_receiver.try_recv() {
+        report_finished(session, finished, pending_error).await;
         *in_flight = in_flight.saturating_sub(1);
-        report_finished(session, finished, pending_error).await?;
     }
-    Ok(())
 }
 
 async fn report_finished<S>(
     session: &mut S,
     finished: DispatchFinished,
     pending_error: &mut Option<WorkerError>,
-) -> Result<(), WorkerError>
-where
+) where
     S: WorkerSession,
 {
     match finished.outcome {
-        Ok(outcome) => report_outcome(session, outcome).await,
+        Ok(outcome) => record_first_error(
+            pending_error,
+            report_outcome(session, finished.workflow_id, finished.activity_id, outcome).await,
+        ),
         Err(error) => {
             if pending_error.is_none() {
                 *pending_error = Some(error);
             }
-            Ok(())
         }
     }
 }
 
-async fn report_outcome<S>(session: &mut S, outcome: DispatchOutcome) -> Result<(), WorkerError>
+async fn report_outcome<S>(
+    session: &mut S,
+    workflow_id: WorkflowId,
+    activity_id: ActivityId,
+    outcome: DispatchOutcome,
+) -> Result<(), WorkerError>
 where
     S: WorkerSession,
 {
     debug!(
-        activity_id = outcome.activity_id().sequence_position(),
+        activity_id = activity_id.sequence_position(),
         "reporting activity outcome"
     );
     match outcome {
-        DispatchOutcome::Completed {
-            workflow_id,
-            activity_id,
-            output,
-        } => {
+        DispatchOutcome::Completed { output } => {
             session
                 .report_result(workflow_id, activity_id.clone(), output)
                 .await?;
@@ -226,11 +228,7 @@ where
                 "reported activity result"
             );
         }
-        DispatchOutcome::Failed {
-            workflow_id,
-            activity_id,
-            failure,
-        } => {
+        DispatchOutcome::Failed { failure } => {
             session
                 .report_failure(workflow_id, activity_id.clone(), failure)
                 .await?;
@@ -244,7 +242,17 @@ where
 }
 
 struct DispatchFinished {
+    workflow_id: WorkflowId,
+    activity_id: ActivityId,
     outcome: Result<DispatchOutcome, WorkerError>,
+}
+
+fn record_first_error(pending_error: &mut Option<WorkerError>, result: Result<(), WorkerError>) {
+    if pending_error.is_none() {
+        if let Err(error) = result {
+            *pending_error = Some(error);
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
