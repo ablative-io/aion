@@ -9,39 +9,34 @@
 //! path. AN-004 replaces this global storage with a scoped `NifContext` that owns
 //! term storage per NIF invocation.
 
+use std::cell::RefCell;
+
 use beamr::term::{Term, binary, boxed, boxed::write_bigint};
-use std::sync::{Mutex, OnceLock};
 
 use crate::TermError;
 
-static TERM_STORAGE: OnceLock<Mutex<Vec<Box<[u64]>>>> = OnceLock::new();
+thread_local! {
+    static TERM_STORAGE: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
+}
 
-fn keep_owned_term<F>(word_len: usize, shape: &'static str, write: F) -> Result<Term, TermError>
+fn keep_owned_term<F>(word_len: usize, write: F) -> Result<Term, TermError>
 where
     F: FnOnce(&mut [u64]) -> Result<Term, TermError>,
 {
     let mut heap = vec![0_u64; word_len].into_boxed_slice();
     let term = write(&mut heap)?;
-    let storage = TERM_STORAGE.get_or_init(|| Mutex::new(Vec::new()));
-    storage
-        .lock()
-        .map_err(|_| TermError::HeapAllocation { shape })?
-        .push(heap);
+    TERM_STORAGE.with_borrow_mut(|storage| storage.push(heap));
     Ok(term)
 }
 
 /// Releases all heap allocations retained by `owned_*` functions.
 ///
-/// The AN-004 declaration shim must call this after each NIF invocation to bound
-/// storage to one call's worth of allocations. This is an interim mechanism — AN-004
-/// introduces `NifContext` which owns term storage per invocation and eliminates this
-/// global entirely.
+/// The declaration shim calls this after each NIF invocation to bound storage to
+/// one call's worth of allocations. Thread-local, so parallel test threads are
+/// isolated. AN-007 replaces this with a scoped `NifContext` that owns term
+/// storage per invocation.
 pub fn clear_term_storage() {
-    if let Some(storage) = TERM_STORAGE.get() {
-        if let Ok(mut guard) = storage.lock() {
-            guard.clear();
-        }
-    }
+    TERM_STORAGE.with_borrow_mut(Vec::clear);
 }
 
 /// Builds a binary term in caller-provided process-heap words.
@@ -75,7 +70,7 @@ pub const fn binary_word_len(byte_len: usize) -> usize {
 /// Returns [`TermError::HeapAllocation`] when the binary layout cannot be
 /// written or retained storage cannot be locked.
 pub fn owned_binary_term(bytes: &[u8]) -> Result<Term, TermError> {
-    keep_owned_term(binary_word_len(bytes.len()), "binary", |heap| {
+    keep_owned_term(binary_word_len(bytes.len()), |heap| {
         binary_term(heap, bytes)
     })
 }
@@ -108,7 +103,7 @@ pub fn tuple_term(heap: &mut [u64], elements: &[Term]) -> Result<Term, TermError
 /// Returns [`TermError::HeapAllocation`] when the tuple layout cannot be
 /// written or retained storage cannot be locked.
 pub fn owned_tuple_term(elements: &[Term]) -> Result<Term, TermError> {
-    keep_owned_term(tuple_word_len(elements.len()), "tuple", |heap| {
+    keep_owned_term(tuple_word_len(elements.len()), |heap| {
         tuple_term(heap, elements)
     })
 }
@@ -136,7 +131,7 @@ pub fn float_term(heap: &mut [u64], value: f64) -> Result<Term, TermError> {
 /// Returns [`TermError::HeapAllocation`] when the float layout cannot be
 /// written or retained storage cannot be locked.
 pub fn owned_float_term(value: f64) -> Result<Term, TermError> {
-    keep_owned_term(float_word_len(), "float", |heap| float_term(heap, value))
+    keep_owned_term(float_word_len(), |heap| float_term(heap, value))
 }
 
 /// Returns the number of heap words required for [`bigint_term`].
@@ -167,7 +162,7 @@ pub fn owned_bigint_term(negative: bool, limbs: &[u64]) -> Result<Term, TermErro
         .rposition(|limb| *limb != 0)
         .map_or(0, |index| index + 1);
     let normalized = &limbs[..len];
-    keep_owned_term(bigint_word_len(normalized.len()), "bigint", |heap| {
+    keep_owned_term(bigint_word_len(normalized.len()), |heap| {
         bigint_term(heap, negative, normalized)
     })
 }
@@ -200,7 +195,7 @@ pub fn cons_term(words: &mut [u64], head: Term, tail: Term) -> Result<Term, Term
 /// Returns [`TermError::HeapAllocation`] when the cons layout cannot be written
 /// or retained storage cannot be locked.
 pub fn owned_cons_term(head: Term, tail: Term) -> Result<Term, TermError> {
-    keep_owned_term(cons_word_len(), "cons", |heap| cons_term(heap, head, tail))
+    keep_owned_term(cons_word_len(), |heap| cons_term(heap, head, tail))
 }
 
 /// Returns the number of heap words required for [`list_term`].
@@ -239,7 +234,7 @@ pub fn list_term(heap: &mut [u64], elements: &[Term]) -> Result<Term, TermError>
 /// Returns [`TermError::HeapAllocation`] when the list layout cannot be written
 /// or retained storage cannot be locked.
 pub fn owned_list_term(elements: &[Term]) -> Result<Term, TermError> {
-    keep_owned_term(list_word_len(elements.len()), "list", |heap| {
+    keep_owned_term(list_word_len(elements.len()), |heap| {
         list_term(heap, elements)
     })
 }
@@ -267,7 +262,7 @@ pub fn map_term(heap: &mut [u64], keys: &[Term], values: &[Term]) -> Result<Term
 /// Returns [`TermError::HeapAllocation`] when the map layout cannot be written
 /// or retained storage cannot be locked.
 pub fn owned_map_term(keys: &[Term], values: &[Term]) -> Result<Term, TermError> {
-    keep_owned_term(map_word_len(keys.len()), "map", |heap| {
+    keep_owned_term(map_word_len(keys.len()), |heap| {
         map_term(heap, keys, values)
     })
 }
