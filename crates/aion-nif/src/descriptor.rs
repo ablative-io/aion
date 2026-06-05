@@ -93,7 +93,7 @@ mod tests {
 
     fn identity_native(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
         let _ = ctx;
-        Ok(args.first().copied().unwrap_or(Term::NIL))
+        args.first().copied().ok_or(Term::NIL)
     }
 
     #[test]
