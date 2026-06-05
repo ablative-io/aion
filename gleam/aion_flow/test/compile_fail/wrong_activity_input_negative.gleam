@@ -1,0 +1,35 @@
+import aion/activity
+import aion/codec
+import aion/error
+
+pub type Order {
+  Order(id: String)
+}
+
+pub type Receipt {
+  Receipt(id: String)
+}
+
+fn order_codec() -> codec.Codec(Order) {
+  codec.Codec(
+    encode: fn(_order) { "{}" },
+    decode: fn(_payload) { Ok(Order(id: "decoded")) },
+  )
+}
+
+fn receipt_codec() -> codec.Codec(Receipt) {
+  codec.Codec(
+    encode: fn(_receipt) { "{}" },
+    decode: fn(_payload) { Ok(Receipt(id: "decoded")) },
+  )
+}
+
+fn run_order(_order: Order) -> Result(Receipt, error.ActivityError) {
+  Ok(Receipt(id: "receipt"))
+}
+
+pub fn invalid_activity_input() {
+  // EXPECT_COMPILE_FAIL: The activity input value is a String, but the input
+  // codec and runner require Order. activity.new must reject this composition.
+  activity.new("charge", "not an order", order_codec(), receipt_codec(), run_order)
+}

@@ -1,0 +1,19 @@
+import aion/codec
+import aion/query
+
+pub type QueryState {
+  QueryState(count: Int)
+}
+
+fn state_codec() -> codec.Codec(QueryState) {
+  codec.Codec(
+    encode: fn(_state) { "{}" },
+    decode: fn(_payload) { Ok(QueryState(count: 0)) },
+  )
+}
+
+pub fn invalid_query_return() {
+  // EXPECT_COMPILE_FAIL: state_codec fixes the handler return type to QueryState,
+  // but the reply function returns an Int.
+  query.handler("state", state_codec(), fn() { 1 })
+}

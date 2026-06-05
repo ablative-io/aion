@@ -25,6 +25,12 @@
 //// - `aion/codec` for payload codecs and decode errors.
 //// - `aion/duration` for canonical workflow durations.
 //// - `aion/testing` for simulated time, activity mocks, and replay assertions.
+////
+//// The canonical typed example lives in
+//// `test/aion_flow_test.gleam` as `canonical_example_workflow`: it defines a
+//// workflow with `workflow.define`, runs an activity, reads deterministic time,
+//// sleeps, receives a typed signal, spawns and awaits a child workflow, and fans
+//// out homogeneous activities with `workflow.all` under the pure-Gleam harness.
 
 /// Marker declaration for the documentation-only package root.
 ///
