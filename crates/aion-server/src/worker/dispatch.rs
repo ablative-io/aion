@@ -188,8 +188,8 @@ mod tests {
         ActivityId::from_sequence_position(42)
     }
 
-    fn payload(value: serde_json::Value) -> Result<Payload, Box<dyn std::error::Error>> {
-        Ok(Payload::from_json(&value)?)
+    fn payload(value: &serde_json::Value) -> Result<Payload, Box<dyn std::error::Error>> {
+        Ok(Payload::from_json(value)?)
     }
 
     #[tokio::test]
@@ -200,7 +200,7 @@ mod tests {
         let activity_types = [String::from("charge-card")];
         let registration = registry.register("tenant-a", activity_types.iter(), tx)?;
         let dispatcher = ActivityDispatcher::new(registry.clone());
-        let input = payload(json!({"amount": 1200}))?;
+        let input = payload(&json!({"amount": 1200}))?;
         let scheduled = ScheduledActivity {
             namespace: String::from("tenant-a"),
             activity_type: String::from("charge-card"),
@@ -287,7 +287,7 @@ mod tests {
     fn successful_activity_result_calls_completion_sink() -> Result<(), Box<dyn std::error::Error>>
     {
         let sink = RecordingSink::default();
-        let output = payload(json!({"ok": true}))?;
+        let output = payload(&json!({"ok": true}))?;
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
             activity_id: Some(ProtoActivityId::from(activity_id())),
@@ -319,7 +319,7 @@ mod tests {
         let error = ProtoActivityError {
             kind: ProtoActivityErrorKind::Retryable as i32,
             message: String::from("temporary outage"),
-            details: Some(ProtoPayload::from(payload(json!({"retry_after_ms": 500}))?)),
+            details: Some(ProtoPayload::from(payload(&json!({"retry_after_ms": 500}))?)),
         };
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
