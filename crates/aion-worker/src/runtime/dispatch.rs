@@ -230,7 +230,9 @@ mod tests {
     use crate::activity::ActivityFailure;
     use crate::config::WorkerConfig;
     use crate::error::WorkerError;
-    use crate::protocol::{WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers};
+    use crate::protocol::{
+        WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers,
+    };
     use crate::runtime::serve_activity_tasks;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -520,7 +522,7 @@ mod tests {
                 activity_id: Some(ProtoActivityId::from(activity_id)),
                 activity_type: activity_type.to_owned(),
                 input: Some(ProtoPayload::from(payload)),
-            })],
+            }))],
             reports: Vec::new(),
         })
     }
