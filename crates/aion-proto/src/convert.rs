@@ -282,6 +282,11 @@ where
 }
 
 /// Serializes a workflow filter into a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the core filter cannot be serialized into the
+/// envelope payload.
 pub fn encode_workflow_filter(
     namespace: impl Into<String>,
     request_id: Option<String>,
@@ -291,6 +296,11 @@ pub fn encode_workflow_filter(
 }
 
 /// Deserializes a workflow filter from a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the envelope is missing a payload, has an unknown
+/// content type, or does not contain a valid workflow filter.
 pub fn decode_workflow_filter(
     envelope: &WireEnvelope,
 ) -> Result<aion_core::WorkflowFilter, WireError> {
@@ -298,6 +308,11 @@ pub fn decode_workflow_filter(
 }
 
 /// Serializes a workflow summary into a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the core summary cannot be serialized into the
+/// envelope payload.
 pub fn encode_workflow_summary(
     namespace: impl Into<String>,
     request_id: Option<String>,
@@ -307,6 +322,11 @@ pub fn encode_workflow_summary(
 }
 
 /// Deserializes a workflow summary from a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the envelope is missing a payload, has an unknown
+/// content type, or does not contain a valid workflow summary.
 pub fn decode_workflow_summary(
     envelope: &WireEnvelope,
 ) -> Result<aion_core::WorkflowSummary, WireError> {
@@ -314,6 +334,11 @@ pub fn decode_workflow_summary(
 }
 
 /// Serializes a workflow event into a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the core event cannot be serialized into the
+/// envelope payload.
 pub fn encode_event(
     namespace: impl Into<String>,
     request_id: Option<String>,
@@ -323,6 +348,11 @@ pub fn encode_event(
 }
 
 /// Deserializes a workflow event from a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the envelope is missing a payload, has an unknown
+/// content type, or does not contain a valid workflow event.
 pub fn decode_event(envelope: &WireEnvelope) -> Result<aion_core::Event, WireError> {
     decode_core_value(envelope)
 }

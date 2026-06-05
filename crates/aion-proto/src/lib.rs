@@ -2,11 +2,6 @@
 
 pub mod convert;
 pub mod error;
-pub mod generated {
-    //! Tonic-generated gRPC stubs from the shared proto contract.
-
-    tonic::include_proto!("aion");
-}
 pub mod workflow;
 
 pub use convert::{
