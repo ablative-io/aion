@@ -1,1 +1,1 @@
-feat(worker): scaffold Rust worker config and protocol session
+fix(worker): satisfy clippy for session registration API

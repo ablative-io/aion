@@ -1,6 +1,6 @@
 //! `WorkerSession` trait and gRPC-backed implementation.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::pin::Pin;
 
 use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
@@ -48,7 +48,7 @@ pub trait WorkerSession: Send {
     async fn register(
         &mut self,
         activity_types: Vec<String>,
-        available_handlers: &HashSet<String>,
+        available_handlers: &BTreeSet<String>,
     ) -> Result<(), WorkerError>;
 
     /// Opens the receive side of AW's `StreamWorker` RPC and yields pushed tasks.
@@ -86,7 +86,7 @@ pub trait WorkerSession: Send {
 /// Returns [`WorkerError::Registration`] for the first missing handler name.
 pub fn validate_activity_handlers(
     activity_types: &[String],
-    available_handlers: &HashSet<String>,
+    available_handlers: &BTreeSet<String>,
 ) -> Result<(), WorkerError> {
     if let Some(activity_type) = activity_types
         .iter()
@@ -211,10 +211,10 @@ impl WorkerSession for GrpcWorkerSession {
     async fn register(
         &mut self,
         activity_types: Vec<String>,
-        available_handlers: &HashSet<String>,
+        available_handlers: &BTreeSet<String>,
     ) -> Result<(), WorkerError> {
         validate_activity_handlers(&activity_types, available_handlers)?;
-        self.activity_types = activity_types.clone();
+        self.activity_types.clone_from(&activity_types);
 
         let register = aion_proto::generated::RegisterWorker {
             namespace: self.config.task_queue.clone(),
@@ -391,7 +391,7 @@ struct SessionStateError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     use aion_proto::ProtoActivityTask;
     use async_trait::async_trait;
@@ -418,7 +418,7 @@ mod tests {
         async fn register(
             &mut self,
             activity_types: Vec<String>,
-            available_handlers: &HashSet<String>,
+            available_handlers: &BTreeSet<String>,
         ) -> Result<(), WorkerError> {
             validate_activity_handlers(&activity_types, available_handlers)?;
             self.registrations.push(activity_types);
@@ -469,7 +469,7 @@ mod tests {
     async fn fake_session_records_handshake_and_registration() -> Result<(), WorkerError> {
         let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 4, None);
         let activity_types = vec![String::from("charge-card"), String::from("send-email")];
-        let handlers = activity_types.iter().cloned().collect::<HashSet<_>>();
+        let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
         let mut session = FakeSession::default();
 
         session.handshake(&config).await?;
@@ -489,7 +489,9 @@ mod tests {
     #[test]
     fn registration_rejects_activity_without_handler() {
         let activity_types = vec![String::from("charge-card"), String::from("send-email")];
-        let handlers = [String::from("charge-card")].into_iter().collect();
+        let handlers = [String::from("charge-card")]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
 
         let result = validate_activity_handlers(&activity_types, &handlers);
         assert!(result.is_err());
