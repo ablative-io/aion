@@ -264,7 +264,9 @@ mod tests {
         let mut ctx = context();
         let only = "hello".to_owned().into_term(&mut ctx)?;
 
-        let error = (nif.native())(&[only], &mut ctx).err().ok_or(TermError::HeapAllocation { shape: "test" })?;
+        let error = (nif.native())(&[only], &mut ctx)
+            .err()
+            .ok_or(TermError::HeapAllocation { shape: "test" })?;
         let message = decode_error_term(error, &ctx)?;
 
         assert!(message.contains("expected 2 arguments"));
@@ -284,7 +286,8 @@ mod tests {
         let right = 42_i64.into_term(&mut ctx)?;
 
         let error = (nif.native())(&[left, right], &mut ctx)
-            .err().ok_or(TermError::HeapAllocation { shape: "test" })?;
+            .err()
+            .ok_or(TermError::HeapAllocation { shape: "test" })?;
         let message = decode_error_term(error, &ctx)?;
 
         assert!(message.contains("failed to decode argument 1"));
@@ -297,7 +300,9 @@ mod tests {
         let nif = deterministic_nif!("example/module", "explode", || -> String { panic!("boom") });
         let mut ctx = context();
 
-        let error = (nif.native())(&[], &mut ctx).err().ok_or(TermError::HeapAllocation { shape: "test" })?;
+        let error = (nif.native())(&[], &mut ctx)
+            .err()
+            .ok_or(TermError::HeapAllocation { shape: "test" })?;
         let message = decode_error_term(error, &ctx)?;
 
         assert!(message.contains("panicked"));
