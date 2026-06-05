@@ -6,3 +6,4 @@ pub mod session;
 pub mod task;
 
 pub use session::{GrpcWorkerSession, WorkerSession, WorkerTaskStream, validate_activity_handlers};
+pub use task::ActivityTask;
