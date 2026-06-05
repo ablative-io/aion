@@ -1,22 +1,20 @@
 import { Skeleton } from '@/components/ui';
 
-export type LoadingSkeletonProps = {
-  rows?: number;
-  label?: string;
-};
-
-export function LoadingSkeleton({ rows = 3, label = 'Loading' }: LoadingSkeletonProps) {
+function LoadingSkeleton() {
   return (
-    <div className="space-y-3" role="status" aria-label={label} aria-busy="true">
-      {Array.from({ length: rows }, (_, index) => (
-        <div className="grid grid-cols-5 gap-3" key={`skeleton-row-${String(index)}`}>
-          <Skeleton className="h-9" />
-          <Skeleton className="h-9" />
-          <Skeleton className="h-9" />
-          <Skeleton className="h-9" />
-          <Skeleton className="h-9" />
+    <div aria-label="Loading timeline" className="space-y-4" role="status">
+      {Array.from({ length: 4 }, (_, index) => (
+        <div className="flex gap-4" key={index.toString()}>
+          <Skeleton className="mt-1 size-10 rounded-full" />
+          <div className="flex-1 space-y-3 rounded-xl border border-[var(--border-default)] p-4">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-5 w-2/3" />
+            <Skeleton className="h-3 w-full" />
+          </div>
         </div>
       ))}
     </div>
   );
 }
+
+export { LoadingSkeleton };
