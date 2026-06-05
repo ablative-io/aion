@@ -1,21 +1,40 @@
 import { useQuery } from '@tanstack/react-query';
 
-import { createApiClient } from '@/lib/api';
+import { requireSelectedNamespace, useNamespace } from '@/features/namespace';
+import { ApiClient } from '@/lib/api';
 import type { Namespace, WorkflowId } from '@/types';
 
-export const workflowHistoryKey = (namespace: Namespace | null, workflowId: WorkflowId | null) =>
-  ['aion-workflow-history', namespace, workflowId] as const;
+const defaultApiClient = new ApiClient();
 
-export function useWorkflowHistory(namespace: Namespace | null, workflowId: WorkflowId | null) {
+export type WorkflowHistoryOptions = {
+  apiClient?: Pick<ApiClient, 'getHistory'>;
+  workflowId: WorkflowId;
+};
+
+export function workflowHistoryQueryKey(namespace: Namespace | null, workflowId: WorkflowId) {
+  return ['workflow-history', namespace, workflowId] as const;
+}
+
+export function requireWorkflowHistoryNamespace(
+  namespace: Namespace | null | undefined
+): Namespace {
+  return requireSelectedNamespace(namespace, 'loading workflow history');
+}
+
+export function workflowHistoryRequestOptions(namespace: Namespace | null | undefined) {
+  return { namespace: requireWorkflowHistoryNamespace(namespace) };
+}
+
+export function useWorkflowHistory({
+  apiClient = defaultApiClient,
+  workflowId,
+}: WorkflowHistoryOptions) {
+  const { selectedNamespace } = useNamespace();
+
   return useQuery({
-    queryKey: workflowHistoryKey(namespace, workflowId),
-    queryFn: () => {
-      if (namespace === null || workflowId === null) {
-        throw new Error('Workflow history requires a namespace and workflow id.');
-      }
-
-      return createApiClient().getHistory(workflowId, { namespace });
-    },
-    enabled: namespace !== null && workflowId !== null,
+    enabled: selectedNamespace !== null && selectedNamespace.trim().length > 0,
+    queryKey: workflowHistoryQueryKey(selectedNamespace, workflowId),
+    queryFn: () =>
+      apiClient.getHistory(workflowId, workflowHistoryRequestOptions(selectedNamespace)),
   });
 }

@@ -1,1 +1,5 @@
-export { useConnectionStatus } from './hooks/useConnectionStatus';
+export {
+  namespaceSubscriptionFilter,
+  subscribeToNamespaceFilter,
+  useEventSubscription,
+} from './hooks/useEventSubscription';
