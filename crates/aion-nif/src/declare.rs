@@ -137,7 +137,7 @@ where
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(value)) => value
             .into_term(ctx)
-            .map_err(|error| activity_error_to_term(term_error_activity(error), ctx)),
+            .map_err(|error| activity_error_to_term(term_error_activity(&error), ctx)),
         Ok(Err(error)) => Err(activity_error_to_term(error, ctx)),
         Err(payload) => Err(activity_error_to_term(
             ActivityError {
@@ -172,7 +172,7 @@ fn fallback_activity_error_term(message: String, ctx: &mut ProcessContext) -> Te
     }
 }
 
-fn term_error_activity(error: TermError) -> ActivityError {
+fn term_error_activity(error: &TermError) -> ActivityError {
     ActivityError {
         kind: ActivityErrorKind::Terminal,
         message: error.to_string(),
