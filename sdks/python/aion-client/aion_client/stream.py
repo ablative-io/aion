@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 import importlib
+from inspect import isawaitable
 import json
 from types import ModuleType
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from .errors import AionClientError, InvalidArgument, Unavailable, map_error
 from .payload import Payload, decode_payload, payload_from_wire
 
 T = TypeVar("T")
+TransportFactory: TypeAlias = Callable[[int | None], AsyncIterator[Any] | Awaitable[AsyncIterator[Any]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +47,7 @@ class EventStream(Generic[T]):
         auth: str | None,
         decoder: type[T] | None = None,
         raw: bool = False,
-        transport_factory: Callable[[int | None], Awaitable[AsyncIterator[Any]]] | None = None,
+        transport_factory: TransportFactory | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.namespace = namespace
@@ -112,7 +114,10 @@ class EventStream(Generic[T]):
 
     async def _open(self, resume_from: int | None) -> AsyncIterator[Any]:
         try:
-            return await self._transport_factory(resume_from)
+            candidate = self._transport_factory(resume_from)
+            if isawaitable(candidate):
+                return await candidate
+            return candidate
         except BaseException as exc:
             if isinstance(exc, AionClientError):
                 raise
@@ -145,16 +150,13 @@ class EventStream(Generic[T]):
 
 
 def _subscription_request(namespace: str, workflow_id: str, resume_from: int | None) -> dict[str, object]:
-    request: dict[str, object] = {
+    del resume_from
+    return {
         "per_workflow": {
             "namespace": namespace,
             "workflow_id": {"uuid": workflow_id},
         }
     }
-    if resume_from is not None:
-        # Structured for AW cursor support once exposed; not a private proto field.
-        request["resume_from_sequence"] = resume_from
-    return request
 
 
 def _frame_event(frame: Any) -> Any:
@@ -200,9 +202,13 @@ def _event_payload(event: Any) -> Payload:
 
 def _extract_seq(value: Any) -> int:
     if isinstance(value, dict):
-        raw_seq = value.get("seq")
+        raw_seq = value.get("seq", value.get("sequence", value.get("sequence_number")))
     else:
         raw_seq = getattr(value, "seq", None)
+        if raw_seq is None:
+            raw_seq = getattr(value, "sequence", None)
+        if raw_seq is None:
+            raw_seq = getattr(value, "sequence_number", None)
     if isinstance(raw_seq, int) and raw_seq >= 0:
         return raw_seq
     raise InvalidArgument("stream event is missing non-negative seq")

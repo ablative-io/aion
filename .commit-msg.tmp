@@ -1,1 +1,1 @@
-feat(python-sdk): implement async aion client package
+Harden Python client stream factory handling and run targeting validation

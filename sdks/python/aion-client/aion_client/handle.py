@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from .errors import InvalidArgument
 from .payload import JSONValue
 from .stream import EventStream
 
@@ -29,8 +30,14 @@ class WorkflowHandle:
         return WorkflowHandle(client=self.client, workflow_id=self.workflow_id, run_id=None, namespace=self.namespace)
 
     def specific_run(self, run_id: str) -> "WorkflowHandle":
-        """Return a handle targeting exactly ``run_id``."""
+        """Return a handle targeting exactly ``run_id``.
 
+        Raises:
+            InvalidArgument: run_id is empty.
+        """
+
+        if not run_id:
+            raise InvalidArgument("run_id must not be empty")
         return WorkflowHandle(client=self.client, workflow_id=self.workflow_id, run_id=run_id, namespace=self.namespace)
 
     async def signal(
