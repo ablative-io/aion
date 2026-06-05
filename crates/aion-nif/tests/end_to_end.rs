@@ -38,7 +38,7 @@ fn illustrative_nif_set_exposes_descriptors_and_dispatches() -> Result<(), TermE
         "example/module", "fetch_label_failure", retryable_activity_failure, () -> Result<String, ActivityError>
     );
 
-    let set = NifSet::new("example/module")
+    let set = NifSet::builder("example/module")
         .with_nif(pure)
         .with_nif(activity)
         .with_nif(activity_failure)

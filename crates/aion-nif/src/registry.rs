@@ -17,10 +17,45 @@ pub struct NifSet {
 }
 
 /// Builder type for a [`NifSet`].
-pub type NifSetBuilder = NifSet;
+#[derive(Clone, Debug)]
+pub struct NifSetBuilder {
+    module: String,
+    nifs: Vec<Nif>,
+}
 
 impl NifSet {
-    /// Starts a new declaration set for NIFs under `module`.
+    /// Starts a new builder for declarations under `module`.
+    #[must_use]
+    pub fn builder(module: impl Into<String>) -> NifSetBuilder {
+        NifSetBuilder::new(module)
+    }
+
+    /// Module name this set declares NIFs for.
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// Declared NIF descriptors in insertion order.
+    #[must_use]
+    pub fn nifs(&self) -> &[Nif] {
+        &self.nifs
+    }
+
+    /// Iterates over declared NIF descriptors in insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = &Nif> {
+        self.nifs.iter()
+    }
+
+    /// Consumes the set and returns its descriptors.
+    #[must_use]
+    pub fn into_nifs(self) -> Vec<Nif> {
+        self.nifs
+    }
+}
+
+impl NifSetBuilder {
+    /// Starts a builder for declarations under `module`.
     #[must_use]
     pub fn new(module: impl Into<String>) -> Self {
         Self {
@@ -48,7 +83,7 @@ impl NifSet {
     ///
     /// Returns [`NifDeclError::Duplicate`] when more than one descriptor has the
     /// same module/function/arity identity.
-    pub fn build(self) -> Result<Self, NifDeclError> {
+    pub fn build(self) -> Result<NifSet, NifDeclError> {
         let mut identities = BTreeSet::new();
 
         for nif in &self.nifs {
@@ -66,30 +101,10 @@ impl NifSet {
             }
         }
 
-        Ok(self)
-    }
-
-    /// Module name this set declares NIFs for.
-    #[must_use]
-    pub fn module(&self) -> &str {
-        &self.module
-    }
-
-    /// Declared NIF descriptors in insertion order.
-    #[must_use]
-    pub fn nifs(&self) -> &[Nif] {
-        &self.nifs
-    }
-
-    /// Iterates over declared NIF descriptors in insertion order.
-    pub fn iter(&self) -> impl Iterator<Item = &Nif> {
-        self.nifs.iter()
-    }
-
-    /// Consumes the set and returns its descriptors.
-    #[must_use]
-    pub fn into_nifs(self) -> Vec<Nif> {
-        self.nifs
+        Ok(NifSet {
+            module: self.module,
+            nifs: self.nifs,
+        })
     }
 }
 
@@ -127,7 +142,7 @@ mod tests {
         let pure = Nif::pure("example/module", "upper", 1, identity_native);
         let activity = Nif::side_effectful("example/module", "read", 1, identity_native);
 
-        let set = NifSet::new("example/module")
+        let set = NifSet::builder("example/module")
             .with_nif(pure)
             .with_nif(activity)
             .build()?;
@@ -151,7 +166,7 @@ mod tests {
         let first = Nif::pure("example/module", "extract", 1, identity_native);
         let second = Nif::side_effectful("example/module", "extract", 1, identity_native);
 
-        match NifSet::new("example/module")
+        match NifSet::builder("example/module")
             .with_nif(first)
             .with_nif(second)
             .build()
@@ -164,7 +179,7 @@ mod tests {
                     arity: 1,
                 }
             ),
-            Ok(set) => assert_ne!(set.nifs().len(), 2),
+            Ok(set) => panic!("duplicate build unexpectedly succeeded with {set:?}"),
         }
     }
 
@@ -173,7 +188,7 @@ mod tests {
         let unary = Nif::pure("example/module", "format", 1, identity_native);
         let binary = Nif::pure("example/module", "format", 2, identity_native);
 
-        let set = NifSet::new("example/module")
+        let set = NifSet::builder("example/module")
             .with_nif(unary)
             .with_nif(binary)
             .build()?;

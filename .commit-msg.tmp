@@ -1,1 +1,1 @@
-feat(aion-nif): add clippy-clean NifSet descriptors
+Harden aion-nif NifSet validation shape
