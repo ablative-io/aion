@@ -9,7 +9,7 @@ use beamr::{
     term::Term,
 };
 
-use crate::{FromTerm, IntoTerm, Nif, TermError, into_term_via_payload, raw};
+use crate::{FromTerm, IntoTerm, Nif, NifContext, TermError, into_term_via_payload};
 
 /// Builds a deterministic NIF descriptor around a generated typed shim.
 ///
@@ -49,17 +49,6 @@ pub fn activity_descriptor(
     Nif::side_effectful(module, function, arity, native)
 }
 
-/// Releases retained heap storage from the previous generated NIF invocation.
-///
-/// The raw seam retains heap-backed return terms long enough for the caller to
-/// consume them. Until a scoped per-invocation owner exists, generated shims keep
-/// incoming terms alive through arity and argument decoding, then clear old
-/// retained storage immediately before encoding this invocation's result or error.
-#[doc(hidden)]
-pub fn begin_nif_call() {
-    raw::clear_term_storage();
-}
-
 /// Decodes one typed argument and annotates conversion failures with its index.
 ///
 /// # Errors
@@ -78,7 +67,7 @@ where
 
 /// Encodes an arity mismatch as a typed NIF error term.
 #[doc(hidden)]
-pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut ProcessContext) -> Term {
+pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut NifContext<'_>) -> Term {
     let error = TermError::Conversion {
         context: "nif arity",
         message: format!("expected {expected} arguments, received {actual}"),
@@ -88,13 +77,13 @@ pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut ProcessContext
 
 /// Encodes a conversion error as a typed deterministic NIF error term.
 #[doc(hidden)]
-pub fn term_error_to_term(error: &TermError, ctx: &mut ProcessContext) -> Term {
+pub fn term_error_to_term(error: &TermError, ctx: &mut NifContext<'_>) -> Term {
     error_message_to_term(error.to_string(), ctx)
 }
 
 /// Encodes a conversion error as a terminal activity failure term.
 #[doc(hidden)]
-pub fn activity_term_error_to_term(error: &TermError, ctx: &mut ProcessContext) -> Term {
+pub fn activity_term_error_to_term(error: &TermError, ctx: &mut NifContext<'_>) -> Term {
     activity_error_to_term(term_error_activity(error), ctx)
 }
 
@@ -106,7 +95,7 @@ pub fn activity_term_error_to_term(error: &TermError, ctx: &mut ProcessContext) 
 /// Returns an error term when the body panics or the return value cannot be
 /// encoded through [`IntoTerm`].
 #[doc(hidden)]
-pub fn invoke_pure<R, F>(ctx: &mut ProcessContext, body: F) -> Result<Term, Term>
+pub fn invoke_pure<R, F>(ctx: &mut NifContext<'_>, body: F) -> Result<Term, Term>
 where
     R: IntoTerm,
     F: FnOnce() -> R,
@@ -135,7 +124,7 @@ where
 /// are classified as [`ActivityErrorKind::Terminal`] so retry policy evaluation
 /// can preserve the invariant that unwinding never crosses the FFI boundary.
 #[doc(hidden)]
-pub fn invoke_activity<R, F>(ctx: &mut ProcessContext, body: F) -> Result<Term, Term>
+pub fn invoke_activity<R, F>(ctx: &mut NifContext<'_>, body: F) -> Result<Term, Term>
 where
     R: IntoTerm,
     F: FnOnce() -> Result<R, ActivityError>,
@@ -159,14 +148,14 @@ where
 /// Encodes an [`ActivityError`] as a JSON-shaped term that preserves kind,
 /// message, and details for the engine's activity-failure reconstruction.
 #[doc(hidden)]
-pub fn activity_error_to_term(error: ActivityError, ctx: &mut ProcessContext) -> Term {
+pub fn activity_error_to_term(error: ActivityError, ctx: &mut NifContext<'_>) -> Term {
     match into_term_via_payload(error, ctx) {
         Ok(term) => term,
         Err(error) => fallback_activity_error_term(error.to_string(), ctx),
     }
 }
 
-fn fallback_activity_error_term(message: String, ctx: &mut ProcessContext) -> Term {
+fn fallback_activity_error_term(message: String, ctx: &mut NifContext<'_>) -> Term {
     let error = ActivityError {
         kind: ActivityErrorKind::Terminal,
         message,
@@ -174,7 +163,7 @@ fn fallback_activity_error_term(message: String, ctx: &mut ProcessContext) -> Te
     };
     match into_term_via_payload(error, ctx) {
         Ok(term) => term,
-        Err(_) => ctx.allocate_term(Term::NIL),
+        Err(_) => ctx.process_mut().allocate_term(Term::NIL),
     }
 }
 
@@ -235,10 +224,10 @@ pub fn request_activity_suspend<'scheduler>(
     Ok(ActivityWakeHandle { scheduler, pid })
 }
 
-fn error_message_to_term(message: String, ctx: &mut ProcessContext) -> Term {
+fn error_message_to_term(message: String, ctx: &mut NifContext<'_>) -> Term {
     match Result::<String, String>::Err(message).into_term(ctx) {
         Ok(term) => term,
-        Err(_) => ctx.allocate_term(Term::NIL),
+        Err(_) => ctx.process_mut().allocate_term(Term::NIL),
     }
 }
 
@@ -256,11 +245,10 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 #[macro_export]
 macro_rules! __aion_nif_decode_argument {
     ($args:expr, $ctx:expr, $index:expr, $ty:ty) => {
-        match $crate::declare::decode_argument::<$ty>($args[$index], $ctx, $index) {
+        match $crate::declare::decode_argument::<$ty>($args[$index], $ctx.process(), $index) {
             Ok(value) => value,
             Err(error) => {
-                $crate::declare::begin_nif_call();
-                return Err($crate::declare::term_error_to_term(&error, $ctx));
+                return Err($crate::declare::term_error_to_term(&error, &mut $ctx));
             }
         }
     };
@@ -270,11 +258,12 @@ macro_rules! __aion_nif_decode_argument {
 #[macro_export]
 macro_rules! __aion_nif_decode_activity_argument {
     ($args:expr, $ctx:expr, $index:expr, $ty:ty) => {
-        match $crate::declare::decode_argument::<$ty>($args[$index], $ctx, $index) {
+        match $crate::declare::decode_argument::<$ty>($args[$index], $ctx.process(), $index) {
             Ok(value) => value,
             Err(error) => {
-                $crate::declare::begin_nif_call();
-                return Err($crate::declare::activity_term_error_to_term(&error, $ctx));
+                return Err($crate::declare::activity_term_error_to_term(
+                    &error, &mut $ctx,
+                ));
             }
         }
     };
@@ -315,12 +304,11 @@ macro_rules! deterministic_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
+            let mut nif_ctx = $crate::NifContext::new(ctx);
             if args.len() != 0 {
-                $crate::declare::begin_nif_call();
-                return Err($crate::declare::arity_error_term(0, args.len(), ctx));
+                return Err($crate::declare::arity_error_term(0, args.len(), &mut nif_ctx));
             }
-            $crate::declare::begin_nif_call();
-            $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
+            $crate::declare::invoke_pure(&mut nif_ctx, || -> $ret { $($body)* })
         }
 
         $crate::declare::pure_descriptor($module, $function, 0, __aion_nif_shim)
@@ -330,13 +318,12 @@ macro_rules! deterministic_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
+            let mut nif_ctx = $crate::NifContext::new(ctx);
             if args.len() != 1 {
-                $crate::declare::begin_nif_call();
-                return Err($crate::declare::arity_error_term(1, args.len(), ctx));
+                return Err($crate::declare::arity_error_term(1, args.len(), &mut nif_ctx));
             }
-            let $arg = $crate::__aion_nif_decode_argument!(args, ctx, 0, $arg_ty);
-            $crate::declare::begin_nif_call();
-            $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
+            let $arg = $crate::__aion_nif_decode_argument!(args, nif_ctx, 0, $arg_ty);
+            $crate::declare::invoke_pure(&mut nif_ctx, || -> $ret { $($body)* })
         }
 
         $crate::declare::pure_descriptor($module, $function, 1, __aion_nif_shim)
@@ -350,14 +337,13 @@ macro_rules! deterministic_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
+            let mut nif_ctx = $crate::NifContext::new(ctx);
             if args.len() != 2 {
-                $crate::declare::begin_nif_call();
-                return Err($crate::declare::arity_error_term(2, args.len(), ctx));
+                return Err($crate::declare::arity_error_term(2, args.len(), &mut nif_ctx));
             }
-            let $left = $crate::__aion_nif_decode_argument!(args, ctx, 0, $left_ty);
-            let $right = $crate::__aion_nif_decode_argument!(args, ctx, 1, $right_ty);
-            $crate::declare::begin_nif_call();
-            $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
+            let $left = $crate::__aion_nif_decode_argument!(args, nif_ctx, 0, $left_ty);
+            let $right = $crate::__aion_nif_decode_argument!(args, nif_ctx, 1, $right_ty);
+            $crate::declare::invoke_pure(&mut nif_ctx, || -> $ret { $($body)* })
         }
 
         $crate::declare::pure_descriptor($module, $function, 2, __aion_nif_shim)
@@ -399,18 +385,17 @@ macro_rules! activity_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
+            let mut nif_ctx = $crate::NifContext::new(ctx);
             if args.len() != 0 {
-                $crate::declare::begin_nif_call();
                 return Err($crate::declare::activity_term_error_to_term(
                     &$crate::TermError::Conversion {
                         context: "nif arity",
                         message: format!("expected {} arguments, received {}", 0, args.len()),
                     },
-                    ctx,
+                    &mut nif_ctx,
                 ));
             }
-            $crate::declare::begin_nif_call();
-            $crate::declare::invoke_activity(ctx, || -> $ret { $($body)* })
+            $crate::declare::invoke_activity(&mut nif_ctx, || -> $ret { $($body)* })
         }
 
         $crate::declare::activity_descriptor($module, $function, 0, __aion_nif_shim)
@@ -420,19 +405,18 @@ macro_rules! activity_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
+            let mut nif_ctx = $crate::NifContext::new(ctx);
             if args.len() != 1 {
-                $crate::declare::begin_nif_call();
                 return Err($crate::declare::activity_term_error_to_term(
                     &$crate::TermError::Conversion {
                         context: "nif arity",
                         message: format!("expected {} arguments, received {}", 1, args.len()),
                     },
-                    ctx,
+                    &mut nif_ctx,
                 ));
             }
-            let $arg = $crate::__aion_nif_decode_activity_argument!(args, ctx, 0, $arg_ty);
-            $crate::declare::begin_nif_call();
-            $crate::declare::invoke_activity(ctx, || -> $ret { $($body)* })
+            let $arg = $crate::__aion_nif_decode_activity_argument!(args, nif_ctx, 0, $arg_ty);
+            $crate::declare::invoke_activity(&mut nif_ctx, || -> $ret { $($body)* })
         }
 
         $crate::declare::activity_descriptor($module, $function, 1, __aion_nif_shim)
@@ -446,20 +430,19 @@ macro_rules! activity_nif {
             args: &[beamr::term::Term],
             ctx: &mut beamr::native::ProcessContext,
         ) -> Result<beamr::term::Term, beamr::term::Term> {
+            let mut nif_ctx = $crate::NifContext::new(ctx);
             if args.len() != 2 {
-                $crate::declare::begin_nif_call();
                 return Err($crate::declare::activity_term_error_to_term(
                     &$crate::TermError::Conversion {
                         context: "nif arity",
                         message: format!("expected {} arguments, received {}", 2, args.len()),
                     },
-                    ctx,
+                    &mut nif_ctx,
                 ));
             }
-            let $left = $crate::__aion_nif_decode_activity_argument!(args, ctx, 0, $left_ty);
-            let $right = $crate::__aion_nif_decode_activity_argument!(args, ctx, 1, $right_ty);
-            $crate::declare::begin_nif_call();
-            $crate::declare::invoke_activity(ctx, || -> $ret { $($body)* })
+            let $left = $crate::__aion_nif_decode_activity_argument!(args, nif_ctx, 0, $left_ty);
+            let $right = $crate::__aion_nif_decode_activity_argument!(args, nif_ctx, 1, $right_ty);
+            $crate::declare::invoke_activity(&mut nif_ctx, || -> $ret { $($body)* })
         }
 
         $crate::declare::activity_descriptor($module, $function, 2, __aion_nif_shim)
@@ -519,8 +502,10 @@ mod tests {
             format!("{left}{right}")
         });
         let mut ctx = context();
-        let left = "hello ".to_owned().into_term(&mut ctx)?;
-        let right = "world".to_owned().into_term(&mut ctx)?;
+        let mut arg_ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut arg_ctx);
+        let left = "hello ".to_owned().into_term(&mut nif_ctx)?;
+        let right = "world".to_owned().into_term(&mut nif_ctx)?;
 
         let output =
             (nif.native())(&[left, right], &mut ctx).map_err(|term| TermError::Conversion {
@@ -543,7 +528,9 @@ mod tests {
             format!("{left}{right}")
         });
         let mut ctx = context();
-        let only = "hello".to_owned().into_term(&mut ctx)?;
+        let mut arg_ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut arg_ctx);
+        let only = "hello".to_owned().into_term(&mut nif_ctx)?;
 
         let error = (nif.native())(&[only], &mut ctx)
             .err()
@@ -563,8 +550,10 @@ mod tests {
             format!("{left}{right}")
         });
         let mut ctx = context();
-        let left = "hello".to_owned().into_term(&mut ctx)?;
-        let right = 42_i64.into_term(&mut ctx)?;
+        let mut arg_ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut arg_ctx);
+        let left = "hello".to_owned().into_term(&mut nif_ctx)?;
+        let right = 42_i64.into_term(&mut nif_ctx)?;
 
         let error = (nif.native())(&[left, right], &mut ctx)
             .err()
@@ -600,7 +589,9 @@ mod tests {
             Ok(format!("env:{name}"))
         });
         let mut ctx = context();
-        let name = "AION_TEST_VALUE".to_owned().into_term(&mut ctx)?;
+        let mut arg_ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut arg_ctx);
+        let name = "AION_TEST_VALUE".to_owned().into_term(&mut nif_ctx)?;
 
         let output = (nif.native())(&[name], &mut ctx).map_err(|term| TermError::Conversion {
             context: "test activity invocation",
@@ -645,7 +636,9 @@ mod tests {
         );
 
         let mut ctx = context();
-        let bad_arg = 42_i64.into_term(&mut ctx)?;
+        let mut arg_ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut arg_ctx);
+        let bad_arg = 42_i64.into_term(&mut nif_ctx)?;
         let decode_error = (decode_failure.native())(&[bad_arg], &mut ctx)
             .err()
             .ok_or(TermError::HeapAllocation { shape: "test" })?;
@@ -712,7 +705,8 @@ mod tests {
 
         assert_eq!(handle.pid(), 42);
         assert_eq!(suspend.timeout_ms, Some(250));
-        handle.wake_with_result("done".to_owned().into_term(&mut ctx)?);
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
+        handle.wake_with_result("done".to_owned().into_term(&mut nif_ctx)?);
         scheduler.shutdown();
         Ok(())
     }

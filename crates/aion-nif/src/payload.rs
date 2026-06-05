@@ -29,7 +29,7 @@ use beamr::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Number, Value};
 
-use crate::{FromTerm, IntoTerm, TermError, raw};
+use crate::{FromTerm, IntoTerm, NifContext, TermError, raw};
 
 /// Decode a beamr term into an aion-core JSON [`Payload`].
 ///
@@ -64,7 +64,7 @@ pub fn payload_from_term(term: Term, ctx: &ProcessContext) -> Result<Payload, Te
 ///
 /// Returns [`TermError`] when the payload is not valid JSON for its content tag
 /// or beamr cannot encode the JSON value as a term.
-pub fn payload_into_term(payload: &Payload, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+pub fn payload_into_term(payload: &Payload, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
     let value = payload.to_json().map_err(|error| TermError::Conversion {
         context: "payload to json value",
         message: error.to_string(),
@@ -101,7 +101,7 @@ where
 ///
 /// Returns [`TermError`] when serde cannot serialize `value`, payload creation
 /// fails, or beamr cannot encode the JSON value as a term.
-pub fn into_term_via_payload<T>(value: T, ctx: &mut ProcessContext) -> Result<Term, TermError>
+pub fn into_term_via_payload<T>(value: T, ctx: &mut NifContext<'_>) -> Result<Term, TermError>
 where
     T: Serialize,
 {
@@ -117,22 +117,25 @@ where
     payload_into_term(&payload, ctx)
 }
 
-fn value_into_term(value: &Value, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+fn value_into_term(value: &Value, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
     match value {
-        Value::Null => Ok(ctx.allocate_term(Term::atom(Atom::NIL))),
+        Value::Null => Ok(ctx.process_mut().allocate_term(Term::atom(Atom::NIL))),
         Value::Array(elements) => {
             let encoded = elements
                 .iter()
                 .map(|element| value_into_term(element, ctx))
                 .collect::<Result<Vec<_>, _>>()?;
-            raw::owned_list_term(&encoded)
+            raw::owned_list_term(ctx, &encoded)
         }
         Value::Object(object) => {
             let entries = {
-                let atom_table = ctx.atom_table().ok_or_else(|| TermError::AtomResolution {
-                    atom: "<json object key>".to_owned(),
-                    reason: "atom table is unavailable".to_owned(),
-                })?;
+                let atom_table =
+                    ctx.process()
+                        .atom_table()
+                        .ok_or_else(|| TermError::AtomResolution {
+                            atom: "<json object key>".to_owned(),
+                            reason: "atom table is unavailable".to_owned(),
+                        })?;
                 object
                     .iter()
                     .map(|(key, value)| (Term::atom(atom_table.intern(key)), value))
@@ -146,39 +149,39 @@ fn value_into_term(value: &Value, ctx: &mut ProcessContext) -> Result<Term, Term
 
             let keys = pairs.iter().map(|(key, _)| *key).collect::<Vec<_>>();
             let values = pairs.iter().map(|(_, value)| *value).collect::<Vec<_>>();
-            raw::owned_map_term(&keys, &values)
+            raw::owned_map_term(ctx, &keys, &values)
         }
         Value::Bool(value) => {
             let atom = if *value { Atom::TRUE } else { Atom::FALSE };
-            Ok(ctx.allocate_term(Term::atom(atom)))
+            Ok(ctx.process_mut().allocate_term(Term::atom(atom)))
         }
         Value::Number(number) => number_into_term(number, ctx),
-        Value::String(string) => raw::owned_binary_term(string.as_bytes()),
+        Value::String(string) => raw::owned_binary_term(ctx, string.as_bytes()),
     }
 }
 
-fn number_into_term(number: &Number, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+fn number_into_term(number: &Number, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
     if let Some(value) = number.as_i64() {
         if let Some(term) = Term::try_small_int(value) {
-            return Ok(ctx.allocate_term(term));
+            return Ok(ctx.process_mut().allocate_term(term));
         }
         let limbs = limbs_from_u128(u128::from(value.unsigned_abs()));
-        return raw::owned_bigint_term(value.is_negative(), &limbs);
+        return raw::owned_bigint_term(ctx, value.is_negative(), &limbs);
     }
 
     if let Some(value) = number.as_u64() {
         if let Some(term) = i64::try_from(value).ok().and_then(Term::try_small_int) {
-            return Ok(ctx.allocate_term(term));
+            return Ok(ctx.process_mut().allocate_term(term));
         }
         let limbs = limbs_from_u128(u128::from(value));
-        return raw::owned_bigint_term(false, &limbs);
+        return raw::owned_bigint_term(ctx, false, &limbs);
     }
 
     let value = number.as_f64().ok_or_else(|| TermError::Conversion {
         context: "json number to term",
         message: format!("unsupported JSON number {number}"),
     })?;
-    raw::owned_float_term(value)
+    raw::owned_float_term(ctx, value)
 }
 
 fn limbs_from_u128(value: u128) -> [u64; 2] {
@@ -197,7 +200,7 @@ impl FromTerm for Payload {
 }
 
 impl IntoTerm for Payload {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         payload_into_term(&self, ctx)
     }
 }
@@ -240,14 +243,15 @@ mod tests {
     fn payload_values_round_trip_losslessly_through_terms() -> Result<(), TermError> {
         for value in json_values() {
             let mut ctx = context();
+            let mut nif_ctx = crate::NifContext::new(&mut ctx);
             let payload =
                 aion_core::Payload::from_json(&value).map_err(|error| TermError::Conversion {
                     context: "test json value to payload",
                     message: error.to_string(),
                 })?;
 
-            let term = payload_into_term(&payload, &mut ctx)?;
-            let decoded = payload_from_term(term, &ctx)?;
+            let term = payload_into_term(&payload, &mut nif_ctx)?;
+            let decoded = payload_from_term(term, nif_ctx.process())?;
             let decoded_value = decoded.to_json().map_err(|error| TermError::Conversion {
                 context: "test payload to json value",
                 message: error.to_string(),
@@ -263,14 +267,15 @@ mod tests {
     fn payload_large_integer_round_trips_without_beamr_json_encoder() -> Result<(), TermError> {
         let value = serde_json::json!({"large": u64::MAX});
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
         let payload =
             aion_core::Payload::from_json(&value).map_err(|error| TermError::Conversion {
                 context: "test json large integer to payload",
                 message: error.to_string(),
             })?;
 
-        let term = payload_into_term(&payload, &mut ctx)?;
-        let decoded = payload_from_term(term, &ctx)?;
+        let term = payload_into_term(&payload, &mut nif_ctx)?;
+        let decoded = payload_from_term(term, nif_ctx.process())?;
         let decoded_value = decoded.to_json().map_err(|error| TermError::Conversion {
             context: "test payload to json value",
             message: error.to_string(),
@@ -283,17 +288,22 @@ mod tests {
     #[test]
     fn payload_null_uses_atom_nil_not_empty_list() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
         let payload =
             aion_core::Payload::from_json(&Value::Null).map_err(|error| TermError::Conversion {
                 context: "test json null to payload",
                 message: error.to_string(),
             })?;
 
-        let term = payload_into_term(&payload, &mut ctx)?;
-        let atom_table = ctx.atom_table().ok_or_else(|| TermError::AtomResolution {
-            atom: "nil".to_owned(),
-            reason: "atom table is unavailable".to_owned(),
-        })?;
+        let term = payload_into_term(&payload, &mut nif_ctx)?;
+        let atom_table =
+            nif_ctx
+                .process()
+                .atom_table()
+                .ok_or_else(|| TermError::AtomResolution {
+                    atom: "nil".to_owned(),
+                    reason: "atom table is unavailable".to_owned(),
+                })?;
 
         assert!(term.is_atom());
         assert_eq!(
@@ -318,14 +328,15 @@ mod tests {
     #[test]
     fn serde_struct_round_trips_via_payload_terms() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
         let original = ExampleStruct {
             name: "render".to_owned(),
             count: 7,
             enabled: true,
         };
 
-        let term = into_term_via_payload(&original, &mut ctx)?;
-        let decoded = from_term_via_payload::<ExampleStruct>(term, &ctx)?;
+        let term = into_term_via_payload(&original, &mut nif_ctx)?;
+        let decoded = from_term_via_payload::<ExampleStruct>(term, nif_ctx.process())?;
 
         assert_eq!(decoded, original);
         Ok(())
@@ -334,9 +345,12 @@ mod tests {
     #[test]
     fn serde_mismatch_returns_typed_conversion_error_with_message() -> Result<(), TermError> {
         let mut ctx = context();
-        let term =
-            into_term_via_payload(serde_json::json!({"name": 5, "count": "many"}), &mut ctx)?;
-        let error = from_term_via_payload::<ExampleStruct>(term, &ctx);
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
+        let term = into_term_via_payload(
+            serde_json::json!({"name": 5, "count": "many"}),
+            &mut nif_ctx,
+        )?;
+        let error = from_term_via_payload::<ExampleStruct>(term, nif_ctx.process());
 
         let Err(TermError::Conversion { context, message }) = error else {
             return Err(TermError::Conversion {

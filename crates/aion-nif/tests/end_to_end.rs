@@ -69,12 +69,14 @@ fn illustrative_nif_set_exposes_descriptors_and_dispatches() -> Result<(), TermE
     assert!(activity_failure.is_dirty());
 
     let mut ctx = context();
-    let pure_input = "hello nif".to_owned().into_term(&mut ctx)?;
+    let mut arg_ctx = context();
+    let mut nif_ctx = aion_nif::NifContext::new(&mut arg_ctx);
+    let pure_input = "hello nif".to_owned().into_term(&mut nif_ctx)?;
     let pure_output =
         (pure.native())(&[pure_input], &mut ctx).map_err(native_error_to_term_error)?;
     assert_eq!(String::from_term(pure_output, &ctx)?, "HELLO NIF");
 
-    let activity_input = "value".to_owned().into_term(&mut ctx)?;
+    let activity_input = "value".to_owned().into_term(&mut nif_ctx)?;
     let activity_output =
         (activity.native())(&[activity_input], &mut ctx).map_err(native_error_to_term_error)?;
     assert_eq!(String::from_term(activity_output, &ctx)?, "activity:value");

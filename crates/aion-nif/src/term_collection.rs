@@ -8,7 +8,7 @@ use beamr::{
     term::{Term, boxed::Cons, boxed::Map, boxed::Tuple},
 };
 
-use crate::{FromTerm, IntoTerm, TermError, raw, term::mismatch};
+use crate::{FromTerm, IntoTerm, NifContext, TermError, raw, term::mismatch};
 
 /// Marker for values that may use the homogeneous-list `Vec<T>` term shape.
 ///
@@ -41,10 +41,10 @@ impl<T> IntoTerm for Option<T>
 where
     T: IntoTerm,
 {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         match self {
             Some(value) => value.into_term(ctx),
-            None => Ok(ctx.allocate_term(Term::NIL)),
+            None => Ok(ctx.process_mut().allocate_term(Term::NIL)),
         }
     }
 }
@@ -75,12 +75,13 @@ where
     T: IntoTerm,
     E: IntoTerm,
 {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         let (tag, value) = match self {
             Ok(value) => (Term::atom(Atom::OK), value.into_term(ctx)?),
             Err(error) => (Term::atom(Atom::ERROR), error.into_term(ctx)?),
         };
-        raw::owned_tuple_term(&[ctx.allocate_term(tag), value])
+        let tag = ctx.process_mut().allocate_term(tag);
+        raw::owned_tuple_term(ctx, &[tag, value])
     }
 }
 
@@ -106,12 +107,12 @@ impl<T> IntoTerm for Vec<T>
 where
     T: ListElement,
 {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         let terms = self
             .into_iter()
             .map(|value| value.into_term(ctx))
             .collect::<Result<Vec<_>, _>>()?;
-        raw::owned_list_term(&terms)
+        raw::owned_list_term(ctx, &terms)
     }
 }
 
@@ -139,7 +140,7 @@ impl<T> IntoTerm for BTreeMap<String, T>
 where
     T: IntoTerm,
 {
-    fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
         let mut keys = Vec::with_capacity(self.len());
         let mut values = Vec::with_capacity(self.len());
 
@@ -148,7 +149,7 @@ where
             values.push(value.into_term(ctx)?);
         }
 
-        raw::owned_map_term(&keys, &values)
+        raw::owned_map_term(ctx, &keys, &values)
     }
 }
 
@@ -169,11 +170,14 @@ mod tests {
     #[test]
     fn option_values_round_trip() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
 
-        let none = Option::<i64>::from_term(None::<i64>.into_term(&mut ctx)?, &ctx)?;
+        let none =
+            Option::<i64>::from_term(None::<i64>.into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert_eq!(none, None);
 
-        let some = Option::<i64>::from_term(Some(7_i64).into_term(&mut ctx)?, &ctx)?;
+        let some =
+            Option::<i64>::from_term(Some(7_i64).into_term(&mut nif_ctx)?, nif_ctx.process())?;
         assert_eq!(some, Some(7));
 
         Ok(())
@@ -182,16 +186,17 @@ mod tests {
     #[test]
     fn result_values_round_trip() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
 
         let ok = Result::<i64, String>::from_term(
-            Result::<i64, String>::Ok(7_i64).into_term(&mut ctx)?,
-            &ctx,
+            Result::<i64, String>::Ok(7_i64).into_term(&mut nif_ctx)?,
+            nif_ctx.process(),
         )?;
         assert_eq!(ok, Ok(7));
 
         let error = Result::<i64, String>::from_term(
-            Result::<i64, String>::Err("failed".to_owned()).into_term(&mut ctx)?,
-            &ctx,
+            Result::<i64, String>::Err("failed".to_owned()).into_term(&mut nif_ctx)?,
+            nif_ctx.process(),
         )?;
         assert_eq!(error, Err("failed".to_owned()));
 
@@ -201,8 +206,12 @@ mod tests {
     #[test]
     fn list_values_round_trip() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
 
-        let list = Vec::<i64>::from_term(vec![1_i64, 2, 3].into_term(&mut ctx)?, &ctx)?;
+        let list = Vec::<i64>::from_term(
+            vec![1_i64, 2, 3].into_term(&mut nif_ctx)?,
+            nif_ctx.process(),
+        )?;
         assert_eq!(list, vec![1, 2, 3]);
 
         Ok(())
@@ -211,12 +220,15 @@ mod tests {
     #[test]
     fn map_values_round_trip() -> Result<(), TermError> {
         let mut ctx = context();
+        let mut nif_ctx = crate::NifContext::new(&mut ctx);
         let mut original = BTreeMap::new();
         original.insert("one".to_owned(), 1_i64);
         original.insert("two".to_owned(), 2_i64);
 
-        let decoded =
-            BTreeMap::<String, i64>::from_term(original.clone().into_term(&mut ctx)?, &ctx)?;
+        let decoded = BTreeMap::<String, i64>::from_term(
+            original.clone().into_term(&mut nif_ctx)?,
+            nif_ctx.process(),
+        )?;
         assert_eq!(decoded, original);
 
         Ok(())
