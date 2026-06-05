@@ -8,7 +8,7 @@ import "common.proto";
 // RegisterWorker first, then ActivityResult and Heartbeat messages. The server
 // pushes ActivityTask messages down the same stream; there is no polling RPC.
 service WorkerProtocol {
-  rpc Connect(stream WorkerToServer) returns (stream ServerToWorker);
+  rpc StreamWorker(stream WorkerToServer) returns (stream ServerToWorker);
 }
 
 // Messages sent by a worker to the server over the bidirectional stream.
