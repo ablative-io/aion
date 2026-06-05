@@ -425,6 +425,25 @@ pub fn query_unknown_name_returns_typed_error_test() {
   |> should.equal(Error(error.UnknownQuery("missing-query")))
 }
 
+pub fn query_decode_failure_is_typed_data_test() {
+  query.handler("malformed-query-reply", charge_receipt_codec(), fn() {
+    ChargeReceipt(id: "receipt-query", approved: True)
+  })
+  |> should.equal(Ok(Nil))
+
+  case query.dispatch("malformed-query-reply", charge_request_codec()) {
+    Ok(_) -> should.fail()
+    Error(error.QueryDecodeFailed(decode_error)) ->
+      decode_error
+      |> should.equal(
+        codec.DecodeError(reason: "Expected Field, found Nothing", path: [
+          "order_id",
+        ]),
+      )
+    Error(_) -> should.fail()
+  }
+}
+
 pub fn query_dispatch_records_no_observation_test() {
   let state = ChargeReceipt(id: "receipt-no-event", approved: True)
 

@@ -1,1 +1,1 @@
-feat(aion-flow): add typed query handler registration
+Harden AF-008 query typed handler implementation

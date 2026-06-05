@@ -3,6 +3,7 @@
 import aion/codec.{type Codec}
 import aion/error
 import aion/internal/ffi
+import gleam/int
 import gleam/json
 import gleam/string
 
@@ -66,9 +67,10 @@ pub fn dispatch(
 pub fn recorded_observations() -> Result(Int, error.QueryError) {
   case ffi.query_recorded_observations() {
     Ok(raw_count) -> {
-      case string.to_int(raw_count) {
+      case int.parse(raw_count) {
         Ok(count) -> Ok(count)
-        Error(_) -> Error(error.QueryEngineFailure("invalid query observation count"))
+        Error(_) ->
+          Error(error.QueryEngineFailure("invalid query observation count"))
       }
     }
     Error(raw_error) -> Error(query_error(raw_error))
@@ -88,7 +90,8 @@ fn query_error(raw: String) -> error.QueryError {
     True -> error.UnknownQuery(name: string.drop_start(raw, 8))
     False ->
       case string.starts_with(raw, "cancelled:") {
-        True -> error.QueryCancelled(error.Cancelled(string.drop_start(raw, 10)))
+        True ->
+          error.QueryCancelled(error.Cancelled(string.drop_start(raw, 10)))
         False ->
           case string.starts_with(raw, "non_determinism:") {
             True ->
