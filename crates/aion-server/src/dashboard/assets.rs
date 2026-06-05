@@ -132,7 +132,9 @@ fn is_reserved_public_path(path: &str) -> bool {
 }
 
 fn content_type(path: &str) -> HeaderValue {
-    let extension = std::path::Path::new(path).extension();
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str);
     if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("html")) {
         HeaderValue::from_static("text/html; charset=utf-8")
     } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("js")) {

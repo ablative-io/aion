@@ -1,1 +1,1 @@
-fix(aion-server): use case-insensitive dashboard asset extensions
+fix(aion-server): harden dashboard asset content-type handling
