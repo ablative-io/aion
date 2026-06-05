@@ -88,14 +88,7 @@ pub fn spawn(
   output_codec: Codec(output),
   error_codec: Codec(workflow_error),
 ) -> Result(ChildHandle(output, workflow_error), error.EngineError) {
-  child.spawn(
-    name,
-    workflow_fn,
-    input,
-    input_codec,
-    output_codec,
-    error_codec,
-  )
+  child.spawn(name, workflow_fn, input, input_codec, output_codec, error_codec)
 }
 
 pub fn spawn_and_wait(
@@ -106,20 +99,14 @@ pub fn spawn_and_wait(
   output_codec: Codec(output),
   error_codec: Codec(workflow_error),
 ) -> Result(output, error.ChildError(workflow_error)) {
-  case
-    spawn(
-      name,
-      workflow_fn,
-      input,
-      input_codec,
-      output_codec,
-      error_codec,
-    )
-  {
-    Ok(handle) -> child.await(handle)
-    Error(error.EngineFailure(message: message)) ->
-      Error(error.ChildEngineFailure(message: message))
-  }
+  child.spawn_and_wait(
+    name,
+    workflow_fn,
+    input,
+    input_codec,
+    output_codec,
+    error_codec,
+  )
 }
 
 pub fn timestamp_to_milliseconds(timestamp: Timestamp) -> Int {

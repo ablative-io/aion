@@ -509,10 +509,9 @@ pub fn child_await_decodes_completed_child_result_test() {
   {
     Ok(handle) ->
       child.await(handle)
-      |> should.equal(Ok(ChargeReceipt(
-        id: "child-receipt-order-child-await",
-        approved: True,
-      )))
+      |> should.equal(
+        Ok(ChargeReceipt(id: "child-receipt-order-child-await", approved: True)),
+      )
     Error(_) -> should.fail()
   }
 }
@@ -528,10 +527,9 @@ pub fn workflow_spawn_and_wait_returns_decoded_ok_test() {
     charge_receipt_codec(),
     workflow_error_codec(),
   )
-  |> should.equal(Ok(ChargeReceipt(
-    id: "child-receipt-order-child-wait",
-    approved: True,
-  )))
+  |> should.equal(
+    Ok(ChargeReceipt(id: "child-receipt-order-child-wait", approved: True)),
+  )
 }
 
 pub fn workflow_spawn_and_wait_returns_decoded_child_error_test() {
@@ -608,7 +606,9 @@ pub fn workflow_define_carries_entry_contract_test() {
   |> should.equal(Ok(ChargeReceipt(id: "receipt-order-entry", approved: True)))
 }
 
-fn increment_count(count: Result(Int, error.QueryError)) -> Result(Int, error.QueryError) {
+fn increment_count(
+  count: Result(Int, error.QueryError),
+) -> Result(Int, error.QueryError) {
   case count {
     Ok(value) -> Ok(value + 1)
     Error(error) -> Error(error)

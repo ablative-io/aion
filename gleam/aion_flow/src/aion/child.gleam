@@ -62,6 +62,25 @@ pub fn await(
   }
 }
 
+/// Start a linked child workflow and await its recorded result.
+///
+/// This is the spawn-then-await convenience kept in the child logic module so
+/// `aion/workflow` can remain a forwarding authoring surface.
+pub fn spawn_and_wait(
+  name: String,
+  workflow_fn: fn(input) -> Result(output, workflow_error),
+  input: input,
+  input_codec: Codec(input),
+  output_codec: Codec(output),
+  error_codec: Codec(workflow_error),
+) -> Result(output, error.ChildError(workflow_error)) {
+  case spawn(name, workflow_fn, input, input_codec, output_codec, error_codec) {
+    Ok(handle) -> await(handle)
+    Error(error.EngineFailure(message: message)) ->
+      Error(error.ChildEngineFailure(message: message))
+  }
+}
+
 /// Return the engine child/correlation id carried by this handle.
 pub fn child_id(handle: ChildHandle(output, workflow_error)) -> String {
   handle.child_id
