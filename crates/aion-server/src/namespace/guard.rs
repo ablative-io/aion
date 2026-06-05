@@ -26,6 +26,12 @@ impl NamespaceGuard {
         Self { resolver }
     }
 
+    /// Borrow the resolver backing this guard.
+    #[must_use]
+    pub const fn resolver(&self) -> &NamespaceResolver {
+        &self.resolver
+    }
+
     /// Authorize and scope an operation before any engine method can be called.
     ///
     /// # Errors

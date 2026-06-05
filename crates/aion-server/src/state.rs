@@ -82,6 +82,16 @@ impl ServerState {
     pub fn worker_registry(&self) -> &ConnectedWorkerRegistry {
         &self.inner.worker_registry
     }
+
+    /// Shut down the embedded engine so in-flight durable appends can finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the namespace resolver has no engine handle or the engine rejects
+    /// shutdown.
+    pub fn shutdown(&self) -> Result<(), ServerError> {
+        self.inner.namespace_guard.resolver().shutdown_engine()
+    }
 }
 
 async fn connect_store(config: StoreConfig) -> Result<LibSqlStore, ServerError> {
