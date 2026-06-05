@@ -7,3 +7,9 @@ pub mod error;
 pub mod protocol;
 pub mod runtime;
 pub mod worker;
+
+pub use config::{TransportCredentials, WorkerConfig, WorkerConfigBuildError, WorkerConfigBuilder};
+pub use error::{MissingActivityHandler, WorkerError};
+pub use protocol::{
+    GrpcWorkerSession, WorkerSession, WorkerTaskStream, validate_activity_handlers,
+};
