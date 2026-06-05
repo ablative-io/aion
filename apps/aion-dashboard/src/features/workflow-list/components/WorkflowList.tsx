@@ -6,7 +6,6 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui';
 import type { ApiClient } from '@/lib/api';
 import type { Namespace, WorkflowFilter } from '@/types';
-import { useLiveListUpdates } from '../hooks/useLiveListUpdates';
 import { useWorkflowQuery } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
@@ -20,13 +19,14 @@ import { Pagination } from './Pagination';
 import { WorkflowRow } from './WorkflowRow';
 
 export type WorkflowListProps = {
-  namespace: Namespace;
+  namespace: Namespace | null;
   client?: ApiClient;
   initialFilterState?: WorkflowListFilterState;
   pageLimit?: number;
 };
 
 export function WorkflowList({
+  namespace,
   client,
   initialFilterState = EMPTY_WORKFLOW_LIST_FILTER_STATE,
   pageLimit = WORKFLOW_PAGE_LIMIT,
@@ -35,12 +35,11 @@ export function WorkflowList({
   const [pagination, setPagination] = useState(FIRST_WORKFLOW_LIST_PAGE);
   const [filter, setFilter] = useState(() => workflowFilterFromState(initialFilterState));
   const normalizedPageLimit = useMemo(() => normalizePageLimit(pageLimit), [pageLimit]);
-  const pageRequest = useMemo(
-    () => ({ cursor: pagination.cursor, limit: normalizedPageLimit }),
-    [normalizedPageLimit, pagination.cursor]
-  );
-  const query = useWorkflowQuery({ apiClient: client, filter, page: pageRequest });
-  useLiveListUpdates({ filter, page: pageRequest });
+  const query = useWorkflowQuery({
+    apiClient: client,
+    filter,
+    page: { cursor: pagination.cursor, limit: normalizedPageLimit },
+  });
 
   function handleFilterChange(nextFilter: WorkflowFilter, state: WorkflowListFilterState) {
     setFilterState(state);
@@ -73,6 +72,15 @@ export function WorkflowList({
     });
   }
 
+  if (namespace === null) {
+    return (
+      <EmptyState
+        description="Select a namespace to scope the workflow query."
+        title="No namespace selected"
+      />
+    );
+  }
+
   return (
     <section className="space-y-4">
       <FilterBar value={filterState} onChange={handleFilterChange} />
@@ -100,15 +108,14 @@ export function WorkflowListBody({
   onNext,
 }: WorkflowListBodyProps) {
   if (query.isPending) {
-    return <LoadingSkeleton label="Loading workflow summaries" rows={6} variant="list" />;
+    return <LoadingSkeleton rows={6} label="Loading workflow summaries" />;
   }
 
   if (query.isError) {
     return (
       <ErrorState
         title="Could not load workflows"
-        message={errorMessage(query.error)}
-        actionLabel="Retry"
+        error={query.error}
         onRetry={() => void query.refetch()}
       />
     );
@@ -117,7 +124,7 @@ export function WorkflowListBody({
   const page = query.data;
 
   if (page === undefined) {
-    return <LoadingSkeleton label="Loading workflow summaries" rows={6} variant="list" />;
+    return <LoadingSkeleton rows={6} label="Loading workflow summaries" />;
   }
 
   if (page.items.length === 0) {
@@ -159,8 +166,4 @@ function normalizePageLimit(limit: number): number {
   }
 
   return Math.max(1, Math.floor(limit));
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

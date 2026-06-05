@@ -1,9 +1,13 @@
 import { expect, test } from 'bun:test';
 
-import { requireSelectedNamespace } from '@/features/namespace';
+import { namespaceSubscriptionFilter, subscribeToNamespaceFilter } from '@/features/live-feed';
 import { workflowHistoryQueryKey, workflowHistoryRequestOptions } from '@/features/workflow-detail';
 import { workflowListQueryKey, workflowQueryRequestOptions } from '@/features/workflow-list';
-import type { FirehoseEventSubscriptionFilter } from '@/lib/api';
+import type {
+  AionEventHandler,
+  AionEventSubscriptionFilter,
+  FilteredEventSubscriptionFilter,
+} from '@/lib/api/websocket';
 import type { WorkflowFilter } from '@/types';
 
 const filter: WorkflowFilter = {
@@ -40,8 +44,8 @@ test('query request helpers reject missing namespaces instead of issuing unscope
 test('switching namespace produces re-scoped query keys and subscription filters', () => {
   const firstListKey = workflowListQueryKey('tenant-a', filter, { cursor: 'next' });
   const nextListKey = workflowListQueryKey('tenant-b', filter, { cursor: 'next' });
-  const firstSubscription = firehoseFilter('tenant-a');
-  const nextSubscription = firehoseFilter('tenant-b');
+  const firstSubscription = namespaceSubscriptionFilter('tenant-a', { kind: 'firehose' });
+  const nextSubscription = namespaceSubscriptionFilter('tenant-b', { kind: 'firehose' });
 
   expect(firstListKey).not.toEqual(nextListKey);
   expect(nextListKey[1]).toBe('tenant-b');
@@ -49,13 +53,42 @@ test('switching namespace produces re-scoped query keys and subscription filters
   expect(nextSubscription).toEqual({ kind: 'firehose', namespace: 'tenant-b' });
 });
 
-test('subscription scoping rejects an empty namespace before subscribing', () => {
-  expect(() => firehoseFilter('')).toThrow('namespace must be selected');
+test('subscription scoping preserves filters while carrying namespace', () => {
+  expect(
+    namespaceSubscriptionFilter<FilteredEventSubscriptionFilter>('tenant-b', {
+      kind: 'filtered',
+      status: filter.status,
+      workflowType: filter.workflow_type,
+    })
+  ).toEqual({
+    kind: 'filtered',
+    namespace: 'tenant-b',
+    status: filter.status,
+    workflowType: filter.workflow_type,
+  });
 });
 
-function firehoseFilter(namespace: string): FirehoseEventSubscriptionFilter {
-  return {
-    kind: 'firehose',
-    namespace: requireSelectedNamespace(namespace, 'subscribing to events'),
+test('subscription scoping rejects an empty namespace before subscribing', () => {
+  expect(() => namespaceSubscriptionFilter('', { kind: 'firehose' })).toThrow(
+    'namespace must be selected'
+  );
+});
+
+test('switching namespace re-establishes the subscription with the new namespace', () => {
+  const filters: AionEventSubscriptionFilter[] = [];
+  const manager = {
+    subscribe(subscriptionFilter: AionEventSubscriptionFilter, _handler: AionEventHandler) {
+      filters.push(subscriptionFilter);
+      return () => undefined;
+    },
   };
-}
+
+  subscribeToNamespaceFilter(manager, 'tenant-a', { kind: 'firehose' }, () => undefined);
+  subscribeToNamespaceFilter(manager, 'tenant-b', { kind: 'firehose' }, () => undefined);
+
+  expect(filters).toEqual([
+    { kind: 'firehose', namespace: 'tenant-a' },
+    { kind: 'firehose', namespace: 'tenant-b' },
+  ]);
+  expect(filters).not.toContainEqual({ kind: 'firehose' });
+});

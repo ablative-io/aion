@@ -1,12 +1,11 @@
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
-import { ConnectionIndicator } from '@/features/live-feed';
 import type { Event } from '@/types';
 
-import { useLiveWorkflowEvents } from '../hooks/useLiveWorkflowEvents';
 import { useWorkflowHistory } from '../hooks/useWorkflowHistory';
-import type { LifecycleOutcome, TimelineEntry, WorkflowDetailProps } from '../types';
+import { projectTimeline } from '../lib/timeline';
+import type { WorkflowDetailProps } from '../types';
 import { EventTimeline } from './EventTimeline';
 
 type WorkflowDetailContentProps = WorkflowDetailProps & {
@@ -14,29 +13,17 @@ type WorkflowDetailContentProps = WorkflowDetailProps & {
   isError: boolean;
   isLoading: boolean;
   error: unknown;
-  isTerminal?: boolean;
   onRetry?: () => void;
-  terminalOutcome?: LifecycleOutcome | null;
-  timeline?: readonly TimelineEntry[];
 };
 
 function WorkflowDetail({ workflowId, namespace }: WorkflowDetailProps) {
   const historyQuery = useWorkflowHistory({ workflowId });
-  const liveEvents = useLiveWorkflowEvents({
-    enabled: historyQuery.isSuccess,
-    history: historyQuery.data ?? [],
-    onResync: () => void historyQuery.refetch(),
-    workflowId,
-  });
 
   return (
     <WorkflowDetailContent
       error={historyQuery.error}
-      history={liveEvents.events}
+      history={historyQuery.data ?? []}
       isError={historyQuery.isError}
-      isTerminal={liveEvents.isTerminal}
-      terminalOutcome={liveEvents.terminalOutcome}
-      timeline={liveEvents.timeline}
       isLoading={historyQuery.isLoading || historyQuery.isPending}
       namespace={namespace}
       onRetry={() => void historyQuery.refetch()}
@@ -52,10 +39,7 @@ function WorkflowDetailContent({
   isError,
   isLoading,
   error,
-  isTerminal = false,
   onRetry,
-  terminalOutcome = null,
-  timeline,
 }: WorkflowDetailContentProps) {
   if (namespace === null) {
     return (
@@ -85,19 +69,11 @@ function WorkflowDetailContent({
 
   return (
     <section className="space-y-4">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-[var(--text-muted)] text-sm">Namespace {namespace}</p>
-          <h1 className="font-semibold text-2xl text-[var(--text-primary)]">
-            Workflow {workflowId}
-          </h1>
-          {isTerminal && terminalOutcome !== null ? (
-            <p className="text-[var(--text-muted)] text-sm">Terminal outcome: {terminalOutcome}</p>
-          ) : null}
-        </div>
-        <ConnectionIndicator />
+      <header>
+        <p className="text-[var(--text-muted)] text-sm">Namespace {namespace}</p>
+        <h1 className="font-semibold text-2xl text-[var(--text-primary)]">Workflow {workflowId}</h1>
       </header>
-      <EventTimeline entries={timeline} events={timeline === undefined ? history : undefined} />
+      <EventTimeline entries={projectTimeline(history)} />
     </section>
   );
 }

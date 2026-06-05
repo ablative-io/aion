@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 
 import { ApiClient, type WorkflowPage } from '@/lib/api';
 import type { Event, Namespace, WorkflowFilter, WorkflowSummary } from '@/types';
@@ -30,7 +31,7 @@ const page: WorkflowPage<WorkflowSummary> = {
 
 describe('WorkflowListBody', () => {
   test('renders rows for a returned workflow page', () => {
-    const markup = renderToStaticMarkup(
+    const markup = renderWithRouter(
       <WorkflowListBody
         query={queryState({ data: page })}
         canGoPrevious={false}
@@ -89,7 +90,7 @@ describe('WorkflowListBody', () => {
 
 describe('WorkflowRow', () => {
   test('links workflow rows to the detail route', () => {
-    const markup = renderToStaticMarkup(
+    const markup = renderWithRouter(
       <table>
         <tbody>
           <WorkflowRow workflow={workflow} />
@@ -249,4 +250,10 @@ function resetPaginationOnFilterChange(
 ): WorkflowListPaginationState {
   void pagination;
   return { cursor: undefined, previousCursors: [] };
+}
+
+function renderWithRouter(children: React.ReactNode) {
+  const router = createMemoryRouter([{ path: '*', element: children }]);
+
+  return renderToStaticMarkup(<RouterProvider router={router} />);
 }

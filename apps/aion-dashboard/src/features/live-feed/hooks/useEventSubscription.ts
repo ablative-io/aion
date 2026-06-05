@@ -1,77 +1,59 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  AionEventContext,
-  AionEventHandler,
-  AionEventSubscriptionFilter,
-  ResyncContext,
-} from '@/lib/api';
+import { useEffect } from 'react';
+
+import { isSelectedNamespace, requireSelectedNamespace, useNamespace } from '@/features/namespace';
 import { type AionEventWebSocketManager, aionEventSocket } from '@/lib/api';
-import type { Event } from '@/types';
+import type { AionEventHandler, AionEventSubscriptionFilter } from '@/lib/api/websocket';
+import type { Event, Namespace } from '@/types';
 
-export type EventSubscriptionManager = Pick<AionEventWebSocketManager, 'subscribe'>;
-
-export type EventSubscriptionInput = {
-  enabled?: boolean;
-  filter: AionEventSubscriptionFilter | null;
-  lastSeenSequence?: number;
-  manager?: EventSubscriptionManager;
-  onEvent: AionEventHandler;
-  onResync?: (context: ResyncContext) => void;
+type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilter> = {
+  afterSeq?: number;
+  filter: Omit<TFilter, 'namespace'>;
+  manager?: Pick<AionEventWebSocketManager, 'subscribe'>;
+  onEvent: (event: Event) => void;
 };
 
-export type EventSubscriptionState = {
-  resyncContext: ResyncContext | null;
-  resyncCount: number;
-};
+export function namespaceSubscriptionFilter<TFilter extends AionEventSubscriptionFilter>(
+  namespace: Namespace,
+  filter: Omit<TFilter, 'namespace'>
+): TFilter {
+  const selectedNamespace = requireSelectedNamespace(namespace, 'subscribing to events');
 
-export function useEventSubscription({
-  enabled = true,
+  return { ...filter, namespace: selectedNamespace } as TFilter;
+}
+
+export function subscribeToNamespaceFilter<TFilter extends AionEventSubscriptionFilter>(
+  manager: Pick<AionEventWebSocketManager, 'subscribe'>,
+  namespace: Namespace,
+  filter: Omit<TFilter, 'namespace'>,
+  onEvent: (event: Event) => void,
+  afterSeq?: number
+) {
+  const handler: AionEventHandler = (event) => onEvent(event);
+
+  return manager.subscribe(namespaceSubscriptionFilter<TFilter>(namespace, filter), handler, {
+    lastSeenSequence: afterSeq,
+  });
+}
+
+export function useEventSubscription<TFilter extends AionEventSubscriptionFilter>({
+  afterSeq,
   filter,
-  lastSeenSequence,
   manager = aionEventSocket,
   onEvent,
-  onResync,
-}: EventSubscriptionInput): EventSubscriptionState {
-  const eventHandlerRef = useRef(onEvent);
-  const lastSeenSequenceRef = useRef(lastSeenSequence);
-  const resyncHandlerRef = useRef(onResync);
-  const [resyncState, setResyncState] = useState<EventSubscriptionState>({
-    resyncContext: null,
-    resyncCount: 0,
-  });
-
-  eventHandlerRef.current = onEvent;
-  lastSeenSequenceRef.current = lastSeenSequence;
-  resyncHandlerRef.current = onResync;
+}: NamespaceScopedSubscriptionInput<TFilter>) {
+  const { selectedNamespace } = useNamespace();
 
   useEffect(() => {
-    if (!enabled || filter === null) {
+    if (!isSelectedNamespace(selectedNamespace)) {
       return;
     }
 
-    return manager.subscribe(
+    return subscribeToNamespaceFilter<TFilter>(
+      manager,
+      selectedNamespace,
       filter,
-      (event: Event, context: AionEventContext) => {
-        eventHandlerRef.current(event, context);
-      },
-      {
-        lastSeenSequence: lastSeenSequenceRef.current,
-        onResync: (context) => {
-          setResyncState((current) => ({
-            resyncContext: {
-              ...context,
-              lastSeenSequence: lastSeenSequenceRef.current ?? context.lastSeenSequence,
-            },
-            resyncCount: current.resyncCount + 1,
-          }));
-          resyncHandlerRef.current?.({
-            ...context,
-            lastSeenSequence: lastSeenSequenceRef.current ?? context.lastSeenSequence,
-          });
-        },
-      }
+      onEvent,
+      afterSeq
     );
-  }, [enabled, filter, manager]);
-
-  return useMemo(() => resyncState, [resyncState]);
+  }, [afterSeq, filter, manager, onEvent, selectedNamespace]);
 }

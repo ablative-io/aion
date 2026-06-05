@@ -1,3 +1,4 @@
+import { generatePath, Link } from 'react-router';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TableCell, TableRow } from '@/components/ui';
 import type { WorkflowSummary } from '@/types';
@@ -10,12 +11,12 @@ export function WorkflowRow({ workflow }: WorkflowRowProps) {
   return (
     <TableRow>
       <TableCell className="font-mono text-xs">
-        <a
+        <Link
           className="text-[var(--accent-cyan)] underline-offset-4 hover:underline"
-          href={`/workflows/${encodeURIComponent(workflow.workflow_id)}`}
+          to={generatePath('/workflows/:id', { id: workflow.workflow_id })}
         >
           {workflow.workflow_id}
-        </a>
+        </Link>
       </TableCell>
       <TableCell>{workflow.workflow_type}</TableCell>
       <TableCell>
