@@ -3,6 +3,12 @@ name = "aion-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Rust caller SDK for connecting to aion-server and operating Aion workflows."
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["aion", "workflow", "sdk", "client"]
+categories = ["api-bindings", "asynchronous"]
 
 [lints]
 workspace = true
