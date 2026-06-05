@@ -10,6 +10,7 @@ use crate::{
     config::{RuntimeConfig, ServerConfig, StoreConfig},
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
+    worker::ConnectedWorkerRegistry,
 };
 
 /// Cloneable shared state passed to all server transports.
@@ -21,6 +22,7 @@ pub struct ServerState {
 struct ServerStateInner {
     namespace_guard: NamespaceGuard,
     runtime: RuntimeConfig,
+    worker_registry: ConnectedWorkerRegistry,
 }
 
 impl ServerState {
@@ -58,6 +60,7 @@ impl ServerState {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
+                worker_registry: ConnectedWorkerRegistry::default(),
             }),
         }
     }
@@ -72,6 +75,12 @@ impl ServerState {
     #[must_use]
     pub fn runtime_config(&self) -> &RuntimeConfig {
         &self.inner.runtime
+    }
+
+    /// Borrow the connected-worker registry shared by worker transports and dispatch.
+    #[must_use]
+    pub fn worker_registry(&self) -> &ConnectedWorkerRegistry {
+        &self.inner.worker_registry
     }
 }
 
@@ -124,6 +133,7 @@ mod tests {
             ServerState::build_with_store(InMemoryStore::default(), runtime_config()).await?;
 
         std::hint::black_box(state.namespace_guard());
+        std::hint::black_box(state.worker_registry());
 
         Ok(())
     }
