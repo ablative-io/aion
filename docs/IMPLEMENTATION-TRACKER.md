@@ -232,7 +232,7 @@ These three tracks run concurrently.
 - [x] **AF-010** — Concurrency (all, race, map) · _landed 802dfdd_
 
 ### Wave 33
-- [ ] **AF-011** — Test harness (simulated time, mocking) · _Lemmy · depends: AF-010_
+- [x] **AF-011** — Test harness (simulated time, mocking) · _landed b2790e6_
 
 ### Wave 34
 - [ ] **AF-012** — Type-safety verification, end-to-end example · _Lemmy · depends: AF-011_
@@ -258,12 +258,12 @@ Three independent tracks running concurrently.
 - [x] **AU-002** — Generated wire types, typed REST client · _landed 5fdcde9_
 
 ### Wave 37 (6 parallel)
-- [ ] **AR-003** — Dispatch and failure classification · _depends: AR-002_
-- [ ] **AL-003** — aion-client (Rust): WorkflowHandle, payloads, stream · _depends: AL-002_
-- [ ] **AU-003** — Aion event WebSocket manager · _depends: AU-002_
-- [ ] **AU-004** — Workflow list view (filter, paginate) · _depends: AU-002_
-- [ ] **AU-005** — Workflow detail (event history timeline) · _depends: AU-002_
-- [ ] **AU-006** — Namespace selection, query scoping · _depends: AU-002_
+- [x] **AR-003** — Dispatch and failure classification · _landed f5b693a_
+- [x] **AL-003** — aion-client (Rust): WorkflowHandle, payloads, stream · _landed b96b961_
+- [x] **AU-003** — Aion event WebSocket manager · _landed 8a9e79a_
+- [x] **AU-004** — Workflow list view (filter, paginate) · _landed 97d41fe_
+- [x] **AU-005** — Workflow detail (event history timeline) · _landed 511ba02_
+- [x] **AU-006** — Namespace selection, query scoping · _landed 747fa28_
 
 ### Wave 38 (7 parallel — peak)
 - [ ] **AR-004** — Heartbeat and cancellation · _depends: AR-003_
