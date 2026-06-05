@@ -3,10 +3,8 @@
 import aion_client.{type WorkflowHandle}
 import aion_client/error.{type Error}
 import aion_client/payload
-import aion_client/payload.{type Payload}
 import gleam/dynamic/decode
 import gleam/list
-import gleam/option.{type Option, None, Some}
 
 pub type Event(event) {
   Event(sequence: Int, payload: event)
@@ -23,7 +21,7 @@ pub type EventStream(event) {
 }
 
 pub type Frame {
-  Frame(sequence: Int, payload: Payload)
+  Frame(sequence: Int, payload: payload.Payload)
   TransientDisconnect
   TerminalFailure(error: Error)
   EndOfStream
@@ -50,7 +48,7 @@ pub fn subscribe_with_stub(
   transport: StubTransport,
   decoder: decode.Decoder(event),
 ) -> EventStream(event) {
-  EventStream(read_all: fn() { read_from_stub(transport, decoder, 0, None, []) })
+  EventStream(read_all: fn() { read_from_stub(transport, decoder, 1, []) })
 }
 
 pub fn collect(stream: EventStream(event)) -> List(StreamItem(event)) {
@@ -62,12 +60,11 @@ fn read_from_stub(
   transport: StubTransport,
   decoder: decode.Decoder(event),
   next_sequence: Int,
-  last_delivered: Option(Int),
   delivered: List(StreamItem(event)),
 ) -> List(StreamItem(event)) {
   let StubTransport(open: open) = transport
   let frames = open(next_sequence)
-  read_frames(transport, decoder, frames, next_sequence, last_delivered, delivered)
+  read_frames(transport, decoder, frames, next_sequence, delivered)
 }
 
 fn read_frames(
@@ -75,7 +72,6 @@ fn read_frames(
   decoder: decode.Decoder(event),
   frames: List(Frame),
   next_sequence: Int,
-  last_delivered: Option(Int),
   delivered: List(StreamItem(event)),
 ) -> List(StreamItem(event)) {
   case frames {
@@ -83,38 +79,26 @@ fn read_frames(
     [first, ..rest] ->
       case first {
         Frame(sequence: sequence, payload: raw_payload) -> {
-          let duplicate = case last_delivered {
-            Some(last) -> sequence <= last
-            None -> False
-          }
-
-          case duplicate {
+          case sequence < next_sequence {
             True ->
-              read_frames(
-                transport,
-                decoder,
-                rest,
-                next_sequence,
-                last_delivered,
-                delivered,
-              )
+              read_frames(transport, decoder, rest, next_sequence, delivered)
             False ->
-              case payload.decode(raw_payload, decoder) {
-                Ok(event) ->
-                  read_frames(
-                    transport,
-                    decoder,
-                    rest,
-                    sequence + 1,
-                    Some(sequence),
-                    [EventItem(Event(sequence: sequence, payload: event)), ..delivered],
-                  )
-                Error(error) -> reverse([StreamError(error), ..delivered])
+              case sequence == next_sequence {
+                False -> reverse([StreamError(error.Unavailable), ..delivered])
+                True ->
+                  case payload.decode(raw_payload, decoder) {
+                    Ok(event) ->
+                      read_frames(transport, decoder, rest, sequence + 1, [
+                        EventItem(Event(sequence: sequence, payload: event)),
+                        ..delivered
+                      ])
+                    Error(error) -> reverse([StreamError(error), ..delivered])
+                  }
               }
           }
         }
         TransientDisconnect ->
-          read_from_stub(transport, decoder, next_sequence, last_delivered, delivered)
+          read_from_stub(transport, decoder, next_sequence, delivered)
         TerminalFailure(error) -> reverse([StreamError(error), ..delivered])
         EndOfStream -> reverse([StreamEnd, ..delivered])
       }
