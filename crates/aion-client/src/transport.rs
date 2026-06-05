@@ -2,6 +2,7 @@
 
 use aion_core::Event;
 use async_trait::async_trait;
+#[cfg(feature = "embedded")]
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use tonic::Request;

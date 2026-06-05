@@ -1,1 +1,1 @@
-feat(aion-client): add workflow handles typed payloads streams and embedded transport
+fix(aion-client): gate embedded-only stream import
