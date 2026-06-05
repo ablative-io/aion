@@ -1,1 +1,1 @@
-feat(aion-server): add namespace resolver guard
+fix(aion-server): satisfy namespace clippy lints

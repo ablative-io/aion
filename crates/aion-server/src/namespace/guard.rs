@@ -36,7 +36,7 @@ impl NamespaceGuard {
     pub fn scope(
         &self,
         caller: &CallerIdentity,
-        operation: NamespaceOperation<'_>,
+        operation: &NamespaceOperation<'_>,
     ) -> Result<ScopedEngine, ServerError> {
         let requested_namespace = operation.requested_namespace();
         let scoped = self.resolver.resolve(caller, requested_namespace)?;
@@ -341,14 +341,15 @@ mod tests {
             include_history: false,
         };
 
-        let denied = [
-            guard.scope(&caller(), NamespaceOperation::signal(&signal, target)),
-            guard.scope(&caller(), NamespaceOperation::query(&query, target)),
-            guard.scope(&caller(), NamespaceOperation::cancel(&cancel, target)),
-            guard.scope(&caller(), NamespaceOperation::describe(&describe, target)),
+        let operations = [
+            NamespaceOperation::signal(&signal, target),
+            NamespaceOperation::query(&query, target),
+            NamespaceOperation::cancel(&cancel, target),
+            NamespaceOperation::describe(&describe, target),
         ];
 
-        for result in denied {
+        for operation in operations {
+            let result = guard.scope(&caller(), &operation);
             assert!(result.is_err());
         }
         assert!(fake.calls()?.is_empty());
@@ -384,26 +385,15 @@ mod tests {
             activity_types: vec![String::from("ship")],
         };
 
-        let denied = [
-            guard.scope(&caller(), NamespaceOperation::list(&list, &filter)),
-            guard.scope(
-                &caller(),
-                NamespaceOperation::subscribe(
-                    SubscriptionScope::Filtered(&filtered),
-                    &event_filter,
-                ),
-            ),
-            guard.scope(
-                &caller(),
-                NamespaceOperation::subscribe(
-                    SubscriptionScope::Firehose(&firehose),
-                    &event_filter,
-                ),
-            ),
-            guard.scope(&caller(), NamespaceOperation::register_worker(&worker)),
+        let operations = [
+            NamespaceOperation::list(&list, &filter),
+            NamespaceOperation::subscribe(SubscriptionScope::Filtered(&filtered), &event_filter),
+            NamespaceOperation::subscribe(SubscriptionScope::Firehose(&firehose), &event_filter),
+            NamespaceOperation::register_worker(&worker),
         ];
 
-        for result in denied {
+        for operation in operations {
+            let result = guard.scope(&caller(), &operation);
             assert!(result.is_err());
         }
         assert!(fake.calls()?.is_empty());
@@ -419,7 +409,7 @@ mod tests {
             input: None,
         };
 
-        let scoped = guard.scope(&caller(), NamespaceOperation::start(&request))?;
+        let scoped = guard.scope(&caller(), &NamespaceOperation::start(&request))?;
 
         assert_eq!(scoped.namespace(), "tenant-a");
         Ok(())
@@ -442,7 +432,7 @@ mod tests {
 
         let scoped = guard.scope(
             &CallerIdentity::new("single-tenant", Vec::<String>::new()),
-            NamespaceOperation::register_worker(&request),
+            &NamespaceOperation::register_worker(&request),
         )?;
 
         assert_eq!(scoped.namespace(), "tenant-a");

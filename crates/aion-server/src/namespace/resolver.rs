@@ -150,17 +150,15 @@ impl NamespaceResolver {
             NamespaceMode::SingleTenant { namespace } if namespace == requested_namespace => {
                 Ok(self.scoped(requested_namespace))
             }
-            NamespaceMode::SingleTenant { .. } => Err(ServerError::namespace_denied(format!(
-                "caller `{}` is not authorized for namespace `{requested_namespace}`",
-                caller.subject()
-            ))),
             NamespaceMode::SharedEngine if caller.can_access(requested_namespace) => {
                 Ok(self.scoped(requested_namespace))
             }
-            NamespaceMode::SharedEngine => Err(ServerError::namespace_denied(format!(
-                "caller `{}` is not authorized for namespace `{requested_namespace}`",
-                caller.subject()
-            ))),
+            NamespaceMode::SingleTenant { .. } | NamespaceMode::SharedEngine => {
+                Err(ServerError::namespace_denied(format!(
+                    "caller `{}` is not authorized for namespace `{requested_namespace}`",
+                    caller.subject()
+                )))
+            }
         }
     }
 
