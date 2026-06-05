@@ -56,18 +56,16 @@ where
 /// Encodes an arity mismatch as a typed NIF error term.
 #[doc(hidden)]
 pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut ProcessContext) -> Term {
-    term_error_to_term(
-        TermError::Conversion {
-            context: "nif arity",
-            message: format!("expected {expected} arguments, received {actual}"),
-        },
-        ctx,
-    )
+    let error = TermError::Conversion {
+        context: "nif arity",
+        message: format!("expected {expected} arguments, received {actual}"),
+    };
+    term_error_to_term(&error, ctx)
 }
 
 /// Encodes a conversion error as a typed NIF error term.
 #[doc(hidden)]
-pub fn term_error_to_term(error: TermError, ctx: &mut ProcessContext) -> Term {
+pub fn term_error_to_term(error: &TermError, ctx: &mut ProcessContext) -> Term {
     error_message_to_term(error.to_string(), ctx)
 }
 
@@ -87,7 +85,7 @@ where
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(value) => value
             .into_term(ctx)
-            .map_err(|error| term_error_to_term(error, ctx)),
+            .map_err(|error| term_error_to_term(&error, ctx)),
         Err(payload) => Err(error_message_to_term(
             format!(
                 "deterministic NIF body panicked: {}",
@@ -164,7 +162,7 @@ macro_rules! deterministic_nif {
             }
             let $arg = match $crate::declare::decode_argument::<$arg_ty>(args[0], ctx, 0) {
                 Ok(value) => value,
-                Err(error) => return Err($crate::declare::term_error_to_term(error, ctx)),
+                Err(error) => return Err($crate::declare::term_error_to_term(&error, ctx)),
             };
             $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
         }
@@ -186,11 +184,11 @@ macro_rules! deterministic_nif {
             }
             let $left = match $crate::declare::decode_argument::<$left_ty>(args[0], ctx, 0) {
                 Ok(value) => value,
-                Err(error) => return Err($crate::declare::term_error_to_term(error, ctx)),
+                Err(error) => return Err($crate::declare::term_error_to_term(&error, ctx)),
             };
             let $right = match $crate::declare::decode_argument::<$right_ty>(args[1], ctx, 1) {
                 Ok(value) => value,
-                Err(error) => return Err($crate::declare::term_error_to_term(error, ctx)),
+                Err(error) => return Err($crate::declare::term_error_to_term(&error, ctx)),
             };
             $crate::declare::invoke_pure(ctx, || -> $ret { $($body)* })
         }
