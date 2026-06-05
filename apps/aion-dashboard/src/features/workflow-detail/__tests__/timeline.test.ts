@@ -2,7 +2,12 @@ import { expect, test } from 'bun:test';
 
 import type { Event, Payload } from '@/types';
 
-import { payloadSummary, projectTimeline } from '../lib/timeline';
+import {
+  mergeEventsBySequence,
+  payloadSummary,
+  projectTimeline,
+  terminalOutcomeForEvents,
+} from '../lib/timeline';
 
 const workflowId = 'workflow-1';
 const jsonPayload: Payload = { content_type: 'Json', bytes: [123, 125] };
@@ -27,6 +32,18 @@ test('projectTimeline orders by sequence and groups logical lifecycle families',
 
 test('payloadSummary decodes generated JSON payload bytes', () => {
   expect(payloadSummary(jsonPayload)).toBe('{}');
+});
+
+test('mergeEventsBySequence de-duplicates history/live overlap and exposes terminal outcome', () => {
+  const merged = mergeEventsBySequence(
+    [workflowStarted(1), activityScheduled(2), activityStarted(3)],
+    [activityStarted(3), workflowCompleted(5), signalReceived(4)]
+  );
+
+  expect(merged.map((event) => event.data.envelope.seq)).toEqual([1, 2, 3, 4, 5]);
+  expect(merged.filter((event) => event.data.envelope.seq === 3)).toHaveLength(1);
+  expect(terminalOutcomeForEvents(merged)).toBe('completed');
+  expect(projectTimeline(merged).at(-1)?.summary).toContain('Workflow completed');
 });
 
 test('projectTimeline records activity retry history and child workflow links', () => {
@@ -68,6 +85,13 @@ function workflowStarted(seq: number): Event {
   return {
     type: 'WorkflowStarted',
     data: { envelope: envelope(seq), workflow_type: 'checkout', input: jsonPayload },
+  };
+}
+
+function workflowCompleted(seq: number): Event {
+  return {
+    type: 'WorkflowCompleted',
+    data: { envelope: envelope(seq), result: jsonPayload },
   };
 }
 

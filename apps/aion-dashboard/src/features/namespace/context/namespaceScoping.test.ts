@@ -1,9 +1,9 @@
 import { expect, test } from 'bun:test';
 
-import { namespaceSubscriptionFilter, subscribeToNamespaceFilter } from '@/features/live-feed';
+import { requireSelectedNamespace } from '@/features/namespace';
 import { workflowHistoryQueryKey, workflowHistoryRequestOptions } from '@/features/workflow-detail';
 import { workflowListQueryKey, workflowQueryRequestOptions } from '@/features/workflow-list';
-import type { EventSubscriptionManager } from '@/lib/api/websocket';
+import type { FirehoseEventSubscriptionFilter } from '@/lib/api';
 import type { WorkflowFilter } from '@/types';
 
 const filter: WorkflowFilter = {
@@ -40,45 +40,22 @@ test('query request helpers reject missing namespaces instead of issuing unscope
 test('switching namespace produces re-scoped query keys and subscription filters', () => {
   const firstListKey = workflowListQueryKey('tenant-a', filter, { cursor: 'next' });
   const nextListKey = workflowListQueryKey('tenant-b', filter, { cursor: 'next' });
-  const firstSubscription = namespaceSubscriptionFilter('tenant-a', { mode: 'firehose' });
-  const nextSubscription = namespaceSubscriptionFilter('tenant-b', { mode: 'firehose' });
+  const firstSubscription = firehoseFilter('tenant-a');
+  const nextSubscription = firehoseFilter('tenant-b');
 
   expect(firstListKey).not.toEqual(nextListKey);
   expect(nextListKey[1]).toBe('tenant-b');
-  expect(firstSubscription).toEqual({ mode: 'firehose', namespace: 'tenant-a' });
-  expect(nextSubscription).toEqual({ mode: 'firehose', namespace: 'tenant-b' });
-});
-
-test('subscription scoping preserves filters while carrying namespace and replay cursor', () => {
-  expect(namespaceSubscriptionFilter('tenant-b', { mode: 'filtered', filter }, 42)).toEqual({
-    afterSeq: 42,
-    filter,
-    mode: 'filtered',
-    namespace: 'tenant-b',
-  });
+  expect(firstSubscription).toEqual({ kind: 'firehose', namespace: 'tenant-a' });
+  expect(nextSubscription).toEqual({ kind: 'firehose', namespace: 'tenant-b' });
 });
 
 test('subscription scoping rejects an empty namespace before subscribing', () => {
-  expect(() => namespaceSubscriptionFilter('', { mode: 'firehose' })).toThrow(
-    'namespace must be selected'
-  );
+  expect(() => firehoseFilter('')).toThrow('namespace must be selected');
 });
 
-test('switching namespace re-establishes the subscription with the new namespace', () => {
-  const filters: unknown[] = [];
-  const manager: EventSubscriptionManager = {
-    subscribe(subscriptionFilter) {
-      filters.push(subscriptionFilter);
-      return () => undefined;
-    },
+function firehoseFilter(namespace: string): FirehoseEventSubscriptionFilter {
+  return {
+    kind: 'firehose',
+    namespace: requireSelectedNamespace(namespace, 'subscribing to events'),
   };
-
-  subscribeToNamespaceFilter(manager, 'tenant-a', { mode: 'firehose' }, () => undefined);
-  subscribeToNamespaceFilter(manager, 'tenant-b', { mode: 'firehose' }, () => undefined);
-
-  expect(filters).toEqual([
-    { mode: 'firehose', namespace: 'tenant-a' },
-    { mode: 'firehose', namespace: 'tenant-b' },
-  ]);
-  expect(filters).not.toContainEqual({ mode: 'firehose' });
-});
+}

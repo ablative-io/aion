@@ -6,6 +6,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui';
 import type { ApiClient } from '@/lib/api';
 import type { Namespace, WorkflowFilter } from '@/types';
+import { useLiveListUpdates } from '../hooks/useLiveListUpdates';
 import { useWorkflowQuery } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
@@ -26,7 +27,6 @@ export type WorkflowListProps = {
 };
 
 export function WorkflowList({
-  namespace,
   client,
   initialFilterState = EMPTY_WORKFLOW_LIST_FILTER_STATE,
   pageLimit = WORKFLOW_PAGE_LIMIT,
@@ -35,12 +35,12 @@ export function WorkflowList({
   const [pagination, setPagination] = useState(FIRST_WORKFLOW_LIST_PAGE);
   const [filter, setFilter] = useState(() => workflowFilterFromState(initialFilterState));
   const normalizedPageLimit = useMemo(() => normalizePageLimit(pageLimit), [pageLimit]);
-  const query = useWorkflowQuery(
-    namespace,
-    filter,
-    { cursor: pagination.cursor, limit: normalizedPageLimit },
-    { client }
+  const pageRequest = useMemo(
+    () => ({ cursor: pagination.cursor, limit: normalizedPageLimit }),
+    [normalizedPageLimit, pagination.cursor]
   );
+  const query = useWorkflowQuery({ apiClient: client, filter, page: pageRequest });
+  useLiveListUpdates({ filter, page: pageRequest });
 
   function handleFilterChange(nextFilter: WorkflowFilter, state: WorkflowListFilterState) {
     setFilterState(state);

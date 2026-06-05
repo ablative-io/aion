@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ApiClient, type WorkflowPage } from '@/lib/api';
-import type { Namespace, WorkflowFilter, WorkflowSummary } from '@/types';
+import type { Event, Namespace, WorkflowFilter, WorkflowSummary } from '@/types';
+import { patchWorkflowPage } from '../hooks/useLiveListUpdates';
 import { queryWorkflowPage, workflowQueryKey } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
@@ -97,6 +98,31 @@ describe('WorkflowRow', () => {
     );
 
     expect(markup).toContain('/workflows/workflow-1');
+  });
+});
+
+describe('live workflow list updates', () => {
+  test('patches status transitions and inserts newly matching started workflows', () => {
+    const filter = workflowFilterFromState(EMPTY_WORKFLOW_LIST_FILTER_STATE);
+    const completed = patchWorkflowPage(
+      page,
+      workflowCompleted(2, workflow.workflow_id),
+      filter,
+      50
+    );
+
+    expect(completed?.items[0]?.status).toBe('Completed');
+    expect(completed?.items[0]?.ended_at).toBe('2026-06-05T20:02:00Z');
+
+    const inserted = patchWorkflowPage(
+      completed ?? page,
+      workflowStarted(3, 'workflow-2', 'EmailDigest'),
+      filter,
+      50
+    );
+
+    expect(inserted?.items.map((item) => item.workflow_id)).toEqual(['workflow-2', 'workflow-1']);
+    expect(inserted?.items[0]?.status).toBe('Running');
   });
 });
 
@@ -195,6 +221,27 @@ function queryState(overrides: QueryStateOverrides) {
     isPending: overrides.isPending ?? false,
     refetch: () => Promise.resolve({}),
   } as ReturnType<typeof import('../hooks/useWorkflowQuery').useWorkflowQuery>;
+}
+
+function workflowStarted(seq: number, workflowId: string, workflowType: string): Event {
+  return {
+    type: 'WorkflowStarted',
+    data: {
+      envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
+      input: { content_type: 'Json', bytes: [123, 125] },
+      workflow_type: workflowType,
+    },
+  };
+}
+
+function workflowCompleted(seq: number, workflowId: string): Event {
+  return {
+    type: 'WorkflowCompleted',
+    data: {
+      envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
+      result: { content_type: 'Json', bytes: [123, 125] },
+    },
+  };
 }
 
 function resetPaginationOnFilterChange(
