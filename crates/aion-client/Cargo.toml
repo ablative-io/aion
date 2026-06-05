@@ -9,11 +9,15 @@ workspace = true
 
 [dependencies]
 aion-core = { path = "../aion-core" }
-aion-proto = { path = "../aion-proto" }
-tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true }
+aion-proto = { path = "../aion-proto", features = ["generated"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tonic = { workspace = true, features = ["transport", "tls-webpki-roots"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 futures = { workspace = true }
+async-trait = { workspace = true }
+http = "1.4.1"
+chrono.workspace = true
+uuid.workspace = true
