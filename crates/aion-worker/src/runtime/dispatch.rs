@@ -218,7 +218,7 @@ mod tests {
 
     use super::{TypedActivityDispatcher, decode_payload, encode_payload};
     use crate::activity::ActivityFailure;
-    use crate::config::WorkerConfig;
+    use crate::config::{ReconnectConfig, WorkerConfig};
     use crate::error::WorkerError;
     use crate::protocol::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
     use crate::runtime::serve_activity_tasks;
@@ -516,6 +516,17 @@ mod tests {
     }
 
     fn test_config() -> WorkerConfig {
-        WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 1, None)
+        WorkerConfig::new(
+            "http://127.0.0.1:50051",
+            "payments",
+            "worker-a",
+            1,
+            ReconnectConfig::new(
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(20),
+                3,
+            ),
+            None,
+        )
     }
 }

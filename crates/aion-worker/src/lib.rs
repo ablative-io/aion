@@ -9,7 +9,10 @@ pub mod runtime;
 pub mod worker;
 
 pub use activity::{ActivityFailure, Classification};
-pub use config::{TransportCredentials, WorkerConfig, WorkerConfigBuildError, WorkerConfigBuilder};
+pub use config::{
+    ReconnectConfig, TransportCredentials, WorkerConfig, WorkerConfigBuildError,
+    WorkerConfigBuilder,
+};
 pub use context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 pub use error::{MissingActivityHandler, WorkerError};
 pub use protocol::{
@@ -17,5 +20,5 @@ pub use protocol::{
 };
 pub use runtime::{
     ActivityDispatcher, DispatchOutcome, TypedActivityDispatcher, decode_payload, encode_payload,
-    serve_activity_tasks,
+    serve_activity_tasks, serve_activity_tasks_with_reconnect, serve_activity_tasks_with_tracker,
 };
