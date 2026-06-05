@@ -7,15 +7,20 @@
 
 import aion/activity.{type Activity}
 import aion/codec.{type Codec}
+import aion/duration
 import aion/error
 import aion/workflow/define as definition
 import aion/workflow/run as dispatch
+import aion/workflow/timer
 
 pub type Timestamp =
   dispatch.Timestamp
 
 pub type WorkflowDefinition(input, output, workflow_error) =
   definition.WorkflowDefinition(input, output, workflow_error)
+
+pub type TimerRef =
+  timer.TimerRef
 
 pub fn run(
   activity: Activity(input, output),
@@ -33,6 +38,32 @@ pub fn random() -> Result(Float, error.EngineError) {
 
 pub fn random_int(min: Int, max: Int) -> Result(Int, error.EngineError) {
   dispatch.random_int(min, max)
+}
+
+pub fn sleep(duration: duration.Duration) -> Result(Nil, error.EngineError) {
+  timer.sleep(duration)
+}
+
+pub fn start_timer(
+  name: String,
+  duration: duration.Duration,
+) -> Result(TimerRef, error.EngineError) {
+  timer.start_timer(name, duration)
+}
+
+pub fn cancel_timer(reference: TimerRef) -> Result(Nil, error.EngineError) {
+  timer.cancel_timer(reference)
+}
+
+pub fn with_timeout(
+  operation: fn() -> Result(value, inner_error),
+  deadline: duration.Duration,
+) -> Result(value, error.TimeoutResultError(inner_error)) {
+  timer.with_timeout(operation, deadline)
+}
+
+pub fn timer_id(reference: TimerRef) -> String {
+  timer.timer_id(reference)
 }
 
 pub fn timestamp_to_milliseconds(timestamp: Timestamp) -> Int {
