@@ -1,4 +1,4 @@
-//// AF-002 codec and duration primitive tests.
+//// aion_flow foundational primitive tests.
 
 import aion/codec
 import aion/duration
