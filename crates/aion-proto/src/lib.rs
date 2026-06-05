@@ -2,6 +2,7 @@
 
 pub mod convert;
 pub mod error;
+pub mod events;
 pub mod workflow;
 
 #[cfg(feature = "generated")]
@@ -13,6 +14,10 @@ pub use convert::{
     encode_core_value, encode_event, encode_workflow_filter, encode_workflow_summary,
 };
 pub use error::{ProtoWireError, ProtoWireErrorCode, WireError, WireErrorCode};
+pub use events::{
+    FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, StreamedEvent,
+    SubscriptionRequest, encode_streamed_event, subscription_request,
+};
 pub use workflow::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoDescribeWorkflowRequest,
     ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,

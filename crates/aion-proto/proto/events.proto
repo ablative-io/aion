@@ -2,4 +2,43 @@ syntax = "proto3";
 
 package aion;
 
-// SubscriptionRequest + streamed Event envelope
+import "common.proto";
+
+// Request to subscribe to workflow events. Every variant carries the caller's
+// namespace so the server can authorise and scope before mapping to an engine
+// event filter.
+message SubscriptionRequest {
+  oneof subscription {
+    PerWorkflowSubscription per_workflow = 1;
+    FilteredSubscription filtered = 2;
+    FirehoseSubscription firehose = 3;
+  }
+}
+
+// Subscribe to events for a single workflow in the caller's namespace.
+message PerWorkflowSubscription {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+}
+
+// Subscribe to events matching optional selectors. The namespace field is the
+// caller's namespace; namespace_selector narrows the selection and must be
+// authorised by the server before any engine call.
+message FilteredSubscription {
+  string namespace = 1;
+  optional string workflow_type = 2;
+  optional WorkflowStatus status = 3;
+  optional string namespace_selector = 4;
+}
+
+// Subscribe to every event visible in the caller's namespace.
+message FirehoseSubscription {
+  string namespace = 1;
+}
+
+// Streamed event frame. The event payload is a serde-encoded aion-core Event in
+// the shared WireEnvelope, not a field-by-field wire clone.
+message StreamedEvent {
+  string namespace = 1;
+  WireEnvelope event = 2;
+}
