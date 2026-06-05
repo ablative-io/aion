@@ -1,10 +1,4 @@
-import type {
-  Event,
-  Namespace,
-  WorkflowFilter,
-  WorkflowId,
-  WorkflowSummary,
-} from '@/types';
+import type { Event, Namespace, WorkflowFilter, WorkflowId, WorkflowSummary } from '@/types';
 
 const DEFAULT_LIMIT = 50;
 
@@ -52,9 +46,11 @@ export type ApiCredentials = {
   headers?: HeadersInit;
 };
 
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 export type ApiClientOptions = {
   baseUrl?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchFn;
   credentials?: ApiCredentials;
 };
 
@@ -115,7 +111,7 @@ type NamespacesResponse = Namespace[] | { namespaces?: Namespace[] };
 
 export class ApiClient {
   private readonly baseUrl: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchFn;
   private readonly credentials?: ApiCredentials;
 
   constructor(options: ApiClientOptions = {}) {
@@ -127,14 +123,14 @@ export class ApiClient {
   async queryWorkflows(
     filter: WorkflowFilter,
     page: WorkflowPageRequest,
-    options: RequestOptions,
+    options: RequestOptions
   ): Promise<WorkflowPage<WorkflowSummary>> {
     const body = this.buildWorkflowQueryBody(filter, page, options.namespace);
     const response = await this.request<WorkflowQueryResponse>(
       AW_REST_CONTRACT.endpoints.workflows,
       AW_REST_CONTRACT.methods.workflows,
       options,
-      body,
+      body
     );
 
     return normalizeWorkflowPage(response, page.limit ?? DEFAULT_LIMIT);
@@ -143,7 +139,7 @@ export class ApiClient {
   async listWorkflows(
     filter: WorkflowFilter,
     page: WorkflowPageRequest,
-    options: RequestOptions,
+    options: RequestOptions
   ): Promise<WorkflowPage<WorkflowSummary>> {
     return this.queryWorkflows(filter, page, options);
   }
@@ -153,7 +149,7 @@ export class ApiClient {
       AW_REST_CONTRACT.endpoints.history,
       AW_REST_CONTRACT.methods.history,
       options,
-      this.buildHistoryBody(workflowId, options.namespace),
+      this.buildHistoryBody(workflowId, options.namespace)
     );
 
     return normalizeHistory(response);
@@ -163,7 +159,7 @@ export class ApiClient {
     const response = await this.request<NamespacesResponse>(
       AW_REST_CONTRACT.endpoints.namespaces,
       AW_REST_CONTRACT.methods.namespaces,
-      { namespace: '' as Namespace, credentials: options?.credentials },
+      { namespace: '' as Namespace, credentials: options?.credentials }
     );
 
     return Array.isArray(response)
@@ -174,7 +170,7 @@ export class ApiClient {
   private buildWorkflowQueryBody(
     filter: WorkflowFilter,
     page: WorkflowPageRequest,
-    namespace: Namespace,
+    namespace: Namespace
   ): JsonRecord {
     return {
       [AW_REST_CONTRACT.requestKeys.namespace]: namespace,
@@ -197,7 +193,7 @@ export class ApiClient {
     path: string,
     method: string,
     options: RequestOptions,
-    body?: RequestBody,
+    body?: RequestBody
   ): Promise<T> {
     const response = await this.fetchImpl(buildUrl(this.baseUrl, path), {
       method,
@@ -242,7 +238,7 @@ export function createApiClient(options?: ApiClientOptions): ApiClient {
 
 function normalizeWorkflowPage(
   response: WorkflowQueryResponse,
-  requestedLimit: number,
+  requestedLimit: number
 ): WorkflowPage<WorkflowSummary> {
   if (Array.isArray(response)) {
     return {
@@ -264,9 +260,11 @@ function normalizeWorkflowPage(
 function normalizeHistory(response: HistoryResponse): Event[] {
   const events = Array.isArray(response)
     ? response
-    : response.events ?? readEnvelopeArray<Event>(response.history ?? []);
+    : (response.events ?? readEnvelopeArray<Event>(response.history ?? []));
 
-  return [...events].sort((left, right) => left.data.envelope.seq - right.data.envelope.seq);
+  return ([...events] as Event[]).sort(
+    (left, right) => left.data.envelope.seq - right.data.envelope.seq
+  );
 }
 
 function readEnvelopeArray<T>(values: unknown[]): T[] {
@@ -336,7 +334,7 @@ function stripTrailingSlash(value: string): string {
 
 function mergeCredentials(
   base: ApiCredentials | undefined,
-  override: ApiCredentials | undefined,
+  override: ApiCredentials | undefined
 ): ApiCredentials | undefined {
   if (base === undefined) {
     return override;
@@ -355,7 +353,7 @@ function mergeCredentials(
 
 function mergeHeaderInputs(
   base: HeadersInit | undefined,
-  override: HeadersInit | undefined,
+  override: HeadersInit | undefined
 ): Headers {
   const headers = new Headers(base);
   appendHeaders(headers, override);

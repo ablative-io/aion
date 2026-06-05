@@ -1,8 +1,3 @@
-export {
-  ApiClient,
-  ApiError,
-  createApiClient,
-} from './client';
 export type {
   ApiClientOptions,
   ApiCredentials,
@@ -10,4 +5,9 @@ export type {
   ServerErrorBody,
   WorkflowPage,
   WorkflowPageRequest,
+} from './client';
+export {
+  ApiClient,
+  ApiError,
+  createApiClient,
 } from './client';
