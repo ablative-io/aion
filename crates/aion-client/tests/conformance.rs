@@ -115,132 +115,13 @@ async fn execute_step(
     server_url: &str,
 ) -> Result<Value, ClientError> {
     match operation {
-        "connect" => {
-            let mut builder = Client::builder(server_url)
-                .with_namespace(input_str(input, "namespace").unwrap_or("conformance"));
-            if let Ok(token) = env::var(AUTH_TOKEN_ENV) {
-                if !token.is_empty() {
-                    builder = builder.with_auth(ClientAuth::bearer(token));
-                }
-            }
-            if input.get("tls").and_then(Value::as_str) == Some("system-roots")
-                && server_url.starts_with("https://")
-            {
-                builder = builder.with_tls(TlsOptions::new());
-            }
-            let client = builder.build().await?;
-            context.client = Some(client);
-            Ok(json!({ "kind": "client" }))
-        }
-        "start" => {
-            let client = context.client()?;
-            let handle = client
-                .start(
-                    input_str(input, "workflowType").unwrap_or_default(),
-                    json_payload(input.get("payload"))?,
-                    StartOptions {
-                        namespace: input_str(input, "namespace").map(ToOwned::to_owned),
-                        idempotency_key: input_str(input, "idempotencyKey").map(ToOwned::to_owned),
-                    },
-                )
-                .await?;
-            let value = json!({
-                "kind": "handle",
-                "workflowId": handle.workflow_id().to_string(),
-                "runId": handle.run_id().to_string()
-            });
-            Ok(value)
-        }
-        "signal" => {
-            let client = context.client()?;
-            let workflow_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
-            let run_id = optional_run_id(input_str(input, "runId"))?;
-            client
-                .signal(
-                    &workflow_id,
-                    run_id.as_ref(),
-                    input_str(input, "signalName").unwrap_or_default(),
-                    json_payload(input.get("payload"))?,
-                )
-                .await?;
-            Ok(json!({ "kind": "accepted" }))
-        }
-        "query" => {
-            let client = context.client()?;
-            let workflow_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
-            let run_id = optional_run_id(input_str(input, "runId"))?;
-            let deadline_ms = input
-                .get("deadlineMs")
-                .and_then(Value::as_u64)
-                .unwrap_or(5000);
-            let payload = client
-                .query(
-                    &workflow_id,
-                    run_id.as_ref(),
-                    input_str(input, "queryName").unwrap_or_default(),
-                    Payload::new(ContentType::Json, Vec::new()),
-                    Duration::from_millis(deadline_ms),
-                )
-                .await?;
-            let decoded = payload.to_json().map_err(|error| ClientError::Server {
-                detail: error.to_string(),
-            })?;
-            Ok(json!({ "kind": "payload", "value": decoded }))
-        }
-        "cancel" => {
-            let client = context.client()?;
-            let workflow_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
-            let run_id = optional_run_id(input_str(input, "runId"))?;
-            client
-                .cancel(
-                    &workflow_id,
-                    run_id.as_ref(),
-                    input_str(input, "reason").unwrap_or_default(),
-                )
-                .await?;
-            Ok(json!({ "kind": "accepted" }))
-        }
-        "list" => {
-            let client = context.client()?;
-            let filter = input.get("filter").unwrap_or(&Value::Null);
-            let workflows = client
-                .list(
-                    &WorkflowFilter {
-                        workflow_type: input_str(filter, "workflowType").map(ToOwned::to_owned),
-                        status: status(input_str(filter, "status")),
-                        started_after: datetime(input_str(filter, "startedAfter")),
-                        started_before: datetime(input_str(filter, "startedBefore")),
-                        parent: None,
-                    },
-                    ListPage::default(),
-                )
-                .await?;
-            let summaries = workflows
-                .into_iter()
-                .map(|summary| {
-                    json!({
-                        "workflowId": summary.workflow_id.to_string(),
-                        "workflowType": summary.workflow_type,
-                        "status": format!("{:?}", summary.status)
-                    })
-                })
-                .collect::<Vec<_>>();
-            Ok(json!({ "kind": "workflowSummaryPage", "workflows": summaries }))
-        }
-        "describe" => {
-            let client = context.client()?;
-            let workflow_id_value =
-                workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
-            let run_id = optional_run_id(input_str(input, "runId"))?;
-            let description = client.describe(&workflow_id_value, run_id.as_ref()).await?;
-            Ok(json!({
-                "kind": "workflowDescription",
-                "workflowId": description.summary.workflow_id.to_string(),
-                "runId": input_str(input, "runId"),
-                "status": format!("{:?}", description.summary.status),
-                "history": description.history.iter().map(normalize_event).collect::<Vec<_>>()
-            }))
-        }
+        "connect" => execute_connect(input, context, server_url).await,
+        "start" => execute_start(input, context).await,
+        "signal" => execute_signal(input, context).await,
+        "query" => execute_query(input, context).await,
+        "cancel" => execute_cancel(input, context).await,
+        "list" => execute_list(input, context).await,
+        "describe" => execute_describe(input, context).await,
         "subscribe" => {
             if input.get("collect").is_some() {
                 Ok(json!({ "kind": "eventStreamStarted" }))
@@ -260,6 +141,159 @@ async fn execute_step(
             detail: format!("unsupported conformance operation {other}: {error}"),
         }),
     }
+}
+
+async fn execute_connect(
+    input: &Value,
+    context: &mut ScenarioContext,
+    server_url: &str,
+) -> Result<Value, ClientError> {
+    let mut builder = Client::builder(server_url)
+        .with_namespace(input_str(input, "namespace").unwrap_or("conformance"));
+    if let Ok(token) = env::var(AUTH_TOKEN_ENV) {
+        if !token.is_empty() {
+            builder = builder.with_auth(ClientAuth::bearer(token));
+        }
+    }
+    if input.get("tls").and_then(Value::as_str) == Some("system-roots")
+        && server_url.starts_with("https://")
+    {
+        builder = builder.with_tls(TlsOptions::new());
+    }
+    let client = builder.build().await?;
+    context.client = Some(client);
+    Ok(json!({ "kind": "client" }))
+}
+
+async fn execute_start(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let handle = client
+        .start(
+            input_str(input, "workflowType").unwrap_or_default(),
+            json_payload(input.get("payload"))?,
+            StartOptions {
+                namespace: input_str(input, "namespace").map(ToOwned::to_owned),
+                idempotency_key: input_str(input, "idempotencyKey").map(ToOwned::to_owned),
+            },
+        )
+        .await?;
+    Ok(json!({
+        "kind": "handle",
+        "workflowId": handle.workflow_id().to_string(),
+        "runId": handle.run_id().to_string()
+    }))
+}
+
+async fn execute_signal(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let wf_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
+    let run_id = optional_run_id(input_str(input, "runId"))?;
+    client
+        .signal(
+            &wf_id,
+            run_id.as_ref(),
+            input_str(input, "signalName").unwrap_or_default(),
+            json_payload(input.get("payload"))?,
+        )
+        .await?;
+    Ok(json!({ "kind": "accepted" }))
+}
+
+async fn execute_query(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let wf_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
+    let run_id = optional_run_id(input_str(input, "runId"))?;
+    let deadline_ms = input
+        .get("deadlineMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(5000);
+    let payload = client
+        .query(
+            &wf_id,
+            run_id.as_ref(),
+            input_str(input, "queryName").unwrap_or_default(),
+            Payload::new(ContentType::Json, Vec::new()),
+            Duration::from_millis(deadline_ms),
+        )
+        .await?;
+    let decoded = payload.to_json().map_err(|error| ClientError::Server {
+        detail: error.to_string(),
+    })?;
+    Ok(json!({ "kind": "payload", "value": decoded }))
+}
+
+async fn execute_cancel(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let wf_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
+    let run_id = optional_run_id(input_str(input, "runId"))?;
+    client
+        .cancel(
+            &wf_id,
+            run_id.as_ref(),
+            input_str(input, "reason").unwrap_or_default(),
+        )
+        .await?;
+    Ok(json!({ "kind": "accepted" }))
+}
+
+async fn execute_list(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let filter = input.get("filter").unwrap_or(&Value::Null);
+    let workflows = client
+        .list(
+            &WorkflowFilter {
+                workflow_type: input_str(filter, "workflowType").map(ToOwned::to_owned),
+                status: status(input_str(filter, "status")),
+                started_after: datetime(input_str(filter, "startedAfter")),
+                started_before: datetime(input_str(filter, "startedBefore")),
+                parent: None,
+            },
+            ListPage::default(),
+        )
+        .await?;
+    let summaries = workflows
+        .into_iter()
+        .map(|summary| {
+            json!({
+                "workflowId": summary.workflow_id.to_string(),
+                "workflowType": summary.workflow_type,
+                "status": format!("{:?}", summary.status)
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "kind": "workflowSummaryPage", "workflows": summaries }))
+}
+
+async fn execute_describe(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let wf_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
+    let run_id = optional_run_id(input_str(input, "runId"))?;
+    let description = client.describe(&wf_id, run_id.as_ref()).await?;
+    Ok(json!({
+        "kind": "workflowDescription",
+        "workflowId": description.summary.workflow_id.to_string(),
+        "runId": input_str(input, "runId"),
+        "status": format!("{:?}", description.summary.status),
+        "history": description.history.iter().map(normalize_event).collect::<Vec<_>>()
+    }))
 }
 
 async fn collect_stream(
