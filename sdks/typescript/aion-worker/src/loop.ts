@@ -1,1 +1,169 @@
-// receive->dispatch->report loop + bounded concurrency
+import {
+  type PendingActivityReport,
+  type UnackedResultTracker,
+  type WorkerLogger,
+  reReportUnacked,
+  reconnectWithBackoff,
+} from "./reconnect.js";
+import type {
+  ActivityFailure,
+  ActivityTask,
+  Payload,
+  WorkerConfig,
+  WorkerSession,
+  WorkerSessionEvent,
+  WorkerSessionFactory,
+} from "./session.js";
+
+export type DispatchOutcome =
+  | { readonly kind: "completed"; readonly output: Payload }
+  | { readonly kind: "failed"; readonly failure: ActivityFailure };
+
+export interface ActivityDispatcher {
+  activityTypes(): readonly string[];
+  dispatch(task: ActivityTask): Promise<DispatchOutcome>;
+}
+
+export interface RunWorkerLoopOptions {
+  readonly config: WorkerConfig;
+  readonly session: WorkerSession;
+  readonly dispatcher: ActivityDispatcher;
+  readonly tracker?: UnackedResultTracker;
+  readonly sessionFactory?: WorkerSessionFactory;
+  readonly sleep?: (delayMs: number) => Promise<void>;
+  readonly logger?: WorkerLogger;
+}
+
+export async function runWorkerLoop(
+  options: RunWorkerLoopOptions,
+): Promise<void> {
+  validateMaxConcurrency(options.config.maxConcurrency);
+  let session = options.session;
+  const activityTypes = options.dispatcher.activityTypes();
+  await session.handshake(options.config);
+  await session.register(activityTypes);
+
+  const running = new Set<Promise<void>>();
+
+  for (;;) {
+    const receiveCompleted = await receiveUntilClosed(session, running, options);
+    if (!receiveCompleted) {
+      await Promise.all(running);
+      return;
+    }
+    if (options.sessionFactory === undefined) {
+      await Promise.all(running);
+      return;
+    }
+    await Promise.all(running);
+    session = await reconnectWithBackoff(options.config, activityTypes, {
+      createSession: options.sessionFactory,
+      sleep: options.sleep,
+      logger: options.logger,
+    });
+    if (options.tracker !== undefined) {
+      await reReportUnacked(session, options.tracker, options.logger);
+    }
+  }
+}
+
+async function receiveUntilClosed(
+  session: WorkerSession,
+  running: Set<Promise<void>>,
+  options: RunWorkerLoopOptions,
+): Promise<boolean> {
+  const iterator = session.receiveTasks()[Symbol.asyncIterator]();
+  for (;;) {
+    await waitForSlot(running, options.config.maxConcurrency);
+    const next = await readNext(iterator, options.logger);
+    if (next === undefined) {
+      return true;
+    }
+    if (next.done === true) {
+      return true;
+    }
+    const event = next.value;
+    if (event.kind === "closed") {
+      return true;
+    }
+    options.logger?.info("worker received activity task", {
+      workflowId: event.task.workflowId,
+      activityId: event.task.activityId,
+      activityType: event.task.activityType,
+      attempt: event.task.attempt,
+    });
+    const taskPromise = dispatchAndReport(event.task, session, options).finally(
+      () => {
+        running.delete(taskPromise);
+      },
+    );
+    running.add(taskPromise);
+  }
+}
+
+async function dispatchAndReport(
+  task: ActivityTask,
+  session: WorkerSession,
+  options: RunWorkerLoopOptions,
+): Promise<void> {
+  const outcome = await options.dispatcher.dispatch(task);
+  if (outcome.kind === "completed") {
+    const report: PendingActivityReport = {
+      kind: "completed",
+      workflowId: task.workflowId,
+      activityId: task.activityId,
+      result: outcome.output,
+    };
+    options.tracker?.record(report);
+    options.logger?.info("worker reporting completed activity", {
+      activityId: task.activityId,
+    });
+    await session.reportResult(task.workflowId, task.activityId, outcome.output);
+  } else {
+    const report: PendingActivityReport = {
+      kind: "failed",
+      workflowId: task.workflowId,
+      activityId: task.activityId,
+      failure: outcome.failure,
+    };
+    options.tracker?.record(report);
+    options.logger?.info("worker reporting failed activity", {
+      activityId: task.activityId,
+      retryable: outcome.failure.retryable,
+    });
+    await session.reportFailure(
+      task.workflowId,
+      task.activityId,
+      outcome.failure,
+    );
+  }
+}
+
+async function readNext(
+  iterator: AsyncIterator<WorkerSessionEvent>,
+  logger: WorkerLogger | undefined,
+): Promise<IteratorResult<WorkerSessionEvent> | undefined> {
+  try {
+    return await iterator.next();
+  } catch (error) {
+    logger?.warn("worker receive stream dropped", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+async function waitForSlot(
+  running: Set<Promise<void>>,
+  maxConcurrency: number,
+): Promise<void> {
+  while (running.size >= maxConcurrency) {
+    await Promise.race(running);
+  }
+}
+
+function validateMaxConcurrency(maxConcurrency: number): void {
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency <= 0) {
+    throw new Error("worker maxConcurrency must be a positive integer");
+  }
+}

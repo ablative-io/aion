@@ -1,8 +1,49 @@
 {
-  "name": "@aion/worker-typescript",
+  "name": "aion-worker-typescript",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "description": "The TypeScript/Node remote-worker SDK for out-of-process activities in the JS ecosystem."
+  "description": "The TypeScript/Node remote-worker SDK for out-of-process activities in the JS ecosystem.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ablative-io/aion.git",
+    "directory": "sdks/typescript/aion-worker"
+  },
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "generate:proto": "mkdir -p src/proto && grpc_tools_node_protoc --plugin=protoc-gen-ts_proto=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=src/proto --ts_proto_opt=esModuleInterop=true,outputServices=grpc-js,useExactTypes=false,forceLong=bigint,importSuffix=.js -I ../../../crates/aion-proto/proto ../../../crates/aion-proto/proto/common.proto ../../../crates/aion-proto/proto/worker.proto",
+    "build": "npm run generate:proto && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('node:fs').writeFileSync('dist/cjs/package.json', JSON.stringify({ type: 'commonjs' }))\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.10.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^20.0.0",
+    "grpc-tools": "^1.12.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "ts-proto": "^2.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }
