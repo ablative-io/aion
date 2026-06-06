@@ -48,15 +48,7 @@ export async function runWorkerLoop(
 	const loopOptions = { ...options, tracker };
 
 	for (;;) {
-		const receiveCompleted = await receiveUntilClosed(
-			session,
-			running,
-			loopOptions,
-		);
-		if (!receiveCompleted) {
-			await Promise.all(running);
-			return;
-		}
+		await receiveUntilClosed(session, running, loopOptions);
 		if (options.sessionFactory === undefined) {
 			await Promise.all(running);
 			return;
@@ -75,20 +67,20 @@ async function receiveUntilClosed(
 	session: WorkerSession,
 	running: Set<Promise<void>>,
 	options: RunWorkerLoopOptions,
-): Promise<boolean> {
+): Promise<void> {
 	const iterator = session.receiveTasks()[Symbol.asyncIterator]();
 	for (;;) {
 		await waitForSlot(running, options.config.maxConcurrency);
 		const next = await readNext(iterator, options.logger);
 		if (next === undefined) {
-			return true;
+			return;
 		}
 		if (next.done === true) {
-			return true;
+			return;
 		}
 		const event = next.value;
 		if (event.kind === "closed") {
-			return true;
+			return;
 		}
 		options.logger?.info("worker received activity task", {
 			workflowId: event.task.workflowId,
