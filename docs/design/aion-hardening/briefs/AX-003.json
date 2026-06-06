@@ -1,0 +1,56 @@
+{
+  "id": "AX-003",
+  "cluster": "aion-hardening",
+  "title": "Remove diagnostic API and fix NIF module derivation",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "run_until_exit_for_diagnostic is a public blocking method on RuntimeHandle left over from E2E debugging. registered_nif_modules() is a hardcoded list. Both need cleanup for production readiness.",
+  "task": "Remove or gate run_until_exit_for_diagnostic behind #[cfg(test)]. Restore start.rs to use spawn_workflow_with_policy. Derive registered_nif_modules from the actual NifRegistration entries instead of hardcoding.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Remove diagnostic blocking API",
+      "spec": "THE SYSTEM SHALL NOT expose run_until_exit_for_diagnostic as a public method in non-test builds. THE SYSTEM SHALL gate it behind #[cfg(test)] or remove it entirely.",
+      "acceptance": [
+        "run_until_exit_for_diagnostic is not callable from aion-server or any non-test code.",
+        "start.rs uses spawn_workflow_with_policy (trap_exit enabled) as designed.",
+        "No eprintln debug output in lifecycle or engine_nifs code."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/handle.rs", "crates/aion/src/lifecycle/start.rs", "crates/aion/src/runtime/engine_nifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Derive NIF module exclusion from registration",
+      "spec": "THE SYSTEM SHALL derive the NIF-backed module names from the NifRegistration entries (the Mfa module field), not from a hardcoded list in engine_nifs.rs.",
+      "acceptance": [
+        "registered_nif_modules returns module names extracted from the actual NIF entries.",
+        "Adding a new engine NIF automatically excludes its module from content-hash renaming.",
+        "No hardcoded module name strings in nif_module_names()."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/handle.rs", "crates/aion/src/runtime/engine_nifs.rs", "crates/aion/src/runtime/nif.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT remove the take_exit_error/take_exit_exception diagnostic capability — those are valuable for test code.",
+    "SHALL NOT change the NIF registration mechanism — only how module names are extracted from it."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test --workspace passes.",
+    "cargo fmt --check passes.",
+    "No eprintln in non-test code paths.",
+    "grep for hardcoded 'aion_flow_ffi' in nif_module_names shows zero results."
+  ]
+}

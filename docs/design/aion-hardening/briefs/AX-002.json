@@ -1,0 +1,40 @@
+{
+  "id": "AX-002",
+  "cluster": "aion-hardening",
+  "title": "Add tracing subscriber to aion-server",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "aion-server has no tracing_subscriber initialized. All tracing::debug/warn/error calls across the engine and server are silently dropped, making debugging impossible without temporary eprintln hacks.",
+  "task": "Initialize tracing_subscriber::fmt in aion-server main.rs before any other initialization. Default to INFO level, configurable via RUST_LOG env var. Add structured fields (timestamps, module paths).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Tracing subscriber initialization",
+      "spec": "THE SYSTEM SHALL initialize a tracing_subscriber in main.rs before engine construction. THE SYSTEM SHALL default to INFO level and respect the RUST_LOG environment variable for level overrides.",
+      "acceptance": [
+        "Server startup logs version and listening addresses at INFO level.",
+        "RUST_LOG=debug shows engine/scheduler detail.",
+        "RUST_LOG=warn suppresses info-level output.",
+        "tracing_subscriber::fmt is initialized with timestamps and module path targets."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/main.rs", "crates/aion-server/Cargo.toml"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the tracing instrumentation in existing code — only add the subscriber.",
+    "SHALL add tracing-subscriber as a dependency if not already present."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test --workspace passes.",
+    "cargo fmt --check passes.",
+    "Running the server produces visible log output at default level."
+  ]
+}

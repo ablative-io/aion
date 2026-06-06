@@ -1,0 +1,55 @@
+{
+  "id": "AX-001",
+  "cluster": "aion-hardening",
+  "title": "Fix payload_to_term Box::leak memory leak",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "payload_to_term uses Box::leak to keep binary term memory alive, leaking memory on every workflow start. Fix this to use proper memory management — either beamr's spawn argument copying, thread-local heap parking (like engine_nifs.rs), or a beamr API that accepts owned binary data.",
+  "task": "Replace the Box::leak pattern in payload_to_term (crates/aion/src/runtime/payload.rs) with a non-leaking alternative that keeps the binary term valid through the spawn call. Verify with repeated workflow starts that memory does not grow unboundedly.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "No memory leak on payload conversion",
+      "spec": "THE SYSTEM SHALL NOT use Box::leak or std::mem::forget to keep payload binary terms alive. The heap allocation backing the binary term SHALL be freed after the beamr scheduler copies the spawn arguments onto the new process heap.",
+      "acceptance": [
+        "payload_to_term does not call Box::leak or std::mem::forget.",
+        "Starting 1000 workflows in a loop does not cause monotonically growing RSS.",
+        "The binary term argument is valid at the time scheduler.spawn() reads it."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/payload.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "E2E activity dispatch still works",
+      "spec": "THE SYSTEM SHALL preserve the full E2E activity dispatch path: Gleam workflow receives the input binary, calls the NIF, worker receives the task.",
+      "acceptance": [
+        "hello-world E2E test passes: server starts, worker connects, workflow starts, NIF fires, worker receives task.",
+        "cargo clippy --workspace --all-targets -- -D warnings passes.",
+        "cargo fmt --check passes."
+      ],
+      "files": {
+        "create": [],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the Term type or beamr's spawn API — work within the existing interface.",
+    "SHALL NOT add unsafe code to the aion crate."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test --workspace passes.",
+    "cargo fmt --check passes.",
+    "No Box::leak or mem::forget in payload.rs."
+  ]
+}

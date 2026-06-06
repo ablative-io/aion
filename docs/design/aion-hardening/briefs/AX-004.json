@@ -1,0 +1,55 @@
+{
+  "id": "AX-004",
+  "cluster": "aion-hardening",
+  "title": "Wire WorkflowDefinition typed entry contract through engine",
+  "depends_on": ["AX-001"],
+  "blocked_by": ["beamr-decoder-closure-fix"],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The Gleam SDK defines a WorkflowDefinition type carrying input/output/error codecs and the typed entry function. The engine currently calls run/1 directly with a raw binary, bypassing the typed contract. This brief wires the proper entry contract so input is decoded and output is encoded through the SDK's codecs.",
+  "task": "Modify the engine's start_workflow path to call the manifest entry function (which returns a WorkflowDefinition), extract the input codec, decode the durable Payload into a typed Gleam value, call the definition's entry_fn, and encode the result. Requires the Gleam decoder pipeline (closures via call_fun2) to work correctly — blocked until the beamr nested closure issue is resolved.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Engine consumes WorkflowDefinition",
+      "spec": "THE SYSTEM SHALL call the manifest entry function to obtain a WorkflowDefinition value. THE SYSTEM SHALL extract the input_codec and use it to decode the spawn Payload before calling the typed entry function.",
+      "acceptance": [
+        "The engine calls the entry function and receives a WorkflowDefinition (Gleam opaque type — BEAM tuple).",
+        "The input codec is extracted and used to decode the Payload bytes.",
+        "The typed entry function is called with the decoded input value."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/start.rs", "crates/aion/src/runtime/payload.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Hello-world uses typed entry",
+      "spec": "THE SYSTEM SHALL restore the hello-world workflow to use pub fn run(input: GreetingInput) with the typed GreetingInput record, not a raw String.",
+      "acceptance": [
+        "hello_world.gleam run function takes GreetingInput, not String.",
+        "definition() returns a WorkflowDefinition with proper codecs.",
+        "The full E2E path works: JSON input → codec decode → typed function → activity dispatch → worker → result → codec encode."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["examples/hello-world/src/hello_world.gleam"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement until the beamr decoder pipeline closure issue is resolved (nested call_fun2 closures in gleam@dynamic@decode).",
+    "SHALL NOT change the WorkflowDefinition type in the Gleam SDK — the engine adapts to the existing contract."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test --workspace passes.",
+    "cargo fmt --check passes.",
+    "Full E2E test: server + worker + workflow start → activity dispatch → result."
+  ]
+}
