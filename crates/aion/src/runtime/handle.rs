@@ -66,6 +66,7 @@ pub struct RuntimeHandle {
     pub(super) native_registry: Arc<BifRegistryImpl>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    registered_nif_modules: Arc<dashmap::DashSet<String>>,
 }
 
 impl RuntimeHandle {
@@ -97,6 +98,7 @@ impl RuntimeHandle {
             native_registry,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            registered_nif_modules: Arc::new(dashmap::DashSet::new()),
         })
     }
 
@@ -111,6 +113,7 @@ impl RuntimeHandle {
     /// Returns [`EngineError::NifRegistration`] when beamr rejects an entry,
     /// including duplicate module/function/arity registrations.
     pub fn install_nifs(&self, registration: NifRegistration) -> Result<(), EngineError> {
+        let module_names = registration.module_names();
         for entry in registration.into_entries() {
             let mfa = entry.mfa;
             let module = self.atom_table.intern(&mfa.module);
@@ -125,6 +128,10 @@ impl RuntimeHandle {
             result.map_err(|error| nif_registration_error(&mfa, error))?;
         }
 
+        for module_name in module_names {
+            self.registered_nif_modules.insert(module_name);
+        }
+
         Ok(())
     }
 
@@ -132,7 +139,13 @@ impl RuntimeHandle {
     /// content-hash renamed during package loading.
     #[must_use]
     pub fn registered_nif_modules(&self) -> Vec<String> {
-        super::engine_nifs::nif_module_names()
+        let mut module_names: Vec<_> = self
+            .registered_nif_modules
+            .iter()
+            .map(|module_name| module_name.key().clone())
+            .collect();
+        module_names.sort();
+        module_names
     }
 
     /// Spawn a top-level workflow process at a deployed module/function entrypoint.
@@ -517,37 +530,6 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
         self.scheduler.run_until_exit(pid)
-    }
-
-    /// Block until a process exits, log any execution error, and return the
-    /// exit reason. Diagnostic only — blocks the calling thread.
-    pub fn run_until_exit_for_diagnostic(&self, pid: Pid) -> (ExitReason, Term) {
-        let (reason, result) = self.scheduler.run_until_exit(pid);
-        if reason != ExitReason::Normal {
-            eprintln!("[aion] pid={pid} exit_reason={reason:?} result={result:?}");
-        }
-        if reason == ExitReason::Error {
-            if let Some(exec_error) = self.scheduler.take_exit_error(pid) {
-                eprintln!("[aion] interpreter error: {exec_error:?}");
-                if let beamr::error::ExecError::Undef {
-                    module,
-                    function,
-                    arity,
-                } = &exec_error
-                {
-                    let mod_name = self.atom_table.resolve(*module).unwrap_or("?");
-                    let fn_name = self.atom_table.resolve(*function).unwrap_or("?");
-                    eprintln!("[aion] undef: {mod_name}:{fn_name}/{arity}");
-                }
-            }
-            if let Some(exception) = self.scheduler.take_exit_exception(pid) {
-                eprintln!(
-                    "[aion] exception: class={:?} reason={:?} trace={:?}",
-                    exception.class, exception.reason, exception.stacktrace
-                );
-            }
-        }
-        (reason, result)
     }
 }
 

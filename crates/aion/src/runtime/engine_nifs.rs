@@ -121,14 +121,6 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
     )]
 }
 
-/// Module names backed by engine-owned NIFs.
-///
-/// These modules must not be content-hash renamed during package loading
-/// because the NIF is registered under the original name.
-pub(super) fn nif_module_names() -> Vec<String> {
-    vec![FFI_MODULE.to_owned()]
-}
-
 #[cfg(test)]
 mod tests {
     use beamr::native::ProcessContext;
