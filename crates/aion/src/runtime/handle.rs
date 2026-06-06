@@ -113,7 +113,6 @@ impl RuntimeHandle {
     /// Returns [`EngineError::NifRegistration`] when beamr rejects an entry,
     /// including duplicate module/function/arity registrations.
     pub fn install_nifs(&self, registration: NifRegistration) -> Result<(), EngineError> {
-        let module_names = registration.module_names();
         for entry in registration.into_entries() {
             let mfa = entry.mfa;
             let module = self.atom_table.intern(&mfa.module);
@@ -126,10 +125,7 @@ impl RuntimeHandle {
                     .register(module, function, mfa.arity, entry.function)
             };
             result.map_err(|error| nif_registration_error(&mfa, error))?;
-        }
-
-        for module_name in module_names {
-            self.registered_nif_modules.insert(module_name);
+            self.registered_nif_modules.insert(mfa.module);
         }
 
         Ok(())
@@ -679,6 +675,7 @@ mod tests {
             Some(EngineError::NifRegistration { reason })
                 if reason.contains("host:answer/0")
         ));
+        assert_eq!(runtime.registered_nif_modules(), vec!["host"]);
         runtime.shutdown()?;
         Ok(())
     }
@@ -694,6 +691,10 @@ mod tests {
 
         runtime.install_nifs(registration)?;
 
+        assert_eq!(
+            runtime.registered_nif_modules(),
+            vec!["aion_flow_ffi", "host"]
+        );
         let answer = runtime.lookup_native_for_test("host", "answer", 0);
         assert!(answer.is_some());
         assert!(
