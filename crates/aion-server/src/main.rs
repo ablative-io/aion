@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    init_tracing()?;
 
     let config_path = config_path_from_args()?;
     let config = ServerConfig::load_from_path(config_path)?;
@@ -43,14 +43,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
+fn init_tracing() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(true)
         .with_timer(tracing_subscriber::fmt::time::SystemTime)
-        .init();
+        .try_init()
+        .context("failed to initialize tracing subscriber")?;
+    Ok(())
 }
 
 async fn serve_grpc(
