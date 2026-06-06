@@ -1,25 +1,124 @@
 # aion-client-python
 
-Async Python caller SDK for Aion workflows. The package is published as `aion-client-python` and imported as `aion_client`.
+Async Python caller SDK for Aion workflows. The package is published as `aion-client-python` and imported as `aion_client`. It exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
 
-```python
-from aion_client import Client, TLSConfig
+## Install
 
-async with await Client.connect(
-    "https://aion.example.com:443",
-    auth="token",
-    tls=TLSConfig(enabled=True),
-    namespace="payments",
-) as client:
-    handle = await client.start("invoice", {"invoice_id": "inv_123"}, idempotency_key="start-inv-123")
-    await handle.signal("approve", {"by": "ops"})
-    state = await handle.query("state", target_type=dict, timeout=5.0)
-    workflows = await client.list()
-    description = await handle.describe(include_history=True)
-    await handle.cancel(reason="caller requested")
-
-    async for event in handle.subscribe():
-        print(event)
+```sh
+python -m pip install aion-client-python
 ```
 
-Payload-bearing operations accept JSON values by default and also expose raw bytes via `raw=` and `content_type=`. Errors are branchable subclasses of `AionClientError` matching the shared Aion client taxonomy.
+## Server prerequisite
+
+Run an `aion-server` that implements the AW workflow API. The runnable example uses the AL-007 fixture defaults:
+
+```sh
+export AION_SERVER_URL=http://127.0.0.1:50051
+export AION_AUTH_TOKEN=dev-token # optional
+python examples/seven_operations.py
+```
+
+See [`examples/seven_operations.py`](examples/seven_operations.py) for a complete async program covering all seven operations.
+
+## Connect
+
+```python
+import os
+from aion_client import Client, TLSConfig
+
+endpoint = os.environ["AION_SERVER_URL"]
+client = await Client.connect(
+    endpoint,
+    auth=os.environ.get("AION_AUTH_TOKEN"),
+    tls=TLSConfig(enabled=endpoint.startswith(("https://", "grpcs://"))),
+    namespace="conformance",
+)
+```
+
+## start
+
+JSON values are the typed payload path. `idempotency_key` makes start safe to retry: a repeated identical start returns the original handle, while conflicting reuse raises `AlreadyExists`.
+
+```python
+handle = await client.start(
+    "conformance.echo",
+    {"message": "hello", "counter": 1},
+    idempotency_key="readme-seven-operations",
+)
+```
+
+## signal
+
+```python
+await handle.signal("record", {"value": "signal-observed"})
+```
+
+## query
+
+The SDK decodes JSON results to Python values, or to a supplied `target_type` when appropriate. The current AW query request has no argument payload field, so omit query arguments for now.
+
+```python
+state = await handle.query("state", target_type=dict, timeout=5.0)
+print(state.get("lastSignal"))
+```
+
+## list
+
+```python
+summaries = await client.list()
+print(f"listed {len(summaries)} workflow(s)")
+```
+
+## describe
+
+```python
+description = await handle.describe(include_history=True)
+print(description.summary, len(description.history))
+```
+
+## cancel
+
+Cancellation is a cooperative request: success means the server accepted the request.
+
+```python
+await handle.cancel(reason="caller requested cancellation")
+```
+
+## subscribe
+
+`handle.subscribe()` returns an async iterator. It reconnects after transient disconnects using the last delivered per-workflow sequence number; terminal failures are raised from iteration rather than ending silently.
+
+```python
+async for event in handle.subscribe(raw=True):
+    print(event.seq, event.value)
+    break
+```
+
+## Typed and raw payloads
+
+Pass ordinary JSON-serializable Python values for typed payloads. For pre-serialized bytes or non-default content, use the raw escape hatch accepted by every payload-bearing operation:
+
+```python
+await handle.signal(
+    "record",
+    raw=b'{"value":"raw"}',
+    content_type="application/json",
+)
+```
+
+## Branching on errors
+
+Every operation raises branchable subclasses of `AionClientError` matching the shared taxonomy.
+
+```python
+from aion_client import AlreadyExists, QueryTimeout, Unavailable
+
+try:
+    state = await handle.query("state", target_type=dict, timeout=0.01)
+except QueryTimeout:
+    print("query timed out; use a longer timeout")
+except AlreadyExists:
+    print("idempotency key was reused for a different start")
+except Unavailable:
+    print("server or stream transport is unavailable")
+```

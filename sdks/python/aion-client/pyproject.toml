@@ -27,6 +27,12 @@ dependencies = [
   "websockets>=12",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ablative-io/aion"
+Repository = "https://github.com/ablative-io/aion"
+Issues = "https://github.com/ablative-io/aion/issues"
+Documentation = "https://github.com/ablative-io/aion/tree/main/sdks/python/aion-client"
+
 [project.optional-dependencies]
 dev = [
   "build>=1.2",
@@ -41,7 +47,7 @@ pydantic = ["pydantic>=2"]
 packages = ["aion_client"]
 
 [tool.hatch.build.targets.sdist]
-include = ["aion_client", "README.md", "pyproject.toml"]
+include = ["aion_client", "examples", "README.md", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 120
@@ -57,4 +63,4 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "examples"]
