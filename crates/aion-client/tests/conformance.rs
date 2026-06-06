@@ -165,10 +165,7 @@ async fn execute_connect(
     Ok(json!({ "kind": "client" }))
 }
 
-async fn execute_start(
-    input: &Value,
-    context: &mut ScenarioContext,
-) -> Result<Value, ClientError> {
+async fn execute_start(input: &Value, context: &mut ScenarioContext) -> Result<Value, ClientError> {
     let client = context.client()?;
     let handle = client
         .start(
@@ -205,10 +202,7 @@ async fn execute_signal(
     Ok(json!({ "kind": "accepted" }))
 }
 
-async fn execute_query(
-    input: &Value,
-    context: &mut ScenarioContext,
-) -> Result<Value, ClientError> {
+async fn execute_query(input: &Value, context: &mut ScenarioContext) -> Result<Value, ClientError> {
     let client = context.client()?;
     let wf_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
     let run_id = optional_run_id(input_str(input, "runId"))?;
@@ -248,10 +242,7 @@ async fn execute_cancel(
     Ok(json!({ "kind": "accepted" }))
 }
 
-async fn execute_list(
-    input: &Value,
-    context: &mut ScenarioContext,
-) -> Result<Value, ClientError> {
+async fn execute_list(input: &Value, context: &mut ScenarioContext) -> Result<Value, ClientError> {
     let client = context.client()?;
     let filter = input.get("filter").unwrap_or(&Value::Null);
     let workflows = client
