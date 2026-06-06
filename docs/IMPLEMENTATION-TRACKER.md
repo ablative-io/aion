@@ -1,6 +1,6 @@
 # Aion Implementation Tracker
 
-117 briefs across 12 clusters, dispatched in 42 waves across 6 phases.
+117 briefs across 12 clusters, dispatched in 42 waves across 6 phases. **117/117 COMPLETE.**
 Peak parallelism: 10 briefs (Wave 17, engine core).
 
 ## Team Assignments
@@ -268,18 +268,18 @@ Three independent tracks running concurrently.
 ### Wave 38 (7 parallel — peak)
 - [x] **AR-004** — Heartbeat and cancellation · _landed a2c94a4_
 - [x] **AR-005** — Reconnect and re-report · _landed 36c353d_
-- [ ] **AL-007** — Cross-language conformance harnesses · _Gleam harness rework pending_
-- [ ] **AL-008** — Packaging, metadata, READMEs, examples · _version field fix pending_
+- [x] **AL-007** — Cross-language conformance harnesses · _landed 1fb08ce_
+- [x] **AL-008** — Packaging, metadata, READMEs, examples · _landed e5c7ddf_
 - [x] **AU-007** — App shell (routing, providers, layout) · _landed 1efc5ef_
 - [x] **AU-008** — Shared components (badge, icon, states) · _landed 52cb834_
 - [x] **AU-009** — Live updates (list, timeline, resync) · _landed 5de4ae1_
 
 ### Wave 39
-- [ ] **AR-006** — Typed Activity, Worker builder · _depends: AR-002..005_
+- [x] **AR-006** — Typed Activity, Worker builder · _landed d3a4bfb_
 
 ### Wave 40 (2 parallel)
-- [ ] **AR-007** — aion-worker-python: packaging, session, loop · _depends: AR-006_
-- [ ] **AR-009** — aion-worker-typescript: packaging, session, loop · _depends: AR-006_
+- [x] **AR-007** — aion-worker-python: packaging, session, loop · _landed 76deb1e_
+- [x] **AR-009** — aion-worker-typescript: packaging, session, loop · _landed 3c2b0ea_
 
 ### Wave 41 (2 parallel)
 - [ ] **AR-008** — aion-worker-python: @activity, context, errors · _depends: AR-007_

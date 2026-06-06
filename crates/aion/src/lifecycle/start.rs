@@ -60,11 +60,12 @@ pub async fn start_workflow(
     context
         .supervision
         .ensure_type_supervisor(loaded.workflow_type())?;
+    let runtime_input = RuntimeInput::from_payload(&input)?;
     let pid = spawn_workflow_with_policy(
         context.runtime,
         loaded.deployed_entry_module(),
         loaded.entry_function(),
-        RuntimeInput::default(),
+        runtime_input,
     )?;
     if let Err(error) = context
         .supervision

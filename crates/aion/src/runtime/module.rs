@@ -2,7 +2,7 @@
 
 use beamr::atom::Atom;
 use beamr::loader::decode::compact::Operand;
-use beamr::loader::{lambda_unique_id, prepare_module, Instruction, Literal};
+use beamr::loader::{Instruction, Literal, lambda_unique_id, prepare_module};
 use beamr::module::ResolvedImportTarget;
 
 use crate::{EngineError, RuntimeHandle};
@@ -102,12 +102,8 @@ fn rewrite_resolved_import_target(
     deployed_atom: Atom,
 ) {
     match target {
-        ResolvedImportTarget::Code { module, .. } => {
-            if *module == original_atom {
-                *module = deployed_atom;
-            }
-        }
-        ResolvedImportTarget::Deferred { module, .. }
+        ResolvedImportTarget::Code { module, .. }
+        | ResolvedImportTarget::Deferred { module, .. }
         | ResolvedImportTarget::Unresolved { module, .. } => {
             if *module == original_atom {
                 *module = deployed_atom;
