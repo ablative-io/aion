@@ -6,9 +6,13 @@ use aion_server::{ServerConfig, ServerError, ServerState, api};
 use anyhow::{Context, Result, bail};
 use tokio::net::TcpListener;
 use tonic::transport::Server as TonicServer;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing()?;
+
     let config_path = config_path_from_args()?;
     let config = ServerConfig::load_from_path(config_path)?;
     let state = ServerState::build(config).await?;
@@ -16,6 +20,12 @@ async fn main() -> Result<()> {
 
     let grpc_address = state.runtime_config().listen.grpc;
     let http_address = state.runtime_config().listen.http;
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        grpc_address = %grpc_address,
+        http_address = %http_address,
+        "aion-server starting"
+    );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let grpc = serve_grpc(state.clone(), grpc_address, shutdown_rx.clone());
     let http = serve_http(state.clone(), http_address, shutdown_rx);
@@ -30,6 +40,18 @@ async fn main() -> Result<()> {
     }
 
     state.shutdown()?;
+    Ok(())
+}
+
+fn init_tracing() -> Result<()> {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(true)
+        .with_timer(tracing_subscriber::fmt::time::SystemTime)
+        .try_init()
+        .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
     Ok(())
 }
 
