@@ -247,6 +247,7 @@ def validate_activity_handlers(activity_types: Iterable[str], available_handlers
 
 
 def decode_server_message(message: Message) -> WorkerSessionEvent:
+    """Decode a raw gRPC server-to-worker message into a typed session event."""
     if not isinstance(message, worker_pb2.ServerToWorker):
         raise TransportError("server-to-worker message had unexpected type")
     which = message.WhichOneof("message")

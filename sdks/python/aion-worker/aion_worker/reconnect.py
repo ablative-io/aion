@@ -159,4 +159,5 @@ async def re_report_unacked(session: WorkerSession, tracker: UnackedResultTracke
 
 
 def activity_sequence(activity_id: ActivityId) -> ActivitySequence:
+    """Extract the deterministic sequence position from an activity identifier."""
     return int(activity_id.sequence_position)
