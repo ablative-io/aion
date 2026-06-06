@@ -193,7 +193,7 @@ impl RuntimeHandle {
         input: RuntimeInput,
     ) -> Result<Pid, EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        self.wait_until_process_ready(parent_pid)?;
+        self.wait_for_process_ready(parent_pid)?;
         let arity = input.arity();
         let module = self.atom_table.intern(deployed_module);
         let function_atom = self.atom_table.intern(function);
@@ -399,7 +399,7 @@ impl RuntimeHandle {
         }
     }
 
-    fn wait_until_process_ready(&self, pid: Pid) -> Result<(), EngineError> {
+    pub(crate) fn wait_for_process_ready(&self, pid: Pid) -> Result<(), EngineError> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
         while std::time::Instant::now() < deadline {
             if self.scheduler.trap_exit(pid).is_some() {
@@ -497,6 +497,36 @@ impl RuntimeHandle {
             .scheduler
             .has_trapped_exit_message(target_pid, source_pid)
             .unwrap_or(false))
+    }
+
+    /// Poll until a trapped EXIT message from `source_pid` arrives at `target_pid`.
+    ///
+    /// beamr delivers exit signals asynchronously after process termination.
+    /// Tests that assert on trapped exit messages must wait for delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] if the message does not arrive within 50ms.
+    #[cfg(test)]
+    pub fn wait_for_trapped_exit(
+        &self,
+        target_pid: Pid,
+        source_pid: Pid,
+    ) -> Result<(), EngineError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        while std::time::Instant::now() < deadline {
+            if self
+                .scheduler
+                .has_trapped_exit_message(target_pid, source_pid)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Err(runtime_error(format!(
+            "trapped exit from {source_pid} to {target_pid} did not arrive"
+        )))
     }
 
     /// Terminate a test process with a trappable abnormal reason.

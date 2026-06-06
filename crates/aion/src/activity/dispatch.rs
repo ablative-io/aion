@@ -155,9 +155,12 @@ mod tests {
             details: Some(details),
         };
         surface_activity_error(&runtime, workflow, activity, error.clone())?;
+        runtime.wait_for_process_ready(workflow)?;
+        runtime.wait_for_process_ready(activity)?;
         runtime.terminate_test_process_with_error(activity)?;
 
         propagate_activity_outcome(&runtime, workflow, activity)?;
+        runtime.wait_for_trapped_exit(workflow, activity)?;
 
         assert!(runtime.has_trapped_exit_message(workflow, activity)?);
         assert_eq!(runtime.activity_error(workflow, activity), Some(error));

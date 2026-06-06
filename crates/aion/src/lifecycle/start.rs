@@ -238,6 +238,7 @@ mod tests {
         assert_eq!(handle.cached_status(), aion_core::WorkflowStatus::Running);
         assert_eq!(handle.residency(), HandleResidency::Resident);
         assert!(!handle.completion().is_completed());
+        runtime.wait_for_process_ready(handle.pid())?;
         assert!(runtime.trap_exit(handle.pid())?);
         assert_eq!(
             supervision
