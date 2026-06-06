@@ -507,7 +507,7 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
+    pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
         self.scheduler.run_until_exit(pid)
     }
 }

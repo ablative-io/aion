@@ -317,12 +317,13 @@ mod tests {
     use std::{cell::RefCell, collections::BTreeMap, time::Duration};
 
     use aion_package::{
-        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-        Package, PackageBuilder, PackageError, content_hash, deployed_name, parse_deployed_name,
+        content_hash, deployed_name, parse_deployed_name, BeamModule, BeamSet, DeclaredActivity,
+        Manifest, ManifestVersion, Package, PackageBuilder, PackageError, CURRENT_FORMAT_VERSION,
     };
     use serde_json::json;
 
     use super::LoadedWorkflows;
+    use crate::runtime::{RuntimeConfig, RuntimeHandle, RuntimeInput};
     use crate::EngineError;
 
     fn manifest(entry_module: &str) -> Manifest {
@@ -357,6 +358,21 @@ mod tests {
     fn entry_only_package(entry_module: &str, bytes: Vec<u8>) -> Result<Package, PackageError> {
         let beams = BeamSet::new(vec![BeamModule::new(entry_module, bytes)])?;
         let archive = PackageBuilder::new(manifest(entry_module), beams).write_to_bytes()?;
+        Package::load_from_bytes(archive)
+    }
+
+    fn fixture_workflow_beam() -> &'static [u8] {
+        include_bytes!("../../tests/fixtures/aion_fixture_workflow.beam")
+    }
+
+    fn fixture_workflow_package() -> Result<Package, PackageError> {
+        let mut manifest = manifest("aion_fixture_workflow");
+        manifest.entry_function = "complete".to_owned();
+        let beams = BeamSet::new(vec![BeamModule::new(
+            "aion_fixture_workflow",
+            fixture_workflow_beam().to_vec(),
+        )])?;
+        let archive = PackageBuilder::new(manifest, beams).write_to_bytes()?;
         Package::load_from_bytes(archive)
     }
 
@@ -455,6 +471,27 @@ mod tests {
     }
 
     #[test]
+    fn package_loaded_under_content_hash_namespace_spawns_entrypoint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let package = fixture_workflow_package()?;
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mut loaded = LoadedWorkflows::new();
+
+        let record = loaded.load_package(&runtime, &package)?;
+        let pid = runtime.spawn_workflow(
+            record.deployed_entry_module(),
+            record.entry_function(),
+            RuntimeInput::default(),
+        )?;
+        let (reason, result) = runtime.run_until_exit_for_test(pid);
+
+        assert_eq!(reason, beamr::process::ExitReason::Normal);
+        assert_eq!(result, beamr::term::Term::atom(beamr::atom::Atom::OK));
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
     fn missing_entry_module_returns_load_error() -> Result<(), Box<dyn std::error::Error>> {
         let package = package("workflow/order", vec![1, 2, 3])?;
         let missing = package_with_missing_entry(&package, "workflow/missing");
@@ -476,8 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn collision_from_different_hash_fails_before_registration()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn collision_from_different_hash_fails_before_registration(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let first = entry_only_package("workflow/order", vec![1, 2, 3])?;
         let second = entry_only_package("workflow/order", vec![1, 2, 4])?;
         let colliding_name = first.deployed_entry_module();
