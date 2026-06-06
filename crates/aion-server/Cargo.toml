@@ -25,6 +25,8 @@ uuid.workspace = true
 futures.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 prost.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
 tokio-stream = "0.1"
 tower = { workspace = true, features = ["util"] }
 rust-embed = "8.11.0"

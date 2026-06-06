@@ -2,192 +2,306 @@
 // Do not edit by hand. Regenerate with the command documented in apps/aion-dashboard/README.md.
 
 export type WorkflowId = string;
+
 export type RunId = string;
+
 export type ActivityId = number;
-export type TimerId = { Named: string } | { Anonymous: number };
+
+export type TimerId = TimerIdKind;
+
 export type Namespace = string;
 
-export type ContentType = 'Json';
+export type ContentType = "Json";
 
-export type Payload = {
-  content_type: ContentType;
-  bytes: number[];
-};
+export type Payload = { content_type: ContentType, bytes: Array<number>, };
 
-export type WorkflowError = {
-  message: string;
-  details: Payload | null;
-};
+export type WorkflowError = { 
+/**
+ * Human-readable error message.
+ */
+message: string, 
+/**
+ * Optional structured details carried as an opaque payload.
+ */
+details: Payload | null, };
 
-export type ActivityErrorKind = 'Retryable' | 'Terminal';
+export type ActivityErrorKind = "Retryable" | "Terminal";
 
-export type ActivityError = {
-  kind: ActivityErrorKind;
-  message: string;
-  details: Payload | null;
-};
+export type ActivityError = { 
+/**
+ * Explicit retryability classification for this activity failure.
+ */
+kind: ActivityErrorKind, 
+/**
+ * Human-readable error message.
+ */
+message: string, 
+/**
+ * Optional structured details carried as an opaque payload.
+ */
+details: Payload | null, };
 
-export type WorkflowStatus = 'Running' | 'Completed' | 'Failed' | 'Cancelled' | 'TimedOut';
+export type WorkflowStatus = "Running" | "Completed" | "Failed" | "Cancelled" | "TimedOut";
 
-export type WorkflowFilter = {
-  workflow_type: string | null;
-  status: WorkflowStatus | null;
-  started_after: string | null;
-  started_before: string | null;
-  parent: WorkflowId | null;
-};
+export type WorkflowFilter = { 
+/**
+ * Match workflows with this workflow type exactly.
+ */
+workflow_type: string | null, 
+/**
+ * Match workflows whose status projection equals this status.
+ */
+status: WorkflowStatus | null, 
+/**
+ * Match workflows started at or after this timestamp.
+ */
+started_after: string | null, 
+/**
+ * Match workflows started at or before this timestamp.
+ */
+started_before: string | null, 
+/**
+ * Match workflows started as children of this parent workflow.
+ */
+parent: WorkflowId | null, };
 
-export type WorkflowSummary = {
-  workflow_id: WorkflowId;
-  workflow_type: string;
-  status: WorkflowStatus;
-  started_at: string;
-  ended_at: string | null;
-  parent: WorkflowId | null;
-};
+export type WorkflowSummary = { 
+/**
+ * Workflow execution identifier.
+ */
+workflow_id: WorkflowId, 
+/**
+ * Workflow type recorded when the execution started.
+ */
+workflow_type: string, 
+/**
+ * Status projected from authoritative workflow history.
+ */
+status: WorkflowStatus, 
+/**
+ * Timestamp recorded on the workflow start event.
+ */
+started_at: string, 
+/**
+ * Timestamp recorded on the terminal lifecycle event, if any.
+ */
+ended_at: string | null, 
+/**
+ * Parent workflow identifier for child-workflow executions, if the store has one.
+ */
+parent: WorkflowId | null, };
 
-export type EventEnvelope = {
-  seq: number;
-  recorded_at: string;
-  workflow_id: WorkflowId;
-};
+export type EventEnvelope = { 
+/**
+ * Monotonic sequence number within the owning workflow history.
+ */
+seq: number, 
+/**
+ * Recorded UTC timestamp for this event.
+ *
+ * This timestamp is the determinism source for `workflow.now`; replay must use the recorded
+ * value rather than consulting wall-clock time.
+ */
+recorded_at: string, 
+/**
+ * Workflow history that owns this event.
+ */
+workflow_id: WorkflowId, };
 
-export type Event =
-  | {
-      type: 'WorkflowStarted';
-      data: {
-        envelope: EventEnvelope;
-        workflow_type: string;
-        input: Payload;
-      };
-    }
-  | {
-      type: 'WorkflowCompleted';
-      data: {
-        envelope: EventEnvelope;
-        result: Payload;
-      };
-    }
-  | {
-      type: 'WorkflowFailed';
-      data: {
-        envelope: EventEnvelope;
-        error: WorkflowError;
-      };
-    }
-  | {
-      type: 'WorkflowCancelled';
-      data: {
-        envelope: EventEnvelope;
-        reason: string;
-      };
-    }
-  | {
-      type: 'WorkflowTimedOut';
-      data: {
-        envelope: EventEnvelope;
-        timeout: string;
-      };
-    }
-  | {
-      type: 'ActivityScheduled';
-      data: {
-        envelope: EventEnvelope;
-        activity_id: ActivityId;
-        activity_type: string;
-        input: Payload;
-      };
-    }
-  | {
-      type: 'ActivityStarted';
-      data: {
-        envelope: EventEnvelope;
-        activity_id: ActivityId;
-      };
-    }
-  | {
-      type: 'ActivityCompleted';
-      data: {
-        envelope: EventEnvelope;
-        activity_id: ActivityId;
-        result: Payload;
-      };
-    }
-  | {
-      type: 'ActivityFailed';
-      data: {
-        envelope: EventEnvelope;
-        activity_id: ActivityId;
-        error: ActivityError;
-        attempt: number;
-      };
-    }
-  | {
-      type: 'ActivityCancelled';
-      data: {
-        envelope: EventEnvelope;
-        activity_id: ActivityId;
-      };
-    }
-  | {
-      type: 'TimerStarted';
-      data: {
-        envelope: EventEnvelope;
-        timer_id: TimerId;
-        fire_at: string;
-      };
-    }
-  | {
-      type: 'TimerFired';
-      data: {
-        envelope: EventEnvelope;
-        timer_id: TimerId;
-      };
-    }
-  | {
-      type: 'TimerCancelled';
-      data: {
-        envelope: EventEnvelope;
-        timer_id: TimerId;
-      };
-    }
-  | {
-      type: 'SignalReceived';
-      data: {
-        envelope: EventEnvelope;
-        name: string;
-        payload: Payload;
-      };
-    }
-  | {
-      type: 'ChildWorkflowStarted';
-      data: {
-        envelope: EventEnvelope;
-        child_workflow_id: WorkflowId;
-        workflow_type: string;
-        input: Payload;
-      };
-    }
-  | {
-      type: 'ChildWorkflowCompleted';
-      data: {
-        envelope: EventEnvelope;
-        child_workflow_id: WorkflowId;
-        result: Payload;
-      };
-    }
-  | {
-      type: 'ChildWorkflowFailed';
-      data: {
-        envelope: EventEnvelope;
-        child_workflow_id: WorkflowId;
-        error: WorkflowError;
-      };
-    }
-  | {
-      type: 'ChildWorkflowCancelled';
-      data: {
-        envelope: EventEnvelope;
-        child_workflow_id: WorkflowId;
-      };
-    };
+export type Event = { "type": "WorkflowStarted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Workflow type selected by the caller.
+ */
+workflow_type: string, 
+/**
+ * Opaque workflow input payload.
+ */
+input: Payload, } } | { "type": "WorkflowCompleted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Opaque workflow result payload.
+ */
+result: Payload, } } | { "type": "WorkflowFailed", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Terminal workflow failure.
+ */
+error: WorkflowError, } } | { "type": "WorkflowCancelled", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Human-readable cancellation reason.
+ */
+reason: string, } } | { "type": "WorkflowTimedOut", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Descriptor identifying the timeout that elapsed.
+ *
+ * Intentionally stringly-typed: the closed set of timeout kinds is defined by cluster AT
+ * (timers and signals), not by the core event model.
+ */
+timeout: string, } } | { "type": "ActivityScheduled", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Deterministic activity identifier derived from the scheduling sequence position.
+ */
+activity_id: ActivityId, 
+/**
+ * Activity type selected by workflow code.
+ */
+activity_type: string, 
+/**
+ * Opaque activity input payload.
+ */
+input: Payload, } } | { "type": "ActivityStarted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Activity being executed.
+ */
+activity_id: ActivityId, } } | { "type": "ActivityCompleted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Activity that produced the result.
+ */
+activity_id: ActivityId, 
+/**
+ * Opaque activity result payload.
+ */
+result: Payload, } } | { "type": "ActivityFailed", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Activity whose attempt failed.
+ */
+activity_id: ActivityId, 
+/**
+ * Classified activity failure.
+ */
+error: ActivityError, 
+/**
+ * One-based activity attempt number that produced this failure.
+ */
+attempt: number, } } | { "type": "ActivityCancelled", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Activity that was cancelled.
+ */
+activity_id: ActivityId, } } | { "type": "TimerStarted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Timer selected by workflow code or assigned by the engine.
+ */
+timer_id: TimerId, 
+/**
+ * UTC timestamp at which the timer becomes eligible to fire.
+ */
+fire_at: string, } } | { "type": "TimerFired", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Timer that fired.
+ */
+timer_id: TimerId, } } | { "type": "TimerCancelled", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Timer that was cancelled.
+ */
+timer_id: TimerId, } } | { "type": "SignalReceived", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Signal name selected by the sender.
+ */
+name: string, 
+/**
+ * Opaque signal payload.
+ */
+payload: Payload, } } | { "type": "ChildWorkflowStarted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Child workflow identifier.
+ */
+child_workflow_id: WorkflowId, 
+/**
+ * Child workflow type selected by the parent.
+ */
+workflow_type: string, 
+/**
+ * Opaque child workflow input payload.
+ */
+input: Payload, } } | { "type": "ChildWorkflowCompleted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Child workflow that produced the result.
+ */
+child_workflow_id: WorkflowId, 
+/**
+ * Opaque child workflow result payload.
+ */
+result: Payload, } } | { "type": "ChildWorkflowFailed", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Child workflow that failed.
+ */
+child_workflow_id: WorkflowId, 
+/**
+ * Terminal child workflow failure.
+ */
+error: WorkflowError, } } | { "type": "ChildWorkflowCancelled", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Child workflow that was cancelled.
+ */
+child_workflow_id: WorkflowId, } };
+
