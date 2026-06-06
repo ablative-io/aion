@@ -224,7 +224,7 @@ class GrpcWorkerSession:
         if outbound is None:
             raise TransportError("worker stream has not been opened")
         try:
-            await outbound.put(message)
+            outbound.put_nowait(message)
         except asyncio.QueueFull as exc:
             raise TransportError("worker outbound queue is full") from exc
 
