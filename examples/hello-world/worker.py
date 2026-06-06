@@ -85,7 +85,7 @@ def worker_config() -> WorkerConfig:
         reconnect=ReconnectConfig(
             initial_backoff_seconds=0.5,
             max_backoff_seconds=5.0,
-            max_attempts=0,
+            max_attempts=10,
         ),
     )
 

@@ -51,12 +51,8 @@ impl ServerState {
         let worker_registry = ConnectedWorkerRegistry::default();
         let pending_activities = PendingActivities::default();
         let dispatcher = Arc::new(
-            WorkerActivityDispatcher::new(
-                worker_registry.clone(),
-                "default",
-                tokio::runtime::Handle::current(),
-            )
-            .with_pending(pending_activities.clone()),
+            WorkerActivityDispatcher::new(worker_registry.clone(), "default")
+                .with_pending(pending_activities.clone()),
         );
 
         let engine = EngineBuilder::new()

@@ -58,32 +58,41 @@ fn manifest() -> Manifest {
 }
 
 fn read_compiled_beams(workflow_root: &Path) -> Result<BeamSet> {
-    let ebin = workflow_root.join("build/dev/erlang/aion_hello_world/ebin");
-    if !ebin.exists() {
+    let erlang_root = workflow_root.join("build/dev/erlang");
+    if !erlang_root.exists() {
         bail!(
-            "compiled BEAM directory {} does not exist; run `gleam build` in examples/hello-world first",
-            ebin.display()
+            "compiled Erlang directory {} does not exist; run `gleam build` in examples/hello-world first",
+            erlang_root.display()
         );
     }
 
     let mut modules = Vec::new();
-    for entry in fs::read_dir(&ebin).with_context(|| format!("reading {}", ebin.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("beam") {
+    for pkg_entry in fs::read_dir(&erlang_root)
+        .with_context(|| format!("reading {}", erlang_root.display()))?
+    {
+        let ebin = pkg_entry?.path().join("ebin");
+        if !ebin.is_dir() {
             continue;
         }
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .context("compiled BEAM filename is not valid UTF-8")?;
-        modules.push(BeamModule::new(stem, fs::read(&path)?));
+        for entry in fs::read_dir(&ebin)
+            .with_context(|| format!("reading {}", ebin.display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("beam") {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .context("compiled BEAM filename is not valid UTF-8")?;
+            modules.push(BeamModule::new(stem, fs::read(&path)?));
+        }
     }
 
     if modules.iter().all(|module| module.name() != ENTRY_MODULE) {
         bail!(
-            "entry module {ENTRY_MODULE}.beam was not found in {}; run `gleam build` again",
-            ebin.display()
+            "entry module {ENTRY_MODULE}.beam was not found under {}; run `gleam build` again",
+            erlang_root.display()
         );
     }
 
