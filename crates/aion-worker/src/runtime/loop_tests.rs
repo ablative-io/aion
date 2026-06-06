@@ -13,12 +13,12 @@ use serde_json::json;
 use tokio::sync::{Mutex, mpsc};
 
 use super::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
-use crate::WorkerConfig;
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::{
     ActivityTask, WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers,
 };
+use crate::{ReconnectConfig, WorkerConfig};
 
 #[derive(Default)]
 struct FakeSession {
@@ -208,7 +208,7 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
         ]),
         dispatched: Mutex::new(Vec::new()),
     });
-    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 2, None);
+    let config = test_config(2);
 
     serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher)).await?;
 
@@ -251,7 +251,7 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
         started: AtomicUsize::new(0),
         release: AtomicBool::new(false),
     });
-    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 2, None);
+    let config = test_config(2);
     let worker = tokio::spawn({
         let dispatcher = Arc::clone(&dispatcher);
         async move {
@@ -295,7 +295,7 @@ async fn cancellation_event_flips_context_without_suppressing_result() -> Result
         started: tokio::sync::Notify::new(),
         observed_cancelled: AtomicBool::new(false),
     });
-    let config = WorkerConfig::new("http://127.0.0.1:50051", "payments", "worker-a", 1, None);
+    let config = test_config(1);
     let worker = tokio::spawn({
         let dispatcher = Arc::clone(&dispatcher);
         async move {
@@ -417,6 +417,17 @@ fn update_peak(peak: &AtomicUsize, observed: usize) {
             Err(next_peak) => current_peak = next_peak,
         }
     }
+}
+
+fn test_config(max_concurrency: usize) -> WorkerConfig {
+    WorkerConfig::new(
+        "http://127.0.0.1:50051",
+        "payments",
+        "worker-a",
+        max_concurrency,
+        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
+        None,
+    )
 }
 
 #[derive(Debug, thiserror::Error)]

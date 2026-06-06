@@ -333,7 +333,6 @@ mod tests {
     use aion_core::{
         ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId,
     };
-    use aion_proto::ProtoActivityTask;
     use async_trait::async_trait;
     use futures::stream;
 
@@ -341,7 +340,9 @@ mod tests {
         PendingActivityReport, UnackedResultTracker, re_report_unacked, reconnect_with_sleep,
     };
     use crate::error::WorkerError;
-    use crate::protocol::{WorkerSession, WorkerTaskStream, validate_activity_handlers};
+    use crate::protocol::{
+        WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers,
+    };
     use crate::{ReconnectConfig, WorkerConfig};
 
     #[test]
@@ -467,7 +468,7 @@ mod tests {
         }
 
         fn receive_tasks(&mut self) -> WorkerTaskStream {
-            Box::pin(stream::empty::<Result<ProtoActivityTask, WorkerError>>())
+            Box::pin(stream::empty::<Result<WorkerSessionEvent, WorkerError>>())
         }
 
         async fn report_result(

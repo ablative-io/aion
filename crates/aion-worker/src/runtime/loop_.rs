@@ -6,6 +6,7 @@ use std::sync::Arc;
 use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
 use async_trait::async_trait;
 use futures::StreamExt;
+use futures::future;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
@@ -46,6 +47,9 @@ pub enum DispatchOutcome {
     },
 }
 
+/// Future that never resolves, used by the default serve entrypoint.
+pub type NoShutdown = future::Pending<()>;
+
 /// Runs the worker receive loop until the session's task stream completes.
 ///
 /// The loop only forwards explicit handler heartbeats and cancellation flags. It
@@ -65,6 +69,30 @@ where
     S: WorkerSession,
     D: ActivityDispatcher,
 {
+    serve_activity_tasks_until(config, session, dispatcher, future::pending()).await
+}
+
+/// Runs the worker receive loop until the session's task stream completes.
+///
+/// The loop only forwards explicit handler heartbeats and cancellation flags. It
+/// never emits automatic heartbeats, never enforces heartbeat timeouts, and never
+/// aborts running handler tasks on cancellation.
+///
+/// # Errors
+///
+/// Returns [`WorkerError`] when task decode, dispatch, heartbeat send, or result
+/// reporting fails.
+pub async fn serve_activity_tasks_until<S, D, Shutdown>(
+    config: &WorkerConfig,
+    session: &mut S,
+    dispatcher: Arc<D>,
+    shutdown: Shutdown,
+) -> Result<(), WorkerError>
+where
+    S: WorkerSession,
+    D: ActivityDispatcher,
+    Shutdown: Future<Output = ()> + Send,
+{
     if config.max_concurrency == 0 {
         return Err(WorkerError::registration(InvalidMaxConcurrency));
     }
@@ -76,6 +104,7 @@ where
     let mut stream = session.receive_tasks();
     let mut in_flight = HashMap::<ActivityExecutionKey, InFlightActivity>::new();
     let mut pending_error = None;
+    tokio::pin!(shutdown);
 
     while pending_error.is_none() {
         drain_runtime_events(
@@ -93,6 +122,10 @@ where
 
         tokio::select! {
             biased;
+            () = &mut shutdown => {
+                cancel_all_in_flight(&in_flight);
+                break;
+            }
             event = stream.next() => {
                 let Some(event) = event else { break; };
                 match event {
@@ -255,6 +288,17 @@ fn deliver_cancellation(
         info!(
             activity_id = activity_id.sequence_position(),
             "delivered cooperative activity cancellation"
+        );
+    }
+}
+
+fn cancel_all_in_flight(in_flight: &HashMap<ActivityExecutionKey, InFlightActivity>) {
+    for (key, in_flight_activity) in in_flight {
+        in_flight_activity.cancellation_handle.cancel();
+        info!(
+            activity_id = key.activity_id.sequence_position(),
+            workflow_id = %key.workflow_id,
+            "delivered cooperative activity cancellation during worker shutdown"
         );
     }
 }

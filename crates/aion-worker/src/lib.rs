@@ -8,7 +8,9 @@ pub mod protocol;
 pub mod runtime;
 pub mod worker;
 
-pub use activity::{ActivityFailure, Classification};
+pub use activity::{
+    ActivityFailure, ActivityRegistry, Classification, DuplicateActivityType, HandlerFuture,
+};
 pub use config::{
     ReconnectConfig, TransportCredentials, WorkerConfig, WorkerConfigBuildError,
     WorkerConfigBuilder,
@@ -20,6 +22,7 @@ pub use protocol::{
     validate_activity_handlers,
 };
 pub use runtime::{
-    ActivityDispatcher, DispatchOutcome, TypedActivityDispatcher, decode_payload, encode_payload,
-    serve_activity_tasks, serve_activity_tasks_with_reconnect, serve_activity_tasks_with_tracker,
+    ActivityDispatcher, DispatchOutcome, NoShutdown, TypedActivityDispatcher, decode_payload,
+    encode_payload, serve_activity_tasks, serve_activity_tasks_until,
 };
+pub use worker::{EmptyActivitySet, Worker, WorkerBuilder, run_worker_with_session};
