@@ -1,6 +1,6 @@
 //! Shared server state constructed once at startup.
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use aion::EngineBuilder;
 use aion_store::EventStore;
@@ -47,7 +47,11 @@ impl ServerState {
     where
         S: EventStore,
     {
-        let engine = EngineBuilder::new().store(store).build().await?;
+        let engine = EngineBuilder::new()
+            .store(store)
+            .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
+            .build()
+            .await?;
         let engine = Arc::new(engine);
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
         Ok(Self::from_parts(namespace_resolver, runtime))
@@ -134,6 +138,7 @@ mod tests {
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
             },
+            workflow_packages: Vec::new(),
         }
     }
 
