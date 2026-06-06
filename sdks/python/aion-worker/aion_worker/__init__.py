@@ -19,7 +19,6 @@ from .reconnect import (
     re_report_unacked,
     reconnect_register_and_replay,
     reconnect_with_backoff,
-    register_connected_session,
 )
 from .session import (
     ActivityCancelled,
@@ -65,7 +64,6 @@ __all__ = [
     "re_report_unacked",
     "reconnect_register_and_replay",
     "reconnect_with_backoff",
-    "register_connected_session",
     "serve",
     "validate_activity_handlers",
 ]

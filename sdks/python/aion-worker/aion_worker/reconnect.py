@@ -101,34 +101,33 @@ class ReconnectBackoff:
 
 async def reconnect_with_backoff(
     connect: ConnectFactory,
+    config: WorkerConfig,
+    activity_types: Iterable[str],
+    available_handlers: Iterable[str],
     backoff: ReconnectBackoff,
     sleep: SleepFactory = asyncio.sleep,
 ) -> WorkerSession:
-    """Reconnect with bounded exponential backoff using injectable hooks for tests."""
+    """Connect, handshake, and register with bounded exponential backoff.
+
+    Matches the Rust reference: the backoff loop wraps connect AND
+    handshake/register so that a server that accepts TCP but rejects
+    handshakes backs off exponentially rather than hammering at
+    initial_backoff_seconds.
+    """
 
     last_error: BaseException | None = None
     for attempt in range(1, backoff.max_attempts + 1):
         try:
-            return await connect()
+            session = await connect()
+            await session.handshake(config)
+            await session.register(activity_types, available_handlers)
+            return session
         except Exception as exc:
             last_error = exc
             if attempt == backoff.max_attempts:
                 break
             await sleep(backoff.delay_for_attempt(attempt))
     raise ReconnectError("worker reconnect attempts exhausted") from last_error
-
-
-async def register_connected_session(
-    session: WorkerSession,
-    config: WorkerConfig,
-    activity_types: Iterable[str],
-    available_handlers: Iterable[str],
-) -> WorkerSession:
-    """Run handshake then registration on a connected session."""
-
-    await session.handshake(config)
-    await session.register(activity_types, available_handlers)
-    return session
 
 
 async def reconnect_register_and_replay(
@@ -142,8 +141,9 @@ async def reconnect_register_and_replay(
     """Reconnect, re-register, then re-report backlog before serving tasks."""
 
     backoff = ReconnectBackoff.from_config(config)
-    session = await reconnect_with_backoff(connect, backoff, sleep)
-    await register_connected_session(session, config, activity_types, available_handlers)
+    session = await reconnect_with_backoff(
+        connect, config, activity_types, available_handlers, backoff, sleep,
+    )
     await re_report_unacked(session, tracker)
     return session
 
