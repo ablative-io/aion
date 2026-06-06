@@ -51,7 +51,7 @@ fn init_tracing() -> Result<()> {
         .with_target(true)
         .with_timer(tracing_subscriber::fmt::time::SystemTime)
         .try_init()
-        .context("failed to initialize tracing subscriber")?;
+        .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
     Ok(())
 }
 
