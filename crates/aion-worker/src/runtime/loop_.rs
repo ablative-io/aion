@@ -133,11 +133,16 @@ where
                         deliver_cancellation(workflow_id, &activity_id, &in_flight);
                     }
                     other => {
-                        let permit = semaphore
-                            .clone()
-                            .acquire_owned()
-                            .await
-                            .map_err(WorkerError::registration)?;
+                        let permit = tokio::select! {
+                            biased;
+                            () = &mut shutdown => {
+                                cancel_all_in_flight(&in_flight);
+                                break;
+                            }
+                            permit = semaphore.clone().acquire_owned() => {
+                                permit.map_err(WorkerError::registration)?
+                            }
+                        };
                         if !handle_session_event(
                             other,
                             SessionEventContext {
