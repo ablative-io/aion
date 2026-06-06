@@ -434,7 +434,10 @@ mod tests {
         Ok(())
     }
 
-    fn proto_task(activity_type: &str, input: &TestInput) -> Result<ProtoActivityTask, WorkerError> {
+    fn proto_task(
+        activity_type: &str,
+        input: &TestInput,
+    ) -> Result<ProtoActivityTask, WorkerError> {
         Ok(ProtoActivityTask {
             workflow_id: Some(ProtoWorkflowId::from(WorkflowId::new_v4())),
             activity_id: Some(ProtoActivityId::from(ActivityId::from_sequence_position(1))),
