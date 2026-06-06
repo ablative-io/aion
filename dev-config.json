@@ -33,6 +33,7 @@
   },
   "workflow_packages": [
     "examples/hello-world/hello-world.aion",
-    "examples/order-saga/order-saga.aion"
+    "examples/order-saga/order-saga.aion",
+    "examples/agent-orchestration/orchestrator.aion"
   ]
 }
