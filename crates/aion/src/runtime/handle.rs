@@ -38,9 +38,9 @@ impl RuntimeInput {
     /// Convert one durable payload into the single BEAM argument used by
     /// in-VM activity dispatch.
     ///
-    /// The runtime boundary owns this representation. JSON primitives map to
-    /// immediate terms where possible; unsupported structured input is passed as
-    /// `nil` until richer payload term support lands in beamr.
+    /// The runtime boundary owns this representation. JSON payloads are passed
+    /// as BEAM binary terms and any boxed host heap backing those terms is
+    /// retained until the spawned process is observed exiting or cancelled.
     ///
     /// # Errors
     ///
@@ -415,7 +415,7 @@ impl RuntimeHandle {
         self.spawn_heaps.insert(pid, Mutex::new(heaps));
     }
 
-    fn release_spawn_heaps(&self, pid: Pid) {
+    pub(super) fn release_spawn_heaps(&self, pid: Pid) {
         self.spawn_heaps.remove(&pid);
     }
 
@@ -826,6 +826,46 @@ mod tests {
 
         assert_eq!(reason, beamr::process::ExitReason::Normal);
         assert_eq!(result.as_small_int(), Some(payload.bytes().len() as i64));
+        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_outcome_releases_payload_heaps() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mfa = Mfa::new("host", "binary_length", 1);
+        let mut registration = NifRegistration::new();
+        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
+        runtime.install_nifs(registration)?;
+
+        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
+        let module = native_call_module_with_arity_for_test(
+            runtime.atom_table.intern("payload_workflow_outcome"),
+            runtime.atom_table.intern("run"),
+            runtime.atom_table.intern("host"),
+            runtime.atom_table.intern("binary_length"),
+            1,
+            native_entry,
+        );
+        runtime.module_registry.insert(module);
+        let payload = Payload::new(
+            aion_core::ContentType::Json,
+            br#"{"workflow":"outcome"}"#.to_vec(),
+        );
+
+        let pid = runtime.spawn_workflow(
+            "payload_workflow_outcome",
+            "run",
+            RuntimeInput::from_payload(&payload)?,
+        )?;
+        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 1);
+        let outcome = runtime.workflow_outcome(pid)?;
+
+        assert_eq!(
+            outcome?,
+            Payload::from_json(&serde_json::json!(payload.bytes().len()))?
+        );
         assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
         runtime.shutdown()?;
         Ok(())
