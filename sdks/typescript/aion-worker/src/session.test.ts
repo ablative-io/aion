@@ -1,106 +1,106 @@
 import { describe, expect, it } from "vitest";
 import {
-  GrpcWorkerSession,
-  decodePayload,
-  encodePayload,
-  type WorkerConfig,
-  type WorkerSession,
-  type WorkerSessionEvent,
+	decodePayload,
+	encodePayload,
+	GrpcWorkerSession,
+	type WorkerConfig,
+	type WorkerSession,
+	type WorkerSessionEvent,
 } from "./index.js";
 import type { ServerToWorker, WorkerToServer } from "./proto/index.js";
 
 class FakeSession implements WorkerSession {
-  public handshakes: WorkerConfig[] = [];
-  public registrations: readonly string[][] = [];
+	public handshakes: WorkerConfig[] = [];
+	public registrations: string[][] = [];
 
-  public async handshake(config: WorkerConfig): Promise<void> {
-    this.handshakes.push(config);
-  }
+	public async handshake(config: WorkerConfig): Promise<void> {
+		this.handshakes.push(config);
+	}
 
-  public async register(activityTypes: readonly string[]): Promise<void> {
-    this.registrations.push([...activityTypes]);
-  }
+	public async register(activityTypes: readonly string[]): Promise<void> {
+		this.registrations.push([...activityTypes]);
+	}
 
-  public async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
-    yield { kind: "closed" };
-  }
+	public async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
+		yield { kind: "closed" };
+	}
 
-  public async reportResult(): Promise<void> {}
+	public async reportResult(): Promise<void> {}
 
-  public async reportFailure(): Promise<void> {}
+	public async reportFailure(): Promise<void> {}
 
-  public async sendHeartbeat(): Promise<void> {}
+	public async sendHeartbeat(): Promise<void> {}
 
-  public async close(): Promise<void> {}
+	public async close(): Promise<void> {}
 }
 
 describe("WorkerSession", () => {
-  it("carries configured task queue, identity, and activity names", async () => {
-    const session = new FakeSession();
-    const config: WorkerConfig = {
-      endpoint: "127.0.0.1:50051",
-      taskQueue: "payments",
-      identity: "worker-a",
-      maxConcurrency: 2,
-    };
+	it("carries configured task queue, identity, and activity names", async () => {
+		const session = new FakeSession();
+		const config: WorkerConfig = {
+			endpoint: "127.0.0.1:50051",
+			taskQueue: "payments",
+			identity: "worker-a",
+			maxConcurrency: 2,
+		};
 
-    await session.handshake(config);
-    await session.register(["charge", "refund"]);
+		await session.handshake(config);
+		await session.register(["charge", "refund"]);
 
-    expect(session.handshakes).toHaveLength(1);
-    expect(session.handshakes[0]?.taskQueue).toBe("payments");
-    expect(session.handshakes[0]?.identity).toBe("worker-a");
-    expect(session.registrations).toEqual([["charge", "refund"]]);
-  });
+		expect(session.handshakes).toHaveLength(1);
+		expect(session.handshakes[0]?.taskQueue).toBe("payments");
+		expect(session.handshakes[0]?.identity).toBe("worker-a");
+		expect(session.registrations).toEqual([["charge", "refund"]]);
+	});
 
-  it("preserves payload content type on encode/decode", () => {
-    const encoded = encodePayload({
-      contentType: "application/json",
-      bytes: new Uint8Array([123, 125]),
-    });
+	it("preserves payload content type on encode/decode", () => {
+		const encoded = encodePayload({
+			contentType: "application/json",
+			bytes: new Uint8Array([123, 125]),
+		});
 
-    expect(decodePayload(encoded)).toEqual({
-      contentType: "application/json",
-      bytes: new Uint8Array([123, 125]),
-    });
-  });
+		expect(decodePayload(encoded)).toEqual({
+			contentType: "application/json",
+			bytes: new Uint8Array([123, 125]),
+		});
+	});
 
-  it("rejects empty activity registrations", async () => {
-    const stream = new RecordingStream();
-    const session = new GrpcWorkerSession({
-      streamWorker: () => stream,
-    });
-    await session.handshake({
-      endpoint: "127.0.0.1:50051",
-      taskQueue: "payments",
-      identity: "worker-a",
-      maxConcurrency: 2,
-    });
+	it("rejects empty activity registrations", async () => {
+		const stream = new RecordingStream();
+		const session = new GrpcWorkerSession({
+			streamWorker: () => stream,
+		});
+		await session.handshake({
+			endpoint: "127.0.0.1:50051",
+			taskQueue: "payments",
+			identity: "worker-a",
+			maxConcurrency: 2,
+		});
 
-    await expect(session.register([])).rejects.toThrow(
-      "worker registration must include at least one activity type",
-    );
-    expect(stream.messages).toEqual([]);
-  });
+		await expect(session.register([])).rejects.toThrow(
+			"worker registration must include at least one activity type",
+		);
+		expect(stream.messages).toEqual([]);
+	});
 });
 
 class RecordingStream implements AsyncIterable<ServerToWorker> {
-  public readonly messages: WorkerToServer[] = [];
+	public readonly messages: WorkerToServer[] = [];
 
-  public write(
-    message: WorkerToServer,
-    callback?: (error?: Error | null) => void,
-  ): boolean {
-    this.messages.push(message);
-    callback?.();
-    return true;
-  }
+	public write(
+		message: WorkerToServer,
+		callback?: (error?: Error | null) => void,
+	): boolean {
+		this.messages.push(message);
+		callback?.();
+		return true;
+	}
 
-  public end(): void {}
+	public end(): void {}
 
-  public on(): this {
-    return this;
-  }
+	public on(): this {
+		return this;
+	}
 
-  public async *[Symbol.asyncIterator](): AsyncIterableIterator<ServerToWorker> {}
+	public async *[Symbol.asyncIterator](): AsyncIterableIterator<ServerToWorker> {}
 }
