@@ -10,7 +10,7 @@ use crate::{
     config::{RuntimeConfig, ServerConfig, StoreConfig},
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
-    worker::{ConnectedWorkerRegistry, WorkerActivityDispatcher},
+    worker::{ConnectedWorkerRegistry, PendingActivities, WorkerActivityDispatcher},
 };
 
 /// Cloneable shared state passed to all server transports.
@@ -23,6 +23,7 @@ struct ServerStateInner {
     namespace_guard: NamespaceGuard,
     runtime: RuntimeConfig,
     worker_registry: ConnectedWorkerRegistry,
+    pending_activities: PendingActivities,
 }
 
 impl ServerState {
@@ -48,11 +49,15 @@ impl ServerState {
         S: EventStore,
     {
         let worker_registry = ConnectedWorkerRegistry::default();
-        let dispatcher = Arc::new(WorkerActivityDispatcher::new(
-            worker_registry.clone(),
-            "default",
-            tokio::runtime::Handle::current(),
-        ));
+        let pending_activities = PendingActivities::default();
+        let dispatcher = Arc::new(
+            WorkerActivityDispatcher::new(
+                worker_registry.clone(),
+                "default",
+                tokio::runtime::Handle::current(),
+            )
+            .with_pending(pending_activities.clone()),
+        );
 
         let engine = EngineBuilder::new()
             .store(store)
@@ -62,21 +67,27 @@ impl ServerState {
             .await?;
         let engine = Arc::new(engine);
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
-        Ok(Self::from_parts_with_registry(
-            namespace_resolver,
-            runtime,
-            worker_registry,
-        ))
+        Ok(Self {
+            inner: Arc::new(ServerStateInner {
+                namespace_guard: NamespaceGuard::new(namespace_resolver),
+                runtime,
+                worker_registry,
+                pending_activities,
+            }),
+        })
     }
 
     /// Build shared state from explicit parts with a default worker registry.
     #[must_use]
     pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
-        Self::from_parts_with_registry(
-            namespace_resolver,
-            runtime,
-            ConnectedWorkerRegistry::default(),
-        )
+        Self {
+            inner: Arc::new(ServerStateInner {
+                namespace_guard: NamespaceGuard::new(namespace_resolver),
+                runtime,
+                worker_registry: ConnectedWorkerRegistry::default(),
+                pending_activities: PendingActivities::default(),
+            }),
+        }
     }
 
     /// Build shared state from explicit parts with a caller-supplied registry.
@@ -91,6 +102,7 @@ impl ServerState {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
                 worker_registry,
+                pending_activities: PendingActivities::default(),
             }),
         }
     }
@@ -111,6 +123,12 @@ impl ServerState {
     #[must_use]
     pub fn worker_registry(&self) -> &ConnectedWorkerRegistry {
         &self.inner.worker_registry
+    }
+
+    /// Borrow the pending-activities tracker shared by the NIF bridge and worker stream handler.
+    #[must_use]
+    pub fn pending_activities(&self) -> &PendingActivities {
+        &self.inner.pending_activities
     }
 
     /// Shut down the embedded engine so in-flight durable appends can finish.

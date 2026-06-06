@@ -38,9 +38,11 @@ async fn serve_grpc(
     address: SocketAddr,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
-    let service = api::grpc::workflow_service(state);
+    let workflow = api::grpc::workflow_service(state.clone());
+    let worker = api::worker_grpc::worker_service(state);
     TonicServer::builder()
-        .add_service(service)
+        .add_service(workflow)
+        .add_service(worker)
         .serve_with_shutdown(address, shutdown_requested(shutdown))
         .await
         .map_err(|source| transport_bind("grpc", address, source))?;

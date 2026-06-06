@@ -115,17 +115,18 @@ impl WorkerActivityDispatcher {
         }
     }
 
+    /// Share a caller-supplied pending-activities tracker.
+    #[must_use]
+    pub fn with_pending(mut self, pending: PendingActivities) -> Self {
+        self.pending = pending;
+        self
+    }
+
     /// Override the per-activity dispatch timeout.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
-    }
-
-    /// Borrow the pending-activities tracker for wiring into the completion path.
-    #[must_use]
-    pub fn pending_activities(&self) -> &PendingActivities {
-        &self.pending
     }
 }
 

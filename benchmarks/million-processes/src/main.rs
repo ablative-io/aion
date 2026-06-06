@@ -11,9 +11,8 @@ use std::time::Instant;
 
 use aion::{RuntimeConfig, RuntimeHandle, RuntimeInput};
 
-const FIXTURE_BEAM: &[u8] = include_bytes!(
-    "../../../crates/aion/tests/fixtures/aion_fixture_workflow.beam"
-);
+const FIXTURE_BEAM: &[u8] =
+    include_bytes!("../../../crates/aion/tests/fixtures/aion_fixture_workflow.beam");
 const MODULE_NAME: &str = "aion_fixture_workflow";
 const ENTRY_FUNCTION: &str = "wait";
 
@@ -113,12 +112,7 @@ fn macos_rss() -> Option<usize> {
 
     unsafe extern "C" {
         fn mach_task_self() -> u32;
-        fn task_info(
-            target: u32,
-            flavor: u32,
-            info: *mut TaskBasicInfo,
-            count: *mut u32,
-        ) -> i32;
+        fn task_info(target: u32, flavor: u32, info: *mut TaskBasicInfo, count: *mut u32) -> i32;
     }
 
     let mut info: TaskBasicInfo = unsafe { mem::zeroed() };
