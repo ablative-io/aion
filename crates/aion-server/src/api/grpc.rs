@@ -476,6 +476,7 @@ mod tests {
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
             },
+            workflow_packages: Vec::new(),
         }
     }
 

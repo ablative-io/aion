@@ -1,0 +1,37 @@
+{
+  "store": {
+    "libsql": {
+      "mode": {
+        "Embedded": {
+          "path": "target/aion-dev.db"
+        }
+      },
+      "journal_mode": "wal",
+      "synchronous": "normal",
+      "sync_interval_seconds": null
+    }
+  },
+  "listen": {
+    "grpc": "127.0.0.1:50051",
+    "http": "127.0.0.1:8080"
+  },
+  "tls": null,
+  "auth": {
+    "bearer_token": "dev-token"
+  },
+  "dashboard": {
+    "source": "Embedded"
+  },
+  "namespace": {
+    "mode": "SharedEngine"
+  },
+  "worker": {
+    "heartbeat_window": 30000
+  },
+  "websocket": {
+    "outbound_buffer_bound": 128
+  },
+  "workflow_packages": [
+    "examples/hello-world/hello-world.aion"
+  ]
+}

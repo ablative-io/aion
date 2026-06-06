@@ -26,6 +26,9 @@ pub struct ServerConfig {
     pub worker: WorkerConfig,
     /// WebSocket event streaming policy.
     pub websocket: WebSocketConfig,
+    /// Workflow package archives loaded into the engine at startup.
+    #[serde(default)]
+    pub workflow_packages: Vec<PathBuf>,
 }
 
 /// Event store backend selection.
@@ -130,6 +133,8 @@ pub struct RuntimeConfig {
     pub worker: WorkerConfig,
     /// WebSocket stream configuration.
     pub websocket: WebSocketConfig,
+    /// Workflow package archives loaded into the engine at startup.
+    pub workflow_packages: Vec<PathBuf>,
 }
 
 impl ServerConfig {
@@ -172,6 +177,7 @@ impl ServerConfig {
             namespace: self.namespace,
             worker: self.worker,
             websocket: self.websocket,
+            workflow_packages: self.workflow_packages,
         };
         (self.store, runtime)
     }
