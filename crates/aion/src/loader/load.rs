@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use aion_package::{ContentHash, Package};
+use aion_package::{ContentHash, Package, deployed_name};
 
 use crate::{error::EngineError, runtime::RuntimeHandle};
 
@@ -58,6 +58,9 @@ impl LoadedWorkflows {
 
     /// Load a package into the runtime and record its deployed entrypoint.
     ///
+    /// Builds the full rename map so cross-module imports within the package
+    /// are rewritten to their content-hash deployed names.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::Load`] when the package cannot be registered as an
@@ -67,10 +70,23 @@ impl LoadedWorkflows {
         runtime: &RuntimeHandle,
         package: &Package,
     ) -> Result<LoadedWorkflow, EngineError> {
+        let hash = package.content_hash();
+        let originals: Vec<&str> = package
+            .beams()
+            .iter()
+            .map(aion_package::BeamModule::name)
+            .collect();
+        let deployed: Vec<String> = originals
+            .iter()
+            .map(|name| deployed_name(name, hash))
+            .collect();
+        let deployed_refs: Vec<&str> = deployed.iter().map(String::as_str).collect();
+        let rename_map = runtime.package_rename_map(&originals, &deployed_refs);
+
         self.load_with_rollback(
             package,
-            |deployed_name, bytes| runtime.register_module(deployed_name, bytes),
-            |deployed_name| runtime.unregister_module(deployed_name),
+            |name, bytes| runtime.register_module_with_renames(name, bytes, &rename_map),
+            |name| runtime.unregister_module(name),
         )
     }
 
