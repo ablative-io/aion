@@ -16,6 +16,7 @@ export default [
     rules: {
       "no-empty": "error",
       "no-throw-literal": "error",
+      "no-redeclare": "off",
       "no-undef": "off",
       "no-unused-vars": "off",
     },
