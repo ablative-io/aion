@@ -19,6 +19,10 @@ use super::payload::{payload_to_term, term_to_payload};
 /// Local BEAM process identifier exposed by the runtime boundary.
 pub type Pid = u64;
 
+type RetainedHeap = Box<[u64]>;
+type RetainedHeaps = Vec<RetainedHeap>;
+type RetainedSpawnHeaps = Arc<dashmap::DashMap<Pid, Mutex<RetainedHeaps>>>;
+
 /// Runtime-owned workflow or activity input terms.
 ///
 /// The wrapper keeps the beamr term representation inside the runtime module
@@ -27,7 +31,7 @@ pub type Pid = u64;
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct RuntimeInput {
     terms: Vec<Term>,
-    heaps: Vec<Box<[u64]>>,
+    heaps: RetainedHeaps,
 }
 
 impl RuntimeInput {
@@ -56,7 +60,7 @@ impl RuntimeInput {
         u8::try_from(self.terms.len()).unwrap_or(u8::MAX)
     }
 
-    fn into_spawn_parts(self) -> (Vec<Term>, Vec<Box<[u64]>>) {
+    fn into_spawn_parts(self) -> (Vec<Term>, RetainedHeaps) {
         (self.terms, self.heaps)
     }
 }
@@ -69,7 +73,7 @@ pub struct RuntimeHandle {
     pub(super) native_registry: Arc<BifRegistryImpl>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
-    spawn_heaps: Arc<dashmap::DashMap<Pid, Mutex<Vec<Box<[u64]>>>>>,
+    spawn_heaps: RetainedSpawnHeaps,
 }
 
 impl RuntimeHandle {
@@ -404,7 +408,7 @@ impl RuntimeHandle {
         Ok(pid)
     }
 
-    fn retain_spawn_heaps(&self, pid: Pid, heaps: Vec<Box<[u64]>>) {
+    fn retain_spawn_heaps(&self, pid: Pid, heaps: RetainedHeaps) {
         if heaps.is_empty() {
             return;
         }
