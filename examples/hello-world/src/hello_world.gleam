@@ -22,20 +22,24 @@ pub type WorkflowError {
   ActivityFailed(message: String)
 }
 
-pub fn definition() -> workflow.WorkflowDefinition(GreetingInput, String, WorkflowError) {
+pub fn definition() -> workflow.WorkflowDefinition(String, String, WorkflowError) {
   workflow.define(
     "hello-world",
-    greeting_input_codec(),
+    codec.json_codec(json.string, decode.string),
     codec.json_codec(json.string, decode.string),
     workflow_error_codec(),
     run,
   )
 }
 
-pub fn run(input: GreetingInput) -> Result(String, WorkflowError) {
-  case workflow.run(greet_activity(input)) {
-    Ok(output) -> Ok(output.greeting)
-    Error(activity_error) -> Error(ActivityFailed(activity_error_message(activity_error)))
+pub fn run(raw_json: String) -> Result(String, WorkflowError) {
+  case json.parse(raw_json, greeting_input_decoder()) {
+    Ok(input) ->
+      case workflow.run(greet_activity(input)) {
+        Ok(output) -> Ok(output.greeting)
+        Error(activity_error) -> Error(ActivityFailed(activity_error_message(activity_error)))
+      }
+    Error(_) -> Error(ActivityFailed("failed to decode workflow input"))
   }
 }
 

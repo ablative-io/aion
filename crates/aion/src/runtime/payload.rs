@@ -8,31 +8,19 @@ use crate::EngineError;
 
 pub(crate) fn payload_to_term(payload: &Payload) -> Result<Term, EngineError> {
     match payload.content_type() {
-        ContentType::Json => json_to_term(payload.to_json().map_err(runtime_error_from_display)?),
+        ContentType::Json => json_to_binary_term(payload.bytes()),
     }
 }
 
-fn json_to_term(value: serde_json::Value) -> Result<Term, EngineError> {
-    match value {
-        serde_json::Value::Null
-        | serde_json::Value::String(_)
-        | serde_json::Value::Array(_)
-        | serde_json::Value::Object(_) => Ok(Term::NIL),
-        serde_json::Value::Bool(true) => Ok(Term::atom(beamr::atom::Atom::TRUE)),
-        serde_json::Value::Bool(false) => Ok(Term::atom(beamr::atom::Atom::FALSE)),
-        serde_json::Value::Number(number) => {
-            let value = number.as_i64().ok_or_else(|| {
-                runtime_error(format!(
-                    "json number `{number}` cannot become a BEAM small integer"
-                ))
-            })?;
-            Term::try_small_int(value).ok_or_else(|| {
-                runtime_error(format!(
-                    "json number `{number}` is outside BEAM small integer range"
-                ))
-            })
-        }
-    }
+fn json_to_binary_term(bytes: &[u8]) -> Result<Term, EngineError> {
+    use beamr::term::binary;
+    let word_count = 2 + binary::packed_word_count(bytes.len());
+    let mut heap = vec![0_u64; word_count].into_boxed_slice();
+    let term = binary::write_binary(&mut heap, bytes).ok_or_else(|| {
+        runtime_error("could not allocate binary term for JSON payload".to_owned())
+    })?;
+    Box::leak(heap);
+    Ok(term)
 }
 
 pub(crate) fn term_to_payload(term: Term, atoms: &AtomTable) -> Result<Payload, EngineError> {
