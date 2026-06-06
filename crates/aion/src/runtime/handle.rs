@@ -518,37 +518,6 @@ impl RuntimeHandle {
     pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
         self.scheduler.run_until_exit(pid)
     }
-
-    /// Block until a process exits, log any execution error, and return the
-    /// exit reason. Diagnostic only — blocks the calling thread.
-    pub fn run_until_exit_for_diagnostic(&self, pid: Pid) -> (ExitReason, Term) {
-        let (reason, result) = self.scheduler.run_until_exit(pid);
-        if reason != ExitReason::Normal {
-            eprintln!("[aion] pid={pid} exit_reason={reason:?} result={result:?}");
-        }
-        if reason == ExitReason::Error {
-            if let Some(exec_error) = self.scheduler.take_exit_error(pid) {
-                eprintln!("[aion] interpreter error: {exec_error:?}");
-                if let beamr::error::ExecError::Undef {
-                    module,
-                    function,
-                    arity,
-                } = &exec_error
-                {
-                    let mod_name = self.atom_table.resolve(*module).unwrap_or("?");
-                    let fn_name = self.atom_table.resolve(*function).unwrap_or("?");
-                    eprintln!("[aion] undef: {mod_name}:{fn_name}/{arity}");
-                }
-            }
-            if let Some(exception) = self.scheduler.take_exit_exception(pid) {
-                eprintln!(
-                    "[aion] exception: class={:?} reason={:?} trace={:?}",
-                    exception.class, exception.reason, exception.stacktrace
-                );
-            }
-        }
-        (reason, result)
-    }
 }
 
 fn runtime_error(reason: String) -> EngineError {

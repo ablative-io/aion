@@ -121,12 +121,17 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
     )]
 }
 
-/// Module names backed by engine-owned NIFs.
+/// Module names backed by engine-owned NIFs, derived from actual entries.
 ///
 /// These modules must not be content-hash renamed during package loading
 /// because the NIF is registered under the original name.
 pub(super) fn nif_module_names() -> Vec<String> {
-    vec![FFI_MODULE.to_owned()]
+    let mut names: Vec<String> = engine_nif_entries()
+        .into_iter()
+        .map(|entry| entry.mfa.module.clone())
+        .collect();
+    names.dedup();
+    names
 }
 
 #[cfg(test)]

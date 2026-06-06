@@ -1,12 +1,19 @@
 //! Runtime-owned conversions between durable payloads and BEAM terms.
 
+use std::cell::RefCell;
+
 use aion_core::{ContentType, Payload};
 use beamr::atom::AtomTable;
 use beamr::term::Term;
 
 use crate::EngineError;
 
+thread_local! {
+    static PAYLOAD_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
+}
+
 pub(crate) fn payload_to_term(payload: &Payload) -> Result<Term, EngineError> {
+    PAYLOAD_HEAP.with_borrow_mut(Vec::clear);
     match payload.content_type() {
         ContentType::Json => json_to_binary_term(payload.bytes()),
     }
@@ -19,7 +26,7 @@ fn json_to_binary_term(bytes: &[u8]) -> Result<Term, EngineError> {
     let term = binary::write_binary(&mut heap, bytes).ok_or_else(|| {
         runtime_error("could not allocate binary term for JSON payload".to_owned())
     })?;
-    Box::leak(heap);
+    PAYLOAD_HEAP.with_borrow_mut(|parked| parked.push(heap));
     Ok(term)
 }
 
