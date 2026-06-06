@@ -168,6 +168,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tonic 0.14.6",
  "tower 0.5.3",
  "uuid",
@@ -1676,6 +1677,13 @@ name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
+
+[[package]]
+name = "million-processes"
+version = "0.1.0"
+dependencies = [
+ "aion",
+]
 
 [[package]]
 name = "mime"

@@ -10,7 +10,8 @@ members = [
     "crates/aion-proto",
     "crates/aion-server",
     "crates/aion-worker",
-    "crates/aion-client"
+    "crates/aion-client",
+    "benchmarks/million-processes",
 ]
 
 [workspace.package]
