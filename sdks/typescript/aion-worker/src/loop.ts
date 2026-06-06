@@ -1,6 +1,6 @@
 import {
   type PendingActivityReport,
-  type UnackedResultTracker,
+  UnackedResultTracker,
   type WorkerLogger,
   reReportUnacked,
   reconnectWithBackoff,
@@ -44,9 +44,11 @@ export async function runWorkerLoop(
   await session.register(activityTypes);
 
   const running = new Set<Promise<void>>();
+  const tracker = options.tracker ?? new UnackedResultTracker();
+  const loopOptions = { ...options, tracker };
 
   for (;;) {
-    const receiveCompleted = await receiveUntilClosed(session, running, options);
+    const receiveCompleted = await receiveUntilClosed(session, running, loopOptions);
     if (!receiveCompleted) {
       await Promise.all(running);
       return;
@@ -61,9 +63,7 @@ export async function runWorkerLoop(
       sleep: options.sleep,
       logger: options.logger,
     });
-    if (options.tracker !== undefined) {
-      await reReportUnacked(session, options.tracker, options.logger);
-    }
+    await reReportUnacked(session, tracker, options.logger);
   }
 }
 
@@ -106,7 +106,7 @@ async function dispatchAndReport(
   session: WorkerSession,
   options: RunWorkerLoopOptions,
 ): Promise<void> {
-  const outcome = await options.dispatcher.dispatch(task);
+  const outcome = await dispatchWithClassification(task, options);
   if (outcome.kind === "completed") {
     const report: PendingActivityReport = {
       kind: "completed",
@@ -118,7 +118,11 @@ async function dispatchAndReport(
     options.logger?.info("worker reporting completed activity", {
       activityId: task.activityId,
     });
-    await session.reportResult(task.workflowId, task.activityId, outcome.output);
+    await reportSafely(
+      () => session.reportResult(task.workflowId, task.activityId, outcome.output),
+      task,
+      options,
+    );
   } else {
     const report: PendingActivityReport = {
       kind: "failed",
@@ -131,11 +135,52 @@ async function dispatchAndReport(
       activityId: task.activityId,
       retryable: outcome.failure.retryable,
     });
-    await session.reportFailure(
-      task.workflowId,
-      task.activityId,
-      outcome.failure,
+    await reportSafely(
+      () =>
+        session.reportFailure(task.workflowId, task.activityId, outcome.failure),
+      task,
+      options,
     );
+  }
+}
+
+async function dispatchWithClassification(
+  task: ActivityTask,
+  options: RunWorkerLoopOptions,
+): Promise<DispatchOutcome> {
+  try {
+    return await options.dispatcher.dispatch(task);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    options.logger?.error("worker dispatcher threw unclassified error", {
+      activityId: task.activityId,
+      activityType: task.activityType,
+      retryable: true,
+      message,
+    });
+    return {
+      kind: "failed",
+      failure: {
+        retryable: true,
+        message,
+      },
+    };
+  }
+}
+
+async function reportSafely(
+  report: () => Promise<void>,
+  task: ActivityTask,
+  options: RunWorkerLoopOptions,
+): Promise<void> {
+  try {
+    await report();
+  } catch (error) {
+    options.logger?.warn("worker report failed; result remains unacknowledged", {
+      activityId: task.activityId,
+      activityType: task.activityType,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

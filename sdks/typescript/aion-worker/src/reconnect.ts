@@ -83,7 +83,10 @@ export async function reconnectWithBackoff(
       return session;
     } catch (error) {
       lastError = error;
-      dependencies.logger?.warn("worker reconnect attempt failed", { attempt });
+      dependencies.logger?.warn("worker reconnect attempt failed", {
+        attempt,
+        message: error instanceof Error ? error.message : String(error),
+      });
       if (attempt === reconnect.maxAttempts) {
         break;
       }
@@ -128,14 +131,19 @@ export function requireReconnectConfig(
   if (reconnect === undefined) {
     throw new Error("worker reconnect config is required");
   }
-  if (reconnect.initialDelayMs <= 0) {
-    throw new Error("worker reconnect initialDelayMs must be greater than zero");
+  if (!Number.isInteger(reconnect.initialDelayMs) || reconnect.initialDelayMs <= 0) {
+    throw new Error("worker reconnect initialDelayMs must be a positive integer");
   }
-  if (reconnect.maxDelayMs <= 0) {
-    throw new Error("worker reconnect maxDelayMs must be greater than zero");
+  if (!Number.isInteger(reconnect.maxDelayMs) || reconnect.maxDelayMs <= 0) {
+    throw new Error("worker reconnect maxDelayMs must be a positive integer");
   }
-  if (reconnect.maxAttempts <= 0) {
-    throw new Error("worker reconnect maxAttempts must be greater than zero");
+  if (!Number.isInteger(reconnect.maxAttempts) || reconnect.maxAttempts <= 0) {
+    throw new Error("worker reconnect maxAttempts must be a positive integer");
+  }
+  if (reconnect.initialDelayMs > reconnect.maxDelayMs) {
+    throw new Error(
+      "worker reconnect initialDelayMs must not exceed maxDelayMs",
+    );
   }
   return reconnect;
 }

@@ -64,11 +64,14 @@ class SlowDispatcher implements ActivityDispatcher {
   public async dispatch(): Promise<DispatchOutcome> {
     this.current += 1;
     this.peak = Math.max(this.peak, this.current);
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
-    });
-    this.current -= 1;
-    return { kind: "completed", output: payload };
+    try {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 5);
+      });
+      return { kind: "completed", output: payload };
+    } finally {
+      this.current -= 1;
+    }
   }
 }
 
@@ -89,6 +92,38 @@ describe("runWorkerLoop", () => {
 
     expect(dispatcher.peak).toBe(2);
     expect(session.reports).toHaveLength(5);
+  });
+
+  it("logs and reports unclassified dispatcher errors as retryable failures", async () => {
+    const session = new ArraySession([
+      { kind: "task", task: task("1") },
+      { kind: "closed" },
+    ]);
+    const warnings: string[] = [];
+    const dispatcher: ActivityDispatcher = {
+      activityTypes: () => ["slow"],
+      dispatch: async () => {
+        throw new Error("boom");
+      },
+    };
+
+    await runWorkerLoop({
+      config: config(1),
+      session,
+      dispatcher,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (message, fields) => {
+          warnings.push(`${message}:${String(fields?.retryable)}`);
+        },
+      },
+    });
+
+    expect(session.reports).toEqual(["1"]);
+    expect(warnings).toEqual([
+      "worker dispatcher threw unclassified error:true",
+    ]);
   });
 });
 

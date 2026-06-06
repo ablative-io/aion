@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { WorkerConfig, WorkerSession, WorkerSessionEvent } from "./index.js";
+import {
+  GrpcWorkerSession,
+  decodePayload,
+  encodePayload,
+  type WorkerConfig,
+  type WorkerSession,
+  type WorkerSessionEvent,
+} from "./index.js";
+import type { ServerToWorker, WorkerToServer } from "./proto/index.js";
 
 class FakeSession implements WorkerSession {
   public handshakes: WorkerConfig[] = [];
@@ -44,4 +52,55 @@ describe("WorkerSession", () => {
     expect(session.handshakes[0]?.identity).toBe("worker-a");
     expect(session.registrations).toEqual([["charge", "refund"]]);
   });
+
+  it("preserves payload content type on encode/decode", () => {
+    const encoded = encodePayload({
+      contentType: "application/json",
+      bytes: new Uint8Array([123, 125]),
+    });
+
+    expect(decodePayload(encoded)).toEqual({
+      contentType: "application/json",
+      bytes: new Uint8Array([123, 125]),
+    });
+  });
+
+  it("rejects empty activity registrations", async () => {
+    const stream = new RecordingStream();
+    const session = new GrpcWorkerSession({
+      streamWorker: () => stream,
+    });
+    await session.handshake({
+      endpoint: "127.0.0.1:50051",
+      taskQueue: "payments",
+      identity: "worker-a",
+      maxConcurrency: 2,
+    });
+
+    await expect(session.register([])).rejects.toThrow(
+      "worker registration must include at least one activity type",
+    );
+    expect(stream.messages).toEqual([]);
+  });
 });
+
+class RecordingStream implements AsyncIterable<ServerToWorker> {
+  public readonly messages: WorkerToServer[] = [];
+
+  public write(
+    message: WorkerToServer,
+    callback?: (error?: Error | null) => void,
+  ): boolean {
+    this.messages.push(message);
+    callback?.();
+    return true;
+  }
+
+  public end(): void {}
+
+  public on(): this {
+    return this;
+  }
+
+  public async *[Symbol.asyncIterator](): AsyncIterableIterator<ServerToWorker> {}
+}
