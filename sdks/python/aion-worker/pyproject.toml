@@ -1,5 +1,69 @@
+[build-system]
+requires = ["hatchling>=1.25", "grpcio-tools>=1.68"]
+build-backend = "hatchling.build"
+
 [project]
 name = "aion-worker-python"
 version = "0.1.0"
 requires-python = ">=3.10"
-description = "The Python remote-worker SDK. The home for ML inference and existing Python business logic as out-of-process activities."
+description = "The Python remote-worker SDK for out-of-process Aion activities."
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Aion Contributors" }]
+keywords = ["aion", "workflow", "worker", "activities", "sdk"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "grpcio>=1.68",
+  "protobuf>=5.28",
+]
+
+[project.urls]
+Homepage = "https://github.com/ablative-io/aion"
+Repository = "https://github.com/ablative-io/aion"
+Issues = "https://github.com/ablative-io/aion/issues"
+Documentation = "https://github.com/ablative-io/aion/tree/main/sdks/python/aion-worker"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "grpcio-tools>=1.68",
+  "mypy>=1.10",
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["aion_worker"]
+
+[tool.hatch.build.targets.sdist]
+include = ["aion_worker", "build_proto.py", "pyproject.toml"]
+
+[tool.hatch.build.hooks.custom]
+path = "build_proto.py"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["aion_worker/proto"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+exclude = ["aion_worker/proto"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

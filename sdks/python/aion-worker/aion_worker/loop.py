@@ -1,1 +1,187 @@
-"""asyncio receive->dispatch->report loop + bounded concurrency"""
+"""Asyncio receive, dispatch, and report loop with bounded concurrency."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from typing import Protocol, TypeAlias
+
+from .reconnect import PendingCompletedReport, PendingFailedReport, UnackedResultTracker
+from .session import (
+    ActivityCancelled,
+    ActivityError,
+    ActivityId,
+    ActivityTask,
+    Payload,
+    TaskReceived,
+    WorkerConfig,
+    WorkerSession,
+    WorkerSessionEvent,
+    WorkflowId,
+)
+
+logger = logging.getLogger(__name__)
+SessionFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
+
+
+@dataclass(frozen=True)
+class ActivityExecutionContext:
+    """Minimal AR-007 dispatch context placeholder."""
+
+    workflow_id: WorkflowId
+    activity_id: ActivityId
+
+
+@dataclass(frozen=True)
+class Completed:
+    """Dispatch outcome carrying successful output payload."""
+
+    output: Payload
+
+
+@dataclass(frozen=True)
+class Failed:
+    """Dispatch outcome carrying explicit classified activity failure."""
+
+    failure: ActivityError
+
+
+DispatchOutcome: TypeAlias = Completed | Failed
+
+
+class ActivityDispatcher(Protocol):
+    """Typed-activity seam filled by AR-008."""
+
+    def activity_types(self) -> Iterable[str]:
+        """Return activity type names this dispatcher can serve."""
+
+    async def dispatch(self, task: ActivityTask, context: ActivityExecutionContext) -> DispatchOutcome:
+        """Run one activity and return a completion or explicit failure."""
+
+
+async def serve(
+    config: WorkerConfig,
+    session: WorkerSession,
+    dispatcher: ActivityDispatcher,
+    tracker: UnackedResultTracker | None = None,
+) -> None:
+    """Serve tasks from an already connected and registered session."""
+
+    if config.max_concurrency <= 0:
+        raise ValueError("max_concurrency must be greater than zero")
+    unacked = tracker if tracker is not None else UnackedResultTracker()
+    semaphore = asyncio.Semaphore(config.max_concurrency)
+    running: set[asyncio.Task[None]] = set()
+    stream = session.receive_tasks().__aiter__()
+
+    try:
+        while True:
+            await semaphore.acquire()
+            try:
+                event = await stream.__anext__()
+            except StopAsyncIteration:
+                semaphore.release()
+                break
+            except Exception:
+                semaphore.release()
+                raise
+            if isinstance(event, TaskReceived):
+                task = asyncio.create_task(_run_and_report(session, dispatcher, event.task, unacked, semaphore))
+                running.add(task)
+                task.add_done_callback(running.discard)
+            else:
+                semaphore.release()
+                _handle_control_event(event)
+    finally:
+        if running:
+            await asyncio.gather(*running)
+
+
+async def connect_register_replay_and_serve(
+    config: WorkerConfig,
+    connect: SessionFactory,
+    dispatcher: ActivityDispatcher,
+    tracker: UnackedResultTracker | None = None,
+) -> None:
+    """Connect, register, replay unacked reports, then enter the serve loop."""
+
+    from .reconnect import reconnect_register_and_replay
+
+    unacked = tracker if tracker is not None else UnackedResultTracker()
+    activity_types = list(dispatcher.activity_types())
+    while True:
+        session = await reconnect_register_and_replay(
+            connect=connect,
+            config=config,
+            activity_types=activity_types,
+            available_handlers=activity_types,
+            tracker=unacked,
+        )
+        try:
+            await serve(config, session, dispatcher, unacked)
+            return
+        except Exception:
+            logger.exception("worker session dropped; reconnecting before receiving more tasks")
+
+
+async def _run_and_report(
+    session: WorkerSession,
+    dispatcher: ActivityDispatcher,
+    task: ActivityTask,
+    tracker: UnackedResultTracker,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    try:
+        logger.info(
+            "received activity task",
+            extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+        )
+        context = ActivityExecutionContext(workflow_id=task.workflow_id, activity_id=task.activity_id)
+        outcome = await dispatcher.dispatch(task, context)
+        await _report_outcome(session, task, outcome, tracker)
+    finally:
+        semaphore.release()
+
+
+async def _report_outcome(
+    session: WorkerSession, task: ActivityTask, outcome: DispatchOutcome, tracker: UnackedResultTracker
+) -> None:
+    if isinstance(outcome, Completed):
+        report = PendingCompletedReport(task.workflow_id, task.activity_id, outcome.output)
+        tracker.record(report)
+        logger.info(
+            "reporting activity completion",
+            extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+        )
+        await session.report_result(task.workflow_id, task.activity_id, outcome.output)
+        logger.info(
+            "reported activity completion",
+            extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+        )
+        return
+    report = PendingFailedReport(task.workflow_id, task.activity_id, outcome.failure)
+    tracker.record(report)
+    logger.info("reporting activity failure", extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type))
+    await session.report_failure(task.workflow_id, task.activity_id, outcome.failure)
+    logger.info("reported activity failure", extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type))
+
+
+def _handle_control_event(event: WorkerSessionEvent) -> None:
+    if isinstance(event, ActivityCancelled):
+        logger.info(
+            "received cooperative activity cancellation",
+            extra={
+                "workflow_id": event.workflow_id.uuid,
+                "activity_id": event.activity_id.sequence_position,
+            },
+        )
+
+
+def _log_fields(workflow_id: WorkflowId, activity_id: ActivityId, activity_type: str) -> dict[str, object]:
+    return {
+        "workflow_id": workflow_id.uuid,
+        "activity_id": activity_id.sequence_position,
+        "activity_type": activity_type,
+    }
