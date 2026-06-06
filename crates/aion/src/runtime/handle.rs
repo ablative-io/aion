@@ -66,6 +66,7 @@ pub struct RuntimeHandle {
     pub(super) native_registry: Arc<BifRegistryImpl>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    registered_nif_modules: Arc<dashmap::DashSet<String>>,
 }
 
 impl RuntimeHandle {
@@ -97,6 +98,7 @@ impl RuntimeHandle {
             native_registry,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            registered_nif_modules: Arc::new(dashmap::DashSet::new()),
         })
     }
 
@@ -123,6 +125,7 @@ impl RuntimeHandle {
                     .register(module, function, mfa.arity, entry.function)
             };
             result.map_err(|error| nif_registration_error(&mfa, error))?;
+            self.registered_nif_modules.insert(mfa.module);
         }
 
         Ok(())
@@ -132,7 +135,13 @@ impl RuntimeHandle {
     /// content-hash renamed during package loading.
     #[must_use]
     pub fn registered_nif_modules(&self) -> Vec<String> {
-        super::engine_nifs::nif_module_names()
+        let mut module_names: Vec<_> = self
+            .registered_nif_modules
+            .iter()
+            .map(|module_name| module_name.key().clone())
+            .collect();
+        module_names.sort();
+        module_names
     }
 
     /// Spawn a top-level workflow process at a deployed module/function entrypoint.
@@ -666,6 +675,7 @@ mod tests {
             Some(EngineError::NifRegistration { reason })
                 if reason.contains("host:answer/0")
         ));
+        assert_eq!(runtime.registered_nif_modules(), vec!["host"]);
         runtime.shutdown()?;
         Ok(())
     }
@@ -681,6 +691,10 @@ mod tests {
 
         runtime.install_nifs(registration)?;
 
+        assert_eq!(
+            runtime.registered_nif_modules(),
+            vec!["aion_flow_ffi", "host"]
+        );
         let answer = runtime.lookup_native_for_test("host", "answer", 0);
         assert!(answer.is_some());
         assert!(

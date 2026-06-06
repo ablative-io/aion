@@ -1,5 +1,7 @@
 //! NIF registration surface.
 
+use std::collections::BTreeSet;
+
 use beamr::native::NativeFn;
 
 /// Module/function/arity key for a native implemented function.
@@ -107,6 +109,20 @@ impl NifRegistration {
         self
     }
 
+    /// Return the unique module names represented by the collected NIF entries.
+    ///
+    /// These names are derived from each entry's MFA and are therefore kept in
+    /// sync with both engine-owned and host-supplied registrations.
+    #[must_use]
+    pub fn module_names(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.mfa.module.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Consume the collection and return the entries to install.
     #[must_use]
     pub fn into_entries(self) -> Vec<NifEntry> {
@@ -145,6 +161,10 @@ mod tests {
             .add_host_nifs([NifEntry::dirty(Mfa::new("host", "zero", 0), native_zero)]);
 
         assert!(registration.len() >= 2);
+        let module_names = registration.module_names();
+        assert!(module_names.iter().any(|module| module == "aion_flow_ffi"));
+        assert!(module_names.iter().any(|module| module == "host"));
+
         let entries = registration.into_entries();
         let host_entry = entries.iter().find(|e| e.mfa.display() == "host:zero/0");
         assert!(host_entry.is_some_and(|e| e.is_dirty));
