@@ -128,6 +128,13 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    /// Return module names that have registered NIFs and should not be
+    /// content-hash renamed during package loading.
+    #[must_use]
+    pub fn registered_nif_modules(&self) -> Vec<String> {
+        super::engine_nifs::nif_module_names()
+    }
+
     /// Spawn a top-level workflow process at a deployed module/function entrypoint.
     ///
     /// # Errors
@@ -516,10 +523,12 @@ impl RuntimeHandle {
     /// exit reason. Diagnostic only — blocks the calling thread.
     pub fn run_until_exit_for_diagnostic(&self, pid: Pid) -> (ExitReason, Term) {
         let (reason, result) = self.scheduler.run_until_exit(pid);
-        eprintln!("[aion] pid={pid} exit_reason={reason:?} result={result:?}");
+        if reason != ExitReason::Normal {
+            eprintln!("[aion] pid={pid} exit_reason={reason:?} result={result:?}");
+        }
         if reason == ExitReason::Error {
             if let Some(exec_error) = self.scheduler.take_exit_error(pid) {
-                eprintln!("[aion] exec error: {exec_error:?}");
+                eprintln!("[aion] interpreter error: {exec_error:?}");
                 if let beamr::error::ExecError::Undef {
                     module,
                     function,
@@ -530,6 +539,12 @@ impl RuntimeHandle {
                     let fn_name = self.atom_table.resolve(*function).unwrap_or("?");
                     eprintln!("[aion] undef: {mod_name}:{fn_name}/{arity}");
                 }
+            }
+            if let Some(exception) = self.scheduler.take_exit_exception(pid) {
+                eprintln!(
+                    "[aion] exception: class={:?} reason={:?} trace={:?}",
+                    exception.class, exception.reason, exception.stacktrace
+                );
             }
         }
         (reason, result)

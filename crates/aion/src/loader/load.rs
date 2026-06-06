@@ -71,10 +71,13 @@ impl LoadedWorkflows {
         package: &Package,
     ) -> Result<LoadedWorkflow, EngineError> {
         let hash = package.content_hash();
+        let nif_modules = runtime.registered_nif_modules();
+
         let originals: Vec<&str> = package
             .beams()
             .iter()
             .map(aion_package::BeamModule::name)
+            .filter(|name| !nif_modules.contains(&(*name).to_owned()))
             .collect();
         let deployed: Vec<String> = originals
             .iter()
@@ -83,10 +86,25 @@ impl LoadedWorkflows {
         let deployed_refs: Vec<&str> = deployed.iter().map(String::as_str).collect();
         let rename_map = runtime.package_rename_map(&originals, &deployed_refs);
 
+        let nif_set: std::collections::HashSet<&str> =
+            nif_modules.iter().map(String::as_str).collect();
+
         self.load_with_rollback(
             package,
-            |name, bytes| runtime.register_module_with_renames(name, bytes, &rename_map),
-            |name| runtime.unregister_module(name),
+            |name, bytes| {
+                let original = name.split('$').next().unwrap_or(name);
+                if nif_set.contains(original) {
+                    return Ok(());
+                }
+                runtime.register_module_with_renames(name, bytes, &rename_map)
+            },
+            |name| {
+                let original = name.split('$').next().unwrap_or(name);
+                if nif_set.contains(original) {
+                    return Ok(());
+                }
+                runtime.unregister_module(name)
+            },
         )
     }
 
