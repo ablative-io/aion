@@ -170,6 +170,10 @@ impl Worker {
 }
 
 /// Connects and serves an already-built worker with the default non-shutdown future.
+///
+/// # Errors
+///
+/// Returns [`WorkerError`] for registration, dispatch, heartbeat, or report failures.
 pub async fn run_worker_with_session<S>(worker: Worker, session: S) -> Result<S, WorkerError>
 where
     S: WorkerSession,
