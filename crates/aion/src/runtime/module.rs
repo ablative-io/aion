@@ -56,13 +56,20 @@ impl RuntimeHandle {
         beam_bytes: &[u8],
         rename_map: &ModuleRenameMap,
     ) -> Result<(), EngineError> {
-        let (module, _) = prepare_module(
+        let (module, unresolved) = prepare_module(
             beam_bytes,
             &self.atom_table,
             &self.module_registry,
             self.native_registry.as_ref(),
         )
         .map_err(runtime_error_from_display)?;
+        if !unresolved.is_empty() {
+            tracing::warn!(
+                module = deployed_name,
+                count = unresolved.imports().len(),
+                "unresolved BEAM imports after BIF + module registration"
+            );
+        }
         self.register_prepared_module(module, deployed_name, rename_map)
     }
 
