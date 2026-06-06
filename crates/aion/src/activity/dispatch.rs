@@ -87,9 +87,13 @@ mod tests {
         aion_core::Payload::from_json(&json!(null))
     }
 
+    fn fixture_workflow_beam() -> &'static [u8] {
+        include_bytes!("../../tests/fixtures/aion_fixture_workflow.beam")
+    }
+
     #[test]
-    fn dispatch_spawns_linked_child_and_uses_dirty_registration()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn dispatch_spawns_linked_child_and_uses_dirty_registration(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime()?;
         runtime.install_test_activity_nif("activity_host", "answer", true, true)?;
         runtime.register_native_call_module_for_test(
@@ -109,8 +113,8 @@ mod tests {
     }
 
     #[test]
-    fn successful_activity_result_is_delivered_to_workflow()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn successful_activity_result_is_delivered_to_workflow(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime()?;
         runtime.install_test_activity_nif("activity_host", "answer", false, true)?;
         runtime.register_native_call_module_for_test(
@@ -131,18 +135,19 @@ mod tests {
     }
 
     #[test]
-    fn failing_activity_surfaces_typed_error_with_trapped_exit()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn failing_activity_surfaces_typed_error_with_trapped_exit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime()?;
-        runtime.install_test_activity_nif("activity_host", "fail", false, false)?;
-        runtime.register_native_call_module_for_test(
-            "activity_fail",
-            "run",
-            "activity_host",
-            "fail",
-        );
+        runtime.register_module("aion_fixture_workflow", fixture_workflow_beam())?;
         let workflow = runtime.spawn_test_process_with_trap_exit(true)?;
-        let activity = dispatch_activity(&runtime, workflow, "activity_fail", "run", &payload()?)?;
+        let activity = dispatch_activity(
+            &runtime,
+            workflow,
+            "aion_fixture_workflow",
+            "activity",
+            &payload()?,
+        )?;
+        assert!(runtime.is_linked(workflow, activity)?);
         let details = aion_core::Payload::new(ContentType::Json, br#"{"code":"boom"}"#.to_vec());
         let error = aion_core::ActivityError {
             kind: ActivityErrorKind::Retryable,
@@ -150,6 +155,7 @@ mod tests {
             details: Some(details),
         };
         surface_activity_error(&runtime, workflow, activity, error.clone())?;
+        runtime.terminate_test_process_with_error(activity)?;
 
         propagate_activity_outcome(&runtime, workflow, activity)?;
 

@@ -176,6 +176,7 @@ impl RuntimeHandle {
         input: RuntimeInput,
     ) -> Result<Pid, EngineError> {
         self.ensure_live_pid(parent_pid)?;
+        self.wait_until_process_ready(parent_pid)?;
         let arity = input.arity();
         let module = self.atom_table.intern(deployed_module);
         let function_atom = self.atom_table.intern(function);
@@ -381,6 +382,20 @@ impl RuntimeHandle {
         }
     }
 
+    fn wait_until_process_ready(&self, pid: Pid) -> Result<(), EngineError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        while std::time::Instant::now() < deadline {
+            if self.scheduler.trap_exit(pid).is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        self.scheduler
+            .trap_exit(pid)
+            .map(|_| ())
+            .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
+    }
+
     /// Register a test module whose exported function waits indefinitely.
     ///
     /// This keeps lifecycle tests at the runtime boundary while still exercising
@@ -584,13 +599,8 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
-    fn fixture(name: &str) -> std::io::Result<Vec<u8>> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("runtime")
-            .join(name);
-        std::fs::read(path)
+    fn fixture_workflow_beam() -> &'static [u8] {
+        include_bytes!("../../tests/fixtures/aion_fixture_workflow.beam")
     }
 
     #[test]
@@ -601,9 +611,10 @@ mod tests {
     #[test]
     fn registers_spawns_and_shuts_down() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        runtime.register_module("counter", &fixture("counter_v1.beam")?)?;
+        runtime.register_module("aion_fixture_workflow", fixture_workflow_beam())?;
 
-        let pid = runtime.spawn_workflow("counter", "version", RuntimeInput::default())?;
+        let pid =
+            runtime.spawn_workflow("aion_fixture_workflow", "wait", RuntimeInput::default())?;
         assert!(runtime.cancel_pid(pid).is_ok());
         runtime.shutdown()?;
         Ok(())
