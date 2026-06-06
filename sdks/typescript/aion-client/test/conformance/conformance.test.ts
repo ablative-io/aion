@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   AionClientError,
+  InvalidArgumentError,
   connect,
   fromPayload,
   type Client,
@@ -15,10 +17,10 @@ import {
 const serverUrlEnv = "AION_SERVER_URL";
 const authTokenEnv = "AION_AUTH_TOKEN";
 const placeholderPrefix = "$";
-const serverUrlPlaceholder = placeholderPrefix + "{" + serverUrlEnv + "}";
-const authTokenPlaceholder = placeholderPrefix + "{" + authTokenEnv + "}";
-const scenarioStartedAtPlaceholder = placeholderPrefix + "{scenario.startedAt}";
-const scenarioNowPlaceholder = placeholderPrefix + "{scenario.now}";
+const serverUrlPlaceholder = `${placeholderPrefix}{${serverUrlEnv}}`;
+const authTokenPlaceholder = `${placeholderPrefix}{${authTokenEnv}}`;
+const scenarioStartedAtPlaceholder = `${placeholderPrefix}{scenario.startedAt}`;
+const scenarioNowPlaceholder = `${placeholderPrefix}{scenario.now}`;
 type Json = null | boolean | number | string | Json[] | { readonly [key: string]: Json };
 type JsonRecord = { readonly [key: string]: Json };
 type MutableJsonRecord = { [key: string]: Json };
@@ -33,10 +35,7 @@ test("shared client contract conformance", async () => {
   }
   const document = asRecord(
     JSON.parse(
-      await readFile(
-        join(process.cwd(), "..", "..", "..", "conformance", "aion-clients", "scenarios.json"),
-        "utf8",
-      ),
+      await readFile(scenariosPath(), "utf8"),
     ),
   );
   const defaults = asRecord(document.defaults);
@@ -45,6 +44,19 @@ test("shared client contract conformance", async () => {
     await runScenario(scenario, defaults, fixtures, serverUrl);
   }
 });
+
+function scenariosPath(): string {
+  return join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "..",
+    "..",
+    "conformance",
+    "aion-clients",
+    "scenarios.json",
+  );
+}
 
 async function runScenario(
   scenario: JsonRecord,
@@ -159,7 +171,7 @@ async function execute(
       return { kind: "eventStream", events, sequenceContiguousUnique: sequencesContiguousUnique(events) };
     }
     default:
-      throw new Error(`unsupported conformance operation ${operation}`);
+      throw new InvalidArgumentError(`unsupported conformance operation ${operation}`);
   }
 }
 
@@ -170,20 +182,33 @@ async function collectStream(input: JsonRecord, context: ScenarioContext): Promi
   const events: JsonRecord[] = [];
   const wanted = asArray(asRecord(input.collectUntil).eventTypes).map(String);
   const timeoutMs = Number(asRecord(input.collectUntil).timeoutMs ?? asRecord(input.collect).timeoutMs ?? input.timeoutMs ?? 10000);
-  const deadline = Date.now() + timeoutMs;
-  for await (const event of stream) {
-    events.push(normalizeStreamEvent(event));
-    if (wanted.length > 0 && wanted.every((kind) => events.some((item) => item.type === kind))) {
+  const iterator = stream[Symbol.asyncIterator]();
+  let remainingMs = timeoutMs;
+  while (remainingMs > 0) {
+    const started = Date.now();
+    const item = await Promise.race([
+      iterator.next(),
+      delay(remainingMs).then(() => null),
+    ]);
+    if (item === null || item.done === true) {
+      return events;
+    }
+    events.push(normalizeStreamEvent(item.value));
+    if (wanted.length > 0 && wanted.every((kind) => events.some((event) => event.type === kind))) {
       return events;
     }
     if (wanted.length === 0 && events.length >= 3) {
       return events;
     }
-    if (Date.now() > deadline) {
-      return events;
-    }
+    remainingMs -= Date.now() - started;
   }
   return events;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function assertMatches(

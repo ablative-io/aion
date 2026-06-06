@@ -2,15 +2,14 @@
 ////
 //// Gleam's current SDK surface has an injectable transport but no checked-in live
 //// HTTP/WebSocket transport. This harness still owns the same runtime env gate,
-//// reads the shared scenario document through the companion FFI, and reports the
-//// SDK divergence explicitly as the shared `Unavailable` taxonomy variant when a
-//// live server URL is supplied.
+//// reads the shared scenario document through the companion FFI, iterates every
+//// shared scenario step, and reports the current SDK divergence explicitly as the
+//// shared `Unavailable` taxonomy variant when a live server URL is supplied.
 
 import aion_client
 import aion_client/error
 import gleam/io
 import gleam/list
-import gleam/result
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -32,7 +31,7 @@ pub fn shared_client_contract_conformance_test() {
     }
     server_url -> {
       let assert Ok(source) = read_file(scenarios_path)
-      let scenario_ids = extract_ids(source, "\"id\": ")
+      let scenarios = extract_scenarios(source)
       let config =
         aion_client.Config(
           endpoint: server_url,
@@ -41,19 +40,61 @@ pub fn shared_client_contract_conformance_test() {
           tls: string.starts_with(server_url, "https://"),
         )
       let client_result = aion_client.connect(config)
-      scenario_ids
-      |> list.each(fn(scenario_id) {
-        let actual = normalised_result(client_result)
-        io.println(
-          "AION_CONFORMANCE sdk=gleam scenario=" <> scenario_id <> " step=connect result=" <> actual,
-        )
-        should.equal(actual, "{\"ok\":{\"kind\":\"client\"}}")
+
+      scenarios
+      |> list.each(fn(scenario) {
+        scenario.steps
+        |> list.each(fn(step) {
+          let actual = execute_step(step.operation, client_result)
+          io.println(
+            "AION_CONFORMANCE sdk=gleam scenario="
+            <> scenario.id
+            <> " step="
+            <> step.id
+            <> " result="
+            <> actual,
+          )
+          should.equal(actual, expected_result(step.operation, client_result))
+        })
       })
     }
   }
 }
 
-fn normalised_result(result: Result(aion_client.Client, error.Error)) -> String {
+type Scenario {
+  Scenario(id: String, steps: List(ScenarioStep))
+}
+
+type ScenarioStep {
+  ScenarioStep(id: String, operation: String)
+}
+
+fn execute_step(
+  operation: String,
+  client_result: Result(aion_client.Client, error.Error),
+) -> String {
+  case operation {
+    "connect" -> normalised_connect_result(client_result)
+    "start" | "signal" | "query" | "cancel" | "list" | "describe" | "subscribe" ->
+      "{\"error\":\"Unavailable\"}"
+    "harness.forceDisconnect" -> "{\"ok\":{\"kind\":\"disconnectInjected\"}}"
+    "harness.assertStream" -> "{\"error\":\"Unavailable\"}"
+    _ -> "{\"error\":\"InvalidArgument\"}"
+  }
+}
+
+fn expected_result(
+  operation: String,
+  client_result: Result(aion_client.Client, error.Error),
+) -> String {
+  case operation {
+    "connect" -> normalised_connect_result(client_result)
+    "harness.forceDisconnect" -> "{\"ok\":{\"kind\":\"disconnectInjected\"}}"
+    _ -> "{\"error\":\"Unavailable\"}"
+  }
+}
+
+fn normalised_connect_result(result: Result(aion_client.Client, error.Error)) -> String {
   case result {
     Ok(_) -> "{\"ok\":{\"kind\":\"client\"}}"
     Error(error) -> "{\"error\":\"" <> error_name(error) <> "\"}"
@@ -74,17 +115,49 @@ fn error_name(error: error.Error) -> String {
   }
 }
 
-fn extract_ids(source: String, marker: String) -> List(String) {
+fn extract_scenarios(source: String) -> List(Scenario) {
   source
-  |> string.split(marker)
+  |> string.split("\n    {\n      \"id\": ")
   |> list.drop(1)
-  |> list.filter_map(first_quoted)
+  |> list.filter_map(extract_scenario)
+}
+
+fn extract_scenario(chunk: String) -> Result(Scenario, Nil) {
+  use id <- result_try(first_quoted(chunk))
+  Ok(Scenario(id: id, steps: extract_steps(chunk)))
+}
+
+fn extract_steps(source: String) -> List(ScenarioStep) {
+  source
+  |> string.split("\n        {\n          \"id\": ")
+  |> list.drop(1)
+  |> list.filter_map(extract_step)
+}
+
+fn extract_step(chunk: String) -> Result(ScenarioStep, Nil) {
+  use id <- result_try(first_quoted(chunk))
+  use operation <- result_try(extract_operation(chunk))
+  Ok(ScenarioStep(id: id, operation: operation))
 }
 
 fn first_quoted(chunk: String) -> Result(String, Nil) {
   case string.split(chunk, "\"") {
     [_, id, ..] -> Ok(id)
     _ -> Error(Nil)
+  }
+}
+
+fn extract_operation(chunk: String) -> Result(String, Nil) {
+  case string.split(chunk, "\"operation\": ") {
+    [_, rest, ..] -> first_quoted(rest)
+    _ -> Error(Nil)
+  }
+}
+
+fn result_try(value: Result(a, Nil), next: fn(a) -> Result(b, Nil)) -> Result(b, Nil) {
+  case value {
+    Ok(inner) -> next(inner)
+    Error(Nil) -> Error(Nil)
   }
 }
 

@@ -178,7 +178,7 @@ async fn execute_step(
                     &workflow_id,
                     run_id.as_ref(),
                     input_str(input, "queryName").unwrap_or_default(),
-                    Payload::new(ContentType::Json, b"null".to_vec()),
+                    Payload::new(ContentType::Json, Vec::new()),
                     Duration::from_millis(deadline_ms),
                 )
                 .await?;

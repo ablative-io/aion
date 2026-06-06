@@ -96,4 +96,4 @@ Report divergence with the SDK, scenario, step, expected observable, and actual 
 DIVERGENCE sdk=typescript scenario=idempotency-conflict step=conflicting-reuse expected={"error":"AlreadyExists"} actual={"ok":{"kind":"handle",...}}
 ```
 
-The language harness assertions include the scenario id and step id on mismatch; the `AION_CONFORMANCE` lines provide the step-by-step JSON needed for manual or scripted cross-SDK comparison.
+The language harness assertions include the scenario id and step id on mismatch; the `AION_CONFORMANCE` lines provide the step-by-step JSON needed for manual or scripted cross-SDK comparison. At the time of AL-007, the Gleam SDK has no checked-in live HTTP/WebSocket transport, so its live run emits the SDK's current `Unavailable` observable for non-connect operations. Treat those lines as a divergence, not as conformance passed, until the Gleam transport follow-up lands.
