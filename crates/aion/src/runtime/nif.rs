@@ -99,9 +99,11 @@ impl NifRegistration {
 
     /// Add engine-owned NIF entries to the collection.
     ///
-    /// The engine currently owns no concrete NIFs in this cluster; later signal,
-    /// timer, query, and activity NIFs can append here without changing host API.
+    /// Registers the `aion_flow_ffi` NIFs that back the Gleam SDK's
+    /// `@external(erlang, "aion_flow_ffi", ...)` declarations.
     pub fn add_engine_nifs(&mut self) -> &mut Self {
+        self.entries
+            .extend(super::engine_nifs::engine_nif_entries());
         self
     }
 
@@ -142,9 +144,13 @@ mod tests {
             .add_engine_nifs()
             .add_host_nifs([NifEntry::dirty(Mfa::new("host", "zero", 0), native_zero)]);
 
-        assert_eq!(registration.len(), 1);
+        assert!(registration.len() >= 2);
         let entries = registration.into_entries();
-        assert_eq!(entries[0].mfa.display(), "host:zero/0");
-        assert!(entries[0].is_dirty);
+        let host_entry = entries.iter().find(|e| e.mfa.display() == "host:zero/0");
+        assert!(host_entry.is_some_and(|e| e.is_dirty));
+        let run_activity = entries
+            .iter()
+            .find(|e| e.mfa.display() == "aion_flow_ffi:run_activity/3");
+        assert!(run_activity.is_some_and(|e| e.is_dirty));
     }
 }

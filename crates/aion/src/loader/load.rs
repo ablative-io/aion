@@ -317,14 +317,14 @@ mod tests {
     use std::{cell::RefCell, collections::BTreeMap, time::Duration};
 
     use aion_package::{
-        content_hash, deployed_name, parse_deployed_name, BeamModule, BeamSet, DeclaredActivity,
-        Manifest, ManifestVersion, Package, PackageBuilder, PackageError, CURRENT_FORMAT_VERSION,
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
+        Package, PackageBuilder, PackageError, content_hash, deployed_name, parse_deployed_name,
     };
     use serde_json::json;
 
     use super::LoadedWorkflows;
-    use crate::runtime::{RuntimeConfig, RuntimeHandle, RuntimeInput};
     use crate::EngineError;
+    use crate::runtime::{RuntimeConfig, RuntimeHandle, RuntimeInput};
 
     fn manifest(entry_module: &str) -> Manifest {
         Manifest {
@@ -471,8 +471,8 @@ mod tests {
     }
 
     #[test]
-    fn package_loaded_under_content_hash_namespace_spawns_entrypoint(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn package_loaded_under_content_hash_namespace_spawns_entrypoint()
+    -> Result<(), Box<dyn std::error::Error>> {
         let package = fixture_workflow_package()?;
         let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
         let mut loaded = LoadedWorkflows::new();
@@ -486,7 +486,7 @@ mod tests {
         let (reason, result) = runtime.run_until_exit_for_test(pid);
 
         assert_eq!(reason, beamr::process::ExitReason::Normal);
-        assert_eq!(result, beamr::term::Term::atom(beamr::atom::Atom::OK));
+        assert_eq!(result, beamr::term::Term::small_int(42));
         runtime.shutdown()?;
         Ok(())
     }
@@ -513,8 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn collision_from_different_hash_fails_before_registration(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn collision_from_different_hash_fails_before_registration()
+    -> Result<(), Box<dyn std::error::Error>> {
         let first = entry_only_package("workflow/order", vec![1, 2, 3])?;
         let second = entry_only_package("workflow/order", vec![1, 2, 4])?;
         let colliding_name = first.deployed_entry_module();

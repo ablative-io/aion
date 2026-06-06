@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 aion-core = { version = "0.1.0", path = "../aion-core" }
+dashmap = { workspace = true }
 uuid.workspace = true
 futures.workspace = true
 chrono = { workspace = true, features = ["serde"] }

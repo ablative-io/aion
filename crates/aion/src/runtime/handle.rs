@@ -414,7 +414,7 @@ impl RuntimeHandle {
         self.module_registry.insert(Module {
             name: module,
             generation: 0,
-            exports: HashMap::from([((function, 0), label)]),
+            exports: HashMap::from([((function, 1), label)]),
             label_index: HashMap::from([(label, 0)]),
             code: vec![
                 Instruction::Label { label },

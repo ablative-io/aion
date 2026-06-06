@@ -10,7 +10,7 @@ use crate::{
     config::{RuntimeConfig, ServerConfig, StoreConfig},
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
-    worker::ConnectedWorkerRegistry,
+    worker::{ConnectedWorkerRegistry, WorkerActivityDispatcher},
 };
 
 /// Cloneable shared state passed to all server transports.
@@ -47,24 +47,50 @@ impl ServerState {
     where
         S: EventStore,
     {
+        let worker_registry = ConnectedWorkerRegistry::default();
+        let dispatcher = Arc::new(WorkerActivityDispatcher::new(
+            worker_registry.clone(),
+            "default",
+            tokio::runtime::Handle::current(),
+        ));
+
         let engine = EngineBuilder::new()
             .store(store)
+            .activity_dispatcher(dispatcher)
             .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
             .build()
             .await?;
         let engine = Arc::new(engine);
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
-        Ok(Self::from_parts(namespace_resolver, runtime))
+        Ok(Self::from_parts_with_registry(
+            namespace_resolver,
+            runtime,
+            worker_registry,
+        ))
     }
 
-    /// Build shared state from explicit parts.
+    /// Build shared state from explicit parts with a default worker registry.
     #[must_use]
     pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
+        Self::from_parts_with_registry(
+            namespace_resolver,
+            runtime,
+            ConnectedWorkerRegistry::default(),
+        )
+    }
+
+    /// Build shared state from explicit parts with a caller-supplied registry.
+    #[must_use]
+    pub fn from_parts_with_registry(
+        namespace_resolver: NamespaceResolver,
+        runtime: RuntimeConfig,
+        worker_registry: ConnectedWorkerRegistry,
+    ) -> Self {
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
-                worker_registry: ConnectedWorkerRegistry::default(),
+                worker_registry,
             }),
         }
     }

@@ -92,8 +92,8 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_spawns_linked_child_and_uses_dirty_registration(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn dispatch_spawns_linked_child_and_uses_dirty_registration()
+    -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime()?;
         runtime.install_test_activity_nif("activity_host", "answer", true, true)?;
         runtime.register_native_call_module_for_test(
@@ -113,8 +113,8 @@ mod tests {
     }
 
     #[test]
-    fn successful_activity_result_is_delivered_to_workflow(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn successful_activity_result_is_delivered_to_workflow()
+    -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime()?;
         runtime.install_test_activity_nif("activity_host", "answer", false, true)?;
         runtime.register_native_call_module_for_test(
@@ -135,8 +135,8 @@ mod tests {
     }
 
     #[test]
-    fn failing_activity_surfaces_typed_error_with_trapped_exit(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn failing_activity_surfaces_typed_error_with_trapped_exit()
+    -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime()?;
         runtime.register_module("aion_fixture_workflow", fixture_workflow_beam())?;
         let workflow = runtime.spawn_test_process_with_trap_exit(true)?;

@@ -159,6 +159,7 @@ dependencies = [
  "anyhow",
  "axum 0.8.9",
  "chrono",
+ "dashmap",
  "futures",
  "prost 0.14.3",
  "rust-embed",

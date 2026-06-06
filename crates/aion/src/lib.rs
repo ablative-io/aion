@@ -18,7 +18,10 @@ pub mod signal;
 pub mod supervision;
 pub mod time;
 
-pub use activity::{dispatch_activity, propagate_activity_outcome, surface_activity_error};
+pub use activity::{
+    ActivityDispatcher, dispatch_activity, install_activity_dispatcher, propagate_activity_outcome,
+    surface_activity_error,
+};
 pub use engine::{
     DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams, Engine,
     EngineBuilder, EventFamily, EventFilter, EventPublisher, QueryService, SignalRouter,

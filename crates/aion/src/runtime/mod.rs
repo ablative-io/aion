@@ -1,6 +1,7 @@
 //! Sole beamr boundary for aion per D1; other modules use `RuntimeHandle`.
 
 pub mod config;
+mod engine_nifs;
 pub mod handle;
 pub mod module;
 pub mod nif;

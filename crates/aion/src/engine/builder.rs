@@ -9,6 +9,7 @@ use aion_store::EventStore;
 use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
     RuntimeHandle, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
+    activity::bridge::{ActivityDispatcher, install_activity_dispatcher},
     durability::{ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery, Recorder},
     runtime::{NifEntry, NifRegistration},
 };
@@ -64,6 +65,7 @@ pub struct EngineBuilder {
     host_nifs: Vec<NifEntry>,
     recovery: Arc<dyn ActiveWorkflowRecoverySeam>,
     delegated: DelegatedSeams,
+    activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
 }
 
 impl Default for EngineBuilder {
@@ -84,6 +86,7 @@ impl EngineBuilder {
             host_nifs: Vec::new(),
             recovery: Arc::new(DeferredActiveWorkflowRecovery),
             delegated: DelegatedSeams::default(),
+            activity_dispatcher: None,
         }
     }
 
@@ -179,6 +182,17 @@ impl EngineBuilder {
         self
     }
 
+    /// Supply the activity dispatcher that backs `aion_flow_ffi:run_activity`.
+    ///
+    /// When set, the dispatcher is installed in the global bridge before
+    /// workflow modules are loaded. Without a dispatcher, `run_activity`
+    /// returns an error to workflow code instead of crashing the process.
+    #[must_use]
+    pub fn activity_dispatcher(mut self, dispatcher: Arc<dyn ActivityDispatcher>) -> Self {
+        self.activity_dispatcher = Some(dispatcher);
+        self
+    }
+
     /// Inspect the configured scheduler thread count.
     #[must_use]
     pub const fn scheduler_thread_count(&self) -> Option<usize> {
@@ -194,6 +208,11 @@ impl EngineBuilder {
     /// poison, or deferred AD recovery failures for active histories.
     pub async fn build(self) -> Result<Engine, EngineError> {
         let store = self.store.ok_or(EngineError::MissingStore)?;
+
+        if let Some(dispatcher) = self.activity_dispatcher {
+            install_activity_dispatcher(dispatcher);
+        }
+
         let runtime = RuntimeHandle::new(RuntimeConfig::new(self.scheduler_threads))?;
 
         let mut nifs = NifRegistration::new();
