@@ -1,0 +1,22 @@
+{
+  "title": "Fix beamr module name resolution for content-hash namespaced modules",
+  "task": "When the engine loads a .aion package, it registers each BEAM module under a content-hash namespaced name (e.g. hello_world$abc123) via runtime::module::register_module(). However, the BEAM bytecode's internal module atom remains the original name (hello_world). When the engine tries to spawn a process at the namespaced module:function (e.g. hello_world$abc123:run/0), beamr returns 'undefined function' because the function table uses the original module name. Fix this so that spawning a workflow from a loaded .aion package succeeds.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Diagnose the exact mechanism: does register_module in runtime/module.rs correctly rename the module atom in the loaded BEAM bytecode? Check if module.name assignment at line 33 (module.name = deployed_atom) actually rewrites all internal references, or just the top-level name. The beamr Module struct may have internal function tables that still reference the old atom.",
+      "acceptance": "Root cause identified with line-level precision"
+    },
+    {
+      "id": "R2",
+      "description": "Fix the module registration so that spawning a process at deployed_module:function/arity works. Either: (a) rewrite all internal module references in the BEAM bytecode when renaming, or (b) maintain a mapping from deployed names to original names and use the original name for function dispatch while keeping the deployed name for module registry lookups, or (c) another approach that correctly resolves the function.",
+      "acceptance": "Starting the aion-server with dev-config.json, then POSTing a start request for workflow_type hello_world returns a successful response with workflow_id and run_id instead of 'Backend engine backend failure'"
+    },
+    {
+      "id": "R3",
+      "description": "Add a test that loads a real .aion package (use the hello-world example's packager output or construct one inline), registers it, and spawns a workflow process on beamr, asserting the process starts without an 'undefined function' error.",
+      "acceptance": "cargo test -p aion passes with the new test"
+    }
+  ],
+  "context": "The error when starting a workflow is: Runtime { reason: 'undefined function Atom(82):Atom(32)/0' } — the atom IDs are beamr internal references. The module registration code is at crates/aion/src/runtime/module.rs:16-33. It sets module.name = deployed_atom (line 33) but may not rewrite function table entries. The spawn path is at crates/aion/src/runtime/handle.rs:138-142 (spawn_workflow). The content-hash naming is done by aion-package's deployed_name() function. The .aion package at examples/hello-world/hello-world.aion was successfully built by the packager. The BEAM bytecode was compiled by gleam build from examples/hello-world/src/hello_world.gleam. beamr is a crates.io dependency — check its Module struct and how module.name affects function resolution."
+}

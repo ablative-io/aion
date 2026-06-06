@@ -1,6 +1,6 @@
 //! `RuntimeHandle` spawn, register, cancel, and shutdown support.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aion_core::{ActivityError, ActivityErrorKind, Payload};
 use beamr::atom::AtomTable;
@@ -19,31 +19,38 @@ use super::payload::{payload_to_term, term_to_payload};
 /// Local BEAM process identifier exposed by the runtime boundary.
 pub type Pid = u64;
 
+type RetainedHeap = Box<[u64]>;
+type RetainedHeaps = Vec<RetainedHeap>;
+type RetainedSpawnHeaps = Arc<dashmap::DashMap<Pid, Mutex<RetainedHeaps>>>;
+
 /// Runtime-owned workflow or activity input terms.
 ///
 /// The wrapper keeps the beamr term representation inside the runtime module
 /// while later lifecycle and payload code decide how durable payloads become VM
 /// terms.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct RuntimeInput {
     terms: Vec<Term>,
+    heaps: RetainedHeaps,
 }
 
 impl RuntimeInput {
     /// Convert one durable payload into the single BEAM argument used by
     /// in-VM activity dispatch.
     ///
-    /// The runtime boundary owns this representation. JSON primitives map to
-    /// immediate terms where possible; unsupported structured input is passed as
-    /// `nil` until richer payload term support lands in beamr.
+    /// The runtime boundary owns this representation. JSON payloads are passed
+    /// as BEAM binary terms and any boxed host heap backing those terms is
+    /// retained until the spawned process is observed exiting or cancelled.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::Runtime`] when a JSON number does not fit in an
     /// immediate small integer.
     pub fn from_payload(payload: &Payload) -> Result<Self, EngineError> {
+        let (term, heaps) = payload_to_term(payload)?.into_parts();
         Ok(Self {
-            terms: vec![payload_to_term(payload)?],
+            terms: vec![term],
+            heaps,
         })
     }
 
@@ -53,8 +60,8 @@ impl RuntimeInput {
         u8::try_from(self.terms.len()).unwrap_or(u8::MAX)
     }
 
-    fn into_terms(self) -> Vec<Term> {
-        self.terms
+    fn into_spawn_parts(self) -> (Vec<Term>, RetainedHeaps) {
+        (self.terms, self.heaps)
     }
 }
 
@@ -67,6 +74,7 @@ pub struct RuntimeHandle {
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
+    spawn_heaps: RetainedSpawnHeaps,
 }
 
 impl RuntimeHandle {
@@ -99,6 +107,7 @@ impl RuntimeHandle {
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
+            spawn_heaps: Arc::new(dashmap::DashMap::new()),
         })
     }
 
@@ -171,11 +180,16 @@ impl RuntimeHandle {
         function: &str,
         input: RuntimeInput,
     ) -> Result<Pid, EngineError> {
+        self.release_dead_spawn_heaps();
         let module = self.atom_table.intern(deployed_module);
         let function = self.atom_table.intern(function);
-        self.scheduler
-            .spawn_trap_exit(module, function, input.into_terms())
-            .map_err(runtime_error_from_display)
+        let (terms, heaps) = input.into_spawn_parts();
+        let pid = self
+            .scheduler
+            .spawn_trap_exit(module, function, terms)
+            .map_err(runtime_error_from_display)?;
+        self.retain_spawn_heaps(pid, heaps);
+        Ok(pid)
     }
 
     /// Spawn an activity child process linked to its workflow parent.
@@ -192,20 +206,24 @@ impl RuntimeHandle {
         function: &str,
         input: RuntimeInput,
     ) -> Result<Pid, EngineError> {
+        self.release_dead_spawn_heaps();
         self.ensure_live_pid(parent_pid)?;
         self.wait_for_process_ready(parent_pid)?;
         let arity = input.arity();
         let module = self.atom_table.intern(deployed_module);
         let function_atom = self.atom_table.intern(function);
-        if self.is_dirty_with_arity(deployed_module, function, arity) {
+        let (terms, heaps) = input.into_spawn_parts();
+        let pid = if self.is_dirty_with_arity(deployed_module, function, arity) {
             self.scheduler
-                .spawn_link_dirty(parent_pid, module, function_atom, input.into_terms())
-                .map_err(runtime_error_from_display)
+                .spawn_link_dirty(parent_pid, module, function_atom, terms)
+                .map_err(runtime_error_from_display)?
         } else {
             self.scheduler
-                .spawn_link(parent_pid, module, function_atom, input.into_terms())
-                .map_err(runtime_error_from_display)
-        }
+                .spawn_link(parent_pid, module, function_atom, terms)
+                .map_err(runtime_error_from_display)?
+        };
+        self.retain_spawn_heaps(pid, heaps);
+        Ok(pid)
     }
 
     /// Return whether the registered native activity entry is dirty for arity 1.
@@ -241,6 +259,7 @@ impl RuntimeHandle {
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(parent_pid)?;
         let (reason, result) = self.scheduler.run_until_exit(activity_pid);
+        self.release_spawn_heaps(activity_pid);
         if reason == ExitReason::Normal {
             let payload = term_to_payload(result, &self.atom_table)?;
             self.deliver_activity_result(parent_pid, activity_pid, payload)
@@ -326,6 +345,7 @@ impl RuntimeHandle {
     pub fn cancel_pid(&self, pid: Pid) -> Result<(), EngineError> {
         self.ensure_live_pid(pid)?;
         self.scheduler.terminate_process(pid, ExitReason::Kill);
+        self.release_spawn_heaps(pid);
         Ok(())
     }
 
@@ -375,6 +395,7 @@ impl RuntimeHandle {
     /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
         self.scheduler.shutdown();
+        self.spawn_heaps.clear();
         Ok(())
     }
 
@@ -384,11 +405,45 @@ impl RuntimeHandle {
         function: &str,
         input: RuntimeInput,
     ) -> Result<Pid, EngineError> {
+        self.release_dead_spawn_heaps();
         let module = self.atom_table.intern(deployed_module);
         let function = self.atom_table.intern(function);
-        self.scheduler
-            .spawn(module, function, input.into_terms())
-            .map_err(runtime_error_from_display)
+        let (terms, heaps) = input.into_spawn_parts();
+        let pid = self
+            .scheduler
+            .spawn(module, function, terms)
+            .map_err(runtime_error_from_display)?;
+        self.retain_spawn_heaps(pid, heaps);
+        Ok(pid)
+    }
+
+    fn retain_spawn_heaps(&self, pid: Pid, heaps: RetainedHeaps) {
+        if heaps.is_empty() {
+            return;
+        }
+        self.spawn_heaps.insert(pid, Mutex::new(heaps));
+    }
+
+    pub(super) fn release_spawn_heaps(&self, pid: Pid) {
+        self.spawn_heaps.remove(&pid);
+    }
+
+    fn release_dead_spawn_heaps(&self) {
+        let dead_pids: Vec<Pid> = self
+            .spawn_heaps
+            .iter()
+            .filter_map(|entry| {
+                let pid = *entry.key();
+                self.scheduler
+                    .process_table()
+                    .get(pid)
+                    .is_none()
+                    .then_some(pid)
+            })
+            .collect();
+        for pid in dead_pids {
+            self.release_spawn_heaps(pid);
+        }
     }
 
     fn ensure_live_pid(&self, pid: Pid) -> Result<(), EngineError> {
@@ -555,7 +610,15 @@ impl RuntimeHandle {
 
     #[cfg(test)]
     pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
-        self.scheduler.run_until_exit(pid)
+        let result = self.scheduler.run_until_exit(pid);
+        self.release_spawn_heaps(pid);
+        result
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_spawn_heap_count_for_test(&self) -> usize {
+        self.release_dead_spawn_heaps();
+        self.spawn_heaps.len()
     }
 }
 
@@ -602,11 +665,13 @@ mod test_support;
 
 #[cfg(test)]
 mod tests {
+    use aion_core::Payload;
     use beamr::loader::Instruction;
     use beamr::loader::decode::compact::Operand;
     use beamr::module::{Module, ResolvedImport, ResolvedImportTarget};
     use beamr::native::ProcessContext;
     use beamr::term::Term;
+    use beamr::term::binary::Binary;
 
     use super::{RuntimeHandle, RuntimeInput};
     use crate::error::EngineError;
@@ -626,6 +691,16 @@ mod tests {
         Ok(Term::small_int(13))
     }
 
+    fn binary_length(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+        match args {
+            [term] => Binary::new(*term)
+                .and_then(|binary| i64::try_from(binary.as_bytes().len()).ok())
+                .map(Term::small_int)
+                .ok_or_else(|| Term::small_int(0)),
+            _ => Err(Term::small_int(0)),
+        }
+    }
+
     fn native_call_module_for_test(
         module: beamr::atom::Atom,
         function: beamr::atom::Atom,
@@ -633,11 +708,29 @@ mod tests {
         target_function: beamr::atom::Atom,
         native_entry: Option<beamr::native::NativeEntry>,
     ) -> Module {
+        native_call_module_with_arity_for_test(
+            module,
+            function,
+            target_module,
+            target_function,
+            0,
+            native_entry,
+        )
+    }
+
+    fn native_call_module_with_arity_for_test(
+        module: beamr::atom::Atom,
+        function: beamr::atom::Atom,
+        target_module: beamr::atom::Atom,
+        target_function: beamr::atom::Atom,
+        arity: u8,
+        native_entry: Option<beamr::native::NativeEntry>,
+    ) -> Module {
         let label = 1;
         let code = vec![
             Instruction::Label { label },
             Instruction::CallExt {
-                arity: Operand::Unsigned(0),
+                arity: Operand::Unsigned(arity.into()),
                 import: Operand::Unsigned(0),
             },
             Instruction::Return,
@@ -645,7 +738,7 @@ mod tests {
         let mut module_data = Module {
             name: module,
             generation: 0,
-            exports: std::collections::HashMap::from([((function, 0), label)]),
+            exports: std::collections::HashMap::from([((function, arity), label)]),
             label_index: std::collections::HashMap::from([(label, 0)]),
             code,
             literals: Vec::new(),
@@ -658,7 +751,7 @@ mod tests {
             module_data.resolved_imports.push(ResolvedImport {
                 module: target_module,
                 function: target_function,
-                arity: 0,
+                arity,
                 target: ResolvedImportTarget::Native(native_entry),
             });
         }
@@ -706,6 +799,122 @@ mod tests {
                 if reason.contains("host:answer/0")
         ));
         assert_eq!(runtime.registered_nif_modules(), vec!["host"]);
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn payload_binary_remains_valid_through_spawn_and_is_released()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mfa = Mfa::new("host", "binary_length", 1);
+        let mut registration = NifRegistration::new();
+        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
+        runtime.install_nifs(registration)?;
+
+        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
+        let module = native_call_module_with_arity_for_test(
+            runtime.atom_table.intern("payload_echo"),
+            runtime.atom_table.intern("run"),
+            runtime.atom_table.intern("host"),
+            runtime.atom_table.intern("binary_length"),
+            1,
+            native_entry,
+        );
+        runtime.module_registry.insert(module);
+        let payload = Payload::new(
+            aion_core::ContentType::Json,
+            br#"{"hello":"world"}"#.to_vec(),
+        );
+
+        let pid =
+            runtime.spawn_workflow("payload_echo", "run", RuntimeInput::from_payload(&payload)?)?;
+        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 1);
+        let (reason, result) = runtime.run_until_exit_for_test(pid);
+
+        assert_eq!(reason, beamr::process::ExitReason::Normal);
+        assert_eq!(result.as_small_int(), Some(i64::try_from(payload.bytes().len()).unwrap_or(0)));
+        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_outcome_releases_payload_heaps() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mfa = Mfa::new("host", "binary_length", 1);
+        let mut registration = NifRegistration::new();
+        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
+        runtime.install_nifs(registration)?;
+
+        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
+        let module = native_call_module_with_arity_for_test(
+            runtime.atom_table.intern("payload_workflow_outcome"),
+            runtime.atom_table.intern("run"),
+            runtime.atom_table.intern("host"),
+            runtime.atom_table.intern("binary_length"),
+            1,
+            native_entry,
+        );
+        runtime.module_registry.insert(module);
+        let payload = Payload::new(
+            aion_core::ContentType::Json,
+            br#"{"workflow":"outcome"}"#.to_vec(),
+        );
+
+        let pid = runtime.spawn_workflow(
+            "payload_workflow_outcome",
+            "run",
+            RuntimeInput::from_payload(&payload)?,
+        )?;
+        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 1);
+        let outcome = runtime.workflow_outcome(pid)?;
+
+        assert_eq!(
+            outcome?,
+            Payload::from_json(&serde_json::json!(payload.bytes().len()))?
+        );
+        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_completed_payload_spawns_do_not_accumulate_retained_heaps()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let mfa = Mfa::new("host", "binary_length", 1);
+        let mut registration = NifRegistration::new();
+        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
+        runtime.install_nifs(registration)?;
+
+        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
+        let module = native_call_module_with_arity_for_test(
+            runtime.atom_table.intern("payload_echo_many"),
+            runtime.atom_table.intern("run"),
+            runtime.atom_table.intern("host"),
+            runtime.atom_table.intern("binary_length"),
+            1,
+            native_entry,
+        );
+        runtime.module_registry.insert(module);
+        let payload = Payload::new(
+            aion_core::ContentType::Json,
+            br#"{"iteration":true}"#.to_vec(),
+        );
+
+        for _ in 0..1_000 {
+            let pid = runtime.spawn_workflow(
+                "payload_echo_many",
+                "run",
+                RuntimeInput::from_payload(&payload)?,
+            )?;
+            let (reason, result) = runtime.run_until_exit_for_test(pid);
+            assert_eq!(reason, beamr::process::ExitReason::Normal);
+            assert_eq!(result.as_small_int(), Some(i64::try_from(payload.bytes().len()).unwrap_or(0)));
+            assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
+        }
+
         runtime.shutdown()?;
         Ok(())
     }

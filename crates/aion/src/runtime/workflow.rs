@@ -18,6 +18,8 @@ impl RuntimeHandle {
         &self,
         pid: Pid,
     ) -> Result<Result<Payload, WorkflowError>, EngineError> {
-        super::outcome::workflow_outcome(&self.scheduler, &self.atom_table, pid)
+        let outcome = super::outcome::workflow_outcome(&self.scheduler, &self.atom_table, pid);
+        self.release_spawn_heaps(pid);
+        outcome
     }
 }
