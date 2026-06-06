@@ -161,8 +161,8 @@ async def _report_outcome(
             extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
         )
         return
-    report = PendingFailedReport(task.workflow_id, task.activity_id, outcome.failure)
-    tracker.record(report)
+    failed_report = PendingFailedReport(task.workflow_id, task.activity_id, outcome.failure)
+    tracker.record(failed_report)
     logger.info("reporting activity failure", extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type))
     await session.report_failure(task.workflow_id, task.activity_id, outcome.failure)
     logger.info("reported activity failure", extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type))

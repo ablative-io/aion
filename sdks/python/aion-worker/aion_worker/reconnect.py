@@ -95,7 +95,7 @@ class ReconnectBackoff:
     def delay_for_attempt(self, attempt: int) -> float:
         if attempt <= 0:
             raise ReconnectError("reconnect attempt must be greater than zero")
-        delay = self.initial_backoff_seconds * (2 ** (attempt - 1))
+        delay = self.initial_backoff_seconds * float(2 ** (attempt - 1))
         return min(delay, self.max_backoff_seconds)
 
 

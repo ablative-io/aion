@@ -27,6 +27,7 @@ def generate_proto_stubs(root: Path) -> None:
         "-I",
         str(proto_root),
         f"--python_out={output}",
+        f"--pyi_out={output}",
         f"--grpc_python_out={output}",
         str(proto_root / "common.proto"),
         str(proto_root / "worker.proto"),
@@ -36,6 +37,11 @@ def generate_proto_stubs(root: Path) -> None:
         output / "worker_pb2.py",
         "import common_pb2 as common__pb2",
         "from . import common_pb2 as common__pb2",
+    )
+    _patch_relative_imports(
+        output / "worker_pb2.pyi",
+        "import common_pb2 as _common_pb2",
+        "from . import common_pb2 as _common_pb2",
     )
     _patch_relative_imports(
         output / "worker_pb2_grpc.py",
