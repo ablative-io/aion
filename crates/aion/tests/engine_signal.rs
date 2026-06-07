@@ -4,12 +4,14 @@ mod common;
 
 use std::sync::Arc;
 
+use aion::durability::Recorder;
 use aion::{
     EngineBuilder, EngineError, HandleResidency, RuntimeHandle, SignalRouter,
     signal::ConcreteSignalRouter,
 };
 use aion_core::{Event, RunId, WorkflowId};
 use aion_store::{EventStore, InMemoryStore};
+use chrono::Utc;
 use serde_json::json;
 
 use common::{FIXTURE_MODULE, engine_with_fixture, fixture_package, input_payload, payload};
@@ -60,6 +62,54 @@ async fn signal_records_history_and_delivers_mailbox_marker()
     let delivered = engine.runtime().signal_messages(handle.pid());
     assert_eq!(delivered, vec![("wake".to_owned(), sent_payload)]);
 
+    engine.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_and_unknown_signals_return_errors_without_appending_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .scheduler_threads(1)
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .load_workflows(fixture_package("wait")?)
+        .build()
+        .await?;
+    let handle = engine
+        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .await?;
+    let mut recorder = Recorder::resume_at(handle.workflow_id().clone(), Arc::clone(&store), 1);
+    recorder
+        .record_workflow_completed(Utc::now(), payload(&json!({ "done": true }))?)
+        .await?;
+    engine
+        .registry()
+        .remove(handle.workflow_id(), handle.run_id())?;
+    let terminal_history_len = store.read_history(handle.workflow_id()).await?.len();
+
+    let terminal_error = engine
+        .signal(
+            handle.workflow_id(),
+            handle.run_id(),
+            "ignored",
+            payload(&json!(null))?,
+        )
+        .await
+        .err()
+        .ok_or("terminal workflow signal unexpectedly succeeded")?;
+    assert!(matches!(
+        terminal_error,
+        EngineError::SignalRouter(aion::SignalRouterError::Terminal { .. })
+    ));
+    assert_eq!(
+        store.read_history(handle.workflow_id()).await?.len(),
+        terminal_history_len
+    );
+
     let unknown_workflow_id = WorkflowId::new_v4();
     let unknown_run_id = RunId::new_v4();
     let unknown_error = engine
@@ -76,10 +126,7 @@ async fn signal_records_history_and_delivers_mailbox_marker()
         unknown_error,
         EngineError::WorkflowNotFound { .. }
     ));
-    assert_eq!(
-        store.read_history(handle.workflow_id()).await?.len(),
-        history.len()
-    );
+    assert!(store.read_history(&unknown_workflow_id).await?.is_empty());
 
     engine.shutdown()?;
     Ok(())
