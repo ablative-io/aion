@@ -14,6 +14,7 @@ use crate::error::ServerError;
 pub struct CallerIdentity {
     subject: String,
     namespaces: BTreeSet<String>,
+    denial_reason: Option<String>,
 }
 
 impl CallerIdentity {
@@ -23,6 +24,17 @@ impl CallerIdentity {
         Self {
             subject: subject.into(),
             namespaces: namespaces.into_iter().collect(),
+            denial_reason: None,
+        }
+    }
+
+    /// Build a caller identity that must be denied with a transport-specific reason.
+    #[must_use]
+    pub fn denied(subject: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            subject: subject.into(),
+            namespaces: BTreeSet::new(),
+            denial_reason: Some(reason.into()),
         }
     }
 
@@ -34,6 +46,10 @@ impl CallerIdentity {
 
     fn can_access(&self, namespace: &str) -> bool {
         self.namespaces.contains(namespace)
+    }
+
+    fn denial_reason(&self) -> Option<&str> {
+        self.denial_reason.as_deref()
     }
 }
 
@@ -162,6 +178,10 @@ impl NamespaceResolver {
             ));
         }
 
+        if let Some(reason) = caller.denial_reason() {
+            return Err(ServerError::namespace_denied(reason));
+        }
+
         match &self.mode {
             NamespaceMode::SingleTenant { namespace } if namespace == requested_namespace => {
                 Ok(self.scoped(requested_namespace))
@@ -201,7 +221,7 @@ impl NamespaceResolver {
 
 fn namespace_denied(caller: &CallerIdentity, requested_namespace: &str) -> ServerError {
     ServerError::namespace_denied(format!(
-        "caller `{}` is not authorized for namespace `{requested_namespace}`",
+        "subject not authorized for namespace {requested_namespace}; add {requested_namespace} to x-aion-namespaces for subject `{}` or request a namespace listed in that header",
         caller.subject()
     ))
 }
