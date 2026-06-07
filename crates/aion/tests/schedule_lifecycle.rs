@@ -13,7 +13,6 @@ use aion_core::{
 };
 use aion_package::ContentHash;
 use aion_store::EventStore;
-use chrono::Utc;
 use serde_json::json;
 
 #[tokio::test]
@@ -71,7 +70,6 @@ async fn schedule_lifecycle_fires_skips_overlap_and_recovers()
 
     engine.shutdown()?;
     let recovered = engine_with_store(Arc::clone(&store), recovery).await?;
-    recovered.recover_schedules_on_startup(Utc::now()).await?;
 
     let recovered_schedules = recovered.list_schedules().await?;
     let [listed_state] = recovered_schedules.as_slice() else {
