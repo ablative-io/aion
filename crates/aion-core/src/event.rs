@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{ActivityError, ActivityId, Payload, TimerId, WorkflowError, WorkflowId};
+use crate::{ActivityError, ActivityId, Payload, RunId, TimerId, WorkflowError, WorkflowId};
 
 /// Metadata recorded with every workflow history event.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
@@ -65,6 +65,20 @@ pub enum Event {
         /// Intentionally stringly-typed: the closed set of timeout kinds is defined by cluster AT
         /// (timers and signals), not by the core event model.
         timeout: String,
+    },
+    /// A workflow execution continued as a new run; this terminal event projects to
+    /// `ContinuedAsNew`.
+    WorkflowContinuedAsNew {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Opaque workflow input payload carried into the new run.
+        input: Payload,
+        /// Workflow type override for the new run, when migration changes the workflow type.
+        ///
+        /// When absent, the new run uses the current workflow type.
+        workflow_type: Option<String>,
+        /// Run identifier for the current run that is being continued.
+        parent_run_id: RunId,
     },
     /// An activity was scheduled by workflow code.
     ActivityScheduled {
@@ -195,6 +209,7 @@ impl Event {
             | Self::WorkflowFailed { envelope, .. }
             | Self::WorkflowCancelled { envelope, .. }
             | Self::WorkflowTimedOut { envelope, .. }
+            | Self::WorkflowContinuedAsNew { envelope, .. }
             | Self::ActivityScheduled { envelope, .. }
             | Self::ActivityStarted { envelope, .. }
             | Self::ActivityCompleted { envelope, .. }
@@ -237,7 +252,8 @@ mod tests {
 
     use super::{Event, EventEnvelope};
     use crate::{
-        ActivityError, ActivityErrorKind, ActivityId, Payload, TimerId, WorkflowError, WorkflowId,
+        ActivityError, ActivityErrorKind, ActivityId, Payload, RunId, TimerId, WorkflowError,
+        WorkflowId,
     };
 
     fn recorded_at() -> DateTime<Utc> {
@@ -325,67 +341,73 @@ mod tests {
                 envelope: envelope(5),
                 timeout: String::from("execution"),
             },
-            Event::ActivityScheduled {
+            Event::WorkflowContinuedAsNew {
                 envelope: envelope(6),
-                activity_id: ActivityId::from_sequence_position(6),
+                input: payload("continued-input")?,
+                workflow_type: Some(String::from("checkout-v2")),
+                parent_run_id: RunId::new(uuid::Uuid::from_u128(2)),
+            },
+            Event::ActivityScheduled {
+                envelope: envelope(7),
+                activity_id: ActivityId::from_sequence_position(7),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
             },
             Event::ActivityStarted {
-                envelope: envelope(7),
-                activity_id: ActivityId::from_sequence_position(6),
+                envelope: envelope(8),
+                activity_id: ActivityId::from_sequence_position(7),
             },
             Event::ActivityCompleted {
-                envelope: envelope(8),
-                activity_id: ActivityId::from_sequence_position(6),
+                envelope: envelope(9),
+                activity_id: ActivityId::from_sequence_position(7),
                 result: payload("activity-result")?,
             },
             Event::ActivityFailed {
-                envelope: envelope(9),
-                activity_id: ActivityId::from_sequence_position(6),
+                envelope: envelope(10),
+                activity_id: ActivityId::from_sequence_position(7),
                 error: activity_error(ActivityErrorKind::Retryable, "temporary outage"),
                 attempt: 1,
             },
             Event::ActivityCancelled {
-                envelope: envelope(10),
-                activity_id: ActivityId::from_sequence_position(6),
+                envelope: envelope(11),
+                activity_id: ActivityId::from_sequence_position(7),
             },
             Event::TimerStarted {
-                envelope: envelope(11),
-                timer_id: TimerId::anonymous(11),
+                envelope: envelope(12),
+                timer_id: TimerId::anonymous(12),
                 fire_at,
             },
             Event::TimerFired {
-                envelope: envelope(12),
-                timer_id: TimerId::anonymous(11),
+                envelope: envelope(13),
+                timer_id: TimerId::anonymous(12),
             },
             Event::TimerCancelled {
-                envelope: envelope(13),
+                envelope: envelope(14),
                 timer_id: TimerId::named("reminder")?,
             },
             Event::SignalReceived {
-                envelope: envelope(14),
+                envelope: envelope(15),
                 name: String::from("approve"),
                 payload: payload("signal")?,
             },
             Event::ChildWorkflowStarted {
-                envelope: envelope(15),
+                envelope: envelope(16),
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: String::from("fulfillment"),
                 input: payload("child-input")?,
             },
             Event::ChildWorkflowCompleted {
-                envelope: envelope(16),
+                envelope: envelope(17),
                 child_workflow_id: child_workflow_id.clone(),
                 result: payload("child-result")?,
             },
             Event::ChildWorkflowFailed {
-                envelope: envelope(17),
+                envelope: envelope(18),
                 child_workflow_id: child_workflow_id.clone(),
                 error: workflow_error("child failed"),
             },
             Event::ChildWorkflowCancelled {
-                envelope: envelope(18),
+                envelope: envelope(19),
                 child_workflow_id,
             },
         ];
