@@ -108,7 +108,11 @@ async fn recovery_active_listing_contains_only_current_continuation_run()
             .count(),
         1
     );
-    assert_eq!(active.len(), 2);
+    let user_workflows: Vec<_> = active
+        .iter()
+        .filter(|id| *id == replacement.workflow_id() || *id == untouched.workflow_id())
+        .collect();
+    assert_eq!(user_workflows.len(), 2);
 
     assert!(
         engine
@@ -252,7 +256,7 @@ impl ActiveWorkflowRecoverySeam for TestRecovery {
                 reason: format!("test recovery has no run metadata for workflow {workflow_id}"),
             })?;
 
-        Ok(ActiveWorkflowRecovery {
+        Ok(ActiveWorkflowRecovery::Resident {
             run_id: entry.run_id.clone(),
             loaded_version: entry.version.clone(),
             pid: entry.pid,

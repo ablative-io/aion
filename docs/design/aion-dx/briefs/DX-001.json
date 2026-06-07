@@ -1,0 +1,59 @@
+{
+  "id": "DX-001",
+  "cluster": "aion-dx",
+  "title": "Fix activity dispatch to connected Python worker in hello-world flow",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The hello-world workflow starts but gets stuck in Running — ActivityScheduled never appears and the connected Python worker never receives a task. This is the #1 blocking issue: until the demo works end-to-end, the system cannot be demonstrated or adopted. Investigate the dispatch path from BEAM workflow code through the NIF bridge to the ConnectedWorkerRegistry and fix the gap.",
+  "task": "Trace the activity dispatch path end-to-end: workflow BEAM process calls run_activity NIF → ActivityDispatcher → ConnectedWorkerRegistry → worker stream. Identify where the chain breaks (likely: the workflow BEAM process isn't executing past WorkflowStarted, OR the activity NIF result isn't routing to the connected worker's task queue). Fix the gap and verify the hello-world completes from start to workflow completion.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Diagnose and fix activity dispatch gap",
+      "spec": "WHEN a workflow calls run_activity and a worker is connected for that activity type, THE SYSTEM SHALL dispatch the task to the worker and return the result to the workflow process. THE SYSTEM SHALL NOT leave the workflow stuck in Running with no ActivityScheduled event.",
+      "acceptance": [
+        "hello-world workflow completes end-to-end: WorkflowStarted → ActivityScheduled → ActivityCompleted → WorkflowCompleted.",
+        "The Python worker receives the task and returns a result.",
+        "cargo test --workspace passes.",
+        "The fix does not require the developer to do anything beyond what the hello-world README describes."
+      ],
+      "files": {
+        "create": [],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Add server log output for activity dispatch lifecycle",
+      "spec": "THE SYSTEM SHALL log at INFO level when: a workflow schedules an activity, an activity is dispatched to a worker, a worker returns a result, and a workflow completes. THE SYSTEM SHALL log at ERROR level when dispatch fails (no worker registered, worker disconnected).",
+      "acceptance": [
+        "Server logs show 'activity scheduled', 'task dispatched to worker', 'activity completed' during hello-world run.",
+        "If no worker is connected, an ERROR log says which activity type has no registered worker.",
+        "Logs include workflow_id and activity_type."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/worker/dispatch.rs",
+          "crates/aion-server/src/worker/bridge.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT redesign the activity dispatch architecture — find and fix the specific wiring gap.",
+    "SHALL NOT modify the worker protocol or worker SDK — the issue is server-side."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "hello-world workflow completes end-to-end with the Python worker."
+  ]
+}

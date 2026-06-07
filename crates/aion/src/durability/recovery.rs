@@ -172,13 +172,21 @@ async fn recover_one(
 /// recover the concrete run identifier, package version, and runtime process id
 /// that should be registered as live.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActiveWorkflowRecovery {
-    /// Concrete run being recovered for the logical workflow id.
-    pub run_id: RunId,
-    /// Package content hash/version that this run started on.
-    pub loaded_version: ContentHash,
-    /// Runtime process id recovered or spawned by AD replay.
-    pub pid: Pid,
+pub enum ActiveWorkflowRecovery {
+    /// A normal workflow recovered as a resident runtime process.
+    Resident {
+        /// Concrete run being recovered for the logical workflow id.
+        run_id: RunId,
+        /// Package content hash/version that this run started on.
+        loaded_version: ContentHash,
+        /// Runtime process id recovered or spawned by AD replay.
+        pid: Pid,
+    },
+    /// The virtual schedule coordinator history recovered without a runtime process.
+    ScheduleCoordinator {
+        /// Concrete run recorded by the coordinator's lifecycle event.
+        run_id: RunId,
+    },
 }
 
 /// AD recovery/replay hook invoked by [`crate::EngineBuilder::build`].
@@ -216,12 +224,29 @@ impl ActiveWorkflowRecoverySeam for DeferredActiveWorkflowRecovery {
         loaded_workflows: &LoadedWorkflows,
     ) -> Result<ActiveWorkflowRecovery, EngineError> {
         let _ = (history, loaded_workflows);
+        if workflow_id == &crate::engine::api::schedule_coordinator_workflow_id()
+            && workflow_type == crate::engine::api::schedule_coordinator_workflow_type()
+        {
+            let run_id = coordinator_started_run_id(history);
+            return Ok(ActiveWorkflowRecovery::ScheduleCoordinator { run_id });
+        }
+
         Err(EngineError::Load {
             reason: format!(
                 "active workflow `{workflow_id}` of type `{workflow_type}` requires AD replay metadata before builder recovery can register it"
             ),
         })
     }
+}
+
+fn coordinator_started_run_id(history: &[Event]) -> RunId {
+    history
+        .iter()
+        .find_map(|event| match event {
+            Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(crate::engine::api::schedule_coordinator_run_id)
 }
 
 #[cfg(test)]

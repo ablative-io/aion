@@ -1,0 +1,44 @@
+{
+  "id": "DX-006",
+  "cluster": "aion-dx",
+  "title": "Python worker startup logging and connection feedback",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The Python worker is completely silent — no output on connect, register, or task receipt. A developer has no idea if the worker is running, connected, or broken. Add structured startup and lifecycle logging to the Python worker SDK.",
+  "task": "Add logging to the Python worker SDK for: connection establishment, activity type registration, task receipt, task completion, and errors. Use Python's standard logging module at INFO level for lifecycle events and ERROR for failures.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Worker lifecycle logging",
+      "spec": "WHEN the Python worker starts, THE SYSTEM SHALL log: connecting to [address], connected successfully, registered activities: [list], waiting for tasks. WHEN a task is received, THE SYSTEM SHALL log: received task [activity_type] for workflow [id]. WHEN a task completes, THE SYSTEM SHALL log: completed [activity_type] in [duration]ms.",
+      "acceptance": [
+        "Worker startup produces 'Connecting to 127.0.0.1:50051' log line.",
+        "After connection: 'Registered activities: greet' log line.",
+        "On task receipt: 'Received task greet for workflow [id]' log line.",
+        "On completion: 'Completed greet in 5ms' log line.",
+        "On connection failure: ERROR level log with the reason."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "sdks/python/aion-worker/aion_worker/worker.py",
+          "sdks/python/aion-worker/aion_worker/session.py"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add external logging dependencies — use Python's built-in logging module.",
+    "SHALL NOT change the worker protocol or SDK public API.",
+    "SHALL NOT log at DEBUG level by default — INFO for lifecycle, ERROR for failures."
+  ],
+  "verification": [
+    "Python worker produces visible lifecycle output on startup.",
+    "A developer can tell from logs whether the worker is connected and registered.",
+    "pip install still works without new dependencies."
+  ]
+}

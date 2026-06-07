@@ -983,6 +983,16 @@ pub(crate) fn schedule_coordinator_workflow_id() -> WorkflowId {
     ))
 }
 
+pub(crate) fn schedule_coordinator_run_id() -> RunId {
+    RunId::new(uuid::Uuid::from_u128(
+        0x0000_0000_a10a_0000_0000_0000_0000_0005,
+    ))
+}
+
+pub(crate) const fn schedule_coordinator_workflow_type() -> &'static str {
+    "aion.schedule_coordinator"
+}
+
 fn schedule_event_envelope(recorded_at: DateTime<Utc>) -> EventEnvelope {
     EventEnvelope {
         seq: 0,

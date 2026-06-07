@@ -7,7 +7,7 @@ use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 
 use crate::{
-    config::{RuntimeConfig, ServerConfig, StoreConfig},
+    config::{RuntimeConfig, ServerConfig, StoreBackend, StoreConfig},
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
     worker::{ConnectedWorkerRegistry, PendingActivities, WorkerActivityDispatcher},
@@ -36,7 +36,7 @@ impl ServerState {
     pub async fn build(config: ServerConfig) -> Result<Self, ServerError> {
         let (store_config, runtime) = config.into_parts();
         let store = connect_store(store_config).await?;
-        Self::build_with_store(store, runtime).await
+        Self::build_with_store_arc(store, runtime).await
     }
 
     /// Build shared state from an already-constructed store.
@@ -48,15 +48,26 @@ impl ServerState {
     where
         S: EventStore,
     {
+        Self::build_with_store_arc(Arc::new(store), runtime).await
+    }
+
+    async fn build_with_store_arc(
+        store: Arc<dyn EventStore>,
+        runtime: RuntimeConfig,
+    ) -> Result<Self, ServerError> {
         let worker_registry = ConnectedWorkerRegistry::default();
         let pending_activities = PendingActivities::default();
         let dispatcher = Arc::new(
-            WorkerActivityDispatcher::new(worker_registry.clone(), "default")
-                .with_pending(pending_activities.clone()),
+            WorkerActivityDispatcher::new(
+                worker_registry.clone(),
+                runtime.default_namespace.clone(),
+            )
+            .with_pending(pending_activities.clone()),
         );
 
         let engine = EngineBuilder::new()
-            .store(store)
+            .store_arc(store)
+            .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
             .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
                 Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
@@ -141,10 +152,19 @@ impl ServerState {
     }
 }
 
-async fn connect_store(config: StoreConfig) -> Result<LibSqlStore, ServerError> {
-    LibSqlStore::connect(config.libsql)
-        .await
-        .map_err(ServerError::from)
+async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, ServerError> {
+    match config.backend {
+        StoreBackend::Memory => Ok(Arc::new(aion_store::InMemoryStore::default())),
+        StoreBackend::LibSql => {
+            let Some(url) = config.url else {
+                return Err(ServerError::Config {
+                    message: "store.url must not be empty when store.backend is libsql".to_owned(),
+                });
+            };
+            let store = LibSqlStore::open(url).await.map_err(ServerError::from)?;
+            Ok(Arc::new(store))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,8 +175,8 @@ mod tests {
 
     use super::ServerState;
     use crate::config::{
-        AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, NamespaceConfig,
-        NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+        AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
+        NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
     };
 
     fn runtime_config() -> RuntimeConfig {
@@ -167,7 +187,9 @@ mod tests {
             },
             tls: None,
             auth: AuthConfig {
-                bearer_token: "test-token".to_owned(),
+                enabled: false,
+                jwks_url: None,
+                jwks_refresh_seconds: 300,
             },
             dashboard: DashboardConfig {
                 source: DashboardAssetSource::Embedded,
@@ -182,6 +204,10 @@ mod tests {
                 outbound_buffer_bound: 32,
             },
             workflow_packages: Vec::new(),
+            scheduler_threads: 1,
+            default_namespace: "default".to_owned(),
+            drain_timeout: Duration::from_secs(30),
+            metrics: MetricsConfig { enabled: true },
         }
     }
 
