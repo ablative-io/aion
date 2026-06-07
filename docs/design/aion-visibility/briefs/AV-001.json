@@ -1,0 +1,73 @@
+{
+  "id": "AV-001",
+  "cluster": "aion-visibility",
+  "title": "Search attribute types, schema, and SearchAttributesUpdated event",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C9"],
+  "stories": ["S3", "S5"],
+  "purpose": "Define the core domain types for workflow visibility: search attribute type taxonomy, attribute schema registration, and the SearchAttributesUpdated event. These are the foundation the visibility store, engine integration, and SDK bindings build on.",
+  "task": "Add search attribute types to aion-core: SearchAttributeType enum (String, Int, Float, Bool, Datetime, KeywordList), SearchAttributeValue enum (typed values), SearchAttributeSchema (per-namespace registry of attribute name to type), and SearchAttributesUpdated event variant carrying a map of attribute name to SearchAttributeValue. Type mismatches on set are errors.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SearchAttributeType and SearchAttributeValue",
+      "spec": "THE SYSTEM SHALL define SearchAttributeType with variants String, Int, Float, Bool, Datetime, KeywordList. THE SYSTEM SHALL define SearchAttributeValue as a typed enum with a variant per type carrying the concrete value.",
+      "acceptance": [
+        "SearchAttributeType has exactly six variants.",
+        "SearchAttributeValue has matching variants with concrete types (String, i64, f64, bool, DateTime<Utc>, Vec<String>).",
+        "Both round-trip through serde correctly."
+      ],
+      "files": {
+        "create": ["crates/aion-core/src/search.rs"],
+        "modify": ["crates/aion-core/src/lib.rs"]
+      },
+      "checklist": ["C1"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R2",
+      "title": "SearchAttributeSchema with type registration and validation",
+      "spec": "THE SYSTEM SHALL define SearchAttributeSchema as a per-namespace registry mapping attribute names to their declared SearchAttributeType. Setting an attribute with a value that doesn't match its declared type SHALL return a typed error.",
+      "acceptance": [
+        "SearchAttributeSchema::register(name, type) records the type for a name.",
+        "SearchAttributeSchema::validate(name, value) returns Ok if the value matches the declared type, Err otherwise.",
+        "Registering the same name with a different type returns an error.",
+        "Setting an unregistered attribute name returns an error."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/search.rs"]
+      },
+      "checklist": ["C9"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "SearchAttributesUpdated event variant",
+      "spec": "THE SYSTEM SHALL add SearchAttributesUpdated to the Event enum carrying an EventEnvelope, workflow_id, and attributes (HashMap<String, SearchAttributeValue>). All exhaustive matches on Event SHALL handle the new variant.",
+      "acceptance": [
+        "Event::SearchAttributesUpdated exists with the specified fields.",
+        "The variant serializes and deserializes correctly.",
+        "All exhaustive matches in aion-core handle the new variant.",
+        "cargo clippy -p aion-core --all-targets -- -D warnings passes."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/event.rs", "crates/aion-core/src/filter.rs", "crates/aion-core/src/status.rs"]
+      },
+      "checklist": ["C2"],
+      "stories": ["S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the VisibilityStore trait — that is AV-002.",
+    "SHALL NOT implement engine integration — that is AV-003.",
+    "SHALL NOT implement SDK bindings — that is AV-004."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-core passes.",
+    "cargo fmt --check passes."
+  ]
+}

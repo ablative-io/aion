@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-schedules",
+  "stories": [
+    {"id": "S1", "persona": "Operator", "story": "As an operator, I want to create a schedule that runs a billing workflow every midnight so that invoices are generated automatically."},
+    {"id": "S2", "persona": "Operator", "story": "As an operator, I want overlap protection so that a slow-running scheduled workflow doesn't cause duplicate executions."},
+    {"id": "S3", "persona": "Operator", "story": "As an operator, I want to pause and resume schedules during maintenance windows."},
+    {"id": "S4", "persona": "Operator", "story": "As an operator, I want the engine to catch up on missed triggers after downtime so that no scheduled work is silently dropped."},
+    {"id": "S5", "persona": "Developer", "story": "As a developer, I want to use standard cron expressions to define trigger timing so that I can reuse my existing scheduling knowledge."},
+    {"id": "S6", "persona": "Operator", "story": "As an operator, I want to list and describe all active schedules so that I can audit what's running."},
+    {"id": "S7", "persona": "Engine developer", "story": "As an engine developer, I want schedule state derived from events so that it survives restarts and is consistent with the durability model."}
+  ]
+}

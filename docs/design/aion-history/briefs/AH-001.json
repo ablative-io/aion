@@ -1,0 +1,76 @@
+{
+  "id": "AH-001",
+  "cluster": "aion-history",
+  "title": "WorkflowContinuedAsNew event and ContinuedAsNew terminal status",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2"],
+  "stories": ["S1", "S4"],
+  "purpose": "Add the core domain types for continue-as-new: the WorkflowContinuedAsNew event variant and the ContinuedAsNew terminal workflow status. These are the foundation every other AH brief builds on. The event carries the input payload for the new run, an optional workflow type override for migration, and the parent_run_id linking to the previous run. The status is derived by projection, consistent with the status-is-a-projection invariant.",
+  "task": "Add a WorkflowContinuedAsNew variant to the Event enum in aion-core carrying an EventEnvelope, the carried Payload (new run input), an optional workflow_type override (String), and parent_run_id (RunId). Add ContinuedAsNew to the WorkflowStatus enum as a terminal status. Update the status projection (status_of) to derive ContinuedAsNew from WorkflowContinuedAsNew events. Update all exhaustive matches on Event and WorkflowStatus across aion-core (filter, is_terminal, display, serde) to handle the new variants.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "WorkflowContinuedAsNew event variant",
+      "spec": "THE SYSTEM SHALL add a WorkflowContinuedAsNew variant to the Event enum carrying: an EventEnvelope, an input Payload (the carried state for the new run), an optional workflow_type (Option<String>) for migration, and a parent_run_id (RunId) linking to the current run that is being continued.",
+      "acceptance": [
+        "Event::WorkflowContinuedAsNew exists with fields envelope: EventEnvelope, input: Payload, workflow_type: Option<String>, parent_run_id: RunId.",
+        "The variant serializes and deserializes correctly via serde (round-trip test).",
+        "The variant is handled in every exhaustive match on Event in aion-core (filter.rs, status.rs, and any other match sites)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/event.rs", "crates/aion-core/src/filter.rs"]
+      },
+      "checklist": ["C1"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "ContinuedAsNew terminal status",
+      "spec": "THE SYSTEM SHALL add ContinuedAsNew to the WorkflowStatus enum. WorkflowStatus::ContinuedAsNew SHALL be terminal (is_terminal returns true). The status_of projection SHALL derive ContinuedAsNew from WorkflowContinuedAsNew events.",
+      "acceptance": [
+        "WorkflowStatus::ContinuedAsNew exists.",
+        "WorkflowStatus::ContinuedAsNew.is_terminal() returns true.",
+        "status_of applied to a history ending with WorkflowContinuedAsNew returns Some(WorkflowStatus::ContinuedAsNew).",
+        "A history with WorkflowStarted then WorkflowContinuedAsNew projects to ContinuedAsNew status.",
+        "All exhaustive matches on WorkflowStatus in aion-core handle the new variant."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/status.rs"]
+      },
+      "checklist": ["C2"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "Filter and projection integration",
+      "spec": "THE SYSTEM SHALL treat WorkflowContinuedAsNew as a terminal lifecycle event in all filter and projection paths. THE SYSTEM SHALL include it in terminal-event filters and closed_at extraction alongside WorkflowCompleted, WorkflowFailed, WorkflowCancelled, and WorkflowTimedOut.",
+      "acceptance": [
+        "EventFilter::terminal() matches WorkflowContinuedAsNew.",
+        "closed_at extraction returns the envelope's recorded_at for WorkflowContinuedAsNew.",
+        "cargo clippy -p aion-core --all-targets -- -D warnings passes with no unhandled-variant warnings.",
+        "cargo test -p aion-core passes."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-core/src/filter.rs"]
+      },
+      "checklist": ["C1", "C2"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the Recorder recording path — that is AH-002.",
+    "SHALL NOT implement the Engine::continue_as_new method — that is AH-003.",
+    "SHALL NOT modify the EventStore trait or any store implementation — that is AH-002.",
+    "SHALL NOT add SDK bindings — those are a later brief."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-core passes.",
+    "cargo fmt --check passes.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "id": "AK-005",
+  "cluster": "aion-schedules",
+  "title": "Server schedule endpoints and integration test",
+  "depends_on": ["AK-001", "AK-003", "AK-004"],
+  "blocked_by": [],
+  "checklist": ["C9", "C12"],
+  "stories": ["S1", "S6"],
+  "purpose": "Expose schedule management via gRPC and HTTP endpoints in aion-server, and provide an end-to-end integration test proving the full schedule lifecycle: create, fire on interval, overlap prevention, recovery re-arm.",
+  "task": "Add schedule management endpoints to aion-server (gRPC and HTTP): CreateSchedule, UpdateSchedule, PauseSchedule, ResumeSchedule, DeleteSchedule, ListSchedules, DescribeSchedule. Each endpoint delegates to the Engine methods. Write an integration test that creates a schedule, verifies it fires, verifies overlap policy prevents concurrent executions, and verifies recovery re-arms timers after restart.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "gRPC schedule endpoints",
+      "spec": "THE SYSTEM SHALL add gRPC service methods for schedule management matching the Engine API: CreateSchedule, UpdateSchedule, PauseSchedule, ResumeSchedule, DeleteSchedule, ListSchedules, DescribeSchedule.",
+      "acceptance": [
+        "Proto definitions exist for all seven schedule RPCs.",
+        "Server handlers delegate to Engine methods.",
+        "Each RPC returns appropriate error codes for invalid input and not-found cases."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-proto/src/lib.rs", "crates/aion-server/src/grpc.rs"]
+      },
+      "checklist": ["C9"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "HTTP schedule endpoints",
+      "spec": "THE SYSTEM SHALL add HTTP REST endpoints for schedule management: POST /schedules, PUT /schedules/:id, POST /schedules/:id/pause, POST /schedules/:id/resume, DELETE /schedules/:id, GET /schedules, GET /schedules/:id.",
+      "acceptance": [
+        "All seven HTTP endpoints exist and delegate to Engine methods.",
+        "Responses use appropriate HTTP status codes (201 for create, 404 for not found, etc.)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/http.rs"]
+      },
+      "checklist": ["C9"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "Integration test: schedule lifecycle with recovery",
+      "spec": "THE SYSTEM SHALL have an integration test that: creates a schedule with a short interval, verifies it fires and starts a workflow, verifies overlap policy (Skip) prevents a concurrent start, and verifies that after simulated recovery the schedule re-arms and fires again.",
+      "acceptance": [
+        "Schedule creation succeeds and returns a ScheduleId.",
+        "Within the expected interval, a workflow is started with the schedule's configured input.",
+        "A ScheduleTriggered event is recorded.",
+        "With overlap policy Skip and a still-running workflow, the next trigger is skipped.",
+        "After recovery, the schedule re-arms and fires again."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/schedule_lifecycle.rs"],
+        "modify": []
+      },
+      "checklist": ["C12"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement WebSocket streaming for schedule events — that is a future enhancement.",
+    "SHALL NOT implement dashboard UI for schedules — that belongs in the dashboard cluster."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-server passes.",
+    "cargo test -p aion --test schedule_lifecycle passes.",
+    "cargo fmt --check passes."
+  ]
+}

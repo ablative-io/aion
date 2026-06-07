@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-history",
+  "items": [
+    {"id": "C1", "text": "WorkflowContinuedAsNew event variant exists in aion-core with input payload, optional workflow type override, and parent_run_id."},
+    {"id": "C2", "text": "WorkflowStatus::ContinuedAsNew is a terminal status derived by projection from WorkflowContinuedAsNew events."},
+    {"id": "C3", "text": "Recorder can record WorkflowContinuedAsNew as a terminal event."},
+    {"id": "C4", "text": "Engine::continue_as_new records the event, deregisters the old run, and starts a new run under the same WorkflowId with a fresh RunId."},
+    {"id": "C5", "text": "Calling continue_as_new with pending in-flight activities or child workflows fails with a clear error."},
+    {"id": "C6", "text": "Recovery (list_active) skips ContinuedAsNew runs and only replays the current active run."},
+    {"id": "C7", "text": "The new run's WorkflowStarted carries parent_run_id linking to the previous run."},
+    {"id": "C8", "text": "History chain is navigable: querying by WorkflowId returns all runs in continuation order."},
+    {"id": "C9", "text": "Optional workflow type change enables migration (v1 continues-as-new into v2)."},
+    {"id": "C10", "text": "Integration test: a looping workflow uses continue-as-new to bound history, recovers correctly from the new run."}
+  ]
+}

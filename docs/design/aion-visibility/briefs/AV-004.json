@@ -1,0 +1,57 @@
+{
+  "id": "AV-004",
+  "cluster": "aion-visibility",
+  "title": "Engine visibility integration and SDK search attribute binding",
+  "depends_on": ["AV-001", "AV-002", "AV-003"],
+  "blocked_by": [],
+  "checklist": ["C7", "C8"],
+  "stories": ["S3", "S4"],
+  "purpose": "Wire visibility into the engine: update the visibility index on every state-changing event, and provide the SDK binding for workflow authors to set custom search attributes from workflow code.",
+  "task": "Add a VisibilityStore to the EngineBuilder. After every state-changing event (WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowContinuedAsNew, SearchAttributesUpdated), the engine upserts the visibility record. Add a Recorder method record_search_attributes_updated for the SDK to call. The SDK binding (workflow.upsert_search_attributes) records a SearchAttributesUpdated event which triggers the visibility update.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Engine updates visibility on state-changing events",
+      "spec": "THE SYSTEM SHALL update the VisibilityStore on WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowContinuedAsNew, and SearchAttributesUpdated events. Each update upserts the full WorkflowSummary with current status, times, and search attributes.",
+      "acceptance": [
+        "After WorkflowStarted, the workflow appears in list_workflows with status Running.",
+        "After WorkflowCompleted, the workflow's status is Completed and close_time is set.",
+        "After WorkflowFailed, the workflow's status is Failed.",
+        "After SearchAttributesUpdated, the workflow's search attributes are updated in the visibility index."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/builder.rs", "crates/aion/src/lifecycle/start.rs", "crates/aion/src/lifecycle/terminate.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Recorder records SearchAttributesUpdated",
+      "spec": "THE SYSTEM SHALL add record_search_attributes_updated to the Recorder that appends a SearchAttributesUpdated event with the provided attribute map. The Recorder SHALL validate attribute types against the registered schema.",
+      "acceptance": [
+        "Recorder::record_search_attributes_updated exists.",
+        "After recording, the event appears in read_history.",
+        "Setting an attribute with a type that doesn't match the schema returns an error."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/durability/recorder.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement Gleam SDK bindings for upsert_search_attributes — those require the aion_flow crate and belong in a separate brief.",
+    "SHALL NOT implement server query endpoints — that is AV-005.",
+    "SHALL NOT implement NIF-level search attribute dispatch — the Recorder method is called from the host side."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Tests cover: visibility update on each state-changing event, search attribute recording, type validation."
+  ]
+}

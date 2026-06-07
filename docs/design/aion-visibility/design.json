@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-visibility",
+  "code": "AV",
+  "title": "Aion Visibility — Search Attributes, Workflow Index, and Operational Queries",
+  "intention": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running workflows of type Y. Without a query layer, the only access path is by WorkflowId — which requires knowing the ID up front. This cluster adds search attributes (user-defined key-value metadata on workflows) and a visibility index that supports filtered listing, full-text-like search on attributes, and time-range queries. This is the operational backbone that makes dashboards, alerting, and debugging possible at scale.",
+  "problem": [
+    "The EventStore is optimised for per-workflow append and replay, not cross-workflow queries. Scanning every workflow's history to find those matching a filter is O(total events), which is prohibitive at scale.",
+    "Operators need to filter by: workflow type, status (running/completed/failed/cancelled), start time, close time, execution duration, and user-defined custom attributes (customer_id, order_number, region).",
+    "Custom attributes must be settable from workflow code (workflow.upsert_search_attributes) and from external callers (the management API). They must be typed (string, int, float, bool, datetime, keyword list) so the index can support efficient filtering.",
+    "The visibility index must be eventually consistent with the EventStore but need not be strongly consistent — a brief delay between an event being appended and the workflow appearing in search results is acceptable. This allows the index to be updated asynchronously.",
+    "The index must support the embedded deployment (single-node, libSQL) as well as server deployment (potentially a dedicated search backend like Elasticsearch or Meilisearch). The abstraction must not leak the backend."
+  ],
+  "solution": {
+    "summary": "Add a VisibilityStore trait abstracting the search index, with a libSQL-backed default implementation using indexed columns for standard fields and a JSON column for custom attributes. Workflow code sets search attributes via workflow.upsert_search_attributes (recorded as SearchAttributesUpdated events). The engine updates the visibility index on every state-changing event (started, completed, failed, cancelled, search attributes updated). The index supports ListWorkflows with filters (type, status, time range, custom attribute predicates) and CountWorkflows. Results return WorkflowSummary (id, type, status, start time, close time, search attributes) without the full event history. The dashboard and server API expose these queries."
+  },
+  "decisions": [
+    {"id": "D1", "title": "VisibilityStore trait with pluggable backends", "status": "active", "choice": "VisibilityStore is a trait in aion-store with methods record_workflow_visibility (upsert), list_workflows (filtered query), and count_workflows. The default implementation uses libSQL with indexed columns. A future Elasticsearch/Meilisearch backend can implement the same trait. Rejected coupling to a specific search engine: embedded mode must work without external services."},
+    {"id": "D2", "title": "Standard fields indexed as columns; custom attributes as typed JSON", "status": "active", "choice": "Standard fields (workflow_id, workflow_type, status, start_time, close_time, execution_duration) are indexed columns for efficient filtering. Custom search attributes are stored as a typed JSON object with a defined schema per attribute name. libSQL's JSON functions support filtering on custom attributes. Rejected separate tables per attribute: too many JOINs at query time."},
+    {"id": "D3", "title": "Search attributes set from workflow code and from management API", "status": "active", "choice": "Workflow code calls workflow.upsert_search_attributes({key: value, ...}) which records a SearchAttributesUpdated event. The management API can also set attributes externally. Both paths update the visibility index. Rejected workflow-only setting: operators need to tag workflows for triage."},
+    {"id": "D4", "title": "Eventually consistent index updated on state-changing events", "status": "active", "choice": "The visibility index is updated asynchronously (or synchronously in embedded mode) whenever a state-changing event is appended. A brief delay is acceptable. Rejected strong consistency: it would couple the critical append path to the index write. Rejected batch indexing: it would create unpredictable search latency."},
+    {"id": "D5", "title": "Typed search attributes with schema registration", "status": "active", "choice": "Each search attribute name has a registered type (String, Int, Float, Bool, Datetime, KeywordList). Type registration is per-namespace. Attempting to set an attribute with the wrong type is an error. This enables the index to use typed comparisons (> for Int, BETWEEN for Datetime). Rejected untyped attributes: they would prevent meaningful filtering."},
+    {"id": "D6", "title": "WorkflowSummary projection, not full history", "status": "active", "choice": "Visibility queries return WorkflowSummary (id, run_id, type, status, start_time, close_time, search_attributes, memo) — a lightweight projection. Full event history requires a separate read_history call. This keeps list queries fast. Rejected returning full histories: unbounded response size."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "VisibilityStore is a trait in aion-store, not coupled to any specific backend."},
+    {"id": "CO2", "description": "The libSQL implementation must support filtering by all standard fields and custom attribute predicates without full table scans."},
+    {"id": "CO3", "description": "Search attribute types are registered per namespace; type mismatches are errors, not silent coercions."},
+    {"id": "CO4", "description": "Visibility updates must not block the EventStore append path in server mode."},
+    {"id": "CO5", "description": "WorkflowSummary must include enough data for dashboard rendering without per-workflow history reads."},
+    {"id": "CO6", "description": "The search attribute event (SearchAttributesUpdated) is a recorded event subject to replay and determinism — it must be replayable."}
+  ],
+  "goals": [
+    "SearchAttribute types (String, Int, Float, Bool, Datetime, KeywordList) and SearchAttributeSchema in aion-core.",
+    "SearchAttributesUpdated event variant in aion-core.",
+    "VisibilityStore trait with record_visibility, list_workflows (filtered), count_workflows.",
+    "WorkflowSummary projection type.",
+    "ListWorkflowsFilter with predicates for type, status, time range, and custom attributes.",
+    "libSQL VisibilityStore implementation with indexed standard fields and JSON custom attributes.",
+    "Engine integration: update visibility on state-changing events.",
+    "SDK binding: workflow.upsert_search_attributes.",
+    "Server API: list and count workflows with filters.",
+    "Dashboard integration: workflow list page backed by visibility queries."
+  ],
+  "structure": {
+    "crate": "aion-core, aion-store, aion-store-libsql, aion, aion-server, aion-dashboard",
+    "modules": [
+      "aion_core::search — SearchAttribute types, schema, SearchAttributesUpdated event",
+      "aion_store::visibility — VisibilityStore trait, WorkflowSummary, ListWorkflowsFilter",
+      "aion_store_libsql::visibility — libSQL VisibilityStore implementation",
+      "aion::engine::api — Engine visibility integration (update on events)",
+      "aion_server — gRPC/HTTP visibility query endpoints",
+      "aion_flow — workflow.upsert_search_attributes SDK binding"
+    ]
+  }
+}

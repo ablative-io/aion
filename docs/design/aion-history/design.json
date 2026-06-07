@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-history",
+  "code": "AH",
+  "title": "Aion History Management — Continue-As-New and Event Compaction",
+  "intention": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever — processing orders, monitoring a sensor, managing a subscription — grows its event log with every iteration. Replay on recovery re-executes every recorded step from the beginning, so performance degrades linearly with history size. Without a mechanism to bound history, Aion cannot support long-lived workflows in production. This cluster adds continue-as-new: a workflow explicitly restarts itself with a fresh event log, carrying forward only the state it needs. The old execution completes as ContinuedAsNew (a terminal status), and a new execution begins immediately with the carried-over state as input. Replay of the new execution starts from its own WorkflowStarted event, not from the original. This is the same mechanism Temporal uses and it is the only sound approach — snapshotting with truncation would require the snapshot to be replay-correct, which is equivalent to re-executing anyway.",
+  "problem": [
+    "A workflow that runs for months or years accumulates thousands or millions of events. Recovery replays from event zero. At 10,000 events, replay takes noticeable time; at 100,000, it is prohibitive. Without a bound, Aion is unsuitable for any workflow that loops.",
+    "Naive snapshotting (serialize workflow state, truncate old events) requires the snapshot to capture the exact internal state the workflow function would reach at that point — including local variables, loop counters, and closure captures. This is equivalent to serializing a running BEAM process, which beamr does not support and which would couple the snapshot format to the workflow code version. Temporal rejected this approach for the same reasons.",
+    "Continue-as-new must preserve the logical identity of the workflow while starting a fresh execution. The WorkflowId remains the same; the RunId changes. The old run is terminal (ContinuedAsNew); the new run is a fresh WorkflowStarted. Any in-flight activities or child workflows of the old run must be handled: either completed before continue-as-new, or cancelled as part of the transition.",
+    "The carried-over state must be a plain Payload, not a serialized process image. The workflow author decides what to carry forward — the current counter, the accumulated result, the last-processed offset. This is an explicit, typed handoff, not an implicit dump.",
+    "The SDK must make continue-as-new ergonomic: a single function call that never returns (the current execution is terminal after it). The engine must treat ContinuedAsNew as a terminal status that triggers a new start."
+  ],
+  "solution": {
+    "summary": "Add ContinuedAsNew as a terminal event and status. The workflow SDK exposes workflow.continue_as_new(input) which records a WorkflowContinuedAsNew event (carrying the new input payload and optionally a different workflow type/version for migration), transitions the current run to terminal status ContinuedAsNew, and the engine immediately starts a new run under the same WorkflowId with a fresh RunId. The new run's WorkflowStarted event carries the provided input. Pending activities and children are cancelled before the transition (the workflow author is responsible for awaiting or cancelling them before calling continue_as_new; calling it with pending activities is a terminal error). History of the old run is retained for audit but is never replayed — only the new run's history is used for recovery. The chain of runs is navigable via a parent_run_id field on the new run's WorkflowStarted event."
+  },
+  "decisions": [
+    {"id": "D1", "title": "ContinuedAsNew is a terminal status with a dedicated event", "status": "active", "choice": "WorkflowContinuedAsNew is a terminal event like WorkflowCompleted or WorkflowFailed. The derived WorkflowStatus::ContinuedAsNew is terminal. The engine deregisters the old run and starts a new one. Rejected making it a non-terminal transition: the old run must be final so its history is immutable."},
+    {"id": "D2", "title": "Same WorkflowId, new RunId", "status": "active", "choice": "The new execution keeps the same WorkflowId (preserving logical identity) but gets a fresh RunId (fresh event sequence). The WorkflowStarted event of the new run carries a parent_run_id linking to the previous run. This allows navigating the chain of continuations."},
+    {"id": "D3", "title": "Carried state is an explicit Payload, not a process snapshot", "status": "active", "choice": "The workflow author passes a Payload to continue_as_new. This is the input to the new run. No implicit state transfer. The author controls what crosses the boundary. Rejected process serialization: beamr does not support it, and it would couple to code version."},
+    {"id": "D4", "title": "Pending activities must be resolved before continue-as-new", "status": "active", "choice": "Calling continue_as_new with pending (in-flight) activities or child workflows is a terminal error (WorkflowFailed with a clear error message). The author must await or cancel them first. Rejected auto-cancellation: it would mask bugs where the author forgot to handle in-flight work."},
+    {"id": "D5", "title": "Optional workflow type change for migration", "status": "active", "choice": "continue_as_new optionally accepts a different workflow type and/or version. This enables migration: a v1 workflow can continue-as-new into a v2 workflow type. If not specified, the same workflow type and latest version are used."},
+    {"id": "D6", "title": "Old run history retained for audit, never replayed", "status": "active", "choice": "The old run's events remain in the EventStore for audit, debugging, and compliance. Recovery never replays them — it uses list_active which returns only the current (non-terminal) run. The old run's terminal status means it is skipped."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "ContinuedAsNew is a terminal status with exactly one corresponding terminal event (WorkflowContinuedAsNew), consistent with the status-is-a-projection invariant."},
+    {"id": "CO2", "description": "The new run's WorkflowStarted must carry parent_run_id so the continuation chain is navigable."},
+    {"id": "CO3", "description": "Continue-as-new with pending activities or children is a hard error, not auto-cancellation."},
+    {"id": "CO4", "description": "The carried payload is subject to the same size constraints as any workflow input."},
+    {"id": "CO5", "description": "Recovery (list_active + replay) must never attempt to replay a ContinuedAsNew run."},
+    {"id": "CO6", "description": "The engine must start the new run atomically with completing the old run — no window where neither exists."}
+  ],
+  "goals": [
+    "WorkflowContinuedAsNew event type in aion-core with input payload, optional new workflow type, and parent_run_id.",
+    "WorkflowStatus::ContinuedAsNew terminal status, derived by projection.",
+    "Engine continue_as_new method that records the event, deregisters the old run, and starts the new run.",
+    "Recorder support for recording WorkflowContinuedAsNew as a terminal event.",
+    "SDK binding (workflow.continue_as_new) that the Gleam workflow author calls.",
+    "Pending-work guard: detect in-flight activities/children and fail if any exist.",
+    "Recovery exclusion: list_active skips ContinuedAsNew runs.",
+    "History chain navigation: read_history returns the full chain when queried by WorkflowId."
+  ],
+  "structure": {
+    "crate": "aion-core, aion, aion_flow",
+    "modules": [
+      "aion_core::event — WorkflowContinuedAsNew variant",
+      "aion_core::status — ContinuedAsNew terminal status",
+      "aion::lifecycle::continue_as_new — engine-level continue-as-new logic",
+      "aion::engine::api — Engine::continue_as_new public method",
+      "aion_flow — workflow.continue_as_new SDK binding"
+    ]
+  }
+}

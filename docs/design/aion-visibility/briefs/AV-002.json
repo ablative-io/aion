@@ -1,0 +1,72 @@
+{
+  "id": "AV-002",
+  "cluster": "aion-visibility",
+  "title": "VisibilityStore trait, WorkflowSummary, and ListWorkflowsFilter",
+  "depends_on": ["AV-001"],
+  "blocked_by": [],
+  "checklist": ["C3", "C4", "C5", "C11"],
+  "stories": ["S1", "S4", "S5"],
+  "purpose": "Define the VisibilityStore trait abstracting the search index, the WorkflowSummary projection type returned by queries, and the ListWorkflowsFilter for filtered workflow listing. These types define the query contract that backend implementations fulfill.",
+  "task": "Add to aion-store: VisibilityStore trait with record_visibility (upsert a workflow's visibility record), list_workflows (filtered query returning WorkflowSummary), and count_workflows (filtered count). Define WorkflowSummary with workflow_id, run_id, workflow_type, status, start_time, close_time, and search_attributes. Define ListWorkflowsFilter with optional predicates for workflow_type, status, time range, and custom attribute value comparisons.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "VisibilityStore trait",
+      "spec": "THE SYSTEM SHALL define VisibilityStore as an async trait in aion-store with methods: record_visibility(record: VisibilityRecord), list_workflows(filter: ListWorkflowsFilter) -> Vec<WorkflowSummary>, count_workflows(filter: ListWorkflowsFilter) -> u64.",
+      "acceptance": [
+        "VisibilityStore trait exists in aion-store with the three specified methods.",
+        "The trait is object-safe (can be used as Arc<dyn VisibilityStore>).",
+        "VisibilityRecord carries all fields needed to upsert a workflow's visibility entry."
+      ],
+      "files": {
+        "create": ["crates/aion-store/src/visibility.rs"],
+        "modify": ["crates/aion-store/src/lib.rs"]
+      },
+      "checklist": ["C3"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "WorkflowSummary projection type",
+      "spec": "THE SYSTEM SHALL define WorkflowSummary with fields: workflow_id (WorkflowId), run_id (RunId), workflow_type (String), status (WorkflowStatus), start_time (DateTime<Utc>), close_time (Option<DateTime<Utc>>), and search_attributes (HashMap<String, SearchAttributeValue>).",
+      "acceptance": [
+        "WorkflowSummary exists with all specified fields.",
+        "WorkflowSummary derives Debug, Clone, Serialize, Deserialize.",
+        "WorkflowSummary does NOT contain the full event history."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store/src/visibility.rs"]
+      },
+      "checklist": ["C4", "C11"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "ListWorkflowsFilter with typed predicates",
+      "spec": "THE SYSTEM SHALL define ListWorkflowsFilter with optional fields: workflow_type (Option<String>), status (Option<WorkflowStatus>), started_after (Option<DateTime<Utc>>), started_before (Option<DateTime<Utc>>), closed_after (Option<DateTime<Utc>>), closed_before (Option<DateTime<Utc>>), search_attributes (Vec<SearchAttributePredicate>), limit (Option<u32>), offset (Option<u32>).",
+      "acceptance": [
+        "ListWorkflowsFilter exists with all specified fields.",
+        "SearchAttributePredicate supports equality, greater-than, less-than, and contains for KeywordList.",
+        "An empty filter matches all workflows.",
+        "Limit and offset enable pagination."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store/src/visibility.rs"]
+      },
+      "checklist": ["C5"],
+      "stories": ["S1"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement a backend (libSQL or otherwise) — that is AV-003.",
+    "SHALL NOT implement engine integration — that is AV-004.",
+    "SHALL NOT add server endpoints — that is AV-005."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store passes.",
+    "cargo fmt --check passes."
+  ]
+}

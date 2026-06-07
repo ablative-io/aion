@@ -1,0 +1,75 @@
+{
+  "id": "AK-004",
+  "cluster": "aion-schedules",
+  "title": "Engine schedule management API",
+  "depends_on": ["AK-001", "AK-003"],
+  "blocked_by": [],
+  "checklist": ["C8"],
+  "stories": ["S1", "S3", "S6"],
+  "purpose": "Expose schedule management through the Engine public API: create, update, pause, resume, delete, list, and describe. Each mutation records the corresponding schedule event and updates the evaluator's state.",
+  "task": "Add schedule management methods to Engine: create_schedule, update_schedule, pause_schedule, resume_schedule, delete_schedule, list_schedules, describe_schedule. Each mutation method records the corresponding event through a schedule-specific Recorder, notifies the ScheduleEvaluator, and returns the result. Query methods (list, describe) project from schedule state.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Engine::create_schedule",
+      "spec": "THE SYSTEM SHALL add create_schedule(config: ScheduleConfig) -> Result<ScheduleId, EngineError> that generates a ScheduleId, records ScheduleCreated, arms the evaluator, and returns the id.",
+      "acceptance": [
+        "create_schedule returns a ScheduleId.",
+        "A ScheduleCreated event is recorded.",
+        "The evaluator has an armed timer for the new schedule.",
+        "The schedule appears in list_schedules."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/api.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Engine update, pause, resume, delete",
+      "spec": "THE SYSTEM SHALL add update_schedule (changes config), pause_schedule (disarms timer), resume_schedule (re-arms timer), and delete_schedule (permanently disarms). Each records the corresponding event.",
+      "acceptance": [
+        "update_schedule records ScheduleUpdated and the evaluator uses the new config.",
+        "pause_schedule records SchedulePaused and disarms the timer.",
+        "resume_schedule records ScheduleResumed and re-arms the timer.",
+        "delete_schedule records ScheduleDeleted and permanently disarms.",
+        "Operating on a non-existent schedule returns an error."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/api.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R3",
+      "title": "Engine list_schedules and describe_schedule",
+      "spec": "THE SYSTEM SHALL add list_schedules() returning all non-deleted schedules with their state, and describe_schedule(id) returning the full state of a single schedule including trigger history.",
+      "acceptance": [
+        "list_schedules returns all non-deleted schedules.",
+        "describe_schedule returns config, is_paused, last_triggered_at, next_trigger_at.",
+        "describe_schedule on a non-existent id returns an error.",
+        "Deleted schedules do not appear in list_schedules."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/engine/api.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement server/gRPC/HTTP endpoints — that is AK-005.",
+    "SHALL NOT implement the evaluator internals — those are in AK-003."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Unit tests cover create, update, pause, resume, delete, list, describe, and error paths."
+  ]
+}

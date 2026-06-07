@@ -1,0 +1,92 @@
+{
+  "id": "AV-003",
+  "cluster": "aion-visibility",
+  "title": "libSQL VisibilityStore implementation",
+  "depends_on": ["AV-001", "AV-002"],
+  "blocked_by": [],
+  "checklist": ["C6"],
+  "stories": ["S1", "S2", "S5", "S6"],
+  "purpose": "Implement the VisibilityStore trait for the libSQL backend. Standard fields (workflow_type, status, start_time, close_time) are indexed columns for efficient filtering. Custom search attributes are stored as a typed JSON column. This enables the embedded deployment to support visibility queries without external search infrastructure.",
+  "task": "Create aion_store_libsql::visibility module implementing VisibilityStore. Create the visibility table with indexed columns for standard fields and a JSON column for custom attributes. Implement record_visibility as an upsert, list_workflows as a parameterized query supporting all filter predicates, and count_workflows as the corresponding COUNT query. Use libSQL JSON functions for custom attribute filtering.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Visibility table schema with indexed standard fields",
+      "spec": "THE SYSTEM SHALL create a visibility table with columns: workflow_id (TEXT, PRIMARY KEY), run_id (TEXT), workflow_type (TEXT, indexed), status (TEXT, indexed), start_time (TEXT, indexed), close_time (TEXT, indexed), search_attributes (TEXT, JSON). Indexes SHALL exist on workflow_type, status, start_time, and close_time.",
+      "acceptance": [
+        "The visibility table is created during store initialization.",
+        "Indexes exist on workflow_type, status, start_time, close_time.",
+        "The schema supports the full WorkflowSummary projection."
+      ],
+      "files": {
+        "create": ["crates/aion-store-libsql/src/visibility.rs"],
+        "modify": ["crates/aion-store-libsql/src/lib.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "record_visibility upserts workflow summary",
+      "spec": "THE SYSTEM SHALL implement record_visibility as an INSERT OR REPLACE that upserts the full visibility record for a workflow, including current status, times, and search attributes.",
+      "acceptance": [
+        "Recording a new workflow inserts a row.",
+        "Recording an existing workflow updates the row.",
+        "Search attributes are stored as valid JSON.",
+        "The upserted row is immediately queryable."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/visibility.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "list_workflows with filter predicates",
+      "spec": "THE SYSTEM SHALL implement list_workflows to query the visibility table with WHERE clauses derived from ListWorkflowsFilter. Standard field filters use indexed column comparisons. Custom attribute filters use libSQL JSON extraction (json_extract). Results are ordered by start_time descending, with limit/offset pagination.",
+      "acceptance": [
+        "Filtering by workflow_type returns only matching workflows.",
+        "Filtering by status returns only matching workflows.",
+        "Filtering by time range (started_after/before) returns workflows in range.",
+        "Filtering by custom attribute value returns matching workflows.",
+        "An empty filter returns all workflows (paginated).",
+        "Limit and offset pagination works correctly."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/visibility.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": ["S1", "S2"]
+    },
+    {
+      "id": "R4",
+      "title": "count_workflows",
+      "spec": "THE SYSTEM SHALL implement count_workflows as a COUNT query using the same filter logic as list_workflows.",
+      "acceptance": [
+        "count_workflows with no filter returns the total workflow count.",
+        "count_workflows with a status filter returns the count of matching workflows.",
+        "count_workflows matches the length of list_workflows with the same filter."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-store-libsql/src/visibility.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": ["S6"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement engine-level visibility updates — that is AV-004.",
+    "SHALL NOT implement server endpoints — that is AV-005.",
+    "SHALL NOT implement an Elasticsearch/Meilisearch backend — that is a future enhancement."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-store-libsql passes.",
+    "cargo fmt --check passes.",
+    "Tests cover: upsert, filter by each standard field, filter by custom attribute, pagination, count."
+  ]
+}

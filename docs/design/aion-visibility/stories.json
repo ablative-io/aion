@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-visibility",
+  "stories": [
+    {"id": "S1", "persona": "Operator", "story": "As an operator, I want to list all failed workflows from the last hour so that I can triage production issues."},
+    {"id": "S2", "persona": "Operator", "story": "As an operator, I want to find the workflow processing a specific customer order by customer_id so that I can debug a support ticket."},
+    {"id": "S3", "persona": "Workflow author", "story": "As a workflow author, I want to set custom search attributes (customer_id, order_number) from my workflow code so that operators can find my workflows by business context."},
+    {"id": "S4", "persona": "Dashboard user", "story": "As a dashboard user, I want to see a filterable list of workflows with their status and custom attributes so that I can monitor the system."},
+    {"id": "S5", "persona": "Engine developer", "story": "As an engine developer, I want a pluggable VisibilityStore trait so that embedded mode uses libSQL and server mode can use a dedicated search backend."},
+    {"id": "S6", "persona": "Operator", "story": "As an operator, I want to count workflows by type and status so that I can build alerting dashboards."}
+  ]
+}

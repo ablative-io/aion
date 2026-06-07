@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-schedules",
+  "code": "AK",
+  "title": "Aion Schedules — Cron Workflows, Recurring Triggers, and Temporal Scheduling",
+  "intention": "Production workflow engines must support time-triggered execution: run this billing workflow every midnight, check this API every 5 minutes, generate this report every Monday at 9am. Without built-in scheduling, every user must build their own cron-to-workflow bridge, duplicating coordination logic (overlap prevention, catch-up, pause/resume) that belongs in the engine. This cluster adds a Schedule resource to Aion: a persistent, durable configuration that starts workflow executions on a cron expression or fixed interval, with policies for overlap, catch-up on missed triggers, and pause/resume. Schedules are engine-level — they survive restarts, are queryable, and their trigger history is auditable.",
+  "problem": [
+    "Without built-in scheduling, users must run external cron jobs that call the Aion API. This creates a single point of failure outside the engine's durability guarantees: if the cron host dies, triggers stop. The schedule state (last fired, next fire, overlap status) lives outside the engine and cannot be recovered.",
+    "Overlap handling is non-trivial: if a workflow execution takes longer than the schedule interval, the next trigger fires while the previous is still running. Policies include skip (do nothing), queue (buffer and start when previous finishes), cancel-previous (cancel the running one and start fresh), and allow-all (let them overlap). Without engine support, users implement this ad-hoc and get it wrong.",
+    "Catch-up after downtime: if the engine is down for an hour with a 5-minute schedule, should it fire 12 catch-up triggers on recovery? Policies include catch-up-all, catch-up-one (fire once immediately), and skip-missed. This must be configurable per schedule.",
+    "Schedules must be manageable: create, update (change cron expression), pause, resume, delete, list, describe. Each mutation must be durable and auditable.",
+    "The schedule evaluation loop must be efficient and must not drift: a schedule that fires every second must not accumulate jitter. The evaluation must be driven by the engine's timer infrastructure, not by polling."
+  ],
+  "solution": {
+    "summary": "Add a Schedule resource persisted in the EventStore (or a dedicated schedule store) with cron expression or fixed interval, overlap policy, catch-up policy, and target workflow type + input. A ScheduleEvaluator runs inside the engine, driven by the existing timer wheel (AT), that evaluates schedules at their next-fire time and starts workflow executions according to policy. Schedules are managed via the Engine API (create, update, pause, resume, delete, list, describe) and exposed through aion-server's gRPC/HTTP surface. Each schedule maintains its state (active, paused, last_triggered_at, next_trigger_at, current_execution_id) as durable events. Recovery replays schedule state from events and re-arms timers."
+  },
+  "decisions": [
+    {"id": "D1", "title": "Schedule is a first-class engine resource with durable state", "status": "active", "choice": "Schedules are persisted as events (ScheduleCreated, ScheduleUpdated, SchedulePaused, ScheduleResumed, ScheduleDeleted, ScheduleTriggered) in the EventStore, keyed by ScheduleId. State is projected from events, consistent with the status-is-a-projection invariant. Rejected external cron: durability requires engine ownership."},
+    {"id": "D2", "title": "Cron expressions and fixed intervals as trigger specifications", "status": "active", "choice": "A schedule trigger is either a cron expression (standard 5-field or extended 6-field with seconds) or a fixed interval (Duration). Cron parsing uses a well-tested Rust crate (cron or saffron). Both are evaluated against the engine's durable time source."},
+    {"id": "D3", "title": "Four overlap policies", "status": "active", "choice": "OverlapPolicy enum: Skip (skip if previous still running), BufferOne (queue at most one pending trigger), CancelPrevious (cancel running, start new), AllowAll (start regardless). Default is Skip. Policy is set per schedule, immutable within a trigger evaluation."},
+    {"id": "D4", "title": "Three catch-up policies", "status": "active", "choice": "CatchUpPolicy enum: All (fire every missed trigger), One (fire once immediately), Skip (ignore missed triggers). Default is One. Evaluated on recovery when next_trigger_at is in the past."},
+    {"id": "D5", "title": "Timer-wheel driven evaluation, not polling", "status": "active", "choice": "The ScheduleEvaluator arms a durable timer (via AT's timer infrastructure) for each schedule's next_trigger_at. When the timer fires, the evaluator applies the overlap policy, optionally starts a workflow, records ScheduleTriggered, and re-arms for the next trigger. No polling loop. Rejected polling: it wastes CPU and drifts."},
+    {"id": "D6", "title": "Schedule management via Engine API", "status": "active", "choice": "Engine exposes create_schedule, update_schedule, pause_schedule, resume_schedule, delete_schedule, list_schedules, describe_schedule. Each mutation is an event. aion-server maps these to gRPC/HTTP endpoints."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "Schedule state is projected from events, never stored as mutable fields."},
+    {"id": "CO2", "description": "Schedule evaluation uses durable timers (AT infrastructure), not wall-clock polling."},
+    {"id": "CO3", "description": "Overlap and catch-up policies are explicit per-schedule configuration, not implicit engine behavior."},
+    {"id": "CO4", "description": "Recovery must reconstruct schedule state from events and re-arm timers for all active schedules."},
+    {"id": "CO5", "description": "A deleted schedule's events are retained for audit but the schedule is no longer evaluated."},
+    {"id": "CO6", "description": "Schedule mutations are serialized per ScheduleId to prevent concurrent modification races."}
+  ],
+  "goals": [
+    "ScheduleId newtype, Schedule resource with cron/interval trigger, overlap policy, catch-up policy, target workflow type + input.",
+    "Schedule event family: ScheduleCreated, ScheduleUpdated, SchedulePaused, ScheduleResumed, ScheduleDeleted, ScheduleTriggered.",
+    "ScheduleEvaluator that arms durable timers and evaluates triggers according to policy.",
+    "Overlap policy enforcement: Skip, BufferOne, CancelPrevious, AllowAll.",
+    "Catch-up policy enforcement on recovery: All, One, Skip.",
+    "Engine API: create, update, pause, resume, delete, list, describe schedules.",
+    "aion-server gRPC/HTTP endpoints for schedule management.",
+    "Recovery: replay schedule events, re-arm timers for active schedules."
+  ],
+  "structure": {
+    "crate": "aion-core, aion, aion-server",
+    "modules": [
+      "aion_core::schedule — ScheduleId, OverlapPolicy, CatchUpPolicy, trigger types",
+      "aion_core::event — Schedule event variants",
+      "aion::schedule::evaluator — ScheduleEvaluator, timer-driven trigger loop",
+      "aion::schedule::policy — overlap and catch-up policy enforcement",
+      "aion::schedule::store — schedule state projection from events",
+      "aion::engine::api — Engine schedule management methods",
+      "aion_server — gRPC/HTTP schedule endpoints"
+    ]
+  }
+}

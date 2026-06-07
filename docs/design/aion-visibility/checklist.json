@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-visibility",
+  "items": [
+    {"id": "C1", "text": "SearchAttribute type enum (String, Int, Float, Bool, Datetime, KeywordList) and SearchAttributeSchema exist in aion-core."},
+    {"id": "C2", "text": "SearchAttributesUpdated event variant exists in aion-core."},
+    {"id": "C3", "text": "VisibilityStore trait in aion-store with record_visibility, list_workflows, and count_workflows."},
+    {"id": "C4", "text": "WorkflowSummary projection type with id, run_id, type, status, start/close time, and search attributes."},
+    {"id": "C5", "text": "ListWorkflowsFilter supports predicates for workflow type, status, time range, and custom attribute values."},
+    {"id": "C6", "text": "libSQL VisibilityStore implementation with indexed standard fields and JSON custom attributes."},
+    {"id": "C7", "text": "Engine updates visibility index on WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled, and SearchAttributesUpdated events."},
+    {"id": "C8", "text": "SDK binding: workflow.upsert_search_attributes records a SearchAttributesUpdated event."},
+    {"id": "C9", "text": "Search attribute type registration per namespace; type mismatch on set is an error."},
+    {"id": "C10", "text": "aion-server exposes list_workflows and count_workflows via gRPC and HTTP."},
+    {"id": "C11", "text": "Visibility queries return WorkflowSummary, not full event history."},
+    {"id": "C12", "text": "Integration test: workflow sets custom attributes, visibility query finds it by attribute value."}
+  ]
+}

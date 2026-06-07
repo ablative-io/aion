@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-schedules",
+  "items": [
+    {"id": "C1", "text": "ScheduleId newtype and Schedule configuration type exist in aion-core with cron expression, interval, overlap policy, and catch-up policy."},
+    {"id": "C2", "text": "Schedule event family exists: ScheduleCreated, ScheduleUpdated, SchedulePaused, ScheduleResumed, ScheduleDeleted, ScheduleTriggered."},
+    {"id": "C3", "text": "OverlapPolicy enum with Skip, BufferOne, CancelPrevious, AllowAll variants."},
+    {"id": "C4", "text": "CatchUpPolicy enum with All, One, Skip variants."},
+    {"id": "C5", "text": "ScheduleEvaluator uses durable timers (AT infrastructure) to fire triggers at the correct time without polling."},
+    {"id": "C6", "text": "Overlap policy is enforced: Skip does not start a new workflow when the previous is still running."},
+    {"id": "C7", "text": "Catch-up policy is enforced on recovery: missed triggers are handled according to policy."},
+    {"id": "C8", "text": "Engine API: create_schedule, update_schedule, pause_schedule, resume_schedule, delete_schedule, list_schedules, describe_schedule."},
+    {"id": "C9", "text": "aion-server exposes schedule management via gRPC and HTTP endpoints."},
+    {"id": "C10", "text": "Recovery reconstructs schedule state from events and re-arms timers for all active schedules."},
+    {"id": "C11", "text": "Cron expression parsing uses a well-tested crate and supports standard 5-field expressions."},
+    {"id": "C12", "text": "Integration test: a schedule fires on interval, overlap policy prevents concurrent executions, recovery re-arms after restart."}
+  ]
+}

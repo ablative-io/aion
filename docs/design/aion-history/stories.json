@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-history",
+  "stories": [
+    {"id": "S1", "persona": "Workflow author", "story": "As a workflow author, I want to call continue_as_new with a carried payload so that my long-running workflow can run indefinitely without accumulating unbounded history."},
+    {"id": "S2", "persona": "Workflow author", "story": "As a workflow author, I want continue_as_new to fail loudly if I have pending activities so that I don't accidentally lose in-flight work."},
+    {"id": "S3", "persona": "Operator", "story": "As an operator, I want to see the full chain of continuations for a workflow so that I can trace its complete execution history across runs."},
+    {"id": "S4", "persona": "Engine developer", "story": "As an engine developer, I want ContinuedAsNew to be a proper terminal status so that recovery skips old runs and only replays the current one."},
+    {"id": "S5", "persona": "Workflow author", "story": "As a workflow author, I want to continue-as-new into a different workflow type so that I can migrate running workflows to new code."}
+  ]
+}

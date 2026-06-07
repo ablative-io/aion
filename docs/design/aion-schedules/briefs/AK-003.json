@@ -1,0 +1,103 @@
+{
+  "id": "AK-003",
+  "cluster": "aion-schedules",
+  "title": "ScheduleEvaluator with timer-driven triggers and policy enforcement",
+  "depends_on": ["AK-001", "AK-002"],
+  "blocked_by": [],
+  "checklist": ["C5", "C6", "C7", "C10"],
+  "stories": ["S1", "S2", "S4", "S7"],
+  "purpose": "Implement the ScheduleEvaluator that drives schedule execution: arms durable timers for each active schedule's next fire time, evaluates overlap policy when a timer fires, starts workflow executions according to policy, handles catch-up on recovery, and re-arms timers for the next trigger. This is the scheduling heartbeat of the engine.",
+  "task": "Create aion::schedule::evaluator module with a ScheduleEvaluator that manages active schedules. On creation/resume, it computes next_fire_time and arms a durable timer. When the timer fires, it: (1) checks overlap policy against the current execution (if any), (2) starts a workflow if policy allows, (3) records ScheduleTriggered, (4) computes and arms the next fire time. On recovery, it evaluates catch-up policy for any schedules whose next_fire_time is in the past. Schedule state is projected from events.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Schedule state projection from events",
+      "spec": "THE SYSTEM SHALL maintain per-schedule state projected from schedule events: schedule_id, config, is_paused, is_deleted, last_triggered_at, next_trigger_at, current_execution.",
+      "acceptance": [
+        "After ScheduleCreated, state reflects the initial config with is_paused=false.",
+        "After ScheduleUpdated, config is updated.",
+        "After SchedulePaused, is_paused=true; after ScheduleResumed, is_paused=false.",
+        "After ScheduleDeleted, is_deleted=true.",
+        "After ScheduleTriggered, last_triggered_at is updated."
+      ],
+      "files": {
+        "create": ["crates/aion/src/schedule/state.rs"],
+        "modify": ["crates/aion/src/schedule/mod.rs"]
+      },
+      "checklist": ["C10"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "Timer-driven trigger evaluation",
+      "spec": "THE SYSTEM SHALL arm a durable timer for each active schedule. When the timer fires, the evaluator SHALL evaluate the trigger, optionally start a workflow, record ScheduleTriggered, and re-arm. THE SYSTEM SHALL NOT use polling.",
+      "acceptance": [
+        "A schedule with a short interval fires within the expected window.",
+        "After each trigger, the timer is re-armed for the next fire time.",
+        "Paused and deleted schedules do not have armed timers."
+      ],
+      "files": {
+        "create": ["crates/aion/src/schedule/evaluator.rs"],
+        "modify": []
+      },
+      "checklist": ["C5"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Overlap policy enforcement",
+      "spec": "THE SYSTEM SHALL enforce overlap policy when a trigger fires and a previous execution is still running. Skip: do not start. BufferOne: queue one pending. CancelPrevious: cancel running, start new. AllowAll: start regardless.",
+      "acceptance": [
+        "Each of the four overlap policies has a dedicated test.",
+        "Skip skips and re-arms; BufferOne queues at most one; CancelPrevious cancels then starts; AllowAll always starts."
+      ],
+      "files": {
+        "create": ["crates/aion/src/schedule/policy.rs"],
+        "modify": ["crates/aion/src/schedule/evaluator.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R4",
+      "title": "Catch-up policy enforcement on recovery",
+      "spec": "THE SYSTEM SHALL evaluate catch-up policy when next_trigger_at is in the past. All: fire every missed trigger. One: fire once immediately. Skip: advance to next future time.",
+      "acceptance": [
+        "Each of the three catch-up policies has a dedicated test.",
+        "Catch-up fires are recorded as ScheduleTriggered events."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/schedule/evaluator.rs", "crates/aion/src/schedule/policy.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R5",
+      "title": "Recovery reconstructs state and re-arms timers",
+      "spec": "THE SYSTEM SHALL reconstruct all schedule state from events on recovery and re-arm timers for active schedules, applying catch-up policy for past-due triggers.",
+      "acceptance": [
+        "After recovery, active schedules have armed timers.",
+        "Paused and deleted schedules are not re-armed.",
+        "Catch-up policy is applied before re-arming."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/schedule/evaluator.rs"]
+      },
+      "checklist": ["C10"],
+      "stories": ["S7"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement Engine API methods — that is AK-004.",
+    "SHALL NOT implement server endpoints — that is AK-005."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Unit tests cover all four overlap policies and all three catch-up policies."
+  ]
+}
