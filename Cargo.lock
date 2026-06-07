@@ -404,9 +404,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beamr"
-version = "0.3.12"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82a55a14a654d4fe5f9bb54d092c064eb1121a178c8ae2b0712064bb78b4d8a5"
+checksum = "05a60ec1fe8c6baa41b3864c0a77728cf127834c66c7e0fbddbe341b638da3f2"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-deque",

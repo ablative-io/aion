@@ -126,12 +126,23 @@ impl RuntimeHandle {
             let mfa = entry.mfa;
             let module = self.atom_table.intern(&mfa.module);
             let function = self.atom_table.intern(&mfa.function);
+            let capability = beamr::native::Capability::ExternalIo;
             let result = if entry.is_dirty {
-                self.native_registry
-                    .register_dirty(module, function, mfa.arity, entry.function)
+                self.native_registry.register_dirty(
+                    module,
+                    function,
+                    mfa.arity,
+                    entry.function,
+                    capability,
+                )
             } else {
-                self.native_registry
-                    .register(module, function, mfa.arity, entry.function)
+                self.native_registry.register(
+                    module,
+                    function,
+                    mfa.arity,
+                    entry.function,
+                    capability,
+                )
             };
             result.map_err(|error| nif_registration_error(&mfa, error))?;
             self.registered_nif_modules.insert(mfa.module);
@@ -833,7 +844,10 @@ mod tests {
         let (reason, result) = runtime.run_until_exit_for_test(pid);
 
         assert_eq!(reason, beamr::process::ExitReason::Normal);
-        assert_eq!(result.as_small_int(), Some(i64::try_from(payload.bytes().len()).unwrap_or(0)));
+        assert_eq!(
+            result.as_small_int(),
+            Some(i64::try_from(payload.bytes().len()).unwrap_or(0))
+        );
         assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
         runtime.shutdown()?;
         Ok(())
@@ -911,7 +925,10 @@ mod tests {
             )?;
             let (reason, result) = runtime.run_until_exit_for_test(pid);
             assert_eq!(reason, beamr::process::ExitReason::Normal);
-            assert_eq!(result.as_small_int(), Some(i64::try_from(payload.bytes().len()).unwrap_or(0)));
+            assert_eq!(
+                result.as_small_int(),
+                Some(i64::try_from(payload.bytes().len()).unwrap_or(0))
+            );
             assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
         }
 

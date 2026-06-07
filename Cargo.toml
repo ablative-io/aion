@@ -57,6 +57,6 @@ axum = "0.8"
 tower = "0.5"
 futures = "0.3"
 dashmap = "6.2"
-beamr = { version = "0.3.12", features = ["json"] }
+beamr = { version = "0.3.15", features = ["json"] }
 
 
