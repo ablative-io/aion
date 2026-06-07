@@ -1,16 +1,26 @@
 //! cancel/complete/fail transitions
 
+use std::sync::Arc;
+
 use aion_core::{Payload, RunId, WorkflowError, WorkflowId};
+use aion_store::EventStore;
+use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
 use crate::EngineError;
 use crate::registry::{Registry, TerminalOutcome, WorkflowHandle};
 use crate::runtime::RuntimeHandle;
 
+use super::visibility::upsert_workflow_visibility;
+
 /// Dependencies required to drive a workflow to a terminal lifecycle state.
 pub struct TerminateWorkflowContext<'a> {
     /// Runtime boundary used to cancel live workflow processes.
     pub runtime: &'a RuntimeHandle,
+    /// Durable event store used to rebuild visibility projections.
+    pub store: Arc<dyn EventStore>,
+    /// Visibility index updated after state-changing workflow events.
+    pub visibility_store: Arc<dyn VisibilityStore>,
     /// Active execution registry keyed by workflow/run identifiers.
     pub registry: &'a Registry,
 }
@@ -36,6 +46,7 @@ pub async fn complete(
             .record_workflow_completed(Utc::now(), result.clone())
             .await?;
     }
+    upsert_workflow_visibility(context.store, context.visibility_store, id, run).await?;
 
     handle
         .completion()
@@ -65,6 +76,7 @@ pub async fn fail(
             .record_workflow_failed(Utc::now(), error.clone())
             .await?;
     }
+    upsert_workflow_visibility(context.store, context.visibility_store, id, run).await?;
 
     handle.completion().notify(TerminalOutcome::Failed(error));
     context.registry.remove(id, run)?;
@@ -96,6 +108,7 @@ pub async fn cancel(
             .record_workflow_cancelled(Utc::now(), reason.clone())
             .await?;
     }
+    upsert_workflow_visibility(context.store, context.visibility_store, id, run).await?;
 
     handle
         .completion()
@@ -122,6 +135,7 @@ mod tests {
 
     use aion_core::{Event, Payload, WorkflowStatus};
     use aion_package::ContentHash;
+    use aion_store::visibility::VisibilityStore;
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
@@ -187,9 +201,16 @@ mod tests {
 
     fn context<'a>(
         runtime: &'a RuntimeHandle,
+        store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
         registry: &'a Registry,
     ) -> TerminateWorkflowContext<'a> {
-        TerminateWorkflowContext { runtime, registry }
+        TerminateWorkflowContext {
+            runtime,
+            store,
+            visibility_store,
+            registry,
+        }
     }
 
     #[tokio::test]
@@ -199,7 +220,12 @@ mod tests {
         let mut receiver = active.handle.completion().subscribe();
 
         complete(
-            context(&active.runtime, &active.registry),
+            context(
+                &active.runtime,
+                active.store.clone(),
+                active.store.clone(),
+                &active.registry,
+            ),
             active.handle.workflow_id(),
             active.handle.run_id(),
             result.clone(),
@@ -245,7 +271,12 @@ mod tests {
         let mut receiver = active.handle.completion().subscribe();
 
         fail(
-            context(&active.runtime, &active.registry),
+            context(
+                &active.runtime,
+                active.store.clone(),
+                active.store.clone(),
+                &active.registry,
+            ),
             active.handle.workflow_id(),
             active.handle.run_id(),
             error.clone(),
@@ -295,7 +326,12 @@ mod tests {
         let mut receiver = active.handle.completion().subscribe();
 
         cancel(
-            context(&active.runtime, &active.registry),
+            context(
+                &active.runtime,
+                active.store.clone(),
+                active.store.clone(),
+                &active.registry,
+            ),
             active.handle.workflow_id(),
             active.handle.run_id(),
             reason.clone(),
@@ -344,7 +380,12 @@ mod tests {
         let run_id = aion_core::RunId::new_v4();
 
         let result = cancel(
-            context(&runtime, &registry),
+            context(
+                &runtime,
+                Arc::new(InMemoryStore::default()),
+                Arc::new(InMemoryStore::default()),
+                &registry,
+            ),
             &workflow_id,
             &run_id,
             "missing workflow",

@@ -1,12 +1,14 @@
 //! Recorder: single-writer append path over `EventStore`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use aion_core::{
-    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowError,
-    WorkflowId,
+    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, SearchAttributeSchema,
+    SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
 };
 use aion_store::EventStore;
+use aion_store::visibility::{VisibilityRecord, VisibilityStore};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
@@ -20,6 +22,12 @@ pub struct Recorder {
     workflow_id: WorkflowId,
     store: Arc<dyn EventStore>,
     sequence: SequenceHead,
+    visibility: Option<RecorderVisibility>,
+}
+
+struct RecorderVisibility {
+    run_id: RunId,
+    store: Arc<dyn VisibilityStore>,
 }
 
 impl Recorder {
@@ -36,7 +44,16 @@ impl Recorder {
             workflow_id,
             store,
             sequence: SequenceHead::from_head(head),
+            visibility: None,
         }
+    }
+
+    /// Enables visibility projection upserts after workflow-level state-changing events recorded
+    /// directly through this recorder.
+    #[must_use]
+    pub fn with_visibility(mut self, run_id: RunId, store: Arc<dyn VisibilityStore>) -> Self {
+        self.visibility = Some(RecorderVisibility { run_id, store });
+        self
     }
 
     /// Returns the workflow this recorder appends to.
@@ -144,7 +161,33 @@ impl Recorder {
             workflow_type,
             parent_run_id,
         })
-        .await
+        .await?;
+        self.upsert_visibility_projection().await
+    }
+
+    /// Records a validated search-attribute update for this workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] when any attribute is unregistered or has a type that does not
+    /// match `schema`, or when the event store rejects the append / sequence advance.
+    pub async fn record_search_attributes_updated(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        attributes: HashMap<String, SearchAttributeValue>,
+        schema: &SearchAttributeSchema,
+    ) -> Result<(), DurabilityError> {
+        for (name, value) in &attributes {
+            schema.validate(name, value)?;
+        }
+        let workflow_id = self.workflow_id.clone();
+        self.append_with(recorded_at, |envelope| Event::SearchAttributesUpdated {
+            envelope,
+            workflow_id,
+            attributes,
+        })
+        .await?;
+        self.upsert_visibility_projection().await
     }
 
     /// Records activity scheduling.
@@ -404,6 +447,76 @@ impl Recorder {
             .await?;
         self.sequence.mark_append_success(1)
     }
+
+    async fn upsert_visibility_projection(&self) -> Result<(), DurabilityError> {
+        let Some(visibility) = &self.visibility else {
+            return Ok(());
+        };
+        let history = self.store.read_history(&self.workflow_id).await?;
+        let record = visibility_record_from_history(&history, &visibility.run_id)?;
+        visibility.store.record_visibility(record).await?;
+        Ok(())
+    }
+}
+
+fn visibility_record_from_history(
+    history: &[Event],
+    run_id: &RunId,
+) -> Result<VisibilityRecord, DurabilityError> {
+    let (workflow_id, workflow_type, start_time) = history
+        .iter()
+        .find_map(|event| match event {
+            Event::WorkflowStarted {
+                envelope,
+                workflow_type,
+                ..
+            } => Some((
+                envelope.workflow_id.clone(),
+                workflow_type.clone(),
+                envelope.recorded_at,
+            )),
+            _ => None,
+        })
+        .ok_or_else(|| DurabilityError::HistoryShape {
+            reason: String::from(
+                "workflow history has no WorkflowStarted event for visibility projection",
+            ),
+        })?;
+
+    Ok(VisibilityRecord {
+        workflow_id,
+        run_id: run_id.clone(),
+        workflow_type,
+        status: aion_core::status_from_events(history),
+        start_time,
+        close_time: terminal_recorded_at(history),
+        search_attributes: search_attributes_from_history(history),
+    })
+}
+
+fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
+    history.iter().rev().find_map(|event| match event {
+        Event::WorkflowCompleted { envelope, .. }
+        | Event::WorkflowFailed { envelope, .. }
+        | Event::WorkflowCancelled { envelope, .. }
+        | Event::WorkflowTimedOut { envelope, .. }
+        | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
+        _ => None,
+    })
+}
+
+fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAttributeValue> {
+    let mut attributes = HashMap::new();
+    for event in history {
+        if let Event::SearchAttributesUpdated {
+            attributes: updated,
+            ..
+        } = event
+        {
+            attributes.extend(updated.clone());
+        }
+    }
+    attributes
 }
 
 #[cfg(test)]

@@ -4,7 +4,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use aion_core::{Event, status_from_events};
 use aion_package::Package;
-use aion_store::EventStore;
+use aion_store::visibility::VisibilityStore;
+use aion_store::{EventStore, InMemoryStore};
 
 use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
@@ -60,6 +61,7 @@ impl From<String> for WorkflowPackageSource {
 /// Builder for the embedded, transport-agnostic workflow engine.
 pub struct EngineBuilder {
     store: Option<Arc<dyn EventStore>>,
+    visibility_store: Option<Arc<dyn VisibilityStore>>,
     scheduler_threads: Option<usize>,
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
@@ -81,6 +83,7 @@ impl EngineBuilder {
     pub fn new() -> Self {
         Self {
             store: None,
+            visibility_store: None,
             scheduler_threads: None,
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
@@ -104,6 +107,23 @@ impl EngineBuilder {
     #[must_use]
     pub fn store_arc(mut self, store: Arc<dyn EventStore>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Supply the visibility store used by the engine for workflow projections.
+    #[must_use]
+    pub fn visibility_store<S>(mut self, visibility_store: S) -> Self
+    where
+        S: VisibilityStore,
+    {
+        self.visibility_store = Some(Arc::new(visibility_store));
+        self
+    }
+
+    /// Supply an already type-erased visibility store.
+    #[must_use]
+    pub fn visibility_store_arc(mut self, visibility_store: Arc<dyn VisibilityStore>) -> Self {
+        self.visibility_store = Some(visibility_store);
         self
     }
 
@@ -208,6 +228,9 @@ impl EngineBuilder {
     /// poison, or deferred AD recovery failures for active histories.
     pub async fn build(self) -> Result<Engine, EngineError> {
         let store = self.store.ok_or(EngineError::MissingStore)?;
+        let visibility_store = self
+            .visibility_store
+            .unwrap_or_else(|| Arc::new(InMemoryStore::default()));
 
         if let Some(dispatcher) = self.activity_dispatcher {
             install_activity_dispatcher(dispatcher);
@@ -238,6 +261,7 @@ impl EngineBuilder {
 
         Ok(Engine::new(
             store,
+            visibility_store,
             runtime,
             loaded_workflows,
             registry,

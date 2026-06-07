@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use aion_core::{Payload, RunId, WorkflowId, WorkflowStatus};
 use aion_store::EventStore;
+use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
+use super::visibility::upsert_workflow_visibility;
 use crate::EngineError;
 use crate::durability::Recorder;
 use crate::loader::LoadedWorkflows;
@@ -19,6 +21,8 @@ use crate::supervision::{SupervisionTree, spawn_workflow_with_policy};
 pub struct StartWorkflowContext<'a> {
     /// Durable event store used by the workflow's single recorder.
     pub store: Arc<dyn EventStore>,
+    /// Visibility index updated after state-changing workflow events.
+    pub visibility_store: Arc<dyn VisibilityStore>,
     /// Loader-owned workflow records keyed by logical workflow type and version.
     pub loaded_workflows: &'a LoadedWorkflows,
     /// Runtime boundary used to spawn the workflow process.
@@ -52,10 +56,18 @@ pub async fn start_workflow(
 
     let workflow_id = WorkflowId::new_v4();
     let run_id = RunId::new_v4();
-    let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&context.store));
+    let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&context.store))
+        .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
     recorder
         .record_workflow_started(Utc::now(), workflow_type.to_owned(), input.clone())
         .await?;
+    upsert_workflow_visibility(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+        &workflow_id,
+        &run_id,
+    )
+    .await?;
 
     context
         .supervision
@@ -106,6 +118,7 @@ mod tests {
 
     use aion_core::{Event, Payload};
     use aion_package::ContentHash;
+    use aion_store::visibility::VisibilityStore;
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
@@ -133,6 +146,7 @@ mod tests {
 
     fn context<'a>(
         store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
         loaded_workflows: &'a LoadedWorkflows,
         runtime: &'a RuntimeHandle,
         supervision: &'a SupervisionTree,
@@ -140,6 +154,7 @@ mod tests {
     ) -> StartWorkflowContext<'a> {
         StartWorkflowContext {
             store,
+            visibility_store,
             loaded_workflows,
             runtime,
             supervision,
@@ -158,7 +173,14 @@ mod tests {
         let input = payload("input")?;
 
         let result = start_workflow(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             input,
         )
@@ -185,7 +207,14 @@ mod tests {
         let input = payload("input")?;
 
         let result = start_workflow(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             input.clone(),
         )
@@ -227,7 +256,14 @@ mod tests {
         let input = payload("input")?;
 
         let handle = start_workflow(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             input.clone(),
         )
