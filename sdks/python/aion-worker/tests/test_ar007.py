@@ -5,8 +5,9 @@ from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import NoReturn
 
-import aion_worker
 import pytest
+
+import aion_worker
 from aion_worker import (
     ActivityExecutionContext,
     ActivityTask,
@@ -206,9 +207,13 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
     assert dispatcher.dispatched == [8]
 
 
-async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_completion(caplog: pytest.LogCaptureFixture) -> None:
+async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_completion(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session = FakeSession()
     dispatcher = RecordingDispatcher(activity_type="greet")
+    perf_ticks = iter([10.0, 10.005])
+    monkeypatch.setattr("aion_worker.loop.time.perf_counter", lambda: next(perf_ticks))
     worker_config = WorkerConfig(
         endpoint="127.0.0.1:50051",
         task_queue="queue-a",
@@ -231,7 +236,7 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
     assert "Registered activities: greet" in messages
     assert "Waiting for tasks" in messages
     assert "Received task greet for workflow workflow-1" in messages
-    assert any(message.startswith("Completed greet in ") and message.endswith("ms") for message in messages)
+    assert "Completed greet in 5ms" in messages
 
 
 async def test_grpc_connect_logs_configured_endpoint(caplog: pytest.LogCaptureFixture) -> None:
@@ -258,4 +263,6 @@ async def test_reconnect_logs_connection_failure_reason(caplog: pytest.LogCaptur
     with caplog.at_level("ERROR"), pytest.raises(ReconnectError, match="dial refused"):
         await connect_register_replay_and_serve(worker_config, fail_connect, RecordingDispatcher())
 
-    assert "Connection failed: dial refused" in [record.getMessage() for record in caplog.records]
+    failure_records = [record for record in caplog.records if record.getMessage() == "Connection failed: dial refused"]
+    assert failure_records
+    assert all(record.levelname == "ERROR" for record in failure_records)
