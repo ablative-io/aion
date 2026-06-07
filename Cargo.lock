@@ -195,6 +195,7 @@ dependencies = [
 name = "aion-store-libsql"
 version = "0.1.0"
 dependencies = [
+ "aion-core",
  "aion-store",
  "async-trait",
  "chrono",

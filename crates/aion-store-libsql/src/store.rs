@@ -133,6 +133,7 @@ mod tests {
 
         assert_schema_object(store.connection(), "table", "events").await?;
         assert_schema_object(store.connection(), "table", "timers").await?;
+        assert_schema_object(store.connection(), "table", "visibility").await?;
 
         Ok(())
     }
