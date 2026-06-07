@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use aion_core::{
-    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
+    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    status_from_events,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
-use crate::{EventStore, RunSummary, StoreError, TimerEntry, run_chain::run_chain_from_history};
+use crate::{EventStore, RunSummary, StoreError, TimerEntry};
 
 /// Correct non-durable [`EventStore`] implementation for tests and backend equivalence.
 #[derive(Debug, Default)]
@@ -157,7 +158,7 @@ impl EventStore for InMemoryStore {
             return Ok(Vec::new());
         };
 
-        run_chain_from_history(history)
+        crate::run_chain::run_chain_from_history(history)
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
@@ -269,6 +270,10 @@ mod tests {
         }
     }
 
+    fn run_id(value: u128) -> aion_core::RunId {
+        aion_core::RunId::new(Uuid::from_u128(value))
+    }
+
     fn payload(label: &str) -> Payload {
         Payload::from_json(&json!({ "label": label })).unwrap_or_else(|error| {
             Payload::new(
@@ -352,6 +357,32 @@ mod tests {
             .await?;
 
         assert_eq!(store.list_active().await?, vec![running]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_run_chain_projects_run_id_from_started_event() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        let workflow_id = workflow_id(1);
+
+        store
+            .append(
+                &workflow_id,
+                &[
+                    workflow_started(1, &workflow_id, "checkout"),
+                    workflow_completed(2, &workflow_id),
+                ],
+                0,
+            )
+            .await?;
+
+        let chain = store.read_run_chain(&workflow_id).await?;
+
+        assert_eq!(chain.len(), 1);
+        // run_id comes from the WorkflowStarted event (hardcoded to from_u128(1) in the helper)
+        assert_eq!(chain[0].run_id, run_id(1));
+        assert_eq!(chain[0].status, WorkflowStatus::Completed);
+        assert_eq!(chain[0].closed_at, Some(recorded_at(2)));
         Ok(())
     }
 
