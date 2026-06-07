@@ -14,6 +14,7 @@ pub mod loader;
 pub mod query;
 pub mod registry;
 pub mod runtime;
+pub mod schedule;
 pub mod signal;
 pub mod supervision;
 pub mod time;
