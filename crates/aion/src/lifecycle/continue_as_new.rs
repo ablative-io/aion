@@ -55,6 +55,12 @@ pub async fn continue_as_new(
     let history = context.store.read_history(id).await?;
     guard_no_pending_work(&history)?;
 
+    let workflow_type = request
+        .workflow_type
+        .as_deref()
+        .unwrap_or(handle.workflow_type());
+    validate_replacement_workflow_type(context.loaded_workflows, workflow_type)?;
+
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
@@ -68,18 +74,7 @@ pub async fn continue_as_new(
             .await?;
     }
 
-    handle.completion().notify(TerminalOutcome::ContinuedAsNew {
-        input: request.input.clone(),
-        workflow_type: request.workflow_type.clone(),
-        parent_run_id: run.clone(),
-    });
-    context.registry.remove(id, run)?;
-
-    let workflow_type = request
-        .workflow_type
-        .as_deref()
-        .unwrap_or(handle.workflow_type());
-    start::start_workflow_with_options(
+    let new_handle = start::start_workflow_with_options(
         StartWorkflowContext {
             store: context.store,
             loaded_workflows: context.loaded_workflows,
@@ -88,13 +83,22 @@ pub async fn continue_as_new(
             registry: context.registry,
         },
         workflow_type,
-        request.input,
+        request.input.clone(),
         StartWorkflowOptions {
             workflow_id: Some(id.clone()),
             parent_run_id: Some(run.clone()),
         },
     )
-    .await
+    .await?;
+
+    handle.completion().notify(TerminalOutcome::ContinuedAsNew {
+        input: request.input.clone(),
+        workflow_type: request.workflow_type.clone(),
+        parent_run_id: run.clone(),
+    });
+    context.registry.remove(id, run)?;
+
+    Ok(new_handle)
 }
 
 fn guard_no_pending_work(events: &[Event]) -> Result<(), EngineError> {
@@ -173,6 +177,18 @@ fn registered_handle(
         .ok_or_else(|| EngineError::WorkflowNotFound {
             workflow_type: format!("{id}/{run}"),
         })
+}
+
+fn validate_replacement_workflow_type(
+    loaded_workflows: &LoadedWorkflows,
+    workflow_type: &str,
+) -> Result<(), EngineError> {
+    loaded_workflows
+        .latest(workflow_type)
+        .ok_or_else(|| EngineError::WorkflowNotFound {
+            workflow_type: workflow_type.to_owned(),
+        })
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -439,6 +455,44 @@ mod tests {
                 return Err(format!("expected continue-as-new history, found {other:?}").into());
             }
         }
+        active.runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_replacement_type_rejects_before_terminal_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let active = active_workflow().await?;
+
+        let result = continue_as_new(
+            context(&active),
+            active.handle.workflow_id(),
+            active.handle.run_id(),
+            ContinueAsNewRequest {
+                input: payload("next")?,
+                workflow_type: Some("missing-workflow".to_owned()),
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(EngineError::WorkflowNotFound { workflow_type }) if workflow_type == "missing-workflow"
+        ));
+        let history = active
+            .store
+            .read_history(active.handle.workflow_id())
+            .await?;
+        assert!(matches!(
+            history.as_slice(),
+            [Event::WorkflowStarted { workflow_type, .. }] if workflow_type == "checkout"
+        ));
+        assert_eq!(
+            active
+                .registry
+                .get(active.handle.workflow_id(), active.handle.run_id())?,
+            Some(active.handle.clone())
+        );
         active.runtime.shutdown()?;
         Ok(())
     }

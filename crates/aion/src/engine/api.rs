@@ -379,34 +379,56 @@ impl Drop for LifecycleOperation {
 }
 
 fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
-    events.iter().rev().find_map(|event| match event {
-        Event::WorkflowCompleted { result, .. } => Some(TerminalOutcome::Completed(result.clone())),
-        Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
-        Event::WorkflowCancelled { reason, .. } => Some(TerminalOutcome::Cancelled(reason.clone())),
-        Event::WorkflowTimedOut { timeout, .. } => Some(TerminalOutcome::TimedOut(timeout.clone())),
-        Event::WorkflowStarted { .. }
-        | Event::WorkflowContinuedAsNew { .. }
-        | Event::SearchAttributesUpdated { .. }
-        | Event::ActivityScheduled { .. }
-        | Event::ActivityStarted { .. }
-        | Event::ActivityCompleted { .. }
-        | Event::ActivityFailed { .. }
-        | Event::ActivityCancelled { .. }
-        | Event::TimerStarted { .. }
-        | Event::TimerFired { .. }
-        | Event::TimerCancelled { .. }
-        | Event::SignalReceived { .. }
-        | Event::ChildWorkflowStarted { .. }
-        | Event::ChildWorkflowCompleted { .. }
-        | Event::ChildWorkflowFailed { .. }
-        | Event::ChildWorkflowCancelled { .. }
-        | Event::ScheduleCreated { .. }
-        | Event::ScheduleUpdated { .. }
-        | Event::SchedulePaused { .. }
-        | Event::ScheduleResumed { .. }
-        | Event::ScheduleDeleted { .. }
-        | Event::ScheduleTriggered { .. } => None,
-    })
+    for event in events.iter().rev() {
+        match event {
+            Event::WorkflowStarted { .. } => return None,
+            Event::WorkflowCompleted { result, .. } => {
+                return Some(TerminalOutcome::Completed(result.clone()));
+            }
+            Event::WorkflowFailed { error, .. } => {
+                return Some(TerminalOutcome::Failed(error.clone()));
+            }
+            Event::WorkflowCancelled { reason, .. } => {
+                return Some(TerminalOutcome::Cancelled(reason.clone()));
+            }
+            Event::WorkflowTimedOut { timeout, .. } => {
+                return Some(TerminalOutcome::TimedOut(timeout.clone()));
+            }
+            Event::WorkflowContinuedAsNew {
+                input,
+                workflow_type,
+                parent_run_id,
+                ..
+            } => {
+                return Some(TerminalOutcome::ContinuedAsNew {
+                    input: input.clone(),
+                    workflow_type: workflow_type.clone(),
+                    parent_run_id: parent_run_id.clone(),
+                });
+            }
+            Event::SearchAttributesUpdated { .. }
+            | Event::ActivityScheduled { .. }
+            | Event::ActivityStarted { .. }
+            | Event::ActivityCompleted { .. }
+            | Event::ActivityFailed { .. }
+            | Event::ActivityCancelled { .. }
+            | Event::TimerStarted { .. }
+            | Event::TimerFired { .. }
+            | Event::TimerCancelled { .. }
+            | Event::SignalReceived { .. }
+            | Event::ChildWorkflowStarted { .. }
+            | Event::ChildWorkflowCompleted { .. }
+            | Event::ChildWorkflowFailed { .. }
+            | Event::ChildWorkflowCancelled { .. }
+            | Event::ScheduleCreated { .. }
+            | Event::ScheduleUpdated { .. }
+            | Event::SchedulePaused { .. }
+            | Event::ScheduleResumed { .. }
+            | Event::ScheduleDeleted { .. }
+            | Event::ScheduleTriggered { .. } => {}
+        }
+    }
+    None
 }
 
 fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError> {
