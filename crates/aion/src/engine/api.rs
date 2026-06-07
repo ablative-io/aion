@@ -724,7 +724,7 @@ pub(crate) fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
 
 fn schedule_coordinator_workflow_id() -> WorkflowId {
     WorkflowId::new(uuid::Uuid::from_u128(
-        0x0000_0000_a10a_0000_0000_000000000004,
+        0x0000_0000_a10a_0000_0000_0000_0000_0004,
     ))
 }
 

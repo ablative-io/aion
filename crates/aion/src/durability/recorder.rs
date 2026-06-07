@@ -78,13 +78,12 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         workflow_type: String,
         input: Payload,
-        parent_run_id: Option<RunId>,
+        _parent_run_id: Option<RunId>,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::WorkflowStarted {
             envelope,
             workflow_type,
             input,
-            parent_run_id,
         })
         .await
     }
