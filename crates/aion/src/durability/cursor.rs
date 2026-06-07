@@ -34,7 +34,7 @@ pub struct FoundEventDescriptor {
 }
 
 /// Outcome of asking the cursor to resolve the next recorded command outcome.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CursorResolveResult {
     /// The recorded command stream matched; contained events were consumed in order.
     Matched(Vec<Event>),
@@ -292,6 +292,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowFailed { .. } => "WorkflowFailed",
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
+        Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
         Event::ActivityCompleted { .. } => "ActivityCompleted",

@@ -122,6 +122,7 @@ fn terminal_recorded_at(events: &[Event]) -> Option<DateTime<Utc>> {
         | Event::WorkflowCancelled { envelope, .. }
         | Event::WorkflowTimedOut { envelope, .. } => Some(envelope.recorded_at),
         Event::WorkflowStarted { .. }
+        | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }
         | Event::ActivityCompleted { .. }
@@ -140,11 +141,13 @@ fn terminal_recorded_at(events: &[Event]) -> Option<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
     use super::{WorkflowFilter, WorkflowSummary};
-    use crate::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
+    use crate::{Event, EventEnvelope, Payload, SearchAttributeValue, WorkflowId, WorkflowStatus};
 
     fn recorded_at(offset_seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0).unwrap_or_default()
@@ -369,8 +372,16 @@ mod tests {
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
             },
-            Event::WorkflowCompleted {
+            Event::SearchAttributesUpdated {
                 envelope: envelope(2, &workflow_id),
+                workflow_id: workflow_id.clone(),
+                attributes: HashMap::from([(
+                    String::from("customer_id"),
+                    SearchAttributeValue::String(String::from("customer-123")),
+                )]),
+            },
+            Event::WorkflowCompleted {
+                envelope: envelope(3, &workflow_id),
                 result: payload("result")?,
             },
         ];
@@ -383,7 +394,7 @@ mod tests {
         assert_eq!(summary.workflow_type, "checkout");
         assert_eq!(summary.status, WorkflowStatus::Completed);
         assert_eq!(summary.started_at, recorded_at(1));
-        assert_eq!(summary.ended_at, Some(recorded_at(2)));
+        assert_eq!(summary.ended_at, Some(recorded_at(3)));
         assert_eq!(summary.parent, None);
         Ok(())
     }

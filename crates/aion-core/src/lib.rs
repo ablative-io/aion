@@ -7,6 +7,7 @@ pub mod filter;
 mod generated_types;
 pub mod ids;
 pub mod payload;
+pub mod search;
 pub mod status;
 
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
@@ -14,4 +15,7 @@ pub use event::{Event, EventEnvelope};
 pub use filter::{WorkflowFilter, WorkflowSummary};
 pub use ids::{ActivityId, IdError, RunId, TimerId, WorkflowId};
 pub use payload::{ContentType, Payload, PayloadError};
+pub use search::{
+    SearchAttributeError, SearchAttributeSchema, SearchAttributeType, SearchAttributeValue,
+};
 pub use status::{WorkflowStatus, status_from_events};

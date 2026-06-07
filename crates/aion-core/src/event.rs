@@ -1,9 +1,13 @@
 //! Workflow history events and their deterministic recording envelope.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{ActivityError, ActivityId, Payload, TimerId, WorkflowError, WorkflowId};
+use crate::{
+    ActivityError, ActivityId, Payload, SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
+};
 
 /// Metadata recorded with every workflow history event.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
@@ -23,7 +27,7 @@ pub struct EventEnvelope {
 ///
 /// User data is carried as opaque [`Payload`] values, while failures use the closed workflow and
 /// activity error types from this crate.
-#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum Event {
     /// A workflow execution started with a type name and input payload.
@@ -65,6 +69,15 @@ pub enum Event {
         /// Intentionally stringly-typed: the closed set of timeout kinds is defined by cluster AT
         /// (timers and signals), not by the core event model.
         timeout: String,
+    },
+    /// Workflow search attributes were updated for visibility projection.
+    SearchAttributesUpdated {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Workflow whose search attributes changed.
+        workflow_id: WorkflowId,
+        /// Updated search attributes keyed by attribute name.
+        attributes: HashMap<String, SearchAttributeValue>,
     },
     /// An activity was scheduled by workflow code.
     ActivityScheduled {
@@ -195,6 +208,7 @@ impl Event {
             | Self::WorkflowFailed { envelope, .. }
             | Self::WorkflowCancelled { envelope, .. }
             | Self::WorkflowTimedOut { envelope, .. }
+            | Self::SearchAttributesUpdated { envelope, .. }
             | Self::ActivityScheduled { envelope, .. }
             | Self::ActivityStarted { envelope, .. }
             | Self::ActivityCompleted { envelope, .. }
@@ -232,12 +246,15 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
     use super::{Event, EventEnvelope};
     use crate::{
-        ActivityError, ActivityErrorKind, ActivityId, Payload, TimerId, WorkflowError, WorkflowId,
+        ActivityError, ActivityErrorKind, ActivityId, Payload, SearchAttributeValue, TimerId,
+        WorkflowError, WorkflowId,
     };
 
     fn recorded_at() -> DateTime<Utc> {
@@ -325,8 +342,26 @@ mod tests {
                 envelope: envelope(5),
                 timeout: String::from("execution"),
             },
-            Event::ActivityScheduled {
+            Event::SearchAttributesUpdated {
                 envelope: envelope(6),
+                workflow_id: WorkflowId::new(uuid::Uuid::nil()),
+                attributes: HashMap::from([
+                    (
+                        String::from("customer_id"),
+                        SearchAttributeValue::String(String::from("customer-123")),
+                    ),
+                    (String::from("attempts"), SearchAttributeValue::Int(3)),
+                    (
+                        String::from("keywords"),
+                        SearchAttributeValue::KeywordList(vec![
+                            String::from("vip"),
+                            String::from("west"),
+                        ]),
+                    ),
+                ]),
+            },
+            Event::ActivityScheduled {
+                envelope: envelope(7),
                 activity_id: ActivityId::from_sequence_position(6),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,

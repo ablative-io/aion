@@ -212,6 +212,7 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
         | Event::WorkflowFailed { .. }
         | Event::WorkflowCancelled { .. }
         | Event::WorkflowTimedOut { .. }
+        | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. } => Err(DurabilityError::HistoryShape {
             reason: format!(
@@ -236,6 +237,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowFailed { .. } => "WorkflowFailed",
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
+        Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
         Event::ActivityCompleted { .. } => "ActivityCompleted",

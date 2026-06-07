@@ -38,6 +38,7 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
             Event::WorkflowCancelled { .. } => Some(WorkflowStatus::Cancelled),
             Event::WorkflowTimedOut { .. } => Some(WorkflowStatus::TimedOut),
             Event::WorkflowStarted { .. }
+            | Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
             | Event::ActivityCompleted { .. }
@@ -57,11 +58,15 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
     use super::{WorkflowStatus, status_from_events};
-    use crate::{ActivityId, Event, EventEnvelope, Payload, WorkflowError, WorkflowId};
+    use crate::{
+        ActivityId, Event, EventEnvelope, Payload, SearchAttributeValue, WorkflowError, WorkflowId,
+    };
 
     fn recorded_at(offset: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset, 0).unwrap_or_default()
@@ -159,9 +164,17 @@ mod tests {
     fn non_terminal_history_projects_to_running() -> Result<(), Box<dyn std::error::Error>> {
         let events = vec![
             workflow_started(1)?,
-            Event::ActivityScheduled {
+            Event::SearchAttributesUpdated {
                 envelope: envelope(2),
-                activity_id: ActivityId::from_sequence_position(2),
+                workflow_id: WorkflowId::new(uuid::Uuid::nil()),
+                attributes: HashMap::from([(
+                    String::from("customer_id"),
+                    SearchAttributeValue::String(String::from("customer-123")),
+                )]),
+            },
+            Event::ActivityScheduled {
+                envelope: envelope(3),
+                activity_id: ActivityId::from_sequence_position(3),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
             },
