@@ -169,6 +169,7 @@ impl ServerError {
 fn wire_from_engine(source: &EngineError) -> WireError {
     match source {
         EngineError::WorkflowNotFound { .. } => WireError::not_found("workflow not found"),
+        EngineError::ScheduleNotFound { .. } => WireError::not_found("schedule not found"),
         EngineError::ShuttingDown => WireError::not_running("engine is shutting down"),
         EngineError::Store(store) => wire_from_store(store),
         EngineError::Durability(durability) => match durability {
@@ -181,6 +182,7 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         EngineError::MissingStore
         | EngineError::Load { .. }
         | EngineError::Package(_)
+        | EngineError::Schedule { .. }
         | EngineError::Runtime { .. }
         | EngineError::RegistryPoisoned
         | EngineError::NifRegistration { .. } => WireError::backend("engine backend failure"),
