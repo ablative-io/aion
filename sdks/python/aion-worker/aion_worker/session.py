@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
@@ -13,6 +14,8 @@ from google.protobuf.message import Message
 from .proto import common_pb2, worker_pb2, worker_pb2_grpc
 
 Payload: TypeAlias = common_pb2.Payload
+logger = logging.getLogger(__name__)
+
 WorkflowId: TypeAlias = common_pb2.WorkflowId
 ActivityId: TypeAlias = common_pb2.ActivityId
 ActivityError: TypeAlias = worker_pb2.ActivityError
@@ -136,10 +139,15 @@ class GrpcWorkerSession:
 
     @classmethod
     async def connect(cls, config: WorkerConfig) -> GrpcWorkerSession:
-        session = cls(config)
-        session._channel = grpc.aio.insecure_channel(config.endpoint)
-        session._stub = worker_pb2_grpc.WorkerProtocolStub(session._channel)
-        return session
+        logger.info("Connecting to %s", config.endpoint)
+        try:
+            session = cls(config)
+            session._channel = grpc.aio.insecure_channel(config.endpoint)
+            session._stub = worker_pb2_grpc.WorkerProtocolStub(session._channel)
+            return session
+        except Exception as exc:
+            logger.error("Connection failed: %s", exc)
+            raise
 
     async def handshake(self, config: WorkerConfig) -> None:
         self._config = config
