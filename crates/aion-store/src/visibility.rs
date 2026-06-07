@@ -1,5 +1,7 @@
 //! Visibility-store contracts and query projection types.
 
+#![allow(clippy::module_name_repetitions)]
+
 use std::collections::HashMap;
 
 use aion_core::{RunId, SearchAttributeValue, WorkflowId, WorkflowStatus};
