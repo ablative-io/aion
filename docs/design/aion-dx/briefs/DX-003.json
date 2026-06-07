@@ -1,0 +1,64 @@
+{
+  "id": "DX-003",
+  "cluster": "aion-dx",
+  "title": "Human-readable JSON payloads in API responses and requests",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The describe endpoint returns payloads as raw byte arrays ([123, 34, 119, ...]). Starting a workflow requires pre-encoding input as {content_type, bytes}. Both are hostile to developers using curl or any HTTP client. The API should accept and return human-readable JSON where the content type is application/json.",
+  "task": "Add JSON decoding/encoding at the HTTP/gRPC boundary: responses with content_type application/json decode the bytes to a JSON value before returning. Requests accept plain JSON objects as input (auto-wrapping in the Payload envelope). Preserve raw bytes for non-JSON content types.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Decode JSON payloads in describe and history responses",
+      "spec": "WHEN a response includes a Payload with content_type application/json, THE SYSTEM SHALL decode the bytes field to a JSON value and return it as a structured object (e.g. {\"content_type\": \"application/json\", \"data\": {\"name\": \"Ada\"}}). For non-JSON content types, THE SYSTEM SHALL return the raw bytes as base64.",
+      "acceptance": [
+        "Describe endpoint returns decoded JSON input/output fields, not byte arrays.",
+        "History events with JSON payloads show decoded data.",
+        "Non-JSON payloads (binary) return base64-encoded bytes.",
+        "The content_type field is always present."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/api/http.rs",
+          "crates/aion-server/src/api/handlers.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Accept plain JSON input for workflow start",
+      "spec": "WHEN a start-workflow request includes an 'input' field that is a plain JSON object (not a Payload envelope), THE SYSTEM SHALL auto-wrap it as {content_type: 'application/json', bytes: <serialized>}. WHEN the input is already a Payload envelope (has content_type and bytes fields), THE SYSTEM SHALL use it as-is.",
+      "acceptance": [
+        "curl with '\"input\": {\"name\": \"Ada\"}' starts the workflow successfully.",
+        "curl with the full envelope format still works (backwards compatible).",
+        "The error message for invalid input shows the expected format with an example."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/api/http.rs",
+          "crates/aion-server/src/api/handlers.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the internal Payload type in aion-core.",
+    "SHALL NOT change the gRPC wire format (proto stays as-is). This is HTTP-layer sugar only.",
+    "SHALL NOT decode payloads in the engine — only at the server boundary."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "curl start-workflow with plain JSON input succeeds.",
+    "curl describe returns human-readable JSON payloads."
+  ]
+}
