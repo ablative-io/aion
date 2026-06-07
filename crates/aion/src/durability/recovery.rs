@@ -227,7 +227,7 @@ impl ActiveWorkflowRecoverySeam for DeferredActiveWorkflowRecovery {
         if workflow_id == &crate::engine::api::schedule_coordinator_workflow_id()
             && workflow_type == crate::engine::api::schedule_coordinator_workflow_type()
         {
-            let run_id = coordinator_started_run_id(workflow_id, history)?;
+            let run_id = coordinator_started_run_id(history);
             return Ok(ActiveWorkflowRecovery::ScheduleCoordinator { run_id });
         }
 
@@ -239,21 +239,14 @@ impl ActiveWorkflowRecoverySeam for DeferredActiveWorkflowRecovery {
     }
 }
 
-fn coordinator_started_run_id(
-    workflow_id: &WorkflowId,
-    history: &[Event],
-) -> Result<RunId, EngineError> {
+fn coordinator_started_run_id(history: &[Event]) -> RunId {
     history
         .iter()
         .find_map(|event| match event {
             Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
             _ => None,
         })
-        .ok_or_else(|| EngineError::Load {
-            reason: format!(
-                "schedule coordinator `{workflow_id}` has no WorkflowStarted event in durable history"
-            ),
-        })
+        .unwrap_or_else(crate::engine::api::schedule_coordinator_run_id)
 }
 
 #[cfg(test)]

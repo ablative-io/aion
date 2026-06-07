@@ -20,7 +20,10 @@ use crate::{
     runtime::{NifEntry, NifRegistration},
 };
 
-use super::api::{Engine, schedule_coordinator_workflow_id, schedule_coordinator_workflow_type};
+use super::api::{
+    Engine, schedule_coordinator_run_id, schedule_coordinator_workflow_id,
+    schedule_coordinator_workflow_type,
+};
 use super::delegated::{DelegatedSeams, EventPublisher, QueryService, SignalRouter};
 
 /// Source for a workflow package collected before `build()` performs fallible
@@ -418,44 +421,48 @@ fn recover_active_workflow(
     recovery.recover_active_workflow(workflow_id, workflow_type, history, loaded_workflows)
 }
 
-fn schedule_coordinator_run_id() -> RunId {
-    RunId::new(uuid::Uuid::from_u128(
-        0x0000_0000_a10a_0000_0000_0000_0000_0005,
-    ))
-}
-
 fn started_workflow_type(
     workflow_id: &aion_core::WorkflowId,
     history: &[Event],
 ) -> Result<String, EngineError> {
-    history
-        .iter()
-        .find_map(|event| match event {
-            Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| EngineError::Load {
-            reason: format!(
-                "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
-            ),
-        })
+    if let Some(workflow_type) = history.iter().find_map(|event| match event {
+        Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.clone()),
+        _ => None,
+    }) {
+        return Ok(workflow_type);
+    }
+
+    if workflow_id == &schedule_coordinator_workflow_id() {
+        return Ok(schedule_coordinator_workflow_type().to_owned());
+    }
+
+    Err(EngineError::Load {
+        reason: format!(
+            "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
+        ),
+    })
 }
 
 fn started_run_id(
     workflow_id: &aion_core::WorkflowId,
     history: &[Event],
 ) -> Result<RunId, EngineError> {
-    history
-        .iter()
-        .find_map(|event| match event {
-            Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| EngineError::Load {
-            reason: format!(
-                "active workflow `{workflow_id}` has no WorkflowStarted run id in durable history"
-            ),
-        })
+    if let Some(run_id) = history.iter().find_map(|event| match event {
+        Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
+        _ => None,
+    }) {
+        return Ok(run_id);
+    }
+
+    if workflow_id == &schedule_coordinator_workflow_id() {
+        return Ok(schedule_coordinator_run_id());
+    }
+
+    Err(EngineError::Load {
+        reason: format!(
+            "active workflow `{workflow_id}` has no WorkflowStarted run id in durable history"
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -473,11 +480,12 @@ mod tests {
 
     use crate::durability::{ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam};
     use crate::engine::api::{
-        schedule_coordinator_workflow_id, schedule_coordinator_workflow_type,
+        schedule_coordinator_run_id, schedule_coordinator_workflow_id,
+        schedule_coordinator_workflow_type,
     };
     use crate::runtime::{Mfa, NifEntry};
 
-    use super::{EngineBuilder, LoadedWorkflows, schedule_coordinator_run_id};
+    use super::{EngineBuilder, LoadedWorkflows};
     use crate::{EngineError, Pid};
 
     fn payload() -> Result<Payload, aion_core::PayloadError> {
