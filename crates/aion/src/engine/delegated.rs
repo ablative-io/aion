@@ -387,16 +387,16 @@ mod tests {
         let backing = Arc::new(InMemoryStore::default());
         let store: Arc<dyn EventStore> = Arc::clone(&backing) as _;
         let visibility_store: Arc<dyn VisibilityStore> = backing;
-        Ok(Engine::new(
+        Ok(Engine::new(EngineComponents {
             store,
             visibility_store,
-            Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
-            LoadedWorkflows::new(),
-            Registry::default(),
-            SupervisionTree::new(),
-            DelegatedSeams::new(signal_router, query_service, event_publisher),
-            Arc::new(crate::signal::SignalResumeHandoff::new()),
-        ))
+            runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
+            loaded_workflows: LoadedWorkflows::new(),
+            registry: Registry::default(),
+            supervision: SupervisionTree::new(),
+            delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
+            signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
+        }))
     }
 
     async fn insert_active_handle(

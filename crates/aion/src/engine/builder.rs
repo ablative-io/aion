@@ -18,7 +18,7 @@ use crate::{
     signal::SignalResumeHandoff,
 };
 
-use super::api::Engine;
+use super::api::{Engine, EngineComponents};
 use super::delegated::{DelegatedSeams, EventPublisher, QueryService, SignalRouter};
 
 /// Source for a workflow package collected before `build()` performs fallible
@@ -297,7 +297,7 @@ impl EngineBuilder {
             self.delegated
         };
 
-        let engine = Engine::new(
+        let engine = Engine::new(EngineComponents {
             store,
             visibility_store,
             runtime,
@@ -306,7 +306,7 @@ impl EngineBuilder {
             supervision,
             delegated,
             signal_handoff,
-        );
+        });
         engine.catchup_schedule_coordinator().await?;
         engine.recover_schedules_on_startup(Utc::now()).await?;
         Ok(engine)

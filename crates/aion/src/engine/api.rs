@@ -52,19 +52,32 @@ pub struct Engine {
     shutdown_gate: ShutdownGate,
 }
 
+/// Components required to construct an [`Engine`].
+pub(crate) struct EngineComponents {
+    pub(crate) store: Arc<dyn EventStore>,
+    pub(crate) visibility_store: Arc<dyn VisibilityStore>,
+    pub(crate) runtime: Arc<RuntimeHandle>,
+    pub(crate) loaded_workflows: LoadedWorkflows,
+    pub(crate) registry: Registry,
+    pub(crate) supervision: SupervisionTree,
+    pub(crate) delegated: DelegatedSeams,
+    pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
+}
+
 impl Engine {
     /// Construct an engine from already-assembled components.
     #[must_use]
-    pub(crate) fn new(
-        store: Arc<dyn EventStore>,
-        visibility_store: Arc<dyn VisibilityStore>,
-        runtime: Arc<RuntimeHandle>,
-        loaded_workflows: LoadedWorkflows,
-        registry: Registry,
-        supervision: SupervisionTree,
-        delegated: DelegatedSeams,
-        signal_handoff: Arc<SignalResumeHandoff>,
-    ) -> Self {
+    pub(crate) fn new(components: EngineComponents) -> Self {
+        let EngineComponents {
+            store,
+            visibility_store,
+            runtime,
+            loaded_workflows,
+            registry,
+            supervision,
+            delegated,
+            signal_handoff,
+        } = components;
         let schedule_coordinator_workflow_id = schedule_coordinator_workflow_id();
         let schedule_recorder = Arc::new(AsyncMutex::new(Recorder::new(
             schedule_coordinator_workflow_id.clone(),
@@ -1082,7 +1095,7 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
-    use super::{DelegatedSeams, Engine};
+    use super::{DelegatedSeams, Engine, EngineComponents};
     use crate::durability::Recorder;
     use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
     use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandleParts};
@@ -1121,16 +1134,16 @@ mod tests {
         let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
         runtime.register_waiting_test_module(deployed_module, "run");
         let visibility_store: Arc<dyn VisibilityStore> = Arc::new(InMemoryStore::default());
-        Ok(Engine::new(
+        Ok(Engine::new(EngineComponents {
             store,
             visibility_store,
-            Arc::new(runtime),
-            loaded_workflows(workflow_type, deployed_module),
-            Registry::default(),
-            SupervisionTree::new(),
-            DelegatedSeams::default(),
-            Arc::new(crate::signal::SignalResumeHandoff::new()),
-        ))
+            runtime: Arc::new(runtime),
+            loaded_workflows: loaded_workflows(workflow_type, deployed_module),
+            registry: Registry::default(),
+            supervision: SupervisionTree::new(),
+            delegated: DelegatedSeams::default(),
+            signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
+        }))
     }
 
     fn termination_context(engine: &Engine) -> TerminateWorkflowContext<'_> {
