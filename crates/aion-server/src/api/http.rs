@@ -420,27 +420,39 @@ fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> Ca
     let subject = headers
         .get("x-aion-subject")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("anonymous");
+        .filter(|value| !value.is_empty());
     let namespaces = headers
         .get("x-aion-namespaces")
         .and_then(|value| value.to_str().ok())
         .map_or_else(Vec::new, parse_namespaces);
     if !auth.enabled {
-        return CallerIdentity::new(subject, namespaces);
+        return CallerIdentity::new(subject.unwrap_or("anonymous"), namespaces);
     }
+
     let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
     let expected = format!("Bearer {bearer_token}");
-    let authorized = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == expected);
-
-    if authorized {
-        CallerIdentity::new(subject, namespaces)
-    } else {
-        CallerIdentity::new(subject, Vec::new())
+    let Some(authorization) = headers.get("authorization") else {
+        return CallerIdentity::denied(
+            subject.unwrap_or("anonymous"),
+            "missing Authorization header with Bearer token; set authorization to `Bearer <token>` for this server",
+        );
+    };
+    let authorization = authorization.to_str().ok();
+    if authorization != Some(expected.as_str()) {
+        return CallerIdentity::denied(
+            subject.unwrap_or("anonymous"),
+            "invalid or expired bearer token; refresh the token and send authorization as `Bearer <token>`",
+        );
     }
+
+    let Some(subject) = subject else {
+        return CallerIdentity::denied(
+            "anonymous",
+            "missing required header: x-aion-subject; set x-aion-subject to a non-empty caller identifier",
+        );
+    };
+
+    CallerIdentity::new(subject, namespaces)
 }
 
 fn parse_namespaces(value: &str) -> Vec<String> {
@@ -573,6 +585,99 @@ mod tests {
         assert_eq!(list_body.summaries.len(), 1);
         let summary = aion_proto::decode_core_value::<WorkflowSummary>(&list_body.summaries[0])?;
         assert_eq!(summary.workflow_id, workflow_id());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_auth_failure_messages_are_specific() -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            WorkflowOwnership::default(),
+        );
+        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let request = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: None,
+        };
+
+        assert_auth_error(
+            router
+                .clone()
+                .oneshot(unauthorized_json_request(
+                    &request,
+                    HeaderCase::MissingAuthorization,
+                )?)
+                .await?,
+            "missing Authorization header with Bearer token",
+            "set authorization",
+        )
+        .await?;
+        assert_auth_error(
+            router
+                .clone()
+                .oneshot(unauthorized_json_request(
+                    &request,
+                    HeaderCase::InvalidToken,
+                )?)
+                .await?,
+            "invalid or expired bearer token",
+            "refresh the token",
+        )
+        .await?;
+        assert_auth_error(
+            router
+                .clone()
+                .oneshot(unauthorized_json_request(
+                    &request,
+                    HeaderCase::MissingSubject,
+                )?)
+                .await?,
+            "missing required header: x-aion-subject",
+            "set x-aion-subject",
+        )
+        .await?;
+        assert_auth_error(
+            router
+                .oneshot(unauthorized_json_request(
+                    &request,
+                    HeaderCase::WrongNamespace,
+                )?)
+                .await?,
+            "subject not authorized for namespace tenant-a",
+            "x-aion-namespaces",
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn assert_auth_error(
+        response: Response,
+        expected_phrase: &str,
+        expected_hint: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::NamespaceDenied);
+        assert!(
+            error.message.contains(expected_phrase),
+            "message `{}` did not contain `{expected_phrase}`",
+            error.message
+        );
+        assert!(
+            error.message.contains(expected_hint),
+            "message `{}` did not contain hint `{expected_hint}`",
+            error.message
+        );
         Ok(())
     }
 
@@ -737,6 +842,48 @@ mod tests {
         Ok(authenticated_request(path)
             .method("POST")
             .header("content-type", "application/json")
+            .body(body::Body::from(body))?)
+    }
+
+    #[derive(Clone, Copy)]
+    enum HeaderCase {
+        MissingAuthorization,
+        InvalidToken,
+        MissingSubject,
+        WrongNamespace,
+    }
+
+    fn unauthorized_json_request<T>(
+        value: &T,
+        header_case: HeaderCase,
+    ) -> Result<Request<body::Body>, Box<dyn std::error::Error>>
+    where
+        T: serde::Serialize,
+    {
+        let body = serde_json::to_vec(value)?;
+        let mut builder = Request::builder()
+            .uri("/workflows/list")
+            .method("POST")
+            .header("content-type", "application/json");
+        if !matches!(header_case, HeaderCase::MissingAuthorization) {
+            let token = match header_case {
+                HeaderCase::InvalidToken => "wrong",
+                HeaderCase::MissingAuthorization
+                | HeaderCase::MissingSubject
+                | HeaderCase::WrongNamespace => TOKEN,
+            };
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        if !matches!(header_case, HeaderCase::MissingSubject) {
+            builder = builder.header("x-aion-subject", "alice");
+        }
+        let namespace = if matches!(header_case, HeaderCase::WrongNamespace) {
+            "tenant-b"
+        } else {
+            NAMESPACE
+        };
+        Ok(builder
+            .header("x-aion-namespaces", namespace)
             .body(body::Body::from(body))?)
     }
 
