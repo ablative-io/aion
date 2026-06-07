@@ -1,0 +1,81 @@
+{
+  "id": "AX-005",
+  "cluster": "aion-hardening",
+  "title": "Wire concrete SignalRouter through aion-server delegated seams",
+  "depends_on": ["AT-005", "AT-006"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The aion-server creates an Engine with DeferredSignalRouter, so POST /workflows/signal and the gRPC signal RPC return 500 with 'signal routing seam is not configured'. A concrete SignalRouter implementation exists in crates/aion/src/signal/router.rs but uses the legacy EngineHandle seam interface. This brief adapts it for the delegated seams architecture and wires it into the server's EngineBuilder.",
+  "task": "Create a delegated-seams-compatible SignalRouter that records the SignalReceived event through the target WorkflowHandle's Recorder and delivers the signal to the workflow's BEAM process mailbox. Wire it into aion-server's EngineBuilder via .signal_router(). Add an integration test proving signal delivery through the HTTP endpoint.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Concrete SignalRouter records event and delivers to mailbox",
+      "spec": "THE SYSTEM SHALL implement SignalRouter::route to (1) acquire the target WorkflowHandle's Recorder lock, (2) record a SignalReceived event with the signal name and payload, (3) deliver the signal to the workflow process via the runtime mailbox. Record-before-deliver ordering is required for crash-safety.",
+      "acceptance": [
+        "SignalRouter::route records a SignalReceived event in the workflow's durable history.",
+        "The signal is delivered to the BEAM process mailbox after successful recording.",
+        "A signal to an unknown workflow returns EngineError::WorkflowNotFound before any recording.",
+        "The implementation lives in crates/aion/src/signal/ or a new module, not in delegated.rs."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion/src/signal/router.rs",
+          "crates/aion/src/signal/mod.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "EngineBuilder wires concrete SignalRouter",
+      "spec": "THE SYSTEM SHALL wire the concrete SignalRouter into the EngineBuilder in aion-server's state initialization, replacing the DeferredSignalRouter.",
+      "acceptance": [
+        "aion-server/src/state.rs calls .signal_router() on EngineBuilder with the concrete implementation.",
+        "Engine::signal() no longer returns 'signal routing seam is not configured'.",
+        "DeferredSignalRouter remains as the default for test setups that don't need signals."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/state.rs",
+          "crates/aion/src/engine/builder.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Integration test for signal delivery through HTTP",
+      "spec": "THE SYSTEM SHALL include an integration test that starts a workflow, sends a signal through the server's signal endpoint, and verifies the SignalReceived event appears in the workflow's durable history.",
+      "acceptance": [
+        "Test starts a workflow via EngineBuilder with the concrete SignalRouter.",
+        "Test calls Engine::signal() with a signal name and payload.",
+        "Test reads the workflow history and asserts a SignalReceived event is recorded.",
+        "cargo clippy --workspace --all-targets -- -D warnings passes.",
+        "cargo test --workspace passes."
+      ],
+      "files": {
+        "create": ["crates/aion/tests/engine_signal.rs"],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement non-resident signal queuing (SignalResumeHandoff) in this brief — only resident delivery.",
+    "SHALL NOT change the SignalRouter trait interface in delegated.rs.",
+    "SHALL NOT add gRPC-specific or HTTP-specific code to the signal router — it operates through the Engine API."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "POST /workflows/signal no longer returns 500 for a live workflow."
+  ]
+}

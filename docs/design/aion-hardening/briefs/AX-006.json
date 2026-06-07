@@ -1,0 +1,59 @@
+{
+  "id": "AX-006",
+  "cluster": "aion-hardening",
+  "title": "Fix schedule lifecycle integration test with test recovery seam",
+  "depends_on": ["AK-005"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The schedule_lifecycle_fires_skips_overlap_and_recovers test fails because the second EngineBuilder (after shutdown) uses DeferredActiveWorkflowRecovery, which cannot recover the workflow that the schedule evaluator started. The coordinator workflow is correctly skipped, but the triggered workflow needs a test-specific recovery seam that can re-register it without full AD replay.",
+  "task": "Add a test recovery seam to the schedule lifecycle integration test that tracks started workflows and can recover them after engine restart. Follow the pattern in crates/aion/tests/continue_as_new.rs (TestRecovery struct).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Test recovery seam tracks schedule-triggered workflows",
+      "spec": "THE TEST SHALL implement ActiveWorkflowRecoverySeam with a struct that records the workflow_id, run_id, pid, and loaded_version from each workflow started during the first engine lifecycle. On recovery, it SHALL spawn a new test process and return the stored metadata.",
+      "acceptance": [
+        "TestRecovery struct implements ActiveWorkflowRecoverySeam.",
+        "The first EngineBuilder shares the recovery tracker with the test harness.",
+        "The second EngineBuilder receives the same tracker via .recovery_seam().",
+        "Recovery successfully re-registers the schedule-triggered workflow."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/tests/schedule_lifecycle.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Schedule lifecycle test passes end-to-end",
+      "spec": "THE TEST SHALL verify the full schedule lifecycle: create schedule, evaluator fires and starts a workflow, overlap policy skips during execution, engine shuts down and restarts, schedule state is recovered from events, and the evaluator re-arms timers.",
+      "acceptance": [
+        "schedule_lifecycle_fires_skips_overlap_and_recovers passes.",
+        "After recovery, list_schedules returns the schedule with correct state.",
+        "The test does not use #[ignore], #[allow], or any bypasses.",
+        "cargo clippy --workspace --all-targets -- -D warnings passes.",
+        "cargo test -p aion --test schedule_lifecycle passes."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/tests/schedule_lifecycle.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement full AD deterministic replay — use a test-only recovery seam.",
+    "SHALL NOT modify the ActiveWorkflowRecoverySeam trait or DeferredActiveWorkflowRecovery.",
+    "SHALL NOT change the schedule evaluator or coordinator skip logic."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test -p aion --test schedule_lifecycle passes.",
+    "cargo test --workspace passes (no regressions)."
+  ]
+}
