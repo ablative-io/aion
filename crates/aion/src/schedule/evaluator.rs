@@ -46,7 +46,7 @@ pub enum ScheduleEvaluatorError {
 }
 
 impl ScheduleEvaluatorError {
-    fn side_effect(reason: impl Into<String>) -> Self {
+    pub(crate) fn side_effect(reason: impl Into<String>) -> Self {
         Self::SideEffect {
             reason: reason.into(),
         }
@@ -167,7 +167,11 @@ impl ScheduleEvaluator {
 
     /// Inserts or replaces a schedule state. Primarily useful for tests and future Engine wiring.
     pub fn upsert_state(&mut self, state: ScheduleState) {
-        self.states.insert(state.schedule_id.clone(), state);
+        let schedule_id = state.schedule_id.clone();
+        if !state.is_active() {
+            self.pending_ticks.remove(&schedule_id);
+        }
+        self.states.insert(schedule_id, state);
     }
 
     /// Returns the projected state for a schedule, when present.
@@ -417,6 +421,10 @@ impl ScheduleEvaluator {
             }
         })?;
         state.current_execution = None;
+        if !state.is_active() {
+            self.pending_ticks.remove(schedule_id);
+            return Ok(None);
+        }
 
         if !self.pending_ticks.remove(schedule_id) {
             return Ok(None);
@@ -440,10 +448,9 @@ pub struct NoopScheduleCanceller;
 impl ScheduleWorkflowCanceller for NoopScheduleCanceller {
     async fn cancel_scheduled_workflow(
         &self,
-        execution: &ScheduleExecution,
-        reason: &str,
+        _execution: &ScheduleExecution,
+        _reason: &str,
     ) -> Result<(), ScheduleEvaluatorError> {
-        let _ = (execution, reason);
         Ok(())
     }
 }
@@ -472,11 +479,10 @@ where
 {
     async fn arm_schedule_timer(
         &self,
-        schedule_id: &ScheduleId,
+        _schedule_id: &ScheduleId,
         timer_id: &TimerId,
         fire_at: DateTime<Utc>,
     ) -> Result<(), ScheduleEvaluatorError> {
-        let _ = schedule_id;
         self.store
             .schedule_timer(&self.coordinator_workflow_id, timer_id, fire_at)
             .await

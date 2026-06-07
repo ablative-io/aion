@@ -390,6 +390,43 @@ async fn recovery_applies_skip_catch_up_without_recording_trigger()
 }
 
 #[tokio::test]
+async fn buffered_tick_does_not_start_after_schedule_becomes_inactive()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = fixture();
+    let fire_at = parse_utc("2026-06-07T00:01:00Z")?;
+    let mut schedule_state = state(OverlapPolicy::BufferOne, CatchUpPolicy::One, fire_at)?;
+    schedule_state.current_execution = Some(ScheduleExecution::new(
+        WorkflowId::new_v4(),
+        aion_core::RunId::new_v4(),
+    ));
+    let schedule_id = schedule_state.schedule_id.clone();
+    fixture.evaluator.upsert_state(schedule_state);
+
+    let outcome = fixture
+        .evaluator
+        .handle_timer_fired(&schedule_id, fire_at)
+        .await?;
+    assert_eq!(outcome, TimerEvaluationOutcome::Buffered);
+
+    let mut inactive_state = fixture
+        .evaluator
+        .state(&schedule_id)
+        .ok_or("missing schedule state")?
+        .clone();
+    inactive_state.is_paused = true;
+    fixture.evaluator.upsert_state(inactive_state);
+    let completed = fixture
+        .evaluator
+        .complete_current_execution(&schedule_id, fire_at)
+        .await?;
+
+    assert!(completed.is_none());
+    assert!(!fixture.evaluator.has_pending_tick(&schedule_id));
+    assert_eq!(lock_len(&fixture.starter.started)?, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_reconstructs_state_and_rearms_only_active_schedules()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = fixture();
