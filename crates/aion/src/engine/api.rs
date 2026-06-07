@@ -49,7 +49,7 @@ impl Engine {
     pub(crate) fn new(
         store: Arc<dyn EventStore>,
         visibility_store: Arc<dyn VisibilityStore>,
-        runtime: RuntimeHandle,
+        runtime: Arc<RuntimeHandle>,
         loaded_workflows: LoadedWorkflows,
         registry: Registry,
         supervision: SupervisionTree,
@@ -60,7 +60,7 @@ impl Engine {
             schedule_coordinator_workflow_id.clone(),
             Arc::clone(&store),
         )));
-        let runtime_arc = Arc::new(runtime);
+        let runtime_arc = runtime;
         let registry_arc = Arc::new(registry);
         let supervision_arc = Arc::new(supervision);
         let schedule_evaluator = Arc::new(AsyncMutex::new(default_schedule_evaluator(
@@ -977,7 +977,7 @@ mod tests {
         Ok(Engine::new(
             store,
             visibility_store,
-            runtime,
+            Arc::new(runtime),
             loaded_workflows(workflow_type, deployed_module),
             Registry::default(),
             SupervisionTree::new(),

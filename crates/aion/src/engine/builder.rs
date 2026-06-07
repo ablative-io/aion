@@ -60,6 +60,8 @@ impl From<String> for WorkflowPackageSource {
     }
 }
 
+type SignalRouterFactory = Arc<dyn Fn(Arc<RuntimeHandle>) -> Arc<dyn SignalRouter> + Send + Sync>;
+
 /// Builder for the embedded, transport-agnostic workflow engine.
 pub struct EngineBuilder {
     store: Option<Arc<dyn EventStore>>,
@@ -69,6 +71,7 @@ pub struct EngineBuilder {
     host_nifs: Vec<NifEntry>,
     recovery: Arc<dyn ActiveWorkflowRecoverySeam>,
     delegated: DelegatedSeams,
+    signal_router_factory: Option<SignalRouterFactory>,
     activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
 }
 
@@ -91,6 +94,7 @@ impl EngineBuilder {
             host_nifs: Vec::new(),
             recovery: Arc::new(DeferredActiveWorkflowRecovery),
             delegated: DelegatedSeams::default(),
+            signal_router_factory: None,
             activity_dispatcher: None,
         }
     }
@@ -174,11 +178,22 @@ impl EngineBuilder {
     /// Override the AT signal-routing seam.
     #[must_use]
     pub fn signal_router(mut self, signal_router: Arc<dyn SignalRouter>) -> Self {
+        self.signal_router_factory = None;
         self.delegated = DelegatedSeams::new(
             signal_router,
             self.delegated.query_service_arc(),
             self.delegated.event_publisher_arc(),
         );
+        self
+    }
+
+    /// Override the AT signal-routing seam after the runtime is assembled.
+    #[must_use]
+    pub fn signal_router_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(Arc<RuntimeHandle>) -> Arc<dyn SignalRouter> + Send + Sync + 'static,
+    {
+        self.signal_router_factory = Some(Arc::new(factory));
         self
     }
 
@@ -238,7 +253,9 @@ impl EngineBuilder {
             install_activity_dispatcher(dispatcher);
         }
 
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(self.scheduler_threads))?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(
+            self.scheduler_threads,
+        ))?);
 
         let mut nifs = NifRegistration::new();
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);
@@ -247,7 +264,7 @@ impl EngineBuilder {
         let mut loaded_workflows = LoadedWorkflows::new();
         for source in self.workflow_sources {
             let package = package_from_source(source)?;
-            loaded_workflows.load_package(&runtime, &package)?;
+            loaded_workflows.load_package(runtime.as_ref(), &package)?;
         }
 
         let registry = Registry::default();
@@ -262,6 +279,16 @@ impl EngineBuilder {
         )
         .await?;
 
+        let delegated = if let Some(factory) = self.signal_router_factory {
+            DelegatedSeams::new(
+                factory(Arc::clone(&runtime)),
+                self.delegated.query_service_arc(),
+                self.delegated.event_publisher_arc(),
+            )
+        } else {
+            self.delegated
+        };
+
         let engine = Engine::new(
             store,
             visibility_store,
@@ -269,7 +296,7 @@ impl EngineBuilder {
             loaded_workflows,
             registry,
             supervision,
-            self.delegated,
+            delegated,
         );
         engine.catchup_schedule_coordinator().await?;
         engine.recover_schedules_on_startup(Utc::now()).await?;

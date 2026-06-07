@@ -380,7 +380,7 @@ mod tests {
         Ok(Engine::new(
             store,
             visibility_store,
-            RuntimeHandle::new(RuntimeConfig::new(Some(1)))?,
+            Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
             LoadedWorkflows::new(),
             Registry::default(),
             SupervisionTree::new(),

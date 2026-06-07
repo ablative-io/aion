@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use aion::EngineBuilder;
+use aion::{EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter};
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 
@@ -58,6 +58,9 @@ impl ServerState {
         let engine = EngineBuilder::new()
             .store(store)
             .activity_dispatcher(dispatcher)
+            .signal_router_factory(|runtime: Arc<RuntimeHandle>| {
+                Arc::new(ConcreteSignalRouter::new(runtime)) as Arc<dyn SignalRouter>
+            })
             .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
             .build()
             .await?;

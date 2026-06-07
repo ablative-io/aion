@@ -73,6 +73,7 @@ pub struct RuntimeHandle {
     pub(super) native_registry: Arc<BifRegistryImpl>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    signal_messages: Arc<dashmap::DashMap<Pid, Vec<(String, Payload)>>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
 }
@@ -106,6 +107,7 @@ impl RuntimeHandle {
             native_registry,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            signal_messages: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
         })
@@ -290,6 +292,38 @@ impl RuntimeHandle {
         }
     }
 
+    /// Deliver a recorded signal marker to the workflow mailbox surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// mailbox marker cannot be queued.
+    pub fn deliver_signal_received(
+        &self,
+        workflow_pid: Pid,
+        name: String,
+        payload: Payload,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        self.signal_messages
+            .entry(workflow_pid)
+            .or_default()
+            .push((name, payload));
+        let marker = self.atom_table.intern("aion_signal_received");
+        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+            Ok(())
+        } else {
+            self.signal_messages
+                .entry(workflow_pid)
+                .and_modify(|messages| {
+                    let _ = messages.pop();
+                });
+            Err(runtime_error(format!(
+                "failed to deliver signal to workflow process {workflow_pid}"
+            )))
+        }
+    }
+
     /// Deliver a successful activity result payload to the workflow mailbox surface.
     ///
     /// # Errors
@@ -330,6 +364,14 @@ impl RuntimeHandle {
         self.activity_errors
             .insert((parent_pid, activity_pid), error);
         Ok(())
+    }
+
+    /// Read delivered signal messages retained for the workflow process.
+    #[must_use]
+    pub fn signal_messages(&self, workflow_pid: Pid) -> Vec<(String, Payload)> {
+        self.signal_messages
+            .get(&workflow_pid)
+            .map_or_else(Vec::new, |entry| entry.clone())
     }
 
     /// Read a previously delivered activity result payload.
