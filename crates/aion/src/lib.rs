@@ -14,6 +14,7 @@ pub mod loader;
 pub mod query;
 pub mod registry;
 pub mod runtime;
+pub mod schedule;
 pub mod signal;
 pub mod supervision;
 pub mod time;
@@ -34,6 +35,7 @@ pub use registry::{
     WorkflowHandleParts,
 };
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
+pub use schedule::{ScheduleError, next_fire_time, parse_cron_expression};
 pub use supervision::{
     EngineSupervisorId, SupervisionTree, TypeSupervisorId, TypeSupervisorNode, WorkflowNode,
 };
