@@ -180,6 +180,11 @@ impl ScheduleEvaluator {
         self.states.get(schedule_id)
     }
 
+    /// Returns all projected schedule states.
+    pub fn states(&self) -> impl Iterator<Item = &ScheduleState> {
+        self.states.values()
+    }
+
     /// Returns whether one buffered tick is pending for a schedule.
     #[must_use]
     pub fn has_pending_tick(&self, schedule_id: &ScheduleId) -> bool {
@@ -456,12 +461,12 @@ impl ScheduleWorkflowCanceller for NoopScheduleCanceller {
 }
 
 /// Durable timer adapter backed by the workflow timer store API with a schedule coordinator owner.
-pub struct StoreScheduleTimer<S> {
+pub struct StoreScheduleTimer<S: ?Sized> {
     store: Arc<S>,
     coordinator_workflow_id: WorkflowId,
 }
 
-impl<S> StoreScheduleTimer<S> {
+impl<S: ?Sized> StoreScheduleTimer<S> {
     /// Creates a store-backed schedule timer adapter.
     #[must_use]
     pub fn new(store: Arc<S>, coordinator_workflow_id: WorkflowId) -> Self {
@@ -475,7 +480,7 @@ impl<S> StoreScheduleTimer<S> {
 #[async_trait]
 impl<S> ScheduleTimer for StoreScheduleTimer<S>
 where
-    S: aion_store::EventStore,
+    S: aion_store::EventStore + ?Sized,
 {
     async fn arm_schedule_timer(
         &self,

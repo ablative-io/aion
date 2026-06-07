@@ -1,5 +1,7 @@
 //! Engine error taxonomy.
 
+use crate::schedule::{ScheduleError, ScheduleEvaluatorError};
+use aion_core::ScheduleId;
 use aion_package::PackageError;
 use aion_store::StoreError;
 
@@ -53,10 +55,45 @@ pub enum EngineError {
         workflow_type: String,
     },
 
+    /// No durable schedule was found for the request.
+    #[error("schedule `{schedule_id}` was not found")]
+    ScheduleNotFound {
+        /// Schedule identifier requested by the caller.
+        schedule_id: ScheduleId,
+    },
+
+    /// Schedule trigger, projection, or evaluator side effect failed.
+    #[error("schedule error: {reason}")]
+    Schedule {
+        /// Human-readable schedule failure reason.
+        reason: String,
+    },
+
     /// Native implemented function registration failed.
     #[error("NIF registration failed: {reason}")]
     NifRegistration {
         /// Human-readable native implemented function registration failure reason.
         reason: String,
     },
+}
+
+impl From<ScheduleError> for EngineError {
+    fn from(error: ScheduleError) -> Self {
+        Self::Schedule {
+            reason: error.to_string(),
+        }
+    }
+}
+
+impl From<ScheduleEvaluatorError> for EngineError {
+    fn from(error: ScheduleEvaluatorError) -> Self {
+        match error {
+            ScheduleEvaluatorError::ScheduleNotFound { schedule_id } => {
+                Self::ScheduleNotFound { schedule_id }
+            }
+            other => Self::Schedule {
+                reason: other.to_string(),
+            },
+        }
+    }
 }
