@@ -174,7 +174,8 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         EngineError::Durability(durability) => match durability {
             aion::durability::DurabilityError::Store(store) => wire_from_store(store),
             aion::durability::DurabilityError::NonDeterminism(_)
-            | aion::durability::DurabilityError::HistoryShape { .. } => {
+            | aion::durability::DurabilityError::HistoryShape { .. }
+            | aion::durability::DurabilityError::SearchAttribute(_) => {
                 WireError::backend("durability failure")
             }
         },
