@@ -7,6 +7,7 @@ pub(super) fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowFailed { .. } => "WorkflowFailed",
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
+        Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
         Event::ActivityCompleted { .. } => "ActivityCompleted",
@@ -31,6 +32,7 @@ pub(super) fn queryable_flag(event: &Event) -> i64 {
             | Event::WorkflowFailed { .. }
             | Event::WorkflowCancelled { .. }
             | Event::WorkflowTimedOut { .. }
+            | Event::WorkflowContinuedAsNew { .. }
             | Event::ChildWorkflowStarted { .. }
     ))
 }
