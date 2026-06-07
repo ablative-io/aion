@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use aion_core::{
-    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
-    status_from_events,
+    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

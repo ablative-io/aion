@@ -27,7 +27,12 @@ async fn workflow_search_attributes_are_queryable_through_visibility_store()
     let mut matching = Recorder::new(workflow_id.clone(), store.clone())
         .with_visibility(run_id.clone(), store.clone());
     matching
-        .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+        .record_workflow_started(
+            recorded_at(1),
+            String::from("checkout"),
+            payload("input")?,
+            run_id.clone(),
+        )
         .await?;
     matching
         .record_search_attributes_updated(
@@ -40,7 +45,12 @@ async fn workflow_search_attributes_are_queryable_through_visibility_store()
     let mut other = Recorder::new(other_workflow_id, store.clone())
         .with_visibility(other_run_id, store.clone());
     other
-        .record_workflow_started(recorded_at(3), String::from("support"), payload("other")?)
+        .record_workflow_started(
+            recorded_at(3),
+            String::from("support"),
+            payload("other")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(20)),
+        )
         .await?;
     other
         .record_search_attributes_updated(
