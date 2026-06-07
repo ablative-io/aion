@@ -192,7 +192,8 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         | EngineError::Schedule { .. }
         | EngineError::Runtime { .. }
         | EngineError::RegistryPoisoned
-        | EngineError::NifRegistration { .. } => WireError::backend("engine backend failure"),
+        | EngineError::NifRegistration { .. }
+        | EngineError::SignalRouter(_) => WireError::backend("engine backend failure"),
     }
 }
 
