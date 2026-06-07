@@ -2,12 +2,16 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use aion::durability::{ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam};
 use aion::schedule::TimerEvaluationOutcome;
-use aion::{Engine, EngineBuilder};
-use aion_core::{CatchUpPolicy, Event, OverlapPolicy, ScheduleConfig, TriggerSpec};
+use aion::{Engine, EngineBuilder, EngineError, LoadedWorkflows, Pid, WorkflowHandle};
+use aion_core::{
+    CatchUpPolicy, Event, OverlapPolicy, RunId, ScheduleConfig, TriggerSpec, WorkflowId,
+};
+use aion_package::ContentHash;
 use aion_store::EventStore;
 use chrono::Utc;
 use serde_json::json;
@@ -16,7 +20,8 @@ use serde_json::json;
 async fn schedule_lifecycle_fires_skips_overlap_and_recovers()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(aion_store::InMemoryStore::default());
-    let engine = engine_with_store(Arc::clone(&store)).await?;
+    let recovery = Arc::new(TestRecovery::default());
+    let engine = engine_with_store(Arc::clone(&store), recovery.clone()).await?;
     let input = common::payload(&json!({ "scheduled": true }))?;
     let config = ScheduleConfig {
         trigger: TriggerSpec::Interval {
@@ -45,6 +50,17 @@ async fn schedule_lifecycle_fires_skips_overlap_and_recovers()
     )));
     assert_schedule_triggered(&engine, &schedule_id, &first_execution.workflow_id).await?;
 
+    let first_handle = engine
+        .registry()
+        .get(&first_execution.workflow_id, &first_execution.run_id)?
+        .ok_or_else(|| EngineError::Load {
+            reason: format!(
+                "test recovery could not find live handle for workflow {}",
+                first_execution.workflow_id
+            ),
+        })?;
+    recovery.record(&first_handle)?;
+
     let state_after_first = engine.describe_schedule(&schedule_id).await?;
     let skipped = engine
         .handle_schedule_timer_fired(&schedule_id, state_after_first.next_trigger_at)
@@ -54,8 +70,24 @@ async fn schedule_lifecycle_fires_skips_overlap_and_recovers()
     assert_eq!(after_skip_triggers, 1);
 
     engine.shutdown()?;
-    let recovered = engine_with_store(Arc::clone(&store)).await?;
+    let recovered = engine_with_store(Arc::clone(&store), recovery).await?;
     recovered.recover_schedules_on_startup(Utc::now()).await?;
+
+    let recovered_schedules = recovered.list_schedules().await?;
+    let [listed_state] = recovered_schedules.as_slice() else {
+        return Err(format!(
+            "expected exactly one recovered schedule, found {}",
+            recovered_schedules.len()
+        )
+        .into());
+    };
+    assert_eq!(listed_state.schedule_id, schedule_id);
+    assert_eq!(listed_state.config, config);
+    assert!(!listed_state.is_paused);
+    assert!(!listed_state.is_deleted);
+    assert!(listed_state.current_execution.is_none());
+    assert!(listed_state.last_triggered_at.is_some());
+
     let recovered_state = recovered.describe_schedule(&schedule_id).await?;
     let recovered_fire = recovered
         .handle_schedule_timer_fired(&schedule_id, recovered_state.next_trigger_at)
@@ -91,10 +123,12 @@ async fn schedule_uses_common_helpers_for_engine_and_payload()
 
 async fn engine_with_store(
     store: Arc<dyn EventStore>,
+    recovery: Arc<dyn ActiveWorkflowRecoverySeam>,
 ) -> Result<Engine, Box<dyn std::error::Error>> {
     Ok(EngineBuilder::new()
         .store_arc(store)
         .scheduler_threads(1)
+        .recovery_seam(recovery)
         .load_workflows(common::fixture_package("wait")?)
         .build()
         .await?)
@@ -135,4 +169,60 @@ async fn schedule_trigger_count(
             )
         })
         .count())
+}
+
+#[derive(Debug, Default)]
+struct TestRecovery {
+    replacements: Mutex<Vec<RecoveryEntry>>,
+}
+
+impl TestRecovery {
+    fn record(&self, handle: &WorkflowHandle) -> Result<(), EngineError> {
+        self.replacements
+            .lock()
+            .map_err(|_| EngineError::RegistryPoisoned)?
+            .push(RecoveryEntry {
+                workflow_id: handle.workflow_id().clone(),
+                run_id: handle.run_id().clone(),
+                version: handle.loaded_version().clone(),
+                pid: handle.pid(),
+            });
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct RecoveryEntry {
+    workflow_id: WorkflowId,
+    run_id: RunId,
+    version: ContentHash,
+    pid: Pid,
+}
+
+impl ActiveWorkflowRecoverySeam for TestRecovery {
+    fn recover_active_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+        workflow_type: &str,
+        history: &[Event],
+        loaded_workflows: &LoadedWorkflows,
+    ) -> Result<ActiveWorkflowRecovery, EngineError> {
+        let _ = (workflow_type, history, loaded_workflows);
+        let replacements = self
+            .replacements
+            .lock()
+            .map_err(|_| EngineError::RegistryPoisoned)?;
+        let entry = replacements
+            .iter()
+            .find(|entry| &entry.workflow_id == workflow_id)
+            .ok_or_else(|| EngineError::Load {
+                reason: format!("test recovery has no run metadata for workflow {workflow_id}"),
+            })?;
+
+        Ok(ActiveWorkflowRecovery {
+            run_id: entry.run_id.clone(),
+            loaded_version: entry.version.clone(),
+            pid: entry.pid,
+        })
+    }
 }
