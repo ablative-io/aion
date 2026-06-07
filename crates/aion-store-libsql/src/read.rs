@@ -72,7 +72,8 @@ pub(crate) async fn read_run_chain(
     workflow_id: &WorkflowId,
 ) -> Result<Vec<RunSummary>, StoreError> {
     let history = read_history(conn, workflow_id).await?;
-    let current_run_id = current_visibility_run_id(conn, workflow_id).await?;
+    let current_status = status_from_events(&history);
+    let current_run_id = current_visibility_run_id(conn, workflow_id, current_status).await?;
 
     run_chain_from_history(&history, current_run_id.as_ref())
 }
@@ -258,13 +259,14 @@ fn sort_summaries(summaries: &mut [WorkflowSummary]) {
 async fn current_visibility_run_id(
     conn: &libsql::Connection,
     workflow_id: &WorkflowId,
+    current_status: WorkflowStatus,
 ) -> Result<Option<RunId>, StoreError> {
     let mut rows = conn
         .query(
             "SELECT run_id FROM visibility WHERE workflow_id = ?1 AND status = ?2 LIMIT 1",
             params![
                 workflow_id.to_string(),
-                serde_json::to_string(&WorkflowStatus::Running)
+                serde_json::to_string(&current_status)
                     .map_err(|error| crate::error::serde_json_error(&error))?
             ],
         )

@@ -231,12 +231,11 @@ impl EventStore for InMemoryStore {
             .histories
             .get(workflow_id)
             .map_or_else(Vec::new, |history| history_in_sequence_order(history));
+        let current_status = status_from_events(&history);
         let current_run_id = state
             .visibility
             .values()
-            .find(|record| {
-                &record.workflow_id == workflow_id && record.status == WorkflowStatus::Running
-            })
+            .find(|record| &record.workflow_id == workflow_id && record.status == current_status)
             .map(|record| &record.run_id);
 
         run_chain_from_history(&history, current_run_id)
@@ -316,6 +315,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::InMemoryStore;
+    use crate::visibility::{VisibilityRecord, VisibilityStore};
     use crate::{EventStore, StoreError, TimerEntry};
 
     fn recorded_at(offset_seconds: i64) -> DateTime<Utc> {
@@ -331,6 +331,26 @@ mod tests {
             seq,
             recorded_at: recorded_at(i64::try_from(seq).unwrap_or_default()),
             workflow_id: workflow_id.clone(),
+        }
+    }
+
+    fn run_id(value: u128) -> aion_core::RunId {
+        aion_core::RunId::new(Uuid::from_u128(value))
+    }
+
+    fn visibility_record(
+        workflow_id: WorkflowId,
+        run_id: aion_core::RunId,
+        status: WorkflowStatus,
+    ) -> VisibilityRecord {
+        VisibilityRecord {
+            workflow_id,
+            run_id,
+            workflow_type: String::from("checkout"),
+            status,
+            start_time: recorded_at(1),
+            close_time: Some(recorded_at(2)),
+            search_attributes: Default::default(),
         }
     }
 
@@ -416,6 +436,40 @@ mod tests {
             .await?;
 
         assert_eq!(store.list_active().await?, vec![running]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_run_chain_resolves_terminal_current_run_from_visibility() -> Result<(), StoreError>
+    {
+        let store = InMemoryStore::default();
+        let workflow_id = workflow_id(1);
+        let run_id = run_id(10);
+
+        store
+            .append(
+                &workflow_id,
+                &[
+                    workflow_started(1, &workflow_id, "checkout"),
+                    workflow_completed(2, &workflow_id),
+                ],
+                0,
+            )
+            .await?;
+        store
+            .record_visibility(visibility_record(
+                workflow_id.clone(),
+                run_id.clone(),
+                WorkflowStatus::Completed,
+            ))
+            .await?;
+
+        let chain = store.read_run_chain(&workflow_id).await?;
+
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].run_id, run_id);
+        assert_eq!(chain[0].status, WorkflowStatus::Completed);
+        assert_eq!(chain[0].closed_at, Some(recorded_at(2)));
         Ok(())
     }
 
