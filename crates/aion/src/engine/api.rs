@@ -4,7 +4,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 
 use aion_core::{
-    Event, Payload, RunId, WorkflowError, WorkflowFilter, WorkflowId, WorkflowSummary,
+    Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId, WorkflowError,
+    WorkflowFilter, WorkflowId, WorkflowSummary,
+};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::durability::Recorder;
+use crate::schedule::{
+    NoopScheduleCanceller, ScheduleEvaluator, ScheduleEvaluatorError, ScheduleEventSink,
+    ScheduleExecution, ScheduleState, ScheduleTimer, ScheduleWorkflowStarter, StoreScheduleTimer,
 };
 use aion_store::EventStore;
 
@@ -19,6 +29,9 @@ use super::delegated::DelegatedSeams;
 /// Live embedded workflow engine assembled by [`crate::EngineBuilder`].
 pub struct Engine {
     store: Arc<dyn EventStore>,
+    schedule_recorder: Arc<AsyncMutex<Recorder>>,
+    schedule_evaluator: Arc<AsyncMutex<ScheduleEvaluator>>,
+    schedule_coordinator_workflow_id: WorkflowId,
     runtime: RuntimeHandle,
     loaded_workflows: LoadedWorkflows,
     registry: Registry,
@@ -38,8 +51,21 @@ impl Engine {
         supervision: SupervisionTree,
         delegated: DelegatedSeams,
     ) -> Self {
+        let schedule_coordinator_workflow_id = schedule_coordinator_workflow_id();
+        let schedule_recorder = Arc::new(AsyncMutex::new(Recorder::new(
+            schedule_coordinator_workflow_id.clone(),
+            Arc::clone(&store),
+        )));
+        let schedule_evaluator = Arc::new(AsyncMutex::new(default_schedule_evaluator(
+            Arc::clone(&store),
+            schedule_coordinator_workflow_id.clone(),
+            Arc::clone(&schedule_recorder),
+        )));
         Self {
             store,
+            schedule_recorder,
+            schedule_evaluator,
+            schedule_coordinator_workflow_id,
             runtime,
             loaded_workflows,
             registry,
@@ -83,6 +109,246 @@ impl Engine {
     #[must_use]
     pub const fn delegated(&self) -> &DelegatedSeams {
         &self.delegated
+    }
+
+    /// Workflow history used for durable schedule events and timer ownership.
+    #[must_use]
+    pub const fn schedule_coordinator_workflow_id(&self) -> &WorkflowId {
+        &self.schedule_coordinator_workflow_id
+    }
+
+    /// Create a durable schedule and arm its first timer.
+    ///
+    /// # Errors
+    ///
+    /// Returns shutdown, durability, schedule projection, or timer arming errors.
+    pub async fn create_schedule(&self, config: ScheduleConfig) -> Result<ScheduleId, EngineError> {
+        let operation = self.shutdown_gate.begin_start()?;
+        let recorded_at = Utc::now();
+        let schedule_id = ScheduleId::new_v4();
+        let result = self
+            .create_schedule_inner(schedule_id, config, recorded_at)
+            .await;
+        drop(operation);
+        result
+    }
+
+    /// Update an existing schedule's configuration and re-arm it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
+    /// projection, and timer errors.
+    pub async fn update_schedule(
+        &self,
+        schedule_id: &ScheduleId,
+        config: ScheduleConfig,
+    ) -> Result<(), EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = self.update_schedule_inner(schedule_id, config).await;
+        drop(operation);
+        result
+    }
+
+    /// Pause an existing schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
+    /// and projection errors.
+    pub async fn pause_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = self.pause_schedule_inner(schedule_id).await;
+        drop(operation);
+        result
+    }
+
+    /// Resume an existing schedule and re-arm it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
+    /// projection, and timer errors.
+    pub async fn resume_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = self.resume_schedule_inner(schedule_id).await;
+        drop(operation);
+        result
+    }
+
+    /// Delete an existing schedule so it is no longer listed or armed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
+    /// and projection errors.
+    pub async fn delete_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = self.delete_schedule_inner(schedule_id).await;
+        drop(operation);
+        result
+    }
+
+    /// List all non-deleted schedules from projected state.
+    ///
+    /// # Errors
+    ///
+    /// Currently returns only infallible projected state, wrapped for API consistency.
+    pub async fn list_schedules(&self) -> Result<Vec<ScheduleState>, EngineError> {
+        let evaluator = self.schedule_evaluator.lock().await;
+        let mut schedules = evaluator
+            .states()
+            .filter(|state| !state.is_deleted)
+            .cloned()
+            .collect::<Vec<_>>();
+        schedules.sort_by(|left, right| {
+            left.next_trigger_at
+                .cmp(&right.next_trigger_at)
+                .then_with(|| {
+                    left.schedule_id
+                        .to_string()
+                        .cmp(&right.schedule_id.to_string())
+                })
+        });
+        Ok(schedules)
+    }
+
+    /// Describe one non-deleted schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScheduleNotFound`] for absent or deleted schedules.
+    pub async fn describe_schedule(
+        &self,
+        schedule_id: &ScheduleId,
+    ) -> Result<ScheduleState, EngineError> {
+        self.schedule_evaluator
+            .lock()
+            .await
+            .state(schedule_id)
+            .filter(|state| !state.is_deleted)
+            .cloned()
+            .ok_or_else(|| EngineError::ScheduleNotFound {
+                schedule_id: schedule_id.clone(),
+            })
+    }
+
+    async fn create_schedule_inner(
+        &self,
+        schedule_id: ScheduleId,
+        config: ScheduleConfig,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<ScheduleId, EngineError> {
+        self.schedule_recorder
+            .lock()
+            .await
+            .record_schedule_created(recorded_at, schedule_id.clone(), config.clone())
+            .await?;
+
+        let state = ScheduleState::created(schedule_id.clone(), config, recorded_at)?;
+        let mut evaluator = self.schedule_evaluator.lock().await;
+        evaluator.upsert_state(state);
+        evaluator.arm_active_schedule(&schedule_id).await?;
+        Ok(schedule_id)
+    }
+
+    async fn update_schedule_inner(
+        &self,
+        schedule_id: &ScheduleId,
+        config: ScheduleConfig,
+    ) -> Result<(), EngineError> {
+        self.ensure_schedule_exists(schedule_id).await?;
+        let recorded_at = Utc::now();
+        self.schedule_recorder
+            .lock()
+            .await
+            .record_schedule_updated(recorded_at, schedule_id.clone(), config.clone())
+            .await?;
+        let event = Event::ScheduleUpdated {
+            envelope: schedule_event_envelope(recorded_at),
+            schedule_id: schedule_id.clone(),
+            config,
+        };
+        self.apply_schedule_event(schedule_id, &event, true).await
+    }
+
+    async fn pause_schedule_inner(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        self.ensure_schedule_exists(schedule_id).await?;
+        let recorded_at = Utc::now();
+        self.schedule_recorder
+            .lock()
+            .await
+            .record_schedule_paused(recorded_at, schedule_id.clone())
+            .await?;
+        let event = Event::SchedulePaused {
+            envelope: schedule_event_envelope(recorded_at),
+            schedule_id: schedule_id.clone(),
+        };
+        self.apply_schedule_event(schedule_id, &event, false).await
+    }
+
+    async fn resume_schedule_inner(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        self.ensure_schedule_exists(schedule_id).await?;
+        let recorded_at = Utc::now();
+        self.schedule_recorder
+            .lock()
+            .await
+            .record_schedule_resumed(recorded_at, schedule_id.clone())
+            .await?;
+        let event = Event::ScheduleResumed {
+            envelope: schedule_event_envelope(recorded_at),
+            schedule_id: schedule_id.clone(),
+        };
+        self.apply_schedule_event(schedule_id, &event, true).await
+    }
+
+    async fn delete_schedule_inner(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        self.ensure_schedule_exists(schedule_id).await?;
+        let recorded_at = Utc::now();
+        self.schedule_recorder
+            .lock()
+            .await
+            .record_schedule_deleted(recorded_at, schedule_id.clone())
+            .await?;
+        let event = Event::ScheduleDeleted {
+            envelope: schedule_event_envelope(recorded_at),
+            schedule_id: schedule_id.clone(),
+        };
+        self.apply_schedule_event(schedule_id, &event, false).await
+    }
+
+    async fn ensure_schedule_exists(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
+        self.schedule_evaluator
+            .lock()
+            .await
+            .state(schedule_id)
+            .filter(|state| !state.is_deleted)
+            .map(|_| ())
+            .ok_or_else(|| EngineError::ScheduleNotFound {
+                schedule_id: schedule_id.clone(),
+            })
+    }
+
+    async fn apply_schedule_event(
+        &self,
+        schedule_id: &ScheduleId,
+        event: &Event,
+        should_arm: bool,
+    ) -> Result<(), EngineError> {
+        let mut evaluator = self.schedule_evaluator.lock().await;
+        let mut state = evaluator
+            .state(schedule_id)
+            .filter(|state| !state.is_deleted)
+            .cloned()
+            .ok_or_else(|| EngineError::ScheduleNotFound {
+                schedule_id: schedule_id.clone(),
+            })?;
+        state.apply(event)?;
+        evaluator.upsert_state(state);
+        if should_arm {
+            evaluator.arm_active_schedule(schedule_id).await?;
+        }
+        Ok(())
     }
 
     /// Start a loaded workflow type as a new BEAM process.
@@ -453,6 +719,70 @@ fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError>
 pub(crate) fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
     EngineError::WorkflowNotFound {
         workflow_type: format!("{id}/{run}"),
+    }
+}
+
+fn schedule_coordinator_workflow_id() -> WorkflowId {
+    WorkflowId::new(uuid::Uuid::from_u128(
+        0x0000_0000_a10a_0000_0000_000000000004,
+    ))
+}
+
+fn schedule_event_envelope(recorded_at: DateTime<Utc>) -> EventEnvelope {
+    EventEnvelope {
+        seq: 0,
+        recorded_at,
+        workflow_id: schedule_coordinator_workflow_id(),
+    }
+}
+
+fn default_schedule_evaluator(
+    store: Arc<dyn EventStore>,
+    coordinator_workflow_id: WorkflowId,
+    recorder: Arc<AsyncMutex<Recorder>>,
+) -> ScheduleEvaluator {
+    let timer: Arc<dyn ScheduleTimer> =
+        Arc::new(StoreScheduleTimer::new(store, coordinator_workflow_id));
+    let starter: Arc<dyn ScheduleWorkflowStarter> = Arc::new(NoopScheduleStarter);
+    let canceller: Arc<dyn crate::schedule::ScheduleWorkflowCanceller> =
+        Arc::new(NoopScheduleCanceller);
+    let events: Arc<dyn ScheduleEventSink> = recorder;
+    ScheduleEvaluator::new(timer, starter, canceller, events)
+}
+
+struct NoopScheduleStarter;
+
+#[async_trait]
+impl ScheduleWorkflowStarter for NoopScheduleStarter {
+    async fn start_scheduled_workflow(
+        &self,
+        workflow_type: &str,
+        _input: Payload,
+    ) -> Result<ScheduleExecution, ScheduleEvaluatorError> {
+        Err(ScheduleEvaluatorError::side_effect(format!(
+            "schedule workflow starter is not installed for `{workflow_type}`"
+        )))
+    }
+}
+
+#[async_trait]
+impl ScheduleEventSink for AsyncMutex<Recorder> {
+    async fn record_schedule_triggered(
+        &self,
+        schedule_id: &ScheduleId,
+        execution: &ScheduleExecution,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<(), ScheduleEvaluatorError> {
+        self.lock()
+            .await
+            .record_schedule_triggered(
+                recorded_at,
+                schedule_id.clone(),
+                execution.workflow_id.clone(),
+                execution.run_id.clone(),
+            )
+            .await
+            .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))
     }
 }
 

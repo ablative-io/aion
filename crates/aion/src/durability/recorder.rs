@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use aion_core::{
-    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowError,
-    WorkflowId,
+    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId,
+    TimerId, WorkflowError, WorkflowId,
 };
 use aion_store::EventStore;
 use chrono::{DateTime, Utc};
@@ -85,6 +85,122 @@ impl Recorder {
             workflow_type,
             input,
             parent_run_id,
+        })
+        .await
+    }
+
+    /// Records schedule creation in the schedule coordinator history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_schedule_created(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        schedule_id: ScheduleId,
+        config: ScheduleConfig,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::ScheduleCreated {
+            envelope,
+            schedule_id,
+            config,
+        })
+        .await
+    }
+
+    /// Records schedule configuration update in the schedule coordinator history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_schedule_updated(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        schedule_id: ScheduleId,
+        config: ScheduleConfig,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::ScheduleUpdated {
+            envelope,
+            schedule_id,
+            config,
+        })
+        .await
+    }
+
+    /// Records schedule pause in the schedule coordinator history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_schedule_paused(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        schedule_id: ScheduleId,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::SchedulePaused {
+            envelope,
+            schedule_id,
+        })
+        .await
+    }
+
+    /// Records schedule resume in the schedule coordinator history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_schedule_resumed(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        schedule_id: ScheduleId,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::ScheduleResumed {
+            envelope,
+            schedule_id,
+        })
+        .await
+    }
+
+    /// Records schedule deletion in the schedule coordinator history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_schedule_deleted(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        schedule_id: ScheduleId,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::ScheduleDeleted {
+            envelope,
+            schedule_id,
+        })
+        .await
+    }
+
+    /// Records a schedule-triggered workflow execution in the schedule coordinator history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_schedule_triggered(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        schedule_id: ScheduleId,
+        workflow_id: WorkflowId,
+        run_id: RunId,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::ScheduleTriggered {
+            envelope,
+            schedule_id,
+            workflow_id,
+            run_id,
         })
         .await
     }
