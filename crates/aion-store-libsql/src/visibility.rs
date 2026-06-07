@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use aion_core::{RunId, SearchAttributeValue, WorkflowId, WorkflowStatus};
-use aion_store::{
-    ListWorkflowsFilter, SearchAttributePredicate, StoreError, VisibilityRecord, VisibilityStore,
-    VisibilityWorkflowSummary,
+use aion_store::StoreError;
+use aion_store::visibility::{
+    ListWorkflowsFilter, SearchAttributePredicate, VisibilityRecord, VisibilityStore,
+    WorkflowSummary as VisibilityWorkflowSummary,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -437,9 +438,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aion_core::{RunId, SearchAttributeValue, WorkflowId, WorkflowStatus};
-    use aion_store::{
-        ListWorkflowsFilter, SearchAttributePredicate, StoreError, VisibilityRecord,
-        VisibilityStore, VisibilityWorkflowSummary,
+    use aion_store::StoreError;
+    use aion_store::visibility::{
+        ListWorkflowsFilter, SearchAttributePredicate, VisibilityRecord, VisibilityStore,
+        WorkflowSummary as VisibilityWorkflowSummary,
     };
     use chrono::{DateTime, TimeZone, Utc};
 
