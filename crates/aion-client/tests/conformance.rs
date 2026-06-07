@@ -636,6 +636,7 @@ fn status(value: Option<&str>) -> Option<WorkflowStatus> {
         Some("FAILED") => Some(WorkflowStatus::Failed),
         Some("CANCELLED") => Some(WorkflowStatus::Cancelled),
         Some("TIMED_OUT") => Some(WorkflowStatus::TimedOut),
+        Some("CONTINUED_AS_NEW") => Some(WorkflowStatus::ContinuedAsNew),
         _ => None,
     }
 }
