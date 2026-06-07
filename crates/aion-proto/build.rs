@@ -8,6 +8,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/worker.proto",
     ];
 
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=proto");
     for proto in &proto_files {
         println!("cargo:rerun-if-changed={proto}");
     }

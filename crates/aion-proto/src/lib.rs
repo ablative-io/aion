@@ -24,8 +24,9 @@ pub use worker::{
     ProtoHeartbeat, ProtoRegisterWorker, proto_activity_result,
 };
 pub use workflow::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoDescribeWorkflowRequest,
-    ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, proto_query_response,
+    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
+    ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
+    ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
+    proto_query_response,
 };

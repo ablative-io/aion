@@ -2,11 +2,14 @@
 
 use aion_core::{Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoDescribeWorkflowRequest,
-    ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError,
-    convert::{ProtoPayload, decode_workflow_filter, encode_event, encode_workflow_summary},
+    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
+    ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
+    ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
+    WireError,
+    convert::{
+        ProtoPayload, decode_core_value, encode_core_value, encode_event, encode_workflow_summary,
+    },
     proto_query_response,
 };
 
@@ -136,7 +139,7 @@ pub async fn cancel(
 /// # Errors
 ///
 /// Returns a stable [`WireError`] when the filter envelope is malformed, namespace scoping fails, the
-/// engine list call fails, or summaries cannot be encoded.
+/// visibility-store list call fails, or summaries cannot be encoded.
 pub async fn list(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -146,11 +149,12 @@ pub async fn list(
     let scoped = guard
         .scope(caller, &NamespaceOperation::list(&request, &scope_filter))
         .map_err(|error| error.to_wire_error())?;
-    let filter = decode_filter(request.filter.as_ref())?;
+    let filter = decode_visibility_filter(request.filter.as_ref())?;
 
     let summaries = scoped
         .engine()
         .map_err(|error| error.to_wire_error())?
+        .visibility_store()
         .list_workflows(filter)
         .await
         .map_err(|error| ServerError::from(error).to_wire_error())?;
@@ -158,10 +162,37 @@ pub async fn list(
     let namespace = scoped.namespace().to_owned();
     let summaries = summaries
         .into_iter()
-        .map(|summary| encode_workflow_summary(namespace.clone(), None, &summary))
+        .map(|summary| encode_core_value(namespace.clone(), None, &summary))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ProtoListWorkflowsResponse { summaries })
+}
+
+/// Handles a decoded count-workflows request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the filter envelope is malformed, namespace scoping fails, or
+/// the visibility-store count call fails.
+pub async fn count(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoCountWorkflowsRequest,
+) -> Result<ProtoCountWorkflowsResponse, WireError> {
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::count(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let filter = decode_visibility_filter(request.filter.as_ref())?;
+
+    let count = scoped
+        .engine()
+        .map_err(|error| error.to_wire_error())?
+        .visibility_store()
+        .count_workflows(filter)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+
+    Ok(ProtoCountWorkflowsResponse { count })
 }
 
 /// Handles a decoded describe-workflow request.
@@ -217,8 +248,13 @@ fn required_payload(payload: Option<ProtoPayload>) -> Result<Payload, WireError>
         .try_into()
 }
 
-fn decode_filter(filter: Option<&aion_proto::WireEnvelope>) -> Result<WorkflowFilter, WireError> {
-    filter.map_or_else(|| Ok(WorkflowFilter::default()), decode_workflow_filter)
+fn decode_visibility_filter(
+    filter: Option<&aion_proto::WireEnvelope>,
+) -> Result<aion_store::visibility::ListWorkflowsFilter, WireError> {
+    filter.map_or_else(
+        || Ok(aion_store::visibility::ListWorkflowsFilter::default()),
+        decode_core_value,
+    )
 }
 
 fn encode_history(
@@ -244,9 +280,12 @@ mod tests {
     use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus};
     use aion_proto::{
         WireErrorCode,
-        convert::{decode_event, decode_workflow_summary, encode_workflow_filter},
+        convert::{decode_core_value, decode_event, decode_workflow_summary, encode_core_value},
     };
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{
+        EventStore, InMemoryStore,
+        visibility::{VisibilityRecord, VisibilityStore},
+    };
     use chrono::Utc;
     use serde_json::json;
 
@@ -324,14 +363,26 @@ mod tests {
     {
         let context = context().await?;
         append_started(context.store.as_ref()).await?;
+        context
+            .visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: run_id(),
+                workflow_type: String::from("fixture"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: std::collections::HashMap::new(),
+            })
+            .await?;
         let request = ProtoListWorkflowsRequest {
             namespace: NAMESPACE.to_owned(),
-            filter: Some(encode_workflow_filter(
+            filter: Some(encode_core_value(
                 NAMESPACE,
                 None,
-                &WorkflowFilter {
+                &aion_store::visibility::ListWorkflowsFilter {
                     status: Some(WorkflowStatus::Running),
-                    ..WorkflowFilter::default()
+                    ..aion_store::visibility::ListWorkflowsFilter::default()
                 },
             )?),
         };
@@ -339,7 +390,8 @@ mod tests {
         let response = list(&context.guard, &context.caller, request).await?;
 
         assert_eq!(response.summaries.len(), 1);
-        let summary = decode_workflow_summary(&response.summaries[0])?;
+        let summary =
+            decode_core_value::<aion_store::visibility::WorkflowSummary>(&response.summaries[0])?;
         assert_eq!(summary.workflow_id, workflow_id());
         Ok(())
     }
@@ -475,21 +527,29 @@ mod tests {
         caller: CallerIdentity,
         ownership: WorkflowOwnership,
         store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
     }
 
     async fn context() -> Result<TestContext, aion::EngineError> {
-        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let backing = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = backing.clone();
+        let visibility_store: Arc<dyn VisibilityStore> = backing;
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(Arc::clone(&store))
+                .visibility_store_arc(Arc::clone(&visibility_store))
                 .scheduler_threads(1)
                 .build()
                 .await?,
         );
-        Ok(context_from_engine(engine, store))
+        Ok(context_from_engine(engine, store, visibility_store))
     }
 
-    fn context_from_engine(engine: Arc<Engine>, store: Arc<dyn EventStore>) -> TestContext {
+    fn context_from_engine(
+        engine: Arc<Engine>,
+        store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
+    ) -> TestContext {
         let ownership = WorkflowOwnership::default();
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
@@ -501,6 +561,7 @@ mod tests {
             caller: CallerIdentity::new("alice", [NAMESPACE.to_owned()]),
             ownership,
             store,
+            visibility_store,
         }
     }
 

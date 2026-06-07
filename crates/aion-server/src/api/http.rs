@@ -1,20 +1,29 @@
 //! axum HTTP/JSON workflow facade.
 
+use std::collections::HashMap;
+
+use aion_core::{SearchAttributeValue, WorkflowStatus};
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoDescribeWorkflowRequest,
-    ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError, WireErrorCode,
+    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
+    ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest,
+    ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest,
+    ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError,
+    WireErrorCode,
 };
+use aion_store::visibility::{ListWorkflowsFilter, SearchAttributePredicate, WorkflowSummary};
 use axum::{
     Json, Router,
-    extract::{FromRequestParts, State},
+    extract::{FromRequestParts, Query, State},
     http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
-use crate::{CallerIdentity, ServerError, ServerState, api::handlers, dashboard::assets};
+use crate::{
+    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
+};
 
 /// Build the public HTTP application: workflow-management routes first, then
 /// the dashboard static asset fallback. The dashboard adds no data API.
@@ -30,11 +39,13 @@ pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
 /// Build the public workflow-management HTTP router.
 pub fn workflow_router(state: ServerState) -> Router {
     Router::new()
+        .route("/workflows", get(get_workflows))
+        .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))
         .route("/workflows/signal", post(signal_workflow))
         .route("/workflows/query", post(query_workflow))
         .route("/workflows/cancel", post(cancel_workflow))
-        .route("/workflows/list", post(list_workflows))
+        .route("/workflows/list", post(post_list_workflows))
         .route("/workflows/describe", post(describe_workflow))
         .with_state(state)
 }
@@ -99,7 +110,7 @@ async fn cancel_workflow(
         .map_err(HttpWireError)
 }
 
-async fn list_workflows(
+async fn post_list_workflows(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
     Json(request): Json<ProtoListWorkflowsRequest>,
@@ -108,6 +119,58 @@ async fn list_workflows(
         .await
         .map(Json)
         .map_err(HttpWireError)
+}
+
+async fn get_workflows(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Query(query): Query<VisibilityQuery>,
+) -> Result<Json<Vec<WorkflowSummary>>, HttpWireError> {
+    let request = ProtoListWorkflowsRequest {
+        namespace: query.namespace.clone(),
+        filter: None,
+    };
+    let scoped = state
+        .namespace_guard()
+        .scope(
+            &caller,
+            &NamespaceOperation::list(&request, &aion_core::WorkflowFilter::default()),
+        )
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    let filter = query.into_filter().map_err(HttpWireError)?;
+    scoped
+        .engine()
+        .map_err(|error| HttpWireError(error.to_wire_error()))?
+        .visibility_store()
+        .list_workflows(filter)
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))
+        .map(Json)
+}
+
+async fn count_workflows(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Query(query): Query<VisibilityQuery>,
+) -> Result<Json<CountWorkflowsBody>, HttpWireError> {
+    let request = ProtoCountWorkflowsRequest {
+        namespace: query.namespace.clone(),
+        filter: None,
+    };
+    let scoped = state
+        .namespace_guard()
+        .scope(&caller, &NamespaceOperation::count(&request))
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    let filter = query.into_filter().map_err(HttpWireError)?;
+    let count = scoped
+        .engine()
+        .map_err(|error| HttpWireError(error.to_wire_error()))?
+        .visibility_store()
+        .count_workflows(filter)
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+
+    Ok(Json(CountWorkflowsBody { count }))
 }
 
 async fn describe_workflow(
@@ -119,6 +182,108 @@ async fn describe_workflow(
         .await
         .map(Json)
         .map_err(HttpWireError)
+}
+
+#[derive(Debug, Deserialize)]
+struct VisibilityQuery {
+    namespace: String,
+    workflow_type: Option<String>,
+    status: Option<String>,
+    started_after: Option<String>,
+    started_before: Option<String>,
+    closed_after: Option<String>,
+    closed_before: Option<String>,
+    search_attributes: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    #[serde(flatten)]
+    extra: HashMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct CountWorkflowsBody {
+    count: u64,
+}
+
+impl VisibilityQuery {
+    fn into_filter(self) -> Result<ListWorkflowsFilter, WireError> {
+        let mut search_attributes = self.parse_search_attributes()?;
+        search_attributes.extend(parse_attr_equals(self.extra));
+
+        Ok(ListWorkflowsFilter {
+            workflow_type: self.workflow_type,
+            status: self.status.as_deref().map(parse_status).transpose()?,
+            started_after: self
+                .started_after
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            started_before: self
+                .started_before
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            closed_after: self
+                .closed_after
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            closed_before: self
+                .closed_before
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            search_attributes,
+            limit: self.limit,
+            offset: self.offset,
+        })
+    }
+
+    fn parse_search_attributes(&self) -> Result<Vec<SearchAttributePredicate>, WireError> {
+        self.search_attributes.as_deref().map_or_else(
+            || Ok(Vec::new()),
+            |value| {
+                serde_json::from_str(value).map_err(|_error| {
+                    WireError::unknown_query("search_attributes query parameter is malformed")
+                })
+            },
+        )
+    }
+}
+
+fn parse_attr_equals(extra: HashMap<String, String>) -> Vec<SearchAttributePredicate> {
+    extra
+        .into_iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("attr.")
+                .map(|name| SearchAttributePredicate::Equals {
+                    name: name.to_owned(),
+                    value: SearchAttributeValue::String(value),
+                })
+        })
+        .collect()
+}
+
+fn parse_status(value: &str) -> Result<WorkflowStatus, WireError> {
+    match value.to_ascii_lowercase().as_str() {
+        "running" => Ok(WorkflowStatus::Running),
+        "completed" => Ok(WorkflowStatus::Completed),
+        "failed" => Ok(WorkflowStatus::Failed),
+        "cancelled" | "canceled" => Ok(WorkflowStatus::Cancelled),
+        "timed_out" | "timedout" | "timed-out" => Ok(WorkflowStatus::TimedOut),
+        "continued_as_new" | "continuedasnew" | "continued-as-new" => {
+            Ok(WorkflowStatus::ContinuedAsNew)
+        }
+        _ => Err(WireError::unknown_query(
+            "workflow status query parameter is unknown",
+        )),
+    }
+}
+
+fn parse_datetime(value: &str) -> Result<DateTime<Utc>, WireError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|datetime| datetime.with_timezone(&Utc))
+        .map_err(|_error| WireError::unknown_query("datetime query parameter is malformed"))
 }
 
 fn caller_from_headers(headers: &axum::http::HeaderMap, bearer_token: &str) -> CallerIdentity {
@@ -179,13 +344,17 @@ mod tests {
     use std::{fs, net::SocketAddr, sync::Arc};
 
     use aion::EngineBuilder;
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowFilter, WorkflowId, WorkflowStatus};
+    use aion_core::{
+        Event, EventEnvelope, Payload, SearchAttributeValue, WorkflowId, WorkflowStatus,
+    };
     use aion_proto::{
         ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoStartWorkflowRequest,
-        WireError, WireErrorCode,
-        convert::{ProtoPayload, decode_workflow_summary, encode_workflow_filter},
+        WireError, WireErrorCode, convert::ProtoPayload,
     };
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{
+        EventStore, InMemoryStore,
+        visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore, WorkflowSummary},
+    };
     use axum::{body, http::Request};
     use chrono::Utc;
     use serde_json::json;
@@ -206,10 +375,13 @@ mod tests {
     #[tokio::test]
     async fn http_start_and_list_match_handler_outcomes() -> Result<(), Box<dyn std::error::Error>>
     {
-        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let backing = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = backing.clone();
+        let visibility_store: Arc<dyn VisibilityStore> = backing;
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(Arc::clone(&store))
+                .visibility_store_arc(Arc::clone(&visibility_store))
                 .scheduler_threads(1)
                 .build()
                 .await?,
@@ -236,12 +408,23 @@ mod tests {
         let start_error: WireError = read_json(start_response).await?;
         assert_eq!(start_error.code, WireErrorCode::NotFound);
 
-        let filter = encode_workflow_filter(
+        visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: run_id(),
+                workflow_type: String::from("fixture"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: std::collections::HashMap::new(),
+            })
+            .await?;
+        let filter = aion_proto::encode_core_value(
             NAMESPACE,
             None,
-            &WorkflowFilter {
+            &ListWorkflowsFilter {
                 status: Some(WorkflowStatus::Running),
-                ..WorkflowFilter::default()
+                ..ListWorkflowsFilter::default()
             },
         )?;
         let list = ProtoListWorkflowsRequest {
@@ -254,8 +437,85 @@ mod tests {
         assert_eq!(list_response.status(), StatusCode::OK);
         let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
         assert_eq!(list_body.summaries.len(), 1);
-        let summary = decode_workflow_summary(&list_body.summaries[0])?;
+        let summary = aion_proto::decode_core_value::<WorkflowSummary>(&list_body.summaries[0])?;
         assert_eq!(summary.workflow_id, workflow_id());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_workflows_and_count_apply_visibility_query_parameters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let visibility_store = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = visibility_store.clone();
+        let visibility: Arc<dyn VisibilityStore> = visibility_store.clone();
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .visibility_store_arc(Arc::clone(&visibility))
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            WorkflowOwnership::default(),
+        );
+        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+
+        visibility
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: run_id(),
+                workflow_type: String::from("checkout"),
+                status: WorkflowStatus::Running,
+                start_time: recorded_at(1),
+                close_time: None,
+                search_attributes: std::collections::HashMap::from([(
+                    String::from("customer_id"),
+                    SearchAttributeValue::String(String::from("12345")),
+                )]),
+            })
+            .await?;
+        visibility
+            .record_visibility(VisibilityRecord {
+                workflow_id: WorkflowId::new(uuid::Uuid::from_u128(2)),
+                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(20)),
+                workflow_type: String::from("support"),
+                status: WorkflowStatus::Running,
+                start_time: recorded_at(2),
+                close_time: None,
+                search_attributes: std::collections::HashMap::from([(
+                    String::from("customer_id"),
+                    SearchAttributeValue::String(String::from("12345")),
+                )]),
+            })
+            .await?;
+
+        let query = concat!(
+            "/workflows?namespace=tenant-a",
+            "&workflow_type=checkout",
+            "&status=running",
+            "&started_after=2023-11-14T22%3A13%3A19Z",
+            "&started_before=2023-11-14T22%3A13%3A22Z",
+            "&limit=10",
+            "&offset=0",
+            "&attr.customer_id=12345"
+        );
+        let list_response = router.clone().oneshot(get_request(query)?).await?;
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let summaries: Vec<WorkflowSummary> = read_json(list_response).await?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].workflow_id, workflow_id());
+
+        let count_response = router
+            .oneshot(get_request(
+                "/workflows/count?namespace=tenant-a&workflow_type=checkout&attr.customer_id=12345",
+            )?)
+            .await?;
+        assert_eq!(count_response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(count_response).await?;
+        assert_eq!(body["count"], 1);
         Ok(())
     }
 
@@ -340,14 +600,24 @@ mod tests {
         T: serde::Serialize,
     {
         let body = serde_json::to_vec(value)?;
-        Ok(Request::builder()
+        Ok(authenticated_request(path)
             .method("POST")
-            .uri(path)
             .header("content-type", "application/json")
+            .body(body::Body::from(body))?)
+    }
+
+    fn get_request(path: &str) -> Result<Request<body::Body>, Box<dyn std::error::Error>> {
+        Ok(authenticated_request(path)
+            .method("GET")
+            .body(body::Body::empty())?)
+    }
+
+    fn authenticated_request(path: &str) -> axum::http::request::Builder {
+        Request::builder()
+            .uri(path)
             .header("authorization", format!("Bearer {TOKEN}"))
             .header("x-aion-subject", "alice")
             .header("x-aion-namespaces", NAMESPACE)
-            .body(body::Body::from(body))?)
     }
 
     async fn read_json<T>(response: Response) -> Result<T, Box<dyn std::error::Error>>
@@ -413,5 +683,13 @@ mod tests {
 
     fn workflow_id() -> WorkflowId {
         WorkflowId::new(uuid::Uuid::from_u128(1))
+    }
+
+    fn run_id() -> aion_core::RunId {
+        aion_core::RunId::new(uuid::Uuid::from_u128(10))
+    }
+
+    fn recorded_at(offset_seconds: i64) -> chrono::DateTime<Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0).unwrap_or_default()
     }
 }
