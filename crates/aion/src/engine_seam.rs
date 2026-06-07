@@ -495,15 +495,6 @@ pub(crate) mod test_support {
             Ok(())
         }
 
-        /// Queues the next response returned by recorder-seam calls.
-        pub fn push_record_response(
-            &self,
-            response: Result<(), EngineSeamError>,
-        ) -> Result<(), EngineSeamError> {
-            self.state()?.record_responses.push_back(response);
-            Ok(())
-        }
-
         /// Queues the next response returned by mailbox-delivery seam calls.
         pub fn push_delivery_response(
             &self,
