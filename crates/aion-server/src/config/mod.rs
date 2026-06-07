@@ -1,0 +1,573 @@
+//! Runtime configuration loading and validation for `aion-server`.
+
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
+
+use serde::Deserialize;
+
+use crate::error::ServerError;
+
+pub mod env;
+pub mod file;
+
+const DEFAULT_HTTP_ADDRESS: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8080);
+const DEFAULT_GRPC_ADDRESS: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 50051);
+
+/// Command-line configuration overrides applied after file and environment values.
+#[derive(Debug, Default)]
+pub struct CliOverrides {
+    /// Optional explicit config path from `--config`.
+    pub config_path: Option<PathBuf>,
+    /// Override for `[server].listen_address`.
+    pub listen_address: Option<SocketAddr>,
+    /// Override for `[store].url`.
+    pub store_url: Option<String>,
+    /// Override for `[runtime].scheduler_threads`.
+    pub scheduler_threads: Option<usize>,
+    /// Override for `[drain].timeout_seconds`.
+    pub drain_timeout_seconds: Option<u64>,
+}
+
+/// Complete merged server configuration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[derive(Default)]
+pub struct ServerConfig {
+    /// Public listener and transport addresses.
+    pub server: ServerSection,
+    /// Event-store backend configuration.
+    pub store: StoreConfig,
+    /// Engine runtime settings.
+    pub runtime: RuntimeSection,
+    /// Shutdown drain settings.
+    pub drain: DrainConfig,
+    /// Authentication settings defined by the operations config surface.
+    pub auth: AuthConfig,
+    /// Metrics endpoint settings.
+    pub metrics: MetricsConfig,
+    /// Namespace defaults.
+    pub namespaces: NamespacesConfig,
+    /// Optional TLS material for transports that require it.
+    pub tls: Option<TlsConfig>,
+    /// Static dashboard asset bundle location.
+    pub dashboard: DashboardConfig,
+    /// Namespace resolver construction mode retained for existing transports.
+    pub namespace: NamespaceConfig,
+    /// Remote-worker heartbeat policy.
+    pub worker: WorkerConfig,
+    /// WebSocket event streaming policy.
+    pub websocket: WebSocketConfig,
+    /// Workflow package archives loaded into the engine at startup.
+    pub workflow_packages: Vec<PathBuf>,
+}
+
+/// Public transport listener addresses from `[server]`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerSection {
+    /// HTTP/JSON and dashboard listener.
+    pub listen_address: SocketAddr,
+    /// gRPC API and worker-protocol listener.
+    pub grpc_address: SocketAddr,
+}
+
+/// Supported event-store backend names.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum StoreBackend {
+    /// In-memory store for local development.
+    Memory,
+    /// libSQL durable store.
+    LibSql,
+}
+
+/// Event-store backend configuration from `[store]`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StoreConfig {
+    /// Selected backing store implementation.
+    pub backend: StoreBackend,
+    /// Backend URL/path. For libSQL this is the embedded database path; for memory it is ignored.
+    pub url: Option<String>,
+}
+
+/// Engine runtime settings from `[runtime]`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RuntimeSection {
+    /// Number of scheduler worker threads.
+    pub scheduler_threads: usize,
+}
+
+/// Graceful drain settings from `[drain]`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DrainConfig {
+    /// Maximum drain duration in seconds.
+    pub timeout_seconds: u64,
+}
+
+/// Authentication configuration applied at adapter boundaries.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthConfig {
+    /// Whether authentication is enabled.
+    pub enabled: bool,
+    /// JWKS URL used by AO-006 auth validation.
+    pub jwks_url: Option<String>,
+    /// JWKS refresh interval in seconds.
+    pub jwks_refresh_seconds: u64,
+}
+
+/// Metrics endpoint settings from `[metrics]`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsConfig {
+    /// Whether metrics are exposed.
+    pub enabled: bool,
+}
+
+/// Namespace defaults from `[namespaces]`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NamespacesConfig {
+    /// Default namespace used for local callers and worker dispatch.
+    pub default: String,
+}
+
+/// Public transport listener addresses retained for existing adapter code.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ListenConfig {
+    /// gRPC API and worker-protocol listener.
+    pub grpc: SocketAddr,
+    /// HTTP/JSON and dashboard listener.
+    pub http: SocketAddr,
+}
+
+/// TLS certificate and private-key material.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Certificate chain path supplied by the operator.
+    pub certificate_chain_path: PathBuf,
+    /// Private-key path supplied by the operator.
+    pub private_key_path: PathBuf,
+}
+
+/// Static dashboard asset configuration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardConfig {
+    /// Operator-selected bundle source.
+    pub source: DashboardAssetSource,
+}
+
+/// Static dashboard bundle source.
+#[derive(Clone, Debug, Deserialize)]
+pub enum DashboardAssetSource {
+    /// Serve the built bundle from an operator-supplied directory.
+    FileSystem {
+        /// Directory containing `index.html` and built asset files.
+        asset_path: PathBuf,
+    },
+    /// Serve the compile-time embedded bundle.
+    Embedded,
+}
+
+/// Namespace resolver construction mode.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NamespaceConfig {
+    /// Deployment-selected namespace mapping mode.
+    pub mode: NamespaceMode,
+}
+
+/// Supported namespace mapping modes.
+#[derive(Clone, Debug, Deserialize)]
+pub enum NamespaceMode {
+    /// All authorized namespaces share the configured engine instance.
+    SharedEngine,
+    /// Namespace authorization is disabled only for single-tenant deployments.
+    SingleTenant {
+        /// The only namespace accepted by the deployment.
+        namespace: String,
+    },
+}
+
+/// Remote worker heartbeat configuration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkerConfig {
+    /// Window after which a silent worker is considered lost.
+    #[serde(with = "duration_millis")]
+    pub heartbeat_window: Duration,
+}
+
+/// WebSocket stream configuration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebSocketConfig {
+    /// Per-connection outbound buffer bound.
+    pub outbound_buffer_bound: usize,
+}
+
+/// Runtime settings retained in shared server state for transport adapters.
+#[derive(Clone, Debug)]
+pub struct RuntimeConfig {
+    /// Listener addresses for public transports.
+    pub listen: ListenConfig,
+    /// Optional TLS material for public transports.
+    pub tls: Option<TlsConfig>,
+    /// Authentication configuration shared by transports.
+    pub auth: AuthConfig,
+    /// Dashboard asset location.
+    pub dashboard: DashboardConfig,
+    /// Namespace resolver construction mode.
+    pub namespace: NamespaceConfig,
+    /// Remote worker heartbeat configuration.
+    pub worker: WorkerConfig,
+    /// WebSocket stream configuration.
+    pub websocket: WebSocketConfig,
+    /// Workflow package archives loaded into the engine at startup.
+    pub workflow_packages: Vec<PathBuf>,
+    /// Engine scheduler thread count.
+    pub scheduler_threads: usize,
+    /// Default namespace used by worker dispatch and unauthenticated local callers.
+    pub default_namespace: String,
+    /// Graceful drain timeout.
+    pub drain_timeout: Duration,
+    /// Metrics endpoint settings.
+    pub metrics: MetricsConfig,
+}
+
+impl ServerConfig {
+    /// Load and merge config from defaults, optional TOML file, environment, and CLI overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Config`] when file discovery, parsing, environment parsing, CLI
+    /// values, or validation fail.
+    pub fn load(cli: &CliOverrides) -> Result<Self, ServerError> {
+        let mut config = file::load(cli.config_path.as_deref())?.unwrap_or_default();
+        env::overlay(&mut config)?;
+        config.apply_cli_overrides(cli);
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Parse server configuration from TOML bytes and validate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Config`] when parsing fails or values are invalid.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ServerError> {
+        let config: Self = toml::from_slice(bytes).map_err(|source| ServerError::Config {
+            message: format!("invalid server config: {source}"),
+        })?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load server configuration from an explicit TOML file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Config`] when the file is missing, unreadable, unparsable, or invalid.
+    pub fn load_from_path(path: impl Into<PathBuf>) -> Result<Self, ServerError> {
+        file::load_required(&path.into())
+    }
+
+    /// Split store configuration from non-secret runtime settings.
+    #[must_use]
+    pub fn into_parts(self) -> (StoreConfig, RuntimeConfig) {
+        let runtime = RuntimeConfig {
+            listen: ListenConfig {
+                grpc: self.server.grpc_address,
+                http: self.server.listen_address,
+            },
+            tls: self.tls,
+            auth: self.auth,
+            dashboard: self.dashboard,
+            namespace: self.namespace,
+            worker: self.worker,
+            websocket: self.websocket,
+            workflow_packages: self.workflow_packages,
+            scheduler_threads: self.runtime.scheduler_threads,
+            default_namespace: self.namespaces.default,
+            drain_timeout: Duration::from_secs(self.drain.timeout_seconds),
+            metrics: self.metrics,
+        };
+        (self.store, runtime)
+    }
+
+    fn apply_cli_overrides(&mut self, cli: &CliOverrides) {
+        if let Some(address) = cli.listen_address {
+            self.server.listen_address = address;
+        }
+        if let Some(url) = &cli.store_url {
+            self.store.url = Some(url.clone());
+            if self.store.backend == StoreBackend::Memory {
+                self.store.backend = StoreBackend::LibSql;
+            }
+        }
+        if let Some(threads) = cli.scheduler_threads {
+            self.runtime.scheduler_threads = threads;
+        }
+        if let Some(timeout) = cli.drain_timeout_seconds {
+            self.drain.timeout_seconds = timeout;
+        }
+    }
+
+    fn validate(&self) -> Result<(), ServerError> {
+        if self.server.listen_address.port() == 0 {
+            return config_error("server.listen_address must use an explicit non-zero port");
+        }
+        if self.server.grpc_address.port() == 0 {
+            return config_error("server.grpc_address must use an explicit non-zero port");
+        }
+        if self.runtime.scheduler_threads == 0 {
+            return config_error("runtime.scheduler_threads must be greater than zero");
+        }
+        if self.drain.timeout_seconds == 0 {
+            return config_error("drain.timeout_seconds must be greater than zero");
+        }
+        if self.auth.enabled && self.auth.jwks_url.as_deref().is_none_or(str::is_empty) {
+            return config_error("auth.jwks_url must not be empty when auth.enabled is true");
+        }
+        if self.auth.jwks_refresh_seconds == 0 {
+            return config_error("auth.jwks_refresh_seconds must be greater than zero");
+        }
+        if self.namespaces.default.is_empty() {
+            return config_error("namespaces.default must not be empty");
+        }
+        if matches!(self.store.backend, StoreBackend::LibSql)
+            && self.store.url.as_deref().is_none_or(str::is_empty)
+        {
+            return config_error("store.url must not be empty when store.backend is libsql");
+        }
+        if let Some(url) = &self.store.url {
+            if url.is_empty() {
+                return config_error("store.url must not be empty");
+            }
+        }
+        if let DashboardAssetSource::FileSystem { asset_path } = &self.dashboard.source {
+            if asset_path.as_os_str().is_empty() {
+                return config_error("dashboard.source.FileSystem.asset_path must not be empty");
+            }
+        }
+        if let NamespaceMode::SingleTenant { namespace } = &self.namespace.mode {
+            if namespace.is_empty() {
+                return config_error("namespace.mode.SingleTenant.namespace must not be empty");
+            }
+        }
+        if self.worker.heartbeat_window.is_zero() {
+            return config_error("worker.heartbeat_window must be greater than zero");
+        }
+        if self.websocket.outbound_buffer_bound == 0 {
+            return config_error("websocket.outbound_buffer_bound must be greater than zero");
+        }
+        Ok(())
+    }
+}
+
+impl Default for ServerSection {
+    fn default() -> Self {
+        Self {
+            listen_address: DEFAULT_HTTP_ADDRESS,
+            grpc_address: DEFAULT_GRPC_ADDRESS,
+        }
+    }
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            backend: StoreBackend::Memory,
+            url: None,
+        }
+    }
+}
+
+impl Default for RuntimeSection {
+    fn default() -> Self {
+        Self {
+            scheduler_threads: 1,
+        }
+    }
+}
+
+impl Default for DrainConfig {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: 30,
+        }
+    }
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            jwks_url: None,
+            jwks_refresh_seconds: 300,
+        }
+    }
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl Default for NamespacesConfig {
+    fn default() -> Self {
+        Self {
+            default: "default".to_owned(),
+        }
+    }
+}
+
+impl Default for ListenConfig {
+    fn default() -> Self {
+        Self {
+            grpc: DEFAULT_GRPC_ADDRESS,
+            http: DEFAULT_HTTP_ADDRESS,
+        }
+    }
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            source: DashboardAssetSource::Embedded,
+        }
+    }
+}
+
+impl Default for NamespaceConfig {
+    fn default() -> Self {
+        Self {
+            mode: NamespaceMode::SharedEngine,
+        }
+    }
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            heartbeat_window: Duration::from_secs(30),
+        }
+    }
+}
+
+impl Default for WebSocketConfig {
+    fn default() -> Self {
+        Self {
+            outbound_buffer_bound: 32,
+        }
+    }
+}
+
+pub(crate) fn config_error<T>(message: impl Into<String>) -> Result<T, ServerError> {
+    Err(ServerError::Config {
+        message: message.into(),
+    })
+}
+
+mod duration_millis {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer};
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let millis = u64::deserialize(deserializer)?;
+        Ok(Duration::from_millis(millis))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CliOverrides, ServerConfig, StoreBackend};
+
+    #[test]
+    fn valid_toml_is_parsed_into_typed_config() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [server]
+                listen_address = "127.0.0.1:18080"
+                grpc_address = "127.0.0.1:15051"
+
+                [store]
+                backend = "libsql"
+                url = "aion.db"
+
+                [runtime]
+                scheduler_threads = 2
+
+                [drain]
+                timeout_seconds = 45
+
+                [auth]
+                enabled = true
+                jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+                jwks_refresh_seconds = 60
+
+                [metrics]
+                enabled = true
+
+                [namespaces]
+                default = "production"
+            "#,
+        )?;
+
+        assert_eq!(config.store.backend, StoreBackend::LibSql);
+        assert_eq!(config.store.url.as_deref(), Some("aion.db"));
+        assert_eq!(config.runtime.scheduler_threads, 2);
+        assert_eq!(config.namespaces.default, "production");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_values_name_problematic_field() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                scheduler_threads = 0
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(message.contains("runtime.scheduler_threads"));
+    }
+
+    #[test]
+    fn cli_overrides_win_over_loaded_values() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = ServerConfig::from_slice(
+            br#"
+                [store]
+                backend = "libsql"
+                url = "file.db"
+            "#,
+        )?;
+        let cli = CliOverrides {
+            store_url: Some("cli.db".to_owned()),
+            scheduler_threads: Some(3),
+            ..CliOverrides::default()
+        };
+
+        config.apply_cli_overrides(&cli);
+        config.validate()?;
+
+        assert_eq!(config.store.url.as_deref(), Some("cli.db"));
+        assert_eq!(config.runtime.scheduler_threads, 3);
+        Ok(())
+    }
+}

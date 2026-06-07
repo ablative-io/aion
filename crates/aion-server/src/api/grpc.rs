@@ -14,7 +14,7 @@ use aion_proto::{
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
-use crate::{CallerIdentity, ServerState, api::handlers};
+use crate::{CallerIdentity, ServerState, api::handlers, config::AuthConfig};
 
 /// Cloneable tonic implementation for workflow management.
 #[derive(Clone)]
@@ -30,10 +30,7 @@ impl WorkflowGrpcService {
     }
 
     fn caller<T>(&self, request: &Request<T>) -> CallerIdentity {
-        caller_from_metadata(
-            request.metadata(),
-            self.state.runtime_config().auth.bearer_token.as_str(),
-        )
+        caller_from_metadata(request.metadata(), &self.state.runtime_config().auth)
     }
 }
 
@@ -258,7 +255,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
 
 pub(crate) fn caller_from_metadata(
     metadata: &tonic::metadata::MetadataMap,
-    bearer_token: &str,
+    auth: &AuthConfig,
 ) -> CallerIdentity {
     let subject = metadata
         .get("x-aion-subject")
@@ -270,6 +267,10 @@ pub(crate) fn caller_from_metadata(
         .and_then(|value| value.to_str().ok())
         .map(parse_namespaces)
         .unwrap_or_default();
+    if !auth.enabled {
+        return CallerIdentity::new(subject, namespaces);
+    }
+    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
     let expected = format!("Bearer {bearer_token}");
     let authorized = metadata
         .get("authorization")
@@ -606,8 +607,8 @@ mod tests {
     use crate::{
         NamespaceResolver, WorkflowOwnership,
         config::{
-            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, NamespaceConfig,
-            NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
+            NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
         },
     };
 
@@ -713,7 +714,9 @@ mod tests {
             },
             tls: None,
             auth: AuthConfig {
-                bearer_token: TOKEN.to_owned(),
+                enabled: true,
+                jwks_url: Some(TOKEN.to_owned()),
+                jwks_refresh_seconds: 300,
             },
             dashboard: DashboardConfig {
                 source: DashboardAssetSource::Embedded,
@@ -728,6 +731,10 @@ mod tests {
                 outbound_buffer_bound: 32,
             },
             workflow_packages: Vec::new(),
+            scheduler_threads: 1,
+            default_namespace: "default".to_owned(),
+            drain_timeout: std::time::Duration::from_secs(30),
+            metrics: MetricsConfig { enabled: true },
         }
     }
 
