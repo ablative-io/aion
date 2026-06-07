@@ -349,8 +349,8 @@ fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
         Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
         Event::WorkflowCancelled { reason, .. } => Some(TerminalOutcome::Cancelled(reason.clone())),
         Event::WorkflowTimedOut { timeout, .. } => Some(TerminalOutcome::TimedOut(timeout.clone())),
-        Event::WorkflowContinuedAsNew { .. } => None,
         Event::WorkflowStarted { .. }
+        | Event::WorkflowContinuedAsNew { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }
         | Event::ActivityCompleted { .. }
