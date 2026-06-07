@@ -315,6 +315,7 @@ mod tests {
                 envelope: envelope(1, 10)?,
                 workflow_type: "workflow".to_owned(),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             aion_core::Event::ActivityScheduled {
                 envelope: envelope(2, 20)?,
@@ -410,6 +411,7 @@ mod tests {
                 envelope: envelope(1, 10)?,
                 workflow_type: "workflow".to_owned(),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             aion_core::Event::WorkflowCompleted {
                 envelope: EventEnvelope {

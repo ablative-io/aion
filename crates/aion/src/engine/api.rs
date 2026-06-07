@@ -8,6 +8,7 @@ use aion_core::{
 };
 use aion_store::EventStore;
 
+use crate::lifecycle::continue_as_new::{self, ContinueAsNewContext, ContinueAsNewRequest};
 use crate::lifecycle::start::{self, StartWorkflowContext};
 use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
 use crate::registry::{TerminalOutcome, WorkflowHandle};
@@ -133,6 +134,40 @@ impl Engine {
             id,
             run,
             reason,
+        )
+        .await;
+        drop(operation);
+        result
+    }
+
+    /// Continue a live workflow run as a new run under the same workflow id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
+    /// is not live. Other typed errors come from the continue-as-new transition.
+    pub async fn continue_as_new(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+        input: Payload,
+        workflow_type: Option<String>,
+    ) -> Result<WorkflowHandle, EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = continue_as_new::continue_as_new(
+            ContinueAsNewContext {
+                store: self.store(),
+                loaded_workflows: &self.loaded_workflows,
+                runtime: &self.runtime,
+                supervision: &self.supervision,
+                registry: &self.registry,
+            },
+            id,
+            run,
+            ContinueAsNewRequest {
+                input,
+                workflow_type,
+            },
         )
         .await;
         drop(operation);
@@ -344,34 +379,56 @@ impl Drop for LifecycleOperation {
 }
 
 fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
-    events.iter().rev().find_map(|event| match event {
-        Event::WorkflowCompleted { result, .. } => Some(TerminalOutcome::Completed(result.clone())),
-        Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
-        Event::WorkflowCancelled { reason, .. } => Some(TerminalOutcome::Cancelled(reason.clone())),
-        Event::WorkflowTimedOut { timeout, .. } => Some(TerminalOutcome::TimedOut(timeout.clone())),
-        Event::WorkflowStarted { .. }
-        | Event::WorkflowContinuedAsNew { .. }
-        | Event::SearchAttributesUpdated { .. }
-        | Event::ActivityScheduled { .. }
-        | Event::ActivityStarted { .. }
-        | Event::ActivityCompleted { .. }
-        | Event::ActivityFailed { .. }
-        | Event::ActivityCancelled { .. }
-        | Event::TimerStarted { .. }
-        | Event::TimerFired { .. }
-        | Event::TimerCancelled { .. }
-        | Event::SignalReceived { .. }
-        | Event::ChildWorkflowStarted { .. }
-        | Event::ChildWorkflowCompleted { .. }
-        | Event::ChildWorkflowFailed { .. }
-        | Event::ChildWorkflowCancelled { .. }
-        | Event::ScheduleCreated { .. }
-        | Event::ScheduleUpdated { .. }
-        | Event::SchedulePaused { .. }
-        | Event::ScheduleResumed { .. }
-        | Event::ScheduleDeleted { .. }
-        | Event::ScheduleTriggered { .. } => None,
-    })
+    for event in events.iter().rev() {
+        match event {
+            Event::WorkflowStarted { .. } => return None,
+            Event::WorkflowCompleted { result, .. } => {
+                return Some(TerminalOutcome::Completed(result.clone()));
+            }
+            Event::WorkflowFailed { error, .. } => {
+                return Some(TerminalOutcome::Failed(error.clone()));
+            }
+            Event::WorkflowCancelled { reason, .. } => {
+                return Some(TerminalOutcome::Cancelled(reason.clone()));
+            }
+            Event::WorkflowTimedOut { timeout, .. } => {
+                return Some(TerminalOutcome::TimedOut(timeout.clone()));
+            }
+            Event::WorkflowContinuedAsNew {
+                input,
+                workflow_type,
+                parent_run_id,
+                ..
+            } => {
+                return Some(TerminalOutcome::ContinuedAsNew {
+                    input: input.clone(),
+                    workflow_type: workflow_type.clone(),
+                    parent_run_id: parent_run_id.clone(),
+                });
+            }
+            Event::SearchAttributesUpdated { .. }
+            | Event::ActivityScheduled { .. }
+            | Event::ActivityStarted { .. }
+            | Event::ActivityCompleted { .. }
+            | Event::ActivityFailed { .. }
+            | Event::ActivityCancelled { .. }
+            | Event::TimerStarted { .. }
+            | Event::TimerFired { .. }
+            | Event::TimerCancelled { .. }
+            | Event::SignalReceived { .. }
+            | Event::ChildWorkflowStarted { .. }
+            | Event::ChildWorkflowCompleted { .. }
+            | Event::ChildWorkflowFailed { .. }
+            | Event::ChildWorkflowCancelled { .. }
+            | Event::ScheduleCreated { .. }
+            | Event::ScheduleUpdated { .. }
+            | Event::SchedulePaused { .. }
+            | Event::ScheduleResumed { .. }
+            | Event::ScheduleDeleted { .. }
+            | Event::ScheduleTriggered { .. } => {}
+        }
+    }
+    None
 }
 
 fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError> {
@@ -384,6 +441,10 @@ fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError>
         }),
         TerminalOutcome::TimedOut(timeout) => Err(WorkflowError {
             message: format!("workflow timed out: {timeout}"),
+            details: None,
+        }),
+        TerminalOutcome::ContinuedAsNew { parent_run_id, .. } => Err(WorkflowError {
+            message: format!("workflow continued as new from run {parent_run_id}"),
             details: None,
         }),
     }
@@ -578,6 +639,23 @@ mod tests {
         let run_id = aion_core::RunId::new_v4();
 
         let result = engine.result(&workflow_id, &run_id).await;
+
+        assert!(matches!(result, Err(EngineError::WorkflowNotFound { .. })));
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn continue_as_new_unknown_workflow_returns_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = engine_with_loaded_workflow(store, "checkout", "checkout_deployed")?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+
+        let result = engine
+            .continue_as_new(&workflow_id, &run_id, payload("next")?, None)
+            .await;
 
         assert!(matches!(result, Err(EngineError::WorkflowNotFound { .. })));
         engine.shutdown()?;

@@ -31,6 +31,15 @@ pub enum TerminalOutcome {
     Cancelled(String),
     /// Workflow exceeded a timeout owned by the timer/signal cluster.
     TimedOut(String),
+    /// Workflow continued as a new run under the same workflow identifier.
+    ContinuedAsNew {
+        /// Opaque workflow input payload carried into the new run.
+        input: Payload,
+        /// Workflow type override for the new run, when present.
+        workflow_type: Option<String>,
+        /// Run identifier for the current run that continued.
+        parent_run_id: RunId,
+    },
 }
 
 /// Multi-consumer completion notification channel for a workflow execution.

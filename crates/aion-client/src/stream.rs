@@ -282,6 +282,7 @@ mod tests {
             },
             workflow_type: String::from("checkout"),
             input: Payload::new(ContentType::Json, Vec::new()),
+            parent_run_id: None,
         }
     }
 

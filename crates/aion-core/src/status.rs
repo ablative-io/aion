@@ -44,19 +44,22 @@ impl WorkflowStatus {
 ///
 /// The last terminal workflow lifecycle event determines the projected status.
 /// Histories without a terminal workflow event are considered running.
+/// When a history contains multiple runs for continue-as-new, a later
+/// [`Event::WorkflowStarted`] begins the current run and supersedes earlier
+/// terminal events from the previous run.
 #[must_use]
 pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
     events
         .iter()
         .rev()
         .find_map(|event| match event {
+            Event::WorkflowStarted { .. } => Some(WorkflowStatus::Running),
             Event::WorkflowCompleted { .. } => Some(WorkflowStatus::Completed),
             Event::WorkflowFailed { .. } => Some(WorkflowStatus::Failed),
             Event::WorkflowCancelled { .. } => Some(WorkflowStatus::Cancelled),
             Event::WorkflowTimedOut { .. } => Some(WorkflowStatus::TimedOut),
             Event::WorkflowContinuedAsNew { .. } => Some(WorkflowStatus::ContinuedAsNew),
-            Event::WorkflowStarted { .. }
-            | Event::SearchAttributesUpdated { .. }
+            Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
             | Event::ActivityCompleted { .. }
@@ -114,6 +117,7 @@ mod tests {
             envelope: envelope(seq),
             workflow_type: String::from("checkout"),
             input: payload("input")?,
+            parent_run_id: None,
         })
     }
 
@@ -127,6 +131,30 @@ mod tests {
     #[test]
     fn empty_history_projects_to_running() {
         assert_eq!(status_from_events(&[]), WorkflowStatus::Running);
+    }
+
+    #[test]
+    fn replacement_start_projects_continue_as_new_chain_running() -> Result<(), crate::PayloadError>
+    {
+        let parent_run_id = RunId::new(uuid::Uuid::from_u128(7));
+        let events = vec![
+            workflow_started(1)?,
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2),
+                input: payload("replacement")?,
+                workflow_type: None,
+                parent_run_id: parent_run_id.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: envelope(3),
+                workflow_type: String::from("checkout"),
+                input: payload("replacement")?,
+                parent_run_id: Some(parent_run_id),
+            },
+        ];
+
+        assert_eq!(status_from_events(&events), WorkflowStatus::Running);
+        Ok(())
     }
 
     #[test]

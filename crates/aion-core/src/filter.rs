@@ -82,12 +82,12 @@ impl WorkflowSummary {
     ///
     /// Returns [`None`] when the history does not contain a
     /// [`Event::WorkflowStarted`] event. The projected status and end timestamp
-    /// are derived from the last terminal workflow lifecycle event in the
-    /// history, matching [`status_from_events`]. Parent linkage is not present in
-    /// a child workflow's own history, so this helper leaves `parent` unset.
+    /// are derived from the current run in the history, matching
+    /// [`status_from_events`]. Parent linkage is not present in a child
+    /// workflow's own history, so this helper leaves `parent` unset.
     #[must_use]
     pub fn from_history(events: &[Event]) -> Option<Self> {
-        let (workflow_id, workflow_type, started_at) = events.iter().find_map(|event| {
+        let (workflow_id, workflow_type, started_at) = events.iter().rev().find_map(|event| {
             if let Event::WorkflowStarted {
                 envelope,
                 workflow_type,
@@ -109,41 +109,44 @@ impl WorkflowSummary {
             workflow_type,
             status: status_from_events(events),
             started_at,
-            ended_at: terminal_recorded_at(events),
+            ended_at: terminal_recorded_at_for_current_run(events),
             parent: None,
         })
     }
 }
 
-fn terminal_recorded_at(events: &[Event]) -> Option<DateTime<Utc>> {
-    events.iter().rev().find_map(|event| match event {
-        Event::WorkflowCompleted { envelope, .. }
-        | Event::WorkflowFailed { envelope, .. }
-        | Event::WorkflowCancelled { envelope, .. }
-        | Event::WorkflowTimedOut { envelope, .. }
-        | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
-        Event::WorkflowStarted { .. }
-        | Event::SearchAttributesUpdated { .. }
-        | Event::ActivityScheduled { .. }
-        | Event::ActivityStarted { .. }
-        | Event::ActivityCompleted { .. }
-        | Event::ActivityFailed { .. }
-        | Event::ActivityCancelled { .. }
-        | Event::TimerStarted { .. }
-        | Event::TimerFired { .. }
-        | Event::TimerCancelled { .. }
-        | Event::SignalReceived { .. }
-        | Event::ChildWorkflowStarted { .. }
-        | Event::ChildWorkflowCompleted { .. }
-        | Event::ChildWorkflowFailed { .. }
-        | Event::ChildWorkflowCancelled { .. }
-        | Event::ScheduleCreated { .. }
-        | Event::ScheduleUpdated { .. }
-        | Event::SchedulePaused { .. }
-        | Event::ScheduleResumed { .. }
-        | Event::ScheduleDeleted { .. }
-        | Event::ScheduleTriggered { .. } => None,
-    })
+fn terminal_recorded_at_for_current_run(events: &[Event]) -> Option<DateTime<Utc>> {
+    for event in events.iter().rev() {
+        match event {
+            Event::WorkflowStarted { .. } => return None,
+            Event::WorkflowCompleted { envelope, .. }
+            | Event::WorkflowFailed { envelope, .. }
+            | Event::WorkflowCancelled { envelope, .. }
+            | Event::WorkflowTimedOut { envelope, .. }
+            | Event::WorkflowContinuedAsNew { envelope, .. } => return Some(envelope.recorded_at),
+            Event::SearchAttributesUpdated { .. }
+            | Event::ActivityScheduled { .. }
+            | Event::ActivityStarted { .. }
+            | Event::ActivityCompleted { .. }
+            | Event::ActivityFailed { .. }
+            | Event::ActivityCancelled { .. }
+            | Event::TimerStarted { .. }
+            | Event::TimerFired { .. }
+            | Event::TimerCancelled { .. }
+            | Event::SignalReceived { .. }
+            | Event::ChildWorkflowStarted { .. }
+            | Event::ChildWorkflowCompleted { .. }
+            | Event::ChildWorkflowFailed { .. }
+            | Event::ChildWorkflowCancelled { .. }
+            | Event::ScheduleCreated { .. }
+            | Event::ScheduleUpdated { .. }
+            | Event::SchedulePaused { .. }
+            | Event::ScheduleResumed { .. }
+            | Event::ScheduleDeleted { .. }
+            | Event::ScheduleTriggered { .. } => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -381,6 +384,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::SearchAttributesUpdated {
                 envelope: envelope(2, &workflow_id),
@@ -422,6 +426,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::WorkflowCompleted {
                 envelope: envelope(2, &workflow_id),
@@ -450,6 +455,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::ScheduleTriggered {
                 envelope: envelope(2, &workflow_id),
@@ -477,6 +483,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2, &workflow_id),
@@ -492,6 +499,44 @@ mod tests {
 
         assert_eq!(summary.status, WorkflowStatus::ContinuedAsNew);
         assert_eq!(summary.ended_at, Some(continued_at));
+        Ok(())
+    }
+
+    #[test]
+    fn summary_projects_current_run_after_continue_as_new() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let workflow_id = WorkflowId::new(uuid::Uuid::from_u128(1));
+        let parent_run_id = RunId::new(uuid::Uuid::from_u128(2));
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1, &workflow_id),
+                workflow_type: String::from("checkout"),
+                input: payload("input")?,
+                parent_run_id: None,
+            },
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2, &workflow_id),
+                input: payload("continued-input")?,
+                workflow_type: Some(String::from("checkout-v2")),
+                parent_run_id: parent_run_id.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: envelope(3, &workflow_id),
+                workflow_type: String::from("checkout-v2"),
+                input: payload("continued-input")?,
+                parent_run_id: Some(parent_run_id),
+            },
+        ];
+
+        let Some(summary) = WorkflowSummary::from_history(&events) else {
+            return Err("history should contain workflow start".into());
+        };
+
+        assert_eq!(summary.workflow_id, workflow_id);
+        assert_eq!(summary.workflow_type, "checkout-v2");
+        assert_eq!(summary.status, WorkflowStatus::Running);
+        assert_eq!(summary.started_at, recorded_at(3));
+        assert_eq!(summary.ended_at, None);
         Ok(())
     }
 }

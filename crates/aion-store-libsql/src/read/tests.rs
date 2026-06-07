@@ -378,6 +378,7 @@ fn workflow_started_at(
         envelope: envelope(seq, workflow_id, offset_seconds),
         workflow_type: workflow_type.to_owned(),
         input: payload("input"),
+        parent_run_id: None,
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use aion_core::{Payload, RunId, WorkflowId, WorkflowStatus};
+use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus};
 use aion_store::EventStore;
 use chrono::Utc;
 
@@ -29,6 +29,15 @@ pub struct StartWorkflowContext<'a> {
     pub registry: &'a Registry,
 }
 
+/// Optional identifiers used by internal start callers such as continue-as-new.
+#[derive(Clone, Debug, Default)]
+pub struct StartWorkflowOptions {
+    /// Existing workflow identifier to reuse; omitted for a fresh workflow.
+    pub workflow_id: Option<WorkflowId>,
+    /// Parent run that continued into this run, when applicable.
+    pub parent_run_id: Option<RunId>,
+}
+
 /// Starts a loaded workflow execution and returns its active handle.
 ///
 /// # Errors
@@ -43,6 +52,26 @@ pub async fn start_workflow(
     workflow_type: &str,
     input: Payload,
 ) -> Result<WorkflowHandle, EngineError> {
+    start_workflow_with_options(
+        context,
+        workflow_type,
+        input,
+        StartWorkflowOptions::default(),
+    )
+    .await
+}
+
+/// Starts a loaded workflow execution with caller-supplied lifecycle options.
+///
+/// # Errors
+///
+/// Returns the same typed errors as [`start_workflow`].
+pub async fn start_workflow_with_options(
+    context: StartWorkflowContext<'_>,
+    workflow_type: &str,
+    input: Payload,
+    options: StartWorkflowOptions,
+) -> Result<WorkflowHandle, EngineError> {
     let loaded = context
         .loaded_workflows
         .latest(workflow_type)
@@ -50,11 +79,33 @@ pub async fn start_workflow(
             workflow_type: workflow_type.to_owned(),
         })?;
 
-    let workflow_id = WorkflowId::new_v4();
+    let supplied_workflow_id = options.workflow_id.is_some();
+    let workflow_id = options.workflow_id.unwrap_or_else(WorkflowId::new_v4);
     let run_id = RunId::new_v4();
-    let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&context.store));
+    let initial_head = if supplied_workflow_id {
+        context
+            .store
+            .read_history(&workflow_id)
+            .await?
+            .iter()
+            .map(Event::seq)
+            .max()
+            .unwrap_or_default()
+    } else {
+        0
+    };
+    let mut recorder = Recorder::resume_at(
+        workflow_id.clone(),
+        Arc::clone(&context.store),
+        initial_head,
+    );
     recorder
-        .record_workflow_started(Utc::now(), workflow_type.to_owned(), input.clone())
+        .record_workflow_started_with_parent(
+            Utc::now(),
+            workflow_type.to_owned(),
+            input.clone(),
+            options.parent_run_id,
+        )
         .await?;
 
     context
@@ -109,7 +160,9 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
-    use super::{StartWorkflowContext, start_workflow};
+    use super::{
+        StartWorkflowContext, StartWorkflowOptions, start_workflow, start_workflow_with_options,
+    };
     use crate::EngineError;
     use crate::loader::LoadedWorkflows;
     use crate::registry::{HandleResidency, Registry};
@@ -201,6 +254,7 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
+                parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
                 assert_eq!(&envelope.workflow_id, &active[0]);
@@ -258,6 +312,7 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
+                parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
                 assert_eq!(&envelope.workflow_id, handle.workflow_id());
@@ -265,6 +320,67 @@ mod tests {
                 assert_eq!(recorded_input, &input);
             }
             other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
+        }
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_with_existing_workflow_id_resumes_history_sequence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = Arc::new(InMemoryStore::default());
+        let deployed_module = "checkout__deployed";
+        let loaded = load_without_runtime_registration("checkout");
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        runtime.register_waiting_test_module(deployed_module, "run");
+        let supervision = SupervisionTree::new();
+        let registry = Registry::default();
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let parent_run_id = aion_core::RunId::new_v4();
+
+        let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), store.clone());
+        recorder
+            .record_workflow_started(chrono::Utc::now(), "checkout".to_owned(), payload("first")?)
+            .await?;
+        recorder
+            .record_workflow_continued_as_new(
+                chrono::Utc::now(),
+                payload("second")?,
+                None,
+                parent_run_id.clone(),
+            )
+            .await?;
+
+        let handle = start_workflow_with_options(
+            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            "checkout",
+            payload("second")?,
+            StartWorkflowOptions {
+                workflow_id: Some(workflow_id.clone()),
+                parent_run_id: Some(parent_run_id.clone()),
+            },
+        )
+        .await?;
+
+        assert_eq!(handle.workflow_id(), &workflow_id);
+        let history = store.read_history(&workflow_id).await?;
+        assert_eq!(history.len(), 3);
+        match &history[2] {
+            Event::WorkflowStarted {
+                envelope,
+                workflow_type,
+                parent_run_id: started_parent,
+                ..
+            } => {
+                assert_eq!(envelope.seq, 3);
+                assert_eq!(workflow_type, "checkout");
+                assert_eq!(started_parent, &Some(parent_run_id));
+            }
+            other => {
+                return Err(
+                    format!("expected replacement WorkflowStarted, found {other:?}").into(),
+                );
+            }
         }
         runtime.shutdown()?;
         Ok(())

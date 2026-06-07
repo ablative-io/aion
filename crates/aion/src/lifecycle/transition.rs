@@ -147,6 +147,7 @@ mod tests {
             envelope: envelope(workflow_id, 1),
             workflow_type: String::from("checkout"),
             input: payload("input")?,
+            parent_run_id: None,
         })
     }
 
