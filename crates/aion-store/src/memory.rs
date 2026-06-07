@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
-use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary, status_from_events};
+use aion_core::{
+    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -97,7 +99,10 @@ impl EventStore for InMemoryStore {
             .histories
             .iter()
             .filter(|(_, history)| {
-                !status_from_events(&history_in_sequence_order(history)).is_terminal()
+                matches!(
+                    status_from_events(&history_in_sequence_order(history)),
+                    WorkflowStatus::Running
+                )
             })
             .map(|(workflow_id, _)| workflow_id.clone())
             .collect::<Vec<_>>();
