@@ -54,6 +54,8 @@ examples/hello-world/hello-world.aion
 
 The repo-root `dev-config.json` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses bearer token `dev-token`, and preloads `examples/hello-world/hello-world.aion` at startup.
 
+Requests below use the same header convention as Aion clients: `Authorization: Bearer dev-token` authenticates to this dev server, `x-aion-subject: hello-world-user` identifies the caller, and `x-aion-namespaces: default` grants access to the same `default` namespace used in each request body.
+
 In terminal 1:
 
 ```sh
@@ -100,6 +102,10 @@ Leave this process running.
 In terminal 3:
 
 ```sh
+# content-type says the request body is JSON.
+# authorization authenticates with the dev server token.
+# x-aion-subject names the non-empty caller identity.
+# x-aion-namespaces must include the request body's namespace: default.
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
   -H 'authorization: Bearer dev-token' \
@@ -143,6 +149,10 @@ printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 List workflows:
 
 ```sh
+# content-type says the request body is JSON.
+# authorization authenticates with the dev server token.
+# x-aion-subject names the non-empty caller identity.
+# x-aion-namespaces must include the request body's namespace: default.
 curl -sS -X POST http://127.0.0.1:8080/workflows/list \
   -H 'content-type: application/json' \
   -H 'authorization: Bearer dev-token' \
@@ -154,6 +164,10 @@ curl -sS -X POST http://127.0.0.1:8080/workflows/list \
 Describe the workflow and include history:
 
 ```sh
+# content-type says the request body is JSON.
+# authorization authenticates with the dev server token.
+# x-aion-subject names the non-empty caller identity.
+# x-aion-namespaces must include the request body's namespace: default.
 curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   -H 'content-type: application/json' \
   -H 'authorization: Bearer dev-token' \
