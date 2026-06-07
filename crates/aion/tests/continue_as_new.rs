@@ -252,7 +252,7 @@ impl ActiveWorkflowRecoverySeam for TestRecovery {
                 reason: format!("test recovery has no run metadata for workflow {workflow_id}"),
             })?;
 
-        Ok(ActiveWorkflowRecovery {
+        Ok(ActiveWorkflowRecovery::Resident {
             run_id: entry.run_id.clone(),
             loaded_version: entry.version.clone(),
             pid: entry.pid,

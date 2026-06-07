@@ -824,6 +824,10 @@ pub(crate) fn schedule_coordinator_workflow_id() -> WorkflowId {
     ))
 }
 
+pub(crate) const fn schedule_coordinator_workflow_type() -> &'static str {
+    "aion.schedule_coordinator"
+}
+
 fn schedule_event_envelope(recorded_at: DateTime<Utc>) -> EventEnvelope {
     EventEnvelope {
         seq: 0,
