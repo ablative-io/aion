@@ -351,6 +351,7 @@ fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
         Event::WorkflowTimedOut { timeout, .. } => Some(TerminalOutcome::TimedOut(timeout.clone())),
         Event::WorkflowStarted { .. }
         | Event::WorkflowContinuedAsNew { .. }
+        | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }
         | Event::ActivityCompleted { .. }

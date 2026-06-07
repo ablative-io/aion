@@ -1,11 +1,13 @@
 //! Workflow history events and their deterministic recording envelope.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActivityError, ActivityId, Payload, RunId, ScheduleConfig, ScheduleId, TimerId, WorkflowError,
-    WorkflowId,
+    ActivityError, ActivityId, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeValue,
+    TimerId, WorkflowError, WorkflowId,
 };
 
 /// Metadata recorded with every workflow history event.
@@ -26,7 +28,7 @@ pub struct EventEnvelope {
 ///
 /// User data is carried as opaque [`Payload`] values, while failures use the closed workflow and
 /// activity error types from this crate.
-#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum Event {
     /// A workflow execution started with a type name and input payload.
@@ -82,6 +84,15 @@ pub enum Event {
         workflow_type: Option<String>,
         /// Run identifier for the current run that is being continued.
         parent_run_id: RunId,
+    },
+    /// Workflow search attributes were updated for visibility and query projection.
+    SearchAttributesUpdated {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Workflow whose search attributes changed.
+        workflow_id: WorkflowId,
+        /// Updated search attributes keyed by attribute name.
+        attributes: HashMap<String, SearchAttributeValue>,
     },
     /// An activity was scheduled by workflow code.
     ActivityScheduled {
@@ -263,6 +274,7 @@ impl Event {
             | Self::WorkflowCancelled { envelope, .. }
             | Self::WorkflowTimedOut { envelope, .. }
             | Self::WorkflowContinuedAsNew { envelope, .. }
+            | Self::SearchAttributesUpdated { envelope, .. }
             | Self::ActivityScheduled { envelope, .. }
             | Self::ActivityStarted { envelope, .. }
             | Self::ActivityCompleted { envelope, .. }
@@ -306,13 +318,16 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
     use super::{Event, EventEnvelope};
     use crate::{
         ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, Payload, RunId,
-        ScheduleConfig, ScheduleId, TimerId, TriggerSpec, WorkflowError, WorkflowId,
+        ScheduleConfig, ScheduleId, SearchAttributeValue, TimerId, TriggerSpec, WorkflowError,
+        WorkflowId,
     };
 
     fn recorded_at() -> DateTime<Utc> {
@@ -412,73 +427,67 @@ mod tests {
                 envelope: envelope(5),
                 timeout: String::from("execution"),
             },
-            Event::WorkflowContinuedAsNew {
-                envelope: envelope(6),
-                input: payload("continued-input")?,
-                workflow_type: Some(String::from("checkout-v2")),
-                parent_run_id: RunId::new(uuid::Uuid::from_u128(2)),
-            },
             Event::ActivityScheduled {
-                envelope: envelope(7),
-                activity_id: ActivityId::from_sequence_position(7),
+                envelope: envelope(6),
+                activity_id: ActivityId::from_sequence_position(6),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
             },
             Event::ActivityStarted {
-                envelope: envelope(8),
-                activity_id: ActivityId::from_sequence_position(7),
+                envelope: envelope(7),
+                activity_id: ActivityId::from_sequence_position(6),
             },
             Event::ActivityCompleted {
-                envelope: envelope(9),
-                activity_id: ActivityId::from_sequence_position(7),
+                envelope: envelope(8),
+                activity_id: ActivityId::from_sequence_position(6),
                 result: payload("activity-result")?,
             },
             Event::ActivityFailed {
-                envelope: envelope(10),
-                activity_id: ActivityId::from_sequence_position(7),
+                envelope: envelope(9),
+                activity_id: ActivityId::from_sequence_position(6),
                 error: activity_error(ActivityErrorKind::Retryable, "temporary outage"),
                 attempt: 1,
             },
             Event::ActivityCancelled {
-                envelope: envelope(11),
-                activity_id: ActivityId::from_sequence_position(7),
+                envelope: envelope(10),
+                activity_id: ActivityId::from_sequence_position(6),
             },
             Event::TimerStarted {
-                envelope: envelope(12),
-                timer_id: TimerId::anonymous(12),
+                envelope: envelope(11),
+                timer_id: TimerId::anonymous(11),
                 fire_at,
             },
             Event::TimerFired {
-                envelope: envelope(13),
-                timer_id: TimerId::anonymous(12),
+                envelope: envelope(12),
+                timer_id: TimerId::anonymous(11),
             },
             Event::TimerCancelled {
-                envelope: envelope(14),
+                envelope: envelope(13),
                 timer_id: TimerId::named("reminder")?,
             },
             Event::SignalReceived {
-                envelope: envelope(15),
+                envelope: envelope(14),
                 name: String::from("approve"),
                 payload: payload("signal")?,
             },
             Event::ChildWorkflowStarted {
-                envelope: envelope(16),
+                envelope: envelope(15),
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: String::from("fulfillment"),
                 input: payload("child-input")?,
             },
             Event::ChildWorkflowCompleted {
-                envelope: envelope(17),
+                envelope: envelope(16),
                 child_workflow_id: child_workflow_id.clone(),
                 result: payload("child-result")?,
             },
             Event::ChildWorkflowFailed {
-                envelope: envelope(18),
+                envelope: envelope(17),
                 child_workflow_id: child_workflow_id.clone(),
                 error: workflow_error("child failed"),
             },
             Event::ChildWorkflowCancelled {
-                envelope: envelope(19),
+                envelope: envelope(18),
                 child_workflow_id,
             },
         ];
@@ -490,35 +499,49 @@ mod tests {
     }
 
     #[test]
-    fn schedule_events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
+    fn extended_events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
         let schedule_id = ScheduleId::new(uuid::Uuid::from_u128(2));
         let triggered_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(3));
         let triggered_run_id = RunId::new(uuid::Uuid::from_u128(4));
         let events = vec![
-            Event::ScheduleCreated {
+            Event::WorkflowContinuedAsNew {
                 envelope: envelope(19),
+                input: payload("continued-input")?,
+                workflow_type: Some(String::from("checkout-v2")),
+                parent_run_id: RunId::new(uuid::Uuid::from_u128(2)),
+            },
+            Event::SearchAttributesUpdated {
+                envelope: envelope(20),
+                workflow_id: WorkflowId::new(uuid::Uuid::nil()),
+                attributes: HashMap::from([(
+                    String::from("customer_id"),
+                    SearchAttributeValue::String(String::from("cust-123")),
+                )]),
+            },
+            Event::ScheduleCreated {
+                envelope: envelope(20),
                 schedule_id: schedule_id.clone(),
                 config: schedule_config("schedule-created")?,
             },
             Event::ScheduleUpdated {
-                envelope: envelope(20),
+                envelope: envelope(21),
                 schedule_id: schedule_id.clone(),
                 config: schedule_config("schedule-updated")?,
             },
             Event::SchedulePaused {
-                envelope: envelope(21),
-                schedule_id: schedule_id.clone(),
-            },
-            Event::ScheduleResumed {
                 envelope: envelope(22),
                 schedule_id: schedule_id.clone(),
             },
-            Event::ScheduleDeleted {
+            Event::ScheduleResumed {
                 envelope: envelope(23),
                 schedule_id: schedule_id.clone(),
             },
-            Event::ScheduleTriggered {
+            Event::ScheduleDeleted {
                 envelope: envelope(24),
+                schedule_id: schedule_id.clone(),
+            },
+            Event::ScheduleTriggered {
+                envelope: envelope(25),
                 schedule_id,
                 workflow_id: triggered_workflow_id,
                 run_id: triggered_run_id,

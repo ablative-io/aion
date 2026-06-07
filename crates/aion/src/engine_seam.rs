@@ -316,7 +316,7 @@ pub(crate) mod test_support {
     use super::*;
 
     /// Operation captured by [`FakeEngineHandle`] in observed order.
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq)]
     pub enum FakeEngineOperation {
         /// A mailbox message was delivered.
         Delivered {

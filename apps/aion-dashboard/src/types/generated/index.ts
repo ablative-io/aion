@@ -129,6 +129,10 @@ ended_at: string | null,
  */
 parent: WorkflowId | null, };
 
+export type SearchAttributeType = "String" | "Int" | "Float" | "Bool" | "Datetime" | "KeywordList";
+
+export type SearchAttributeValue = { "type": "String", "data": string } | { "type": "Int", "data": number } | { "type": "Float", "data": number } | { "type": "Bool", "data": boolean } | { "type": "Datetime", "data": string } | { "type": "KeywordList", "data": Array<string> };
+
 export type EventEnvelope = { 
 /**
  * Monotonic sequence number within the owning workflow history.
@@ -211,7 +215,19 @@ workflow_type: string | null,
 /**
  * Run identifier for the current run that is being continued.
  */
-parent_run_id: RunId, } } | { "type": "ActivityScheduled", "data": { 
+parent_run_id: RunId, } } | { "type": "SearchAttributesUpdated", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Workflow whose search attributes changed.
+ */
+workflow_id: WorkflowId, 
+/**
+ * Updated search attributes keyed by attribute name.
+ */
+attributes: { [key in string]: SearchAttributeValue }, } } | { "type": "ActivityScheduled", "data": { 
 /**
  * Recording metadata for this event.
  */

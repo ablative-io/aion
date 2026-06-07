@@ -8,6 +8,7 @@ pub(super) fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
+        Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
         Event::ActivityCompleted { .. } => "ActivityCompleted",

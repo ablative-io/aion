@@ -49,7 +49,7 @@ pub struct ListPage {
 }
 
 /// Workflow detail returned by [`Client::describe`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkflowDescription {
     /// Lightweight workflow summary reused from `aion-core`.
     pub summary: WorkflowSummary,

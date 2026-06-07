@@ -263,7 +263,8 @@ const fn event_family(event: &Event) -> EventFamily {
         | Event::WorkflowFailed { .. }
         | Event::WorkflowCancelled { .. }
         | Event::WorkflowTimedOut { .. }
-        | Event::WorkflowContinuedAsNew { .. } => EventFamily::Workflow,
+        | Event::WorkflowContinuedAsNew { .. }
+        | Event::SearchAttributesUpdated { .. } => EventFamily::Workflow,
         Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }
         | Event::ActivityCompleted { .. }

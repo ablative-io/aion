@@ -7,8 +7,9 @@ use ts_rs::{Config, TS};
 
 use crate::{
     ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType, Event, EventEnvelope,
-    OverlapPolicy, Payload, RunId, ScheduleConfig, ScheduleId, TimerId, TriggerSpec, WorkflowError,
-    WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    OverlapPolicy, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
+    SearchAttributeValue, TimerId, TriggerSpec, WorkflowError, WorkflowFilter, WorkflowId,
+    WorkflowStatus, WorkflowSummary,
 };
 
 const DASHBOARD_GENERATED_DIR: &str = "../../apps/aion-dashboard/src/types/generated";
@@ -54,6 +55,8 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<WorkflowStatus>(&config, &mut output)?;
     push_type::<WorkflowFilter>(&config, &mut output)?;
     push_type::<WorkflowSummary>(&config, &mut output)?;
+    push_type::<SearchAttributeType>(&config, &mut output)?;
+    push_type::<SearchAttributeValue>(&config, &mut output)?;
     push_type::<EventEnvelope>(&config, &mut output)?;
     push_type::<Event>(&config, &mut output)?;
 
