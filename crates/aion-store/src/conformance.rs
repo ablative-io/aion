@@ -33,6 +33,7 @@ where
     list_active_reflects_projected_status(make_store().await).await?;
     query_applies_all_filters(make_store().await).await?;
     read_run_chain_orders_continuations(make_store().await).await?;
+    read_run_chain_single_and_multi_continuations(make_store().await).await?;
     expired_timers_include_due_boundary_and_exclude_future(make_store().await).await?;
     rescheduling_same_timer_replaces_prior_fire_at(make_store().await).await?;
     Ok(())
@@ -320,8 +321,12 @@ async fn read_run_chain_orders_continuations(store: Arc<dyn EventStore>) -> Resu
             },
         ],
         "read_run_chain should handle a workflow with exactly one continuation",
-    )?;
+    )
+}
 
+async fn read_run_chain_single_and_multi_continuations(
+    store: Arc<dyn EventStore>,
+) -> Result<(), StoreError> {
     let single = workflow_id();
     let single_run = run_id(1);
     store
