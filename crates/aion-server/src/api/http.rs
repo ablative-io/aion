@@ -33,6 +33,8 @@ use crate::{
     config::AuthConfig, dashboard::assets,
 };
 
+const JSON_CONTENT_TYPE: &str = "application/json";
+
 /// Build the public HTTP application: workflow-management routes first, then
 /// the dashboard static asset fallback. The dashboard adds no data API.
 ///
@@ -391,7 +393,7 @@ fn http_input_payload(input: Value) -> Result<aion_proto::convert::ProtoPayload,
     } else {
         serde_json::to_vec(&input)
             .map(|bytes| aion_proto::convert::ProtoPayload {
-                content_type: "application/json".to_owned(),
+                content_type: JSON_CONTENT_TYPE.to_owned(),
                 bytes,
             })
             .map_err(|_error| invalid_start_input())
@@ -451,8 +453,25 @@ impl TryFrom<aion_proto::convert::ProtoPayload> for HttpPayload {
     }
 }
 
+fn http_payload_content_type(content_type: &str) -> &str {
+    if content_type == "Json" {
+        JSON_CONTENT_TYPE
+    } else {
+        content_type
+    }
+}
+
+fn is_json_content_type(content_type: &str) -> bool {
+    let normalized = http_payload_content_type(content_type);
+    normalized
+        .split_once(';')
+        .map_or(normalized, |(media_type, _parameters)| media_type)
+        .trim()
+        .eq_ignore_ascii_case(JSON_CONTENT_TYPE)
+}
+
 fn payload_data(content_type: &str, bytes: &[u8]) -> Result<Value, HttpWireError> {
-    if content_type == "application/json" {
+    if is_json_content_type(content_type) {
         let value = serde_json::from_slice(bytes).map_err(|_error| {
             HttpWireError(WireError::backend(
                 "application/json payload contains invalid JSON",
@@ -486,10 +505,13 @@ fn rewrite_payload_values(value: Value) -> Result<Value, HttpWireError> {
 }
 
 fn rewrite_payload_object(object: Map<String, Value>) -> Result<Value, HttpWireError> {
-    let payload: aion_proto::convert::ProtoPayload = serde_json::from_value(Value::Object(object))
-        .map_err(|_error| {
+    let mut payload: aion_proto::convert::ProtoPayload =
+        serde_json::from_value(Value::Object(object)).map_err(|_error| {
             HttpWireError(WireError::backend("stored payload envelope is malformed"))
         })?;
+    if payload.content_type == "Json" {
+        payload.content_type = JSON_CONTENT_TYPE.to_owned();
+    }
     let payload = HttpPayload::try_from(payload)?;
     Ok(json!({
         "content_type": payload.content_type,
@@ -765,6 +787,35 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn http_start_input_normalization_accepts_plain_json_and_legacy_envelope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plain = http_input_payload(json!({ "name": "Ada" }))?;
+        assert_eq!(plain.content_type, JSON_CONTENT_TYPE);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&plain.bytes)?,
+            json!({ "name": "Ada" })
+        );
+
+        let envelope = json!({
+            "content_type": "application/json; charset=utf-8",
+            "bytes": [123, 34, 110, 97, 109, 101, 34, 58, 34, 65, 100, 97, 34, 125],
+        });
+        let legacy = http_input_payload(envelope)?;
+        assert_eq!(legacy.content_type, "application/json; charset=utf-8");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&legacy.bytes)?,
+            json!({ "name": "Ada" })
+        );
+
+        let malformed = http_input_payload(
+            json!({ "content_type": "application/json", "bytes": "not-a-byte-array" }),
+        );
+        assert!(matches!(malformed, Err(error) if error.code == WireErrorCode::InvalidInput));
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn describe_decodes_json_payloads_for_http() -> Result<(), Box<dyn std::error::Error>> {
         let backing = Arc::new(InMemoryStore::default());
@@ -779,11 +830,10 @@ mod tests {
                 .await?,
         );
         store.append(&workflow_id(), &[started_event()?], 0).await?;
-        let resolver = NamespaceResolver::from_parts(
-            NamespaceMode::SharedEngine,
-            Some(engine),
-            WorkflowOwnership::default(),
-        );
+        let ownership = WorkflowOwnership::default();
+        ownership.record(workflow_id(), NAMESPACE)?;
+        let resolver =
+            NamespaceResolver::from_parts(NamespaceMode::SharedEngine, Some(engine), ownership);
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
 
         let describe = ProtoDescribeWorkflowRequest {
@@ -807,7 +857,7 @@ mod tests {
             workflow_id().to_string()
         );
         assert_eq!(
-            body["history"][0]["payload"]["data"]["input"],
+            body["history"][0]["payload"]["data"]["data"]["input"],
             json!({"content_type": "application/json", "data": {"fixture": "input"}})
         );
         Ok(())
@@ -818,6 +868,15 @@ mod tests {
         let data = payload_data("application/octet-stream", &[0, 1, 2])
             .map_err(|error| std::io::Error::other(error.0.message))?;
         assert_eq!(data, json!("AAEC"));
+        Ok(())
+    }
+
+    #[test]
+    fn http_payload_decodes_json_content_type_with_parameters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = payload_data("application/json; charset=utf-8", br#"{"name":"Ada"}"#)
+            .map_err(|error| std::io::Error::other(error.0.message))?;
+        assert_eq!(data, json!({ "name": "Ada" }));
         Ok(())
     }
 
