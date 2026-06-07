@@ -23,8 +23,16 @@ use aion_store::visibility::VisibilityStore;
 use crate::lifecycle::continue_as_new::{self, ContinueAsNewContext, ContinueAsNewRequest};
 use crate::lifecycle::start::{self, StartWorkflowContext};
 use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
+use crate::lifecycle::transition;
 use crate::registry::{TerminalOutcome, WorkflowHandle};
-use crate::{EngineError, LoadedWorkflows, Registry, RuntimeHandle, SupervisionTree};
+use crate::{
+    EngineError, LoadedWorkflows, Registry, RuntimeHandle, SupervisionTree,
+    engine_seam::{
+        EngineHandle, EngineSeamError, WorkflowMailboxMessage, WorkflowProcessHandle,
+        WorkflowResidency,
+    },
+    signal::SignalResumeHandoff,
+};
 
 use super::delegated::DelegatedSeams;
 
@@ -40,6 +48,7 @@ pub struct Engine {
     registry: Arc<Registry>,
     supervision: Arc<SupervisionTree>,
     delegated: DelegatedSeams,
+    signal_handoff: Arc<SignalResumeHandoff>,
     shutdown_gate: ShutdownGate,
 }
 
@@ -54,6 +63,7 @@ impl Engine {
         registry: Registry,
         supervision: SupervisionTree,
         delegated: DelegatedSeams,
+        signal_handoff: Arc<SignalResumeHandoff>,
     ) -> Self {
         let schedule_coordinator_workflow_id = schedule_coordinator_workflow_id();
         let schedule_recorder = Arc::new(AsyncMutex::new(Recorder::new(
@@ -86,6 +96,7 @@ impl Engine {
             registry: registry_arc,
             supervision: supervision_arc,
             delegated,
+            signal_handoff,
             shutdown_gate: ShutdownGate::default(),
         }
     }
@@ -154,6 +165,12 @@ impl Engine {
     #[must_use]
     pub const fn delegated(&self) -> &DelegatedSeams {
         &self.delegated
+    }
+
+    /// Shared in-memory handoff for already-recorded non-resident signals.
+    #[must_use]
+    pub fn signal_handoff(&self) -> Arc<SignalResumeHandoff> {
+        Arc::clone(&self.signal_handoff)
     }
 
     /// Workflow history used for durable schedule events and timer ownership.
@@ -459,6 +476,7 @@ impl Engine {
                 runtime: &self.runtime,
                 supervision: &self.supervision,
                 registry: &self.registry,
+                signal_handoff: Some(self.signal_handoff()),
             },
             workflow_type,
             input,
@@ -466,6 +484,30 @@ impl Engine {
         .await;
         drop(operation);
         result
+    }
+
+    /// Resume a suspended workflow run and flush deferred signals through its mailbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
+    /// is absent, or registry errors from the residency transition. Deferred
+    /// delivery failures are logged and dropped because signals are already durable.
+    pub fn resume_workflow(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+    ) -> Result<WorkflowHandle, EngineError> {
+        let handle = transition::resume(self.registry(), id, run)?;
+        if let Err(error) = self.signal_handoff.deliver_deferred(self, id) {
+            tracing::warn!(
+                workflow_id = %id,
+                run_id = %run,
+                error = %error,
+                "failed to flush deferred signals after workflow resume"
+            );
+        }
+        Ok(handle)
     }
 
     /// Cancel a live workflow run by killing its runtime process.
@@ -740,7 +782,111 @@ impl Drop for LifecycleOperation {
     }
 }
 
-fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
+impl EngineHandle for Engine {
+    fn resolve_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<WorkflowResidency, EngineSeamError> {
+        let handle = self
+            .registry()
+            .list()
+            .map_err(|error| EngineSeamError::Delivery {
+                reason: error.to_string(),
+            })?
+            .into_iter()
+            .find(|handle| handle.workflow_id() == workflow_id);
+        match handle {
+            Some(handle) if handle.residency() == crate::HandleResidency::Resident => Ok(
+                WorkflowResidency::Resident(WorkflowProcessHandle::new(handle.pid())),
+            ),
+            Some(_) => Ok(WorkflowResidency::NonResident),
+            None => Ok(WorkflowResidency::Unknown),
+        }
+    }
+
+    fn deliver_workflow_message(
+        &self,
+        process: WorkflowProcessHandle,
+        message: WorkflowMailboxMessage,
+    ) -> Result<(), EngineSeamError> {
+        match message {
+            WorkflowMailboxMessage::SignalReceived { name, payload } => self
+                .runtime()
+                .deliver_signal_received(process.pid(), name, payload)
+                .map_err(|error| EngineSeamError::Delivery {
+                    reason: error.to_string(),
+                }),
+            other => Err(EngineSeamError::Delivery {
+                reason: format!("unsupported workflow mailbox message: {other:?}"),
+            }),
+        }
+    }
+
+    fn spawn_child_workflow(
+        &self,
+        request: crate::engine_seam::ChildWorkflowSpawnRequest,
+    ) -> Result<crate::engine_seam::ChildWorkflowSpawnResult, EngineSeamError> {
+        let _ = request;
+        Err(EngineSeamError::ChildSpawn {
+            reason: "engine handle child spawning is not wired here".to_owned(),
+        })
+    }
+
+    fn terminate_linked_child_workflow(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        child_process: WorkflowProcessHandle,
+        correlation: u64,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (parent_workflow_id, child_process, correlation);
+        Err(EngineSeamError::ChildTermination {
+            reason: "engine handle child termination is not wired here".to_owned(),
+        })
+    }
+
+    fn terminate_linked_activity(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        activity_process: crate::Pid,
+        correlation: u64,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (parent_workflow_id, activity_process, correlation);
+        Err(EngineSeamError::ChildTermination {
+            reason: "engine handle activity termination is not wired here".to_owned(),
+        })
+    }
+
+    fn arm_timer(&self, entry: crate::engine_seam::TimerWheelEntry) -> Result<(), EngineSeamError> {
+        let _ = entry;
+        Err(EngineSeamError::TimerWheel {
+            reason: "engine handle timer arming is not wired here".to_owned(),
+        })
+    }
+
+    fn disarm_timer(
+        &self,
+        process: WorkflowProcessHandle,
+        timer_id: &aion_core::TimerId,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (process, timer_id);
+        Err(EngineSeamError::TimerWheel {
+            reason: "engine handle timer disarming is not wired here".to_owned(),
+        })
+    }
+
+    fn record_workflow_event(
+        &self,
+        workflow_id: &WorkflowId,
+        event: Event,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (workflow_id, event);
+        Err(EngineSeamError::Recorder {
+            reason: "engine handle event recording is not wired here".to_owned(),
+        })
+    }
+}
+
+pub(crate) fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
     for event in events.iter().rev() {
         match event {
             Event::WorkflowStarted { .. } => return None,
@@ -876,6 +1022,7 @@ impl ScheduleWorkflowStarter for EngineScheduleStarter {
                 runtime: &self.deps.runtime,
                 supervision: &self.deps.supervision,
                 registry: &self.deps.registry,
+                signal_handoff: None,
             },
             workflow_type,
             input,
@@ -982,6 +1129,7 @@ mod tests {
             Registry::default(),
             SupervisionTree::new(),
             DelegatedSeams::default(),
+            Arc::new(crate::signal::SignalResumeHandoff::new()),
         ))
     }
 

@@ -6,9 +6,9 @@ use futures::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::{Engine, EngineError, WorkflowHandle};
+use crate::{Engine, EngineError, SignalRouterError, WorkflowHandle};
 
-use super::api::workflow_not_found;
+use super::api::{terminal_outcome_from_history, workflow_not_found};
 
 /// Live-event subscription filter consumed by the AD/AT publisher seam.
 ///
@@ -217,10 +217,20 @@ impl Engine {
         name: impl Into<String>,
         payload: Payload,
     ) -> Result<(), EngineError> {
-        let handle = self
-            .registry()
-            .get(id, run)?
-            .ok_or_else(|| workflow_not_found(id, run))?;
+        let Some(handle) = self.registry().get(id, run)? else {
+            let history = self.store().read_history(id).await?;
+            let run_was_started = history.iter().any(
+                |event| matches!(event, Event::WorkflowStarted { run_id, .. } if run_id == run),
+            );
+            if run_was_started && terminal_outcome_from_history(&history).is_some() {
+                return Err(SignalRouterError::Terminal {
+                    workflow_id: id.clone(),
+                    run_id: run.clone(),
+                }
+                .into());
+            }
+            return Err(workflow_not_found(id, run));
+        };
         self.delegated()
             .signal_router()
             .route(&handle, name.into(), payload)
@@ -385,6 +395,7 @@ mod tests {
             Registry::default(),
             SupervisionTree::new(),
             DelegatedSeams::new(signal_router, query_service, event_publisher),
+            Arc::new(crate::signal::SignalResumeHandoff::new()),
         ))
     }
 

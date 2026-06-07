@@ -58,8 +58,8 @@ impl ServerState {
         let engine = EngineBuilder::new()
             .store(store)
             .activity_dispatcher(dispatcher)
-            .signal_router_factory(|runtime: Arc<RuntimeHandle>| {
-                Arc::new(ConcreteSignalRouter::new(runtime)) as Arc<dyn SignalRouter>
+            .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+                Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
             })
             .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
             .build()

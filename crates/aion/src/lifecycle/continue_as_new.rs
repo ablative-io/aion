@@ -85,6 +85,7 @@ pub async fn continue_as_new(
             runtime: context.runtime,
             supervision: context.supervision,
             registry: context.registry,
+            signal_handoff: None,
         },
         workflow_type,
         request.input.clone(),

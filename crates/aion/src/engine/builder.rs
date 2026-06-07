@@ -15,6 +15,7 @@ use crate::{
     activity::bridge::{ActivityDispatcher, install_activity_dispatcher},
     durability::{ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery, Recorder},
     runtime::{NifEntry, NifRegistration},
+    signal::SignalResumeHandoff,
 };
 
 use super::api::Engine;
@@ -60,7 +61,9 @@ impl From<String> for WorkflowPackageSource {
     }
 }
 
-type SignalRouterFactory = Arc<dyn Fn(Arc<RuntimeHandle>) -> Arc<dyn SignalRouter> + Send + Sync>;
+type SignalRouterFactory = Arc<
+    dyn Fn(Arc<RuntimeHandle>, Arc<SignalResumeHandoff>) -> Arc<dyn SignalRouter> + Send + Sync,
+>;
 
 /// Builder for the embedded, transport-agnostic workflow engine.
 pub struct EngineBuilder {
@@ -191,7 +194,10 @@ impl EngineBuilder {
     #[must_use]
     pub fn signal_router_factory<F>(mut self, factory: F) -> Self
     where
-        F: Fn(Arc<RuntimeHandle>) -> Arc<dyn SignalRouter> + Send + Sync + 'static,
+        F: Fn(Arc<RuntimeHandle>, Arc<SignalResumeHandoff>) -> Arc<dyn SignalRouter>
+            + Send
+            + Sync
+            + 'static,
     {
         self.signal_router_factory = Some(Arc::new(factory));
         self
@@ -279,9 +285,11 @@ impl EngineBuilder {
         )
         .await?;
 
+        let signal_handoff = Arc::new(SignalResumeHandoff::new());
+
         let delegated = if let Some(factory) = self.signal_router_factory {
             DelegatedSeams::new(
-                factory(Arc::clone(&runtime)),
+                factory(Arc::clone(&runtime), Arc::clone(&signal_handoff)),
                 self.delegated.query_service_arc(),
                 self.delegated.event_publisher_arc(),
             )
@@ -297,6 +305,7 @@ impl EngineBuilder {
             registry,
             supervision,
             delegated,
+            signal_handoff,
         );
         engine.catchup_schedule_coordinator().await?;
         engine.recover_schedules_on_startup(Utc::now()).await?;

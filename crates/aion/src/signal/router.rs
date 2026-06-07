@@ -6,7 +6,10 @@ use aion_core::Payload;
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::{EngineError, RuntimeHandle, WorkflowHandle, engine::delegated};
+use crate::{
+    EngineError, HandleResidency, RuntimeHandle, SignalRouterError, WorkflowHandle,
+    engine::delegated, signal::SignalResumeHandoff,
+};
 
 /// Delegated signal router for resident workflow processes.
 ///
@@ -17,13 +20,14 @@ use crate::{EngineError, RuntimeHandle, WorkflowHandle, engine::delegated};
 #[derive(Clone)]
 pub struct ConcreteSignalRouter {
     runtime: Arc<RuntimeHandle>,
+    handoff: Arc<SignalResumeHandoff>,
 }
 
 impl ConcreteSignalRouter {
-    /// Create a router that delivers recorded signals through `runtime`.
+    /// Create a router that delivers recorded signals through `runtime` and defers through `handoff`.
     #[must_use]
-    pub fn new(runtime: Arc<RuntimeHandle>) -> Self {
-        Self { runtime }
+    pub fn new(runtime: Arc<RuntimeHandle>, handoff: Arc<SignalResumeHandoff>) -> Self {
+        Self { runtime, handoff }
     }
 }
 
@@ -43,7 +47,19 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
                 .await?;
         }
 
-        self.runtime
-            .deliver_signal_received(target.pid(), name, payload)
+        match target.residency() {
+            HandleResidency::Resident => {
+                self.runtime
+                    .deliver_signal_received(target.pid(), name, payload)
+            }
+            HandleResidency::Suspended => self
+                .handoff
+                .defer(target.workflow_id().clone(), name, payload)
+                .map_err(|error| {
+                    EngineError::from(SignalRouterError::Handoff {
+                        reason: error.to_string(),
+                    })
+                }),
+        }
     }
 }

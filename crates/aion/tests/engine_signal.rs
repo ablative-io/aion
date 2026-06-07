@@ -4,7 +4,10 @@ mod common;
 
 use std::sync::Arc;
 
-use aion::{EngineBuilder, EngineError, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter};
+use aion::{
+    EngineBuilder, EngineError, HandleResidency, RuntimeHandle, SignalRouter,
+    signal::ConcreteSignalRouter,
+};
 use aion_core::{Event, RunId, WorkflowId};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
@@ -18,8 +21,8 @@ async fn signal_records_history_and_delivers_mailbox_marker()
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
         .scheduler_threads(1)
-        .signal_router_factory(|runtime: Arc<RuntimeHandle>| {
-            Arc::new(ConcreteSignalRouter::new(runtime)) as Arc<dyn SignalRouter>
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
         })
         .load_workflows(fixture_package("wait")?)
         .build()
@@ -76,6 +79,73 @@ async fn signal_records_history_and_delivers_mailbox_marker()
     assert_eq!(
         store.read_history(handle.workflow_id()).await?.len(),
         history.len()
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_resident_signal_records_defers_and_resume_delivers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .scheduler_threads(1)
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .load_workflows(fixture_package("wait")?)
+        .build()
+        .await?;
+    let handle = engine
+        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .await?;
+    engine.registry().replace_residency(
+        handle.workflow_id(),
+        handle.run_id(),
+        HandleResidency::Suspended,
+    )?;
+    let sent_payload = payload(&json!({ "wake": "later" }))?;
+
+    engine
+        .signal(
+            handle.workflow_id(),
+            handle.run_id(),
+            "wake",
+            sent_payload.clone(),
+        )
+        .await?;
+
+    let history = store.read_history(handle.workflow_id()).await?;
+    let signal = history
+        .iter()
+        .find_map(|event| match event {
+            Event::SignalReceived { name, payload, .. } => Some((name, payload)),
+            _ => None,
+        })
+        .ok_or("SignalReceived event was not recorded for suspended workflow")?;
+    assert_eq!(signal.0, "wake");
+    assert_eq!(signal.1, &sent_payload);
+    assert!(engine.runtime().signal_messages(handle.pid()).is_empty());
+    assert_eq!(
+        engine
+            .signal_handoff()
+            .pending_count(handle.workflow_id())?,
+        1
+    );
+
+    let resumed = engine.resume_workflow(handle.workflow_id(), handle.run_id())?;
+    assert_eq!(resumed.residency(), HandleResidency::Resident);
+    assert_eq!(
+        engine
+            .signal_handoff()
+            .pending_count(handle.workflow_id())?,
+        0
+    );
+    assert_eq!(
+        engine.runtime().signal_messages(handle.pid()),
+        vec![("wake".to_owned(), sent_payload)]
     );
 
     engine.shutdown()?;
