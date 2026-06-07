@@ -271,6 +271,57 @@ async fn read_run_chain_orders_continuations(store: Arc<dyn EventStore>) -> Resu
         "unknown workflow run chain should be empty",
     )?;
 
+    let one_continuation = workflow_id();
+    let first_continuation_run = run_id(101);
+    let second_continuation_run = run_id(102);
+    store
+        .append(
+            &one_continuation,
+            &[
+                workflow_started_with_run(
+                    1,
+                    &one_continuation,
+                    "checkout",
+                    &first_continuation_run,
+                    None,
+                )?,
+                workflow_continued_as_new_with_parent(
+                    2,
+                    &one_continuation,
+                    &first_continuation_run,
+                )?,
+                workflow_started_with_run(
+                    3,
+                    &one_continuation,
+                    "checkout-v2",
+                    &second_continuation_run,
+                    Some(first_continuation_run.clone()),
+                )?,
+            ],
+            0,
+        )
+        .await?;
+    expect_eq(
+        store.read_run_chain(&one_continuation).await?,
+        vec![
+            RunSummary {
+                run_id: first_continuation_run.clone(),
+                parent_run_id: None,
+                status: WorkflowStatus::ContinuedAsNew,
+                started_at: recorded_at(1)?,
+                closed_at: Some(recorded_at(2)?),
+            },
+            RunSummary {
+                run_id: second_continuation_run,
+                parent_run_id: Some(first_continuation_run),
+                status: WorkflowStatus::Running,
+                started_at: recorded_at(3)?,
+                closed_at: None,
+            },
+        ],
+        "read_run_chain should handle a workflow with exactly one continuation",
+    )?;
+
     let single = workflow_id();
     let single_run = run_id(1);
     store

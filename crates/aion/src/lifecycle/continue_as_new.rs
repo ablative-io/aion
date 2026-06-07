@@ -445,7 +445,7 @@ mod tests {
                 Event::WorkflowStarted {
                     input: started_input,
                     workflow_type: started_type,
-                    run_id: _,
+                    run_id: started_run_id,
                     parent_run_id: started_parent,
                     ..
                 },
@@ -455,6 +455,7 @@ mod tests {
                 assert_eq!(parent_run_id, &old_run_id);
                 assert_eq!(started_input, &input);
                 assert_eq!(started_type, "checkout-v2");
+                assert_eq!(started_run_id, new_handle.run_id());
                 assert_eq!(started_parent, &Some(old_run_id));
             }
             other => {

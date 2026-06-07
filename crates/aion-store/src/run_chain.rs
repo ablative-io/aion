@@ -54,7 +54,7 @@ fn project_run_summary(events: &[Event]) -> Result<RunSummary, StoreError> {
         parent_run_id: parent_run_id.clone(),
         status: status_from_events(events),
         started_at: envelope.recorded_at,
-        closed_at: events.iter().find_map(terminal_recorded_at),
+        closed_at: events.iter().rev().find_map(terminal_recorded_at),
     })
 }
 

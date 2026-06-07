@@ -314,13 +314,14 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
-                run_id: _,
+                run_id: recorded_run_id,
                 parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
                 assert_eq!(&envelope.workflow_id, handle.workflow_id());
                 assert_eq!(workflow_type, "checkout");
                 assert_eq!(recorded_input, &input);
+                assert_eq!(recorded_run_id, handle.run_id());
             }
             other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
         }
