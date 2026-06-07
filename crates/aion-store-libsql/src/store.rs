@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use aion_store::{
-    Event, EventStore, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
+    Event, EventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
+    WorkflowSummary,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -86,6 +87,13 @@ impl EventStore for LibSqlStore {
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         crate::read::read_history(self.connection(), workflow_id).await
+    }
+
+    async fn read_run_chain(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<RunSummary>, StoreError> {
+        crate::read::read_run_chain(self.connection(), workflow_id).await
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {

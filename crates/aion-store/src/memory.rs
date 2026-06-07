@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
-use crate::{EventStore, StoreError, TimerEntry};
+use crate::{EventStore, RunSummary, StoreError, TimerEntry, run_chain::run_chain_from_history};
 
 /// Correct non-durable [`EventStore`] implementation for tests and backend equivalence.
 #[derive(Debug, Default)]
@@ -148,6 +148,18 @@ impl EventStore for InMemoryStore {
             .map_or_else(Vec::new, |history| history_in_sequence_order(history)))
     }
 
+    async fn read_run_chain(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<RunSummary>, StoreError> {
+        let state = self.lock_state()?;
+        let Some(history) = state.histories.get(workflow_id) else {
+            return Ok(Vec::new());
+        };
+
+        run_chain_from_history(history)
+    }
+
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         let state = self.lock_state()?;
         let mut active = state
@@ -271,6 +283,7 @@ mod tests {
             envelope: envelope(seq, workflow_id),
             workflow_type: workflow_type.to_owned(),
             input: payload("input"),
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         }
     }

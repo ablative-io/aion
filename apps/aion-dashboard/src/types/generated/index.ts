@@ -164,6 +164,10 @@ workflow_type: string,
  */
 input: Payload, 
 /**
+ * Concrete run identifier started by this event.
+ */
+run_id: RunId, 
+/**
  * Parent run that continued as this run, when this start is part of a
  * continue-as-new chain.
  */

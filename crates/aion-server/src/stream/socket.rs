@@ -253,6 +253,7 @@ mod tests {
             envelope: envelope(seq, workflow_id),
             workflow_type: "checkout".to_owned(),
             input: payload("input")?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
     }

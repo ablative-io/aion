@@ -88,7 +88,12 @@ async fn record_full_history(
     let timer_id = TimerId::anonymous(4);
 
     recorder
-        .record_workflow_started(timestamp(10)?, "workflow".to_owned(), payload("input")?)
+        .record_workflow_started(
+            timestamp(10)?,
+            "workflow".to_owned(),
+            payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+        )
         .await?;
     recorder
         .record_activity_scheduled(
@@ -149,6 +154,7 @@ async fn record_partial_history_for(
             timestamp(timestamp_base)?,
             "workflow".to_owned(),
             payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
         )
         .await?;
     recorder
@@ -175,7 +181,12 @@ async fn record_terminal_history_for(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut recorder = Recorder::new(workflow_id, store);
     recorder
-        .record_workflow_started(timestamp(200)?, "workflow".to_owned(), payload("input")?)
+        .record_workflow_started(
+            timestamp(200)?,
+            "workflow".to_owned(),
+            payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+        )
         .await?;
     recorder
         .record_workflow_completed(timestamp(210)?, payload("workflow-result")?)
@@ -189,7 +200,12 @@ async fn record_divergent_history_for(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut recorder = Recorder::new(workflow_id, store);
     recorder
-        .record_workflow_started(timestamp(300)?, "workflow".to_owned(), payload("input")?)
+        .record_workflow_started(
+            timestamp(300)?,
+            "workflow".to_owned(),
+            payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+        )
         .await?;
     recorder
         .record_timer_started(timestamp(310)?, TimerId::anonymous(99), timestamp(400)?)
@@ -249,7 +265,12 @@ async fn record_round_trip_history(
     let timer_id = TimerId::anonymous(4);
 
     recorder
-        .record_workflow_started(timestamp(10)?, "workflow".to_owned(), payload("input")?)
+        .record_workflow_started(
+            timestamp(10)?,
+            "workflow".to_owned(),
+            payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+        )
         .await?;
     recorder
         .record_activity_scheduled(
@@ -344,7 +365,12 @@ async fn record_partial_history(
     let activity_id = ActivityId::from_sequence_position(0);
 
     recorder
-        .record_workflow_started(timestamp(10)?, "workflow".to_owned(), payload("input")?)
+        .record_workflow_started(
+            timestamp(10)?,
+            "workflow".to_owned(),
+            payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+        )
         .await?;
     recorder
         .record_activity_scheduled(
@@ -738,7 +764,12 @@ async fn terminal_activity_failure_is_served_from_history_cache_without_live_cal
     let executor = CountingExecutor::default();
 
     recorder
-        .record_workflow_started(timestamp(10)?, "workflow".to_owned(), payload("input")?)
+        .record_workflow_started(
+            timestamp(10)?,
+            "workflow".to_owned(),
+            payload("input")?,
+            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+        )
         .await?;
     recorder
         .record_activity_scheduled(

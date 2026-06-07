@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{
-    Event, EventStore, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
+    Event, EventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
     WorkflowSummary, conformance::run_event_store_suite,
 };
 use aion_store_libsql::LibSqlStore;
@@ -53,6 +53,13 @@ impl EventStore for StoreOpenResult {
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         self.store()?.read_history(workflow_id).await
+    }
+
+    async fn read_run_chain(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<RunSummary>, StoreError> {
+        self.store()?.read_run_chain(workflow_id).await
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {

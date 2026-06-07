@@ -396,7 +396,12 @@ mod tests {
         let store = engine.store();
         let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));
         recorder
-            .record_workflow_started(chrono::Utc::now(), "checkout".to_owned(), payload("input")?)
+            .record_workflow_started(
+                chrono::Utc::now(),
+                "checkout".to_owned(),
+                payload("input")?,
+                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            )
             .await?;
         let handle = WorkflowHandle::new(WorkflowHandleParts {
             workflow_id: workflow_id.clone(),
@@ -511,6 +516,7 @@ mod tests {
             envelope: envelope(1, &other_id),
             workflow_type: "checkout".to_owned(),
             input: payload("input")?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         };
         let engine = engine_with_seams(
