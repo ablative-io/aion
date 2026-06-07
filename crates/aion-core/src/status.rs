@@ -67,7 +67,7 @@ mod tests {
     use serde_json::json;
 
     use super::{WorkflowStatus, status_from_events};
-    use crate::{ActivityId, Event, EventEnvelope, Payload, WorkflowError, WorkflowId};
+    use crate::{ActivityId, Event, EventEnvelope, Payload, ScheduleId, WorkflowError, WorkflowId};
 
     fn recorded_at(offset: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset, 0).unwrap_or_default()
@@ -170,6 +170,20 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(2),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
+            },
+        ];
+
+        assert_eq!(status_from_events(&events), WorkflowStatus::Running);
+        Ok(())
+    }
+
+    #[test]
+    fn schedule_events_do_not_change_workflow_status() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            Event::SchedulePaused {
+                envelope: envelope(2),
+                schedule_id: ScheduleId::new(uuid::Uuid::from_u128(2)),
             },
         ];
 

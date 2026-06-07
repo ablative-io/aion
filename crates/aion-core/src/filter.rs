@@ -150,7 +150,7 @@ mod tests {
     use serde_json::json;
 
     use super::{WorkflowFilter, WorkflowSummary};
-    use crate::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
+    use crate::{Event, EventEnvelope, Payload, ScheduleId, WorkflowId, WorkflowStatus};
 
     fn recorded_at(offset_seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0).unwrap_or_default()
@@ -425,6 +425,32 @@ mod tests {
 
         assert_eq!(summary.status, WorkflowStatus::TimedOut);
         assert_eq!(summary.ended_at, Some(recorded_at(3)));
+        Ok(())
+    }
+
+    #[test]
+    fn schedule_events_do_not_set_summary_end_time() -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = WorkflowId::new(uuid::Uuid::from_u128(1));
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1, &workflow_id),
+                workflow_type: String::from("checkout"),
+                input: payload("input")?,
+            },
+            Event::ScheduleTriggered {
+                envelope: envelope(2, &workflow_id),
+                schedule_id: ScheduleId::new(uuid::Uuid::from_u128(2)),
+                workflow_id: WorkflowId::new(uuid::Uuid::from_u128(3)),
+                run_id: crate::RunId::new(uuid::Uuid::from_u128(4)),
+            },
+        ];
+
+        let Some(summary) = WorkflowSummary::from_history(&events) else {
+            return Err("history should contain workflow start".into());
+        };
+
+        assert_eq!(summary.status, WorkflowStatus::Running);
+        assert_eq!(summary.ended_at, None);
         Ok(())
     }
 }
