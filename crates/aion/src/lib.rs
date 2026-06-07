@@ -35,6 +35,7 @@ pub use registry::{
     WorkflowHandleParts,
 };
 pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput};
+pub use schedule::{ScheduleError, next_fire_time, parse_cron_expression};
 pub use supervision::{
     EngineSupervisorId, SupervisionTree, TypeSupervisorId, TypeSupervisorNode, WorkflowNode,
 };

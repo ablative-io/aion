@@ -177,6 +177,46 @@ mod tests {
     }
 
     #[test]
+    fn invalid_cron_trigger_returns_typed_parse_error() -> Result<(), Box<dyn Error>> {
+        let trigger = TriggerSpec::Cron {
+            expression: "invalid".to_owned(),
+        };
+        let reference = parse_utc("2026-06-07T12:00:00Z")?;
+
+        assert!(matches!(
+            next_fire_time(&trigger, reference),
+            Err(ScheduleError::CronParse { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_interval_returns_typed_range_error() -> Result<(), Box<dyn Error>> {
+        let trigger = TriggerSpec::Interval {
+            period: Duration::from_secs(u64::MAX),
+        };
+        let reference = parse_utc("2026-06-07T12:00:00Z")?;
+
+        assert!(matches!(
+            next_fire_time(&trigger, reference),
+            Err(ScheduleError::IntervalOutOfRange)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn interval_timestamp_overflow_returns_typed_range_error() {
+        let trigger = TriggerSpec::Interval {
+            period: Duration::from_secs(1),
+        };
+
+        assert!(matches!(
+            next_fire_time(&trigger, DateTime::<Utc>::MAX_UTC),
+            Err(ScheduleError::NextFireTimeOutOfRange)
+        ));
+    }
+
+    #[test]
     fn successive_calls_are_strictly_increasing() -> Result<(), Box<dyn Error>> {
         let cron_trigger = TriggerSpec::Cron {
             expression: "*/5 * * * *".to_owned(),
