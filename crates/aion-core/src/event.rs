@@ -3,7 +3,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{ActivityError, ActivityId, Payload, TimerId, WorkflowError, WorkflowId};
+use crate::{
+    ActivityError, ActivityId, Payload, RunId, ScheduleConfig, ScheduleId, TimerId, WorkflowError,
+    WorkflowId,
+};
 
 /// Metadata recorded with every workflow history event.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
@@ -183,6 +186,56 @@ pub enum Event {
         /// Child workflow that was cancelled.
         child_workflow_id: WorkflowId,
     },
+    /// A schedule resource was created.
+    ScheduleCreated {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Schedule resource that was created.
+        schedule_id: ScheduleId,
+        /// Persisted schedule configuration.
+        config: ScheduleConfig,
+    },
+    /// A schedule resource was updated.
+    ScheduleUpdated {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Schedule resource that was updated.
+        schedule_id: ScheduleId,
+        /// Updated schedule configuration.
+        config: ScheduleConfig,
+    },
+    /// A schedule resource was paused.
+    SchedulePaused {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Schedule resource that was paused.
+        schedule_id: ScheduleId,
+    },
+    /// A paused schedule resource was resumed.
+    ScheduleResumed {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Schedule resource that was resumed.
+        schedule_id: ScheduleId,
+    },
+    /// A schedule resource was deleted.
+    ScheduleDeleted {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Schedule resource that was deleted.
+        schedule_id: ScheduleId,
+    },
+    /// A schedule tick started a workflow execution.
+    ScheduleTriggered {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Schedule resource that fired.
+        schedule_id: ScheduleId,
+        /// Workflow execution started by the schedule tick.
+        workflow_id: WorkflowId,
+        /// Run started by the schedule tick.
+        run_id: RunId,
+    },
 }
 
 impl Event {
@@ -207,7 +260,13 @@ impl Event {
             | Self::ChildWorkflowStarted { envelope, .. }
             | Self::ChildWorkflowCompleted { envelope, .. }
             | Self::ChildWorkflowFailed { envelope, .. }
-            | Self::ChildWorkflowCancelled { envelope, .. } => envelope,
+            | Self::ChildWorkflowCancelled { envelope, .. }
+            | Self::ScheduleCreated { envelope, .. }
+            | Self::ScheduleUpdated { envelope, .. }
+            | Self::SchedulePaused { envelope, .. }
+            | Self::ScheduleResumed { envelope, .. }
+            | Self::ScheduleDeleted { envelope, .. }
+            | Self::ScheduleTriggered { envelope, .. } => envelope,
         }
     }
 
@@ -237,7 +296,8 @@ mod tests {
 
     use super::{Event, EventEnvelope};
     use crate::{
-        ActivityError, ActivityErrorKind, ActivityId, Payload, TimerId, WorkflowError, WorkflowId,
+        ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, Payload, RunId,
+        ScheduleConfig, ScheduleId, TimerId, TriggerSpec, WorkflowError, WorkflowId,
     };
 
     fn recorded_at() -> DateTime<Utc> {
@@ -254,6 +314,18 @@ mod tests {
 
     fn payload(label: &str) -> Result<Payload, crate::PayloadError> {
         Payload::from_json(&json!({ "label": label }))
+    }
+
+    fn schedule_config(label: &str) -> Result<ScheduleConfig, crate::PayloadError> {
+        Ok(ScheduleConfig {
+            trigger: TriggerSpec::Cron {
+                expression: String::from("0 0 * * *"),
+            },
+            overlap_policy: OverlapPolicy::Skip,
+            catch_up_policy: CatchUpPolicy::One,
+            workflow_type: String::from("checkout"),
+            input: payload(label)?,
+        })
     }
 
     fn workflow_error(message: &str) -> WorkflowError {
@@ -302,6 +374,9 @@ mod tests {
     #[test]
     fn events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
         let child_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(1));
+        let schedule_id = ScheduleId::new(uuid::Uuid::from_u128(2));
+        let triggered_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(3));
+        let triggered_run_id = RunId::new(uuid::Uuid::from_u128(4));
         let fire_at = DateTime::from_timestamp(1_700_000_100, 0).unwrap_or_default();
         let events = vec![
             Event::WorkflowStarted {
@@ -387,6 +462,34 @@ mod tests {
             Event::ChildWorkflowCancelled {
                 envelope: envelope(18),
                 child_workflow_id,
+            },
+            Event::ScheduleCreated {
+                envelope: envelope(19),
+                schedule_id: schedule_id.clone(),
+                config: schedule_config("schedule-created")?,
+            },
+            Event::ScheduleUpdated {
+                envelope: envelope(20),
+                schedule_id: schedule_id.clone(),
+                config: schedule_config("schedule-updated")?,
+            },
+            Event::SchedulePaused {
+                envelope: envelope(21),
+                schedule_id: schedule_id.clone(),
+            },
+            Event::ScheduleResumed {
+                envelope: envelope(22),
+                schedule_id: schedule_id.clone(),
+            },
+            Event::ScheduleDeleted {
+                envelope: envelope(23),
+                schedule_id: schedule_id.clone(),
+            },
+            Event::ScheduleTriggered {
+                envelope: envelope(24),
+                schedule_id,
+                workflow_id: triggered_workflow_id,
+                run_id: triggered_run_id,
             },
         ];
 

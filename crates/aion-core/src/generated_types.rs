@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use ts_rs::{Config, TS};
 
 use crate::{
-    ActivityError, ActivityErrorKind, ActivityId, ContentType, Event, EventEnvelope, Payload,
-    RunId, TimerId, WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType, Event, EventEnvelope,
+    OverlapPolicy, Payload, RunId, ScheduleConfig, ScheduleId, TimerId, TriggerSpec, WorkflowError,
+    WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
 const DASHBOARD_GENERATED_DIR: &str = "../../apps/aion-dashboard/src/types/generated";
@@ -37,11 +38,16 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
 
     push_type::<WorkflowId>(&config, &mut output)?;
     push_type::<RunId>(&config, &mut output)?;
+    push_type::<ScheduleId>(&config, &mut output)?;
     push_type::<ActivityId>(&config, &mut output)?;
     push_type::<TimerId>(&config, &mut output)?;
     output.push_str("export type Namespace = string;\n\n");
     push_type::<ContentType>(&config, &mut output)?;
     push_type::<Payload>(&config, &mut output)?;
+    push_type::<TriggerSpec>(&config, &mut output)?;
+    push_type::<OverlapPolicy>(&config, &mut output)?;
+    push_type::<CatchUpPolicy>(&config, &mut output)?;
+    push_type::<ScheduleConfig>(&config, &mut output)?;
     push_type::<WorkflowError>(&config, &mut output)?;
     push_type::<ActivityErrorKind>(&config, &mut output)?;
     push_type::<ActivityError>(&config, &mut output)?;
