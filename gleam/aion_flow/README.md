@@ -124,9 +124,11 @@ Use workflow primitives instead of wall-clock functions:
 
 ```gleam
 import aion/duration
+import aion/error
 import aion/workflow
+import gleam/result
 
-pub fn pause_then_read_time() {
+pub fn pause_then_read_time() -> Result(workflow.Timestamp, error.EngineError) {
   use _ <- result.try(workflow.sleep(duration.minutes(5)))
   workflow.now()
 }
@@ -139,9 +141,12 @@ The timer API also includes `workflow.start_timer`, `workflow.cancel_timer`, `wo
 Queries are read-only and record no workflow events. A handler returns a typed value through a codec; by convention it must not dispatch activities or mutate workflow state.
 
 ```gleam
+import aion/error
 import aion/query
 
-pub fn register_state_query(current_status: fn() -> String) {
+pub fn register_state_query(
+  current_status: fn() -> String,
+) -> Result(Nil, error.QueryError) {
   query.handler("state", string_codec(), current_status)
 }
 ```
@@ -159,6 +164,7 @@ import aion/signal
 import aion/workflow
 import gleam/dynamic/decode
 import gleam/json
+import gleam/result
 
 type Request {
   Request(name: String)
@@ -187,9 +193,12 @@ fn greet_activity(name: String) -> activity.Activity(String, String) {
   })
 }
 
-fn approval_signal() -> signal.SignalRef(Bool) {
+fn bool_codec() -> codec.Codec(Bool) {
   codec.json_codec(json.bool, decode.bool)
-  |> signal.new("approval")
+}
+
+fn approval_signal() -> signal.SignalRef(Bool) {
+  signal.new("approval", bool_codec())
 }
 
 pub fn definition() {

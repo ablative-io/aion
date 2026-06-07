@@ -93,16 +93,8 @@ The byte array is the UTF-8 JSON payload `{"name":"Ada"}`.
 Capture the returned ids:
 
 ```sh
-WORKFLOW_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["workflow_id"]["uuid"])
-PY
-)
-RUN_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["run_id"]["uuid"])
-PY
-)
+WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["workflow_id"]["uuid"])')
+RUN_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["run_id"]["uuid"])')
 printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 ```
 
