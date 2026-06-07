@@ -1,6 +1,7 @@
 //! Workflow visibility projection storage backed by libSQL.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use aion_core::{RunId, SearchAttributeValue, WorkflowId, WorkflowStatus};
 use aion_store::{
@@ -150,12 +151,13 @@ impl QueryPlan {
             .push_str(" ORDER BY start_time DESC, workflow_id ASC");
         if let Some(limit) = filter.limit {
             plan.push_param(Value::Integer(i64::from(limit)));
-            plan.sql.push_str(&format!(" LIMIT ?{}", plan.params.len()));
+            write!(plan.sql, " LIMIT ?{}", plan.params.len())
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
         }
         if let Some(offset) = filter.offset {
             plan.push_param(Value::Integer(i64::from(offset)));
-            plan.sql
-                .push_str(&format!(" OFFSET ?{}", plan.params.len()));
+            write!(plan.sql, " OFFSET ?{}", plan.params.len())
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
         }
         Ok(plan)
     }
