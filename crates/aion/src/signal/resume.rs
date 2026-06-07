@@ -56,14 +56,14 @@ impl SignalResumeHandoff {
     /// Delivers queued signals for a workflow that AE has made resident.
     ///
     /// Signals are delivered in FIFO order, matching the order in which the router recorded and
-    /// deferred them. A delivered signal is removed immediately, so repeated handoff calls in the
-    /// same engine lifetime do not redeliver it. If delivery fails, the failed signal and all later
-    /// signals remain queued for a later retry.
+    /// deferred them. Each signal is removed immediately after its delivery attempt, so repeated
+    /// handoff calls in the same engine lifetime do not redeliver it. If delivery fails, the failure
+    /// is logged and dropped because the signal is already durable and replay can redeliver it.
     ///
     /// # Errors
     ///
     /// Returns [`SignalResumeError`] when residency resolution fails, the workflow is not resident,
-    /// mailbox delivery fails, or the in-memory registry lock is poisoned.
+    /// or the in-memory registry lock is poisoned.
     pub fn deliver_deferred(
         &self,
         engine: &dyn EngineHandle,
@@ -97,17 +97,22 @@ impl SignalResumeHandoff {
             return Ok(0);
         };
 
-        while let Some(signal) = queue.front().cloned() {
-            engine
-                .deliver_workflow_message(
-                    process,
-                    WorkflowMailboxMessage::SignalReceived {
-                        name: signal.name,
-                        payload: signal.payload,
-                    },
-                )
-                .map_err(SignalResumeError::Deliver)?;
-            queue.pop_front();
+        while let Some(signal) = queue.pop_front() {
+            if let Err(error) = engine.deliver_workflow_message(
+                process,
+                WorkflowMailboxMessage::SignalReceived {
+                    name: signal.name,
+                    payload: signal.payload,
+                },
+            ) {
+                tracing::warn!(
+                    workflow_id = %workflow_id,
+                    process = process.pid(),
+                    error = %error,
+                    "dropping already-recorded deferred signal after mailbox delivery failure"
+                );
+                continue;
+            }
             delivered += 1;
         }
 
@@ -180,7 +185,7 @@ mod tests {
 
     use aion_core::{ContentType, Payload, WorkflowId};
 
-    use super::{SignalResumeError, SignalResumeHandoff};
+    use super::SignalResumeHandoff;
     use crate::engine_seam::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
     use crate::engine_seam::{EngineSeamError, WorkflowProcessHandle, WorkflowResidency};
 
@@ -224,7 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn failed_delivery_keeps_signal_queued_for_retry() -> Result<(), Box<dyn std::error::Error>> {
+    fn failed_delivery_is_logged_dropped_and_subsequent_signals_continue()
+    -> Result<(), Box<dyn std::error::Error>> {
         let engine = Arc::new(FakeEngineHandle::new());
         let handoff = SignalResumeHandoff::new();
         let workflow_id = WorkflowId::new_v4();
@@ -239,34 +245,18 @@ mod tests {
         handoff.defer(workflow_id.clone(), "first".to_owned(), first.clone())?;
         handoff.defer(workflow_id.clone(), "second".to_owned(), second.clone())?;
 
-        let error = handoff
-            .deliver_deferred(engine.as_ref(), &workflow_id)
-            .err()
-            .ok_or_else(|| std::io::Error::other("delivery failure was not returned"))?;
+        assert_eq!(handoff.deliver_deferred(engine.as_ref(), &workflow_id)?, 1);
+        assert_eq!(handoff.pending_count(&workflow_id)?, 0);
 
-        assert!(matches!(error, SignalResumeError::Deliver(_)));
-        assert_eq!(handoff.pending_count(&workflow_id)?, 2);
-        assert!(engine.delivered_messages()?.is_empty());
-
-        assert_eq!(handoff.deliver_deferred(engine.as_ref(), &workflow_id)?, 2);
         assert_eq!(
             engine.delivered_messages()?,
-            vec![
-                (
-                    process,
-                    DeliveredWorkflowMessage::SignalReceived {
-                        name: "first".to_owned(),
-                        payload: first,
-                    },
-                ),
-                (
-                    process,
-                    DeliveredWorkflowMessage::SignalReceived {
-                        name: "second".to_owned(),
-                        payload: second,
-                    },
-                ),
-            ]
+            vec![(
+                process,
+                DeliveredWorkflowMessage::SignalReceived {
+                    name: "second".to_owned(),
+                    payload: second,
+                },
+            ),]
         );
         assert_eq!(handoff.pending_count(&workflow_id)?, 0);
         Ok(())

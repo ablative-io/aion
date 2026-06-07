@@ -93,18 +93,30 @@ workspace.json     Machine-readable description of every component
 
 ## Status
 
-**Design complete; implementation not yet started.**
+**The core engine is implemented and functional.**
 
-The design is fully authored across 12 clusters (~117 implementation
-briefs) using the structured design system in `docs/design/`. Each cluster
-has a `DESIGN.md`, a `design.json`, a `checklist.json`, a `stories.json`,
-and numbered briefs. The beamr runtime Aion builds on — including hot code
-loading — is implemented, tested, and published.
+What works today:
 
-This repository currently holds the design and a scaffolded workspace
-skeleton. Implementation proceeds cluster by cluster in dependency order:
-`aion-core` → `aion` (engine) → durability/time → the Gleam SDK → the
-server → workers and clients.
+- The `aion` engine implements workflow lifecycle, event-sourced durability
+  and replay, durable timers, signals, queries, child workflows, and the
+  transport-agnostic engine API.
+- `aion-server` is a functional standalone server with HTTP/JSON, gRPC,
+  WebSocket event streams, package loading, and the remote-worker protocol.
+- Worker and client SDK packages are available across Rust, Gleam, Python,
+  and TypeScript; the Gleam authoring SDK lives in `gleam/aion_flow`.
+- Three working examples live under [`examples/`](examples/), with
+  [`examples/hello-world/`](examples/hello-world/) as the recommended first
+  run.
+
+Still maturing:
+
+- Documentation and developer-experience polish are ongoing; start with
+  [`GETTING-STARTED.md`](GETTING-STARTED.md), [`docs/API.md`](docs/API.md),
+  and [`gleam/aion_flow/README.md`](gleam/aion_flow/README.md).
+- SDK packages and conformance coverage continue to harden around the
+  implemented server and engine surfaces.
+- The dashboard/static UI is included and served by the server; continue to
+  treat the observability UI as evolving rather than production-polished.
 
 ## Scaffolding
 

@@ -6,7 +6,7 @@ use futures::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::{Engine, EngineError, WorkflowHandle};
+use crate::{Engine, EngineError, SignalRouterError, WorkflowHandle};
 
 use super::api::workflow_not_found;
 
@@ -208,8 +208,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
-    /// is not live. Other typed errors come from the configured signal seam.
+    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair is unknown,
+    /// [`SignalRouterError::Terminal`] when it is durably terminal, or other typed errors from
+    /// the configured signal seam.
     pub async fn signal(
         &self,
         id: &WorkflowId,
@@ -217,10 +218,17 @@ impl Engine {
         name: impl Into<String>,
         payload: Payload,
     ) -> Result<(), EngineError> {
-        let handle = self
-            .registry()
-            .get(id, run)?
-            .ok_or_else(|| workflow_not_found(id, run))?;
+        let Some(handle) = self.registry().get(id, run)? else {
+            let history = self.store().read_history(id).await?;
+            if run_has_terminal_history(&history, run) {
+                return Err(SignalRouterError::Terminal {
+                    workflow_id: id.clone(),
+                    run_id: run.clone(),
+                }
+                .into());
+            }
+            return Err(workflow_not_found(id, run));
+        };
         self.delegated()
             .signal_router()
             .route(&handle, name.into(), payload)
@@ -254,6 +262,55 @@ impl Engine {
     pub fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event> {
         self.delegated().event_publisher().subscribe(filter)
     }
+}
+
+fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
+    let mut in_requested_run = false;
+    for event in history {
+        match event {
+            Event::WorkflowStarted { run_id, .. } => {
+                if in_requested_run {
+                    return false;
+                }
+                in_requested_run = run_id == run;
+            }
+            Event::WorkflowCompleted { .. }
+            | Event::WorkflowFailed { .. }
+            | Event::WorkflowCancelled { .. }
+            | Event::WorkflowTimedOut { .. }
+            | Event::WorkflowContinuedAsNew { .. }
+                if in_requested_run =>
+            {
+                return true;
+            }
+            Event::SearchAttributesUpdated { .. }
+            | Event::ActivityScheduled { .. }
+            | Event::ActivityStarted { .. }
+            | Event::ActivityCompleted { .. }
+            | Event::ActivityFailed { .. }
+            | Event::ActivityCancelled { .. }
+            | Event::TimerStarted { .. }
+            | Event::TimerFired { .. }
+            | Event::TimerCancelled { .. }
+            | Event::SignalReceived { .. }
+            | Event::ChildWorkflowStarted { .. }
+            | Event::ChildWorkflowCompleted { .. }
+            | Event::ChildWorkflowFailed { .. }
+            | Event::ChildWorkflowCancelled { .. }
+            | Event::ScheduleCreated { .. }
+            | Event::ScheduleUpdated { .. }
+            | Event::SchedulePaused { .. }
+            | Event::ScheduleResumed { .. }
+            | Event::ScheduleDeleted { .. }
+            | Event::ScheduleTriggered { .. }
+            | Event::WorkflowCompleted { .. }
+            | Event::WorkflowFailed { .. }
+            | Event::WorkflowCancelled { .. }
+            | Event::WorkflowTimedOut { .. }
+            | Event::WorkflowContinuedAsNew { .. } => {}
+        }
+    }
+    false
 }
 
 const fn event_family(event: &Event) -> EventFamily {
@@ -299,6 +356,7 @@ mod tests {
     use serde_json::json;
 
     use crate::durability::Recorder;
+    use crate::engine::api::EngineComponents;
     use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandleParts};
     use crate::{
         LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SupervisionTree, WorkflowHandle,
@@ -377,15 +435,16 @@ mod tests {
         let backing = Arc::new(InMemoryStore::default());
         let store: Arc<dyn EventStore> = Arc::clone(&backing) as _;
         let visibility_store: Arc<dyn VisibilityStore> = backing;
-        Ok(Engine::new(
+        Ok(Engine::new(EngineComponents {
             store,
             visibility_store,
-            Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
-            LoadedWorkflows::new(),
-            Registry::default(),
-            SupervisionTree::new(),
-            DelegatedSeams::new(signal_router, query_service, event_publisher),
-        ))
+            runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
+            loaded_workflows: LoadedWorkflows::new(),
+            registry: Registry::default(),
+            supervision: SupervisionTree::new(),
+            delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
+            signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
+        }))
     }
 
     async fn insert_active_handle(

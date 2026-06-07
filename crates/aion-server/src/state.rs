@@ -69,8 +69,8 @@ impl ServerState {
             .store_arc(store)
             .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
-            .signal_router_factory(|runtime: Arc<RuntimeHandle>| {
-                Arc::new(ConcreteSignalRouter::new(runtime)) as Arc<dyn SignalRouter>
+            .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+                Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
             })
             .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
             .build()
