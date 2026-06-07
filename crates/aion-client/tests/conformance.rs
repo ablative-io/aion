@@ -342,6 +342,7 @@ fn normalize_event(event: &Event) -> Value {
         Event::WorkflowStarted {
             envelope,
             input,
+            run_id: _,
             parent_run_id: None,
             ..
         } => {

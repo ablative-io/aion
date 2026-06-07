@@ -117,6 +117,7 @@ mod tests {
             envelope: envelope(seq),
             workflow_type: String::from("checkout"),
             input: payload("input")?,
+            run_id: RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
     }
@@ -149,6 +150,7 @@ mod tests {
                 envelope: envelope(3),
                 workflow_type: String::from("checkout"),
                 input: payload("replacement")?,
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: Some(parent_run_id),
             },
         ];

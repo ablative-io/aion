@@ -234,7 +234,7 @@ mod tests {
     use aion_core::{
         Event, EventEnvelope, Payload, RunId, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
     };
-    use aion_store::{EventStore, StoreError, TimerEntry};
+    use aion_store::{EventStore, RunSummary, StoreError, TimerEntry};
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use serde_json::json;
@@ -297,6 +297,14 @@ mod tests {
                 .get(workflow_id)
                 .cloned()
                 .unwrap_or_default())
+        }
+
+        async fn read_run_chain(
+            &self,
+            workflow_id: &WorkflowId,
+        ) -> Result<Vec<RunSummary>, StoreError> {
+            let history = self.read_history(workflow_id).await?;
+            aion_store::run_chain::run_chain_from_history(&history)
         }
 
         async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
@@ -427,6 +435,7 @@ mod tests {
             },
             workflow_type: "workflow".to_owned(),
             input: payload("input")?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
     }

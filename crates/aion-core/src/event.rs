@@ -39,6 +39,8 @@ pub enum Event {
         workflow_type: String,
         /// Opaque workflow input payload.
         input: Payload,
+        /// Concrete run identifier started by this event.
+        run_id: RunId,
         /// Parent run that continued as this run, when this start is part of a
         /// continue-as-new chain.
         parent_run_id: Option<RunId>,
@@ -396,6 +398,7 @@ mod tests {
             envelope,
             workflow_type: String::from("checkout"),
             input: payload("input")?,
+            run_id: RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         };
 
@@ -414,6 +417,7 @@ mod tests {
                 envelope: envelope(1),
                 workflow_type: String::from("checkout"),
                 input: payload("workflow-input")?,
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
             },
             Event::WorkflowCompleted {

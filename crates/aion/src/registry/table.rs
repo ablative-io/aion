@@ -211,6 +211,7 @@ mod tests {
             envelope: envelope(workflow_id, 1),
             workflow_type: String::from("checkout"),
             input: payload("input")?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
     }

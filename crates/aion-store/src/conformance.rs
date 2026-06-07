@@ -10,7 +10,7 @@ use aion_core::{
 };
 use chrono::{DateTime, Utc};
 
-use crate::{EventStore, StoreError, TimerEntry};
+use crate::{EventStore, RunSummary, StoreError, TimerEntry};
 
 /// Runs the shared behavioural suite for an [`EventStore`] implementation.
 ///
@@ -32,6 +32,7 @@ where
     stale_expected_sequence_writes_nothing(make_store().await).await?;
     list_active_reflects_projected_status(make_store().await).await?;
     query_applies_all_filters(make_store().await).await?;
+    read_run_chain_orders_continuations(make_store().await).await?;
     expired_timers_include_due_boundary_and_exclude_future(make_store().await).await?;
     rescheduling_same_timer_replaces_prior_fire_at(make_store().await).await?;
     Ok(())
@@ -263,6 +264,100 @@ async fn query_applies_all_filters(store: Arc<dyn EventStore>) -> Result<(), Sto
     )
 }
 
+async fn read_run_chain_orders_continuations(store: Arc<dyn EventStore>) -> Result<(), StoreError> {
+    let unknown = workflow_id();
+    expect_empty(
+        store.read_run_chain(&unknown).await?,
+        "unknown workflow run chain should be empty",
+    )?;
+
+    let single = workflow_id();
+    let single_run = run_id(1);
+    store
+        .append(
+            &single,
+            &[workflow_started_with_run(
+                1,
+                &single,
+                "checkout",
+                &single_run,
+                None,
+            )?],
+            0,
+        )
+        .await?;
+    expect_eq(
+        store.read_run_chain(&single).await?,
+        vec![RunSummary {
+            run_id: single_run,
+            parent_run_id: None,
+            status: WorkflowStatus::Running,
+            started_at: recorded_at(1)?,
+            closed_at: None,
+        }],
+        "single-run workflow should return one running RunSummary",
+    )?;
+
+    let workflow = workflow_id();
+    let first = run_id(11);
+    let second = run_id(12);
+    let third = run_id(13);
+    store
+        .append(
+            &workflow,
+            &[
+                workflow_started_with_run(1, &workflow, "checkout", &first, None)?,
+                workflow_continued_as_new_with_parent(2, &workflow, &first)?,
+                workflow_started_with_run(
+                    3,
+                    &workflow,
+                    "checkout-v2",
+                    &second,
+                    Some(first.clone()),
+                )?,
+                workflow_continued_as_new_with_parent(4, &workflow, &second)?,
+                workflow_started_with_run(
+                    5,
+                    &workflow,
+                    "checkout-v3",
+                    &third,
+                    Some(second.clone()),
+                )?,
+                workflow_completed(6, &workflow)?,
+            ],
+            0,
+        )
+        .await?;
+
+    expect_eq(
+        store.read_run_chain(&workflow).await?,
+        vec![
+            RunSummary {
+                run_id: first.clone(),
+                parent_run_id: None,
+                status: WorkflowStatus::ContinuedAsNew,
+                started_at: recorded_at(1)?,
+                closed_at: Some(recorded_at(2)?),
+            },
+            RunSummary {
+                run_id: second.clone(),
+                parent_run_id: Some(first),
+                status: WorkflowStatus::ContinuedAsNew,
+                started_at: recorded_at(3)?,
+                closed_at: Some(recorded_at(4)?),
+            },
+            RunSummary {
+                run_id: third,
+                parent_run_id: Some(second),
+                status: WorkflowStatus::Completed,
+                started_at: recorded_at(5)?,
+                closed_at: Some(recorded_at(6)?),
+            },
+        ],
+        "read_run_chain should follow parent_run_id links oldest to newest",
+    )
+}
+
 async fn expired_timers_include_due_boundary_and_exclude_future(
     store: Arc<dyn EventStore>,
 ) -> Result<(), StoreError> {
@@ -343,6 +438,10 @@ fn workflow_id() -> WorkflowId {
     )))
 }
 
+fn run_id(value: u128) -> RunId {
+    RunId::new(uuid::Uuid::from_u128(value))
+}
+
 fn envelope(seq: u64, workflow_id: &WorkflowId) -> Result<EventEnvelope, StoreError> {
     let offset = i64::try_from(seq).map_err(|error| {
         StoreError::Backend(format!("event sequence out of timestamp range: {error}"))
@@ -372,11 +471,28 @@ fn workflow_started(
     workflow_id: &WorkflowId,
     workflow_type: &str,
 ) -> Result<Event, StoreError> {
+    workflow_started_with_run(
+        seq,
+        workflow_id,
+        workflow_type,
+        &run_id(u128::from(seq)),
+        None,
+    )
+}
+
+fn workflow_started_with_run(
+    seq: u64,
+    workflow_id: &WorkflowId,
+    workflow_type: &str,
+    run_id: &RunId,
+    parent_run_id: Option<RunId>,
+) -> Result<Event, StoreError> {
     Ok(Event::WorkflowStarted {
         envelope: envelope(seq, workflow_id)?,
         workflow_type: workflow_type.to_owned(),
         input: payload("input")?,
-        parent_run_id: None,
+        run_id: run_id.clone(),
+        parent_run_id,
     })
 }
 
@@ -390,6 +506,7 @@ fn workflow_started_at(
         envelope: envelope_at(seq, workflow_id, offset_seconds)?,
         workflow_type: workflow_type.to_owned(),
         input: payload("input")?,
+        run_id: run_id(u128::from(seq)),
         parent_run_id: None,
     })
 }
@@ -430,11 +547,19 @@ fn workflow_failed_at(
 }
 
 fn workflow_continued_as_new(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
+    workflow_continued_as_new_with_parent(seq, workflow_id, &run_id(42))
+}
+
+fn workflow_continued_as_new_with_parent(
+    seq: u64,
+    workflow_id: &WorkflowId,
+    parent_run_id: &RunId,
+) -> Result<Event, StoreError> {
     Ok(Event::WorkflowContinuedAsNew {
         envelope: envelope(seq, workflow_id)?,
         input: payload("continued-input")?,
         workflow_type: Some(String::from("continued-workflow")),
-        parent_run_id: RunId::new(uuid::Uuid::from_u128(42)),
+        parent_run_id: parent_run_id.clone(),
     })
 }
 

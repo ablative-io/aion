@@ -62,8 +62,9 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         workflow_type: String,
         input: Payload,
+        run_id: RunId,
     ) -> Result<(), DurabilityError> {
-        self.record_workflow_started_with_parent(recorded_at, workflow_type, input, None)
+        self.record_workflow_started_with_parent(recorded_at, workflow_type, input, run_id, None)
             .await
     }
 
@@ -78,12 +79,14 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         workflow_type: String,
         input: Payload,
+        run_id: RunId,
         parent_run_id: Option<RunId>,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::WorkflowStarted {
             envelope,
             workflow_type,
             input,
+            run_id,
             parent_run_id,
         })
         .await
@@ -460,6 +463,7 @@ mod tests {
             },
             workflow_type: String::from("checkout"),
             input: payload("workflow-input")?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
     }
@@ -472,7 +476,12 @@ mod tests {
         let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
 
         recorder
-            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .record_workflow_started(
+                recorded_at(1),
+                String::from("checkout"),
+                payload("input")?,
+                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            )
             .await?;
         recorder
             .record_workflow_completed(recorded_at(2), payload("result")?)
@@ -497,7 +506,12 @@ mod tests {
         let workflow_type = Some(String::from("checkout-v2"));
 
         recorder
-            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .record_workflow_started(
+                recorded_at(1),
+                String::from("checkout"),
+                payload("input")?,
+                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            )
             .await?;
         recorder
             .record_workflow_continued_as_new(

@@ -104,6 +104,7 @@ pub async fn start_workflow_with_options(
             Utc::now(),
             workflow_type.to_owned(),
             input.clone(),
+            run_id.clone(),
             options.parent_run_id,
         )
         .await?;
@@ -254,6 +255,7 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
+                run_id: _,
                 parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
@@ -312,6 +314,7 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
+                run_id: _,
                 parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
@@ -340,7 +343,12 @@ mod tests {
 
         let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), store.clone());
         recorder
-            .record_workflow_started(chrono::Utc::now(), "checkout".to_owned(), payload("first")?)
+            .record_workflow_started(
+                chrono::Utc::now(),
+                "checkout".to_owned(),
+                payload("first")?,
+                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            )
             .await?;
         recorder
             .record_workflow_continued_as_new(
@@ -369,6 +377,7 @@ mod tests {
             Event::WorkflowStarted {
                 envelope,
                 workflow_type,
+                run_id: _,
                 parent_run_id: started_parent,
                 ..
             } => {

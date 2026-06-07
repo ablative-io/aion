@@ -1,10 +1,27 @@
 //! `EventStore` trait.
 
-use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_core::{
+    Event, RunId, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::{StoreError, TimerEntry};
+
+/// Summary of one concrete run in a workflow's continuation chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummary {
+    /// Concrete run identifier for this chain entry.
+    pub run_id: RunId,
+    /// Parent run that continued as this run, or `None` for the first run.
+    pub parent_run_id: Option<RunId>,
+    /// Status projected from this run's slice of lifecycle events.
+    pub status: WorkflowStatus,
+    /// Timestamp of this run's `WorkflowStarted` event.
+    pub started_at: DateTime<Utc>,
+    /// Timestamp of this run's terminal lifecycle event, when closed.
+    pub closed_at: Option<DateTime<Utc>>,
+}
 
 /// Durable event-history, visibility-query, and timer contract for Aion stores.
 #[async_trait]
@@ -41,6 +58,17 @@ pub trait EventStore: Send + Sync + 'static {
     ///
     /// Returns backend or serialization errors encountered while reading history.
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError>;
+
+    /// Reads the concrete run chain for `workflow_id` in continuation order.
+    ///
+    /// A workflow with no recorded run starts is observed as an empty chain. This includes unknown
+    /// workflow identifiers and must not return [`StoreError::NotFound`] for absent workflows.
+    ///
+    /// # Errors
+    ///
+    /// Returns backend or serialization errors encountered while reading or projecting run history.
+    async fn read_run_chain(&self, workflow_id: &WorkflowId)
+    -> Result<Vec<RunSummary>, StoreError>;
 
     /// Lists workflow identifiers whose projected status is non-terminal.
     ///

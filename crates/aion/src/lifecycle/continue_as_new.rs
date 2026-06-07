@@ -253,7 +253,12 @@ mod tests {
         let run_id = aion_core::RunId::new_v4();
         let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));
         recorder
-            .record_workflow_started(chrono::Utc::now(), "checkout".to_owned(), payload("input")?)
+            .record_workflow_started(
+                chrono::Utc::now(),
+                "checkout".to_owned(),
+                payload("input")?,
+                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            )
             .await?;
         let pid = runtime.spawn_test_process_with_trap_exit(true)?;
         let handle = WorkflowHandle::new(WorkflowHandleParts {
@@ -440,6 +445,7 @@ mod tests {
                 Event::WorkflowStarted {
                     input: started_input,
                     workflow_type: started_type,
+                    run_id: _,
                     parent_run_id: started_parent,
                     ..
                 },

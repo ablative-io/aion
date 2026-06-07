@@ -41,6 +41,7 @@ async fn start_appends_registers_and_lists_workflow() -> Result<(), Box<dyn std:
         Some(Event::WorkflowStarted {
             workflow_type,
             input: recorded_input,
+            run_id: _,
             parent_run_id: None,
             ..
         }) => {

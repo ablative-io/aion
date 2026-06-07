@@ -533,6 +533,7 @@ mod tests {
                 chrono::Utc::now(),
                 workflow_type.to_owned(),
                 payload("input")?,
+                run_id.clone(),
             )
             .await?;
         let pid = engine.runtime().spawn_test_process_with_trap_exit(true)?;

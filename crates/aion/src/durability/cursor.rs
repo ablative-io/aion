@@ -352,6 +352,7 @@ mod tests {
             envelope: envelope(seq)?,
             workflow_type: "workflow".to_owned(),
             input: payload()?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
     }

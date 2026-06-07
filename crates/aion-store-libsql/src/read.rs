@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use aion_store::{
-    Event, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    Event, RunSummary, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
     status_from_events,
 };
 use libsql::{Value, params, params_from_iter};
@@ -40,6 +40,20 @@ pub(crate) async fn read_history(
     }
 
     Ok(events)
+}
+
+/// Read a workflow's concrete run chain in continuation order.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL failures, `StoreError::Serialization` when a stored
+/// event blob cannot be decoded, or a backend projection error for malformed chains.
+pub(crate) async fn read_run_chain(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+) -> Result<Vec<RunSummary>, StoreError> {
+    let history = read_history(conn, workflow_id).await?;
+    aion_store::run_chain::run_chain_from_history(&history)
 }
 
 /// Return workflow ids whose projected status is still running.
