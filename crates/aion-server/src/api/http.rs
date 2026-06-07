@@ -1,20 +1,29 @@
 //! axum HTTP/JSON workflow facade.
 
+use std::collections::HashMap;
+
+use aion_core::{SearchAttributeValue, WorkflowStatus};
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoDescribeWorkflowRequest,
-    ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError, WireErrorCode,
+    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
+    ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest,
+    ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest,
+    ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError,
+    WireErrorCode,
 };
+use aion_store::visibility::{ListWorkflowsFilter, SearchAttributePredicate, WorkflowSummary};
 use axum::{
     Json, Router,
-    extract::{FromRequestParts, State},
+    extract::{FromRequestParts, Query, State},
     http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
-use crate::{CallerIdentity, ServerError, ServerState, api::handlers, dashboard::assets};
+use crate::{
+    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
+};
 
 /// Build the public HTTP application: workflow-management routes first, then
 /// the dashboard static asset fallback. The dashboard adds no data API.
@@ -30,11 +39,13 @@ pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
 /// Build the public workflow-management HTTP router.
 pub fn workflow_router(state: ServerState) -> Router {
     Router::new()
+        .route("/workflows", get(get_workflows))
+        .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))
         .route("/workflows/signal", post(signal_workflow))
         .route("/workflows/query", post(query_workflow))
         .route("/workflows/cancel", post(cancel_workflow))
-        .route("/workflows/list", post(list_workflows))
+        .route("/workflows/list", post(post_list_workflows))
         .route("/workflows/describe", post(describe_workflow))
         .with_state(state)
 }
@@ -99,7 +110,7 @@ async fn cancel_workflow(
         .map_err(HttpWireError)
 }
 
-async fn list_workflows(
+async fn post_list_workflows(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
     Json(request): Json<ProtoListWorkflowsRequest>,
@@ -108,6 +119,58 @@ async fn list_workflows(
         .await
         .map(Json)
         .map_err(HttpWireError)
+}
+
+async fn get_workflows(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Query(query): Query<VisibilityQuery>,
+) -> Result<Json<Vec<WorkflowSummary>>, HttpWireError> {
+    let request = ProtoListWorkflowsRequest {
+        namespace: query.namespace.clone(),
+        filter: None,
+    };
+    let scoped = state
+        .namespace_guard()
+        .scope(
+            &caller,
+            &NamespaceOperation::list(&request, &aion_core::WorkflowFilter::default()),
+        )
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    let filter = query.into_filter().map_err(HttpWireError)?;
+    scoped
+        .engine()
+        .map_err(|error| HttpWireError(error.to_wire_error()))?
+        .visibility_store()
+        .list_workflows(filter)
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))
+        .map(Json)
+}
+
+async fn count_workflows(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Query(query): Query<VisibilityQuery>,
+) -> Result<Json<CountWorkflowsBody>, HttpWireError> {
+    let request = ProtoCountWorkflowsRequest {
+        namespace: query.namespace.clone(),
+        filter: None,
+    };
+    let scoped = state
+        .namespace_guard()
+        .scope(&caller, &NamespaceOperation::count(&request))
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    let filter = query.into_filter().map_err(HttpWireError)?;
+    let count = scoped
+        .engine()
+        .map_err(|error| HttpWireError(error.to_wire_error()))?
+        .visibility_store()
+        .count_workflows(filter)
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+
+    Ok(Json(CountWorkflowsBody { count }))
 }
 
 async fn describe_workflow(
@@ -119,6 +182,108 @@ async fn describe_workflow(
         .await
         .map(Json)
         .map_err(HttpWireError)
+}
+
+#[derive(Debug, Deserialize)]
+struct VisibilityQuery {
+    namespace: String,
+    workflow_type: Option<String>,
+    status: Option<String>,
+    started_after: Option<String>,
+    started_before: Option<String>,
+    closed_after: Option<String>,
+    closed_before: Option<String>,
+    search_attributes: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    #[serde(flatten)]
+    extra: HashMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct CountWorkflowsBody {
+    count: u64,
+}
+
+impl VisibilityQuery {
+    fn into_filter(self) -> Result<ListWorkflowsFilter, WireError> {
+        let mut search_attributes = self.parse_search_attributes()?;
+        search_attributes.extend(parse_attr_equals(self.extra));
+
+        Ok(ListWorkflowsFilter {
+            workflow_type: self.workflow_type,
+            status: self.status.as_deref().map(parse_status).transpose()?,
+            started_after: self
+                .started_after
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            started_before: self
+                .started_before
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            closed_after: self
+                .closed_after
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            closed_before: self
+                .closed_before
+                .as_deref()
+                .map(parse_datetime)
+                .transpose()?,
+            search_attributes,
+            limit: self.limit,
+            offset: self.offset,
+        })
+    }
+
+    fn parse_search_attributes(&self) -> Result<Vec<SearchAttributePredicate>, WireError> {
+        self.search_attributes.as_deref().map_or_else(
+            || Ok(Vec::new()),
+            |value| {
+                serde_json::from_str(value).map_err(|_error| {
+                    WireError::unknown_query("search_attributes query parameter is malformed")
+                })
+            },
+        )
+    }
+}
+
+fn parse_attr_equals(extra: HashMap<String, String>) -> Vec<SearchAttributePredicate> {
+    extra
+        .into_iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("attr.")
+                .map(|name| SearchAttributePredicate::Equals {
+                    name: name.to_owned(),
+                    value: SearchAttributeValue::String(value),
+                })
+        })
+        .collect()
+}
+
+fn parse_status(value: &str) -> Result<WorkflowStatus, WireError> {
+    match value.to_ascii_lowercase().as_str() {
+        "running" => Ok(WorkflowStatus::Running),
+        "completed" => Ok(WorkflowStatus::Completed),
+        "failed" => Ok(WorkflowStatus::Failed),
+        "cancelled" | "canceled" => Ok(WorkflowStatus::Cancelled),
+        "timed_out" | "timedout" | "timed-out" => Ok(WorkflowStatus::TimedOut),
+        "continued_as_new" | "continuedasnew" | "continued-as-new" => {
+            Ok(WorkflowStatus::ContinuedAsNew)
+        }
+        _ => Err(WireError::unknown_query(
+            "workflow status query parameter is unknown",
+        )),
+    }
+}
+
+fn parse_datetime(value: &str) -> Result<DateTime<Utc>, WireError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|datetime| datetime.with_timezone(&Utc))
+        .map_err(|_error| WireError::unknown_query("datetime query parameter is malformed"))
 }
 
 fn caller_from_headers(headers: &axum::http::HeaderMap, bearer_token: &str) -> CallerIdentity {
@@ -179,13 +344,16 @@ mod tests {
     use std::{fs, net::SocketAddr, sync::Arc};
 
     use aion::EngineBuilder;
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowFilter, WorkflowId, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
     use aion_proto::{
         ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoStartWorkflowRequest,
         WireError, WireErrorCode,
-        convert::{ProtoPayload, decode_workflow_summary, encode_workflow_filter},
+        convert::{ProtoPayload, decode_core_value, encode_core_value},
     };
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{
+        EventStore, InMemoryStore,
+        visibility::{VisibilityRecord, VisibilityStore},
+    };
     use axum::{body, http::Request};
     use chrono::Utc;
     use serde_json::json;

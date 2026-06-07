@@ -11,6 +11,7 @@ service WorkflowService {
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc Cancel(CancelRequest) returns (CancelResponse);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  rpc CountWorkflows(CountWorkflowsRequest) returns (CountWorkflowsResponse);
   rpc DescribeWorkflow(DescribeWorkflowRequest) returns (DescribeWorkflowResponse);
 }
 
@@ -60,11 +61,23 @@ message CancelResponse {}
 
 message ListWorkflowsRequest {
   string namespace = 1;
+  // Serde-encoded aion_store::visibility::ListWorkflowsFilter.
   WireEnvelope filter = 2;
 }
 
 message ListWorkflowsResponse {
+  // Serde-encoded aion_store::visibility::WorkflowSummary values.
   repeated WireEnvelope summaries = 1;
+}
+
+message CountWorkflowsRequest {
+  string namespace = 1;
+  // Serde-encoded aion_store::visibility::ListWorkflowsFilter.
+  WireEnvelope filter = 2;
+}
+
+message CountWorkflowsResponse {
+  uint64 count = 1;
 }
 
 message DescribeWorkflowRequest {

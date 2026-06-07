@@ -1,10 +1,11 @@
 //! tonic workflow service adapter.
 
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoDescribeWorkflowRequest,
-    ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, ProtoWireError, WireError,
+    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
+    ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
+    ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
+    ProtoWireError, WireError,
     generated::{self, workflow_service_server::WorkflowServiceServer},
 };
 use prost::Message;
@@ -114,6 +115,21 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         .await
         .map_err(status_from_wire_error)?;
         Ok(Response::new(encode_list_response(response)))
+    }
+
+    async fn count_workflows(
+        &self,
+        request: Request<generated::CountWorkflowsRequest>,
+    ) -> Result<Response<generated::CountWorkflowsResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::count(
+            self.state.namespace_guard(),
+            &caller,
+            decode_count_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_count_response(response)))
     }
 
     async fn describe_workflow(
@@ -329,6 +345,17 @@ fn encode_list_response(value: ProtoListWorkflowsResponse) -> generated::ListWor
     }
 }
 
+fn decode_count_request(value: generated::CountWorkflowsRequest) -> ProtoCountWorkflowsRequest {
+    ProtoCountWorkflowsRequest {
+        namespace: value.namespace,
+        filter: value.filter.map(decode_envelope),
+    }
+}
+
+fn encode_count_response(value: ProtoCountWorkflowsResponse) -> generated::CountWorkflowsResponse {
+    generated::CountWorkflowsResponse { count: value.count }
+}
+
 fn decode_describe_request(
     value: generated::DescribeWorkflowRequest,
 ) -> ProtoDescribeWorkflowRequest {
@@ -354,13 +381,16 @@ mod tests {
     use std::{net::SocketAddr, sync::Arc};
 
     use aion::EngineBuilder;
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowFilter, WorkflowId, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
     use aion_proto::{
         WireErrorCode,
-        convert::{decode_workflow_summary, encode_workflow_filter},
+        convert::{decode_core_value, encode_core_value},
         generated::workflow_service_server::WorkflowService,
     };
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{
+        EventStore, InMemoryStore,
+        visibility::{VisibilityRecord, VisibilityStore},
+    };
     use chrono::Utc;
     use serde_json::json;
     use tonic::Request;
@@ -380,15 +410,29 @@ mod tests {
     #[tokio::test]
     async fn in_process_tonic_start_and_list_use_shared_handlers()
     -> Result<(), Box<dyn std::error::Error>> {
-        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let backing = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = backing.clone();
+        let visibility_store: Arc<dyn VisibilityStore> = backing;
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(Arc::clone(&store))
+                .visibility_store_arc(Arc::clone(&visibility_store))
                 .scheduler_threads(1)
                 .build()
                 .await?,
         );
         store.append(&workflow_id(), &[started_event()?], 0).await?;
+        visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(2)),
+                workflow_type: String::from("fixture"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: std::collections::HashMap::new(),
+            })
+            .await?;
         let ownership = WorkflowOwnership::default();
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
@@ -410,12 +454,12 @@ mod tests {
             Some(Code::NotFound)
         );
 
-        let list_filter = encode_workflow_filter(
+        let list_filter = encode_core_value(
             NAMESPACE,
             None,
-            &WorkflowFilter {
+            &aion_store::visibility::ListWorkflowsFilter {
                 status: Some(WorkflowStatus::Running),
-                ..WorkflowFilter::default()
+                ..aion_store::visibility::ListWorkflowsFilter::default()
             },
         )?;
         let mut list = Request::new(generated::ListWorkflowsRequest {
@@ -431,7 +475,7 @@ mod tests {
             .into_iter()
             .next()
             .map(decode_envelope)
-            .map(|envelope| decode_workflow_summary(&envelope))
+            .map(|envelope| decode_core_value::<aion_store::visibility::WorkflowSummary>(&envelope))
             .transpose()?
             .ok_or_else(|| WireError::backend("summary missing"))?;
         assert_eq!(summary.workflow_id, workflow_id());

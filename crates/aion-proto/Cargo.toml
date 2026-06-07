@@ -26,3 +26,6 @@ tonic-prost = "=0.14.5"
 protoc-bin-vendored = "3.2.0"
 tonic-build = { workspace = true }
 tonic-prost-build = "=0.14.5"
+
+[dev-dependencies]
+aion-store = { path = "../aion-store" }

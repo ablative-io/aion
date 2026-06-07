@@ -118,7 +118,7 @@ pub struct ProtoListWorkflowsRequest {
     /// Namespace that scopes the operation.
     #[prost(string, tag = "1")]
     pub namespace: String,
-    /// Serde-encoded `aion_core::WorkflowFilter` envelope.
+    /// Serde-encoded `aion_store::visibility::ListWorkflowsFilter` envelope.
     #[prost(message, optional, tag = "2")]
     pub filter: Option<WireEnvelope>,
 }
@@ -126,9 +126,28 @@ pub struct ProtoListWorkflowsRequest {
 /// Proto representation of `ListWorkflowsResponse`.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoListWorkflowsResponse {
-    /// Serde-encoded `aion_core::WorkflowSummary` envelopes.
+    /// Serde-encoded `aion_store::visibility::WorkflowSummary` envelopes.
     #[prost(message, repeated, tag = "1")]
     pub summaries: Vec<WireEnvelope>,
+}
+
+/// Proto representation of `CountWorkflowsRequest`.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoCountWorkflowsRequest {
+    /// Namespace that scopes the operation.
+    #[prost(string, tag = "1")]
+    pub namespace: String,
+    /// Serde-encoded `aion_store::visibility::ListWorkflowsFilter` envelope.
+    #[prost(message, optional, tag = "2")]
+    pub filter: Option<WireEnvelope>,
+}
+
+/// Proto representation of `CountWorkflowsResponse`.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoCountWorkflowsResponse {
+    /// Number of visibility summaries matching the filter.
+    #[prost(uint64, tag = "1")]
+    pub count: u64,
 }
 
 /// Proto representation of `DescribeWorkflowRequest`.
@@ -161,19 +180,22 @@ pub struct ProtoDescribeWorkflowResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use aion_core::SearchAttributeValue;
+    use aion_store::visibility::{ListWorkflowsFilter, SearchAttributePredicate};
     use chrono::{DateTime, Utc};
     use prost::Message;
     use serde::de::DeserializeOwned;
     use serde_json::json;
 
     use super::{
-        ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest,
-        ProtoQueryResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
-        proto_query_response,
+        ProtoCountWorkflowsRequest, ProtoCountWorkflowsResponse, ProtoListWorkflowsRequest,
+        ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
+        ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, proto_query_response,
     };
     use crate::convert::{
-        ProtoPayload, ProtoRunId, ProtoWorkflowId, decode_workflow_filter, decode_workflow_summary,
-        encode_workflow_filter, encode_workflow_summary,
+        ProtoPayload, ProtoRunId, ProtoWorkflowId, decode_core_value, encode_core_value,
     };
     use crate::error::{ProtoWireError, WireError};
 
@@ -237,22 +259,31 @@ mod tests {
 
     #[test]
     fn list_workflows_round_trips_json_and_proto() -> Result<(), Box<dyn std::error::Error>> {
-        let filter = aion_core::WorkflowFilter {
+        let filter = ListWorkflowsFilter {
             workflow_type: Some(String::from("checkout")),
             status: Some(aion_core::WorkflowStatus::Running),
-            ..aion_core::WorkflowFilter::default()
+            search_attributes: vec![SearchAttributePredicate::Equals {
+                name: String::from("customer_id"),
+                value: SearchAttributeValue::String(String::from("12345")),
+            }],
+            limit: Some(10),
+            offset: Some(5),
+            ..ListWorkflowsFilter::default()
         };
-        let summary = aion_core::WorkflowSummary {
+        let summary = aion_store::visibility::WorkflowSummary {
             workflow_id: workflow_id(),
+            run_id: run_id(),
             workflow_type: String::from("checkout"),
             status: aion_core::WorkflowStatus::Running,
-            started_at: recorded_at()?,
-            ended_at: None,
-            parent: None,
+            start_time: recorded_at()?,
+            close_time: None,
+            search_attributes: HashMap::from([(
+                String::from("customer_id"),
+                SearchAttributeValue::String(String::from("12345")),
+            )]),
         };
-        let filter_envelope =
-            encode_workflow_filter("tenant-a", Some(String::from("r1")), &filter)?;
-        let summary_envelope = encode_workflow_summary("tenant-a", None, &summary)?;
+        let filter_envelope = encode_core_value("tenant-a", Some(String::from("r1")), &filter)?;
+        let summary_envelope = encode_core_value("tenant-a", None, &summary)?;
         let request = ProtoListWorkflowsRequest {
             namespace: String::from("tenant-a"),
             filter: Some(filter_envelope.clone()),
@@ -260,13 +291,28 @@ mod tests {
         let response = ProtoListWorkflowsResponse {
             summaries: vec![summary_envelope.clone()],
         };
+        let count_request = ProtoCountWorkflowsRequest {
+            namespace: String::from("tenant-a"),
+            filter: Some(filter_envelope.clone()),
+        };
+        let count_response = ProtoCountWorkflowsResponse { count: 1 };
 
         assert_json_round_trip(&request)?;
         assert_proto_round_trip(&request)?;
         assert_json_round_trip(&response)?;
         assert_proto_round_trip(&response)?;
-        assert_eq!(decode_workflow_filter(&filter_envelope)?, filter);
-        assert_eq!(decode_workflow_summary(&summary_envelope)?, summary);
+        assert_json_round_trip(&count_request)?;
+        assert_proto_round_trip(&count_request)?;
+        assert_json_round_trip(&count_response)?;
+        assert_proto_round_trip(&count_response)?;
+        assert_eq!(
+            decode_core_value::<ListWorkflowsFilter>(&filter_envelope)?,
+            filter
+        );
+        assert_eq!(
+            decode_core_value::<aion_store::visibility::WorkflowSummary>(&summary_envelope)?,
+            summary
+        );
         Ok(())
     }
 

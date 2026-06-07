@@ -4,9 +4,9 @@ use aion::EventFilter;
 use aion_core::{RunId, WorkflowFilter, WorkflowId};
 use aion_proto::{
     FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
-    ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoQueryRequest,
-    ProtoRegisterWorker, ProtoSignalRequest, ProtoStartWorkflowRequest, SubscriptionRequest,
-    subscription_request,
+    ProtoCountWorkflowsRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest,
+    ProtoQueryRequest, ProtoRegisterWorker, ProtoSignalRequest, ProtoStartWorkflowRequest,
+    SubscriptionRequest, subscription_request,
 };
 
 use crate::error::ServerError;
@@ -63,6 +63,8 @@ pub enum NamespaceOperation<'a> {
     Cancel(&'a ProtoCancelRequest, WorkflowTarget<'a>),
     /// List workflow request.
     ListWorkflows(&'a ProtoListWorkflowsRequest, &'a WorkflowFilter),
+    /// Count workflow request.
+    CountWorkflows(&'a ProtoCountWorkflowsRequest),
     /// Describe workflow request.
     Describe(&'a ProtoDescribeWorkflowRequest, WorkflowTarget<'a>),
     /// Event subscription request.
@@ -102,6 +104,12 @@ impl<'a> NamespaceOperation<'a> {
         Self::ListWorkflows(request, filter)
     }
 
+    /// Create a count-workflows operation descriptor.
+    #[must_use]
+    pub const fn count(request: &'a ProtoCountWorkflowsRequest) -> Self {
+        Self::CountWorkflows(request)
+    }
+
     /// Create a describe-workflow operation descriptor.
     #[must_use]
     pub const fn describe(
@@ -130,6 +138,7 @@ impl<'a> NamespaceOperation<'a> {
             Self::Query(request, _target) => request.namespace.as_str(),
             Self::Cancel(request, _target) => request.namespace.as_str(),
             Self::ListWorkflows(request, _filter) => request.namespace.as_str(),
+            Self::CountWorkflows(request) => request.namespace.as_str(),
             Self::Describe(request, _target) => request.namespace.as_str(),
             Self::Subscribe(scope, _filter) => scope.namespace(),
             Self::RegisterWorker(request) => request.namespace.as_str(),
@@ -147,7 +156,10 @@ impl<'a> NamespaceOperation<'a> {
             | Self::Cancel(_, target)
             | Self::Describe(_, target) => target.verify(resolver, authorized_namespace),
             Self::Subscribe(scope, filter) => scope.verify(resolver, authorized_namespace, filter),
-            Self::StartWorkflow(_) | Self::ListWorkflows(_, _) | Self::RegisterWorker(_) => Ok(()),
+            Self::StartWorkflow(_)
+            | Self::ListWorkflows(_, _)
+            | Self::CountWorkflows(_)
+            | Self::RegisterWorker(_) => Ok(()),
         }
     }
 }
