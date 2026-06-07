@@ -521,9 +521,14 @@ fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAt
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use aion_core::{Event, Payload, TimerId};
+    use aion_core::{
+        Event, Payload, SearchAttributeError, SearchAttributeSchema, SearchAttributeType,
+        SearchAttributeValue, TimerId,
+    };
+    use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
     use aion_store::{EventStore, InMemoryStore, StoreError};
     use chrono::{DateTime, Utc};
     use serde_json::json;
@@ -621,6 +626,124 @@ mod tests {
             other => return Err(format!("expected WorkflowContinuedAsNew, got {other:?}").into()),
         }
         assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_validated_search_attributes_updated_event()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(7);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("customer_id", SearchAttributeType::String)?;
+        schema.register("attempt", SearchAttributeType::Int)?;
+        let attributes = HashMap::from([
+            (
+                String::from("customer_id"),
+                SearchAttributeValue::String(String::from("customer-123")),
+            ),
+            (String::from("attempt"), SearchAttributeValue::Int(2)),
+        ]);
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        recorder
+            .record_search_attributes_updated(recorded_at(2), attributes.clone(), &schema)
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        match history.as_slice() {
+            [
+                Event::WorkflowStarted { .. },
+                Event::SearchAttributesUpdated {
+                    envelope,
+                    workflow_id: recorded_workflow_id,
+                    attributes: recorded,
+                },
+            ] => {
+                assert_eq!(envelope.seq, 2);
+                assert_eq!(recorded_workflow_id, &workflow_id);
+                assert_eq!(recorded, &attributes);
+            }
+            other => {
+                return Err(
+                    format!("expected started then search attributes, found {other:?}").into(),
+                );
+            }
+        }
+        assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_search_attributes_return_error_without_appending()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(8);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("attempt", SearchAttributeType::Int)?;
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        let attributes = HashMap::from([(
+            String::from("attempt"),
+            SearchAttributeValue::String(String::from("two")),
+        )]);
+        let error = recorder
+            .record_search_attributes_updated(recorded_at(2), attributes, &schema)
+            .await;
+
+        match error {
+            Err(DurabilityError::SearchAttribute(SearchAttributeError::TypeMismatch {
+                name,
+                expected,
+                actual,
+            })) => {
+                assert_eq!(name, "attempt");
+                assert_eq!(expected, SearchAttributeType::Int);
+                assert_eq!(actual, SearchAttributeType::String);
+            }
+            Err(other) => {
+                return Err(format!("expected search attribute error, got {other:?}").into());
+            }
+            Ok(()) => return Err("expected search attribute validation error".into()),
+        }
+        assert_eq!(recorder.current_head(), 1);
+        assert_eq!(store.read_history(&workflow_id).await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorder_visibility_updates_after_search_attributes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(9);
+        let run_id = aion_core::RunId::new(uuid::Uuid::from_u128(90));
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone())
+            .with_visibility(run_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("customer_id", SearchAttributeType::String)?;
+        let attributes = HashMap::from([(
+            String::from("customer_id"),
+            SearchAttributeValue::String(String::from("customer-123")),
+        )]);
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        recorder
+            .record_search_attributes_updated(recorded_at(2), attributes.clone(), &schema)
+            .await?;
+
+        let summaries = store.list_workflows(ListWorkflowsFilter::default()).await?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].workflow_id, workflow_id);
+        assert_eq!(summaries[0].run_id, run_id);
+        assert_eq!(summaries[0].search_attributes, attributes);
         Ok(())
     }
 

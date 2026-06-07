@@ -252,6 +252,7 @@ impl EngineBuilder {
         let supervision = SupervisionTree::new();
         repopulate_active_workflows(
             Arc::clone(&store),
+            Arc::clone(&visibility_store),
             &loaded_workflows,
             &registry,
             &supervision,
@@ -287,6 +288,7 @@ fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineE
 
 async fn repopulate_active_workflows(
     store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
     loaded_workflows: &LoadedWorkflows,
     registry: &Registry,
     supervision: &SupervisionTree,
@@ -305,7 +307,8 @@ async fn repopulate_active_workflows(
             loaded_workflows,
         )?;
         let history_len = u64::try_from(history.len()).unwrap_or(u64::MAX);
-        let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_len);
+        let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_len)
+            .with_visibility(recovered.run_id.clone(), Arc::clone(&visibility_store));
         let completion = CompletionNotifier::new();
         let handle = WorkflowHandle::new(WorkflowHandleParts {
             workflow_id: workflow_id.clone(),
