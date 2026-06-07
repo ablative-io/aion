@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
 
-use aion_core::{Event, status_from_events};
+use aion_core::{Event, Payload, RunId, status_from_events};
 use aion_package::Package;
 use aion_store::visibility::VisibilityStore;
 use aion_store::{EventStore, InMemoryStore};
@@ -13,11 +13,17 @@ use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
     RuntimeHandle, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
     activity::bridge::{ActivityDispatcher, install_activity_dispatcher},
-    durability::{ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery, Recorder},
+    durability::{
+        ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
+        Recorder,
+    },
     runtime::{NifEntry, NifRegistration},
 };
 
-use super::api::Engine;
+use super::api::{
+    Engine, schedule_coordinator_run_id, schedule_coordinator_workflow_id,
+    schedule_coordinator_workflow_type,
+};
 use super::delegated::{DelegatedSeams, EventPublisher, QueryService, SignalRouter};
 
 /// Source for a workflow package collected before `build()` performs fallible
@@ -269,6 +275,7 @@ impl EngineBuilder {
 
         let registry = Registry::default();
         let supervision = SupervisionTree::new();
+        bootstrap_schedule_coordinator(Arc::clone(&store)).await?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),
@@ -318,6 +325,29 @@ fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineE
     }
 }
 
+async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
+    let workflow_id = schedule_coordinator_workflow_id();
+    let history = store.as_ref().read_history(&workflow_id).await?;
+    if !history.is_empty() {
+        return Ok(());
+    }
+
+    let input = Payload::from_json(&serde_json::json!({})).map_err(|error| EngineError::Load {
+        reason: format!("failed to build schedule coordinator input payload: {error}"),
+    })?;
+    let run_id = schedule_coordinator_run_id();
+    let mut recorder = Recorder::new(workflow_id, store);
+    recorder
+        .record_workflow_started(
+            Utc::now(),
+            schedule_coordinator_workflow_type().to_owned(),
+            input,
+            run_id,
+        )
+        .await?;
+    Ok(())
+}
+
 async fn repopulate_active_workflows(
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
@@ -326,60 +356,113 @@ async fn repopulate_active_workflows(
     supervision: &SupervisionTree,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
-    let schedule_coordinator = crate::engine::api::schedule_coordinator_workflow_id();
     for workflow_id in store.as_ref().list_active().await? {
-        if workflow_id == schedule_coordinator {
-            continue;
-        }
         let history = store.as_ref().read_history(&workflow_id).await?;
         let workflow_type = started_workflow_type(&workflow_id, &history)?;
         let projected_status = status_from_events(&history);
         supervision.ensure_type_supervisor(workflow_type.clone())?;
 
-        let recovered = recovery.recover_active_workflow(
+        let recovered = recover_active_workflow(
+            recovery,
             &workflow_id,
             &workflow_type,
             &history,
             loaded_workflows,
         )?;
         let history_len = u64::try_from(history.len()).unwrap_or(u64::MAX);
-        let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_len)
-            .with_visibility(recovered.run_id.clone(), Arc::clone(&visibility_store));
-        let completion = CompletionNotifier::new();
-        let handle = WorkflowHandle::new(WorkflowHandleParts {
-            workflow_id: workflow_id.clone(),
-            run_id: recovered.run_id.clone(),
-            pid: recovered.pid,
-            workflow_type: workflow_type.clone(),
-            loaded_version: recovered.loaded_version,
-            cached_status: projected_status,
-            residency: HandleResidency::Resident,
-            recorder,
-            completion,
-        });
-        registry.insert((workflow_id.clone(), recovered.run_id.clone()), handle)?;
-        registry.reconcile(&workflow_id, &recovered.run_id, &history)?;
-        supervision.place_workflow(workflow_type, recovered.pid)?;
+        match recovered {
+            ActiveWorkflowRecovery::Resident {
+                run_id,
+                loaded_version,
+                pid,
+            } => {
+                let recorder =
+                    Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_len)
+                        .with_visibility(run_id.clone(), Arc::clone(&visibility_store));
+                let completion = CompletionNotifier::new();
+                let handle = WorkflowHandle::new(WorkflowHandleParts {
+                    workflow_id: workflow_id.clone(),
+                    run_id: run_id.clone(),
+                    pid,
+                    workflow_type: workflow_type.clone(),
+                    loaded_version,
+                    cached_status: projected_status,
+                    residency: HandleResidency::Resident,
+                    recorder,
+                    completion,
+                });
+                registry.insert((workflow_id.clone(), run_id.clone()), handle)?;
+                registry.reconcile(&workflow_id, &run_id, &history)?;
+                supervision.place_workflow(workflow_type, pid)?;
+            }
+            ActiveWorkflowRecovery::ScheduleCoordinator { run_id } => {
+                registry.reconcile(&workflow_id, &run_id, &history)?;
+            }
+        }
     }
 
     Ok(())
+}
+
+fn recover_active_workflow(
+    recovery: &dyn ActiveWorkflowRecoverySeam,
+    workflow_id: &aion_core::WorkflowId,
+    workflow_type: &str,
+    history: &[Event],
+    loaded_workflows: &LoadedWorkflows,
+) -> Result<ActiveWorkflowRecovery, EngineError> {
+    if workflow_id == &schedule_coordinator_workflow_id()
+        && workflow_type == schedule_coordinator_workflow_type()
+    {
+        let run_id = started_run_id(workflow_id, history)?;
+        return Ok(ActiveWorkflowRecovery::ScheduleCoordinator { run_id });
+    }
+
+    recovery.recover_active_workflow(workflow_id, workflow_type, history, loaded_workflows)
 }
 
 fn started_workflow_type(
     workflow_id: &aion_core::WorkflowId,
     history: &[Event],
 ) -> Result<String, EngineError> {
-    history
-        .iter()
-        .find_map(|event| match event {
-            Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| EngineError::Load {
-            reason: format!(
-                "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
-            ),
-        })
+    if let Some(workflow_type) = history.iter().find_map(|event| match event {
+        Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.clone()),
+        _ => None,
+    }) {
+        return Ok(workflow_type);
+    }
+
+    if workflow_id == &schedule_coordinator_workflow_id() {
+        return Ok(schedule_coordinator_workflow_type().to_owned());
+    }
+
+    Err(EngineError::Load {
+        reason: format!(
+            "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
+        ),
+    })
+}
+
+fn started_run_id(
+    workflow_id: &aion_core::WorkflowId,
+    history: &[Event],
+) -> Result<RunId, EngineError> {
+    if let Some(run_id) = history.iter().find_map(|event| match event {
+        Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
+        _ => None,
+    }) {
+        return Ok(run_id);
+    }
+
+    if workflow_id == &schedule_coordinator_workflow_id() {
+        return Ok(schedule_coordinator_run_id());
+    }
+
+    Err(EngineError::Load {
+        reason: format!(
+            "active workflow `{workflow_id}` has no WorkflowStarted run id in durable history"
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -396,6 +479,10 @@ mod tests {
     use serde_json::json;
 
     use crate::durability::{ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam};
+    use crate::engine::api::{
+        schedule_coordinator_run_id, schedule_coordinator_workflow_id,
+        schedule_coordinator_workflow_type,
+    };
     use crate::runtime::{Mfa, NifEntry};
 
     use super::{EngineBuilder, LoadedWorkflows};
@@ -496,7 +583,7 @@ mod tests {
             loaded_workflows: &LoadedWorkflows,
         ) -> Result<ActiveWorkflowRecovery, EngineError> {
             let _ = (workflow_id, workflow_type, history, loaded_workflows);
-            Ok(ActiveWorkflowRecovery {
+            Ok(ActiveWorkflowRecovery::Resident {
                 run_id: self.run_id.clone(),
                 loaded_version: self.version.clone(),
                 pid: self.pid,
@@ -542,16 +629,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_store_builds_empty_registry_and_no_type_supervisors() -> Result<(), EngineError>
-    {
+    async fn empty_store_builds_coordinator_history_without_registry_or_supervision()
+    -> Result<(), EngineError> {
+        let store = Arc::new(InMemoryStore::default());
         let engine = EngineBuilder::new()
-            .store(InMemoryStore::default())
+            .store_arc(store.clone())
             .build()
             .await?;
 
         assert!(engine.registry().list()?.is_empty());
-        assert_eq!(engine.supervision().type_supervisor_count()?, 0);
+        assert_eq!(engine.supervision().type_supervisor_count()?, 1);
         assert_eq!(engine.loaded_workflows().iter().count(), 0);
+
+        let coordinator_id = schedule_coordinator_workflow_id();
+        let active = store.list_active().await?;
+        assert_eq!(active, vec![coordinator_id.clone()]);
+        let history = store.read_history(&coordinator_id).await?;
+        let [started] = history.as_slice() else {
+            return Err(EngineError::Load {
+                reason: format!(
+                    "expected exactly one coordinator event, found {}",
+                    history.len()
+                ),
+            });
+        };
+        match started {
+            Event::WorkflowStarted {
+                workflow_type,
+                input,
+                run_id,
+                parent_run_id,
+                ..
+            } => {
+                assert_eq!(workflow_type, schedule_coordinator_workflow_type());
+                assert_eq!(
+                    *input,
+                    Payload::from_json(&json!({})).map_err(|error| {
+                        EngineError::Load {
+                            reason: format!("failed to build expected payload: {error}"),
+                        }
+                    })?
+                );
+                assert_eq!(run_id, &schedule_coordinator_run_id());
+                assert!(parent_run_id.is_none());
+            }
+            other => {
+                return Err(EngineError::Load {
+                    reason: format!("expected coordinator WorkflowStarted, found {other:?}"),
+                });
+            }
+        }
+
+        engine.shutdown()?;
+        let rebuilt = EngineBuilder::new()
+            .store_arc(store.clone())
+            .build()
+            .await?;
+        let rebuilt_history = store.read_history(&coordinator_id).await?;
+        assert_eq!(rebuilt_history.len(), 1);
+        rebuilt.shutdown()?;
+
         Ok(())
     }
 
@@ -626,13 +763,17 @@ mod tests {
                 && handle.cached_status() == WorkflowStatus::Running
                 && handle.pid() == pid
         }));
-        assert_eq!(engine.supervision().type_supervisor_count()?, 1);
+        assert_eq!(engine.supervision().type_supervisor_count()?, 2);
+        let type_supervisors = engine.supervision().type_supervisors()?;
         assert!(
-            engine
-                .supervision()
-                .type_supervisors()?
+            type_supervisors
                 .iter()
                 .any(|node| node.id().workflow_type() == "checkout")
+        );
+        assert!(
+            type_supervisors
+                .iter()
+                .any(|node| node.id().workflow_type() == schedule_coordinator_workflow_type())
         );
         Ok(())
     }
