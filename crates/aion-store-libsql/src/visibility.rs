@@ -718,7 +718,7 @@ mod tests {
         };
         assert_eq!(count_workflows(&conn, filter.clone()).await?, 1);
         assert_eq!(
-            count_workflows(&conn, filter.clone()).await? as usize,
+            usize::try_from(count_workflows(&conn, filter.clone()).await?).unwrap_or(usize::MAX),
             list_workflows(&conn, filter).await?.len()
         );
 
