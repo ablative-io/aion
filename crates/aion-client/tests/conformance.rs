@@ -341,6 +341,7 @@ fn normalize_event(event: &Event) -> Value {
     match event {
         Event::WorkflowStarted {
             envelope, input, ..
+            parent_run_id: None,
         } => {
             json!({"type":"WorkflowStarted","workflowId": envelope.workflow_id.to_string(),"seq": envelope.seq,"payload": input.to_json().ok()})
         }

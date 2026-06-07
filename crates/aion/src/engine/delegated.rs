@@ -506,6 +506,7 @@ mod tests {
             envelope: envelope(1, &other_id),
             workflow_type: "checkout".to_owned(),
             input: payload("input")?,
+            parent_run_id: None,
         };
         let engine = engine_with_seams(
             Arc::new(DeferredSignalRouter),

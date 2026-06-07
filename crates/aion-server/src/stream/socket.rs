@@ -253,6 +253,7 @@ mod tests {
             envelope: envelope(seq, workflow_id),
             workflow_type: "checkout".to_owned(),
             input: payload("input")?,
+            parent_run_id: None,
         })
     }
 

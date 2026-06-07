@@ -39,6 +39,9 @@ pub enum Event {
         workflow_type: String,
         /// Opaque workflow input payload.
         input: Payload,
+        /// Parent run that continued as this run, when this start is part of a
+        /// continue-as-new chain.
+        parent_run_id: Option<RunId>,
     },
     /// A workflow execution completed successfully; this terminal event projects to Completed.
     WorkflowCompleted {
@@ -393,6 +396,7 @@ mod tests {
             envelope,
             workflow_type: String::from("checkout"),
             input: payload("input")?,
+            parent_run_id: None,
         };
 
         assert_eq!(event.seq(), 17);
@@ -410,6 +414,7 @@ mod tests {
                 envelope: envelope(1),
                 workflow_type: String::from("checkout"),
                 input: payload("workflow-input")?,
+                parent_run_id: None,
             },
             Event::WorkflowCompleted {
                 envelope: envelope(2),

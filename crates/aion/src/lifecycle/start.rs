@@ -29,6 +29,15 @@ pub struct StartWorkflowContext<'a> {
     pub registry: &'a Registry,
 }
 
+/// Optional identifiers used by internal start callers such as continue-as-new.
+#[derive(Clone, Debug, Default)]
+pub struct StartWorkflowOptions {
+    /// Existing workflow identifier to reuse; omitted for a fresh workflow.
+    pub workflow_id: Option<WorkflowId>,
+    /// Parent run that continued into this run, when applicable.
+    pub parent_run_id: Option<RunId>,
+}
+
 /// Starts a loaded workflow execution and returns its active handle.
 ///
 /// # Errors
@@ -43,6 +52,26 @@ pub async fn start_workflow(
     workflow_type: &str,
     input: Payload,
 ) -> Result<WorkflowHandle, EngineError> {
+    start_workflow_with_options(
+        context,
+        workflow_type,
+        input,
+        StartWorkflowOptions::default(),
+    )
+    .await
+}
+
+/// Starts a loaded workflow execution with caller-supplied lifecycle options.
+///
+/// # Errors
+///
+/// Returns the same typed errors as [`start_workflow`].
+pub async fn start_workflow_with_options(
+    context: StartWorkflowContext<'_>,
+    workflow_type: &str,
+    input: Payload,
+    options: StartWorkflowOptions,
+) -> Result<WorkflowHandle, EngineError> {
     let loaded = context
         .loaded_workflows
         .latest(workflow_type)
@@ -50,11 +79,16 @@ pub async fn start_workflow(
             workflow_type: workflow_type.to_owned(),
         })?;
 
-    let workflow_id = WorkflowId::new_v4();
+    let workflow_id = options.workflow_id.unwrap_or_else(WorkflowId::new_v4);
     let run_id = RunId::new_v4();
     let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&context.store));
     recorder
-        .record_workflow_started(Utc::now(), workflow_type.to_owned(), input.clone())
+        .record_workflow_started_with_parent(
+            Utc::now(),
+            workflow_type.to_owned(),
+            input.clone(),
+            options.parent_run_id,
+        )
         .await?;
 
     context
@@ -201,6 +235,7 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
+                parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
                 assert_eq!(&envelope.workflow_id, &active[0]);
@@ -258,6 +293,7 @@ mod tests {
                 envelope,
                 workflow_type,
                 input: recorded_input,
+                parent_run_id: None,
             } => {
                 assert_eq!(envelope.seq, 1);
                 assert_eq!(&envelope.workflow_id, handle.workflow_id());

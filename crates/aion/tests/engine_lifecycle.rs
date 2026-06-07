@@ -42,6 +42,7 @@ async fn start_appends_registers_and_lists_workflow() -> Result<(), Box<dyn std:
             workflow_type,
             input: recorded_input,
             ..
+            parent_run_id: None,
         }) => {
             assert_eq!(workflow_type, FIXTURE_MODULE);
             assert_eq!(recorded_input, &input);

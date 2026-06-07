@@ -63,10 +63,28 @@ impl Recorder {
         workflow_type: String,
         input: Payload,
     ) -> Result<(), DurabilityError> {
+        self.record_workflow_started_with_parent(recorded_at, workflow_type, input, None)
+            .await
+    }
+
+    /// Records workflow start with an optional parent run for continue-as-new chains.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_workflow_started_with_parent(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        workflow_type: String,
+        input: Payload,
+        parent_run_id: Option<RunId>,
+    ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::WorkflowStarted {
             envelope,
             workflow_type,
             input,
+            parent_run_id,
         })
         .await
     }
@@ -442,6 +460,7 @@ mod tests {
             },
             workflow_type: String::from("checkout"),
             input: payload("workflow-input")?,
+            parent_run_id: None,
         })
     }
 

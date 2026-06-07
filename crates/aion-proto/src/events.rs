@@ -217,6 +217,7 @@ mod tests {
             envelope: event_envelope()?,
             workflow_type: String::from("checkout"),
             input: aion_core::Payload::from_json(&json!({ "cart": ["sku-1"] }))?,
+            parent_run_id: None,
         };
 
         let frame = encode_streamed_event("tenant-a", Some(String::from("request-1")), &event)?;

@@ -381,6 +381,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::SearchAttributesUpdated {
                 envelope: envelope(2, &workflow_id),
@@ -422,6 +423,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::WorkflowCompleted {
                 envelope: envelope(2, &workflow_id),
@@ -450,6 +452,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::ScheduleTriggered {
                 envelope: envelope(2, &workflow_id),
@@ -477,6 +480,7 @@ mod tests {
                 envelope: envelope(1, &workflow_id),
                 workflow_type: String::from("checkout"),
                 input: payload("input")?,
+                parent_run_id: None,
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2, &workflow_id),

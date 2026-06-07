@@ -489,6 +489,7 @@ mod tests {
             },
             workflow_type: "fixture".to_owned(),
             input: payload()?,
+            parent_run_id: None,
         })
     }
 

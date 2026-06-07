@@ -427,6 +427,7 @@ mod tests {
             },
             workflow_type: "workflow".to_owned(),
             input: payload("input")?,
+            parent_run_id: None,
         })
     }
 

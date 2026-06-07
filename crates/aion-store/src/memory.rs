@@ -216,6 +216,7 @@ mod tests {
             envelope: envelope(seq, workflow_id),
             workflow_type: workflow_type.to_owned(),
             input: payload("input"),
+            parent_run_id: None,
         }
     }
 
