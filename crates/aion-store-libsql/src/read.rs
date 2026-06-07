@@ -52,7 +52,7 @@ pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<Workflo
     let mut active = load_summaries(conn, &WorkflowFilter::default(), false)
         .await?
         .into_iter()
-        .filter(|summary| summary.status == WorkflowStatus::Running)
+        .filter(|summary| matches!(summary.status, WorkflowStatus::Running))
         .map(|summary| summary.workflow_id)
         .collect::<Vec<_>>();
     active.sort_by_key(ToString::to_string);

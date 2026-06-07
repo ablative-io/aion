@@ -99,7 +99,10 @@ impl EventStore for InMemoryStore {
             .histories
             .iter()
             .filter(|(_, history)| {
-                status_from_events(&history_in_sequence_order(history)) == WorkflowStatus::Running
+                matches!(
+                    status_from_events(&history_in_sequence_order(history)),
+                    WorkflowStatus::Running
+                )
             })
             .map(|(workflow_id, _)| workflow_id.clone())
             .collect::<Vec<_>>();

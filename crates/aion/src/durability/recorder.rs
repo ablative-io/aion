@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use aion_core::{
-    ActivityError, ActivityId, Event, EventEnvelope, Payload, TimerId, WorkflowError, WorkflowId,
+    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowError,
+    WorkflowId,
 };
 use aion_store::EventStore;
 use chrono::{DateTime, Utc};
@@ -120,6 +121,28 @@ impl Recorder {
         self.append_with(recorded_at, |envelope| Event::WorkflowCancelled {
             envelope,
             reason,
+        })
+        .await
+    }
+
+    /// Records workflow continue-as-new as a terminal event for this run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_workflow_continued_as_new(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        input: Payload,
+        workflow_type: Option<String>,
+        parent_run_id: RunId,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::WorkflowContinuedAsNew {
+            envelope,
+            input,
+            workflow_type,
+            parent_run_id,
         })
         .await
     }
@@ -444,8 +467,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_activity_events_in_sequence_order() -> Result<(), Box<dyn std::error::Error>> {
+    async fn records_workflow_continued_as_new_terminal_event()
+    -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = workflow_id(2);
+        let parent_run_id = aion_core::RunId::new(uuid::Uuid::from_u128(20));
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let continued_at = recorded_at(2);
+        let continued_input = payload("continued-input")?;
+        let workflow_type = Some(String::from("checkout-v2"));
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        recorder
+            .record_workflow_continued_as_new(
+                continued_at,
+                continued_input.clone(),
+                workflow_type.clone(),
+                parent_run_id.clone(),
+            )
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].seq(), 1);
+        assert_eq!(history[1].seq(), 2);
+        match &history[1] {
+            Event::WorkflowContinuedAsNew {
+                envelope,
+                input,
+                workflow_type: recorded_workflow_type,
+                parent_run_id: recorded_parent_run_id,
+            } => {
+                assert_eq!(envelope.recorded_at, continued_at);
+                assert_eq!(input, &continued_input);
+                assert_eq!(recorded_workflow_type, &workflow_type);
+                assert_eq!(recorded_parent_run_id, &parent_run_id);
+            }
+            other => return Err(format!("expected WorkflowContinuedAsNew, got {other:?}").into()),
+        }
+        assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_activity_events_in_sequence_order() -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(6);
         let store = Arc::new(InMemoryStore::default());
         let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
         let activity_id = aion_core::ActivityId::from_sequence_position(1);
