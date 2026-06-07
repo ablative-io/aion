@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 
+use aion_core::RunId;
 use aion_store::{
-    Event, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    Event, RunSummary, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
     status_from_events,
 };
 use libsql::{Value, params, params_from_iter};
+use uuid::Uuid;
 
 /// Read a workflow's complete event history in sequence order.
 ///
@@ -57,6 +59,22 @@ pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<Workflo
         .collect::<Vec<_>>();
     active.sort_by_key(ToString::to_string);
     Ok(active)
+}
+
+/// Read run summaries for one workflow in continuation order.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL failures and `StoreError::Serialization` for malformed
+/// stored event blobs or run identifiers.
+pub(crate) async fn read_run_chain(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+) -> Result<Vec<RunSummary>, StoreError> {
+    let history = read_history(conn, workflow_id).await?;
+    let current_run_id = current_visibility_run_id(conn, workflow_id).await?;
+
+    run_chain_from_history(&history, current_run_id)
 }
 
 /// Query workflow summaries using SQL-bound filter parameters plus authoritative projection.
@@ -235,6 +253,97 @@ fn sort_summaries(summaries: &mut [WorkflowSummary]) {
                 .cmp(&right.workflow_id.to_string())
         })
     });
+}
+
+async fn current_visibility_run_id(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+) -> Result<Option<RunId>, StoreError> {
+    let mut rows = conn
+        .query(
+            "SELECT run_id FROM visibility WHERE workflow_id = ?1 AND status = ?2 LIMIT 1",
+            params![
+                workflow_id.to_string(),
+                serde_json::to_string(&WorkflowStatus::Running)
+                    .map_err(|error| crate::error::serde_json_error(&error))?
+            ],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    rows.next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+        .map(|row| {
+            let run_id: String = row
+                .get(0)
+                .map_err(|error| crate::error::libsql_error(&error))?;
+            decode_run_id(&run_id).map(Some)
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn run_chain_from_history(
+    history: &[Event],
+    current_run_id: Option<RunId>,
+) -> Result<Vec<RunSummary>, StoreError> {
+    let starts = history
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            Event::WorkflowStarted {
+                envelope,
+                parent_run_id,
+                ..
+            } => Some((index, envelope.recorded_at, parent_run_id.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut summaries = Vec::with_capacity(starts.len());
+    for (position, (start_index, started_at, parent_run_id)) in starts.iter().enumerate() {
+        let end_index = starts
+            .get(position + 1)
+            .map_or(history.len(), |(next_start, _, _)| *next_start);
+        let run_events = &history[*start_index..end_index];
+        let run_id = run_events
+            .iter()
+            .find_map(|event| match event {
+                Event::WorkflowContinuedAsNew { parent_run_id, .. } => Some(parent_run_id.clone()),
+                _ => None,
+            })
+            .or_else(|| current_run_id.clone())
+            .ok_or_else(|| {
+                StoreError::Backend(String::from(
+                    "run chain cannot identify a run without a terminal continue-as-new event or visibility run id",
+                ))
+            })?;
+        let closed_at = run_events.iter().rev().find_map(|event| match event {
+            Event::WorkflowCompleted { envelope, .. }
+            | Event::WorkflowFailed { envelope, .. }
+            | Event::WorkflowCancelled { envelope, .. }
+            | Event::WorkflowTimedOut { envelope, .. }
+            | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
+            _ => None,
+        });
+
+        summaries.push(RunSummary {
+            run_id,
+            parent_run_id: parent_run_id.clone(),
+            status: status_from_events(run_events),
+            started_at: *started_at,
+            closed_at,
+        });
+    }
+
+    Ok(summaries)
+}
+
+fn decode_run_id(value: &str) -> Result<RunId, StoreError> {
+    Uuid::parse_str(value)
+        .map(RunId::new)
+        .map_err(|error| StoreError::Serialization(error.to_string()))
 }
 
 fn decode_event(blob: &[u8]) -> Result<Event, StoreError> {

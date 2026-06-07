@@ -4,18 +4,75 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use aion_core::{
-    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
+    Event, RunId, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    status_from_events,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
-use crate::{EventStore, StoreError, TimerEntry};
+use crate::{EventStore, RunSummary, StoreError, TimerEntry};
 
 /// Correct non-durable [`EventStore`] implementation for tests and backend equivalence.
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     state: Mutex<InMemoryState>,
+}
+
+fn run_chain_from_history(
+    history: &[Event],
+    current_run_id: Option<RunId>,
+) -> Result<Vec<RunSummary>, StoreError> {
+    let starts = history
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            Event::WorkflowStarted {
+                envelope,
+                parent_run_id,
+                ..
+            } => Some((index, envelope.recorded_at, parent_run_id.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut summaries = Vec::with_capacity(starts.len());
+    for (position, (start_index, started_at, parent_run_id)) in starts.iter().enumerate() {
+        let end_index = starts
+            .get(position + 1)
+            .map_or(history.len(), |(next_start, _, _)| *next_start);
+        let run_events = &history[*start_index..end_index];
+        let run_id = run_events
+            .iter()
+            .find_map(|event| match event {
+                Event::WorkflowContinuedAsNew { parent_run_id, .. } => Some(parent_run_id.clone()),
+                _ => None,
+            })
+            .or_else(|| current_run_id.clone())
+            .ok_or_else(|| {
+                StoreError::Backend(String::from(
+                    "run chain cannot identify a run without a terminal continue-as-new event or visibility run id",
+                ))
+            })?;
+        let closed_at = run_events.iter().rev().find_map(|event| match event {
+            Event::WorkflowCompleted { envelope, .. }
+            | Event::WorkflowFailed { envelope, .. }
+            | Event::WorkflowCancelled { envelope, .. }
+            | Event::WorkflowTimedOut { envelope, .. }
+            | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
+            _ => None,
+        });
+
+        summaries.push(RunSummary {
+            run_id,
+            parent_run_id: parent_run_id.clone(),
+            status: status_from_events(run_events),
+            started_at: *started_at,
+            closed_at,
+        });
+    }
+
+    Ok(summaries)
 }
 
 #[async_trait]
@@ -163,6 +220,26 @@ impl EventStore for InMemoryStore {
             .collect::<Vec<_>>();
         active.sort_by_key(ToString::to_string);
         Ok(active)
+    }
+
+    async fn read_run_chain(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<RunSummary>, StoreError> {
+        let state = self.lock_state()?;
+        let history = state
+            .histories
+            .get(workflow_id)
+            .map_or_else(Vec::new, |history| history_in_sequence_order(history));
+        let current_run_id = state
+            .visibility
+            .values()
+            .find(|record| {
+                &record.workflow_id == workflow_id && record.status == WorkflowStatus::Running
+            })
+            .map(|record| record.run_id.clone());
+
+        run_chain_from_history(&history, current_run_id)
     }
 
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {

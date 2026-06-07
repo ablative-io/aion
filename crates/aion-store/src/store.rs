@@ -1,10 +1,27 @@
 //! `EventStore` trait.
 
-use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_core::{
+    Event, RunId, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::{StoreError, TimerEntry};
+
+/// Summary for one concrete run in a continue-as-new chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummary {
+    /// Concrete run identifier.
+    pub run_id: RunId,
+    /// Parent run that continued into this run, if any.
+    pub parent_run_id: Option<RunId>,
+    /// Projected status for this concrete run's history slice.
+    pub status: WorkflowStatus,
+    /// Timestamp recorded for this run's `WorkflowStarted` event.
+    pub started_at: DateTime<Utc>,
+    /// Timestamp recorded for this run's terminal event, when present.
+    pub closed_at: Option<DateTime<Utc>>,
+}
 
 /// Durable event-history, visibility-query, and timer contract for Aion stores.
 #[async_trait]
@@ -52,6 +69,17 @@ pub trait EventStore: Send + Sync + 'static {
     ///
     /// Returns backend or serialization errors encountered while projecting active workflows.
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError>;
+
+    /// Reads the concrete runs for `workflow_id` in continue-as-new order.
+    ///
+    /// The first entry has no parent run. Later entries carry the run id that continued into them.
+    /// Unknown workflows return an empty vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns backend or serialization errors encountered while reading histories or run metadata.
+    async fn read_run_chain(&self, workflow_id: &WorkflowId)
+    -> Result<Vec<RunSummary>, StoreError>;
 
     /// Returns workflow summaries matching `filter`.
     ///
