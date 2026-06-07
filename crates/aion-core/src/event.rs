@@ -70,7 +70,7 @@ pub enum Event {
         /// (timers and signals), not by the core event model.
         timeout: String,
     },
-    /// Workflow search attributes were updated for visibility projection.
+    /// Workflow search attributes were updated for visibility and query projection.
     SearchAttributesUpdated {
         /// Recording metadata for this event.
         envelope: EventEnvelope,
