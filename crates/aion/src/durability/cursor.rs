@@ -305,6 +305,12 @@ fn event_kind(event: &Event) -> &'static str {
         Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
         Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",
         Event::ChildWorkflowCancelled { .. } => "ChildWorkflowCancelled",
+        Event::ScheduleCreated { .. } => "ScheduleCreated",
+        Event::ScheduleUpdated { .. } => "ScheduleUpdated",
+        Event::SchedulePaused { .. } => "SchedulePaused",
+        Event::ScheduleResumed { .. } => "ScheduleResumed",
+        Event::ScheduleDeleted { .. } => "ScheduleDeleted",
+        Event::ScheduleTriggered { .. } => "ScheduleTriggered",
     }
 }
 

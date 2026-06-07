@@ -362,7 +362,13 @@ fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
         | Event::ChildWorkflowStarted { .. }
         | Event::ChildWorkflowCompleted { .. }
         | Event::ChildWorkflowFailed { .. }
-        | Event::ChildWorkflowCancelled { .. } => None,
+        | Event::ChildWorkflowCancelled { .. }
+        | Event::ScheduleCreated { .. }
+        | Event::ScheduleUpdated { .. }
+        | Event::SchedulePaused { .. }
+        | Event::ScheduleResumed { .. }
+        | Event::ScheduleDeleted { .. }
+        | Event::ScheduleTriggered { .. } => None,
     })
 }
 

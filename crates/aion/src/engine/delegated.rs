@@ -55,6 +55,8 @@ pub enum EventFamily {
     Signal,
     /// Child-workflow lifecycle events.
     ChildWorkflow,
+    /// Schedule lifecycle and trigger events.
+    Schedule,
 }
 
 /// AT-005/AT-006 signal-routing seam.
@@ -274,6 +276,12 @@ const fn event_family(event: &Event) -> EventFamily {
         | Event::ChildWorkflowCompleted { .. }
         | Event::ChildWorkflowFailed { .. }
         | Event::ChildWorkflowCancelled { .. } => EventFamily::ChildWorkflow,
+        Event::ScheduleCreated { .. }
+        | Event::ScheduleUpdated { .. }
+        | Event::SchedulePaused { .. }
+        | Event::ScheduleResumed { .. }
+        | Event::ScheduleDeleted { .. }
+        | Event::ScheduleTriggered { .. } => EventFamily::Schedule,
     }
 }
 

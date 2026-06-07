@@ -213,7 +213,13 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
         | Event::WorkflowCancelled { .. }
         | Event::WorkflowTimedOut { .. }
         | Event::ActivityScheduled { .. }
-        | Event::ActivityStarted { .. } => Err(DurabilityError::HistoryShape {
+        | Event::ActivityStarted { .. }
+        | Event::ScheduleCreated { .. }
+        | Event::ScheduleUpdated { .. }
+        | Event::SchedulePaused { .. }
+        | Event::ScheduleResumed { .. }
+        | Event::ScheduleDeleted { .. }
+        | Event::ScheduleTriggered { .. } => Err(DurabilityError::HistoryShape {
             reason: format!(
                 "matched history ended without a recorded command outcome: {}",
                 event_kind(last)
@@ -249,6 +255,12 @@ fn event_kind(event: &Event) -> &'static str {
         Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
         Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",
         Event::ChildWorkflowCancelled { .. } => "ChildWorkflowCancelled",
+        Event::ScheduleCreated { .. } => "ScheduleCreated",
+        Event::ScheduleUpdated { .. } => "ScheduleUpdated",
+        Event::SchedulePaused { .. } => "SchedulePaused",
+        Event::ScheduleResumed { .. } => "ScheduleResumed",
+        Event::ScheduleDeleted { .. } => "ScheduleDeleted",
+        Event::ScheduleTriggered { .. } => "ScheduleTriggered",
     }
 }
 
