@@ -21,7 +21,7 @@ pub struct InMemoryStore {
 
 fn run_chain_from_history(
     history: &[Event],
-    current_run_id: Option<RunId>,
+    current_run_id: Option<&RunId>,
 ) -> Result<Vec<RunSummary>, StoreError> {
     let starts = history
         .iter()
@@ -48,7 +48,7 @@ fn run_chain_from_history(
                 Event::WorkflowContinuedAsNew { parent_run_id, .. } => Some(parent_run_id.clone()),
                 _ => None,
             })
-            .or_else(|| current_run_id.clone())
+            .or_else(|| current_run_id.cloned())
             .ok_or_else(|| {
                 StoreError::Backend(String::from(
                     "run chain cannot identify a run without a terminal continue-as-new event or visibility run id",
@@ -237,7 +237,7 @@ impl EventStore for InMemoryStore {
             .find(|record| {
                 &record.workflow_id == workflow_id && record.status == WorkflowStatus::Running
             })
-            .map(|record| record.run_id.clone());
+            .map(|record| &record.run_id);
 
         run_chain_from_history(&history, current_run_id)
     }

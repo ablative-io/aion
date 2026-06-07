@@ -74,7 +74,7 @@ pub(crate) async fn read_run_chain(
     let history = read_history(conn, workflow_id).await?;
     let current_run_id = current_visibility_run_id(conn, workflow_id).await?;
 
-    run_chain_from_history(&history, current_run_id)
+    run_chain_from_history(&history, current_run_id.as_ref())
 }
 
 /// Query workflow summaries using SQL-bound filter parameters plus authoritative projection.
@@ -286,7 +286,7 @@ async fn current_visibility_run_id(
 
 fn run_chain_from_history(
     history: &[Event],
-    current_run_id: Option<RunId>,
+    current_run_id: Option<&RunId>,
 ) -> Result<Vec<RunSummary>, StoreError> {
     let starts = history
         .iter()
@@ -313,7 +313,7 @@ fn run_chain_from_history(
                 Event::WorkflowContinuedAsNew { parent_run_id, .. } => Some(parent_run_id.clone()),
                 _ => None,
             })
-            .or_else(|| current_run_id.clone())
+            .or_else(|| current_run_id.cloned())
             .ok_or_else(|| {
                 StoreError::Backend(String::from(
                     "run chain cannot identify a run without a terminal continue-as-new event or visibility run id",
