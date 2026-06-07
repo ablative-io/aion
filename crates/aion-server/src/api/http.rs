@@ -429,14 +429,11 @@ fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> Ca
         return CallerIdentity::new(subject.unwrap_or("anonymous"), namespaces);
     }
 
-    let subject = match subject {
-        Some(subject) => subject,
-        None => {
-            return CallerIdentity::denied(
-                "anonymous",
-                "missing required header: x-aion-subject; set x-aion-subject to a non-empty caller identifier",
-            );
-        }
+    let Some(subject) = subject else {
+        return CallerIdentity::denied(
+            "anonymous",
+            "missing required header: x-aion-subject; set x-aion-subject to a non-empty caller identifier",
+        );
     };
 
     let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
