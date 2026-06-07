@@ -429,6 +429,22 @@ fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> Ca
         return CallerIdentity::new(subject.unwrap_or("anonymous"), namespaces);
     }
 
+    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
+    let expected = format!("Bearer {bearer_token}");
+    let Some(authorization) = headers.get("authorization") else {
+        return CallerIdentity::denied(
+            subject.unwrap_or("anonymous"),
+            "missing Authorization header with Bearer token; set authorization to `Bearer <token>` for this server",
+        );
+    };
+    let authorization = authorization.to_str().ok();
+    if authorization != Some(expected.as_str()) {
+        return CallerIdentity::denied(
+            subject.unwrap_or("anonymous"),
+            "invalid or expired bearer token; refresh the token and send authorization as `Bearer <token>`",
+        );
+    }
+
     let Some(subject) = subject else {
         return CallerIdentity::denied(
             "anonymous",
@@ -436,22 +452,7 @@ fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> Ca
         );
     };
 
-    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
-    let expected = format!("Bearer {bearer_token}");
-    match headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        None => CallerIdentity::denied(
-            subject,
-            "missing Authorization header with Bearer token; set authorization to `Bearer <token>` for this server",
-        ),
-        Some(value) if value == expected => CallerIdentity::new(subject, namespaces),
-        Some(_) => CallerIdentity::denied(
-            subject,
-            "invalid or expired bearer token; refresh the token and send authorization as `Bearer <token>`",
-        ),
-    }
+    CallerIdentity::new(subject, namespaces)
 }
 
 fn parse_namespaces(value: &str) -> Vec<String> {
