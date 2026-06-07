@@ -25,7 +25,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::{
-    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
+    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers,
+    config::AuthConfig, dashboard::assets,
 };
 
 /// Build the public HTTP application: workflow-management routes first, then
@@ -78,7 +79,7 @@ impl FromRequestParts<ServerState> for HttpCaller {
     ) -> Result<Self, Self::Rejection> {
         Ok(Self(caller_from_headers(
             &parts.headers,
-            state.runtime_config().auth.bearer_token.as_str(),
+            &state.runtime_config().auth,
         )))
     }
 }
@@ -415,7 +416,7 @@ fn parse_datetime(value: &str) -> Result<DateTime<Utc>, WireError> {
         .map_err(|_error| WireError::unknown_query("datetime query parameter is malformed"))
 }
 
-fn caller_from_headers(headers: &axum::http::HeaderMap, bearer_token: &str) -> CallerIdentity {
+fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> CallerIdentity {
     let subject = headers
         .get("x-aion-subject")
         .and_then(|value| value.to_str().ok())
@@ -425,6 +426,10 @@ fn caller_from_headers(headers: &axum::http::HeaderMap, bearer_token: &str) -> C
         .get("x-aion-namespaces")
         .and_then(|value| value.to_str().ok())
         .map_or_else(Vec::new, parse_namespaces);
+    if !auth.enabled {
+        return CallerIdentity::new(subject, namespaces);
+    }
+    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
     let expected = format!("Bearer {bearer_token}");
     let authorized = headers
         .get("authorization")
@@ -493,8 +498,8 @@ mod tests {
     use crate::{
         NamespaceResolver, WorkflowOwnership,
         config::{
-            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, NamespaceConfig,
-            NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
+            NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
         },
     };
 
@@ -770,7 +775,9 @@ mod tests {
             },
             tls: None,
             auth: AuthConfig {
-                bearer_token: TOKEN.to_owned(),
+                enabled: true,
+                jwks_url: Some(TOKEN.to_owned()),
+                jwks_refresh_seconds: 300,
             },
             dashboard: DashboardConfig {
                 source: DashboardAssetSource::Embedded,
@@ -785,6 +792,10 @@ mod tests {
                 outbound_buffer_bound: 32,
             },
             workflow_packages: Vec::new(),
+            scheduler_threads: 1,
+            default_namespace: "default".to_owned(),
+            drain_timeout: std::time::Duration::from_secs(30),
+            metrics: MetricsConfig { enabled: true },
         }
     }
 

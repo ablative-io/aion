@@ -30,6 +30,7 @@ tower = { workspace = true, features = ["util"] }
 rust-embed = "8.11.0"
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+toml = "1.1.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

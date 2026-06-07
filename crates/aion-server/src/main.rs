@@ -1,20 +1,41 @@
 //! Thin binary entry point; `anyhow` is confined to this file.
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
 
-use aion_server::{ServerConfig, ServerError, ServerState, api};
-use anyhow::{Context, Result, bail};
+use aion_server::{ServerConfig, ServerError, ServerState, api, config::CliOverrides};
+use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tonic::transport::Server as TonicServer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match run_main() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error:#}");
+            if is_config_error(&error) {
+                ExitCode::from(2)
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+fn run_main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to build tokio runtime")?;
+    runtime.block_on(run())
+}
+
+async fn run() -> Result<()> {
     init_tracing()?;
 
-    let config_path = config_path_from_args()?;
-    let config = ServerConfig::load_from_path(config_path)?;
+    let cli = parse_cli(std::env::args_os().skip(1))?;
+    let config = ServerConfig::load(&cli)?;
     let state = ServerState::build(config).await?;
     reject_tls_until_supported(&state)?;
 
@@ -122,12 +143,100 @@ where
     }
 }
 
-fn config_path_from_args() -> Result<PathBuf> {
-    let mut args = std::env::args_os();
-    drop(args.next());
-    let Some(path) = args.next() else {
-        bail!("usage: aion-server <config.json>");
-    };
+fn parse_cli(args: impl IntoIterator<Item = OsString>) -> Result<CliOverrides, ServerError> {
+    let mut overrides = CliOverrides::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        let flag = arg.to_string_lossy();
+        match flag.as_ref() {
+            "--config" => {
+                overrides.config_path =
+                    Some(PathBuf::from(required_value("--config", args.next())?));
+            }
+            "--listen-address" => {
+                let value = required_value("--listen-address", args.next())?;
+                overrides.listen_address = Some(parse_socket_addr("--listen-address", &value)?);
+            }
+            "--store-url" => overrides.store_url = Some(required_utf8("--store-url", args.next())?),
+            "--scheduler-threads" => {
+                let value = required_utf8("--scheduler-threads", args.next())?;
+                overrides.scheduler_threads =
+                    Some(parse_positive_usize("--scheduler-threads", &value)?);
+            }
+            "--drain-timeout" => {
+                let value = required_utf8("--drain-timeout", args.next())?;
+                overrides.drain_timeout_seconds =
+                    Some(parse_positive_u64("--drain-timeout", &value)?);
+            }
+            "--help" | "-h" => {
+                return Err(ServerError::Config { message: usage() });
+            }
+            unknown => {
+                return Err(ServerError::Config {
+                    message: format!("unknown argument `{unknown}`\n{}", usage()),
+                });
+            }
+        }
+    }
+    Ok(overrides)
+}
 
-    Ok(PathBuf::from(path))
+fn required_value(flag: &str, value: Option<OsString>) -> Result<OsString, ServerError> {
+    value.ok_or_else(|| ServerError::Config {
+        message: format!("{flag} requires a value"),
+    })
+}
+
+fn required_utf8(flag: &str, value: Option<OsString>) -> Result<String, ServerError> {
+    let value = required_value(flag, value)?;
+    value.into_string().map_err(|_| ServerError::Config {
+        message: format!("{flag} must be valid UTF-8"),
+    })
+}
+
+fn parse_socket_addr(flag: &str, value: &OsString) -> Result<SocketAddr, ServerError> {
+    let value = value.to_str().ok_or_else(|| ServerError::Config {
+        message: format!("{flag} must be valid UTF-8"),
+    })?;
+    value.parse().map_err(|source| ServerError::Config {
+        message: format!("{flag} must be a socket address: {source}"),
+    })
+}
+
+fn parse_positive_usize(flag: &str, value: &str) -> Result<usize, ServerError> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|source| ServerError::Config {
+            message: format!("{flag} must be a positive integer: {source}"),
+        })?;
+    if parsed == 0 {
+        return Err(ServerError::Config {
+            message: format!("{flag} must be a positive integer"),
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_positive_u64(flag: &str, value: &str) -> Result<u64, ServerError> {
+    let parsed = value.parse::<u64>().map_err(|source| ServerError::Config {
+        message: format!("{flag} must be a positive integer: {source}"),
+    })?;
+    if parsed == 0 {
+        return Err(ServerError::Config {
+            message: format!("{flag} must be a positive integer"),
+        });
+    }
+    Ok(parsed)
+}
+
+fn is_config_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<ServerError>()
+            .is_some_and(ServerError::is_config)
+    })
+}
+
+fn usage() -> String {
+    "usage: aion-server [--config PATH] [--listen-address HOST:PORT] [--store-url URL] [--scheduler-threads N] [--drain-timeout SECONDS]".to_owned()
 }

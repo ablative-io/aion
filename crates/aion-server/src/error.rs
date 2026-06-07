@@ -129,6 +129,12 @@ impl ServerError {
         }
     }
 
+    /// Return true when this is an operator configuration failure.
+    #[must_use]
+    pub const fn is_config(&self) -> bool {
+        matches!(self, Self::Config { .. })
+    }
+
     /// Construct a namespace-denied error without embedding authorization logic.
     #[must_use]
     pub fn namespace_denied(message: impl Into<String>) -> Self {
