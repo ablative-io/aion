@@ -151,7 +151,7 @@ fn parse_cli(args: impl IntoIterator<Item = OsString>) -> Result<CliOverrides, S
         match flag.as_ref() {
             "--config" => {
                 overrides.config_path =
-                    Some(PathBuf::from(required_value("--config", args.next())?))
+                    Some(PathBuf::from(required_value("--config", args.next())?));
             }
             "--listen-address" => {
                 let value = required_value("--listen-address", args.next())?;
