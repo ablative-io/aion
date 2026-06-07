@@ -374,9 +374,6 @@ mod tests {
     #[test]
     fn events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
         let child_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(1));
-        let schedule_id = ScheduleId::new(uuid::Uuid::from_u128(2));
-        let triggered_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(3));
-        let triggered_run_id = RunId::new(uuid::Uuid::from_u128(4));
         let fire_at = DateTime::from_timestamp(1_700_000_100, 0).unwrap_or_default();
         let events = vec![
             Event::WorkflowStarted {
@@ -463,6 +460,20 @@ mod tests {
                 envelope: envelope(18),
                 child_workflow_id,
             },
+        ];
+
+        for event in events {
+            round_trip(&event)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn schedule_events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
+        let schedule_id = ScheduleId::new(uuid::Uuid::from_u128(2));
+        let triggered_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(3));
+        let triggered_run_id = RunId::new(uuid::Uuid::from_u128(4));
+        let events = vec![
             Event::ScheduleCreated {
                 envelope: envelope(19),
                 schedule_id: schedule_id.clone(),
