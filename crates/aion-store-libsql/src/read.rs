@@ -223,6 +223,7 @@ fn is_queryable_event(event: &Event) -> bool {
             | Event::WorkflowFailed { .. }
             | Event::WorkflowCancelled { .. }
             | Event::WorkflowTimedOut { .. }
+            | Event::WorkflowContinuedAsNew { .. }
     )
 }
 

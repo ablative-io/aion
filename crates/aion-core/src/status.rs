@@ -21,6 +21,23 @@ pub enum WorkflowStatus {
     Cancelled,
     /// The workflow recorded a [`Event::WorkflowTimedOut`] terminal event.
     TimedOut,
+    /// The workflow recorded a [`Event::WorkflowContinuedAsNew`] terminal event.
+    ContinuedAsNew,
+}
+
+impl WorkflowStatus {
+    /// Returns whether this status represents a terminal workflow execution state.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        match self {
+            Self::Running => false,
+            Self::Completed
+            | Self::Failed
+            | Self::Cancelled
+            | Self::TimedOut
+            | Self::ContinuedAsNew => true,
+        }
+    }
 }
 
 /// Projects workflow status from an event history.
@@ -37,6 +54,7 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
             Event::WorkflowFailed { .. } => Some(WorkflowStatus::Failed),
             Event::WorkflowCancelled { .. } => Some(WorkflowStatus::Cancelled),
             Event::WorkflowTimedOut { .. } => Some(WorkflowStatus::TimedOut),
+            Event::WorkflowContinuedAsNew { .. } => Some(WorkflowStatus::ContinuedAsNew),
             Event::WorkflowStarted { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
@@ -67,7 +85,9 @@ mod tests {
     use serde_json::json;
 
     use super::{WorkflowStatus, status_from_events};
-    use crate::{ActivityId, Event, EventEnvelope, Payload, ScheduleId, WorkflowError, WorkflowId};
+    use crate::{
+        ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleId, WorkflowError, WorkflowId,
+    };
 
     fn recorded_at(offset: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset, 0).unwrap_or_default()
@@ -158,6 +178,48 @@ mod tests {
         ];
 
         assert_eq!(status_from_events(&events), WorkflowStatus::TimedOut);
+        Ok(())
+    }
+
+    #[test]
+    fn continued_as_new_projects_status() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2),
+                input: payload("continued-input")?,
+                workflow_type: Some(String::from("checkout-v2")),
+                parent_run_id: RunId::new(uuid::Uuid::from_u128(2)),
+            },
+        ];
+
+        assert_eq!(status_from_events(&events), WorkflowStatus::ContinuedAsNew);
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_status_terminality_classifies_running_and_terminal_statuses() {
+        assert!(!WorkflowStatus::Running.is_terminal());
+        assert!(WorkflowStatus::Completed.is_terminal());
+        assert!(WorkflowStatus::Failed.is_terminal());
+        assert!(WorkflowStatus::Cancelled.is_terminal());
+        assert!(WorkflowStatus::TimedOut.is_terminal());
+        assert!(WorkflowStatus::ContinuedAsNew.is_terminal());
+    }
+
+    #[test]
+    fn started_then_continued_as_new_projects_status() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2),
+                input: payload("continued-input")?,
+                workflow_type: None,
+                parent_run_id: RunId::new(uuid::Uuid::from_u128(3)),
+            },
+        ];
+
+        assert_eq!(status_from_events(&events), WorkflowStatus::ContinuedAsNew);
         Ok(())
     }
 

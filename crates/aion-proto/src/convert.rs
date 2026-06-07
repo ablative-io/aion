@@ -90,6 +90,8 @@ pub enum ProtoWorkflowStatus {
     Cancelled = 4,
     /// Workflow timed out.
     TimedOut = 5,
+    /// Workflow continued as a new run.
+    ContinuedAsNew = 6,
 }
 
 /// Thin proto envelope carrying a serde-encoded aion-core value.
@@ -206,6 +208,7 @@ impl From<aion_core::WorkflowStatus> for ProtoWorkflowStatus {
             aion_core::WorkflowStatus::Failed => Self::Failed,
             aion_core::WorkflowStatus::Cancelled => Self::Cancelled,
             aion_core::WorkflowStatus::TimedOut => Self::TimedOut,
+            aion_core::WorkflowStatus::ContinuedAsNew => Self::ContinuedAsNew,
         }
     }
 }
@@ -223,6 +226,7 @@ impl TryFrom<ProtoWorkflowStatus> for aion_core::WorkflowStatus {
             ProtoWorkflowStatus::Failed => Ok(Self::Failed),
             ProtoWorkflowStatus::Cancelled => Ok(Self::Cancelled),
             ProtoWorkflowStatus::TimedOut => Ok(Self::TimedOut),
+            ProtoWorkflowStatus::ContinuedAsNew => Ok(Self::ContinuedAsNew),
         }
     }
 }
@@ -514,6 +518,7 @@ mod tests {
             aion_core::WorkflowStatus::Failed,
             aion_core::WorkflowStatus::Cancelled,
             aion_core::WorkflowStatus::TimedOut,
+            aion_core::WorkflowStatus::ContinuedAsNew,
         ];
 
         for core in statuses {

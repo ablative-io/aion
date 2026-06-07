@@ -5,6 +5,8 @@ export type WorkflowId = string;
 
 export type RunId = string;
 
+export type ScheduleId = string;
+
 export type ActivityId = number;
 
 export type TimerId = TimerIdKind;
@@ -14,6 +16,42 @@ export type Namespace = string;
 export type ContentType = "Json";
 
 export type Payload = { content_type: ContentType, bytes: Array<number>, };
+
+export type TriggerSpec = { "Cron": { 
+/**
+ * Cron expression to evaluate in later scheduling layers.
+ */
+expression: string, } } | { "Interval": { 
+/**
+ * Duration between firings.
+ */
+period: { secs: number, nanos: number }, } };
+
+export type OverlapPolicy = "Skip" | "BufferOne" | "CancelPrevious" | "AllowAll";
+
+export type CatchUpPolicy = "All" | "One" | "Skip";
+
+export type ScheduleConfig = { 
+/**
+ * Trigger used to compute eligible fire times.
+ */
+trigger: TriggerSpec, 
+/**
+ * Policy for overlapping firings.
+ */
+overlap_policy: OverlapPolicy, 
+/**
+ * Policy for missed firings.
+ */
+catch_up_policy: CatchUpPolicy, 
+/**
+ * Workflow type started when the schedule fires.
+ */
+workflow_type: string, 
+/**
+ * Opaque workflow input supplied to triggered executions.
+ */
+input: Payload, };
 
 export type WorkflowError = { 
 /**
@@ -41,7 +79,7 @@ message: string,
  */
 details: Payload | null, };
 
-export type WorkflowStatus = "Running" | "Completed" | "Failed" | "Cancelled" | "TimedOut";
+export type WorkflowStatus = "Running" | "Completed" | "Failed" | "Cancelled" | "TimedOut" | "ContinuedAsNew";
 
 export type WorkflowFilter = { 
 /**
@@ -155,7 +193,25 @@ envelope: EventEnvelope,
  * Intentionally stringly-typed: the closed set of timeout kinds is defined by cluster AT
  * (timers and signals), not by the core event model.
  */
-timeout: string, } } | { "type": "ActivityScheduled", "data": { 
+timeout: string, } } | { "type": "WorkflowContinuedAsNew", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Opaque workflow input payload carried into the new run.
+ */
+input: Payload, 
+/**
+ * Workflow type override for the new run, when migration changes the workflow type.
+ *
+ * When absent, the new run uses the current workflow type.
+ */
+workflow_type: string | null, 
+/**
+ * Run identifier for the current run that is being continued.
+ */
+parent_run_id: RunId, } } | { "type": "ActivityScheduled", "data": { 
 /**
  * Recording metadata for this event.
  */
@@ -303,5 +359,69 @@ envelope: EventEnvelope,
 /**
  * Child workflow that was cancelled.
  */
-child_workflow_id: WorkflowId, } };
+child_workflow_id: WorkflowId, } } | { "type": "ScheduleCreated", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Schedule resource that was created.
+ */
+schedule_id: ScheduleId, 
+/**
+ * Persisted schedule configuration.
+ */
+config: ScheduleConfig, } } | { "type": "ScheduleUpdated", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Schedule resource that was updated.
+ */
+schedule_id: ScheduleId, 
+/**
+ * Updated schedule configuration.
+ */
+config: ScheduleConfig, } } | { "type": "SchedulePaused", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Schedule resource that was paused.
+ */
+schedule_id: ScheduleId, } } | { "type": "ScheduleResumed", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Schedule resource that was resumed.
+ */
+schedule_id: ScheduleId, } } | { "type": "ScheduleDeleted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Schedule resource that was deleted.
+ */
+schedule_id: ScheduleId, } } | { "type": "ScheduleTriggered", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Schedule resource that fired.
+ */
+schedule_id: ScheduleId, 
+/**
+ * Workflow execution started by the schedule tick.
+ */
+workflow_id: WorkflowId, 
+/**
+ * Run started by the schedule tick.
+ */
+run_id: RunId, } };
 

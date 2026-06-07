@@ -224,6 +224,8 @@ pub enum ReplayTerminal {
     Cancelled(String),
     /// Workflow timed out with a recorded timeout descriptor.
     TimedOut(String),
+    /// Workflow continued as a new run with a carried input payload.
+    ContinuedAsNew(Payload),
 }
 
 fn workflow_started_at(
@@ -254,6 +256,9 @@ fn terminal_from_history(workflow_id: &WorkflowId, history: &[Event]) -> Option<
             Event::WorkflowFailed { error, .. } => ReplayTerminal::Failed(error.clone()),
             Event::WorkflowCancelled { reason, .. } => ReplayTerminal::Cancelled(reason.clone()),
             Event::WorkflowTimedOut { timeout, .. } => ReplayTerminal::TimedOut(timeout.clone()),
+            Event::WorkflowContinuedAsNew { input, .. } => {
+                ReplayTerminal::ContinuedAsNew(input.clone())
+            }
             _ => return None,
         };
 
