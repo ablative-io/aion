@@ -183,7 +183,10 @@ pub enum ActiveWorkflowRecovery {
         pid: Pid,
     },
     /// The virtual schedule coordinator history recovered without a runtime process.
-    ScheduleCoordinator { run_id: RunId },
+    ScheduleCoordinator {
+        /// Concrete run recorded by the coordinator's lifecycle event.
+        run_id: RunId,
+    },
 }
 
 /// AD recovery/replay hook invoked by [`crate::EngineBuilder::build`].
