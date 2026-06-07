@@ -41,6 +41,8 @@ pub enum WireErrorCode {
     NotRunning,
     /// A bounded stream consumer fell behind and was disconnected.
     Lagged,
+    /// A request body, identifier, or envelope is malformed or semantically invalid.
+    InvalidInput,
     /// Backend storage, serialization, runtime, or other internal failure.
     Backend,
 }
@@ -57,6 +59,7 @@ impl WireErrorCode {
             Self::QueryTimeout => "query_timeout",
             Self::NotRunning => "not_running",
             Self::Lagged => "lagged",
+            Self::InvalidInput => "invalid_input",
             Self::Backend => "backend",
         }
     }
@@ -130,6 +133,12 @@ impl WireError {
         Self::new(WireErrorCode::Lagged, message)
     }
 
+    /// Invalid input failure.
+    #[must_use]
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(WireErrorCode::InvalidInput, message)
+    }
+
     /// Backend/internal failure.
     #[must_use]
     pub fn backend(message: impl Into<String>) -> Self {
@@ -157,8 +166,10 @@ pub enum ProtoWireErrorCode {
     NotRunning = 6,
     /// See [`WireErrorCode::Lagged`].
     Lagged = 7,
+    /// See [`WireErrorCode::InvalidInput`].
+    InvalidInput = 8,
     /// See [`WireErrorCode::Backend`].
-    Backend = 8,
+    Backend = 9,
 }
 
 /// Proto representation of [`WireError`].
@@ -182,6 +193,7 @@ impl From<WireErrorCode> for ProtoWireErrorCode {
             WireErrorCode::QueryTimeout => Self::QueryTimeout,
             WireErrorCode::NotRunning => Self::NotRunning,
             WireErrorCode::Lagged => Self::Lagged,
+            WireErrorCode::InvalidInput => Self::InvalidInput,
             WireErrorCode::Backend => Self::Backend,
         }
     }
@@ -202,6 +214,7 @@ impl TryFrom<ProtoWireErrorCode> for WireErrorCode {
             ProtoWireErrorCode::QueryTimeout => Ok(Self::QueryTimeout),
             ProtoWireErrorCode::NotRunning => Ok(Self::NotRunning),
             ProtoWireErrorCode::Lagged => Ok(Self::Lagged),
+            ProtoWireErrorCode::InvalidInput => Ok(Self::InvalidInput),
             ProtoWireErrorCode::Backend => Ok(Self::Backend),
         }
     }
@@ -248,6 +261,7 @@ mod tests {
             WireErrorCode::QueryTimeout,
             WireErrorCode::NotRunning,
             WireErrorCode::Lagged,
+            WireErrorCode::InvalidInput,
             WireErrorCode::Backend,
         ];
 
@@ -300,6 +314,10 @@ mod tests {
         assert_eq!(
             WireError::not_running("terminal").code,
             WireErrorCode::NotRunning
+        );
+        assert_eq!(
+            WireError::invalid_input("malformed").code,
+            WireErrorCode::InvalidInput
         );
     }
 }

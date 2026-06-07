@@ -105,7 +105,8 @@ fn map_wire_parts(code: WireErrorCode, detail: String) -> ClientError {
         WireErrorCode::NotFound => ClientError::NotFound,
         WireErrorCode::NamespaceDenied
         | WireErrorCode::UnknownQuery
-        | WireErrorCode::NotRunning => ClientError::InvalidArgument,
+        | WireErrorCode::NotRunning
+        | WireErrorCode::InvalidInput => ClientError::InvalidArgument,
         WireErrorCode::SequenceConflict => ClientError::AlreadyExists,
         WireErrorCode::QueryTimeout => ClientError::QueryTimeout,
         WireErrorCode::Lagged => ClientError::Unavailable,

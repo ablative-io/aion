@@ -23,6 +23,14 @@ pub struct ProtoRunId {
     pub uuid: String,
 }
 
+/// Proto representation of `ScheduleId`.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoScheduleId {
+    /// UUID encoded in canonical string form.
+    #[prost(string, tag = "1")]
+    pub uuid: String,
+}
+
 /// Proto representation of `ActivityId`.
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoActivityId {
@@ -137,6 +145,22 @@ impl TryFrom<ProtoRunId> for aion_core::RunId {
 
     fn try_from(value: ProtoRunId) -> Result<Self, Self::Error> {
         parse_uuid(&value.uuid, "run id").map(Self::new)
+    }
+}
+
+impl From<aion_core::ScheduleId> for ProtoScheduleId {
+    fn from(value: aion_core::ScheduleId) -> Self {
+        Self {
+            uuid: value.as_uuid().to_string(),
+        }
+    }
+}
+
+impl TryFrom<ProtoScheduleId> for aion_core::ScheduleId {
+    type Error = WireError;
+
+    fn try_from(value: ProtoScheduleId) -> Result<Self, Self::Error> {
+        parse_uuid(&value.uuid, "schedule id").map(Self::new)
     }
 }
 
@@ -277,12 +301,14 @@ where
     let payload = envelope
         .payload
         .as_ref()
-        .ok_or_else(|| WireError::backend("wire envelope payload is missing"))?;
+        .ok_or_else(|| WireError::invalid_input("wire envelope payload is missing"))?;
     if payload.content_type != JSON_CONTENT_TYPE {
-        return Err(WireError::backend("wire envelope content type is unknown"));
+        return Err(WireError::invalid_input(
+            "wire envelope content type is unknown",
+        ));
     }
     serde_json::from_slice(&payload.bytes)
-        .map_err(|_| WireError::backend("core value decode failed"))
+        .map_err(|_| WireError::invalid_input("core value decode failed"))
 }
 
 /// Serializes a workflow filter into a thin wire envelope.
@@ -337,6 +363,60 @@ pub fn decode_workflow_summary(
     decode_core_value(envelope)
 }
 
+/// Serializes a schedule config into a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the core config cannot be serialized into the envelope payload.
+pub fn encode_schedule_config(
+    namespace: impl Into<String>,
+    request_id: Option<String>,
+    config: &aion_core::ScheduleConfig,
+) -> Result<WireEnvelope, WireError> {
+    encode_core_value(namespace, request_id, config)
+}
+
+/// Deserializes a schedule config from a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the envelope is missing a payload, has an unknown content type, or does
+/// not contain a valid schedule config.
+pub fn decode_schedule_config(
+    envelope: &WireEnvelope,
+) -> Result<aion_core::ScheduleConfig, WireError> {
+    decode_core_value(envelope)
+}
+
+/// Serializes a schedule state into a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the schedule state cannot be serialized into the envelope payload.
+pub fn encode_schedule_state<T>(
+    namespace: impl Into<String>,
+    request_id: Option<String>,
+    state: &T,
+) -> Result<WireEnvelope, WireError>
+where
+    T: Serialize,
+{
+    encode_core_value(namespace, request_id, state)
+}
+
+/// Deserializes a schedule state from a thin wire envelope.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the envelope is missing a payload, has an unknown content type, or does
+/// not contain the requested schedule state representation.
+pub fn decode_schedule_state<T>(envelope: &WireEnvelope) -> Result<T, WireError>
+where
+    T: DeserializeOwned,
+{
+    decode_core_value(envelope)
+}
+
 /// Serializes a workflow event into a thin wire envelope.
 ///
 /// # Errors
@@ -362,7 +442,8 @@ pub fn decode_event(envelope: &WireEnvelope) -> Result<aion_core::Event, WireErr
 }
 
 fn parse_uuid(value: &str, label: &str) -> Result<Uuid, WireError> {
-    Uuid::parse_str(value).map_err(|_| WireError::backend(format!("{label} uuid is malformed")))
+    Uuid::parse_str(value)
+        .map_err(|_| WireError::invalid_input(format!("{label} uuid is malformed")))
 }
 
 fn content_type_to_wire(content_type: &aion_core::ContentType) -> String {
@@ -374,7 +455,7 @@ fn content_type_to_wire(content_type: &aion_core::ContentType) -> String {
 fn content_type_from_wire(content_type: &str) -> Result<aion_core::ContentType, WireError> {
     match content_type {
         JSON_CONTENT_TYPE => Ok(aion_core::ContentType::Json),
-        _ => Err(WireError::backend("payload content type is unknown")),
+        _ => Err(WireError::invalid_input("payload content type is unknown")),
     }
 }
 
@@ -567,7 +648,7 @@ mod tests {
         let decoded = decode_core_value::<aion_core::Event>(&envelope);
         assert_eq!(
             decoded,
-            Err(WireError::backend("wire envelope payload is missing"))
+            Err(WireError::invalid_input("wire envelope payload is missing"))
         );
     }
 }

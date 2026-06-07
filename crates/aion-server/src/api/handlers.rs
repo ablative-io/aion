@@ -3,12 +3,16 @@
 use aion_core::{Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_proto::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
-    ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
-    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
+    ProtoCountWorkflowsResponse, ProtoCreateScheduleRequest, ProtoCreateScheduleResponse,
+    ProtoDeleteScheduleResponse, ProtoDescribeScheduleResponse, ProtoDescribeWorkflowRequest,
+    ProtoDescribeWorkflowResponse, ProtoListSchedulesRequest, ProtoListSchedulesResponse,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoPauseScheduleResponse,
+    ProtoQueryRequest, ProtoQueryResponse, ProtoResumeScheduleResponse, ProtoScheduleIdRequest,
     ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
-    WireError,
+    ProtoUpdateScheduleRequest, ProtoUpdateScheduleResponse, WireError,
     convert::{
-        ProtoPayload, decode_core_value, encode_core_value, encode_event, encode_workflow_summary,
+        ProtoPayload, ProtoScheduleId, decode_core_value, decode_schedule_config,
+        encode_core_value, encode_event, encode_schedule_state, encode_workflow_summary,
     },
     proto_query_response,
 };
@@ -232,6 +236,227 @@ pub async fn describe(
     })
 }
 
+/// Handles a decoded create-schedule request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the schedule config is missing or malformed, namespace
+/// scoping fails, or the engine create/describe call fails.
+pub async fn create_schedule(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoCreateScheduleRequest,
+) -> Result<ProtoCreateScheduleResponse, WireError> {
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::create_schedule(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let config = required_schedule_config(request.config.as_ref())?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let schedule_id = engine
+        .create_schedule(config)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    let state = engine
+        .describe_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+
+    Ok(ProtoCreateScheduleResponse {
+        schedule_id: Some(schedule_id.into()),
+        state: Some(encode_schedule_state(
+            scoped.namespace().to_owned(),
+            None,
+            &state,
+        )?),
+    })
+}
+
+/// Handles a decoded update-schedule request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the schedule ID or config is missing or malformed, namespace
+/// scoping fails, or the engine update/describe call fails.
+pub async fn update_schedule(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoUpdateScheduleRequest,
+) -> Result<ProtoUpdateScheduleResponse, WireError> {
+    let schedule_id = required_schedule_id(request.schedule_id.clone())?;
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::update_schedule(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let config = required_schedule_config(request.config.as_ref())?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    engine
+        .update_schedule(&schedule_id, config)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    let state = engine
+        .describe_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+
+    Ok(ProtoUpdateScheduleResponse {
+        state: Some(encode_schedule_state(
+            scoped.namespace().to_owned(),
+            None,
+            &state,
+        )?),
+    })
+}
+
+/// Handles a decoded pause-schedule request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the schedule ID is missing or malformed, namespace scoping
+/// fails, or the engine pause/describe call fails.
+pub async fn pause_schedule(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoScheduleIdRequest,
+) -> Result<ProtoPauseScheduleResponse, WireError> {
+    let schedule_id = required_schedule_id(request.schedule_id.clone())?;
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::pause_schedule(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    engine
+        .pause_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    let state = engine
+        .describe_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+
+    Ok(ProtoPauseScheduleResponse {
+        state: Some(encode_schedule_state(
+            scoped.namespace().to_owned(),
+            None,
+            &state,
+        )?),
+    })
+}
+
+/// Handles a decoded resume-schedule request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the schedule ID is missing or malformed, namespace scoping
+/// fails, or the engine resume/describe call fails.
+pub async fn resume_schedule(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoScheduleIdRequest,
+) -> Result<ProtoResumeScheduleResponse, WireError> {
+    let schedule_id = required_schedule_id(request.schedule_id.clone())?;
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::resume_schedule(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    engine
+        .resume_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    let state = engine
+        .describe_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+
+    Ok(ProtoResumeScheduleResponse {
+        state: Some(encode_schedule_state(
+            scoped.namespace().to_owned(),
+            None,
+            &state,
+        )?),
+    })
+}
+
+/// Handles a decoded delete-schedule request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the schedule ID is missing or malformed, namespace scoping
+/// fails, or the engine delete call fails.
+pub async fn delete_schedule(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoScheduleIdRequest,
+) -> Result<ProtoDeleteScheduleResponse, WireError> {
+    let schedule_id = required_schedule_id(request.schedule_id.clone())?;
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::delete_schedule(&request))
+        .map_err(|error| error.to_wire_error())?;
+    scoped
+        .engine()
+        .map_err(|error| error.to_wire_error())?
+        .delete_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    Ok(ProtoDeleteScheduleResponse {})
+}
+
+/// Handles a decoded list-schedules request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when namespace scoping fails, the engine list call fails, or
+/// schedule states cannot be encoded.
+pub async fn list_schedules(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoListSchedulesRequest,
+) -> Result<ProtoListSchedulesResponse, WireError> {
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::list_schedules(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
+    let schedules = scoped
+        .engine()
+        .map_err(|error| error.to_wire_error())?
+        .list_schedules()
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?
+        .into_iter()
+        .map(|state| encode_schedule_state(namespace.clone(), None, &state))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(ProtoListSchedulesResponse { schedules })
+}
+
+/// Handles a decoded describe-schedule request.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when the schedule ID is missing or malformed, namespace scoping
+/// fails, or the engine describe call fails.
+pub async fn describe_schedule(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoScheduleIdRequest,
+) -> Result<ProtoDescribeScheduleResponse, WireError> {
+    let schedule_id = required_schedule_id(request.schedule_id.clone())?;
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::describe_schedule(&request))
+        .map_err(|error| error.to_wire_error())?;
+    let state = scoped
+        .engine()
+        .map_err(|error| error.to_wire_error())?
+        .describe_schedule(&schedule_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+
+    Ok(ProtoDescribeScheduleResponse {
+        state: Some(encode_schedule_state(
+            scoped.namespace().to_owned(),
+            None,
+            &state,
+        )?),
+    })
+}
+
 fn required_workflow_id(id: Option<aion_proto::ProtoWorkflowId>) -> Result<WorkflowId, WireError> {
     id.ok_or_else(|| WireError::backend("workflow id is missing"))?
         .try_into()
@@ -255,6 +480,19 @@ fn decode_visibility_filter(
         || Ok(aion_store::visibility::ListWorkflowsFilter::default()),
         decode_core_value,
     )
+}
+
+fn required_schedule_id(id: Option<ProtoScheduleId>) -> Result<aion_core::ScheduleId, WireError> {
+    id.ok_or_else(|| WireError::invalid_input("schedule id is missing"))?
+        .try_into()
+}
+
+fn required_schedule_config(
+    config: Option<&aion_proto::WireEnvelope>,
+) -> Result<aion_core::ScheduleConfig, WireError> {
+    config
+        .ok_or_else(|| WireError::invalid_input("schedule config is missing"))
+        .and_then(decode_schedule_config)
 }
 
 fn encode_history(

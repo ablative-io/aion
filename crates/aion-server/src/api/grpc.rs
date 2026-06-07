@@ -2,10 +2,13 @@
 
 use aion_proto::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
-    ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
-    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
+    ProtoCountWorkflowsResponse, ProtoCreateScheduleRequest, ProtoCreateScheduleResponse,
+    ProtoDeleteScheduleResponse, ProtoDescribeScheduleResponse, ProtoDescribeWorkflowRequest,
+    ProtoDescribeWorkflowResponse, ProtoListSchedulesRequest, ProtoListSchedulesResponse,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoPauseScheduleResponse,
+    ProtoQueryRequest, ProtoQueryResponse, ProtoResumeScheduleResponse, ProtoScheduleIdRequest,
     ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
-    ProtoWireError, WireError,
+    ProtoUpdateScheduleRequest, ProtoUpdateScheduleResponse, ProtoWireError, WireError,
     generated::{self, workflow_service_server::WorkflowServiceServer},
 };
 use prost::Message;
@@ -146,6 +149,111 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         .map_err(status_from_wire_error)?;
         Ok(Response::new(encode_describe_response(response)))
     }
+
+    async fn create_schedule(
+        &self,
+        request: Request<generated::CreateScheduleRequest>,
+    ) -> Result<Response<generated::CreateScheduleResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::create_schedule(
+            self.state.namespace_guard(),
+            &caller,
+            decode_create_schedule_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_create_schedule_response(response)))
+    }
+
+    async fn update_schedule(
+        &self,
+        request: Request<generated::UpdateScheduleRequest>,
+    ) -> Result<Response<generated::UpdateScheduleResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::update_schedule(
+            self.state.namespace_guard(),
+            &caller,
+            decode_update_schedule_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_update_schedule_response(response)))
+    }
+
+    async fn pause_schedule(
+        &self,
+        request: Request<generated::ScheduleIdRequest>,
+    ) -> Result<Response<generated::PauseScheduleResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::pause_schedule(
+            self.state.namespace_guard(),
+            &caller,
+            decode_schedule_id_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_pause_schedule_response(response)))
+    }
+
+    async fn resume_schedule(
+        &self,
+        request: Request<generated::ScheduleIdRequest>,
+    ) -> Result<Response<generated::ResumeScheduleResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::resume_schedule(
+            self.state.namespace_guard(),
+            &caller,
+            decode_schedule_id_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_resume_schedule_response(response)))
+    }
+
+    async fn delete_schedule(
+        &self,
+        request: Request<generated::ScheduleIdRequest>,
+    ) -> Result<Response<generated::DeleteScheduleResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::delete_schedule(
+            self.state.namespace_guard(),
+            &caller,
+            decode_schedule_id_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_delete_schedule_response(response)))
+    }
+
+    async fn list_schedules(
+        &self,
+        request: Request<generated::ListSchedulesRequest>,
+    ) -> Result<Response<generated::ListSchedulesResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::list_schedules(
+            self.state.namespace_guard(),
+            &caller,
+            decode_list_schedules_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_list_schedules_response(response)))
+    }
+
+    async fn describe_schedule(
+        &self,
+        request: Request<generated::ScheduleIdRequest>,
+    ) -> Result<Response<generated::DescribeScheduleResponse>, Status> {
+        let caller = self.caller(&request);
+        let response = handlers::describe_schedule(
+            self.state.namespace_guard(),
+            &caller,
+            decode_schedule_id_request(request.into_inner()),
+        )
+        .await
+        .map_err(status_from_wire_error)?;
+        Ok(Response::new(encode_describe_schedule_response(response)))
+    }
 }
 
 pub(crate) fn caller_from_metadata(
@@ -201,7 +309,9 @@ fn grpc_code(code: aion_proto::WireErrorCode) -> Code {
         aion_proto::WireErrorCode::NotFound => Code::NotFound,
         aion_proto::WireErrorCode::NamespaceDenied => Code::PermissionDenied,
         aion_proto::WireErrorCode::SequenceConflict => Code::Aborted,
-        aion_proto::WireErrorCode::UnknownQuery => Code::InvalidArgument,
+        aion_proto::WireErrorCode::UnknownQuery | aion_proto::WireErrorCode::InvalidInput => {
+            Code::InvalidArgument
+        }
         aion_proto::WireErrorCode::QueryTimeout => Code::DeadlineExceeded,
         aion_proto::WireErrorCode::NotRunning => Code::FailedPrecondition,
         aion_proto::WireErrorCode::Lagged => Code::ResourceExhausted,
@@ -223,6 +333,14 @@ fn decode_run_id(value: generated::RunId) -> aion_proto::ProtoRunId {
 
 fn encode_run_id(value: aion_proto::ProtoRunId) -> generated::RunId {
     generated::RunId { uuid: value.uuid }
+}
+
+fn decode_schedule_id(value: generated::ScheduleId) -> aion_proto::ProtoScheduleId {
+    aion_proto::ProtoScheduleId { uuid: value.uuid }
+}
+
+fn encode_schedule_id(value: aion_proto::ProtoScheduleId) -> generated::ScheduleId {
+    generated::ScheduleId { uuid: value.uuid }
 }
 
 fn decode_payload(value: generated::Payload) -> aion_proto::ProtoPayload {
@@ -373,6 +491,95 @@ fn encode_describe_response(
     generated::DescribeWorkflowResponse {
         summary: value.summary.map(encode_envelope),
         history: value.history.into_iter().map(encode_envelope).collect(),
+    }
+}
+
+fn decode_create_schedule_request(
+    value: generated::CreateScheduleRequest,
+) -> ProtoCreateScheduleRequest {
+    ProtoCreateScheduleRequest {
+        namespace: value.namespace,
+        config: value.config.map(decode_envelope),
+    }
+}
+
+fn encode_create_schedule_response(
+    value: ProtoCreateScheduleResponse,
+) -> generated::CreateScheduleResponse {
+    generated::CreateScheduleResponse {
+        schedule_id: value.schedule_id.map(encode_schedule_id),
+        state: value.state.map(encode_envelope),
+    }
+}
+
+fn decode_update_schedule_request(
+    value: generated::UpdateScheduleRequest,
+) -> ProtoUpdateScheduleRequest {
+    ProtoUpdateScheduleRequest {
+        namespace: value.namespace,
+        schedule_id: value.schedule_id.map(decode_schedule_id),
+        config: value.config.map(decode_envelope),
+    }
+}
+
+fn encode_update_schedule_response(
+    value: ProtoUpdateScheduleResponse,
+) -> generated::UpdateScheduleResponse {
+    generated::UpdateScheduleResponse {
+        state: value.state.map(encode_envelope),
+    }
+}
+
+fn decode_schedule_id_request(value: generated::ScheduleIdRequest) -> ProtoScheduleIdRequest {
+    ProtoScheduleIdRequest {
+        namespace: value.namespace,
+        schedule_id: value.schedule_id.map(decode_schedule_id),
+    }
+}
+
+fn encode_pause_schedule_response(
+    value: ProtoPauseScheduleResponse,
+) -> generated::PauseScheduleResponse {
+    generated::PauseScheduleResponse {
+        state: value.state.map(encode_envelope),
+    }
+}
+
+fn encode_resume_schedule_response(
+    value: ProtoResumeScheduleResponse,
+) -> generated::ResumeScheduleResponse {
+    generated::ResumeScheduleResponse {
+        state: value.state.map(encode_envelope),
+    }
+}
+
+fn encode_delete_schedule_response(
+    _: ProtoDeleteScheduleResponse,
+) -> generated::DeleteScheduleResponse {
+    generated::DeleteScheduleResponse {}
+}
+
+fn decode_list_schedules_request(
+    value: generated::ListSchedulesRequest,
+) -> ProtoListSchedulesRequest {
+    ProtoListSchedulesRequest {
+        namespace: value.namespace,
+    }
+}
+
+fn encode_list_schedules_response(
+    value: ProtoListSchedulesResponse,
+) -> generated::ListSchedulesResponse {
+    generated::ListSchedulesResponse {
+        schedules: value.schedules.into_iter().map(encode_envelope).collect(),
+    }
+}
+
+fn encode_describe_schedule_response(
+    value: ProtoDescribeScheduleResponse,
+) -> generated::DescribeScheduleResponse {
+    generated::DescribeScheduleResponse {
+        state: value.state.map(encode_envelope),
     }
 }
 

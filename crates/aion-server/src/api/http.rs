@@ -5,15 +5,18 @@ use std::collections::HashMap;
 use aion_core::{SearchAttributeValue, WorkflowStatus};
 use aion_proto::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
-    ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse, ProtoListWorkflowsRequest,
-    ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest,
-    ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError,
-    WireErrorCode,
+    ProtoCreateScheduleRequest, ProtoCreateScheduleResponse, ProtoDeleteScheduleResponse,
+    ProtoDescribeScheduleResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
+    ProtoListSchedulesRequest, ProtoListSchedulesResponse, ProtoListWorkflowsRequest,
+    ProtoListWorkflowsResponse, ProtoPauseScheduleResponse, ProtoQueryRequest, ProtoQueryResponse,
+    ProtoResumeScheduleResponse, ProtoScheduleId, ProtoScheduleIdRequest, ProtoSignalRequest,
+    ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
+    ProtoUpdateScheduleRequest, ProtoUpdateScheduleResponse, WireError, WireErrorCode,
 };
 use aion_store::visibility::{ListWorkflowsFilter, SearchAttributePredicate, WorkflowSummary};
 use axum::{
     Json, Router,
-    extract::{FromRequestParts, Query, State},
+    extract::{FromRequestParts, Path, Query, State},
     http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -47,7 +50,21 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/workflows/cancel", post(cancel_workflow))
         .route("/workflows/list", post(post_list_workflows))
         .route("/workflows/describe", post(describe_workflow))
+        .route("/schedules", post(create_schedule).get(list_schedules))
+        .route(
+            "/schedules/{id}",
+            get(describe_schedule)
+                .put(update_schedule)
+                .delete(delete_schedule),
+        )
+        .route("/schedules/{id}/pause", post(pause_schedule))
+        .route("/schedules/{id}/resume", post(resume_schedule))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct NamespaceQuery {
+    namespace: String,
 }
 
 struct HttpCaller(CallerIdentity);
@@ -182,6 +199,118 @@ async fn describe_workflow(
         .await
         .map(Json)
         .map_err(HttpWireError)
+}
+
+async fn create_schedule(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<ProtoCreateScheduleRequest>,
+) -> Result<(StatusCode, Json<ProtoCreateScheduleResponse>), HttpWireError> {
+    handlers::create_schedule(state.namespace_guard(), &caller, request)
+        .await
+        .map(|response| (StatusCode::CREATED, Json(response)))
+        .map_err(HttpWireError)
+}
+
+async fn update_schedule(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(id): Path<String>,
+    Json(mut request): Json<ProtoUpdateScheduleRequest>,
+) -> Result<Json<ProtoUpdateScheduleResponse>, HttpWireError> {
+    request.schedule_id = Some(ProtoScheduleId { uuid: id });
+    handlers::update_schedule(state.namespace_guard(), &caller, request)
+        .await
+        .map(Json)
+        .map_err(HttpWireError)
+}
+
+async fn pause_schedule(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(id): Path<String>,
+    Query(query): Query<NamespaceQuery>,
+) -> Result<Json<ProtoPauseScheduleResponse>, HttpWireError> {
+    handlers::pause_schedule(
+        state.namespace_guard(),
+        &caller,
+        schedule_id_request(query, id),
+    )
+    .await
+    .map(Json)
+    .map_err(HttpWireError)
+}
+
+async fn resume_schedule(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(id): Path<String>,
+    Query(query): Query<NamespaceQuery>,
+) -> Result<Json<ProtoResumeScheduleResponse>, HttpWireError> {
+    handlers::resume_schedule(
+        state.namespace_guard(),
+        &caller,
+        schedule_id_request(query, id),
+    )
+    .await
+    .map(Json)
+    .map_err(HttpWireError)
+}
+
+async fn delete_schedule(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(id): Path<String>,
+    Query(query): Query<NamespaceQuery>,
+) -> Result<Json<ProtoDeleteScheduleResponse>, HttpWireError> {
+    handlers::delete_schedule(
+        state.namespace_guard(),
+        &caller,
+        schedule_id_request(query, id),
+    )
+    .await
+    .map(Json)
+    .map_err(HttpWireError)
+}
+
+async fn list_schedules(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Query(query): Query<NamespaceQuery>,
+) -> Result<Json<ProtoListSchedulesResponse>, HttpWireError> {
+    handlers::list_schedules(
+        state.namespace_guard(),
+        &caller,
+        ProtoListSchedulesRequest {
+            namespace: query.namespace,
+        },
+    )
+    .await
+    .map(Json)
+    .map_err(HttpWireError)
+}
+
+async fn describe_schedule(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(id): Path<String>,
+    Query(query): Query<NamespaceQuery>,
+) -> Result<Json<ProtoDescribeScheduleResponse>, HttpWireError> {
+    handlers::describe_schedule(
+        state.namespace_guard(),
+        &caller,
+        schedule_id_request(query, id),
+    )
+    .await
+    .map(Json)
+    .map_err(HttpWireError)
+}
+
+fn schedule_id_request(query: NamespaceQuery, id: String) -> ProtoScheduleIdRequest {
+    ProtoScheduleIdRequest {
+        namespace: query.namespace,
+        schedule_id: Some(ProtoScheduleId { uuid: id }),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -331,7 +460,7 @@ fn http_status(code: WireErrorCode) -> StatusCode {
         WireErrorCode::NotFound => StatusCode::NOT_FOUND,
         WireErrorCode::NamespaceDenied => StatusCode::FORBIDDEN,
         WireErrorCode::SequenceConflict => StatusCode::CONFLICT,
-        WireErrorCode::UnknownQuery => StatusCode::BAD_REQUEST,
+        WireErrorCode::UnknownQuery | WireErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
         WireErrorCode::QueryTimeout => StatusCode::REQUEST_TIMEOUT,
         WireErrorCode::NotRunning => StatusCode::PRECONDITION_FAILED,
         WireErrorCode::Lagged => StatusCode::TOO_MANY_REQUESTS,

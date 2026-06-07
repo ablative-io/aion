@@ -4,9 +4,10 @@ use aion::EventFilter;
 use aion_core::{RunId, WorkflowFilter, WorkflowId};
 use aion_proto::{
     FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
-    ProtoCountWorkflowsRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest,
-    ProtoQueryRequest, ProtoRegisterWorker, ProtoSignalRequest, ProtoStartWorkflowRequest,
-    SubscriptionRequest, subscription_request,
+    ProtoCountWorkflowsRequest, ProtoCreateScheduleRequest, ProtoDescribeWorkflowRequest,
+    ProtoListSchedulesRequest, ProtoListWorkflowsRequest, ProtoQueryRequest, ProtoRegisterWorker,
+    ProtoScheduleIdRequest, ProtoSignalRequest, ProtoStartWorkflowRequest,
+    ProtoUpdateScheduleRequest, SubscriptionRequest, subscription_request,
 };
 
 use crate::error::ServerError;
@@ -67,6 +68,20 @@ pub enum NamespaceOperation<'a> {
     CountWorkflows(&'a ProtoCountWorkflowsRequest),
     /// Describe workflow request.
     Describe(&'a ProtoDescribeWorkflowRequest, WorkflowTarget<'a>),
+    /// Create schedule request.
+    CreateSchedule(&'a ProtoCreateScheduleRequest),
+    /// Update schedule request.
+    UpdateSchedule(&'a ProtoUpdateScheduleRequest),
+    /// Pause schedule request.
+    PauseSchedule(&'a ProtoScheduleIdRequest),
+    /// Resume schedule request.
+    ResumeSchedule(&'a ProtoScheduleIdRequest),
+    /// Delete schedule request.
+    DeleteSchedule(&'a ProtoScheduleIdRequest),
+    /// List schedules request.
+    ListSchedules(&'a ProtoListSchedulesRequest),
+    /// Describe schedule request.
+    DescribeSchedule(&'a ProtoScheduleIdRequest),
     /// Event subscription request.
     Subscribe(SubscriptionScope<'a>, &'a EventFilter),
     /// Worker registration request.
@@ -119,6 +134,48 @@ impl<'a> NamespaceOperation<'a> {
         Self::Describe(request, target)
     }
 
+    /// Create a create-schedule operation descriptor.
+    #[must_use]
+    pub const fn create_schedule(request: &'a ProtoCreateScheduleRequest) -> Self {
+        Self::CreateSchedule(request)
+    }
+
+    /// Create an update-schedule operation descriptor.
+    #[must_use]
+    pub const fn update_schedule(request: &'a ProtoUpdateScheduleRequest) -> Self {
+        Self::UpdateSchedule(request)
+    }
+
+    /// Create a pause-schedule operation descriptor.
+    #[must_use]
+    pub const fn pause_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
+        Self::PauseSchedule(request)
+    }
+
+    /// Create a resume-schedule operation descriptor.
+    #[must_use]
+    pub const fn resume_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
+        Self::ResumeSchedule(request)
+    }
+
+    /// Create a delete-schedule operation descriptor.
+    #[must_use]
+    pub const fn delete_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
+        Self::DeleteSchedule(request)
+    }
+
+    /// Create a list-schedules operation descriptor.
+    #[must_use]
+    pub const fn list_schedules(request: &'a ProtoListSchedulesRequest) -> Self {
+        Self::ListSchedules(request)
+    }
+
+    /// Create a describe-schedule operation descriptor.
+    #[must_use]
+    pub const fn describe_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
+        Self::DescribeSchedule(request)
+    }
+
     /// Create a subscribe operation descriptor.
     #[must_use]
     pub const fn subscribe(scope: SubscriptionScope<'a>, filter: &'a EventFilter) -> Self {
@@ -140,6 +197,13 @@ impl<'a> NamespaceOperation<'a> {
             Self::ListWorkflows(request, _filter) => request.namespace.as_str(),
             Self::CountWorkflows(request) => request.namespace.as_str(),
             Self::Describe(request, _target) => request.namespace.as_str(),
+            Self::CreateSchedule(request) => request.namespace.as_str(),
+            Self::UpdateSchedule(request) => request.namespace.as_str(),
+            Self::PauseSchedule(request)
+            | Self::ResumeSchedule(request)
+            | Self::DeleteSchedule(request)
+            | Self::DescribeSchedule(request) => request.namespace.as_str(),
+            Self::ListSchedules(request) => request.namespace.as_str(),
             Self::Subscribe(scope, _filter) => scope.namespace(),
             Self::RegisterWorker(request) => request.namespace.as_str(),
         }
@@ -159,6 +223,13 @@ impl<'a> NamespaceOperation<'a> {
             Self::StartWorkflow(_)
             | Self::ListWorkflows(_, _)
             | Self::CountWorkflows(_)
+            | Self::CreateSchedule(_)
+            | Self::UpdateSchedule(_)
+            | Self::PauseSchedule(_)
+            | Self::ResumeSchedule(_)
+            | Self::DeleteSchedule(_)
+            | Self::ListSchedules(_)
+            | Self::DescribeSchedule(_)
             | Self::RegisterWorker(_) => Ok(()),
         }
     }

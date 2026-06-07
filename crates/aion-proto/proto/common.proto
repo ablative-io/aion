@@ -12,6 +12,11 @@ message RunId {
   string uuid = 1;
 }
 
+// UUID-backed schedule resource identifier.
+message ScheduleId {
+  string uuid = 1;
+}
+
 // Sequence-position-backed activity identifier.
 message ActivityId {
   uint64 sequence_position = 1;
@@ -61,7 +66,8 @@ enum WireErrorCode {
   WIRE_ERROR_CODE_QUERY_TIMEOUT = 5;
   WIRE_ERROR_CODE_NOT_RUNNING = 6;
   WIRE_ERROR_CODE_LAGGED = 7;
-  WIRE_ERROR_CODE_BACKEND = 8;
+  WIRE_ERROR_CODE_INVALID_INPUT = 8;
+  WIRE_ERROR_CODE_BACKEND = 9;
 }
 
 // Wire-safe error value returned by server, client, and worker APIs.

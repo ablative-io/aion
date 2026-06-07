@@ -2,6 +2,8 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use chrono::Utc;
+
 use aion_core::{Event, status_from_events};
 use aion_package::Package;
 use aion_store::visibility::VisibilityStore;
@@ -260,7 +262,7 @@ impl EngineBuilder {
         )
         .await?;
 
-        Ok(Engine::new(
+        let engine = Engine::new(
             store,
             visibility_store,
             runtime,
@@ -268,7 +270,9 @@ impl EngineBuilder {
             registry,
             supervision,
             self.delegated,
-        ))
+        );
+        engine.recover_schedules_on_startup(Utc::now()).await?;
+        Ok(engine)
     }
 }
 
@@ -294,7 +298,11 @@ async fn repopulate_active_workflows(
     supervision: &SupervisionTree,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
+    let schedule_coordinator = crate::engine::api::schedule_coordinator_workflow_id();
     for workflow_id in store.as_ref().list_active().await? {
+        if workflow_id == schedule_coordinator {
+            continue;
+        }
         let history = store.as_ref().read_history(&workflow_id).await?;
         let workflow_type = started_workflow_type(&workflow_id, &history)?;
         let projected_status = status_from_events(&history);

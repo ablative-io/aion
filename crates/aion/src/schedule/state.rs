@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use crate::schedule::{ScheduleError, next_fire_time};
 
 /// Workflow execution most recently started by a schedule tick.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScheduleExecution {
     /// Workflow execution identifier started by the schedule.
     pub workflow_id: WorkflowId,
@@ -26,7 +26,7 @@ impl ScheduleExecution {
 }
 
 /// Per-schedule projection derived from schedule events.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScheduleState {
     /// Schedule resource identifier.
     pub schedule_id: ScheduleId,

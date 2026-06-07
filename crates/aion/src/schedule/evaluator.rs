@@ -389,6 +389,12 @@ impl ScheduleEvaluator {
             if !state.is_active() {
                 continue;
             }
+            if let Some(state) = self.states.get_mut(&schedule_id) {
+                state.current_execution = None;
+            }
+            let Some(state) = self.states.get(&schedule_id) else {
+                continue;
+            };
 
             let plan = evaluate_catch_up(
                 &state.config.catch_up_policy,

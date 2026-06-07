@@ -14,7 +14,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::durability::Recorder;
 use crate::schedule::{
     NoopScheduleCanceller, ScheduleEvaluator, ScheduleEvaluatorError, ScheduleEventSink,
-    ScheduleExecution, ScheduleState, ScheduleTimer, ScheduleWorkflowStarter, StoreScheduleTimer,
+    ScheduleEventSource, ScheduleExecution, ScheduleState, ScheduleTimer, ScheduleWorkflowStarter,
+    StoreScheduleTimer, TimerEvaluationOutcome,
 };
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
@@ -34,10 +35,10 @@ pub struct Engine {
     schedule_recorder: Arc<AsyncMutex<Recorder>>,
     schedule_evaluator: Arc<AsyncMutex<ScheduleEvaluator>>,
     schedule_coordinator_workflow_id: WorkflowId,
-    runtime: RuntimeHandle,
+    runtime: Arc<RuntimeHandle>,
     loaded_workflows: LoadedWorkflows,
-    registry: Registry,
-    supervision: SupervisionTree,
+    registry: Arc<Registry>,
+    supervision: Arc<SupervisionTree>,
     delegated: DelegatedSeams,
     shutdown_gate: ShutdownGate,
 }
@@ -59,10 +60,20 @@ impl Engine {
             schedule_coordinator_workflow_id.clone(),
             Arc::clone(&store),
         )));
+        let runtime_arc = Arc::new(runtime);
+        let registry_arc = Arc::new(registry);
+        let supervision_arc = Arc::new(supervision);
         let schedule_evaluator = Arc::new(AsyncMutex::new(default_schedule_evaluator(
-            Arc::clone(&store),
             schedule_coordinator_workflow_id.clone(),
             Arc::clone(&schedule_recorder),
+            ScheduleRuntimeDeps {
+                store: Arc::clone(&store),
+                visibility_store: Arc::clone(&visibility_store),
+                runtime: Arc::clone(&runtime_arc),
+                loaded_workflows: loaded_workflows.clone(),
+                registry: Arc::clone(&registry_arc),
+                supervision: Arc::clone(&supervision_arc),
+            },
         )));
         Self {
             store,
@@ -70,10 +81,10 @@ impl Engine {
             schedule_recorder,
             schedule_evaluator,
             schedule_coordinator_workflow_id,
-            runtime,
+            runtime: runtime_arc,
             loaded_workflows,
-            registry,
-            supervision,
+            registry: registry_arc,
+            supervision: supervision_arc,
             delegated,
             shutdown_gate: ShutdownGate::default(),
         }
@@ -93,7 +104,7 @@ impl Engine {
 
     /// Runtime boundary assembled for this engine.
     #[must_use]
-    pub const fn runtime(&self) -> &RuntimeHandle {
+    pub fn runtime(&self) -> &RuntimeHandle {
         &self.runtime
     }
 
@@ -105,13 +116,13 @@ impl Engine {
 
     /// Active execution registry.
     #[must_use]
-    pub const fn registry(&self) -> &Registry {
+    pub fn registry(&self) -> &Registry {
         &self.registry
     }
 
     /// Supervision tree snapshot/model.
     #[must_use]
-    pub const fn supervision(&self) -> &SupervisionTree {
+    pub fn supervision(&self) -> &SupervisionTree {
         &self.supervision
     }
 
@@ -359,6 +370,49 @@ impl Engine {
             evaluator.arm_active_schedule(schedule_id).await?;
         }
         Ok(())
+    }
+
+    /// Handles a fired durable schedule timer through the schedule evaluator.
+    ///
+    /// # Errors
+    ///
+    /// Returns schedule evaluator or shutdown errors.
+    pub async fn handle_schedule_timer_fired(
+        &self,
+        schedule_id: &ScheduleId,
+        fire_at: DateTime<Utc>,
+    ) -> Result<TimerEvaluationOutcome, EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = self
+            .schedule_evaluator
+            .lock()
+            .await
+            .handle_timer_fired(schedule_id, fire_at)
+            .await
+            .map_err(EngineError::from);
+        drop(operation);
+        result
+    }
+
+    /// Rebuilds schedule state from durable coordinator history and re-arms active schedules.
+    ///
+    /// # Errors
+    ///
+    /// Returns schedule projection, catch-up, timer, or workflow-start errors.
+    pub async fn recover_schedules_on_startup(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<(), EngineError> {
+        let source = StoreScheduleEventSource {
+            store: self.store(),
+            coordinator_workflow_id: self.schedule_coordinator_workflow_id.clone(),
+        };
+        self.schedule_evaluator
+            .lock()
+            .await
+            .recover_on_startup(&source, now)
+            .await
+            .map_err(EngineError::from)
     }
 
     /// Start a loaded workflow type as a new BEAM process.
@@ -740,7 +794,7 @@ pub(crate) fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
     }
 }
 
-fn schedule_coordinator_workflow_id() -> WorkflowId {
+pub(crate) fn schedule_coordinator_workflow_id() -> WorkflowId {
     WorkflowId::new(uuid::Uuid::from_u128(
         0x0000_0000_a10a_0000_0000_0000_0000_0004,
     ))
@@ -755,31 +809,74 @@ fn schedule_event_envelope(recorded_at: DateTime<Utc>) -> EventEnvelope {
 }
 
 fn default_schedule_evaluator(
-    store: Arc<dyn EventStore>,
     coordinator_workflow_id: WorkflowId,
     recorder: Arc<AsyncMutex<Recorder>>,
+    deps: ScheduleRuntimeDeps,
 ) -> ScheduleEvaluator {
-    let timer: Arc<dyn ScheduleTimer> =
-        Arc::new(StoreScheduleTimer::new(store, coordinator_workflow_id));
-    let starter: Arc<dyn ScheduleWorkflowStarter> = Arc::new(NoopScheduleStarter);
+    let timer: Arc<dyn ScheduleTimer> = Arc::new(StoreScheduleTimer::new(
+        Arc::clone(&deps.store),
+        coordinator_workflow_id,
+    ));
+    let starter: Arc<dyn ScheduleWorkflowStarter> = Arc::new(EngineScheduleStarter { deps });
     let canceller: Arc<dyn crate::schedule::ScheduleWorkflowCanceller> =
         Arc::new(NoopScheduleCanceller);
     let events: Arc<dyn ScheduleEventSink> = recorder;
     ScheduleEvaluator::new(timer, starter, canceller, events)
 }
 
-struct NoopScheduleStarter;
+struct ScheduleRuntimeDeps {
+    store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
+    runtime: Arc<RuntimeHandle>,
+    loaded_workflows: LoadedWorkflows,
+    registry: Arc<Registry>,
+    supervision: Arc<SupervisionTree>,
+}
+
+struct EngineScheduleStarter {
+    deps: ScheduleRuntimeDeps,
+}
 
 #[async_trait]
-impl ScheduleWorkflowStarter for NoopScheduleStarter {
+impl ScheduleWorkflowStarter for EngineScheduleStarter {
     async fn start_scheduled_workflow(
         &self,
         workflow_type: &str,
-        _input: Payload,
+        input: Payload,
     ) -> Result<ScheduleExecution, ScheduleEvaluatorError> {
-        Err(ScheduleEvaluatorError::side_effect(format!(
-            "schedule workflow starter is not installed for `{workflow_type}`"
-        )))
+        let handle = start::start_workflow(
+            StartWorkflowContext {
+                store: Arc::clone(&self.deps.store),
+                visibility_store: Arc::clone(&self.deps.visibility_store),
+                loaded_workflows: &self.deps.loaded_workflows,
+                runtime: &self.deps.runtime,
+                supervision: &self.deps.supervision,
+                registry: &self.deps.registry,
+            },
+            workflow_type,
+            input,
+        )
+        .await
+        .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))?;
+        Ok(ScheduleExecution::new(
+            handle.workflow_id().clone(),
+            handle.run_id().clone(),
+        ))
+    }
+}
+
+struct StoreScheduleEventSource {
+    store: Arc<dyn EventStore>,
+    coordinator_workflow_id: WorkflowId,
+}
+
+#[async_trait]
+impl ScheduleEventSource for StoreScheduleEventSource {
+    async fn schedule_events(&self) -> Result<Vec<Event>, ScheduleEvaluatorError> {
+        self.store
+            .read_history(&self.coordinator_workflow_id)
+            .await
+            .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))
     }
 }
 

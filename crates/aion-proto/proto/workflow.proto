@@ -13,6 +13,13 @@ service WorkflowService {
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   rpc CountWorkflows(CountWorkflowsRequest) returns (CountWorkflowsResponse);
   rpc DescribeWorkflow(DescribeWorkflowRequest) returns (DescribeWorkflowResponse);
+  rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse);
+  rpc UpdateSchedule(UpdateScheduleRequest) returns (UpdateScheduleResponse);
+  rpc PauseSchedule(ScheduleIdRequest) returns (PauseScheduleResponse);
+  rpc ResumeSchedule(ScheduleIdRequest) returns (ResumeScheduleResponse);
+  rpc DeleteSchedule(ScheduleIdRequest) returns (DeleteScheduleResponse);
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse);
+  rpc DescribeSchedule(ScheduleIdRequest) returns (DescribeScheduleResponse);
 }
 
 message StartWorkflowRequest {
@@ -90,4 +97,51 @@ message DescribeWorkflowRequest {
 message DescribeWorkflowResponse {
   WireEnvelope summary = 1;
   repeated WireEnvelope history = 2;
+}
+
+message CreateScheduleRequest {
+  string namespace = 1;
+  WireEnvelope config = 2;
+}
+
+message CreateScheduleResponse {
+  ScheduleId schedule_id = 1;
+  WireEnvelope state = 2;
+}
+
+message UpdateScheduleRequest {
+  string namespace = 1;
+  ScheduleId schedule_id = 2;
+  WireEnvelope config = 3;
+}
+
+message UpdateScheduleResponse {
+  WireEnvelope state = 1;
+}
+
+message ScheduleIdRequest {
+  string namespace = 1;
+  ScheduleId schedule_id = 2;
+}
+
+message PauseScheduleResponse {
+  WireEnvelope state = 1;
+}
+
+message ResumeScheduleResponse {
+  WireEnvelope state = 1;
+}
+
+message DeleteScheduleResponse {}
+
+message ListSchedulesRequest {
+  string namespace = 1;
+}
+
+message ListSchedulesResponse {
+  repeated WireEnvelope schedules = 1;
+}
+
+message DescribeScheduleResponse {
+  WireEnvelope state = 1;
 }
