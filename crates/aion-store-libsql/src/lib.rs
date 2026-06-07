@@ -8,6 +8,7 @@ mod read;
 pub mod schema;
 pub mod store;
 mod timer;
+mod visibility;
 
 pub use config::{LibSqlConfig, LibSqlMode};
 pub use store::LibSqlStore;

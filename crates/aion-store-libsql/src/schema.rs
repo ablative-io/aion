@@ -35,11 +35,48 @@ pub const CREATE_TIMERS_FIRE_AT_INDEX: &str = "
 CREATE INDEX IF NOT EXISTS idx_timers_fire_at
 ON timers (fire_at)";
 
-const DDL_STATEMENTS: [&str; 4] = [
+/// Workflow visibility projection table.
+pub const CREATE_VISIBILITY_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS visibility (
+    workflow_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    workflow_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    close_time TEXT,
+    search_attributes TEXT NOT NULL CHECK (json_valid(search_attributes))
+)";
+
+/// Visibility index supporting workflow-type equality filters.
+pub const CREATE_VISIBILITY_WORKFLOW_TYPE_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_visibility_workflow_type
+ON visibility (workflow_type)";
+
+/// Visibility index supporting status equality filters.
+pub const CREATE_VISIBILITY_STATUS_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_visibility_status
+ON visibility (status)";
+
+/// Visibility index supporting start-time range filters and ordering.
+pub const CREATE_VISIBILITY_START_TIME_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_visibility_start_time
+ON visibility (start_time)";
+
+/// Visibility index supporting close-time range filters.
+pub const CREATE_VISIBILITY_CLOSE_TIME_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_visibility_close_time
+ON visibility (close_time)";
+
+const DDL_STATEMENTS: [&str; 9] = [
     CREATE_EVENTS_TABLE,
     CREATE_EVENTS_PROJECTION_INDEX,
     CREATE_TIMERS_TABLE,
     CREATE_TIMERS_FIRE_AT_INDEX,
+    CREATE_VISIBILITY_TABLE,
+    CREATE_VISIBILITY_WORKFLOW_TYPE_INDEX,
+    CREATE_VISIBILITY_STATUS_INDEX,
+    CREATE_VISIBILITY_START_TIME_INDEX,
+    CREATE_VISIBILITY_CLOSE_TIME_INDEX,
 ];
 
 /// Ensure the libSQL schema exists on a fresh or previously-created database.
@@ -90,6 +127,12 @@ mod tests {
         assert_schema_object(&conn, "table", "timers").await?;
         assert_schema_object(&conn, "index", "sqlite_autoindex_timers_1").await?;
         assert_schema_object(&conn, "index", "idx_timers_fire_at").await?;
+        assert_schema_object(&conn, "table", "visibility").await?;
+        assert_schema_object(&conn, "index", "sqlite_autoindex_visibility_1").await?;
+        assert_schema_object(&conn, "index", "idx_visibility_workflow_type").await?;
+        assert_schema_object(&conn, "index", "idx_visibility_status").await?;
+        assert_schema_object(&conn, "index", "idx_visibility_start_time").await?;
+        assert_schema_object(&conn, "index", "idx_visibility_close_time").await?;
 
         Ok(())
     }
