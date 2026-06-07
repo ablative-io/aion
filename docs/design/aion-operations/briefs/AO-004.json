@@ -1,0 +1,111 @@
+{
+  "id": "AO-004",
+  "cluster": "aion-operations",
+  "title": "Prometheus metrics endpoint and Kubernetes health probes",
+  "depends_on": ["AO-003"],
+  "blocked_by": [],
+  "checklist": ["C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18"],
+  "stories": ["S2", "S3"],
+  "purpose": "Give operators quantitative visibility into Aion's runtime behaviour and enable Kubernetes pod lifecycle management through standard health probes. Without metrics, operators are blind to throughput, latency, and capacity. Without probes, orchestrators cannot manage availability.",
+  "task": "Implement a Prometheus metrics registry with counters, gauges, and histograms for workflow, activity, signal, schedule, and infrastructure metrics. Add /metrics endpoint for scraping. Implement /health/live and /health/ready probes that check scheduler responsiveness and store reachability respectively. Metrics for internally-triggered operations (timer fires, schedule evaluations, signal flush on resume) are derived by subscribing to the engine's existing EventPublisher broadcast seam — the same seam that powers WebSocket streaming (AW-010). Handler-layer instrumentation covers request-initiated operations. No new engine crate dependencies required (CO4).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Prometheus metrics registry and exposition endpoint",
+      "spec": "THE SYSTEM SHALL maintain a Prometheus metrics registry containing all defined counters, gauges, and histograms. WHEN GET /metrics is requested, THE SYSTEM SHALL return the current metric values in Prometheus exposition text format with correct typing, help text, and labels.",
+      "acceptance": [
+        "GET /metrics returns Content-Type text/plain with Prometheus exposition format.",
+        "Each metric includes a TYPE line and a HELP line.",
+        "Counter values are monotonically increasing.",
+        "Histogram buckets are present for duration metrics.",
+        "The endpoint responds in under 10ms (no blocking computation)."
+      ],
+      "files": {
+        "create": [
+          "crates/aion-server/src/observability/mod.rs",
+          "crates/aion-server/src/observability/metrics.rs"
+        ],
+        "modify": ["crates/aion-server/src/main.rs"]
+      },
+      "checklist": ["C11"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R2",
+      "title": "Workflow and activity lifecycle metrics",
+      "spec": "THE SYSTEM SHALL increment aion_workflows_started_total on every workflow start (labels: namespace, workflow_type). THE SYSTEM SHALL increment aion_workflows_completed_total on every terminal event (labels: namespace, status). THE SYSTEM SHALL increment aion_activities_dispatched_total on dispatch and aion_activities_completed_total on result (labels: namespace, activity_type, outcome). THE SYSTEM SHALL observe aion_activity_duration_seconds on activity completion.",
+      "acceptance": [
+        "Starting a workflow increments the started counter with correct labels.",
+        "A completed workflow increments the completed counter with status=completed.",
+        "A failed workflow increments with status=failed.",
+        "Activity dispatch and completion counters reflect actual dispatch/result events.",
+        "Activity duration histogram records wall-clock time from dispatch to result."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/observability/metrics.rs",
+          "crates/aion-server/src/state.rs",
+          "crates/aion-server/src/worker/dispatch.rs"
+        ]
+      },
+      "checklist": ["C12", "C13"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R3",
+      "title": "Infrastructure, signal, and schedule metrics",
+      "spec": "THE SYSTEM SHALL maintain aion_connected_workers gauge (labels: namespace) updated on worker connect/disconnect. THE SYSTEM SHALL maintain aion_inflight_activities gauge updated on dispatch/completion. THE SYSTEM SHALL observe aion_store_operation_duration_seconds on store calls. THE SYSTEM SHALL increment aion_signals_delivered_total (labels: namespace, residency) and aion_schedules_fired_total (labels: namespace) on signal delivery and schedule fire respectively.",
+      "acceptance": [
+        "Worker connect increments the gauge; disconnect decrements it.",
+        "In-flight gauge reflects the current count of dispatched-but-not-completed activities.",
+        "Store duration histogram captures read_history, append, and list_active latencies.",
+        "Signal counter distinguishes resident vs deferred delivery.",
+        "Schedule counter increments on each timer evaluation that starts a workflow."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/observability/metrics.rs",
+          "crates/aion-server/src/worker/registry.rs",
+          "crates/aion-server/src/worker/bridge.rs"
+        ]
+      },
+      "checklist": ["C14", "C15"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R4",
+      "title": "Liveness and readiness health probes",
+      "spec": "WHEN GET /health/live is requested, THE SYSTEM SHALL return 200 if the beamr scheduler is responsive (can spawn a trivial check process within 50ms) and 503 otherwise. WHEN GET /health/ready is requested, THE SYSTEM SHALL return 200 if the store is reachable (a no-op read completes within 100ms) and the runtime is initialized; 503 otherwise. THE SYSTEM SHALL NOT perform blocking store queries in the liveness probe path.",
+      "acceptance": [
+        "/health/live returns 200 under normal operation.",
+        "/health/live returns 503 if the scheduler is unresponsive (simulated in test).",
+        "/health/ready returns 200 when store is reachable.",
+        "/health/ready returns 503 when store read times out.",
+        "Both probes respond within 100ms under normal load.",
+        "Probes are unauthenticated (accessible without a Bearer token even when auth is enabled)."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/observability/health.rs"],
+        "modify": ["crates/aion-server/src/main.rs"]
+      },
+      "checklist": ["C16", "C17", "C18"],
+      "stories": ["S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement custom metric types beyond what the prometheus crate provides.",
+    "SHALL NOT add metrics instrumentation to the aion engine crate itself — metrics are server-level only (CO4).",
+    "SHALL NOT implement metric aggregation, dashboards, or alerting rules — those are operator concerns.",
+    "SHALL NOT require authentication for /health/* or /metrics endpoints."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "GET /metrics returns valid Prometheus exposition format parseable by promtool.",
+    "GET /health/live returns 200 with a running server.",
+    "GET /health/ready returns 200 when store is configured and reachable."
+  ]
+}

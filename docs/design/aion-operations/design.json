@@ -1,0 +1,91 @@
+{
+  "type": "design",
+  "cluster": "aion-operations",
+  "title": "Aion Operations — Production Deployment, Observability, and Runtime Completion",
+  "intention": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, point Prometheus at, wire into their alerting stack, and trust with real workloads.",
+  "problem": [
+    "Non-resident signal delivery is unfinished — signals to suspended workflows are rejected instead of queued for delivery on resume.",
+    "No graceful shutdown or drain — rolling deploys lose in-flight work.",
+    "No structured observability — no metrics, no traces, no health probes. Operators cannot distinguish a healthy idle server from a crashed one.",
+    "No runtime configuration — store URLs, listen addresses, and thread counts require code changes to modify.",
+    "No authentication boundary — any client that can reach the port can operate in any namespace."
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "title": "Non-resident signal delivery completes the AT-006 contract",
+      "chosen": "Engine signal path gains residency-aware routing: Resident records and delivers, NonResident records and defers via existing SignalResumeHandoff, Terminal returns typed error. On workflow resume (Suspended -> Resident transition), engine invokes deliver_deferred() to flush queued signals FIFO.",
+      "rejected": ["Dropping signals to non-resident workflows silently", "Polling-based signal delivery on timer rather than event-driven resume trigger"],
+      "rationale": "Temporal guarantees signal delivery regardless of workflow state. Dropping or polling violates the durability contract. The SignalResumeHandoff struct is already built and tested — only the wiring is missing."
+    },
+    {
+      "id": "D2",
+      "title": "Graceful shutdown with configurable activity drain",
+      "chosen": "On SIGTERM: stop accepting new work, signal workers to drain, await in-flight activities up to configurable timeout, then shutdown engine. Clean drain exits 0, timeout exits 1.",
+      "rejected": ["Immediate shutdown killing all in-flight work", "Indefinite wait for all activities (no timeout)"],
+      "rationale": "Rolling deploys must not lose work. But indefinite waits turn a deploy into a hang. A configurable timeout with retryable-failure surface for timed-out tasks gives operators control."
+    },
+    {
+      "id": "D3",
+      "title": "Prometheus metrics and Kubernetes-style health probes",
+      "chosen": "Prometheus exposition format on /metrics endpoint. Liveness probe (/health/live) checks scheduler responsiveness. Readiness probe (/health/ready) checks store reachability and optionally worker connectivity.",
+      "rejected": ["OpenTelemetry-only metrics (no direct scrape endpoint)", "Custom binary metrics protocol"],
+      "rationale": "Prometheus is the de facto standard for infrastructure metrics. Direct exposition avoids requiring an OTel collector in every deployment. Health probes match Kubernetes pod lifecycle expectations."
+    },
+    {
+      "id": "D4",
+      "title": "TOML configuration with environment override and CLI precedence",
+      "chosen": "Single aion.toml file, AION_ prefixed env vars override, CLI flags override both. Precedence: CLI > env > file > defaults.",
+      "rejected": ["YAML configuration", "Environment-only configuration", "JSON configuration"],
+      "rationale": "TOML is readable, comments-friendly, and Rust-native (serde support). Env vars enable container deployments where config files are awkward. CLI flags enable one-off overrides in scripts."
+    },
+    {
+      "id": "D5",
+      "title": "Feature-gated JWT authentication with namespace-scoped claims",
+      "chosen": "When auth.enabled=true, Bearer tokens validated against JWKS endpoint. Token claims include namespace field scoping all operations. Feature-gated behind cfg(feature='auth') to keep base binary lean.",
+      "rejected": ["Always-on auth (penalizes development)", "API-key-only auth (no standard claims)", "mTLS-only (no namespace claims in cert)"],
+      "rationale": "JWT/JWKS is the industry standard for service-to-service auth with structured claims. Feature gating keeps the dependency tree clean for embedded and testing use cases where auth is irrelevant."
+    }
+  ],
+  "goals": [
+    "A signal sent to a non-resident workflow is recorded and delivered when the workflow resumes, matching Temporal signal delivery semantics.",
+    "A rolling deploy (SIGTERM then drain then restart) loses zero in-flight work.",
+    "A Prometheus scrape of /metrics returns all listed metrics with correct labels and values.",
+    "/health/live and /health/ready return correct status codes within 100ms.",
+    "aion-server starts from a TOML config file with zero code changes.",
+    "With auth enabled, a request without a valid token is rejected with 401.",
+    "All of the above pass under cargo clippy --workspace -- -D warnings."
+  ],
+  "non_goals": [
+    "Horizontal scaling or clustering — single-writer-per-workflow is the architecture; multi-node is a future concern.",
+    "Custom metrics backends — Prometheus exposition is the interface; operators pipe to their own stack.",
+    "OAuth2 provider implementation — the server validates tokens, not issues them.",
+    "Log aggregation — structured JSON to stdout; operators handle shipping.",
+    "Rate limiting — deferred to a future cluster."
+  ],
+  "structure": {
+    "crates/aion/src/signal/router.rs": "Residency-aware routing (modify, AO-001)",
+    "crates/aion/src/signal/resume.rs": "SignalResumeHandoff (exists, wire in AO-001)",
+    "crates/aion/src/engine/api.rs": "Resume transition trigger (modify, AO-001)",
+    "crates/aion-server/src/config/mod.rs": "pub mod + re-exports",
+    "crates/aion-server/src/config/file.rs": "TOML parsing and validation (AO-003)",
+    "crates/aion-server/src/config/env.rs": "Environment variable overlay (AO-003)",
+    "crates/aion-server/src/observability/mod.rs": "pub mod + re-exports",
+    "crates/aion-server/src/observability/metrics.rs": "Prometheus registry and endpoint (AO-004)",
+    "crates/aion-server/src/observability/health.rs": "Liveness and readiness probes (AO-004)",
+    "crates/aion-server/src/observability/tracing.rs": "Structured logging setup (AO-004)",
+    "crates/aion-server/src/auth/mod.rs": "pub mod + re-exports (AO-006)",
+    "crates/aion-server/src/auth/middleware.rs": "Tower middleware for token extraction (AO-006)",
+    "crates/aion-server/src/auth/jwks.rs": "JWKS validation (AO-006)",
+    "crates/aion-server/src/shutdown.rs": "Graceful drain coordinator (AO-002)",
+    "crates/aion-server/src/state.rs": "Config-driven initialization (modify, AO-003)",
+    "crates/aion-server/src/main.rs": "Config loading, signal handling (modify, AO-002/003)"
+  },
+  "constraints": [
+    {"id": "CO1", "text": "No execution logic in the server. Signal wiring (AO-001) is an engine change. The server never makes durability decisions."},
+    {"id": "CO2", "text": "No arbitrary defaults for operator-configurable values. Thread counts, timeouts, drain durations come from config."},
+    {"id": "CO3", "text": "Feature-gated auth. The auth module is behind cfg(feature='auth'). Base binary compiles without auth dependencies."},
+    {"id": "CO4", "text": "No new dependencies in the engine crate. Observability and config live in aion-server."},
+    {"id": "CO5", "text": "Structured output only. No println, no unstructured log lines. Everything through tracing with structured fields."}
+  ]
+}

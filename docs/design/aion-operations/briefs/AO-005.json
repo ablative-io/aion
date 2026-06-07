@@ -1,0 +1,88 @@
+{
+  "id": "AO-005",
+  "cluster": "aion-operations",
+  "title": "Structured tracing with JSON output and span context",
+  "depends_on": ["AO-003"],
+  "blocked_by": [],
+  "checklist": ["C19", "C20", "C21"],
+  "stories": ["S5"],
+  "purpose": "Replace unstructured output with tracing-based structured JSON logging so operators can correlate events across their aggregation pipeline using workflow_id, namespace, and operation-specific fields.",
+  "task": "Set up a tracing subscriber with JSON formatting in aion-server's initialization. Instrument the server handler layer with structured spans for request-initiated operations (start, signal, query, cancel). For internally-triggered operations (timer fires, schedule evaluations, child starts, signal flush), subscribe to the engine's EventPublisher broadcast and emit structured events from the subscription handler — same pattern as AO-004 metrics. Ensure no println/eprintln/unstructured output exists in production code paths.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "JSON tracing subscriber initialization",
+      "spec": "WHEN aion-server starts, THE SYSTEM SHALL initialize a tracing subscriber that formats events as JSON to stdout with timestamp, level, target, span context, and structured fields. THE SYSTEM SHALL NOT emit any output through println, eprintln, or unstructured log macros in production code paths.",
+      "acceptance": [
+        "Server startup emits a JSON-formatted log line with level=info.",
+        "Log lines include timestamp, level, target, and message fields.",
+        "Span context (workflow_id, namespace) propagates to child events.",
+        "No raw println or eprintln output exists in production code (grep verification).",
+        "Log level is configurable via AION_LOG or RUST_LOG environment variable."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/observability/tracing.rs"],
+        "modify": [
+          "crates/aion-server/src/observability/mod.rs",
+          "crates/aion-server/src/main.rs"
+        ]
+      },
+      "checklist": ["C19"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "Engine operation spans with workflow and namespace context",
+      "spec": "THE SYSTEM SHALL emit tracing spans for workflow start, signal, query, cancel, and complete operations carrying workflow_id and namespace as structured fields. Activity dispatch spans SHALL additionally carry activity_type and worker_id. THE SYSTEM SHALL NOT add tracing dependencies to the aion engine crate — instrumentation hooks are in the server's handler layer.",
+      "acceptance": [
+        "Starting a workflow emits a span with workflow_id and namespace.",
+        "Signalling a workflow includes signal_name in the span.",
+        "Activity dispatch includes activity_type and the worker's identity.",
+        "Activity completion includes duration_ms as a numeric field.",
+        "All spans are in the server handler layer, not in the engine crate."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/api/handlers.rs",
+          "crates/aion-server/src/worker/dispatch.rs"
+        ]
+      },
+      "checklist": ["C20"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Error events with typed variant names",
+      "spec": "WHEN an error occurs in a request handler or worker interaction, THE SYSTEM SHALL emit a tracing error event with the error's typed variant name as a structured field (e.g. error_type=\"WorkflowNotFound\"), not just the Display representation. THE SYSTEM SHALL include enough context (workflow_id, request type) to correlate the error with the operation that caused it.",
+      "acceptance": [
+        "A WorkflowNotFound error emits error_type=\"WorkflowNotFound\" as a field.",
+        "A store error emits error_type=\"StoreError\" with the inner reason.",
+        "Error events include the workflow_id and operation that triggered them.",
+        "Error events are at level=error, not level=warn or info."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/api/handlers.rs",
+          "crates/aion-server/src/worker/bridge.rs"
+        ]
+      },
+      "checklist": ["C21"],
+      "stories": ["S5"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add tracing or tracing-subscriber as dependencies of the aion engine crate (CO4).",
+    "SHALL NOT implement log shipping, log rotation, or log file output — JSON to stdout only.",
+    "SHALL NOT add request-id or trace-id propagation in this brief — that is a future OpenTelemetry concern.",
+    "SHALL NOT remove existing tracing instrumentation that may exist in test code."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "grep -r 'println\\!\\|eprintln\\!' crates/aion-server/src/ returns zero matches in non-test files.",
+    "Server output is valid JSON parseable by jq."
+  ]
+}
