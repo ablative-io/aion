@@ -1,12 +1,14 @@
 //! Recorder: single-writer append path over `EventStore`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use aion_core::{
-    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowError,
-    WorkflowId,
+    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, SearchAttributeSchema,
+    SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
 };
 use aion_store::EventStore;
+use aion_store::visibility::{VisibilityRecord, VisibilityStore};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
@@ -20,6 +22,12 @@ pub struct Recorder {
     workflow_id: WorkflowId,
     store: Arc<dyn EventStore>,
     sequence: SequenceHead,
+    visibility: Option<RecorderVisibility>,
+}
+
+struct RecorderVisibility {
+    run_id: RunId,
+    store: Arc<dyn VisibilityStore>,
 }
 
 impl Recorder {
@@ -36,7 +44,16 @@ impl Recorder {
             workflow_id,
             store,
             sequence: SequenceHead::from_head(head),
+            visibility: None,
         }
+    }
+
+    /// Enables visibility projection upserts after workflow-level state-changing events recorded
+    /// directly through this recorder.
+    #[must_use]
+    pub fn with_visibility(mut self, run_id: RunId, store: Arc<dyn VisibilityStore>) -> Self {
+        self.visibility = Some(RecorderVisibility { run_id, store });
+        self
     }
 
     /// Returns the workflow this recorder appends to.
@@ -162,7 +179,33 @@ impl Recorder {
             workflow_type,
             parent_run_id,
         })
-        .await
+        .await?;
+        self.upsert_visibility_projection().await
+    }
+
+    /// Records a validated search-attribute update for this workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] when any attribute is unregistered or has a type that does not
+    /// match `schema`, or when the event store rejects the append / sequence advance.
+    pub async fn record_search_attributes_updated(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        attributes: HashMap<String, SearchAttributeValue>,
+        schema: &SearchAttributeSchema,
+    ) -> Result<(), DurabilityError> {
+        for (name, value) in &attributes {
+            schema.validate(name, value)?;
+        }
+        let workflow_id = self.workflow_id.clone();
+        self.append_with(recorded_at, |envelope| Event::SearchAttributesUpdated {
+            envelope,
+            workflow_id,
+            attributes,
+        })
+        .await?;
+        self.upsert_visibility_projection().await
     }
 
     /// Records activity scheduling.
@@ -422,13 +465,88 @@ impl Recorder {
             .await?;
         self.sequence.mark_append_success(1)
     }
+
+    async fn upsert_visibility_projection(&self) -> Result<(), DurabilityError> {
+        let Some(visibility) = &self.visibility else {
+            return Ok(());
+        };
+        let history = self.store.read_history(&self.workflow_id).await?;
+        let record = visibility_record_from_history(&history, &visibility.run_id)?;
+        visibility.store.record_visibility(record).await?;
+        Ok(())
+    }
+}
+
+fn visibility_record_from_history(
+    history: &[Event],
+    run_id: &RunId,
+) -> Result<VisibilityRecord, DurabilityError> {
+    let (workflow_id, workflow_type, start_time) = history
+        .iter()
+        .find_map(|event| match event {
+            Event::WorkflowStarted {
+                envelope,
+                workflow_type,
+                ..
+            } => Some((
+                envelope.workflow_id.clone(),
+                workflow_type.clone(),
+                envelope.recorded_at,
+            )),
+            _ => None,
+        })
+        .ok_or_else(|| DurabilityError::HistoryShape {
+            reason: String::from(
+                "workflow history has no WorkflowStarted event for visibility projection",
+            ),
+        })?;
+
+    Ok(VisibilityRecord {
+        workflow_id,
+        run_id: run_id.clone(),
+        workflow_type,
+        status: aion_core::status_from_events(history),
+        start_time,
+        close_time: terminal_recorded_at(history),
+        search_attributes: search_attributes_from_history(history),
+    })
+}
+
+fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
+    history.iter().rev().find_map(|event| match event {
+        Event::WorkflowCompleted { envelope, .. }
+        | Event::WorkflowFailed { envelope, .. }
+        | Event::WorkflowCancelled { envelope, .. }
+        | Event::WorkflowTimedOut { envelope, .. }
+        | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
+        _ => None,
+    })
+}
+
+fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAttributeValue> {
+    let mut attributes = HashMap::new();
+    for event in history {
+        if let Event::SearchAttributesUpdated {
+            attributes: updated,
+            ..
+        } = event
+        {
+            attributes.extend(updated.clone());
+        }
+    }
+    attributes
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use aion_core::{Event, Payload, TimerId};
+    use aion_core::{
+        Event, Payload, SearchAttributeError, SearchAttributeSchema, SearchAttributeType,
+        SearchAttributeValue, TimerId,
+    };
+    use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
     use aion_store::{EventStore, InMemoryStore, StoreError};
     use chrono::{DateTime, Utc};
     use serde_json::json;
@@ -527,6 +645,124 @@ mod tests {
             other => return Err(format!("expected WorkflowContinuedAsNew, got {other:?}").into()),
         }
         assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_validated_search_attributes_updated_event()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(7);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("customer_id", SearchAttributeType::String)?;
+        schema.register("attempt", SearchAttributeType::Int)?;
+        let attributes = HashMap::from([
+            (
+                String::from("customer_id"),
+                SearchAttributeValue::String(String::from("customer-123")),
+            ),
+            (String::from("attempt"), SearchAttributeValue::Int(2)),
+        ]);
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        recorder
+            .record_search_attributes_updated(recorded_at(2), attributes.clone(), &schema)
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        match history.as_slice() {
+            [
+                Event::WorkflowStarted { .. },
+                Event::SearchAttributesUpdated {
+                    envelope,
+                    workflow_id: recorded_workflow_id,
+                    attributes: stored_attributes,
+                },
+            ] => {
+                assert_eq!(envelope.seq, 2);
+                assert_eq!(recorded_workflow_id, &workflow_id);
+                assert_eq!(stored_attributes, &attributes);
+            }
+            other => {
+                return Err(
+                    format!("expected started then search attributes, found {other:?}").into(),
+                );
+            }
+        }
+        assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_search_attributes_return_error_without_appending()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(8);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("attempt", SearchAttributeType::Int)?;
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        let attributes = HashMap::from([(
+            String::from("attempt"),
+            SearchAttributeValue::String(String::from("two")),
+        )]);
+        let error = recorder
+            .record_search_attributes_updated(recorded_at(2), attributes, &schema)
+            .await;
+
+        match error {
+            Err(DurabilityError::SearchAttribute(SearchAttributeError::TypeMismatch {
+                name,
+                expected,
+                actual,
+            })) => {
+                assert_eq!(name, "attempt");
+                assert_eq!(expected, SearchAttributeType::Int);
+                assert_eq!(actual, SearchAttributeType::String);
+            }
+            Err(other) => {
+                return Err(format!("expected search attribute error, got {other:?}").into());
+            }
+            Ok(()) => return Err("expected search attribute validation error".into()),
+        }
+        assert_eq!(recorder.current_head(), 1);
+        assert_eq!(store.read_history(&workflow_id).await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorder_visibility_updates_after_search_attributes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(9);
+        let run_id = aion_core::RunId::new(uuid::Uuid::from_u128(90));
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone())
+            .with_visibility(run_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("customer_id", SearchAttributeType::String)?;
+        let attributes = HashMap::from([(
+            String::from("customer_id"),
+            SearchAttributeValue::String(String::from("customer-123")),
+        )]);
+
+        recorder
+            .record_workflow_started(recorded_at(1), String::from("checkout"), payload("input")?)
+            .await?;
+        recorder
+            .record_search_attributes_updated(recorded_at(2), attributes.clone(), &schema)
+            .await?;
+
+        let summaries = store.list_workflows(ListWorkflowsFilter::default()).await?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].workflow_id, workflow_id);
+        assert_eq!(summaries[0].run_id, run_id);
+        assert_eq!(summaries[0].search_attributes, attributes);
         Ok(())
     }
 

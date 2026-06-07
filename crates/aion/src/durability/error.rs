@@ -1,6 +1,6 @@
 //! `NonDeterminismError` and `DurabilityError` taxonomy.
 
-use aion_core::WorkflowId;
+use aion_core::{SearchAttributeError, WorkflowId};
 use aion_store::StoreError;
 
 /// A deterministic replay mismatch between the workflow command stream and recorded history.
@@ -36,6 +36,10 @@ pub enum DurabilityError {
         /// Human-readable description of the malformed recorded history.
         reason: String,
     },
+
+    /// A search attribute update did not satisfy the registered schema.
+    #[error("search attribute validation error: {0}")]
+    SearchAttribute(#[from] SearchAttributeError),
 }
 
 #[cfg(test)]

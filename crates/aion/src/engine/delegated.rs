@@ -293,7 +293,8 @@ mod tests {
 
     use aion_core::{EventEnvelope, WorkflowStatus};
     use aion_package::ContentHash;
-    use aion_store::InMemoryStore;
+    use aion_store::visibility::VisibilityStore;
+    use aion_store::{EventStore, InMemoryStore};
     use futures::{StreamExt, stream};
     use serde_json::json;
 
@@ -373,8 +374,12 @@ mod tests {
         query_service: Arc<dyn QueryService>,
         event_publisher: Arc<dyn EventPublisher>,
     ) -> Result<Engine, EngineError> {
+        let backing = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as _;
+        let visibility_store: Arc<dyn VisibilityStore> = backing;
         Ok(Engine::new(
-            Arc::new(InMemoryStore::default()),
+            store,
+            visibility_store,
             RuntimeHandle::new(RuntimeConfig::new(Some(1)))?,
             LoadedWorkflows::new(),
             Registry::default(),

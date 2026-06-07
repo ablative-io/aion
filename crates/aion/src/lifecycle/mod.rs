@@ -4,6 +4,7 @@ pub mod continue_as_new;
 pub mod start;
 pub mod terminate;
 pub mod transition;
+pub mod visibility;
 
 pub use continue_as_new::{ContinueAsNewContext, ContinueAsNewRequest, continue_as_new};
 pub use terminate::{TerminateWorkflowContext, cancel, complete, fail};

@@ -9,6 +9,7 @@ use aion_core::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
 use crate::{EventStore, StoreError, TimerEntry};
 
 /// Correct non-durable [`EventStore`] implementation for tests and backend equivalence.
@@ -17,10 +18,64 @@ pub struct InMemoryStore {
     state: Mutex<InMemoryState>,
 }
 
+#[async_trait]
+impl VisibilityStore for InMemoryStore {
+    async fn record_visibility(&self, record: VisibilityRecord) -> Result<(), StoreError> {
+        let mut state = self.lock_state()?;
+        state
+            .visibility
+            .insert((record.workflow_id.clone(), record.run_id.clone()), record);
+        Ok(())
+    }
+
+    async fn list_workflows(
+        &self,
+        filter: ListWorkflowsFilter,
+    ) -> Result<Vec<crate::visibility::WorkflowSummary>, StoreError> {
+        let state = self.lock_state()?;
+        let mut summaries = state
+            .visibility
+            .values()
+            .cloned()
+            .map(crate::visibility::WorkflowSummary::from)
+            .filter(|summary| filter.matches(summary))
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| {
+            left.start_time.cmp(&right.start_time).then_with(|| {
+                left.workflow_id
+                    .to_string()
+                    .cmp(&right.workflow_id.to_string())
+            })
+        });
+        let offset = filter.offset.and_then(|value| usize::try_from(value).ok());
+        if let Some(offset) = offset {
+            summaries = summaries.into_iter().skip(offset).collect();
+        }
+        if let Some(limit) = filter.limit.and_then(|value| usize::try_from(value).ok()) {
+            summaries.truncate(limit);
+        }
+        Ok(summaries)
+    }
+
+    async fn count_workflows(&self, filter: ListWorkflowsFilter) -> Result<u64, StoreError> {
+        let state = self.lock_state()?;
+        Ok(state
+            .visibility
+            .values()
+            .cloned()
+            .map(crate::visibility::WorkflowSummary::from)
+            .filter(|summary| filter.matches(summary))
+            .count()
+            .try_into()
+            .unwrap_or(u64::MAX))
+    }
+}
+
 #[derive(Debug, Default)]
 struct InMemoryState {
     histories: HashMap<WorkflowId, Vec<Event>>,
     timers: HashMap<(WorkflowId, TimerId), TimerEntry>,
+    visibility: HashMap<(WorkflowId, aion_core::RunId), VisibilityRecord>,
 }
 
 impl InMemoryStore {

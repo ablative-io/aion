@@ -7,6 +7,7 @@ use aion_core::{
     Event, Payload, RunId, WorkflowError, WorkflowFilter, WorkflowId, WorkflowSummary,
 };
 use aion_store::EventStore;
+use aion_store::visibility::VisibilityStore;
 
 use crate::lifecycle::continue_as_new::{self, ContinueAsNewContext, ContinueAsNewRequest};
 use crate::lifecycle::start::{self, StartWorkflowContext};
@@ -19,6 +20,7 @@ use super::delegated::DelegatedSeams;
 /// Live embedded workflow engine assembled by [`crate::EngineBuilder`].
 pub struct Engine {
     store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
     runtime: RuntimeHandle,
     loaded_workflows: LoadedWorkflows,
     registry: Registry,
@@ -32,6 +34,7 @@ impl Engine {
     #[must_use]
     pub(crate) fn new(
         store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
         runtime: RuntimeHandle,
         loaded_workflows: LoadedWorkflows,
         registry: Registry,
@@ -40,6 +43,7 @@ impl Engine {
     ) -> Self {
         Self {
             store,
+            visibility_store,
             runtime,
             loaded_workflows,
             registry,
@@ -53,6 +57,12 @@ impl Engine {
     #[must_use]
     pub fn store(&self) -> Arc<dyn EventStore> {
         Arc::clone(&self.store)
+    }
+
+    /// Visibility store used for workflow summary projections.
+    #[must_use]
+    pub fn visibility_store(&self) -> Arc<dyn VisibilityStore> {
+        Arc::clone(&self.visibility_store)
     }
 
     /// Runtime boundary assembled for this engine.
@@ -100,6 +110,7 @@ impl Engine {
         let result = start::start_workflow(
             StartWorkflowContext {
                 store: self.store(),
+                visibility_store: self.visibility_store(),
                 loaded_workflows: &self.loaded_workflows,
                 runtime: &self.runtime,
                 supervision: &self.supervision,
@@ -129,6 +140,8 @@ impl Engine {
         let result = terminate::cancel(
             TerminateWorkflowContext {
                 runtime: &self.runtime,
+                store: self.store(),
+                visibility_store: self.visibility_store(),
                 registry: &self.registry,
             },
             id,
@@ -157,6 +170,7 @@ impl Engine {
         let result = continue_as_new::continue_as_new(
             ContinueAsNewContext {
                 store: self.store(),
+                visibility_store: Arc::clone(&self.visibility_store),
                 loaded_workflows: &self.loaded_workflows,
                 runtime: &self.runtime,
                 supervision: &self.supervision,
@@ -203,6 +217,8 @@ impl Engine {
                 terminate::complete(
                     TerminateWorkflowContext {
                         runtime: &self.runtime,
+                        store: self.store(),
+                        visibility_store: self.visibility_store(),
                         registry: &self.registry,
                     },
                     id,
@@ -215,6 +231,8 @@ impl Engine {
                 terminate::fail(
                     TerminateWorkflowContext {
                         runtime: &self.runtime,
+                        store: self.store(),
+                        visibility_store: self.visibility_store(),
                         registry: &self.registry,
                     },
                     id,
@@ -462,6 +480,7 @@ mod tests {
 
     use aion_core::{Event, Payload, WorkflowFilter, WorkflowStatus};
     use aion_package::ContentHash;
+    use aion_store::visibility::VisibilityStore;
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
@@ -503,8 +522,10 @@ mod tests {
     ) -> Result<Engine, EngineError> {
         let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
         runtime.register_waiting_test_module(deployed_module, "run");
+        let visibility_store: Arc<dyn VisibilityStore> = Arc::new(InMemoryStore::default());
         Ok(Engine::new(
             store,
+            visibility_store,
             runtime,
             loaded_workflows(workflow_type, deployed_module),
             Registry::default(),
@@ -516,6 +537,8 @@ mod tests {
     fn termination_context(engine: &Engine) -> TerminateWorkflowContext<'_> {
         TerminateWorkflowContext {
             runtime: engine.runtime(),
+            store: engine.store(),
+            visibility_store: engine.visibility_store(),
             registry: engine.registry(),
         }
     }

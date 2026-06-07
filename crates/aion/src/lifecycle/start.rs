@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus};
 use aion_store::EventStore;
+use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
+use super::visibility::upsert_workflow_visibility;
 use crate::EngineError;
 use crate::durability::Recorder;
 use crate::loader::LoadedWorkflows;
@@ -19,6 +21,8 @@ use crate::supervision::{SupervisionTree, spawn_workflow_with_policy};
 pub struct StartWorkflowContext<'a> {
     /// Durable event store used by the workflow's single recorder.
     pub store: Arc<dyn EventStore>,
+    /// Visibility index updated after state-changing workflow events.
+    pub visibility_store: Arc<dyn VisibilityStore>,
     /// Loader-owned workflow records keyed by logical workflow type and version.
     pub loaded_workflows: &'a LoadedWorkflows,
     /// Runtime boundary used to spawn the workflow process.
@@ -98,7 +102,8 @@ pub async fn start_workflow_with_options(
         workflow_id.clone(),
         Arc::clone(&context.store),
         initial_head,
-    );
+    )
+    .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
     recorder
         .record_workflow_started_with_parent(
             Utc::now(),
@@ -107,6 +112,13 @@ pub async fn start_workflow_with_options(
             options.parent_run_id,
         )
         .await?;
+    upsert_workflow_visibility(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+        &workflow_id,
+        &run_id,
+    )
+    .await?;
 
     context
         .supervision
@@ -157,6 +169,7 @@ mod tests {
 
     use aion_core::{Event, Payload};
     use aion_package::ContentHash;
+    use aion_store::visibility::VisibilityStore;
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
@@ -186,6 +199,7 @@ mod tests {
 
     fn context<'a>(
         store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
         loaded_workflows: &'a LoadedWorkflows,
         runtime: &'a RuntimeHandle,
         supervision: &'a SupervisionTree,
@@ -193,6 +207,7 @@ mod tests {
     ) -> StartWorkflowContext<'a> {
         StartWorkflowContext {
             store,
+            visibility_store,
             loaded_workflows,
             runtime,
             supervision,
@@ -211,7 +226,14 @@ mod tests {
         let input = payload("input")?;
 
         let result = start_workflow(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             input,
         )
@@ -238,7 +260,14 @@ mod tests {
         let input = payload("input")?;
 
         let result = start_workflow(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             input.clone(),
         )
@@ -281,7 +310,14 @@ mod tests {
         let input = payload("input")?;
 
         let handle = start_workflow(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             input.clone(),
         )
@@ -352,7 +388,14 @@ mod tests {
             .await?;
 
         let handle = start_workflow_with_options(
-            context(store.clone(), &loaded, &runtime, &supervision, &registry),
+            context(
+                store.clone(),
+                store.clone(),
+                &loaded,
+                &runtime,
+                &supervision,
+                &registry,
+            ),
             "checkout",
             payload("second")?,
             StartWorkflowOptions {

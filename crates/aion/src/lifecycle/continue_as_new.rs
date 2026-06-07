@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use aion_core::{ActivityId, Event, Payload, RunId, WorkflowId};
 use aion_store::EventStore;
+use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
 use crate::EngineError;
@@ -18,6 +19,8 @@ use crate::supervision::SupervisionTree;
 pub struct ContinueAsNewContext<'a> {
     /// Durable event store used to scan history and start the replacement run.
     pub store: Arc<dyn EventStore>,
+    /// Visibility store for workflow visibility projections.
+    pub visibility_store: Arc<dyn VisibilityStore>,
     /// Loader-owned workflow records keyed by logical workflow type and version.
     pub loaded_workflows: &'a LoadedWorkflows,
     /// Runtime boundary used to spawn the replacement workflow process.
@@ -77,6 +80,7 @@ pub async fn continue_as_new(
     let new_handle = start::start_workflow_with_options(
         StartWorkflowContext {
             store: context.store,
+            visibility_store: context.visibility_store,
             loaded_workflows: context.loaded_workflows,
             runtime: context.runtime,
             supervision: context.supervision,
@@ -197,6 +201,7 @@ mod tests {
 
     use aion_core::{ActivityId, Event, Payload, WorkflowStatus};
     use aion_package::ContentHash;
+    use aion_store::visibility::VisibilityStore;
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
@@ -213,6 +218,7 @@ mod tests {
 
     struct ActiveWorkflow {
         store: Arc<dyn EventStore>,
+        visibility_store: Arc<dyn VisibilityStore>,
         loaded: LoadedWorkflows,
         runtime: RuntimeHandle,
         supervision: SupervisionTree,
@@ -242,7 +248,9 @@ mod tests {
     }
 
     async fn active_workflow() -> Result<ActiveWorkflow, Box<dyn std::error::Error>> {
-        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let backing = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let visibility_store: Arc<dyn VisibilityStore> = backing;
         let loaded = loaded_workflows();
         let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
         runtime.register_waiting_test_module("checkout_deployed", "run");
@@ -271,6 +279,7 @@ mod tests {
 
         Ok(ActiveWorkflow {
             store,
+            visibility_store,
             loaded,
             runtime,
             supervision,
@@ -282,6 +291,7 @@ mod tests {
     fn context(active: &ActiveWorkflow) -> ContinueAsNewContext<'_> {
         ContinueAsNewContext {
             store: Arc::clone(&active.store),
+            visibility_store: Arc::clone(&active.visibility_store),
             loaded_workflows: &active.loaded,
             runtime: &active.runtime,
             supervision: &active.supervision,

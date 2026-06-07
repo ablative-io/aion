@@ -162,7 +162,12 @@ workflow_type: string,
 /**
  * Opaque workflow input payload.
  */
-input: Payload, } } | { "type": "WorkflowCompleted", "data": { 
+input: Payload, 
+/**
+ * Parent run that continued as this run, when this start is part of a
+ * continue-as-new chain.
+ */
+parent_run_id: RunId | null, } } | { "type": "WorkflowCompleted", "data": { 
 /**
  * Recording metadata for this event.
  */
