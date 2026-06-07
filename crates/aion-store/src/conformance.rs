@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use aion_core::{
-    Event, EventEnvelope, Payload, TimerId, WorkflowError, WorkflowFilter, WorkflowId,
+    Event, EventEnvelope, Payload, RunId, TimerId, WorkflowError, WorkflowFilter, WorkflowId,
     WorkflowStatus, WorkflowSummary,
 };
 use chrono::{DateTime, Utc};
@@ -121,6 +121,7 @@ async fn list_active_reflects_projected_status(
 
     let running = workflow_id();
     let completing = workflow_id();
+    let continuing = workflow_id();
 
     store
         .append(&running, &[workflow_started(1, &running, "checkout")?], 0)
@@ -132,21 +133,35 @@ async fn list_active_reflects_projected_status(
             0,
         )
         .await?;
+    store
+        .append(
+            &continuing,
+            &[workflow_started(1, &continuing, "fulfillment")?],
+            0,
+        )
+        .await?;
 
     expect_contains_exactly(
         store.list_active().await?,
-        &[running.clone(), completing.clone()],
+        &[running.clone(), completing.clone(), continuing.clone()],
         "started workflows should be listed as active before terminal events",
     )?;
 
     store
         .append(&completing, &[workflow_completed(2, &completing)?], 1)
         .await?;
+    store
+        .append(
+            &continuing,
+            &[workflow_continued_as_new(2, &continuing)?],
+            1,
+        )
+        .await?;
 
     expect_contains_exactly(
         store.list_active().await?,
         &[running],
-        "terminal workflow lifecycle events should remove workflows from active listing",
+        "terminal workflow lifecycle events, including continued-as-new, should remove workflows from active listing",
     )
 }
 
@@ -409,6 +424,15 @@ fn workflow_failed_at(
             message: String::from("failed"),
             details: None,
         },
+    })
+}
+
+fn workflow_continued_as_new(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
+    Ok(Event::WorkflowContinuedAsNew {
+        envelope: envelope(seq, workflow_id)?,
+        input: payload("continued-input")?,
+        workflow_type: Some(String::from("continued-workflow")),
+        parent_run_id: RunId::new(uuid::Uuid::from_u128(42)),
     })
 }
 

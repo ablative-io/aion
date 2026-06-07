@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 
 use aion_store::{
-    Event, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
-    status_from_events,
+    Event, StoreError, WorkflowFilter, WorkflowId, WorkflowSummary, status_from_events,
 };
 use libsql::{Value, params, params_from_iter};
 
@@ -52,7 +51,7 @@ pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<Workflo
     let mut active = load_summaries(conn, &WorkflowFilter::default(), false)
         .await?
         .into_iter()
-        .filter(|summary| summary.status == WorkflowStatus::Running)
+        .filter(|summary| !summary.status.is_terminal())
         .map(|summary| summary.workflow_id)
         .collect::<Vec<_>>();
     active.sort_by_key(ToString::to_string);
