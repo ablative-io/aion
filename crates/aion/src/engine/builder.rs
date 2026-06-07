@@ -298,6 +298,7 @@ impl EngineBuilder {
             supervision,
             delegated,
         );
+        engine.catchup_schedule_coordinator().await?;
         engine.recover_schedules_on_startup(Utc::now()).await?;
         Ok(engine)
     }

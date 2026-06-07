@@ -90,6 +90,30 @@ impl Engine {
         }
     }
 
+    /// Advance the schedule coordinator's recorder head to match persisted
+    /// events so that a rebuilt engine resumes appending at the correct
+    /// sequence rather than conflicting at head 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns store read errors.
+    pub(crate) async fn catchup_schedule_coordinator(&self) -> Result<(), EngineError> {
+        let history = self
+            .store
+            .read_history(&self.schedule_coordinator_workflow_id)
+            .await?;
+        let head = u64::try_from(history.len()).unwrap_or(u64::MAX);
+        if head > 0 {
+            let mut recorder = self.schedule_recorder.lock().await;
+            *recorder = Recorder::resume_at(
+                self.schedule_coordinator_workflow_id.clone(),
+                Arc::clone(&self.store),
+                head,
+            );
+        }
+        Ok(())
+    }
+
     /// Event store used by lifecycle and delegated AD/AT operations.
     #[must_use]
     pub fn store(&self) -> Arc<dyn EventStore> {
