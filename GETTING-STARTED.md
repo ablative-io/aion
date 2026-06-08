@@ -33,7 +33,7 @@ This writes `examples/hello-world/hello-world.aion`.
 
 ## 3. Start the Aion dev server
 
-The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, uses the in-memory store, defaults to the `default` namespace, and preloads the hello-world package you built above.
+The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, uses the in-memory store, and defaults to the `default` namespace. To preload the hello-world package you built above, make sure `workflow_packages` includes `examples/hello-world/hello-world.aion` before starting the server.
 
 ```sh
 cargo run -p aion-server -- --config dev-config.toml

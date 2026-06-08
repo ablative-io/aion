@@ -52,7 +52,7 @@ examples/hello-world/hello-world.aion
 
 ## 3. Start the Aion dev server
 
-The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, defaults to the `default` namespace, and preloads `examples/hello-world/hello-world.aion` at startup.
+The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, and defaults to the `default` namespace. To preload this example at startup, make sure `workflow_packages` includes `examples/hello-world/hello-world.aion` after building the package.
 
 Requests below use the same header convention as Aion clients: `x-aion-subject: hello-world-user` identifies the caller, and `x-aion-namespaces: default` grants access to the same `default` namespace used in each request body. The dev config leaves auth disabled, so no bearer token is needed.
 
