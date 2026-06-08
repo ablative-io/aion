@@ -74,4 +74,5 @@ enum WireErrorCode {
 message WireError {
   WireErrorCode code = 1;
   string message = 2;
+  optional string error_type = 3;
 }

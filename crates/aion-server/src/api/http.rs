@@ -737,6 +737,8 @@ mod tests {
         assert_eq!(start_response.status(), StatusCode::NOT_FOUND);
         let start_error: WireError = read_json(start_response).await?;
         assert_eq!(start_error.code, WireErrorCode::NotFound);
+        assert_eq!(start_error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(start_error.message.contains("missing-workflow"));
 
         let plain_start = json!({
             "namespace": NAMESPACE,

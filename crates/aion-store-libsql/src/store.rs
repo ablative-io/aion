@@ -54,6 +54,16 @@ impl LibSqlStore {
         .await
     }
 
+    /// Validate stored event blobs against the current Aion event schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Serialization` when any stored event cannot be decoded by the current
+    /// event schema, or `StoreError::Backend` for libSQL scan failures.
+    pub async fn validate_event_compatibility(&self) -> Result<(), StoreError> {
+        crate::read::validate_all_events(self.connection()).await
+    }
+
     /// Trigger and await a libSQL replica synchronization cycle.
     ///
     /// # Errors

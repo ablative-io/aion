@@ -224,8 +224,12 @@ pub async fn describe(
         .read_history(&workflow_id)
         .await
         .map_err(|error| ServerError::from(error).to_wire_error())?;
-    let summary = WorkflowSummary::from_history(&history)
-        .ok_or_else(|| WireError::not_found("workflow not found"))?;
+    let summary = WorkflowSummary::from_history(&history).ok_or_else(|| {
+        WireError::not_found_with_type(
+            "WorkflowNotFound",
+            format!("workflow not found: {workflow_id}"),
+        )
+    })?;
     let namespace = scoped.namespace().to_owned();
     let summary = encode_workflow_summary(namespace.clone(), None, &summary)?;
     let history = encode_history(request.include_history, &namespace, &history)?;
@@ -559,10 +563,12 @@ mod tests {
 
         let error = signal(&context.guard, &context.caller, signal_request()?).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
@@ -574,10 +580,12 @@ mod tests {
 
         let error = query(&context.guard, &context.caller, query_request()).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
@@ -589,10 +597,12 @@ mod tests {
 
         let error = cancel(&context.guard, &context.caller, cancel_request()).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
@@ -666,10 +676,12 @@ mod tests {
 
         let error = describe(&context.guard, &context.caller, describe_request(false)).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
