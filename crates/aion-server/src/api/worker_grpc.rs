@@ -71,7 +71,7 @@ impl WorkerProtocol for WorkerGrpcService {
             .state
             .worker_registry()
             .accept_registration(self.state.namespace_guard(), &caller, &register, worker_tx)
-            .map_err(status_from_server_error)?;
+            .map_err(|error| status_from_server_error(&error))?;
 
         let pending = self.state.pending_activities().clone();
 
@@ -181,6 +181,7 @@ async fn token_expiration_from_metadata(
     #[cfg(not(feature = "auth"))]
     {
         let _ = metadata;
+        std::future::ready(()).await;
         Err(Status::unauthenticated("authentication unavailable"))
     }
 }
@@ -208,7 +209,7 @@ fn token_expired(expires_at: Option<u64>) -> bool {
     })
 }
 
-fn status_from_server_error(error: crate::ServerError) -> Status {
+fn status_from_server_error(error: &crate::ServerError) -> Status {
     let wire = error.to_wire_error();
     if wire.code == aion_proto::WireErrorCode::NamespaceDenied {
         Status::permission_denied(wire.message)

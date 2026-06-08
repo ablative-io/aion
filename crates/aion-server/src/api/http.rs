@@ -101,7 +101,7 @@ impl FromRequestParts<ServerState> for HttpCaller {
     ) -> Result<Self, Self::Rejection> {
         let caller = caller_from_headers(&parts.headers, state)
             .await
-            .map_err(|error| error.into_response())?;
+            .map_err(axum::response::IntoResponse::into_response)?;
         Ok(Self(caller))
     }
 }
@@ -464,7 +464,8 @@ async fn caller_from_headers(
     }
     #[cfg(not(feature = "auth"))]
     {
-        let _headers = headers;
+        let _ = headers;
+        std::future::ready(()).await;
         Err(HttpAuthError)
     }
 }

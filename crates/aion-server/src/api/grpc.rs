@@ -278,6 +278,7 @@ pub(crate) async fn caller_from_metadata(
     }
     #[cfg(not(feature = "auth"))]
     {
+        std::future::ready(()).await;
         Err(Status::unauthenticated("authentication unavailable"))
     }
 }
