@@ -14,7 +14,7 @@ use aion_proto::{
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
-use crate::{CallerIdentity, ServerState, api::handlers, config::AuthConfig};
+use crate::{CallerIdentity, ServerState, api::handlers};
 
 /// Cloneable tonic implementation for workflow management.
 #[derive(Clone)]
@@ -29,8 +29,8 @@ impl WorkflowGrpcService {
         Self { state }
     }
 
-    fn caller<T>(&self, request: &Request<T>) -> CallerIdentity {
-        caller_from_metadata(request.metadata(), &self.state.runtime_config().auth)
+    async fn caller<T>(&self, request: &Request<T>) -> Result<CallerIdentity, Status> {
+        caller_from_metadata(request.metadata(), &self.state).await
     }
 }
 
@@ -46,7 +46,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::StartWorkflowRequest>,
     ) -> Result<Response<generated::StartWorkflowResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::start(
             self.state.namespace_guard(),
             &caller,
@@ -61,7 +61,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::SignalRequest>,
     ) -> Result<Response<generated::SignalResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::signal(
             self.state.namespace_guard(),
             &caller,
@@ -76,7 +76,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::QueryRequest>,
     ) -> Result<Response<generated::QueryResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::query(
             self.state.namespace_guard(),
             &caller,
@@ -91,7 +91,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::CancelRequest>,
     ) -> Result<Response<generated::CancelResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::cancel(
             self.state.namespace_guard(),
             &caller,
@@ -106,7 +106,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::ListWorkflowsRequest>,
     ) -> Result<Response<generated::ListWorkflowsResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::list(
             self.state.namespace_guard(),
             &caller,
@@ -121,7 +121,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::CountWorkflowsRequest>,
     ) -> Result<Response<generated::CountWorkflowsResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::count(
             self.state.namespace_guard(),
             &caller,
@@ -136,7 +136,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::DescribeWorkflowRequest>,
     ) -> Result<Response<generated::DescribeWorkflowResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::describe(
             self.state.namespace_guard(),
             &caller,
@@ -151,7 +151,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::CreateScheduleRequest>,
     ) -> Result<Response<generated::CreateScheduleResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::create_schedule(
             self.state.namespace_guard(),
             &caller,
@@ -166,7 +166,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::UpdateScheduleRequest>,
     ) -> Result<Response<generated::UpdateScheduleResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::update_schedule(
             self.state.namespace_guard(),
             &caller,
@@ -181,7 +181,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::PauseScheduleResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::pause_schedule(
             self.state.namespace_guard(),
             &caller,
@@ -196,7 +196,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::ResumeScheduleResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::resume_schedule(
             self.state.namespace_guard(),
             &caller,
@@ -211,7 +211,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::DeleteScheduleResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::delete_schedule(
             self.state.namespace_guard(),
             &caller,
@@ -226,7 +226,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::ListSchedulesRequest>,
     ) -> Result<Response<generated::ListSchedulesResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::list_schedules(
             self.state.namespace_guard(),
             &caller,
@@ -241,7 +241,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::DescribeScheduleResponse>, Status> {
-        let caller = self.caller(&request);
+        let caller = self.caller(&request).await?;
         let response = handlers::describe_schedule(
             self.state.namespace_guard(),
             &caller,
@@ -253,10 +253,37 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
     }
 }
 
-pub(crate) fn caller_from_metadata(
+pub(crate) async fn caller_from_metadata(
     metadata: &tonic::metadata::MetadataMap,
-    auth: &AuthConfig,
-) -> CallerIdentity {
+    state: &ServerState,
+) -> Result<CallerIdentity, Status> {
+    if !state.runtime_config().auth.enabled {
+        return Ok(development_caller_from_metadata(metadata));
+    }
+    #[cfg(feature = "auth")]
+    {
+        let bearer = metadata
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_bearer)
+            .ok_or_else(|| Status::unauthenticated("missing bearer token"))?;
+        let Some(cache) = state.jwks_cache() else {
+            return Err(Status::unauthenticated("invalid bearer token"));
+        };
+        return cache
+            .validate(&bearer)
+            .await
+            .map(|claims| claims.caller_identity())
+            .map_err(|_error| Status::unauthenticated("invalid bearer token"));
+    }
+    #[cfg(not(feature = "auth"))]
+    {
+        std::future::ready(()).await;
+        Err(Status::unauthenticated("authentication unavailable"))
+    }
+}
+
+fn development_caller_from_metadata(metadata: &tonic::metadata::MetadataMap) -> CallerIdentity {
     let subject = metadata
         .get("x-aion-subject")
         .and_then(|value| value.to_str().ok())
@@ -267,21 +294,16 @@ pub(crate) fn caller_from_metadata(
         .and_then(|value| value.to_str().ok())
         .map(parse_namespaces)
         .unwrap_or_default();
-    if !auth.enabled {
-        return CallerIdentity::new(subject, namespaces);
-    }
-    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
-    let expected = format!("Bearer {bearer_token}");
-    let authorized = metadata
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == expected);
+    CallerIdentity::new(subject, namespaces)
+}
 
-    if authorized {
-        CallerIdentity::new(subject, namespaces)
-    } else {
-        CallerIdentity::new(subject, Vec::new())
+#[cfg(feature = "auth")]
+fn parse_bearer(value: &str) -> Option<String> {
+    let token = value.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        return None;
     }
+    Some(token.to_owned())
 }
 
 fn parse_namespaces(value: &str) -> Vec<String> {
