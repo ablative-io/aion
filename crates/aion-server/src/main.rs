@@ -4,7 +4,7 @@ use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
 
 use aion_server::{
     ServerConfig, ServerError, ServerState, api,
-    config::CliOverrides,
+    config::{CliOverrides, NamespaceMode, StoreBackend},
     observability,
     shutdown::{self, ShutdownOutcome},
 };
@@ -41,16 +41,30 @@ async fn run() -> Result<ExitCode> {
     let cli = parse_cli(std::env::args_os().skip(1))?;
     let config = ServerConfig::load(&cli)?;
     reject_auth_without_feature(&config)?;
+    let store_backend = config.store.backend;
     let state = ServerState::build(config).await?;
     reject_tls_until_supported(&state)?;
 
-    let grpc_address = state.runtime_config().listen.grpc;
-    let http_address = state.runtime_config().listen.http;
+    let runtime = state.runtime_config();
+    let grpc_address = runtime.listen.grpc;
+    let http_address = runtime.listen.http;
+    let workflow_packages: Vec<String> = runtime
+        .workflow_packages
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
     info!(
         version = env!("CARGO_PKG_VERSION"),
         grpc_address = %grpc_address,
         http_address = %http_address,
-        "aion-server starting"
+        default_namespace = %runtime.default_namespace,
+        namespace_mode = namespace_mode_label(&runtime.namespace.mode),
+        store_backend = store_backend_label(store_backend),
+        auth_enabled = runtime.auth.enabled,
+        metrics_enabled = runtime.metrics.enabled,
+        workflow_package_count = workflow_packages.len(),
+        workflow_packages = ?workflow_packages,
+        "aion-server startup banner"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut grpc = tokio::spawn(serve_grpc(state.clone(), grpc_address, shutdown_rx.clone()));
@@ -174,6 +188,20 @@ fn reject_tls_until_supported(state: &ServerState) -> Result<()> {
     Ok(())
 }
 
+fn store_backend_label(backend: StoreBackend) -> &'static str {
+    match backend {
+        StoreBackend::Memory => "memory",
+        StoreBackend::LibSql => "libsql",
+    }
+}
+
+fn namespace_mode_label(mode: &NamespaceMode) -> &'static str {
+    match mode {
+        NamespaceMode::SharedEngine => "SharedEngine",
+        NamespaceMode::SingleTenant { .. } => "SingleTenant",
+    }
+}
+
 fn transport_bind<E>(transport: &'static str, address: SocketAddr, source: E) -> ServerError
 where
     E: std::error::Error,
@@ -209,6 +237,14 @@ fn parse_cli(args: impl IntoIterator<Item = OsString>) -> Result<CliOverrides, S
                 let value = required_utf8("--drain-timeout", args.next())?;
                 overrides.drain_timeout_seconds =
                     Some(parse_positive_u64("--drain-timeout", &value)?);
+            }
+            "--workflow-package" => {
+                overrides
+                    .workflow_packages
+                    .push(PathBuf::from(required_value(
+                        "--workflow-package",
+                        args.next(),
+                    )?));
             }
             "--help" | "-h" => {
                 return Err(ServerError::Config { message: usage() });
@@ -280,5 +316,31 @@ fn is_config_error(error: &anyhow::Error) -> bool {
 }
 
 fn usage() -> String {
-    "usage: aion-server [--config PATH] [--listen-address HOST:PORT] [--store-url URL] [--scheduler-threads N] [--drain-timeout SECONDS]".to_owned()
+    "usage: aion-server [--config PATH] [--listen-address HOST:PORT] [--store-url URL] [--scheduler-threads N] [--drain-timeout SECONDS] [--workflow-package PATH]...".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::parse_cli;
+
+    #[test]
+    fn workflow_package_flag_is_repeatable() -> Result<(), Box<dyn std::error::Error>> {
+        let overrides = parse_cli([
+            OsString::from("--workflow-package"),
+            OsString::from("examples/hello-world/hello-world.aion"),
+            OsString::from("--workflow-package"),
+            OsString::from("local.aion"),
+        ])?;
+
+        assert_eq!(
+            overrides.workflow_packages,
+            vec![
+                std::path::PathBuf::from("examples/hello-world/hello-world.aion"),
+                std::path::PathBuf::from("local.aion"),
+            ]
+        );
+        Ok(())
+    }
 }
