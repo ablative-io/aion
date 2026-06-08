@@ -510,7 +510,7 @@ fn rewrite_payload_object(object: Map<String, Value>) -> Result<Value, HttpWireE
             HttpWireError(WireError::backend("stored payload envelope is malformed"))
         })?;
     if payload.content_type == "Json" {
-        payload.content_type = JSON_CONTENT_TYPE.to_owned();
+        JSON_CONTENT_TYPE.clone_into(&mut payload.content_type);
     }
     let payload = HttpPayload::try_from(payload)?;
     Ok(json!({
