@@ -529,15 +529,22 @@ fn merge_workflow_packages(
     discovered_packages: Vec<PathBuf>,
     cli_packages: &[PathBuf],
 ) {
-    let mut seen: HashSet<PathBuf> = workflow_packages.iter().cloned().collect();
+    let mut seen: HashSet<PathBuf> = workflow_packages
+        .iter()
+        .map(|package| deduplicated_package_key(package))
+        .collect();
     for package in discovered_packages
         .into_iter()
         .chain(cli_packages.iter().cloned())
     {
-        if seen.insert(package.clone()) {
+        if seen.insert(deduplicated_package_key(&package)) {
             workflow_packages.push(package);
         }
     }
+}
+
+fn deduplicated_package_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 mod duration_millis {
@@ -693,6 +700,20 @@ mod tests {
                 std::path::PathBuf::from("cli.aion"),
             ]
         );
+    }
+
+    #[test]
+    fn package_merge_deduplicates_canonical_files() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let package = temp_dir.path().join("hello.aion");
+        std::fs::write(&package, b"package")?;
+        let mut packages = vec![package.clone()];
+        let discovered = vec![temp_dir.path().join(".").join("hello.aion")];
+
+        merge_workflow_packages(&mut packages, discovered, &[]);
+
+        assert_eq!(packages, vec![package]);
+        Ok(())
     }
 
     #[test]
