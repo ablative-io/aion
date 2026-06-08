@@ -14,6 +14,7 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::ServerState;
 use crate::worker::PendingActivities;
 use crate::worker::dispatch::{ActivityCompletion, ActivityCompletionSink};
+use crate::worker::registry::{WorkerId, WorkerMessage};
 
 /// Cloneable tonic implementation for the worker bidirectional stream.
 #[derive(Clone)]
@@ -74,17 +75,18 @@ impl WorkerProtocol for WorkerGrpcService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let pending = self.state.pending_activities().clone();
+        let heartbeat = self.state.heartbeat_tracker().clone();
+        let drain = self.state.drain_state().clone();
+        let worker_id = registration
+            .worker_id()
+            .ok_or_else(|| Status::internal("worker registration missing id"))?;
 
         tokio::spawn(async move {
             let write_handle = tokio::spawn({
                 let task_tx = task_tx.clone();
                 async move {
-                    while let Some(task) = worker_rx.recv().await {
-                        let msg = generated::ServerToWorker {
-                            message: Some(generated::server_to_worker::Message::Task(encode_task(
-                                task,
-                            ))),
-                        };
+                    while let Some(message) = worker_rx.recv().await {
+                        let msg = encode_server_to_worker(message);
                         if task_tx.send(Ok(msg)).await.is_err() {
                             break;
                         }
@@ -92,7 +94,8 @@ impl WorkerProtocol for WorkerGrpcService {
                 }
             });
 
-            let _read_result = process_inbound(inbound, &pending).await;
+            let _read_result =
+                process_inbound(inbound, worker_id, &pending, &heartbeat, &drain).await;
 
             write_handle.abort();
             drop(task_tx);
@@ -105,7 +108,10 @@ impl WorkerProtocol for WorkerGrpcService {
 
 async fn process_inbound(
     mut inbound: Streaming<generated::WorkerToServer>,
+    worker_id: WorkerId,
     pending: &PendingActivities,
+    heartbeat: &crate::worker::HeartbeatTracker,
+    drain: &crate::shutdown::DrainState,
 ) -> Result<(), Status> {
     while let Some(msg) = inbound.message().await? {
         let Some(inner) = msg.message else {
@@ -115,11 +121,23 @@ async fn process_inbound(
             generated::worker_to_server::Message::Result(result) => {
                 let proto_result = decode_activity_result(result);
                 if let Ok(completion) = ActivityCompletion::try_from(proto_result) {
+                    let _ = heartbeat.complete_task(
+                        worker_id,
+                        &completion.workflow_id,
+                        &completion.activity_id,
+                    );
+                    drain.notify_activity_drained();
                     let _ = pending.complete_activity(completion);
                 }
             }
-            generated::worker_to_server::Message::Register(_)
-            | generated::worker_to_server::Message::Heartbeat(_) => {}
+            generated::worker_to_server::Message::Heartbeat(heartbeat_msg) => {
+                let _ = heartbeat.record_heartbeat(
+                    worker_id,
+                    decode_heartbeat(heartbeat_msg),
+                    std::time::Instant::now(),
+                );
+            }
+            generated::worker_to_server::Message::Register(_) => {}
         }
     }
     Ok(())
@@ -129,6 +147,20 @@ fn decode_register(r: generated::RegisterWorker) -> ProtoRegisterWorker {
     ProtoRegisterWorker {
         namespace: r.namespace,
         activity_types: r.activity_types,
+    }
+}
+
+fn encode_server_to_worker(message: WorkerMessage) -> generated::ServerToWorker {
+    let message = match message {
+        WorkerMessage::ActivityTask(task) => {
+            generated::server_to_worker::Message::Task(encode_task(task))
+        }
+        WorkerMessage::DrainRequest => {
+            generated::server_to_worker::Message::Drain(generated::DrainRequest {})
+        }
+    };
+    generated::ServerToWorker {
+        message: Some(message),
     }
 }
 
@@ -157,6 +189,21 @@ fn decode_activity_result(r: generated::ActivityResult) -> ProtoActivityResult {
             sequence_position: id.sequence_position,
         }),
         outcome: r.outcome.map(decode_outcome),
+    }
+}
+
+fn decode_heartbeat(r: generated::Heartbeat) -> aion_proto::ProtoHeartbeat {
+    aion_proto::ProtoHeartbeat {
+        workflow_id: r
+            .workflow_id
+            .map(|id| aion_proto::ProtoWorkflowId { uuid: id.uuid }),
+        activity_id: r.activity_id.map(|id| aion_proto::ProtoActivityId {
+            sequence_position: id.sequence_position,
+        }),
+        progress: r.progress.map(|p| aion_proto::ProtoPayload {
+            content_type: p.content_type,
+            bytes: p.bytes,
+        }),
     }
 }
 

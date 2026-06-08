@@ -7,7 +7,8 @@ use aion_proto::{
 };
 
 use crate::error::ServerError;
-use crate::worker::registry::{ConnectedWorkerRegistry, WorkerHandle};
+use crate::shutdown::DrainState;
+use crate::worker::registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerMessage};
 
 /// Scheduled remote activity that must be placed with a connected worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,13 +42,24 @@ impl ScheduledActivity {
 #[derive(Clone, Debug)]
 pub struct ActivityDispatcher {
     registry: ConnectedWorkerRegistry,
+    drain_state: DrainState,
 }
 
 impl ActivityDispatcher {
     /// Build a dispatcher over the shared worker registry.
     #[must_use]
     pub fn new(registry: ConnectedWorkerRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            drain_state: DrainState::default(),
+        }
+    }
+
+    /// Share the server drain gate.
+    #[must_use]
+    pub fn with_drain_state(mut self, drain_state: DrainState) -> Self {
+        self.drain_state = drain_state;
+        self
     }
 
     /// Push a scheduled activity to a matching worker.
@@ -57,6 +69,8 @@ impl ActivityDispatcher {
     /// Returns a typed dispatch error if no worker is available or the selected
     /// stream is closed; returns lock poison if registry access cannot be trusted.
     pub async fn dispatch(&self, activity: &ScheduledActivity) -> Result<(), ServerError> {
+        self.drain_state
+            .ensure_accepting(&activity.namespace, &activity.activity_type)?;
         let mut workers = self
             .registry
             .workers_for(&activity.namespace, &activity.activity_type)?;
@@ -71,7 +85,14 @@ impl ActivityDispatcher {
         }
 
         for worker in workers {
-            if worker.sender().send(activity.to_task()).await.is_ok() {
+            self.drain_state
+                .ensure_accepting(&activity.namespace, &activity.activity_type)?;
+            if worker
+                .sender()
+                .send(WorkerMessage::ActivityTask(activity.to_task()))
+                .await
+                .is_ok()
+            {
                 return Ok(());
             }
             self.registry.deregister(worker.id())?;
@@ -224,7 +245,10 @@ mod tests {
         };
 
         dispatcher.dispatch(&scheduled).await?;
-        let task = rx.recv().await.ok_or("expected pushed activity task")?;
+        let message = rx.recv().await.ok_or("expected pushed activity task")?;
+        let WorkerMessage::ActivityTask(task) = message else {
+            return Err("expected activity task message".into());
+        };
 
         assert_eq!(task.workflow_id, Some(ProtoWorkflowId::from(workflow_id())));
         assert_eq!(task.activity_id, Some(ProtoActivityId::from(activity_id())));

@@ -11,6 +11,11 @@ service WorkerProtocol {
   rpc StreamWorker(stream WorkerToServer) returns (stream ServerToWorker);
 }
 
+// Graceful-shutdown notification. Workers that receive this message should
+// finish already-assigned work and stop expecting new ActivityTask messages on
+// this stream.
+message DrainRequest {}
+
 // Messages sent by a worker to the server over the bidirectional stream.
 message WorkerToServer {
   oneof message {
@@ -24,6 +29,7 @@ message WorkerToServer {
 message ServerToWorker {
   oneof message {
     ActivityTask task = 1;
+    DrainRequest drain = 2;
   }
 }
 

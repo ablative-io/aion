@@ -10,7 +10,16 @@ use crate::error::ServerError;
 use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
 
 /// Server-side handle used to push activity tasks to a connected worker stream.
-pub type WorkerTaskSender = mpsc::Sender<ProtoActivityTask>;
+pub type WorkerTaskSender = mpsc::Sender<WorkerMessage>;
+
+/// Message queued from server-side dispatch/shutdown into a worker stream writer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerMessage {
+    /// Activity invocation pushed to a worker.
+    ActivityTask(ProtoActivityTask),
+    /// Graceful-shutdown notification; no new work will be dispatched.
+    DrainRequest,
+}
 
 type ActivityKey = (String, String);
 type WorkerMap = HashMap<WorkerId, WorkerHandle>;
@@ -159,6 +168,38 @@ impl ConnectedWorkerRegistry {
             .get(&key)
             .map(|workers| workers.values().cloned().collect())
             .unwrap_or_default())
+    }
+
+    /// Return a snapshot of every connected worker stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn all_workers(&self) -> Result<Vec<WorkerHandle>, ServerError> {
+        let state = self.state()?;
+        Ok(state.workers.values().cloned().collect())
+    }
+
+    /// Broadcast a graceful drain request to every connected worker stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn broadcast_drain(&self) -> Result<usize, ServerError> {
+        let workers = self.all_workers()?;
+        let mut delivered = 0usize;
+        for worker in workers {
+            if worker
+                .sender()
+                .try_send(WorkerMessage::DrainRequest)
+                .is_ok()
+            {
+                delivered = delivered.saturating_add(1);
+            } else {
+                self.deregister(worker.id())?;
+            }
+        }
+        Ok(delivered)
     }
 
     /// Select one worker for the namespace and activity type.

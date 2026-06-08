@@ -10,7 +10,10 @@ use crate::{
     config::{RuntimeConfig, ServerConfig, StoreBackend, StoreConfig},
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
-    worker::{ConnectedWorkerRegistry, PendingActivities, WorkerActivityDispatcher},
+    shutdown::DrainState,
+    worker::{
+        ConnectedWorkerRegistry, HeartbeatTracker, PendingActivities, WorkerActivityDispatcher,
+    },
 };
 
 /// Cloneable shared state passed to all server transports.
@@ -24,6 +27,8 @@ struct ServerStateInner {
     runtime: RuntimeConfig,
     worker_registry: ConnectedWorkerRegistry,
     pending_activities: PendingActivities,
+    heartbeat_tracker: HeartbeatTracker,
+    drain_state: DrainState,
 }
 
 impl ServerState {
@@ -57,12 +62,16 @@ impl ServerState {
     ) -> Result<Self, ServerError> {
         let worker_registry = ConnectedWorkerRegistry::default();
         let pending_activities = PendingActivities::default();
+        let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
+        let drain_state = DrainState::default();
         let dispatcher = Arc::new(
             WorkerActivityDispatcher::new(
                 worker_registry.clone(),
                 runtime.default_namespace.clone(),
             )
-            .with_pending(pending_activities.clone()),
+            .with_pending(pending_activities.clone())
+            .with_heartbeat_tracker(heartbeat_tracker.clone())
+            .with_drain_state(drain_state.clone()),
         );
 
         let engine = EngineBuilder::new()
@@ -83,6 +92,8 @@ impl ServerState {
                 runtime,
                 worker_registry,
                 pending_activities,
+                heartbeat_tracker,
+                drain_state,
             }),
         })
     }
@@ -96,6 +107,8 @@ impl ServerState {
                 runtime,
                 worker_registry: ConnectedWorkerRegistry::default(),
                 pending_activities: PendingActivities::default(),
+                heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
+                drain_state: DrainState::default(),
             }),
         }
     }
@@ -113,6 +126,8 @@ impl ServerState {
                 runtime,
                 worker_registry,
                 pending_activities: PendingActivities::default(),
+                heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
+                drain_state: DrainState::default(),
             }),
         }
     }
@@ -139,6 +154,18 @@ impl ServerState {
     #[must_use]
     pub fn pending_activities(&self) -> &PendingActivities {
         &self.inner.pending_activities
+    }
+
+    /// Borrow the heartbeat/liveness tracker shared by dispatch and worker streams.
+    #[must_use]
+    pub fn heartbeat_tracker(&self) -> &HeartbeatTracker {
+        &self.inner.heartbeat_tracker
+    }
+
+    /// Borrow the drain gate shared by transports and worker dispatch.
+    #[must_use]
+    pub fn drain_state(&self) -> &DrainState {
+        &self.inner.drain_state
     }
 
     /// Shut down the embedded engine so in-flight durable appends can finish.

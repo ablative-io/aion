@@ -66,6 +66,10 @@ pub struct ProtoActivityTask {
     pub input: Option<ProtoPayload>,
 }
 
+/// Graceful-shutdown notification sent by the server to a connected worker.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoDrainRequest {}
+
 /// Activity result or failure reported by a worker.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoActivityResult {
@@ -167,7 +171,7 @@ mod tests {
 
     use super::{
         ProtoActivityError, ProtoActivityErrorKind, ProtoActivityResult, ProtoActivityTask,
-        ProtoHeartbeat, ProtoRegisterWorker, proto_activity_result,
+        ProtoDrainRequest, ProtoHeartbeat, ProtoRegisterWorker, proto_activity_result,
     };
     use crate::{ProtoActivityId, ProtoPayload, ProtoWorkflowId, WireError};
 
@@ -226,6 +230,12 @@ mod tests {
         };
 
         assert_json_and_proto_round_trip(&task)
+    }
+
+    #[test]
+    fn drain_request_round_trips_through_serde_and_proto() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_json_and_proto_round_trip(&ProtoDrainRequest {})
     }
 
     #[test]
