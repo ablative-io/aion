@@ -56,21 +56,21 @@ Leave this process running in terminal 1. The dashboard/static UI at `http://127
 
 ### Server environment variables and JSON logs
 
-The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags. Supported server environment variables are:
+The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags where a matching flag exists (`--listen-address`, `--store-url`, `--scheduler-threads`, and `--drain-timeout-seconds`). Supported server environment variables are:
 
 | Variable | Description | Default |
 |---|---|---|
-| `AION_SERVER_LISTEN_ADDRESS` | HTTP listen address for the server API/static assets. | `127.0.0.1:8080` |
-| `AION_SERVER_GRPC_ADDRESS` | gRPC listen address for the worker/client protocol. | `127.0.0.1:50051` |
-| `AION_STORE_BACKEND` | Store backend selection, such as `memory` for the in-memory dev store. | `memory` |
-| `AION_STORE_URL` | Backend connection URL/path when the selected store needs one. | unset |
-| `AION_RUNTIME_SCHEDULER_THREADS` | Number of scheduler runtime threads. | `1` |
-| `AION_DRAIN_TIMEOUT_SECONDS` | Graceful shutdown drain timeout in seconds. | `30` |
-| `AION_AUTH_ENABLED` | Enables or disables server auth. | `false` |
-| `AION_AUTH_JWKS_URL` | JWKS endpoint used when auth is enabled with JWKS validation. | unset |
-| `AION_AUTH_JWKS_REFRESH_SECONDS` | JWKS refresh interval in seconds. | `300` |
-| `AION_METRICS_ENABLED` | Enables or disables metrics endpoints/export. | `true` |
-| `AION_NAMESPACES_DEFAULT` | Default namespace used when one is not otherwise configured. | `default` |
+| `AION_SERVER_LISTEN_ADDRESS` | HTTP listen socket address for the server API/static assets, formatted as `host:port` with a non-zero port. | `127.0.0.1:8080` |
+| `AION_SERVER_GRPC_ADDRESS` | gRPC listen socket address for the worker/client protocol, formatted as `host:port` with a non-zero port. | `127.0.0.1:50051` |
+| `AION_STORE_BACKEND` | Store backend selection; accepted values are `memory` or `libsql` (case-insensitive). | `memory` |
+| `AION_STORE_URL` | Non-empty backend connection URL/path when the selected store needs one; setting it also selects `libsql` if the backend is still `memory`. | unset |
+| `AION_RUNTIME_SCHEDULER_THREADS` | Positive integer number of scheduler runtime threads. | `1` |
+| `AION_DRAIN_TIMEOUT_SECONDS` | Positive integer graceful shutdown drain timeout in seconds. | `30` |
+| `AION_AUTH_ENABLED` | Enables or disables server auth; accepted booleans are `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off` (case-insensitive). | `false` |
+| `AION_AUTH_JWKS_URL` | Non-empty JWKS endpoint used when auth is enabled with JWKS validation. | unset |
+| `AION_AUTH_JWKS_REFRESH_SECONDS` | Positive integer JWKS refresh interval in seconds. | `300` |
+| `AION_METRICS_ENABLED` | Enables or disables metrics endpoints/export; uses the same boolean forms as `AION_AUTH_ENABLED`. | `true` |
+| `AION_NAMESPACES_DEFAULT` | Non-empty default namespace used when one is not otherwise configured. | `default` |
 | `AION_LOG` | Tracing filter for server logs; takes precedence over `RUST_LOG`. Example: `AION_LOG=debug`. | `info` |
 
 Server logs are emitted as JSON on stdout. For interactive development, pipe them through `jq` for readability, for example:

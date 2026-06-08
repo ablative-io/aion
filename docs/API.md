@@ -9,7 +9,7 @@ Aion exposes the engine through the standalone `aion-server` plus language-speci
 - HTTP/JSON workflow operations for starting, signalling, querying, cancelling, listing, and describing workflows.
 - gRPC APIs, including the remote worker protocol used by worker SDKs.
 - WebSocket event streams for live workflow updates.
-- Static dashboard assets served from the same HTTP listener.
+- Static dashboard assets served from the same HTTP listener; the dashboard UI is under development, so use the HTTP API or CLI for workflow observation for now.
 
 The root [Getting started guide](../GETTING-STARTED.md) shows the shortest copy-pasteable path for running the server with the hello-world package.
 

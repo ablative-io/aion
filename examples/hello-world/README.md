@@ -85,10 +85,10 @@ The worker example reads these environment variables:
 
 | Variable | Description | Default |
 |---|---|---|
-| `AION_WORKER_ENDPOINT` | gRPC endpoint for the Aion server. | `127.0.0.1:50051` |
-| `AION_TASK_QUEUE` | Task queue where the worker registers and polls for activities. | `default` |
-| `AION_WORKER_IDENTITY` | Worker identity reported to the server. | `hello-world-python-worker` |
-| `AION_WORKER_CONCURRENCY` | Maximum concurrent activity tasks handled by the worker. | `4` |
+| `AION_WORKER_ENDPOINT` | gRPC endpoint for the Aion server, formatted as `host:port`. | `127.0.0.1:50051` |
+| `AION_TASK_QUEUE` | Non-empty task queue where the worker registers and polls for activities. | `default` |
+| `AION_WORKER_IDENTITY` | Non-empty worker identity reported to the server. | `hello-world-python-worker` |
+| `AION_WORKER_CONCURRENCY` | Positive integer maximum concurrent activity tasks handled by the worker. | `4` |
 
 For example, to point the worker at another server:
 
