@@ -456,7 +456,6 @@ fn encode_wire_error(value: ProtoWireError) -> generated::WireError {
     generated::WireError {
         code: value.code,
         message: value.message,
-        error_type: String::new(),
     }
 }
 
