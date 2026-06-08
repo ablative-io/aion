@@ -1,8 +1,6 @@
 //! Build-time gRPC stub generation for the shared wire contract.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rerun-if-changed=build.rs");
-
     let proto_files = [
         "proto/common.proto",
         "proto/events.proto",

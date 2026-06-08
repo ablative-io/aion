@@ -116,12 +116,15 @@ async fn start_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
     body: Bytes,
-) -> Result<Json<ProtoStartWorkflowResponse>, HttpWireError> {
-    let request = decode_start_workflow_request(&body)?;
+) -> Result<Json<ProtoStartWorkflowResponse>, HttpStartError> {
+    if state.drain_state().is_draining() {
+        return Err(HttpStartError::Draining);
+    }
+    let request = decode_start_workflow_request(&body).map_err(HttpStartError::Wire)?;
     handlers::start(state.namespace_guard(), &caller, request)
         .await
         .map(Json)
-        .map_err(HttpWireError)
+        .map_err(|error| HttpStartError::Wire(HttpWireError(error)))
 }
 
 async fn signal_workflow(
@@ -690,6 +693,26 @@ fn parse_namespaces(value: &str) -> Vec<String> {
         .filter(|namespace| !namespace.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+enum HttpStartError {
+    Wire(HttpWireError),
+    Draining,
+}
+
+impl IntoResponse for HttpStartError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Wire(error) => error.into_response(),
+            Self::Draining => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(WireError::backend(
+                    "server is draining and not accepting new workflow starts",
+                )),
+            )
+                .into_response(),
+        }
+    }
 }
 
 struct HttpWireError(WireError);

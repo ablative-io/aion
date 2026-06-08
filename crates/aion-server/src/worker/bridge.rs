@@ -19,8 +19,10 @@ use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflow
 use dashmap::DashMap;
 
 use super::dispatch::{ActivityCompletion, ActivityCompletionOutcome, ActivityCompletionSink};
-use super::registry::ConnectedWorkerRegistry;
+use super::heartbeat::{HeartbeatTracker, InFlightActivity};
+use super::registry::{ConnectedWorkerRegistry, WorkerMessage};
 use crate::error::ServerError;
+use crate::shutdown::DrainState;
 
 type SyncSender = std::sync::mpsc::SyncSender<Result<String, String>>;
 type SyncReceiver = std::sync::mpsc::Receiver<Result<String, String>>;
@@ -90,6 +92,8 @@ pub struct WorkerActivityDispatcher {
     registry: ConnectedWorkerRegistry,
     namespace: String,
     pending: PendingActivities,
+    heartbeat_tracker: HeartbeatTracker,
+    drain_state: DrainState,
     next_id: AtomicU64,
     timeout: Duration,
 }
@@ -111,6 +115,8 @@ impl WorkerActivityDispatcher {
             registry,
             namespace: namespace.into(),
             pending: PendingActivities::default(),
+            heartbeat_tracker: HeartbeatTracker::new(Duration::from_secs(30)),
+            drain_state: DrainState::default(),
             next_id: AtomicU64::new(1),
             timeout: Duration::from_secs(30),
         }
@@ -120,6 +126,20 @@ impl WorkerActivityDispatcher {
     #[must_use]
     pub fn with_pending(mut self, pending: PendingActivities) -> Self {
         self.pending = pending;
+        self
+    }
+
+    /// Share a caller-supplied heartbeat/liveness tracker.
+    #[must_use]
+    pub fn with_heartbeat_tracker(mut self, heartbeat_tracker: HeartbeatTracker) -> Self {
+        self.heartbeat_tracker = heartbeat_tracker;
+        self
+    }
+
+    /// Share the server drain gate.
+    #[must_use]
+    pub fn with_drain_state(mut self, drain_state: DrainState) -> Self {
+        self.drain_state = drain_state;
         self
     }
 
@@ -134,6 +154,9 @@ impl WorkerActivityDispatcher {
 impl ActivityDispatcher for WorkerActivityDispatcher {
     fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
         let _ = config;
+        self.drain_state
+            .ensure_accepting(&self.namespace, name)
+            .map_err(|error| error.to_string())?;
 
         let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
         let activity_id = ActivityId::from_sequence_position(seq);
@@ -149,9 +172,12 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
                     self.namespace
                 )
             })?;
+        self.drain_state
+            .ensure_accepting(&self.namespace, name)
+            .map_err(|error| error.to_string())?;
 
         let task = ProtoActivityTask {
-            workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
             activity_id: Some(ProtoActivityId::from(activity_id.clone())),
             activity_type: name.to_owned(),
             input: Some(ProtoPayload {
@@ -161,16 +187,34 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
         };
 
         let rx = self.pending.insert(activity_id.clone());
+        self.heartbeat_tracker
+            .track_task(
+                worker.id(),
+                InFlightActivity {
+                    workflow_id: workflow_id.clone(),
+                    activity_id: activity_id.clone(),
+                },
+                std::time::Instant::now(),
+            )
+            .map_err(|error| error.to_string())?;
 
-        worker
-            .sender()
-            .try_send(task)
-            .map_err(|_| "worker task channel full or closed".to_owned())?;
+        if let Err(error) = worker.sender().try_send(WorkerMessage::ActivityTask(task)) {
+            let _removed = self.pending.pending.remove(&activity_id);
+            let _ = self
+                .heartbeat_tracker
+                .complete_task(worker.id(), &workflow_id, &activity_id);
+            self.drain_state.notify_activity_drained();
+            return Err(format!("worker task channel full or closed: {error}"));
+        }
 
         match rx.recv_timeout(self.timeout) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 self.pending.pending.remove(&activity_id);
+                let _ =
+                    self.heartbeat_tracker
+                        .complete_task(worker.id(), &workflow_id, &activity_id);
+                self.drain_state.notify_activity_drained();
                 Err(format!(
                     "activity '{name}' timed out after {}s",
                     self.timeout.as_secs()

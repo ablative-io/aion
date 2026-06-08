@@ -46,6 +46,11 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         &self,
         request: Request<generated::StartWorkflowRequest>,
     ) -> Result<Response<generated::StartWorkflowResponse>, Status> {
+        if self.state.drain_state().is_draining() {
+            return Err(Status::unavailable(
+                "server is draining and not accepting new workflow starts",
+            ));
+        }
         let caller = self.caller(&request).await?;
         let response = handlers::start(
             self.state.namespace_guard(),

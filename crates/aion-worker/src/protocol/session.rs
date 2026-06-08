@@ -28,6 +28,8 @@ pub type WorkerTaskStream =
 pub enum WorkerSessionEvent {
     /// A new activity task to execute.
     Task(ProtoActivityTask),
+    /// Server is draining and will not dispatch more activity tasks on this stream.
+    Drain,
     /// Cooperative cancellation for an in-flight activity.
     ///
     /// The current AW worker proto in this worktree does not yet carry this
@@ -327,6 +329,9 @@ fn decode_server_message(
     match message.message {
         Some(aion_proto::generated::server_to_worker::Message::Task(task)) => {
             Ok(WorkerSessionEvent::Task(proto_task(task)))
+        }
+        Some(aion_proto::generated::server_to_worker::Message::Drain(_)) => {
+            Ok(WorkerSessionEvent::Drain)
         }
         None => Err(WorkerError::decode(SessionStateError {
             message: String::from("server-to-worker message was empty"),

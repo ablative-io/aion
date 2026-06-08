@@ -7,6 +7,7 @@ pub mod config;
 pub mod dashboard;
 pub mod error;
 pub mod namespace;
+pub mod shutdown;
 pub mod state;
 pub mod stream;
 pub mod worker;

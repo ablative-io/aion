@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 use aion_core::{ActivityId, Payload, WorkflowId};
 use aion_proto::{ProtoHeartbeat, WireError};
@@ -68,6 +69,7 @@ struct HeartbeatState {
 pub struct HeartbeatTracker {
     heartbeat_window: Duration,
     inner: Arc<Mutex<HeartbeatState>>,
+    empty: Arc<Notify>,
 }
 
 impl HeartbeatTracker {
@@ -77,6 +79,7 @@ impl HeartbeatTracker {
         Self {
             heartbeat_window,
             inner: Arc::new(Mutex::new(HeartbeatState::default())),
+            empty: Arc::new(Notify::new()),
         }
     }
 
@@ -106,6 +109,38 @@ impl HeartbeatTracker {
         };
         self.state()?.tasks.insert(key, liveness);
         Ok(())
+    }
+
+    /// Stop tracking a completed activity and wake drain waiters if this was the last task.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if tracker state cannot be trusted.
+    pub fn complete_task(
+        &self,
+        worker_id: WorkerId,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<(), ServerError> {
+        let key = TaskKey::new(worker_id, workflow_id.clone(), activity_id.clone());
+        let became_empty = {
+            let mut state = self.state()?;
+            state.tasks.remove(&key);
+            state.tasks.is_empty()
+        };
+        if became_empty {
+            self.empty.notify_waiters();
+        }
+        Ok(())
+    }
+
+    /// Number of currently tracked in-flight activities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if tracker state cannot be trusted.
+    pub fn in_flight_count(&self) -> Result<usize, ServerError> {
+        Ok(self.state()?.tasks.len())
     }
 
     /// Record a worker heartbeat without completing the activity.
@@ -203,6 +238,39 @@ impl HeartbeatTracker {
         sink: &impl ActivityCompletionSink,
     ) -> Result<LostWorkerReport, ServerError> {
         self.fail_lost_worker(worker_id, registry, sink)
+    }
+
+    /// Mark every currently in-flight worker lost and fail all remaining tasks through the sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns registry, tracker, or sink errors without retrying or rescheduling activities.
+    pub fn fail_all_in_flight_workers(
+        &self,
+        registry: &ConnectedWorkerRegistry,
+        sink: &impl ActivityCompletionSink,
+    ) -> Result<Vec<LostWorkerReport>, ServerError> {
+        let worker_ids = {
+            let state = self.state()?;
+            let mut worker_ids = state
+                .tasks
+                .values()
+                .map(|liveness| liveness.worker_id)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            worker_ids.sort_unstable();
+            worker_ids
+        };
+        let mut reports = Vec::new();
+        for worker_id in worker_ids {
+            let report = self.fail_lost_worker(worker_id, registry, sink)?;
+            if !report.tasks.is_empty() {
+                reports.push(report);
+            }
+        }
+        self.empty.notify_waiters();
+        Ok(reports)
     }
 
     fn fail_lost_worker(

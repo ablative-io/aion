@@ -2,18 +2,22 @@
 
 use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
 
-use aion_server::{ServerConfig, ServerError, ServerState, api, config::CliOverrides};
+use aion_server::{
+    ServerConfig, ServerError, ServerState, api,
+    config::CliOverrides,
+    shutdown::{self, ShutdownOutcome},
+};
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tonic::transport::Server as TonicServer;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
     match run_main() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
-            eprintln!("{error:#}");
+            error!(%error, "aion-server failed");
             if is_config_error(&error) {
                 ExitCode::from(2)
             } else {
@@ -23,7 +27,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_main() -> Result<()> {
+fn run_main() -> Result<ExitCode> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -31,7 +35,7 @@ fn run_main() -> Result<()> {
     runtime.block_on(run())
 }
 
-async fn run() -> Result<()> {
+async fn run() -> Result<ExitCode> {
     init_tracing()?;
 
     let cli = parse_cli(std::env::args_os().skip(1))?;
@@ -49,20 +53,44 @@ async fn run() -> Result<()> {
         "aion-server starting"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let grpc = serve_grpc(state.clone(), grpc_address, shutdown_rx.clone());
-    let http = serve_http(state.clone(), http_address, shutdown_rx);
+    let mut grpc = tokio::spawn(serve_grpc(state.clone(), grpc_address, shutdown_rx.clone()));
+    let mut http = tokio::spawn(serve_http(state.clone(), http_address, shutdown_rx));
 
-    tokio::select! {
-        result = grpc => result.context("gRPC transport stopped")?,
-        result = http => result.context("HTTP transport stopped")?,
+    let outcome = tokio::select! {
+        result = &mut grpc => {
+            transport_result("gRPC", result)?;
+            state.shutdown()?;
+            ShutdownOutcome::Clean
+        },
+        result = &mut http => {
+            transport_result("HTTP", result)?;
+            state.shutdown()?;
+            ShutdownOutcome::Clean
+        },
         result = shutdown_signal() => {
             result?;
             let _receiver_count = shutdown_tx.send(true);
+            let outcome = shutdown::drain_after_first_signal(state.clone(), async {
+                let _ = shutdown_signal().await;
+            }).await?;
+            if !matches!(outcome, ShutdownOutcome::Forced) {
+                transport_result("gRPC", grpc.await)?;
+                transport_result("HTTP", http.await)?;
+            }
+            outcome
         },
-    }
+    };
 
-    state.shutdown()?;
-    Ok(())
+    Ok(outcome.exit_code())
+}
+
+fn transport_result(
+    transport: &'static str,
+    result: std::result::Result<Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    result
+        .with_context(|| format!("{transport} transport task failed"))?
+        .with_context(|| format!("{transport} transport stopped"))
 }
 
 fn init_tracing() -> Result<()> {
@@ -117,9 +145,24 @@ async fn shutdown_requested(mut shutdown: tokio::sync::watch::Receiver<bool>) {
 }
 
 async fn shutdown_signal() -> Result<()> {
-    tokio::signal::ctrl_c()
-        .await
-        .context("shutdown signal listener failed")
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).context("SIGTERM listener failed")?;
+        let mut interrupt = signal(SignalKind::interrupt()).context("SIGINT listener failed")?;
+        tokio::select! {
+            _ = terminate.recv() => Ok(()),
+            _ = interrupt.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("shutdown signal listener failed")
+    }
 }
 
 fn reject_auth_without_feature(config: &ServerConfig) -> Result<()> {
