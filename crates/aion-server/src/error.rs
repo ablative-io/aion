@@ -116,7 +116,7 @@ impl ServerError {
                 WireError::backend("server backend failure")
             }
             Self::WorkerDispatch { .. } => WireError::backend("worker dispatch failed"),
-            Self::Namespace { .. } => WireError::namespace_denied("namespace access denied"),
+            Self::Namespace { message } => WireError::namespace_denied(message.clone()),
             Self::EngineCall { source } => wire_from_engine(source),
             Self::StoreBackend { source } => wire_from_store(source),
             Self::Stream { failure } => match failure {
@@ -206,6 +206,9 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         }
         EngineError::NifRegistration { .. } => {
             WireError::backend_with_type("NifRegistration", source.to_string())
+        }
+        EngineError::SignalRouter(_) => {
+            WireError::backend_with_type("SignalRouter", source.to_string())
         }
     }
 }

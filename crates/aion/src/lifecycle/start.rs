@@ -8,7 +8,6 @@ use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
 use super::visibility::upsert_workflow_visibility;
-use crate::EngineError;
 use crate::durability::Recorder;
 use crate::loader::LoadedWorkflows;
 use crate::registry::{
@@ -16,6 +15,14 @@ use crate::registry::{
 };
 use crate::runtime::{RuntimeHandle, RuntimeInput};
 use crate::supervision::{SupervisionTree, spawn_workflow_with_policy};
+use crate::{
+    EngineError,
+    engine_seam::{
+        ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
+        TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
+    },
+    signal::SignalResumeHandoff,
+};
 
 /// Dependencies required to start one workflow execution.
 pub struct StartWorkflowContext<'a> {
@@ -31,6 +38,8 @@ pub struct StartWorkflowContext<'a> {
     pub supervision: &'a SupervisionTree,
     /// Active execution registry keyed by workflow/run identifiers.
     pub registry: &'a Registry,
+    /// Shared non-resident signal handoff to flush after resident registration.
+    pub signal_handoff: Option<Arc<SignalResumeHandoff>>,
 }
 
 /// Optional identifiers used by internal start callers such as continue-as-new.
@@ -161,7 +170,130 @@ pub async fn start_workflow_with_options(
         return Err(error);
     }
 
+    if let Some(handoff) = &context.signal_handoff {
+        let adapter = StartResumeEngineHandle {
+            runtime: context.runtime,
+            registry: context.registry,
+        };
+        if let Err(error) = handoff.deliver_deferred(&adapter, handle.workflow_id()) {
+            tracing::warn!(
+                workflow_id = %handle.workflow_id(),
+                error = %error,
+                "failed to flush deferred signals after workflow became resident"
+            );
+        }
+    }
+
     Ok(handle)
+}
+
+struct StartResumeEngineHandle<'a> {
+    runtime: &'a RuntimeHandle,
+    registry: &'a Registry,
+}
+
+impl EngineHandle for StartResumeEngineHandle<'_> {
+    fn resolve_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<WorkflowResidency, EngineSeamError> {
+        let handle = self
+            .registry
+            .list()
+            .map_err(|error| EngineSeamError::Delivery {
+                reason: error.to_string(),
+            })?
+            .into_iter()
+            .find(|handle| handle.workflow_id() == workflow_id);
+        match handle {
+            Some(handle) if handle.residency() == HandleResidency::Resident => Ok(
+                WorkflowResidency::Resident(WorkflowProcessHandle::new(handle.pid())),
+            ),
+            Some(_) => Ok(WorkflowResidency::NonResident),
+            None => Ok(WorkflowResidency::Unknown),
+        }
+    }
+
+    fn deliver_workflow_message(
+        &self,
+        process: WorkflowProcessHandle,
+        message: WorkflowMailboxMessage,
+    ) -> Result<(), EngineSeamError> {
+        match message {
+            WorkflowMailboxMessage::SignalReceived { name, payload } => self
+                .runtime
+                .deliver_signal_received(process.pid(), name, payload)
+                .map_err(|error| EngineSeamError::Delivery {
+                    reason: error.to_string(),
+                }),
+            other => Err(EngineSeamError::Delivery {
+                reason: format!("unsupported resume handoff message: {other:?}"),
+            }),
+        }
+    }
+
+    fn spawn_child_workflow(
+        &self,
+        request: ChildWorkflowSpawnRequest,
+    ) -> Result<ChildWorkflowSpawnResult, EngineSeamError> {
+        let _ = request;
+        Err(EngineSeamError::ChildSpawn {
+            reason: "start resume handoff cannot spawn child workflows".to_owned(),
+        })
+    }
+
+    fn terminate_linked_child_workflow(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        child_process: WorkflowProcessHandle,
+        correlation: u64,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (parent_workflow_id, child_process, correlation);
+        Err(EngineSeamError::ChildTermination {
+            reason: "start resume handoff cannot terminate child workflows".to_owned(),
+        })
+    }
+
+    fn terminate_linked_activity(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        activity_process: crate::Pid,
+        correlation: u64,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (parent_workflow_id, activity_process, correlation);
+        Err(EngineSeamError::ChildTermination {
+            reason: "start resume handoff cannot terminate activities".to_owned(),
+        })
+    }
+
+    fn arm_timer(&self, entry: TimerWheelEntry) -> Result<(), EngineSeamError> {
+        let _ = entry;
+        Err(EngineSeamError::TimerWheel {
+            reason: "start resume handoff cannot arm timers".to_owned(),
+        })
+    }
+
+    fn disarm_timer(
+        &self,
+        process: WorkflowProcessHandle,
+        timer_id: &aion_core::TimerId,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (process, timer_id);
+        Err(EngineSeamError::TimerWheel {
+            reason: "start resume handoff cannot disarm timers".to_owned(),
+        })
+    }
+
+    fn record_workflow_event(
+        &self,
+        workflow_id: &WorkflowId,
+        event: Event,
+    ) -> Result<(), EngineSeamError> {
+        let _ = (workflow_id, event);
+        Err(EngineSeamError::Recorder {
+            reason: "start resume handoff cannot record workflow events".to_owned(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +345,7 @@ mod tests {
             runtime,
             supervision,
             registry,
+            signal_handoff: None,
         }
     }
 

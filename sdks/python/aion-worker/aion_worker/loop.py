@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
@@ -120,10 +121,14 @@ async def connect_register_replay_and_serve(
             tracker=unacked,
         )
         try:
+            logger.info("Connected successfully")
+            logger.info("Registered activities: %s", ", ".join(activity_types))
+            logger.info("Waiting for tasks")
             await serve(config, session, dispatcher, unacked)
             return
         except Exception:
             logger.exception("worker session dropped; reconnecting before receiving more tasks")
+            raise
 
 
 async def _run_and_report(
@@ -135,12 +140,41 @@ async def _run_and_report(
 ) -> None:
     try:
         logger.info(
-            "received activity task",
+            "Received task %s for workflow %s",
+            task.activity_type,
+            task.workflow_id.uuid,
             extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
         )
+        started_at = time.perf_counter()
         context = ActivityExecutionContext(workflow_id=task.workflow_id, activity_id=task.activity_id)
         outcome = await dispatcher.dispatch(task, context)
         await _report_outcome(session, task, outcome, tracker)
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+        if isinstance(outcome, Completed):
+            logger.info(
+                "Completed %s in %sms",
+                task.activity_type,
+                elapsed_ms,
+                extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+            )
+        else:
+            logger.error(
+                "Failed %s for workflow %s in %sms: %s",
+                task.activity_type,
+                task.workflow_id.uuid,
+                elapsed_ms,
+                outcome.failure.message,
+                extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+            )
+    except Exception as exc:
+        logger.error(
+            "Task %s for workflow %s failed: %s",
+            task.activity_type,
+            task.workflow_id.uuid,
+            exc,
+            extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+        )
+        raise
     finally:
         semaphore.release()
 

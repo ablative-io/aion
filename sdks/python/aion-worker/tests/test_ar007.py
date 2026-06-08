@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
+from typing import NoReturn
+
+import pytest
 
 import aion_worker
 from aion_worker import (
@@ -11,6 +14,7 @@ from aion_worker import (
     Completed,
     DispatchOutcome,
     ReconnectConfig,
+    ReconnectError,
     TaskReceived,
     UnackedResultTracker,
     WorkerConfig,
@@ -105,15 +109,16 @@ class FakeSession:
 
 
 class RecordingDispatcher:
-    def __init__(self, release: asyncio.Event | None = None) -> None:
+    def __init__(self, release: asyncio.Event | None = None, activity_type: str = "slow") -> None:
         self.active = 0
         self.peak = 0
         self.started = 0
         self.release = release
+        self.activity_type = activity_type
         self.dispatched: list[int] = []
 
     def activity_types(self) -> Iterable[str]:
-        return ["slow"]
+        return [self.activity_type]
 
     async def dispatch(self, task: ActivityTask, context: ActivityExecutionContext) -> DispatchOutcome:
         self.active += 1
@@ -128,12 +133,12 @@ class RecordingDispatcher:
             self.active -= 1
 
 
-def task(sequence_position: int) -> TaskReceived:
+def task(sequence_position: int, activity_type: str = "slow") -> TaskReceived:
     return TaskReceived(
         ActivityTask(
             workflow_id=workflow_id(),
             activity_id=activity_id(sequence_position),
-            activity_type="slow",
+            activity_type=activity_type,
             input=payload(),
         )
     )
@@ -200,3 +205,64 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
     await connect_register_replay_and_serve(config(), fail_then_connect, dispatcher, tracker)
     assert second.log[:4] == ["handshake", "register", "result:7", "receive"]
     assert dispatcher.dispatched == [8]
+
+
+async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_completion(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = FakeSession()
+    dispatcher = RecordingDispatcher(activity_type="greet")
+    perf_ticks = iter([10.0, 10.005])
+    monkeypatch.setattr("aion_worker.loop.time.perf_counter", lambda: next(perf_ticks))
+    worker_config = WorkerConfig(
+        endpoint="127.0.0.1:50051",
+        task_queue="queue-a",
+        identity="worker-a",
+        max_concurrency=2,
+        reconnect=ReconnectConfig(initial_backoff_seconds=0.01, max_backoff_seconds=0.02, max_attempts=3),
+    )
+
+    async def connect() -> FakeSession:
+        return session
+
+    await session.push(task(1, "greet"))
+    await session.finish()
+
+    with caplog.at_level("INFO"):
+        await connect_register_replay_and_serve(worker_config, connect, dispatcher)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Connected successfully" in messages
+    assert "Registered activities: greet" in messages
+    assert "Waiting for tasks" in messages
+    assert "Received task greet for workflow workflow-1" in messages
+    assert "Completed greet in 5ms" in messages
+
+
+async def test_grpc_connect_logs_configured_endpoint(caplog: pytest.LogCaptureFixture) -> None:
+    worker_config = WorkerConfig(
+        endpoint="127.0.0.1:50051",
+        task_queue="queue-a",
+        identity="worker-a",
+        max_concurrency=2,
+        reconnect=ReconnectConfig(initial_backoff_seconds=0.01, max_backoff_seconds=0.02, max_attempts=3),
+    )
+
+    with caplog.at_level("INFO"):
+        session = await aion_worker.GrpcWorkerSession.connect(worker_config)
+    await session.close()
+
+    assert "Connecting to 127.0.0.1:50051" in [record.getMessage() for record in caplog.records]
+
+
+async def test_reconnect_logs_connection_failure_reason(caplog: pytest.LogCaptureFixture) -> None:
+    async def fail_connect() -> NoReturn:
+        raise OSError("dial refused")
+
+    worker_config = config()
+    with caplog.at_level("ERROR"), pytest.raises(ReconnectError, match="dial refused"):
+        await connect_register_replay_and_serve(worker_config, fail_connect, RecordingDispatcher())
+
+    failure_records = [record for record in caplog.records if record.getMessage() == "Connection failed: dial refused"]
+    assert failure_records
+    assert all(record.levelname == "ERROR" for record in failure_records)

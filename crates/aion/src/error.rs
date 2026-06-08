@@ -1,7 +1,7 @@
 //! Engine error taxonomy.
 
 use crate::schedule::{ScheduleError, ScheduleEvaluatorError};
-use aion_core::ScheduleId;
+use aion_core::{RunId, ScheduleId, WorkflowId};
 use aion_package::PackageError;
 use aion_store::StoreError;
 
@@ -73,6 +73,30 @@ pub enum EngineError {
     #[error("NIF registration failed: {reason}")]
     NifRegistration {
         /// Human-readable native implemented function registration failure reason.
+        reason: String,
+    },
+
+    /// Signal routing failed after the target was resolved.
+    #[error("signal router error: {0}")]
+    SignalRouter(#[from] SignalRouterError),
+}
+
+/// Errors surfaced by the signal routing boundary.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum SignalRouterError {
+    /// The target workflow is terminal and cannot receive new signals.
+    #[error("workflow {workflow_id}/{run_id} is terminal")]
+    Terminal {
+        /// Target workflow id.
+        workflow_id: WorkflowId,
+        /// Target run id.
+        run_id: RunId,
+    },
+
+    /// The router could not defer a recorded non-resident signal.
+    #[error("signal resume handoff failed: {reason}")]
+    Handoff {
+        /// Human-readable handoff failure reason.
         reason: String,
     },
 }
