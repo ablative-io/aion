@@ -559,10 +559,12 @@ mod tests {
 
         let error = signal(&context.guard, &context.caller, signal_request()?).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
@@ -574,10 +576,12 @@ mod tests {
 
         let error = query(&context.guard, &context.caller, query_request()).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
@@ -589,10 +593,12 @@ mod tests {
 
         let error = cancel(&context.guard, &context.caller, cancel_request()).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(error.message.contains(&workflow_id().to_string()));
         Ok(())
     }
 
@@ -666,10 +672,12 @@ mod tests {
 
         let error = describe(&context.guard, &context.caller, describe_request(false)).await;
 
-        assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
-        );
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type, None);
+        assert_eq!(error.message, "workflow not found");
         Ok(())
     }
 

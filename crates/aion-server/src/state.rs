@@ -161,7 +161,20 @@ async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, Serve
                     message: "store.url must not be empty when store.backend is libsql".to_owned(),
                 });
             };
-            let store = LibSqlStore::open(url).await.map_err(ServerError::from)?;
+            let store = LibSqlStore::open(url.clone())
+                .await
+                .map_err(ServerError::from)?;
+            store
+                .validate_event_compatibility()
+                .await
+                .map_err(|error| match error {
+                    aion_store::StoreError::Serialization(_) => ServerError::Config {
+                        message: format!(
+                            "Database schema mismatch — delete {url} and restart, or run migrations."
+                        ),
+                    },
+                    other => ServerError::from(other),
+                })?;
             Ok(Arc::new(store))
         }
     }

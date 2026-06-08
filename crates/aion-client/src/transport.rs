@@ -495,6 +495,7 @@ fn decode_wire_error(value: aion_proto::generated::WireError) -> aion_proto::Pro
     aion_proto::ProtoWireError {
         code: value.code,
         message: value.message,
+        error_type: value.error_type,
     }
 }
 

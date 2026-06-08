@@ -174,36 +174,55 @@ impl ServerError {
 
 fn wire_from_engine(source: &EngineError) -> WireError {
     match source {
-        EngineError::WorkflowNotFound { .. } => WireError::not_found("workflow not found"),
-        EngineError::ScheduleNotFound { .. } => WireError::not_found("schedule not found"),
-        EngineError::ShuttingDown => WireError::not_running("engine is shutting down"),
+        EngineError::WorkflowNotFound { .. } => {
+            WireError::not_found_with_type("WorkflowNotFound", source.to_string())
+        }
+        EngineError::ScheduleNotFound { .. } => {
+            WireError::not_found_with_type("ScheduleNotFound", source.to_string())
+        }
+        EngineError::ShuttingDown => {
+            WireError::not_running_with_type("ShuttingDown", source.to_string())
+        }
         EngineError::Store(store) => wire_from_store(store),
         EngineError::Durability(durability) => match durability {
             aion::durability::DurabilityError::Store(store) => wire_from_store(store),
             aion::durability::DurabilityError::NonDeterminism(_)
             | aion::durability::DurabilityError::HistoryShape { .. }
             | aion::durability::DurabilityError::SearchAttribute(_) => {
-                WireError::backend("durability failure")
+                WireError::backend_with_type("Durability", source.to_string())
             }
         },
-        EngineError::MissingStore
-        | EngineError::Load { .. }
-        | EngineError::Package(_)
-        | EngineError::Schedule { .. }
-        | EngineError::Runtime { .. }
-        | EngineError::RegistryPoisoned
-        | EngineError::NifRegistration { .. } => WireError::backend("engine backend failure"),
+        EngineError::MissingStore => {
+            WireError::backend_with_type("MissingStore", source.to_string())
+        }
+        EngineError::Load { .. } => WireError::backend_with_type("Load", source.to_string()),
+        EngineError::Package(_) => WireError::backend_with_type("Package", source.to_string()),
+        EngineError::Schedule { .. } => {
+            WireError::backend_with_type("Schedule", source.to_string())
+        }
+        EngineError::Runtime { .. } => WireError::backend_with_type("Runtime", source.to_string()),
+        EngineError::RegistryPoisoned => {
+            WireError::backend_with_type("RegistryPoisoned", source.to_string())
+        }
+        EngineError::NifRegistration { .. } => {
+            WireError::backend_with_type("NifRegistration", source.to_string())
+        }
     }
 }
 
 fn wire_from_store(source: &StoreError) -> WireError {
     match source {
-        StoreError::SequenceConflict { .. } => {
-            WireError::sequence_conflict("durable sequence conflict")
+        StoreError::SequenceConflict { .. } => WireError::new_with_type(
+            aion_proto::WireErrorCode::SequenceConflict,
+            "SequenceConflict",
+            source.to_string(),
+        ),
+        StoreError::NotFound { .. } => {
+            WireError::not_found_with_type("NotFound", source.to_string())
         }
-        StoreError::NotFound { .. } => WireError::not_found("workflow not found"),
-        StoreError::Backend(_) | StoreError::Serialization(_) => {
-            WireError::backend("store backend failure")
+        StoreError::Backend(_) => WireError::backend_with_type("Backend", source.to_string()),
+        StoreError::Serialization(_) => {
+            WireError::backend_with_type("Serialization", source.to_string())
         }
     }
 }

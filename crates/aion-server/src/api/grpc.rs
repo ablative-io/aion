@@ -435,6 +435,7 @@ fn encode_wire_error(value: ProtoWireError) -> generated::WireError {
     generated::WireError {
         code: value.code,
         message: value.message,
+        error_type: value.error_type,
     }
 }
 
@@ -657,10 +658,13 @@ mod tests {
         });
         apply_metadata(start.metadata_mut())?;
         let start_error = service.start_workflow(start).await;
-        assert_eq!(
-            start_error.err().map(|status| status.code()),
-            Some(Code::NotFound)
-        );
+        let status = start_error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(status.code(), Code::NotFound);
+        let detail = ProtoWireError::decode(status.details())?;
+        assert_eq!(detail.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert!(detail.message.contains("missing-workflow"));
 
         let list_filter = encode_core_value(
             NAMESPACE,
