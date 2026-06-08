@@ -810,6 +810,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn omitted_run_id_resolves_latest_run_from_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let first = RunId::new(uuid::Uuid::from_u128(11));
+        let latest = RunId::new(uuid::Uuid::from_u128(12));
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_continued_chain(context.store.as_ref(), &first, &latest).await?;
+
+        let engine = context.guard.scope(
+            &context.caller,
+            &NamespaceOperation::describe(
+                &describe_request(false, None),
+                WorkflowTarget::workflow(&workflow_id()),
+            ),
+        )?;
+        let resolved = resolve_run_id(engine.engine()?.as_ref(), &workflow_id(), None).await?;
+
+        assert_eq!(resolved, latest);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supplied_run_id_takes_precedence_over_latest_chain_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let requested = RunId::new(uuid::Uuid::from_u128(10));
+        let latest = RunId::new(uuid::Uuid::from_u128(12));
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_continued_chain(context.store.as_ref(), &requested, &latest).await?;
+
+        let engine = context.guard.scope(
+            &context.caller,
+            &NamespaceOperation::describe(
+                &describe_request(false, Some(requested.clone())),
+                WorkflowTarget::workflow(&workflow_id()),
+            ),
+        )?;
+        let resolved = resolve_run_id(
+            engine.engine()?.as_ref(),
+            &workflow_id(),
+            Some(requested.clone().into()),
+        )
+        .await?;
+
+        assert_eq!(resolved, requested);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn describe_handler_maps_empty_history_to_not_found()
     -> Result<(), Box<dyn std::error::Error>> {
         let context = context().await?;
@@ -976,6 +1025,37 @@ mod tests {
         Ok(())
     }
 
+    async fn append_continued_chain(
+        store: &dyn EventStore,
+        first: &RunId,
+        latest: &RunId,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let events = [
+            Event::WorkflowStarted {
+                envelope: event_envelope(1),
+                workflow_type: "fixture".to_owned(),
+                input: payload()?,
+                run_id: first.clone(),
+                parent_run_id: None,
+            },
+            Event::WorkflowContinuedAsNew {
+                envelope: event_envelope(2),
+                input: payload()?,
+                workflow_type: None,
+                parent_run_id: first.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: event_envelope(3),
+                workflow_type: "fixture".to_owned(),
+                input: payload()?,
+                run_id: latest.clone(),
+                parent_run_id: Some(first.clone()),
+            },
+        ];
+        store.append(&workflow_id(), &events, 0).await?;
+        Ok(())
+    }
+
     fn signal_request() -> Result<ProtoSignalRequest, aion_core::PayloadError> {
         Ok(ProtoSignalRequest {
             namespace: NAMESPACE.to_owned(),
@@ -1018,16 +1098,20 @@ mod tests {
 
     fn started_event() -> Result<Event, aion_core::PayloadError> {
         Ok(Event::WorkflowStarted {
-            envelope: EventEnvelope {
-                seq: 1,
-                recorded_at: Utc::now(),
-                workflow_id: workflow_id(),
-            },
+            envelope: event_envelope(1),
             workflow_type: "fixture".to_owned(),
             input: payload()?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
+    }
+
+    fn event_envelope(seq: u64) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            recorded_at: Utc::now(),
+            workflow_id: workflow_id(),
+        }
     }
 
     fn proto_payload() -> Result<ProtoPayload, aion_core::PayloadError> {

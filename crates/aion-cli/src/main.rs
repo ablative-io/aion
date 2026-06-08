@@ -267,7 +267,88 @@ fn normalize_endpoint(endpoint: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_endpoint;
+    use clap::Parser;
+
+    use super::{Cli, Command, normalize_endpoint};
+
+    const WORKFLOW_ID: &str = "00000000-0000-0000-0000-000000000001";
+    const RUN_ID: &str = "00000000-0000-0000-0000-000000000002";
+
+    #[test]
+    fn describe_accepts_optional_run_id() {
+        let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--run-id", RUN_ID])
+            .expect("describe with --run-id should parse");
+
+        let Command::Describe {
+            workflow_id,
+            run_id,
+        } = cli.command
+        else {
+            panic!("expected describe command");
+        };
+        assert_eq!(workflow_id, WORKFLOW_ID);
+        assert_eq!(run_id.as_deref(), Some(RUN_ID));
+    }
+
+    #[test]
+    fn workflow_operations_allow_omitted_run_id() {
+        let commands = [
+            vec!["aion-cli", "describe", WORKFLOW_ID],
+            vec!["aion-cli", "signal", WORKFLOW_ID, "poke", "--payload", "{}"],
+            vec!["aion-cli", "cancel", WORKFLOW_ID],
+            vec!["aion-cli", "query", WORKFLOW_ID, "state"],
+        ];
+
+        for args in commands {
+            let cli = Cli::try_parse_from(args).expect("command without --run-id should parse");
+            match cli.command {
+                Command::Describe { run_id, .. }
+                | Command::Signal { run_id, .. }
+                | Command::Cancel { run_id, .. }
+                | Command::Query { run_id, .. } => assert!(run_id.is_none()),
+                Command::Start { .. } | Command::List { .. } => {
+                    panic!("expected workflow operation command")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signal_cancel_and_query_accept_optional_run_id() {
+        let commands = [
+            vec![
+                "aion-cli",
+                "signal",
+                WORKFLOW_ID,
+                "poke",
+                "--run-id",
+                RUN_ID,
+                "--payload",
+                "{}",
+            ],
+            vec!["aion-cli", "cancel", WORKFLOW_ID, "--run-id", RUN_ID],
+            vec![
+                "aion-cli",
+                "query",
+                WORKFLOW_ID,
+                "state",
+                "--run-id",
+                RUN_ID,
+            ],
+        ];
+
+        for args in commands {
+            let cli = Cli::try_parse_from(args).expect("command with --run-id should parse");
+            match cli.command {
+                Command::Signal { run_id, .. }
+                | Command::Cancel { run_id, .. }
+                | Command::Query { run_id, .. } => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
+                Command::Start { .. } | Command::List { .. } | Command::Describe { .. } => {
+                    panic!("expected run-targeted workflow operation command")
+                }
+            }
+        }
+    }
 
     #[test]
     fn normalize_endpoint_preserves_explicit_scheme() {
