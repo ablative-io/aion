@@ -132,6 +132,9 @@ where
                     Ok(WorkerSessionEvent::Cancel { workflow_id, activity_id }) => {
                         deliver_cancellation(workflow_id, &activity_id, &in_flight);
                     }
+                    Ok(WorkerSessionEvent::Drain) => {
+                        break;
+                    }
                     other => {
                         let permit = tokio::select! {
                             biased;
@@ -219,7 +222,7 @@ where
             )?;
             Ok(true)
         }
-        Ok(WorkerSessionEvent::Cancel { .. }) => {
+        Ok(WorkerSessionEvent::Cancel { .. } | WorkerSessionEvent::Drain) => {
             drop(ctx.permit);
             Ok(true)
         }

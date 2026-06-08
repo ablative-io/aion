@@ -105,6 +105,11 @@ impl DrainState {
 /// Run the graceful drain after the first termination signal.
 ///
 /// The caller is responsible for stopping transports as soon as drain begins.
+///
+/// # Errors
+///
+/// Returns [`ServerError`] if worker-drain broadcast, in-flight accounting, timeout failure
+/// surfacing, or engine shutdown fails.
 pub async fn drain_after_first_signal(
     state: ServerState,
     second_signal: impl std::future::Future<Output = ()>,
