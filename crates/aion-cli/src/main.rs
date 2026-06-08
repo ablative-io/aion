@@ -80,7 +80,7 @@ enum Command {
     },
     /// List workflow executions.
     List {
-        /// Optional workflow status filter. Accepted values: Running, Completed, Failed, Cancelled, `TimedOut`, `ContinuedAsNew`.
+        /// Optional workflow status filter. Accepted values: running, completed, failed, cancelled, timed-out, continued-as-new.
         #[arg(long, value_parser = parse_status)]
         status: Option<WorkflowStatus>,
     },
@@ -218,5 +218,26 @@ fn normalize_endpoint(endpoint: &str) -> String {
         endpoint.to_owned()
     } else {
         format!("http://{endpoint}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_endpoint;
+
+    #[test]
+    fn normalize_endpoint_preserves_explicit_scheme() {
+        assert_eq!(
+            normalize_endpoint("https://aion.example:50051"),
+            "https://aion.example:50051"
+        );
+    }
+
+    #[test]
+    fn normalize_endpoint_defaults_to_http_scheme() {
+        assert_eq!(
+            normalize_endpoint("127.0.0.1:50051"),
+            "http://127.0.0.1:50051"
+        );
     }
 }

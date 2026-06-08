@@ -152,14 +152,14 @@ You should see workflow events for start, `greet` scheduling/completion, and wor
 
 ## 7. Signal or cancel a workflow
 
-The hello-world workflow completes quickly and does not define a meaningful signal handler, but the CLI can send any JSON signal payload to workflows that do listen for signals. To exercise the CLI command shape against the captured hello-world id, run:
+The hello-world workflow normally completes quickly and does not define a meaningful signal handler, so the required hello-world path is complete after `describe`. For workflows that are still running and listen for signals, send JSON payloads with the same CLI:
 
 ```sh
 cargo run -q -p aion-cli -- --subject hello-world-user \
   signal "$WORKFLOW_ID" example_signal --payload '{"note":"hello from the CLI"}'
 ```
 
-A successful signal request prints an acknowledgement JSON object. Workflows that need cooperative shutdown can also be cancelled:
+A successful signal request prints an acknowledgement JSON object. Workflows that need cooperative shutdown can also be cancelled while they are still running:
 
 ```sh
 cargo run -q -p aion-cli -- --subject hello-world-user \

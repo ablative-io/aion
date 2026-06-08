@@ -26,15 +26,62 @@ pub(crate) fn parse_workflow_id(raw: &str) -> Result<WorkflowId> {
 }
 
 pub(crate) fn parse_status(raw: &str) -> Result<WorkflowStatus, String> {
-    match raw {
-        "Running" => Ok(WorkflowStatus::Running),
-        "Completed" => Ok(WorkflowStatus::Completed),
-        "Failed" => Ok(WorkflowStatus::Failed),
-        "Cancelled" => Ok(WorkflowStatus::Cancelled),
-        "TimedOut" => Ok(WorkflowStatus::TimedOut),
-        "ContinuedAsNew" => Ok(WorkflowStatus::ContinuedAsNew),
+    match status_key(raw).as_str() {
+        "running" => Ok(WorkflowStatus::Running),
+        "completed" => Ok(WorkflowStatus::Completed),
+        "failed" => Ok(WorkflowStatus::Failed),
+        "cancelled" | "canceled" => Ok(WorkflowStatus::Cancelled),
+        "timedout" | "timed-out" => Ok(WorkflowStatus::TimedOut),
+        "continuedasnew" | "continued-as-new" => Ok(WorkflowStatus::ContinuedAsNew),
         _ => Err(String::from(
-            "expected one of Running, Completed, Failed, Cancelled, TimedOut, ContinuedAsNew",
+            "expected one of running, completed, failed, cancelled, timed-out, continued-as-new",
         )),
+    }
+}
+
+fn status_key(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|character| match character {
+            '_' | ' ' => '-',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{json_payload, parse_status, parse_workflow_id, payload_to_json};
+    use aion_core::WorkflowStatus;
+
+    #[test]
+    fn json_payload_round_trips_to_json_value() -> anyhow::Result<()> {
+        let payload = json_payload(r#"{"name":"Ada"}"#)?;
+
+        assert_eq!(payload_to_json(&payload)?, json!({ "name": "Ada" }));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_status_accepts_documented_and_serde_spellings() {
+        assert_eq!(parse_status("running"), Ok(WorkflowStatus::Running));
+        assert_eq!(parse_status("Completed"), Ok(WorkflowStatus::Completed));
+        assert_eq!(parse_status("timed-out"), Ok(WorkflowStatus::TimedOut));
+        assert_eq!(parse_status("TimedOut"), Ok(WorkflowStatus::TimedOut));
+        assert_eq!(
+            parse_status("continued_as_new"),
+            Ok(WorkflowStatus::ContinuedAsNew)
+        );
+        assert_eq!(
+            parse_status("ContinuedAsNew"),
+            Ok(WorkflowStatus::ContinuedAsNew)
+        );
+    }
+
+    #[test]
+    fn parse_workflow_id_rejects_invalid_uuid() {
+        assert!(parse_workflow_id("not-a-uuid").is_err());
     }
 }
