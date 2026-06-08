@@ -67,7 +67,7 @@ fn decode_string_arg(term: Term) -> Result<String, String> {
 /// Heap from the previous NIF invocation is drained first (matching
 /// `NifContext`'s one-call retention window), then fresh allocations for
 /// the return value are parked for the scheduler to copy.
-fn run_activity(args: &[Term], _ctx: &mut ProcessContext) -> Result<Term, Term> {
+fn run_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     if args.len() > 255 {
         return Err(Term::NIL);
     }
@@ -107,7 +107,7 @@ fn run_activity(args: &[Term], _ctx: &mut ProcessContext) -> Result<Term, Term> 
         .unwrap_or(Term::NIL));
     };
 
-    match dispatcher.dispatch(&name, &input, &config) {
+    match dispatcher.dispatch_from_process(&name, &input, &config, ctx.pid()) {
         Ok(result) => Ok(ok_result_term(&result).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }

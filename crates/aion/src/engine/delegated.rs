@@ -440,7 +440,7 @@ mod tests {
             visibility_store,
             runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
             loaded_workflows: LoadedWorkflows::new(),
-            registry: Registry::default(),
+            registry: Arc::new(Registry::default()),
             supervision: SupervisionTree::new(),
             delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
             signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),

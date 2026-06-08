@@ -114,6 +114,8 @@ pub struct WorkerActivityDispatcher {
     drain_state: DrainState,
     next_id: AtomicU64,
     timeout: Duration,
+    workflow_registry: Option<Arc<aion::Registry>>,
+    tokio_handle: Option<tokio::runtime::Handle>,
 }
 
 impl std::fmt::Debug for WorkerActivityDispatcher {
@@ -137,6 +139,8 @@ impl WorkerActivityDispatcher {
             drain_state: DrainState::default(),
             next_id: AtomicU64::new(1),
             timeout: Duration::from_secs(30),
+            workflow_registry: None,
+            tokio_handle: None,
         }
     }
 
@@ -158,6 +162,20 @@ impl WorkerActivityDispatcher {
     #[must_use]
     pub fn with_drain_state(mut self, drain_state: DrainState) -> Self {
         self.drain_state = drain_state;
+        self
+    }
+
+    /// Share the engine's active workflow registry for PID-to-handle correlation.
+    #[must_use]
+    pub fn with_workflow_registry(mut self, workflow_registry: Arc<aion::Registry>) -> Self {
+        self.workflow_registry = Some(workflow_registry);
+        self
+    }
+
+    /// Share the server runtime handle for sync history writes from dirty NIF threads.
+    #[must_use]
+    pub fn with_tokio_handle(mut self, tokio_handle: tokio::runtime::Handle) -> Self {
+        self.tokio_handle = Some(tokio_handle);
         self
     }
 
