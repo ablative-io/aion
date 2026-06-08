@@ -199,7 +199,13 @@ async def test_worker_config_grpc_metadata_includes_namespace_and_subject() -> N
             max_backoff_seconds=0.02,
             max_attempts=3,
         ),
-        transport_credentials=TransportCredentials(metadata=(("authorization", "Bearer token"),)),
+        transport_credentials=TransportCredentials(
+            metadata=(
+                ("authorization", "Bearer token"),
+                ("x-aion-namespaces", "stale"),
+                ("X-Aion-Subject", "stale"),
+            )
+        ),
         namespace="payments",
         subject="worker-a",
     )

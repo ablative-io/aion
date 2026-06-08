@@ -67,7 +67,7 @@ impl ReconnectConfig {
 
 /// Operator-supplied worker connection and serving configuration.
 ///
-/// Most tunable fields are caller-supplied. Namespace authorization metadata
+/// Tunable fields remain caller-supplied. Namespace authorization metadata
 /// defaults to `default`/`worker` so development workers can register against
 /// the default task queue without an explicit auth setup.
 #[derive(Clone, Debug, PartialEq, Eq)]

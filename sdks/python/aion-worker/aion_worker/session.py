@@ -64,14 +64,25 @@ class WorkerConfig:
     subject: str = "worker"
 
     def grpc_metadata(self) -> tuple[tuple[str, str], ...]:
-        """Return authorization metadata for the worker stream connection."""
-        metadata = (
+        """Return authorization metadata for the worker stream connection.
+
+        WorkerConfig owns the Aion authorization headers. Preserve any unrelated
+        transport metadata while dropping reserved auth header duplicates so stale
+        credential metadata cannot shadow the configured namespace or subject.
+        """
+        auth_metadata = (
             ("x-aion-namespaces", self.namespace),
             ("x-aion-subject", self.subject),
         )
         if self.transport_credentials is None:
-            return metadata
-        return (*self.transport_credentials.metadata, *metadata)
+            return auth_metadata
+        reserved_headers = {key for key, _value in auth_metadata}
+        transport_metadata = tuple(
+            (key, value)
+            for key, value in self.transport_credentials.metadata
+            if key.lower() not in reserved_headers
+        )
+        return (*transport_metadata, *auth_metadata)
 
 
 @dataclass(frozen=True)
