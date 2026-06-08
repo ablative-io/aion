@@ -180,6 +180,7 @@ async fn token_expiration_from_metadata(
     }
     #[cfg(not(feature = "auth"))]
     {
+        let _ = metadata;
         Err(Status::unauthenticated("authentication unavailable"))
     }
 }
