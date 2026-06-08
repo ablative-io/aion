@@ -85,12 +85,20 @@ pub async fn signal(
     request: ProtoSignalRequest,
 ) -> Result<ProtoSignalResponse, WireError> {
     let workflow_id = required_workflow_id(request.workflow_id.clone())?;
-    let run_id = required_run_id(request.run_id.clone())?;
-    let target = WorkflowTarget::with_run(&workflow_id, &run_id);
+    let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::signal(&request, target))
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
+    let run_id = resolve_run_id(
+        scoped
+            .engine()
+            .map_err(|error| error.to_wire_error())?
+            .as_ref(),
+        &workflow_id,
+        request.run_id.clone(),
+    )
+    .await?;
     let payload = required_payload(request.payload.clone())?;
     let signal_name = request.signal_name.clone();
     let span = info_span!(
@@ -132,12 +140,20 @@ pub async fn query(
     request: ProtoQueryRequest,
 ) -> Result<ProtoQueryResponse, WireError> {
     let workflow_id = required_workflow_id(request.workflow_id.clone())?;
-    let run_id = required_run_id(request.run_id.clone())?;
-    let target = WorkflowTarget::with_run(&workflow_id, &run_id);
+    let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::query(&request, target))
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
+    let run_id = resolve_run_id(
+        scoped
+            .engine()
+            .map_err(|error| error.to_wire_error())?
+            .as_ref(),
+        &workflow_id,
+        request.run_id.clone(),
+    )
+    .await?;
     let query_name = request.query_name.clone();
     let span = info_span!(
         "engine_operation",
@@ -180,12 +196,20 @@ pub async fn cancel(
     request: ProtoCancelRequest,
 ) -> Result<ProtoCancelResponse, WireError> {
     let workflow_id = required_workflow_id(request.workflow_id.clone())?;
-    let run_id = required_run_id(request.run_id.clone())?;
-    let target = WorkflowTarget::with_run(&workflow_id, &run_id);
+    let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::cancel(&request, target))
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
+    let run_id = resolve_run_id(
+        scoped
+            .engine()
+            .map_err(|error| error.to_wire_error())?
+            .as_ref(),
+        &workflow_id,
+        request.run_id.clone(),
+    )
+    .await?;
     let span = info_span!(
         "engine_operation",
         operation = "cancel",
@@ -285,15 +309,14 @@ pub async fn describe(
     request: ProtoDescribeWorkflowRequest,
 ) -> Result<ProtoDescribeWorkflowResponse, WireError> {
     let workflow_id = required_workflow_id(request.workflow_id.clone())?;
-    let run_id = required_run_id(request.run_id.clone())?;
-    let target = WorkflowTarget::with_run(&workflow_id, &run_id);
+    let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::describe(&request, target))
         .map_err(|error| error.to_wire_error())?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
 
-    let history = scoped
-        .engine()
-        .map_err(|error| error.to_wire_error())?
+    let history = engine
         .store()
         .read_history(&workflow_id)
         .await
@@ -540,9 +563,29 @@ fn required_workflow_id(id: Option<aion_proto::ProtoWorkflowId>) -> Result<Workf
         .try_into()
 }
 
-fn required_run_id(id: Option<aion_proto::ProtoRunId>) -> Result<RunId, WireError> {
-    id.ok_or_else(|| WireError::backend("run id is missing"))?
-        .try_into()
+async fn resolve_run_id(
+    engine: &aion::Engine,
+    workflow_id: &WorkflowId,
+    id: Option<aion_proto::ProtoRunId>,
+) -> Result<RunId, WireError> {
+    if let Some(id) = id {
+        return id.try_into();
+    }
+
+    let chain = engine
+        .store()
+        .read_run_chain(workflow_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    chain
+        .last()
+        .map(|summary| summary.run_id.clone())
+        .ok_or_else(|| {
+            WireError::not_found_with_type(
+                "WorkflowNotFound",
+                format!("workflow not found: {workflow_id}"),
+            )
+        })
 }
 
 fn required_payload(payload: Option<ProtoPayload>) -> Result<Payload, WireError> {
@@ -744,7 +787,12 @@ mod tests {
         context.ownership.record(workflow_id(), NAMESPACE)?;
         append_started(context.store.as_ref()).await?;
 
-        let response = describe(&context.guard, &context.caller, describe_request(true)).await?;
+        let response = describe(
+            &context.guard,
+            &context.caller,
+            describe_request(true, None),
+        )
+        .await?;
 
         let summary = response
             .summary
@@ -762,12 +810,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn omitted_run_id_resolves_latest_run_from_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let first = RunId::new(uuid::Uuid::from_u128(11));
+        let latest = RunId::new(uuid::Uuid::from_u128(12));
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_continued_chain(context.store.as_ref(), &first, &latest).await?;
+
+        let engine = context.guard.scope(
+            &context.caller,
+            &NamespaceOperation::describe(
+                &describe_request(false, None),
+                WorkflowTarget::workflow(&workflow_id()),
+            ),
+        )?;
+        let resolved = resolve_run_id(engine.engine()?.as_ref(), &workflow_id(), None).await?;
+
+        assert_eq!(resolved, latest);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supplied_run_id_takes_precedence_over_latest_chain_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let requested = RunId::new(uuid::Uuid::from_u128(10));
+        let latest = RunId::new(uuid::Uuid::from_u128(12));
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_continued_chain(context.store.as_ref(), &requested, &latest).await?;
+
+        let engine = context.guard.scope(
+            &context.caller,
+            &NamespaceOperation::describe(
+                &describe_request(false, Some(requested.clone())),
+                WorkflowTarget::workflow(&workflow_id()),
+            ),
+        )?;
+        let resolved = resolve_run_id(
+            engine.engine()?.as_ref(),
+            &workflow_id(),
+            Some(requested.clone().into()),
+        )
+        .await?;
+
+        assert_eq!(resolved, requested);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn describe_handler_maps_empty_history_to_not_found()
     -> Result<(), Box<dyn std::error::Error>> {
         let context = context().await?;
         context.ownership.record(workflow_id(), NAMESPACE)?;
 
-        let error = describe(&context.guard, &context.caller, describe_request(false)).await;
+        let error = describe(
+            &context.guard,
+            &context.caller,
+            describe_request(false, Some(run_id())),
+        )
+        .await;
 
         let error = error
             .err()
@@ -923,6 +1025,37 @@ mod tests {
         Ok(())
     }
 
+    async fn append_continued_chain(
+        store: &dyn EventStore,
+        first: &RunId,
+        latest: &RunId,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let events = [
+            Event::WorkflowStarted {
+                envelope: event_envelope(1),
+                workflow_type: "fixture".to_owned(),
+                input: payload()?,
+                run_id: first.clone(),
+                parent_run_id: None,
+            },
+            Event::WorkflowContinuedAsNew {
+                envelope: event_envelope(2),
+                input: payload()?,
+                workflow_type: None,
+                parent_run_id: first.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: event_envelope(3),
+                workflow_type: "fixture".to_owned(),
+                input: payload()?,
+                run_id: latest.clone(),
+                parent_run_id: Some(first.clone()),
+            },
+        ];
+        store.append(&workflow_id(), &events, 0).await?;
+        Ok(())
+    }
+
     fn signal_request() -> Result<ProtoSignalRequest, aion_core::PayloadError> {
         Ok(ProtoSignalRequest {
             namespace: NAMESPACE.to_owned(),
@@ -951,27 +1084,34 @@ mod tests {
         }
     }
 
-    fn describe_request(include_history: bool) -> ProtoDescribeWorkflowRequest {
+    fn describe_request(
+        include_history: bool,
+        run_id: Option<RunId>,
+    ) -> ProtoDescribeWorkflowRequest {
         ProtoDescribeWorkflowRequest {
             namespace: NAMESPACE.to_owned(),
             workflow_id: Some(workflow_id().into()),
-            run_id: Some(run_id().into()),
+            run_id: run_id.map(Into::into),
             include_history,
         }
     }
 
     fn started_event() -> Result<Event, aion_core::PayloadError> {
         Ok(Event::WorkflowStarted {
-            envelope: EventEnvelope {
-                seq: 1,
-                recorded_at: Utc::now(),
-                workflow_id: workflow_id(),
-            },
+            envelope: event_envelope(1),
             workflow_type: "fixture".to_owned(),
             input: payload()?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
         })
+    }
+
+    fn event_envelope(seq: u64) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            recorded_at: Utc::now(),
+            workflow_id: workflow_id(),
+        }
     }
 
     fn proto_payload() -> Result<ProtoPayload, aion_core::PayloadError> {

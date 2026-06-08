@@ -6,9 +6,10 @@ use aion_core::{Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSumma
 use aion_proto::{
     ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoPayload,
     ProtoQueryRequest, ProtoRunId, ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoWorkflowId,
-    WireError, WireErrorCode, decode_event, decode_workflow_summary, encode_workflow_filter,
-    proto_query_response,
+    WireError, WireErrorCode, decode_core_value, decode_event, decode_workflow_summary,
+    encode_core_value, proto_query_response,
 };
+use aion_store::visibility::ListWorkflowsFilter;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -271,7 +272,8 @@ impl Client {
     ) -> Result<Vec<WorkflowSummary>, ClientError> {
         validate_list_page(&page)?;
         let namespace = self.namespace().to_owned();
-        let filter = encode_workflow_filter(namespace.clone(), page.request_id, filter)
+        let filter = workflow_filter_to_visibility(filter)?;
+        let filter = encode_core_value(namespace.clone(), page.request_id, &filter)
             .map_err(ClientError::from_wire_error)?;
         let response = self
             .transport
@@ -284,7 +286,7 @@ impl Client {
         response
             .summaries
             .iter()
-            .map(decode_workflow_summary)
+            .map(decode_visibility_summary)
             .map(|result| result.map_err(ClientError::from_wire_error))
             .collect()
     }
@@ -428,6 +430,36 @@ fn validate_list_page(page: &ListPage) -> Result<(), ClientError> {
     Ok(())
 }
 
+fn workflow_filter_to_visibility(
+    filter: &WorkflowFilter,
+) -> Result<ListWorkflowsFilter, ClientError> {
+    if filter.parent.is_some() {
+        return Err(ClientError::InvalidArgument);
+    }
+
+    Ok(ListWorkflowsFilter {
+        workflow_type: filter.workflow_type.clone(),
+        status: filter.status,
+        started_after: filter.started_after,
+        started_before: filter.started_before,
+        ..ListWorkflowsFilter::default()
+    })
+}
+
+fn decode_visibility_summary(
+    envelope: &aion_proto::WireEnvelope,
+) -> Result<WorkflowSummary, WireError> {
+    let summary = decode_core_value::<aion_store::visibility::WorkflowSummary>(envelope)?;
+    Ok(WorkflowSummary {
+        workflow_id: summary.workflow_id,
+        workflow_type: summary.workflow_type,
+        status: summary.status,
+        started_at: summary.start_time,
+        ended_at: summary.close_time,
+        parent: None,
+    })
+}
+
 fn decode_required_workflow_id(
     value: Option<ProtoWorkflowId>,
     context: &str,
@@ -461,7 +493,8 @@ mod tests {
     use aion_proto::{
         ProtoCancelResponse, ProtoDescribeWorkflowResponse, ProtoListWorkflowsResponse,
         ProtoQueryResponse, ProtoRunId, ProtoSignalResponse, ProtoStartWorkflowResponse,
-        ProtoWorkflowId, WireError, encode_workflow_summary, proto_query_response,
+        ProtoWorkflowId, WireError, encode_core_value, encode_workflow_summary,
+        proto_query_response,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -544,7 +577,7 @@ mod tests {
             *self.last_list.lock().await = Some(request);
             Ok(ProtoListWorkflowsResponse {
                 summaries: vec![
-                    encode_workflow_summary("tenant-a", None, &summary())
+                    encode_core_value("tenant-a", None, &visibility_summary())
                         .map_err(ClientError::from_wire_error)?,
                 ],
             })
@@ -609,6 +642,18 @@ mod tests {
             started_at: Utc::now(),
             ended_at: None,
             parent: None,
+        }
+    }
+
+    fn visibility_summary() -> aion_store::visibility::WorkflowSummary {
+        aion_store::visibility::WorkflowSummary {
+            workflow_id: workflow_id(),
+            run_id: run_id(),
+            workflow_type: String::from("checkout"),
+            status: WorkflowStatus::Running,
+            start_time: Utc::now(),
+            close_time: None,
+            search_attributes: std::collections::HashMap::new(),
         }
     }
 

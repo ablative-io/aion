@@ -1,6 +1,6 @@
 //! Payload and argument parsing helpers for the CLI.
 
-use aion_core::{ContentType, Payload, WorkflowId, WorkflowStatus};
+use aion_core::{ContentType, Payload, RunId, WorkflowId, WorkflowStatus};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use uuid::Uuid;
@@ -23,6 +23,11 @@ pub(crate) fn payload_to_json(payload: &Payload) -> Result<Value> {
 pub(crate) fn parse_workflow_id(raw: &str) -> Result<WorkflowId> {
     let uuid = Uuid::parse_str(raw).with_context(|| format!("invalid workflow id '{raw}'"))?;
     Ok(WorkflowId::new(uuid))
+}
+
+pub(crate) fn parse_run_id(raw: &str) -> Result<RunId> {
+    let uuid = Uuid::parse_str(raw).with_context(|| format!("invalid run id '{raw}'"))?;
+    Ok(RunId::new(uuid))
 }
 
 pub(crate) fn parse_status(raw: &str) -> Result<WorkflowStatus, String> {
@@ -53,7 +58,7 @@ fn status_key(raw: &str) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{json_payload, parse_status, parse_workflow_id, payload_to_json};
+    use super::{json_payload, parse_run_id, parse_status, parse_workflow_id, payload_to_json};
     use aion_core::WorkflowStatus;
 
     #[test]
@@ -83,5 +88,10 @@ mod tests {
     #[test]
     fn parse_workflow_id_rejects_invalid_uuid() {
         assert!(parse_workflow_id("not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn parse_run_id_rejects_invalid_uuid() {
+        assert!(parse_run_id("not-a-uuid").is_err());
     }
 }
