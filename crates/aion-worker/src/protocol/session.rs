@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
+use tonic::{Request, metadata::MetadataValue, transport::Channel};
 
 use crate::config::WorkerConfig;
 use crate::error::{MissingActivityHandler, WorkerError};
@@ -180,8 +180,10 @@ impl GrpcWorkerSession {
             })
         })?;
         let (sender, outbound) = mpsc::channel(16);
+        let mut request = Request::new(ReceiverStream::new(outbound));
+        apply_auth_metadata(request.metadata_mut(), &self.config)?;
         let response = client
-            .stream_worker(ReceiverStream::new(outbound))
+            .stream_worker(request)
             .await
             .map_err(|source| WorkerError::Handshake { source })?;
 
@@ -208,6 +210,23 @@ impl GrpcWorkerSession {
                 source: tonic::Status::unavailable(format!("worker stream send failed: {source}")),
             })
     }
+}
+
+fn apply_auth_metadata(
+    metadata: &mut tonic::metadata::MetadataMap,
+    config: &WorkerConfig,
+) -> Result<(), WorkerError> {
+    let namespace =
+        MetadataValue::try_from(config.namespace.as_str()).map_err(|_| WorkerError::Handshake {
+            source: tonic::Status::invalid_argument("worker namespace is not valid gRPC metadata"),
+        })?;
+    let subject =
+        MetadataValue::try_from(config.subject.as_str()).map_err(|_| WorkerError::Handshake {
+            source: tonic::Status::invalid_argument("worker subject is not valid gRPC metadata"),
+        })?;
+    metadata.insert("x-aion-namespaces", namespace);
+    metadata.insert("x-aion-subject", subject);
+    Ok(())
 }
 
 #[async_trait]
@@ -427,7 +446,10 @@ mod tests {
     use async_trait::async_trait;
     use futures::{StreamExt, stream};
 
-    use super::{WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers};
+    use super::{
+        WorkerSession, WorkerSessionEvent, WorkerTaskStream, apply_auth_metadata,
+        validate_activity_handlers,
+    };
     use crate::error::WorkerError;
     use crate::{ReconnectConfig, WorkerConfig};
 
@@ -495,6 +517,39 @@ mod tests {
             drop((workflow_id, activity_id, progress));
             Ok(())
         }
+    }
+
+    #[test]
+    fn apply_auth_metadata_sets_worker_authorization_headers() -> Result<(), WorkerError> {
+        let config = WorkerConfig::builder()
+            .endpoint("http://127.0.0.1:50051")
+            .task_queue("payments")
+            .identity("worker-a")
+            .max_concurrency(4)
+            .reconnect_initial_backoff(std::time::Duration::from_millis(5))
+            .reconnect_max_backoff(std::time::Duration::from_millis(20))
+            .reconnect_max_attempts(3)
+            .namespace("payments")
+            .subject("worker-a")
+            .build()
+            .map_err(WorkerError::registration)?;
+        let mut metadata = tonic::metadata::MetadataMap::new();
+
+        apply_auth_metadata(&mut metadata, &config)?;
+
+        assert_eq!(
+            metadata
+                .get("x-aion-namespaces")
+                .and_then(|value| value.to_str().ok()),
+            Some("payments")
+        );
+        assert_eq!(
+            metadata
+                .get("x-aion-subject")
+                .and_then(|value| value.to_str().ok()),
+            Some("worker-a")
+        );
+        Ok(())
     }
 
     #[tokio::test]

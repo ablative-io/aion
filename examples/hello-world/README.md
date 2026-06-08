@@ -15,7 +15,7 @@ Install these tools before starting:
 
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP available on your `PATH`
 - Rust toolchain and Cargo (`rustup` is recommended)
-- Python 3.11 or newer
+- Python 3.10 or newer
 - `jq`, optional but useful for extracting fields from the CLI's JSON output
 
 All commands below are copy-pasteable from the repository root unless noted.

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, cast
+from typing import Any, Protocol, TypeAlias, cast
 
 import grpc
 from google.protobuf.message import Message
@@ -60,6 +60,29 @@ class WorkerConfig:
     max_concurrency: int
     reconnect: ReconnectConfig
     transport_credentials: TransportCredentials | None = None
+    namespace: str = "default"
+    subject: str = "worker"
+
+    def grpc_metadata(self) -> tuple[tuple[str, str], ...]:
+        """Return authorization metadata for the worker stream connection.
+
+        WorkerConfig owns the Aion authorization headers. Preserve any unrelated
+        transport metadata while dropping reserved auth header duplicates so stale
+        credential metadata cannot shadow the configured namespace or subject.
+        """
+        auth_metadata = (
+            ("x-aion-namespaces", self.namespace),
+            ("x-aion-subject", self.subject),
+        )
+        if self.transport_credentials is None:
+            return auth_metadata
+        reserved_headers = {key for key, _value in auth_metadata}
+        transport_metadata = tuple(
+            (key, value)
+            for key, value in self.transport_credentials.metadata
+            if key.lower() not in reserved_headers
+        )
+        return (*transport_metadata, *auth_metadata)
 
 
 @dataclass(frozen=True)
@@ -216,7 +239,8 @@ class GrpcWorkerSession:
                 self._channel = grpc.aio.insecure_channel(self._config.endpoint)
             self._stub = worker_pb2_grpc.WorkerProtocolStub(self._channel)
         self._outbound = asyncio.Queue(maxsize=16)
-        self._stream = self._stub.StreamWorker(self._outbound_messages())
+        stream_worker = cast(Any, self._stub.StreamWorker)
+        self._stream = stream_worker(self._outbound_messages(), metadata=self._config.grpc_metadata())
 
     async def _outbound_messages(self) -> AsyncIterator[worker_pb2.WorkerToServer]:
         outbound = self._outbound

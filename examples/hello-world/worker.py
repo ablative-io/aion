@@ -82,6 +82,8 @@ def worker_config() -> WorkerConfig:
         task_queue=os.environ.get("AION_TASK_QUEUE", "default"),
         identity=os.environ.get("AION_WORKER_IDENTITY", "hello-world-python-worker"),
         max_concurrency=int(os.environ.get("AION_WORKER_CONCURRENCY", "4")),
+        namespace=os.environ.get("AION_WORKER_NAMESPACE", "default"),
+        subject=os.environ.get("AION_WORKER_SUBJECT", "worker"),
         reconnect=ReconnectConfig(
             initial_backoff_seconds=0.5,
             max_backoff_seconds=5.0,
