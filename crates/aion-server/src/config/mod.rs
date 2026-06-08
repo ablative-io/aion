@@ -1,6 +1,12 @@
 //! Runtime configuration loading and validation for `aion-server`.
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet,
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::Deserialize;
 
@@ -27,6 +33,8 @@ pub struct CliOverrides {
     pub scheduler_threads: Option<usize>,
     /// Override for `[drain].timeout_seconds`.
     pub drain_timeout_seconds: Option<u64>,
+    /// Additional workflow package archives loaded after config and auto-discovered packages.
+    pub workflow_packages: Vec<PathBuf>,
 }
 
 /// Complete merged server configuration.
@@ -253,6 +261,12 @@ impl ServerConfig {
         let mut config = file::load(cli.config_path.as_deref())?.unwrap_or_default();
         env::overlay(&mut config)?;
         config.apply_cli_overrides(cli);
+        let discovered_packages = discover_workflow_packages_from_current_dir()?;
+        merge_workflow_packages(
+            &mut config.workflow_packages,
+            discovered_packages,
+            &cli.workflow_packages,
+        );
         config.validate()?;
         Ok(config)
     }
@@ -477,6 +491,62 @@ pub(crate) fn config_error<T>(message: impl Into<String>) -> Result<T, ServerErr
     })
 }
 
+fn discover_workflow_packages_from_current_dir() -> Result<Vec<PathBuf>, ServerError> {
+    discover_workflow_packages(Path::new("."))
+}
+
+fn discover_workflow_packages(directory: &Path) -> Result<Vec<PathBuf>, ServerError> {
+    let mut packages = Vec::new();
+    let entries = fs::read_dir(directory).map_err(|source| ServerError::Config {
+        message: format!(
+            "failed to scan workflow packages in `{}`: {source}",
+            directory.display()
+        ),
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| ServerError::Config {
+            message: format!(
+                "failed to read workflow package entry in `{}`: {source}",
+                directory.display()
+            ),
+        })?;
+        let path = entry.path();
+        let has_aion_extension = path
+            .extension()
+            .is_some_and(|extension| extension == "aion");
+        if path.is_file() && has_aion_extension {
+            packages.push(path);
+        }
+    }
+
+    packages.sort_by(|left, right| left.as_os_str().cmp(right.as_os_str()));
+    Ok(packages)
+}
+
+fn merge_workflow_packages(
+    workflow_packages: &mut Vec<PathBuf>,
+    discovered_packages: Vec<PathBuf>,
+    cli_packages: &[PathBuf],
+) {
+    let mut seen: HashSet<PathBuf> = workflow_packages
+        .iter()
+        .map(|package| deduplicated_package_key(package))
+        .collect();
+    for package in discovered_packages
+        .into_iter()
+        .chain(cli_packages.iter().cloned())
+    {
+        if seen.insert(deduplicated_package_key(&package)) {
+            workflow_packages.push(package);
+        }
+    }
+}
+
+fn deduplicated_package_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 mod duration_millis {
     use std::time::Duration;
 
@@ -493,7 +563,10 @@ mod duration_millis {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliOverrides, ServerConfig, StoreBackend};
+    use super::{
+        CliOverrides, ServerConfig, StoreBackend, discover_workflow_packages,
+        merge_workflow_packages,
+    };
 
     #[test]
     fn valid_toml_is_parsed_into_typed_config() -> Result<(), Box<dyn std::error::Error>> {
@@ -568,6 +641,107 @@ mod tests {
 
         assert_eq!(config.store.url.as_deref(), Some("cli.db"));
         assert_eq!(config.runtime.scheduler_threads, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn default_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::default();
+
+        assert_eq!(config.store.backend, StoreBackend::Memory);
+        assert_eq!(config.store.url, None);
+        assert_eq!(config.server.grpc_address.to_string(), "127.0.0.1:50051");
+        assert_eq!(config.server.listen_address.to_string(), "127.0.0.1:8080");
+        assert_eq!(config.namespaces.default, "default");
+        assert!(!config.auth.enabled);
+        assert!(config.metrics.enabled);
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn package_discovery_is_sorted() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::write(temp_dir.path().join("zeta.aion"), b"package")?;
+        std::fs::write(temp_dir.path().join("alpha.aion"), b"package")?;
+        std::fs::write(temp_dir.path().join("ignored.txt"), b"package")?;
+        std::fs::create_dir(temp_dir.path().join("nested"))?;
+        std::fs::write(
+            temp_dir.path().join("nested").join("nested.aion"),
+            b"package",
+        )?;
+
+        let packages = discover_workflow_packages(temp_dir.path())?;
+
+        assert_eq!(
+            packages,
+            vec![
+                temp_dir.path().join("alpha.aion"),
+                temp_dir.path().join("zeta.aion"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_package_merge_is_additive_and_deduplicated() {
+        let mut packages = vec!["config.aion".into(), "shared.aion".into()];
+        let discovered = vec!["auto.aion".into(), "shared.aion".into()];
+        let cli = vec!["cli.aion".into(), "auto.aion".into()];
+
+        merge_workflow_packages(&mut packages, discovered, &cli);
+
+        assert_eq!(
+            packages,
+            vec![
+                std::path::PathBuf::from("config.aion"),
+                std::path::PathBuf::from("shared.aion"),
+                std::path::PathBuf::from("auto.aion"),
+                std::path::PathBuf::from("cli.aion"),
+            ]
+        );
+    }
+
+    #[test]
+    fn package_merge_deduplicates_canonical_files() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let package = temp_dir.path().join("hello.aion");
+        std::fs::write(&package, b"package")?;
+        let mut packages = vec![package.clone()];
+        let discovered = vec![temp_dir.path().join(".").join("hello.aion")];
+
+        merge_workflow_packages(&mut packages, discovered, &[]);
+
+        assert_eq!(packages, vec![package]);
+        Ok(())
+    }
+
+    #[test]
+    fn cli_packages_are_additive() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = ServerConfig::from_slice(
+            br#"
+                workflow_packages = ["config.aion"]
+            "#,
+        )?;
+        let cli = CliOverrides {
+            workflow_packages: vec!["cli-one.aion".into(), "cli-two.aion".into()],
+            ..CliOverrides::default()
+        };
+
+        merge_workflow_packages(
+            &mut config.workflow_packages,
+            Vec::new(),
+            &cli.workflow_packages,
+        );
+
+        assert_eq!(
+            config.workflow_packages,
+            vec![
+                std::path::PathBuf::from("config.aion"),
+                std::path::PathBuf::from("cli-one.aion"),
+                std::path::PathBuf::from("cli-two.aion"),
+            ]
+        );
         Ok(())
     }
 }
