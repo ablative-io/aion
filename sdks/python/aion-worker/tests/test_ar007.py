@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import NoReturn
+from typing import Any, NoReturn, cast
 
 import pytest
 
@@ -9,6 +9,7 @@ import aion_worker
 from aion_worker import (
     ReconnectConfig,
     ReconnectError,
+    TransportCredentials,
     UnackedResultTracker,
     WorkerConfig,
     connect_register_replay_and_serve,
@@ -179,6 +180,79 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
     assert "Waiting for tasks" in messages
     assert "Received task greet for workflow workflow-1" in messages
     assert "Completed greet in 5ms" in messages
+
+
+async def test_worker_config_grpc_metadata_includes_namespace_and_subject() -> None:
+    default_config = config()
+    assert default_config.grpc_metadata() == (
+        ("x-aion-namespaces", "default"),
+        ("x-aion-subject", "worker"),
+    )
+
+    configured = WorkerConfig(
+        endpoint="127.0.0.1:50051",
+        task_queue="queue-a",
+        identity="worker-a",
+        max_concurrency=2,
+        reconnect=ReconnectConfig(
+            initial_backoff_seconds=0.01,
+            max_backoff_seconds=0.02,
+            max_attempts=3,
+        ),
+        transport_credentials=TransportCredentials(
+            metadata=(
+                ("authorization", "Bearer token"),
+                ("x-aion-namespaces", "stale"),
+                ("X-Aion-Subject", "stale"),
+            )
+        ),
+        namespace="payments",
+        subject="worker-a",
+    )
+
+    assert configured.grpc_metadata() == (
+        ("authorization", "Bearer token"),
+        ("x-aion-namespaces", "payments"),
+        ("x-aion-subject", "worker-a"),
+    )
+
+
+class RecordingStreamWorker:
+    def __init__(self) -> None:
+        self.metadata: tuple[tuple[str, str], ...] | None = None
+
+    def __call__(
+        self,
+        request_iterator: object,
+        *,
+        metadata: tuple[tuple[str, str], ...],
+    ) -> FakeGrpcStream:
+        del request_iterator
+        self.metadata = metadata
+        return FakeGrpcStream()
+
+
+class RecordingGrpcStub:
+    def __init__(self) -> None:
+        self.stream_worker = RecordingStreamWorker()
+
+    @property
+    def StreamWorker(self) -> RecordingStreamWorker:
+        return self.stream_worker
+
+
+async def test_grpc_open_stream_sends_authorization_metadata() -> None:
+    worker_config = config()
+    session = aion_worker.GrpcWorkerSession(worker_config)
+    stub = RecordingGrpcStub()
+    session._stub = cast(Any, stub)
+
+    await session._open_stream()
+
+    assert stub.StreamWorker.metadata == (
+        ("x-aion-namespaces", "default"),
+        ("x-aion-subject", "worker"),
+    )
 
 
 async def test_grpc_register_waits_for_transport_connection_before_success() -> None:

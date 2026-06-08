@@ -67,10 +67,15 @@ impl ReconnectConfig {
 
 /// Operator-supplied worker connection and serving configuration.
 ///
-/// No tunable field has a default. In particular, `max_concurrency` is provided
-/// by the caller so the worker never assumes an implicit concurrency cap.
+/// Tunable fields remain caller-supplied. Namespace authorization metadata
+/// defaults to `default`/`worker` so development workers can register against
+/// the default task queue without an explicit auth setup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerConfig {
+    /// Namespace advertised in `x-aion-namespaces` worker stream metadata.
+    pub namespace: String,
+    /// Subject advertised in `x-aion-subject` worker stream metadata.
+    pub subject: String,
     /// Engine worker endpoint URI.
     pub endpoint: String,
     /// Task queue advertised to the engine. The current AW wire names this field
@@ -86,6 +91,9 @@ pub struct WorkerConfig {
     pub transport_credentials: Option<TransportCredentials>,
 }
 
+const DEFAULT_WORKER_NAMESPACE: &str = "default";
+const DEFAULT_WORKER_SUBJECT: &str = "worker";
+
 impl WorkerConfig {
     /// Starts an explicit builder. The caller must provide every required field
     /// before calling [`WorkerConfigBuilder::build`].
@@ -94,7 +102,7 @@ impl WorkerConfig {
         WorkerConfigBuilder::new()
     }
 
-    /// Creates a worker config with every field supplied explicitly.
+    /// Creates a worker config with default authorization metadata.
     #[must_use]
     pub fn new(
         endpoint: impl Into<String>,
@@ -105,6 +113,8 @@ impl WorkerConfig {
         transport_credentials: Option<TransportCredentials>,
     ) -> Self {
         Self {
+            namespace: String::from(DEFAULT_WORKER_NAMESPACE),
+            subject: String::from(DEFAULT_WORKER_SUBJECT),
             endpoint: endpoint.into(),
             task_queue: task_queue.into(),
             identity: identity.into(),
@@ -115,9 +125,11 @@ impl WorkerConfig {
     }
 }
 
-/// Builder for [`WorkerConfig`] with no baked-in tunable defaults.
+/// Builder for [`WorkerConfig`] with auth metadata defaults and explicit required fields.
 #[derive(Clone, Debug, Default)]
 pub struct WorkerConfigBuilder {
+    namespace: Option<String>,
+    subject: Option<String>,
     endpoint: Option<String>,
     task_queue: Option<String>,
     identity: Option<String>,
@@ -133,6 +145,8 @@ impl WorkerConfigBuilder {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            namespace: None,
+            subject: None,
             endpoint: None,
             task_queue: None,
             identity: None,
@@ -142,6 +156,20 @@ impl WorkerConfigBuilder {
             reconnect_max_attempts: None,
             transport_credentials: None,
         }
+    }
+
+    /// Sets the namespace advertised in worker stream authorization metadata.
+    #[must_use]
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Sets the subject advertised in worker stream authorization metadata.
+    #[must_use]
+    pub fn subject(mut self, subject: impl Into<String>) -> Self {
+        self.subject = Some(subject.into());
+        self
     }
 
     /// Sets the engine worker endpoint URI.
@@ -207,6 +235,12 @@ impl WorkerConfigBuilder {
     /// Returns [`WorkerConfigBuildError`] naming the missing required field.
     pub fn build(self) -> Result<WorkerConfig, WorkerConfigBuildError> {
         Ok(WorkerConfig {
+            namespace: self
+                .namespace
+                .unwrap_or_else(|| String::from(DEFAULT_WORKER_NAMESPACE)),
+            subject: self
+                .subject
+                .unwrap_or_else(|| String::from(DEFAULT_WORKER_SUBJECT)),
             endpoint: self
                 .endpoint
                 .ok_or(WorkerConfigBuildError::MissingEndpoint)?,
@@ -278,9 +312,13 @@ mod tests {
             .reconnect_initial_backoff(Duration::from_millis(10))
             .reconnect_max_backoff(Duration::from_millis(100))
             .reconnect_max_attempts(3)
+            .namespace("payments")
+            .subject("worker-a")
             .transport_credentials(credentials.clone())
             .build()?;
 
+        assert_eq!(config.namespace, "payments");
+        assert_eq!(config.subject, "worker-a");
         assert_eq!(config.endpoint, "http://127.0.0.1:50051");
         assert_eq!(config.task_queue, "payments");
         assert_eq!(config.identity, "worker-a");
@@ -292,5 +330,20 @@ mod tests {
         assert!(!format!("{config:?}").contains("secret-token"));
 
         Ok(())
+    }
+
+    #[test]
+    fn worker_config_new_uses_auth_metadata_defaults() {
+        let config = WorkerConfig::new(
+            "http://127.0.0.1:50051",
+            "default",
+            "worker-a",
+            4,
+            super::ReconnectConfig::new(Duration::from_millis(10), Duration::from_millis(100), 3),
+            None,
+        );
+
+        assert_eq!(config.namespace, "default");
+        assert_eq!(config.subject, "worker");
     }
 }
