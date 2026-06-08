@@ -11,6 +11,7 @@ members = [
     "crates/aion-server",
     "crates/aion-worker",
     "crates/aion-client",
+    "crates/aion-cli",
     "benchmarks/million-processes",
 ]
 
@@ -36,6 +37,7 @@ todo = "warn"
 [workspace.dependencies]
 serde = "1.0"
 serde_json = "1.0"
+clap = "4"
 thiserror = "2.0"
 anyhow = "1.0"
 uuid = "1.23"

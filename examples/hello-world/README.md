@@ -6,8 +6,8 @@ This example takes you from a fresh checkout to a running Aion workflow. You wil
 2. package the compiled BEAM modules into `hello-world.aion`,
 3. start the Aion dev server with the repo-root `dev-config.toml`,
 4. start a Python activity worker for the `greet` activity,
-5. start a workflow instance with `curl`, and
-6. inspect the run from the HTTP API while the dashboard UI is under development.
+5. start a workflow instance with `aion-cli`, and
+6. inspect and operate the run from `aion-cli` while the dashboard UI is under development.
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ Install these tools before starting:
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP available on your `PATH`
 - Rust toolchain and Cargo (`rustup` is recommended)
 - Python 3.11 or newer
-- `curl`
+- `jq`, optional but useful for extracting fields from the CLI's JSON output
 
 All commands below are copy-pasteable from the repository root unless noted.
 
@@ -54,15 +54,18 @@ examples/hello-world/hello-world.aion
 
 The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, and defaults to the `default` namespace. To preload this example at startup, make sure `workflow_packages` includes `examples/hello-world/hello-world.aion` after building the package.
 
-Requests below use the same header convention as Aion clients: `x-aion-subject: hello-world-user` identifies the caller, and `x-aion-namespaces: default` grants access to the same `default` namespace used in each request body. The dev config leaves auth disabled, so no bearer token is needed.
-
 In terminal 1:
 
 ```sh
 cargo run -p aion-server -- --config dev-config.toml
 ```
 
-Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API commands in the observe section below (or Aion CLI commands where available) to inspect workflows for now.
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use `aion-cli` over the gRPC endpoint (`127.0.0.1:50051`) to inspect workflows for now. The CLI global flags map to client metadata and routing:
+
+- `--endpoint` selects the gRPC server endpoint and defaults to `127.0.0.1:50051`.
+- `--namespace` selects the workflow namespace and defaults to `default`.
+- `--subject` identifies the caller and defaults to `cli-user`; this tutorial uses `hello-world-user`.
+- `--pretty` formats the otherwise compact JSON output for humans.
 
 ## 4. Start the Python activity worker
 
@@ -109,80 +112,63 @@ Leave this process running.
 In terminal 3:
 
 ```sh
-# content-type says the request body is JSON.
-# x-aion-subject names the non-empty caller identity.
-# x-aion-namespaces must include the request body's namespace: default.
-START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data '{
-    "namespace": "default",
-    "workflow_type": "hello_world",
-    "input": {
-      "content_type": "application/json",
-      "bytes": [123,34,110,97,109,101,34,58,34,65,100,97,34,125]
-    }
-  }')
+START_RESPONSE=$(cargo run -q -p aion-cli -- \
+  --subject hello-world-user \
+  start hello_world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 
-The byte array is the UTF-8 JSON payload:
+The CLI prints JSON by default:
 
 ```json
-{"name":"Ada"}
+{"workflow_id":"<workflow-id>","run_id":"<run-id>"}
 ```
 
 Capture the workflow id for the next commands:
 
 ```sh
-WORKFLOW_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["workflow_id"]["uuid"])
-PY
-)
-RUN_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["run_id"]["uuid"])
-PY
-)
+WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | jq -r .workflow_id)
+RUN_ID=$(printf '%s' "$START_RESPONSE" | jq -r .run_id)
 printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 ```
+
+If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JSON output into shell variables manually.
 
 ## 6. Observe the result
 
 List workflows:
 
 ```sh
-# content-type says the request body is JSON.
-# x-aion-subject names the non-empty caller identity.
-# x-aion-namespaces must include the request body's namespace: default.
-curl -sS -X POST http://127.0.0.1:8080/workflows/list \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data '{"namespace":"default"}'
+cargo run -q -p aion-cli -- --subject hello-world-user list --pretty
 ```
 
 Describe the workflow and include history:
 
 ```sh
-# content-type says the request body is JSON.
-# x-aion-subject names the non-empty caller identity.
-# x-aion-namespaces must include the request body's namespace: default.
-curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data "{
-    \"namespace\": \"default\",
-    \"workflow_id\": { \"uuid\": \"$WORKFLOW_ID\" },
-    \"run_id\": { \"uuid\": \"$RUN_ID\" },
-    \"include_history\": true
-  }"
+cargo run -q -p aion-cli -- --subject hello-world-user describe "$WORKFLOW_ID" --pretty
 ```
 
-You should see workflow events for start, `greet` scheduling/completion, and workflow completion. The dashboard UI is still under development, so prefer these HTTP API responses (or Aion CLI commands where available) when observing runs.
+You should see workflow events for start, `greet` scheduling/completion, and workflow completion. For machine-readable output, omit `--pretty`; the compact JSON is parseable by `jq`.
+
+## 7. Signal or cancel a workflow
+
+The hello-world workflow normally completes quickly and does not define a meaningful signal handler, so the required hello-world path is complete after `describe`. For workflows that are still running and listen for signals, send JSON payloads with the same CLI:
+
+```sh
+cargo run -q -p aion-cli -- --subject hello-world-user \
+  signal "$WORKFLOW_ID" example_signal --payload '{"note":"hello from the CLI"}'
+```
+
+A successful signal request prints an acknowledgement JSON object. Workflows that need cooperative shutdown can also be cancelled while they are still running:
+
+```sh
+cargo run -q -p aion-cli -- --subject hello-world-user \
+  cancel "$WORKFLOW_ID" --reason 'tutorial cleanup'
+```
+
+## HTTP API reference
+
+The tutorial above uses the CLI as the primary interaction method. If you need to compare against the HTTP API directly, the dev server also listens on `http://127.0.0.1:8080/`; HTTP callers must provide JSON request bodies and the equivalent metadata headers (`x-aion-subject` and `x-aion-namespaces`). See [`docs/API.md`](../../docs/API.md) for the transport overview.
 
 ## Clean up
 

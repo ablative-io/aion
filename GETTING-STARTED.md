@@ -9,7 +9,7 @@ Install these before starting:
 - Rust toolchain and Cargo (`rustup` is recommended)
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP on your `PATH`
 - Python 3.11 or newer, optional unless you run the Python worker used below
-- `curl`
+- `jq`, optional but useful for extracting fields from the CLI's JSON output
 
 ## 1. Clone and enter the repository
 
@@ -39,7 +39,7 @@ The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.
 cargo run -p aion-server -- --config dev-config.toml
 ```
 
-Leave this process running in terminal 1. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API commands below (or Aion CLI commands where available) to observe workflows for now.
+Leave this process running in terminal 1. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use `aion-cli` over the gRPC endpoint (`127.0.0.1:50051`) to operate workflows for now.
 
 ### Server environment variables and JSON logs
 
@@ -94,56 +94,40 @@ The worker connects to `127.0.0.1:50051`, registers the `greet` activity on the 
 In terminal 3, from the repository root:
 
 ```sh
-START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data '{
-    "namespace": "default",
-    "workflow_type": "hello_world",
-    "input": {
-      "content_type": "application/json",
-      "bytes": [123,34,110,97,109,101,34,58,34,65,100,97,34,125]
-    }
-  }')
+START_RESPONSE=$(cargo run -q -p aion-cli -- \
+  --subject hello-world-user \
+  start hello_world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 
-The byte array is the UTF-8 JSON payload `{"name":"Ada"}`.
+The CLI prints compact JSON by default, for example:
 
-Capture the returned ids:
+```json
+{"workflow_id":"<workflow-id>","run_id":"<run-id>"}
+```
+
+Capture the returned ids with `jq` if it is installed:
 
 ```sh
-WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["workflow_id"]["uuid"])')
-RUN_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["run_id"]["uuid"])')
+WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | jq -r .workflow_id)
+RUN_ID=$(printf '%s' "$START_RESPONSE" | jq -r .run_id)
 printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 ```
+
+If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JSON output into shell variables manually.
 
 ## 6. Observe the run
 
 List workflows:
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8080/workflows/list \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data '{"namespace":"default"}'
+cargo run -q -p aion-cli -- --subject hello-world-user list --pretty
 ```
 
 Describe the run and include history:
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data "{
-    \"namespace\": \"default\",
-    \"workflow_id\": { \"uuid\": \"$WORKFLOW_ID\" },
-    \"run_id\": { \"uuid\": \"$RUN_ID\" },
-    \"include_history\": true
-  }"
+cargo run -q -p aion-cli -- --subject hello-world-user describe "$WORKFLOW_ID" --pretty
 ```
 
 You should see events for workflow start, `greet` scheduling/completion, and workflow completion.
