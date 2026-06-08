@@ -1,0 +1,19 @@
+# Local development server configuration.
+#
+# This file is intentionally minimal and uses only fields from
+# `aion-server`'s ServerConfig. Add built `.aion` archives to
+# `workflow_packages` when you want the server to preload them at startup.
+# For example, after building the hello-world package:
+#   workflow_packages = ["examples/hello-world/hello-world.aion"]
+
+workflow_packages = []
+
+[server]
+listen_address = "127.0.0.1:8080"
+grpc_address = "127.0.0.1:50051"
+
+[store]
+backend = "memory"
+
+[namespaces]
+default = "default"

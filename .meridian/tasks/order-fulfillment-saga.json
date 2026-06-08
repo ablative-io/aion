@@ -23,5 +23,5 @@
       "acceptance": "A developer can follow the README and run both paths"
     }
   ],
-  "context": "Follow examples/hello-world/ structure exactly (gleam.toml with aion_flow path dep, packager/Cargo.toml with aion-package dep, worker.py with aion-worker SDK, copy-pasteable README). The aion_flow API: workflow.define() for entry contract, workflow.run() for activity dispatch. Update dev-config.json workflow_packages array to include examples/order-saga/order-saga.aion."
+  "context": "Follow examples/hello-world/ structure exactly (gleam.toml with aion_flow path dep, packager/Cargo.toml with aion-package dep, worker.py with aion-worker SDK, copy-pasteable README). The aion_flow API: workflow.define() for entry contract, workflow.run() for activity dispatch. Update dev-config.toml workflow_packages array to include examples/order-saga/order-saga.aion when preloading the example."
 }
