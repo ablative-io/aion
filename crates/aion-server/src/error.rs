@@ -1,5 +1,6 @@
 //! `ServerError` taxonomy for server library modules.
 
+use std::borrow::Cow;
 use std::net::SocketAddr;
 
 use aion::EngineError;
@@ -169,6 +170,119 @@ impl ServerError {
     #[must_use]
     pub const fn lock_poisoned(resource: &'static str) -> Self {
         Self::LockPoisoned { resource }
+    }
+}
+
+/// Stable structured error metadata for tracing events.
+#[derive(Clone)]
+pub struct ErrorTraceFields<'a> {
+    /// Outer error type recorded in the `error_type` tracing field.
+    pub error_type: Cow<'a, str>,
+    /// Optional inner store error type for `StoreError` records.
+    pub store_error_type: Option<&'static str>,
+    /// Human-readable reason safe for operator logs.
+    pub reason: &'a dyn std::fmt::Display,
+}
+
+impl ServerError {
+    /// Return stable typed fields for structured error logging.
+    #[must_use]
+    pub fn trace_fields(&self) -> ErrorTraceFields<'_> {
+        match self {
+            Self::Config { message } => ErrorTraceFields {
+                error_type: Cow::Borrowed("Config"),
+                store_error_type: None,
+                reason: message,
+            },
+            Self::TransportBind { message, .. } => ErrorTraceFields {
+                error_type: Cow::Borrowed("TransportBind"),
+                store_error_type: None,
+                reason: message,
+            },
+            Self::Namespace { message } => ErrorTraceFields {
+                error_type: Cow::Borrowed("Namespace"),
+                store_error_type: None,
+                reason: message,
+            },
+            Self::EngineCall { source } => engine_trace_fields(source),
+            Self::StoreBackend { source } => store_trace_fields(source),
+            Self::Stream { failure } => ErrorTraceFields {
+                error_type: Cow::Borrowed("Stream"),
+                store_error_type: None,
+                reason: failure,
+            },
+            Self::WorkerDispatch { reason, .. } => ErrorTraceFields {
+                error_type: Cow::Borrowed("WorkerDispatch"),
+                store_error_type: None,
+                reason,
+            },
+            Self::LockPoisoned { resource } => ErrorTraceFields {
+                error_type: Cow::Borrowed("LockPoisoned"),
+                store_error_type: None,
+                reason: resource,
+            },
+            Self::Wire { wire } => ErrorTraceFields {
+                error_type: wire
+                    .error_type
+                    .as_deref()
+                    .map_or_else(|| Cow::Borrowed(wire.code.as_str()), Cow::Borrowed),
+                store_error_type: None,
+                reason: wire,
+            },
+        }
+    }
+}
+
+fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
+    match source {
+        EngineError::WorkflowNotFound { .. } => simple_engine_fields("WorkflowNotFound", source),
+        EngineError::ScheduleNotFound { .. } => simple_engine_fields("ScheduleNotFound", source),
+        EngineError::ShuttingDown => simple_engine_fields("ShuttingDown", source),
+        EngineError::Store(store) => store_trace_fields(store),
+        EngineError::Durability(durability) => match durability {
+            aion::durability::DurabilityError::Store(store) => store_trace_fields(store),
+            aion::durability::DurabilityError::NonDeterminism(_)
+            | aion::durability::DurabilityError::HistoryShape { .. }
+            | aion::durability::DurabilityError::SearchAttribute(_) => {
+                simple_engine_fields("Durability", source)
+            }
+        },
+        EngineError::MissingStore => simple_engine_fields("MissingStore", source),
+        EngineError::Load { .. } => simple_engine_fields("Load", source),
+        EngineError::Package(_) => simple_engine_fields("Package", source),
+        EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
+        EngineError::Runtime { .. } => simple_engine_fields("Runtime", source),
+        EngineError::RegistryPoisoned => simple_engine_fields("RegistryPoisoned", source),
+        EngineError::NifRegistration { .. } => simple_engine_fields("NifRegistration", source),
+        EngineError::SignalRouter(_) => simple_engine_fields("SignalRouter", source),
+    }
+}
+
+fn simple_engine_fields<'a>(
+    error_type: &'static str,
+    source: &'a EngineError,
+) -> ErrorTraceFields<'a> {
+    ErrorTraceFields {
+        error_type: Cow::Borrowed(error_type),
+        store_error_type: None,
+        reason: source,
+    }
+}
+
+fn store_trace_fields(source: &StoreError) -> ErrorTraceFields<'_> {
+    ErrorTraceFields {
+        error_type: Cow::Borrowed("StoreError"),
+        store_error_type: Some(store_error_type(source)),
+        reason: source,
+    }
+}
+
+fn store_error_type(source: &StoreError) -> &'static str {
+    match source {
+        StoreError::SequenceConflict { .. } => "SequenceConflict",
+        StoreError::NotFound { .. } => "NotFound",
+        StoreError::Backend(_) => "Backend",
+        StoreError::Serialization(_) => "Serialization",
     }
 }
 

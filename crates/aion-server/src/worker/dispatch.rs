@@ -9,6 +9,7 @@ use aion_proto::{
 use crate::error::ServerError;
 use crate::shutdown::DrainState;
 use crate::worker::registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerMessage};
+use tracing::{Instrument, info_span};
 
 /// Scheduled remote activity that must be placed with a connected worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,41 +70,89 @@ impl ActivityDispatcher {
     /// Returns a typed dispatch error if no worker is available or the selected
     /// stream is closed; returns lock poison if registry access cannot be trusted.
     pub async fn dispatch(&self, activity: &ScheduledActivity) -> Result<(), ServerError> {
-        self.drain_state
-            .ensure_accepting(&activity.namespace, &activity.activity_type)?;
-        let mut workers = self
-            .registry
-            .workers_for(&activity.namespace, &activity.activity_type)?;
-        workers.sort_by_key(WorkerHandle::id);
+        let span = info_span!(
+            "activity_dispatch",
+            operation = "activity_dispatch",
+            namespace = %activity.namespace,
+            workflow_id = %activity.workflow_id,
+            activity_id = %activity.activity_id,
+            activity_type = %activity.activity_type,
+            worker_id = tracing::field::Empty,
+        );
+        let span_fields = span.clone();
 
-        if workers.is_empty() {
-            return Err(ServerError::worker_dispatch(
-                activity.namespace.clone(),
-                activity.activity_type.clone(),
-                "no connected worker for activity type",
-            ));
-        }
-
-        for worker in workers {
+        async {
             self.drain_state
                 .ensure_accepting(&activity.namespace, &activity.activity_type)?;
-            if worker
-                .sender()
-                .send(WorkerMessage::ActivityTask(activity.to_task()))
-                .await
-                .is_ok()
-            {
-                return Ok(());
-            }
-            self.registry.deregister(worker.id())?;
-        }
+            let mut workers = self
+                .registry
+                .workers_for(&activity.namespace, &activity.activity_type)?;
+            workers.sort_by_key(WorkerHandle::id);
 
-        Err(ServerError::worker_dispatch(
-            activity.namespace.clone(),
-            activity.activity_type.clone(),
-            "all matching worker streams closed before task could be delivered",
-        ))
+            if workers.is_empty() {
+                return Err(ServerError::worker_dispatch(
+                    activity.namespace.clone(),
+                    activity.activity_type.clone(),
+                    "no connected worker for activity type",
+                ));
+            }
+
+            for worker in workers {
+                self.drain_state
+                    .ensure_accepting(&activity.namespace, &activity.activity_type)?;
+                span_fields.record("worker_id", format!("{:?}", worker.id()));
+                if worker
+                    .sender()
+                    .send(WorkerMessage::ActivityTask(activity.to_task()))
+                    .await
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+                self.registry.deregister(worker.id())?;
+            }
+
+            Err(ServerError::worker_dispatch(
+                activity.namespace.clone(),
+                activity.activity_type.clone(),
+                "all matching worker streams closed before task could be delivered",
+            ))
+        }
+        .instrument(span)
+        .await
+        .inspect_err(|error| {
+            log_dispatch_error(
+                "activity_dispatch",
+                &activity.namespace,
+                &activity.workflow_id,
+                &activity.activity_id,
+                &activity.activity_type,
+                error,
+            );
+        })
     }
+}
+
+fn log_dispatch_error(
+    operation: &'static str,
+    namespace: &str,
+    workflow_id: &WorkflowId,
+    activity_id: &ActivityId,
+    activity_type: &str,
+    error: &ServerError,
+) {
+    let fields = error.trace_fields();
+    tracing::error!(
+        operation,
+        namespace,
+        workflow_id = %workflow_id,
+        activity_id = %activity_id,
+        activity_type,
+        error_type = %fields.error_type,
+        store_error_type = fields.store_error_type,
+        reason = %fields.reason,
+        "activity dispatch failed"
+    );
 }
 
 /// Decoded activity outcome reported by a worker.

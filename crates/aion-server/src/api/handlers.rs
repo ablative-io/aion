@@ -18,6 +18,7 @@ use aion_proto::{
 };
 
 use crate::{CallerIdentity, NamespaceGuard, NamespaceOperation, ServerError, WorkflowTarget};
+use tracing::{Instrument, info_span};
 
 /// Handles a decoded start-workflow request.
 ///
@@ -33,17 +34,38 @@ pub async fn start(
     let scoped = guard
         .scope(caller, &NamespaceOperation::start(&request))
         .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
     let input = required_payload(request.input.clone())?;
-    let handle = scoped
-        .engine()
-        .map_err(|error| error.to_wire_error())?
-        .start_workflow(&request.workflow_type, input)
-        .await
-        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    let span = info_span!(
+        "engine_operation",
+        operation = "start",
+        namespace = %namespace,
+        workflow_id = tracing::field::Empty,
+        workflow_type = %request.workflow_type,
+    );
+    let handle = async {
+        scoped
+            .engine()
+            .map_err(|error| log_server_error("start", Some(&namespace), None, &error))?
+            .start_workflow(&request.workflow_type, input)
+            .await
+            .map_err(ServerError::from)
+            .map_err(|error| log_server_error("start", Some(&namespace), None, &error))
+    }
+    .instrument(span.clone())
+    .await?;
+    span.record("workflow_id", tracing::field::display(handle.workflow_id()));
 
     scoped
         .record_workflow(handle.workflow_id().clone())
-        .map_err(|error| error.to_wire_error())?;
+        .map_err(|error| {
+            log_server_error(
+                "start",
+                Some(&namespace),
+                Some(handle.workflow_id()),
+                &error,
+            )
+        })?;
 
     Ok(ProtoStartWorkflowResponse {
         workflow_id: Some(handle.workflow_id().clone().into()),
@@ -68,14 +90,32 @@ pub async fn signal(
     let scoped = guard
         .scope(caller, &NamespaceOperation::signal(&request, target))
         .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
     let payload = required_payload(request.payload.clone())?;
+    let signal_name = request.signal_name.clone();
+    let span = info_span!(
+        "engine_operation",
+        operation = "signal",
+        namespace = %namespace,
+        workflow_id = %workflow_id,
+        signal_name = %signal_name,
+    );
 
-    scoped
-        .engine()
-        .map_err(|error| error.to_wire_error())?
-        .signal(&workflow_id, &run_id, request.signal_name, payload)
-        .await
-        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    async {
+        scoped
+            .engine()
+            .map_err(|error| {
+                log_server_error("signal", Some(&namespace), Some(&workflow_id), &error)
+            })?
+            .signal(&workflow_id, &run_id, signal_name, payload)
+            .await
+            .map_err(ServerError::from)
+            .map_err(|error| {
+                log_server_error("signal", Some(&namespace), Some(&workflow_id), &error)
+            })
+    }
+    .instrument(span)
+    .await?;
 
     Ok(ProtoSignalResponse {})
 }
@@ -97,13 +137,31 @@ pub async fn query(
     let scoped = guard
         .scope(caller, &NamespaceOperation::query(&request, target))
         .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
+    let query_name = request.query_name.clone();
+    let span = info_span!(
+        "engine_operation",
+        operation = "query",
+        namespace = %namespace,
+        workflow_id = %workflow_id,
+        query_name = %query_name,
+    );
 
-    let result = scoped
-        .engine()
-        .map_err(|error| error.to_wire_error())?
-        .query(&workflow_id, &run_id, request.query_name)
-        .await
-        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    let result = async {
+        scoped
+            .engine()
+            .map_err(|error| {
+                log_server_error("query", Some(&namespace), Some(&workflow_id), &error)
+            })?
+            .query(&workflow_id, &run_id, query_name)
+            .await
+            .map_err(ServerError::from)
+            .map_err(|error| {
+                log_server_error("query", Some(&namespace), Some(&workflow_id), &error)
+            })
+    }
+    .instrument(span)
+    .await?;
 
     Ok(ProtoQueryResponse {
         outcome: Some(proto_query_response::Outcome::Result(result.into())),
@@ -127,13 +185,29 @@ pub async fn cancel(
     let scoped = guard
         .scope(caller, &NamespaceOperation::cancel(&request, target))
         .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
+    let span = info_span!(
+        "engine_operation",
+        operation = "cancel",
+        namespace = %namespace,
+        workflow_id = %workflow_id,
+    );
 
-    scoped
-        .engine()
-        .map_err(|error| error.to_wire_error())?
-        .cancel(&workflow_id, &run_id, request.reason)
-        .await
-        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    async {
+        scoped
+            .engine()
+            .map_err(|error| {
+                log_server_error("cancel", Some(&namespace), Some(&workflow_id), &error)
+            })?
+            .cancel(&workflow_id, &run_id, request.reason)
+            .await
+            .map_err(ServerError::from)
+            .map_err(|error| {
+                log_server_error("cancel", Some(&namespace), Some(&workflow_id), &error)
+            })
+    }
+    .instrument(span)
+    .await?;
 
     Ok(ProtoCancelResponse {})
 }
@@ -512,6 +586,25 @@ fn encode_history(
     } else {
         Ok(Vec::new())
     }
+}
+
+fn log_server_error(
+    operation: &'static str,
+    namespace: Option<&str>,
+    workflow_id: Option<&WorkflowId>,
+    error: &ServerError,
+) -> WireError {
+    let fields = error.trace_fields();
+    tracing::error!(
+        operation,
+        namespace,
+        workflow_id = workflow_id.map(ToString::to_string).as_deref(),
+        error_type = %fields.error_type,
+        store_error_type = fields.store_error_type,
+        reason = %fields.reason,
+        "request handler failed"
+    );
+    error.to_wire_error()
 }
 
 #[cfg(test)]
