@@ -14,7 +14,7 @@
     },
     {
       "id": "R3",
-      "description": "Create examples/hello-world/README.md that walks through the complete path: prerequisites (gleam CLI, cargo, rust toolchain), building the .aion package, starting the dev server with the repo-root dev-config.json, deploying the .aion package, starting a workflow instance via curl, and observing the result on the dashboard and via the list/describe API. Every command should be copy-pasteable.",
+      "description": "Create examples/hello-world/README.md that walks through the complete path: prerequisites (gleam CLI, cargo, rust toolchain), building the .aion package, starting the dev server with the repo-root dev-config.toml, deploying the .aion package, starting a workflow instance via curl, and observing the result on the dashboard and via the list/describe API. Every command should be copy-pasteable.",
       "acceptance": "A developer with gleam and cargo installed can follow the README from scratch and see a workflow run"
     },
     {
@@ -23,5 +23,5 @@
       "acceptance": "python worker.py connects to the server and serves the greeting activity"
     }
   ],
-  "context": "The aion_flow Gleam SDK is at gleam/aion_flow/ — it provides workflow.define() for entry contracts, workflow.run() for activity dispatch, and deterministic time/signal/query helpers. The aion-package crate at crates/aion-package/ has PackageBuilder::new(manifest, beams) and write_to_path(). The Manifest struct needs entry_module, entry_function, and activity declarations. The server at crates/aion-server/ takes a JSON config — a working dev-config.json already exists at the repo root. The Python worker SDK is at sdks/python/aion-worker/ with session/loop/reconnect. The server listens on gRPC :50051 and HTTP :8080. Auth uses bearer token 'dev-token'. The workflow HTTP API is at /workflows/start, /workflows/list, /workflows/describe (all POST with JSON body)."
+  "context": "The aion_flow Gleam SDK is at gleam/aion_flow/ — it provides workflow.define() for entry contracts, workflow.run() for activity dispatch, and deterministic time/signal/query helpers. The aion-package crate at crates/aion-package/ has PackageBuilder::new(manifest, beams) and write_to_path(). The Manifest struct needs entry_module, entry_function, and activity declarations. The server at crates/aion-server/ takes a TOML config — a working dev-config.toml already exists at the repo root. The Python worker SDK is at sdks/python/aion-worker/ with session/loop/reconnect. The server listens on gRPC :50051 and HTTP :8080. The dev config leaves auth disabled by default. The workflow HTTP API is at /workflows/start, /workflows/list, /workflows/describe (all POST with JSON body)."
 }

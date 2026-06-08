@@ -9,7 +9,7 @@ Install these before starting:
 - Rust toolchain and Cargo (`rustup` is recommended)
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP on your `PATH`
 - Python 3.11 or newer, optional unless you run the Python worker used below
-- `curl`
+- `jq`, optional but useful for extracting fields from the CLI's JSON output
 
 ## 1. Clone and enter the repository
 
@@ -33,26 +33,47 @@ This writes `examples/hello-world/hello-world.aion`.
 
 ## 3. Start the Aion dev server
 
-The server CLI accepts TOML config files via `--config`. Create a local config that listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, and preloads the hello-world package:
+The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, uses the in-memory store, and defaults to the `default` namespace. To preload the hello-world package you built above, make sure `workflow_packages` includes `examples/hello-world/hello-world.aion` before starting the server.
 
 ```sh
-cat > aion-hello-world.toml <<'EOF'
-workflow_packages = ["examples/hello-world/hello-world.aion"]
-
-[server]
-listen_address = "127.0.0.1:8080"
-grpc_address = "127.0.0.1:50051"
-
-[store]
-backend = "memory"
-
-[namespaces]
-default = "default"
-EOF
-cargo run -p aion-server -- --config aion-hello-world.toml
+cargo run -p aion-server -- --config dev-config.toml
 ```
 
-Leave this process running in terminal 1. The dashboard/static UI is served at `http://127.0.0.1:8080/`.
+Leave this process running in terminal 1. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use `aion-cli` over the gRPC endpoint (`127.0.0.1:50051`) to operate workflows for now.
+
+### Server environment variables and JSON logs
+
+The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags where a matching flag exists (`--listen-address`, `--store-url`, `--scheduler-threads`, and `--drain-timeout-seconds`). Supported server environment variables are:
+
+| Variable | Description | Default |
+|---|---|---|
+| `AION_SERVER_LISTEN_ADDRESS` | HTTP listen socket address for the server API/static assets, formatted as `host:port` with a non-zero port. | `127.0.0.1:8080` |
+| `AION_SERVER_GRPC_ADDRESS` | gRPC listen socket address for the worker/client protocol, formatted as `host:port` with a non-zero port. | `127.0.0.1:50051` |
+| `AION_STORE_BACKEND` | Store backend selection; accepted values are `memory` or `libsql` (case-insensitive). | `memory` |
+| `AION_STORE_URL` | Non-empty backend connection URL/path when the selected store needs one; setting it also selects `libsql` if the backend is still `memory`. | unset |
+| `AION_RUNTIME_SCHEDULER_THREADS` | Positive integer number of scheduler runtime threads. | `1` |
+| `AION_DRAIN_TIMEOUT_SECONDS` | Positive integer graceful shutdown drain timeout in seconds. | `30` |
+| `AION_AUTH_ENABLED` | Enables or disables server auth; accepted booleans are `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off` (case-insensitive). | `false` |
+| `AION_AUTH_JWKS_URL` | Non-empty JWKS endpoint used when auth is enabled with JWKS validation. | unset |
+| `AION_AUTH_JWKS_REFRESH_SECONDS` | Positive integer JWKS refresh interval in seconds. | `300` |
+| `AION_METRICS_ENABLED` | Enables or disables metrics endpoints/export; uses the same boolean forms as `AION_AUTH_ENABLED`. | `true` |
+| `AION_NAMESPACES_DEFAULT` | Non-empty default namespace used when one is not otherwise configured. | `default` |
+| `AION_LOG` | Tracing filter for server logs; takes precedence over `RUST_LOG`. Example: `AION_LOG=debug`. | `info` |
+
+Server logs are emitted as JSON on stdout. For interactive development, pipe them through `jq` for readability, for example:
+
+```sh
+AION_LOG=debug cargo run -p aion-server -- --config aion-hello-world.toml | jq .
+```
+
+### Config auto-discovery
+
+When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults. To use auto-discovery from the repository root, copy the dev config and start the server with no flags:
+
+```sh
+cp dev-config.toml aion.toml
+cargo run -p aion-server
+```
 
 ## 4. Start the Python activity worker
 
@@ -73,56 +94,40 @@ The worker connects to `127.0.0.1:50051`, registers the `greet` activity on the 
 In terminal 3, from the repository root:
 
 ```sh
-START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data '{
-    "namespace": "default",
-    "workflow_type": "hello_world",
-    "input": {
-      "content_type": "application/json",
-      "bytes": [123,34,110,97,109,101,34,58,34,65,100,97,34,125]
-    }
-  }')
+START_RESPONSE=$(cargo run -q -p aion-cli -- \
+  --subject hello-world-user \
+  start hello_world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 
-The byte array is the UTF-8 JSON payload `{"name":"Ada"}`.
+The CLI prints compact JSON by default, for example:
 
-Capture the returned ids:
+```json
+{"workflow_id":"<workflow-id>","run_id":"<run-id>"}
+```
+
+Capture the returned ids with `jq` if it is installed:
 
 ```sh
-WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["workflow_id"]["uuid"])')
-RUN_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["run_id"]["uuid"])')
+WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | jq -r .workflow_id)
+RUN_ID=$(printf '%s' "$START_RESPONSE" | jq -r .run_id)
 printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 ```
+
+If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JSON output into shell variables manually.
 
 ## 6. Observe the run
 
 List workflows:
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8080/workflows/list \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data '{"namespace":"default"}'
+cargo run -q -p aion-cli -- --subject hello-world-user list --pretty
 ```
 
 Describe the run and include history:
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
-  -H 'content-type: application/json' \
-  -H 'x-aion-subject: hello-world-user' \
-  -H 'x-aion-namespaces: default' \
-  --data "{
-    \"namespace\": \"default\",
-    \"workflow_id\": { \"uuid\": \"$WORKFLOW_ID\" },
-    \"run_id\": { \"uuid\": \"$RUN_ID\" },
-    \"include_history\": true
-  }"
+cargo run -q -p aion-cli -- --subject hello-world-user describe "$WORKFLOW_ID" --pretty
 ```
 
 You should see events for workflow start, `greet` scheduling/completion, and workflow completion.
@@ -132,7 +137,7 @@ You should see events for workflow start, `greet` scheduling/completion, and wor
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-hello aion-hello-world.toml examples/hello-world/hello-world.aion examples/hello-world/build
+rm -rf .venv-aion-hello aion.toml examples/hello-world/hello-world.aion examples/hello-world/build
 ```
 
 ## Where to go next

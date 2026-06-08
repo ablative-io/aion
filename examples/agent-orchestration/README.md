@@ -12,7 +12,7 @@ Aion replaces that with durable typed workflows:
 
 - **Type safety:** the orchestration logic lives in `src/orchestrator.gleam` with typed `TaskInput`, `DevOutput`, `ReviewOutput`, and `WorkflowError` values.
 - **Durability:** activity completions are recorded in Aion history. On replay, a completed `develop` result is read from history and the workflow resumes at `review` instead of invoking `develop` again.
-- **Observability:** the dashboard and `describe` API show the ordered event history: develop attempt 1, review revise, develop attempt 2, review land, workflow complete.
+- **Observability:** the `describe` HTTP API shows the ordered event history: develop attempt 1, review revise, develop attempt 2, review land, workflow complete. The dashboard UI is under development; use the HTTP API or Aion CLI commands where available for workflow observation.
 
 ## Prerequisites
 
@@ -66,23 +66,17 @@ It writes:
 examples/agent-orchestration/orchestrator.aion
 ```
 
-The repo-root `dev-config.json` includes this package in `workflow_packages` alongside hello-world.
+The repo-root `dev-config.toml` is the local development config. If you want the server to preload this package at startup, add `examples/agent-orchestration/orchestrator.aion` to its `workflow_packages` array after building the package.
 
 ## 3. Start the Aion dev server
 
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- dev-config.json
+cargo run -p aion-server -- --config dev-config.toml
 ```
 
-Leave this process running. Open the dashboard:
-
-```sh
-open http://127.0.0.1:8080/
-```
-
-If you are not on macOS, open `http://127.0.0.1:8080/` in your browser.
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API observe commands below (or Aion CLI commands where available) to inspect workflows for now.
 
 ## 4. Start the Python activity worker
 
@@ -122,7 +116,6 @@ PY
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: agent-orchestration-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -159,7 +152,6 @@ Describe the workflow and include history:
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: agent-orchestration-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -170,7 +162,7 @@ curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   }"
 ```
 
-In the event history and dashboard, observe the sequence:
+In the event history returned by the HTTP API, observe the sequence:
 
 1. workflow started with the task brief,
 2. `develop` scheduled and completed for attempt 1,
@@ -186,5 +178,5 @@ This is the durability boundary that matters for AI agents. If the dev process t
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-agent target/aion-dev.db examples/agent-orchestration/orchestrator.aion examples/agent-orchestration/build
+rm -rf .venv-aion-agent examples/agent-orchestration/orchestrator.aion examples/agent-orchestration/build
 ```

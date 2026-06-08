@@ -13,7 +13,7 @@ You will:
 
 1. build a Gleam workflow that uses `aion_flow`,
 2. package the compiled BEAM modules into `order-saga.aion`,
-3. start the Aion dev server with the repo-root `dev-config.json`,
+3. start the Aion dev server with the repo-root `dev-config.toml`,
 4. start a Python activity worker for all six saga activities,
 5. run a happy-path workflow instance,
 6. run a compensation-path workflow instance, and
@@ -66,27 +66,19 @@ It writes:
 examples/order-saga/order-saga.aion
 ```
 
-The repo-root `dev-config.json` preloads this package alongside the hello-world package.
+The repo-root `dev-config.toml` is the local development config. If you want the server to preload this package at startup, add `examples/order-saga/order-saga.aion` to its `workflow_packages` array after building the package.
 
 ## 3. Start the Aion dev server
 
-The repo-root `dev-config.json` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses bearer token `dev-token`, and preloads `examples/order-saga/order-saga.aion` at startup.
+The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, and defaults to the `default` namespace.
 
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- dev-config.json
+cargo run -p aion-server -- --config dev-config.toml
 ```
 
-Leave this process running.
-
-Open the dashboard:
-
-```sh
-open http://127.0.0.1:8080/
-```
-
-If you are not on macOS, open `http://127.0.0.1:8080/` in your browser.
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API observe commands below (or Aion CLI commands where available) to inspect workflows for now.
 
 ## 4. Start the Python activity worker
 
@@ -121,7 +113,6 @@ PY
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: order-saga-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -186,7 +177,6 @@ PY
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: order-saga-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -248,7 +238,6 @@ List workflows:
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/workflows/list \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: order-saga-user' \
   -H 'x-aion-namespaces: default' \
   --data '{"namespace":"default"}'
@@ -259,7 +248,6 @@ Describe the latest workflow and include history:
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: order-saga-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -289,5 +277,5 @@ That event history is the durable saga guarantee: after a failure, recovery/repl
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-order-saga target/aion-dev.db examples/order-saga/order-saga.aion examples/order-saga/build
+rm -rf .venv-aion-order-saga examples/order-saga/order-saga.aion examples/order-saga/build
 ```

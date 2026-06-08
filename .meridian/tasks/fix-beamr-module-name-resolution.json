@@ -10,7 +10,7 @@
     {
       "id": "R2",
       "description": "Fix the module registration so that spawning a process at deployed_module:function/arity works. Either: (a) rewrite all internal module references in the BEAM bytecode when renaming, or (b) maintain a mapping from deployed names to original names and use the original name for function dispatch while keeping the deployed name for module registry lookups, or (c) another approach that correctly resolves the function.",
-      "acceptance": "Starting the aion-server with dev-config.json, then POSTing a start request for workflow_type hello_world returns a successful response with workflow_id and run_id instead of 'Backend engine backend failure'"
+      "acceptance": "Starting the aion-server with dev-config.toml, then POSTing a start request for workflow_type hello_world returns a successful response with workflow_id and run_id instead of 'Backend engine backend failure'"
     },
     {
       "id": "R3",
