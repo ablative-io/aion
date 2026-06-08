@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aion::ActivityDispatcher;
 use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
@@ -20,9 +20,10 @@ use dashmap::DashMap;
 
 use super::dispatch::{ActivityCompletion, ActivityCompletionOutcome, ActivityCompletionSink};
 use super::heartbeat::{HeartbeatTracker, InFlightActivity};
-use super::registry::{ConnectedWorkerRegistry, WorkerMessage};
+use super::registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerId, WorkerMessage};
 use crate::error::ServerError;
 use crate::shutdown::DrainState;
+use tracing::info_span;
 
 type SyncSender = std::sync::mpsc::SyncSender<Result<String, String>>;
 type SyncReceiver = std::sync::mpsc::Receiver<Result<String, String>>;
@@ -57,8 +58,16 @@ impl ActivityCompletionSink for PendingActivities {
     fn complete_activity(&self, completion: ActivityCompletion) -> Result<(), ServerError> {
         let result = match completion.outcome {
             ActivityCompletionOutcome::Succeeded(payload) => {
-                payload_to_string(&payload).map_err(|e| {
-                    ServerError::worker_dispatch("", "", format!("payload decode: {e}"))
+                payload_to_string(&payload).map_err(|reason| {
+                    tracing::error!(
+                        operation = "activity_complete",
+                        workflow_id = %completion.workflow_id,
+                        activity_id = %completion.activity_id,
+                        error_type = "ActivityResultDecode",
+                        %reason,
+                        "activity completion failed"
+                    );
+                    ServerError::worker_dispatch("", "", format!("payload decode: {reason}"))
                 })?
             }
             ActivityCompletionOutcome::Failed(error) => {
@@ -67,6 +76,15 @@ impl ActivityCompletionSink for PendingActivities {
                 } else {
                     "terminal"
                 };
+                tracing::error!(
+                    operation = "activity_complete",
+                    workflow_id = %completion.workflow_id,
+                    activity_id = %completion.activity_id,
+                    error_type = "ActivityFailed",
+                    error_kind = prefix,
+                    reason = %error.message,
+                    "activity completion failed"
+                );
                 Err(format!("{prefix}:{}", error.message))
             }
         };
@@ -151,80 +169,302 @@ impl WorkerActivityDispatcher {
     }
 }
 
-impl ActivityDispatcher for WorkerActivityDispatcher {
-    fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
-        let _ = config;
+impl WorkerActivityDispatcher {
+    fn ensure_accepting(
+        &self,
+        activity_type: &str,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        worker_id: Option<WorkerId>,
+    ) -> Result<(), String> {
         self.drain_state
-            .ensure_accepting(&self.namespace, name)
-            .map_err(|error| error.to_string())?;
+            .ensure_accepting(&self.namespace, activity_type)
+            .map_err(|error| {
+                let reason = error.to_string();
+                log_worker_error(
+                    "WorkerDispatch",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    worker_id,
+                    &reason,
+                );
+                reason
+            })
+    }
 
-        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let activity_id = ActivityId::from_sequence_position(seq);
-        let workflow_id = WorkflowId::new_v4();
-
-        let worker = self
-            .registry
-            .select_worker(&self.namespace, name)
-            .map_err(|e| format!("registry error: {e}"))?
+    fn select_worker(
+        &self,
+        activity_type: &str,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<WorkerHandle, String> {
+        self.registry
+            .select_worker(&self.namespace, activity_type)
+            .map_err(|error| {
+                let reason = format!("registry error: {error}");
+                log_worker_error(
+                    "WorkerRegistry",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    None,
+                    &reason,
+                );
+                reason
+            })?
             .ok_or_else(|| {
-                format!(
-                    "no connected worker for activity type '{name}' in namespace '{}'",
+                let reason = format!(
+                    "no connected worker for activity type '{activity_type}' in namespace '{}'",
                     self.namespace
-                )
-            })?;
-        self.drain_state
-            .ensure_accepting(&self.namespace, name)
-            .map_err(|error| error.to_string())?;
+                );
+                log_worker_error(
+                    "WorkerUnavailable",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    None,
+                    &reason,
+                );
+                reason
+            })
+    }
 
-        let task = ProtoActivityTask {
-            workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
-            activity_id: Some(ProtoActivityId::from(activity_id.clone())),
-            activity_type: name.to_owned(),
-            input: Some(ProtoPayload {
-                content_type: String::from("application/json"),
-                bytes: input.as_bytes().to_vec(),
-            }),
-        };
-
-        let rx = self.pending.insert(activity_id.clone());
+    fn track_worker_task(
+        &self,
+        worker_id: WorkerId,
+        activity_type: &str,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<(), String> {
         self.heartbeat_tracker
             .track_task(
-                worker.id(),
+                worker_id,
                 InFlightActivity {
                     workflow_id: workflow_id.clone(),
                     activity_id: activity_id.clone(),
                 },
-                std::time::Instant::now(),
+                Instant::now(),
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                let reason = error.to_string();
+                log_worker_error(
+                    "WorkerHeartbeatTracker",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    Some(worker_id),
+                    &reason,
+                );
+                reason
+            })
+    }
 
-        if let Err(error) = worker.sender().try_send(WorkerMessage::ActivityTask(task)) {
-            let _removed = self.pending.pending.remove(&activity_id);
-            let _ = self
-                .heartbeat_tracker
-                .complete_task(worker.id(), &workflow_id, &activity_id);
-            self.drain_state.notify_activity_drained();
-            return Err(format!("worker task channel full or closed: {error}"));
-        }
+    fn cleanup_activity(
+        &self,
+        worker_id: WorkerId,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) {
+        self.pending.pending.remove(activity_id);
+        let _ = self
+            .heartbeat_tracker
+            .complete_task(worker_id, workflow_id, activity_id);
+        self.drain_state.notify_activity_drained();
+    }
 
-        match rx.recv_timeout(self.timeout) {
-            Ok(result) => result,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                self.pending.pending.remove(&activity_id);
-                let _ =
-                    self.heartbeat_tracker
-                        .complete_task(worker.id(), &workflow_id, &activity_id);
-                self.drain_state.notify_activity_drained();
-                Err(format!(
-                    "activity '{name}' timed out after {}s",
-                    self.timeout.as_secs()
-                ))
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err("activity response channel dropped".to_owned())
+    fn send_activity_task(
+        &self,
+        worker: &WorkerHandle,
+        task: ProtoActivityTask,
+        activity_type: &str,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<(), String> {
+        match worker.sender().try_send(WorkerMessage::ActivityTask(task)) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let worker_id = worker.id();
+                let reason = format!("worker task channel full or closed: {error}");
+                self.cleanup_activity(worker_id, workflow_id, activity_id);
+                log_worker_error(
+                    "WorkerChannelClosed",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    Some(worker_id),
+                    &reason,
+                );
+                Err(reason)
             }
         }
     }
+
+    fn await_activity_result(
+        &self,
+        context: &ActivityDispatchContext<'_>,
+        rx: &SyncReceiver,
+    ) -> Result<String, String> {
+        match rx.recv_timeout(self.timeout) {
+            Ok(result) => {
+                self.pending.pending.remove(context.activity_id);
+                log_activity_completion(context, result.is_ok());
+                result.inspect_err(|reason| {
+                    log_worker_error(
+                        "ActivityFailed",
+                        &self.namespace,
+                        context.activity_type,
+                        context.workflow_id,
+                        context.activity_id,
+                        Some(context.worker_id),
+                        reason,
+                    );
+                })
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.cleanup_activity(context.worker_id, context.workflow_id, context.activity_id);
+                let reason = format!(
+                    "activity '{}' timed out after {}s",
+                    context.activity_type,
+                    self.timeout.as_secs()
+                );
+                log_worker_error(
+                    "ActivityTimeout",
+                    &self.namespace,
+                    context.activity_type,
+                    context.workflow_id,
+                    context.activity_id,
+                    Some(context.worker_id),
+                    &reason,
+                );
+                Err(reason)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.cleanup_activity(context.worker_id, context.workflow_id, context.activity_id);
+                let reason = "activity response channel dropped".to_owned();
+                log_worker_error(
+                    "WorkerChannelClosed",
+                    &self.namespace,
+                    context.activity_type,
+                    context.workflow_id,
+                    context.activity_id,
+                    Some(context.worker_id),
+                    &reason,
+                );
+                Err(reason)
+            }
+        }
+    }
+}
+
+impl ActivityDispatcher for WorkerActivityDispatcher {
+    fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
+        let _ = config;
+        let started_at = Instant::now();
+        let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let activity_id = ActivityId::from_sequence_position(sequence);
+        let workflow_id = WorkflowId::new_v4();
+        self.ensure_accepting(name, &workflow_id, &activity_id, None)?;
+        let worker = self.select_worker(name, &workflow_id, &activity_id)?;
+        let worker_id = worker.id();
+        let span = info_span!(
+            "activity_dispatch",
+            operation = "activity_dispatch",
+            namespace = %self.namespace,
+            workflow_id = %workflow_id,
+            activity_id = %activity_id,
+            activity_type = %name,
+            worker_id = ?worker_id,
+        );
+        let _span_guard = span.enter();
+        self.ensure_accepting(name, &workflow_id, &activity_id, Some(worker_id))?;
+
+        let task = activity_task(name, input, &workflow_id, &activity_id);
+        let rx = self.pending.insert(activity_id.clone());
+        self.track_worker_task(worker_id, name, &workflow_id, &activity_id)?;
+        self.send_activity_task(&worker, task, name, &workflow_id, &activity_id)?;
+        let context = ActivityDispatchContext {
+            namespace: &self.namespace,
+            activity_type: name,
+            worker_id,
+            workflow_id: &workflow_id,
+            activity_id: &activity_id,
+            started_at,
+        };
+        self.await_activity_result(&context, &rx)
+    }
+}
+
+struct ActivityDispatchContext<'a> {
+    namespace: &'a str,
+    activity_type: &'a str,
+    worker_id: WorkerId,
+    workflow_id: &'a WorkflowId,
+    activity_id: &'a ActivityId,
+    started_at: Instant,
+}
+
+fn activity_task(
+    activity_type: &str,
+    input: &str,
+    workflow_id: &WorkflowId,
+    activity_id: &ActivityId,
+) -> ProtoActivityTask {
+    ProtoActivityTask {
+        workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
+        activity_id: Some(ProtoActivityId::from(activity_id.clone())),
+        activity_type: activity_type.to_owned(),
+        input: Some(ProtoPayload {
+            content_type: String::from("application/json"),
+            bytes: input.as_bytes().to_vec(),
+        }),
+    }
+}
+
+fn log_activity_completion(context: &ActivityDispatchContext<'_>, succeeded: bool) {
+    let duration_ms = duration_ms(context.started_at.elapsed());
+    tracing::info!(
+        operation = "activity_complete",
+        namespace = context.namespace,
+        workflow_id = %context.workflow_id,
+        activity_id = %context.activity_id,
+        activity_type = context.activity_type,
+        worker_id = ?context.worker_id,
+        duration_ms,
+        outcome = if succeeded { "succeeded" } else { "failed" },
+        "activity completed"
+    );
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn log_worker_error(
+    error_type: &'static str,
+    namespace: &str,
+    activity_type: &str,
+    workflow_id: &WorkflowId,
+    activity_id: &ActivityId,
+    worker_id: Option<super::registry::WorkerId>,
+    reason: &str,
+) {
+    tracing::error!(
+        operation = "activity_dispatch",
+        namespace,
+        workflow_id = %workflow_id,
+        activity_id = %activity_id,
+        activity_type,
+        worker_id = ?worker_id,
+        error_type,
+        reason,
+        "worker interaction failed"
+    );
 }
 
 #[cfg(test)]
