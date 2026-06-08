@@ -32,6 +32,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
+    observability,
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -44,16 +45,26 @@ const JSON_CONTENT_TYPE: &str = "application/json";
 /// Returns [`ServerError::Config`] when dashboard assets are misconfigured.
 pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
     let dashboard = assets::dashboard_router(&state.runtime_config().dashboard)?;
-    Ok(observability_router()
-        .merge(workflow_router(state))
-        .merge(dashboard))
-}
-
-fn observability_router() -> Router {
-    Router::new()
-        .route("/health/live", get(live))
-        .route("/health/ready", get(ready))
-        .route("/metrics", get(metrics))
+    let metrics = state.metrics().cloned();
+    let health = state.health().cloned();
+    let mut router = workflow_router(state);
+    if let Some(metrics) = metrics {
+        router = router.merge(Router::new().route(
+            "/metrics",
+            get(observability::metrics::metrics_handler).with_state(metrics),
+        ));
+    }
+    if let Some(health) = health {
+        router = router.merge(
+            Router::new()
+                .route("/health/live", get(observability::health::live))
+                .route(
+                    "/health/ready",
+                    get(observability::health::ready).with_state(health),
+                ),
+        );
+    }
+    Ok(router.merge(dashboard))
 }
 
 /// Build the public workflow-management HTTP router.
@@ -77,18 +88,6 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/schedules/{id}/pause", post(pause_schedule))
         .route("/schedules/{id}/resume", post(resume_schedule))
         .with_state(state)
-}
-
-async fn live() -> StatusCode {
-    StatusCode::OK
-}
-
-async fn ready() -> StatusCode {
-    StatusCode::OK
-}
-
-async fn metrics() -> &'static str {
-    "# aion metrics endpoint\n"
 }
 
 #[derive(Deserialize)]
@@ -1351,5 +1350,57 @@ mod tests {
 
     fn recorded_at(offset_seconds: i64) -> chrono::DateTime<Utc> {
         chrono::DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn observability_routes_are_public_and_expose_expected_payloads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let router = http_router(
+            ServerState::build_with_store(InMemoryStore::default(), runtime_config()).await?,
+        )?;
+
+        let metrics_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(metrics_response.status(), StatusCode::OK);
+        assert_eq!(
+            metrics_response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain; version=0.0.4; charset=utf-8")
+        );
+        let metrics_body = read_text(metrics_response).await?;
+        assert!(metrics_body.contains("# HELP aion_workflows_started_total"));
+        assert!(metrics_body.contains("# TYPE aion_workflows_started_total counter"));
+        assert!(metrics_body.contains("# HELP aion_activity_duration_seconds"));
+        assert!(metrics_body.contains("# TYPE aion_activity_duration_seconds histogram"));
+        assert!(metrics_body.contains("aion_activity_duration_seconds_bucket"));
+        assert!(metrics_body.contains("aion_store_operation_duration_seconds_bucket"));
+
+        let live_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health/live")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(live_response.status(), StatusCode::OK);
+
+        let ready_response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health/ready")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(ready_response.status(), StatusCode::OK);
+        Ok(())
     }
 }
