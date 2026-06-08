@@ -33,26 +33,22 @@ This writes `examples/hello-world/hello-world.aion`.
 
 ## 3. Start the Aion dev server
 
-The server CLI accepts TOML config files via `--config`. Create a local config that listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, and preloads the hello-world package:
+The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, uses the in-memory store, defaults to the `default` namespace, and preloads the hello-world package you built above.
 
 ```sh
-cat > aion-hello-world.toml <<'EOF'
-workflow_packages = ["examples/hello-world/hello-world.aion"]
-
-[server]
-listen_address = "127.0.0.1:8080"
-grpc_address = "127.0.0.1:50051"
-
-[store]
-backend = "memory"
-
-[namespaces]
-default = "default"
-EOF
-cargo run -p aion-server -- --config aion-hello-world.toml
+cargo run -p aion-server -- --config dev-config.toml
 ```
 
 Leave this process running in terminal 1. The dashboard/static UI is served at `http://127.0.0.1:8080/`.
+
+### Config auto-discovery
+
+When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults. To use auto-discovery from the repository root, copy the dev config and start the server with no flags:
+
+```sh
+cp dev-config.toml aion.toml
+cargo run -p aion-server
+```
 
 ## 4. Start the Python activity worker
 
@@ -132,7 +128,7 @@ You should see events for workflow start, `greet` scheduling/completion, and wor
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-hello aion-hello-world.toml examples/hello-world/hello-world.aion examples/hello-world/build
+rm -rf .venv-aion-hello aion.toml examples/hello-world/hello-world.aion examples/hello-world/build
 ```
 
 ## Where to go next

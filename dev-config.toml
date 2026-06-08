@@ -1,0 +1,18 @@
+# Local development server configuration.
+#
+# This file is intentionally minimal and uses only fields from
+# `aion-server`'s ServerConfig. Build the example package before starting
+# the server so the path below exists:
+#   cargo run --manifest-path examples/hello-world/packager/Cargo.toml
+
+workflow_packages = ["examples/hello-world/hello-world.aion"]
+
+[server]
+listen_address = "127.0.0.1:8080"
+grpc_address = "127.0.0.1:50051"
+
+[store]
+backend = "memory"
+
+[namespaces]
+default = "default"

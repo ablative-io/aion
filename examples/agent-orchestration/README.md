@@ -66,14 +66,14 @@ It writes:
 examples/agent-orchestration/orchestrator.aion
 ```
 
-The repo-root `dev-config.json` includes this package in `workflow_packages` alongside hello-world.
+The repo-root `dev-config.toml` is the local development config. If you want the server to preload this package at startup, add `examples/agent-orchestration/orchestrator.aion` to its `workflow_packages` array after building the package.
 
 ## 3. Start the Aion dev server
 
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- dev-config.json
+cargo run -p aion-server -- --config dev-config.toml
 ```
 
 Leave this process running. Open the dashboard:
@@ -122,7 +122,6 @@ PY
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: agent-orchestration-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -159,7 +158,6 @@ Describe the workflow and include history:
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: agent-orchestration-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -186,5 +184,5 @@ This is the durability boundary that matters for AI agents. If the dev process t
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-agent target/aion-dev.db examples/agent-orchestration/orchestrator.aion examples/agent-orchestration/build
+rm -rf .venv-aion-agent examples/agent-orchestration/orchestrator.aion examples/agent-orchestration/build
 ```

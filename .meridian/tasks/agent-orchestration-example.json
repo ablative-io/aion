@@ -23,5 +23,5 @@
       "acceptance": "README clearly positions Aion as a durable AI agent orchestrator and the demo is runnable"
     }
   ],
-  "context": "This is the killer market demo — it shows Aion solving the exact problem Meridian faces: orchestrating AI agent workflows with durability. The existing onatopp-dev-norn workflow in Meridian is a Rhai script that dispatches dev and review steps. This Aion version adds: type safety (Gleam), crash recovery (if the dev step takes 30 minutes and crashes, replay returns the cached result), and observability (dashboard shows the iteration loop in the event history). Follow examples/hello-world/ structure. Update dev-config.json workflow_packages to include this example."
+  "context": "This is the killer market demo — it shows Aion solving the exact problem Meridian faces: orchestrating AI agent workflows with durability. The existing onatopp-dev-norn workflow in Meridian is a Rhai script that dispatches dev and review steps. This Aion version adds: type safety (Gleam), crash recovery (if the dev step takes 30 minutes and crashes, replay returns the cached result), and observability (dashboard shows the iteration loop in the event history). Follow examples/hello-world/ structure. Update dev-config.toml workflow_packages to include this example when preloading it."
 }

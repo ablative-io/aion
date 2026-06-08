@@ -4,7 +4,7 @@ This example takes you from a fresh checkout to a running Aion workflow. You wil
 
 1. build a Gleam workflow that uses `aion_flow`,
 2. package the compiled BEAM modules into `hello-world.aion`,
-3. start the Aion dev server with the repo-root `dev-config.json`,
+3. start the Aion dev server with the repo-root `dev-config.toml`,
 4. start a Python activity worker for the `greet` activity,
 5. start a workflow instance with `curl`, and
 6. inspect the run from the dashboard and HTTP API.
@@ -52,14 +52,14 @@ examples/hello-world/hello-world.aion
 
 ## 3. Start the Aion dev server
 
-The repo-root `dev-config.json` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses bearer token `dev-token`, and preloads `examples/hello-world/hello-world.aion` at startup.
+The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, defaults to the `default` namespace, and preloads `examples/hello-world/hello-world.aion` at startup.
 
-Requests below use the same header convention as Aion clients: `Authorization: Bearer dev-token` authenticates to this dev server, `x-aion-subject: hello-world-user` identifies the caller, and `x-aion-namespaces: default` grants access to the same `default` namespace used in each request body.
+Requests below use the same header convention as Aion clients: `x-aion-subject: hello-world-user` identifies the caller, and `x-aion-namespaces: default` grants access to the same `default` namespace used in each request body. The dev config leaves auth disabled, so no bearer token is needed.
 
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- dev-config.json
+cargo run -p aion-server -- --config dev-config.toml
 ```
 
 Leave this process running.
@@ -103,12 +103,10 @@ In terminal 3:
 
 ```sh
 # content-type says the request body is JSON.
-# authorization authenticates with the dev server token.
 # x-aion-subject names the non-empty caller identity.
 # x-aion-namespaces must include the request body's namespace: default.
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: hello-world-user' \
   -H 'x-aion-namespaces: default' \
   --data '{
@@ -150,12 +148,10 @@ List workflows:
 
 ```sh
 # content-type says the request body is JSON.
-# authorization authenticates with the dev server token.
 # x-aion-subject names the non-empty caller identity.
 # x-aion-namespaces must include the request body's namespace: default.
 curl -sS -X POST http://127.0.0.1:8080/workflows/list \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: hello-world-user' \
   -H 'x-aion-namespaces: default' \
   --data '{"namespace":"default"}'
@@ -165,12 +161,10 @@ Describe the workflow and include history:
 
 ```sh
 # content-type says the request body is JSON.
-# authorization authenticates with the dev server token.
 # x-aion-subject names the non-empty caller identity.
 # x-aion-namespaces must include the request body's namespace: default.
 curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer dev-token' \
   -H 'x-aion-subject: hello-world-user' \
   -H 'x-aion-namespaces: default' \
   --data "{
@@ -188,5 +182,5 @@ You should see workflow events for start, `greet` scheduling/completion, and wor
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-hello target/aion-dev.db examples/hello-world/hello-world.aion examples/hello-world/build
+rm -rf .venv-aion-hello examples/hello-world/hello-world.aion examples/hello-world/build
 ```
