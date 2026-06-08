@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, cast
 
 import grpc
 from google.protobuf.message import Message
@@ -99,6 +99,13 @@ class ActivityCancelled:
 WorkerSessionEvent: TypeAlias = TaskReceived | ActivityCancelled
 
 
+class ConnectableStream(Protocol):
+    """Subset of gRPC stream call methods used to force connection readiness."""
+
+    async def wait_for_connection(self) -> None:
+        """Wait until the underlying RPC is connected or fails."""
+
+
 class WorkerSession(Protocol):
     """Fake-friendly transport abstraction hiding generated gRPC stubs."""
 
@@ -159,6 +166,7 @@ class GrpcWorkerSession:
         validate_activity_handlers(requested, available_handlers)
         self._activity_types = requested
         await self._send_register(requested)
+        await self._wait_for_connection()
 
     def receive_tasks(self) -> AsyncIterator[WorkerSessionEvent]:
         stream = self._stream
@@ -226,6 +234,15 @@ class GrpcWorkerSession:
             activity_types=activity_types,
         )
         await self._send_to_server(worker_pb2.WorkerToServer(register=register))
+
+    async def _wait_for_connection(self) -> None:
+        stream = self._stream
+        if stream is None:
+            raise TransportError("worker receive stream has not been opened")
+        try:
+            await cast(ConnectableStream, stream).wait_for_connection()
+        except Exception as exc:
+            raise TransportError(f"worker stream connection failed: {exc}") from exc
 
     async def _send_to_server(self, message: worker_pb2.WorkerToServer) -> None:
         outbound = self._outbound

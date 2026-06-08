@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Protocol, TypeAlias, runtime_checkable
 
 from .session import ActivityError, ActivityId, Payload, WorkerConfig, WorkerSession, WorkflowId
 
@@ -16,6 +17,14 @@ ConnectFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
 logger = logging.getLogger(__name__)
 
 SleepFactory: TypeAlias = Callable[[float], Awaitable[None]]
+
+
+@runtime_checkable
+class ClosableSession(Protocol):
+    """Optional close capability implemented by concrete worker sessions."""
+
+    def close(self) -> object:
+        """Close session resources; may return an awaitable."""
 
 
 class ReconnectError(Exception):
@@ -120,6 +129,7 @@ async def reconnect_with_backoff(
 
     last_error: BaseException | None = None
     for attempt in range(1, backoff.max_attempts + 1):
+        session: WorkerSession | None = None
         try:
             session = await connect()
             await session.handshake(config)
@@ -127,6 +137,7 @@ async def reconnect_with_backoff(
             return session
         except Exception as exc:
             logger.error("Connection failed to %s: %s", config.endpoint, exc)
+            await close_failed_session(session)
             last_error = exc
             if attempt == backoff.max_attempts:
                 break
@@ -141,6 +152,19 @@ async def reconnect_with_backoff(
     raise ReconnectError(
         f"worker reconnect attempts exhausted for {config.endpoint}: {last_error}"
     ) from last_error
+
+
+async def close_failed_session(session: WorkerSession | None) -> None:
+    """Close a session that failed before entering the serving loop."""
+
+    if session is None or not isinstance(session, ClosableSession):
+        return
+    try:
+        result = session.close()
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        logger.warning("failed to close unsuccessful worker session: %s", exc)
 
 
 async def reconnect_register_and_replay(

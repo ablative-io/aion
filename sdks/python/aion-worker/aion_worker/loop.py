@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -162,7 +163,9 @@ async def _close_session(session: WorkerSession) -> None:
     if close is None:
         return
     try:
-        await close()
+        result = close()
+        if inspect.isawaitable(result):
+            await result
     except Exception as exc:
         logger.warning("failed to close dropped worker session: %s", exc)
 
