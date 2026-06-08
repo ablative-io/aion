@@ -12,6 +12,11 @@ use crate::{
     config::{RuntimeConfig, ServerConfig, StoreBackend, StoreConfig},
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
+    observability::{
+        Metrics,
+        health::HealthState,
+        metrics::{InstrumentedEventStore, MetricsError},
+    },
     shutdown::DrainState,
     worker::{
         ConnectedWorkerRegistry, HeartbeatTracker, PendingActivities, WorkerActivityDispatcher,
@@ -31,6 +36,8 @@ struct ServerStateInner {
     pending_activities: PendingActivities,
     heartbeat_tracker: HeartbeatTracker,
     drain_state: DrainState,
+    metrics: Option<Metrics>,
+    health: Option<HealthState>,
     #[cfg(feature = "auth")]
     jwks_cache: Option<JwksCache>,
 }
@@ -64,6 +71,13 @@ impl ServerState {
         store: Arc<dyn EventStore>,
         runtime: RuntimeConfig,
     ) -> Result<Self, ServerError> {
+        let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
+        let instrumented_store = Arc::new(InstrumentedEventStore::new(
+            store.clone(),
+            metrics.clone(),
+            runtime.default_namespace.clone(),
+        ));
+        let exported_metrics = runtime.metrics.enabled.then_some(metrics.clone());
         let worker_registry = ConnectedWorkerRegistry::default();
         let pending_activities = PendingActivities::default();
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
@@ -79,7 +93,7 @@ impl ServerState {
         );
 
         let engine = EngineBuilder::new()
-            .store_arc(store)
+            .store_arc(instrumented_store.clone())
             .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
             .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
@@ -100,6 +114,8 @@ impl ServerState {
                 pending_activities,
                 heartbeat_tracker,
                 drain_state,
+                metrics: exported_metrics,
+                health: Some(HealthState::new(instrumented_store, true)),
                 #[cfg(feature = "auth")]
                 jwks_cache,
             }),
@@ -117,6 +133,8 @@ impl ServerState {
                 pending_activities: PendingActivities::default(),
                 heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
                 drain_state: DrainState::default(),
+                metrics: None,
+                health: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -138,6 +156,8 @@ impl ServerState {
                 pending_activities: PendingActivities::default(),
                 heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
                 drain_state: DrainState::default(),
+                metrics: None,
+                health: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -180,6 +200,18 @@ impl ServerState {
         &self.inner.drain_state
     }
 
+    /// Borrow the prometheus metrics handle when this state was built with a store.
+    #[must_use]
+    pub fn metrics(&self) -> Option<&Metrics> {
+        self.inner.metrics.as_ref()
+    }
+
+    /// Borrow health probe state when this state was built with a store.
+    #[must_use]
+    pub fn health(&self) -> Option<&HealthState> {
+        self.inner.health.as_ref()
+    }
+
     /// Borrow the shared JWKS cache when authentication is enabled.
     #[cfg(feature = "auth")]
     #[must_use]
@@ -215,6 +247,12 @@ async fn build_jwks_cache(runtime: &RuntimeConfig) -> Result<Option<JwksCache>, 
             message: format!("auth jwks initial fetch failed: {error}"),
         })?;
     Ok(Some(cache))
+}
+
+fn metrics_config_error(error: &MetricsError) -> ServerError {
+    ServerError::Config {
+        message: error.to_string(),
+    }
 }
 
 async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, ServerError> {

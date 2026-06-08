@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::error::ServerError;
 use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
+use crate::observability::Metrics;
 
 /// Server-side handle used to push activity tasks to a connected worker stream.
 pub type WorkerTaskSender = mpsc::Sender<WorkerMessage>;
@@ -85,9 +86,19 @@ impl Default for RegistryState {
 #[derive(Clone, Debug, Default)]
 pub struct ConnectedWorkerRegistry {
     inner: Arc<Mutex<RegistryState>>,
+    metrics: Option<Metrics>,
 }
 
 impl ConnectedWorkerRegistry {
+    /// Build a registry that records connected-worker gauge updates.
+    #[must_use]
+    pub fn with_metrics(metrics: Metrics) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RegistryState::default())),
+            metrics: Some(metrics),
+        }
+    }
+
     /// Authorize a worker registration and insert it into the connected-worker registry.
     ///
     /// # Errors
@@ -140,6 +151,11 @@ impl ConnectedWorkerRegistry {
                 .insert(worker_id, handle.clone());
         }
         state.workers.insert(worker_id, handle);
+        drop(state);
+
+        if let Some(metrics) = &self.metrics {
+            metrics.worker_connected(&namespace);
+        }
 
         Ok(WorkerRegistration {
             registry: self.clone(),
@@ -227,14 +243,19 @@ impl ConnectedWorkerRegistry {
     /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
     pub fn deregister(&self, worker_id: WorkerId) -> Result<(), ServerError> {
         let mut state = self.state()?;
-        Self::remove_worker(&mut state, worker_id);
+        let removed_namespace = Self::remove_worker(&mut state, worker_id);
+        drop(state);
+
+        if let (Some(namespace), Some(metrics)) = (removed_namespace, &self.metrics) {
+            metrics.worker_disconnected(&namespace);
+        }
+
         Ok(())
     }
 
-    fn remove_worker(state: &mut RegistryState, worker_id: WorkerId) {
-        let Some(handle) = state.workers.remove(&worker_id) else {
-            return;
-        };
+    fn remove_worker(state: &mut RegistryState, worker_id: WorkerId) -> Option<String> {
+        let handle = state.workers.remove(&worker_id)?;
+        let namespace = handle.namespace.clone();
 
         for activity_type in handle.activity_types {
             let key = (handle.namespace.clone(), activity_type);
@@ -245,6 +266,8 @@ impl ConnectedWorkerRegistry {
                 }
             }
         }
+
+        Some(namespace)
     }
 
     fn state(&self) -> Result<MutexGuard<'_, RegistryState>, ServerError> {
@@ -309,7 +332,11 @@ impl Drop for WorkerRegistration {
             return;
         };
         if let Ok(mut state) = self.registry.inner.lock() {
-            ConnectedWorkerRegistry::remove_worker(&mut state, parts.worker_id);
+            let removed_namespace =
+                ConnectedWorkerRegistry::remove_worker(&mut state, parts.worker_id);
+            if let (Some(namespace), Some(metrics)) = (removed_namespace, &self.registry.metrics) {
+                metrics.worker_disconnected(&namespace);
+            }
         }
     }
 }
