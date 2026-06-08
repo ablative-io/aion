@@ -79,6 +79,9 @@ pub struct WireError {
     pub code: WireErrorCode,
     /// Human-readable informational message.
     pub message: String,
+    /// Concrete typed error variant, when the server can expose one safely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
 }
 
 impl WireError {
@@ -88,7 +91,32 @@ impl WireError {
         Self {
             code,
             message: message.into(),
+            error_type: None,
         }
+    }
+
+    /// Attach a concrete typed error variant name to this wire error.
+    #[must_use]
+    pub fn with_error_type(mut self, error_type: impl Into<String>) -> Self {
+        self.error_type = Some(error_type.into());
+        self
+    }
+
+    /// Attach an optional concrete typed error variant name to this wire error.
+    #[must_use]
+    pub fn with_optional_error_type(mut self, error_type: Option<String>) -> Self {
+        self.error_type = error_type;
+        self
+    }
+
+    /// Creates a wire error with a concrete typed error variant name.
+    #[must_use]
+    pub fn new_with_type(
+        code: WireErrorCode,
+        error_type: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new(code, message).with_error_type(error_type)
     }
 
     /// Not-found failure.
@@ -144,6 +172,27 @@ impl WireError {
     pub fn backend(message: impl Into<String>) -> Self {
         Self::new(WireErrorCode::Backend, message)
     }
+
+    /// Not-found failure with a concrete typed error variant name.
+    #[must_use]
+    pub fn not_found_with_type(error_type: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new_with_type(WireErrorCode::NotFound, error_type, message)
+    }
+
+    /// Not-running failure with a concrete typed error variant name.
+    #[must_use]
+    pub fn not_running_with_type(
+        error_type: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new_with_type(WireErrorCode::NotRunning, error_type, message)
+    }
+
+    /// Backend/internal failure with a concrete typed error variant name.
+    #[must_use]
+    pub fn backend_with_type(error_type: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new_with_type(WireErrorCode::Backend, error_type, message)
+    }
 }
 
 /// Proto representation of [`WireErrorCode`]. Zero is invalid on decode.
@@ -181,6 +230,9 @@ pub struct ProtoWireError {
     /// Informational message.
     #[prost(string, tag = "2")]
     pub message: String,
+    /// Concrete typed error variant, when known.
+    #[prost(string, optional, tag = "3")]
+    pub error_type: Option<String>,
 }
 
 impl From<WireErrorCode> for ProtoWireErrorCode {
@@ -226,6 +278,7 @@ impl From<WireError> for ProtoWireError {
         Self {
             code,
             message: value.message,
+            error_type: value.error_type,
         }
     }
 }
@@ -236,7 +289,8 @@ impl TryFrom<ProtoWireError> for WireError {
     fn try_from(value: ProtoWireError) -> Result<Self, Self::Error> {
         let code = ProtoWireErrorCode::try_from(value.code)
             .map_err(|_| WireError::backend("wire error code is unknown"))?;
-        Ok(Self::new(WireErrorCode::try_from(code)?, value.message))
+        Ok(Self::new(WireErrorCode::try_from(code)?, value.message)
+            .with_optional_error_type(value.error_type))
     }
 }
 
@@ -266,7 +320,11 @@ mod tests {
         ];
 
         for code in codes {
-            let error = WireError::new(code, format!("message for {}", code.as_str()));
+            let error = WireError::new_with_type(
+                code,
+                format!("{}Variant", code.as_str()),
+                format!("message for {}", code.as_str()),
+            );
             let proto = ProtoWireError::from(error.clone());
             let decoded = WireError::try_from(proto)?;
             assert_eq!(decoded, error);
@@ -280,6 +338,7 @@ mod tests {
         let proto = ProtoWireError {
             code: 0,
             message: String::from("missing"),
+            error_type: None,
         };
 
         let result = WireError::try_from(proto);

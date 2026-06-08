@@ -3,7 +3,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{Event, EventStore, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus};
 use chrono::{DateTime, Utc};
-use libsql::params;
 use serde_json::json;
 
 use crate::LibSqlStore;
@@ -37,17 +36,47 @@ async fn malformed_event_blob_maps_to_serialization_error() -> Result<(), StoreE
     let store = open_test_store("malformed-blob").await?;
     let workflow_id = workflow_id(1);
 
-    store
-        .connection()
-        .execute(
-            "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_queryable_event) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![workflow_id.to_string(), 1_u64, b"not json".to_vec(), recorded_at(1).to_rfc3339(), "WorkflowStarted", 1_i64],
-        )
-        .await
-        .map_err(|error| crate::error::libsql_error(&error))?;
+    insert_raw_event(&store, &workflow_id, b"not json".to_vec()).await?;
 
     assert!(matches!(
         store.read_history(&workflow_id).await,
+        Err(StoreError::Serialization(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn validate_event_compatibility_rejects_stale_workflow_started_blob() -> Result<(), StoreError>
+{
+    let store = open_test_store("stale-workflow-started").await?;
+    let workflow_id = workflow_id(1);
+    let stale_event = json!({
+        "type": "WorkflowStarted",
+        "data": {
+            "envelope": {
+                "seq": 1,
+                "recorded_at": recorded_at(1),
+                "workflow_id": workflow_id,
+            },
+            "workflow_type": "checkout",
+            "input": {
+                "content_type": "Json",
+                "bytes": [123, 125]
+            }
+        }
+    });
+
+    insert_raw_event(
+        &store,
+        &workflow_id,
+        serde_json::to_vec(&stale_event).map_err(|error| {
+            StoreError::Serialization(format!("stale fixture could not be encoded: {error}"))
+        })?,
+    )
+    .await?;
+
+    assert!(matches!(
+        store.validate_event_compatibility().await,
         Err(StoreError::Serialization(_))
     ));
     Ok(())
@@ -336,6 +365,22 @@ async fn seeded_store(name: &str) -> Result<(LibSqlStore, SeedIds), StoreError> 
 
 async fn open_test_store(name: &str) -> Result<LibSqlStore, StoreError> {
     LibSqlStore::open(unique_temp_path(name)).await
+}
+
+async fn insert_raw_event(
+    store: &LibSqlStore,
+    workflow_id: &WorkflowId,
+    event: Vec<u8>,
+) -> Result<(), StoreError> {
+    store
+        .connection()
+        .execute(
+            "INSERT INTO events (workflow_id, seq, event, recorded_at, event_kind, is_queryable_event) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            libsql::params![workflow_id.to_string(), 1_u64, event, recorded_at(1).to_rfc3339(), "WorkflowStarted", 1_i64],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| crate::error::libsql_error(&error))
 }
 
 fn one_summary(
