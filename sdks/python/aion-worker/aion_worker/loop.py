@@ -9,7 +9,13 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
-from .reconnect import PendingCompletedReport, PendingFailedReport, UnackedResultTracker
+from .reconnect import (
+    PendingCompletedReport,
+    PendingFailedReport,
+    ReconnectBackoff,
+    ReconnectError,
+    UnackedResultTracker,
+)
 from .session import (
     ActivityCancelled,
     ActivityError,
@@ -25,6 +31,7 @@ from .session import (
 
 logger = logging.getLogger(__name__)
 SessionFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
+SleepFactory: TypeAlias = Callable[[float], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,7 @@ async def connect_register_replay_and_serve(
     connect: SessionFactory,
     dispatcher: ActivityDispatcher,
     tracker: UnackedResultTracker | None = None,
+    sleep: SleepFactory = asyncio.sleep,
 ) -> None:
     """Connect, register, replay unacked reports, then enter the serve loop."""
 
@@ -112,6 +120,9 @@ async def connect_register_replay_and_serve(
 
     unacked = tracker if tracker is not None else UnackedResultTracker()
     activity_types = list(dispatcher.activity_types())
+    backoff = ReconnectBackoff.from_config(config)
+    dropped_attempt = 0
+    last_drop: BaseException | None = None
     while True:
         session = await reconnect_register_and_replay(
             connect=connect,
@@ -119,16 +130,41 @@ async def connect_register_replay_and_serve(
             activity_types=activity_types,
             available_handlers=activity_types,
             tracker=unacked,
+            sleep=sleep,
         )
         try:
-            logger.info("Connected successfully")
+            logger.info("Connected")
             logger.info("Registered activities: %s", ", ".join(activity_types))
             logger.info("Waiting for tasks")
             await serve(config, session, dispatcher, unacked)
             return
-        except Exception:
+        except Exception as exc:
             logger.exception("worker session dropped; reconnecting before receiving more tasks")
-            raise
+            await _close_session(session)
+            dropped_attempt += 1
+            last_drop = exc
+            if dropped_attempt >= backoff.max_attempts:
+                raise ReconnectError(
+                    f"worker reconnect attempts exhausted for {config.endpoint}: {last_drop}"
+                ) from last_drop
+            delay = backoff.delay_for_attempt(dropped_attempt)
+            logger.warning(
+                "Reconnecting in %ss (attempt %s/%s)",
+                delay,
+                dropped_attempt,
+                backoff.max_attempts,
+            )
+            await sleep(delay)
+
+
+async def _close_session(session: WorkerSession) -> None:
+    close = getattr(session, "close", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception as exc:
+        logger.warning("failed to close dropped worker session: %s", exc)
 
 
 async def _run_and_report(

@@ -126,12 +126,21 @@ async def reconnect_with_backoff(
             await session.register(activity_types, available_handlers)
             return session
         except Exception as exc:
-            logger.error("Connection failed: %s", exc)
+            logger.error("Connection failed to %s: %s", config.endpoint, exc)
             last_error = exc
             if attempt == backoff.max_attempts:
                 break
-            await sleep(backoff.delay_for_attempt(attempt))
-    raise ReconnectError(f"worker reconnect attempts exhausted: {last_error}") from last_error
+            delay = backoff.delay_for_attempt(attempt)
+            logger.warning(
+                "Reconnecting in %ss (attempt %s/%s)",
+                delay,
+                attempt,
+                backoff.max_attempts,
+            )
+            await sleep(delay)
+    raise ReconnectError(
+        f"worker reconnect attempts exhausted for {config.endpoint}: {last_error}"
+    ) from last_error
 
 
 async def reconnect_register_and_replay(

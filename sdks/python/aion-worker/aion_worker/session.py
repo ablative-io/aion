@@ -146,7 +146,7 @@ class GrpcWorkerSession:
             session._stub = worker_pb2_grpc.WorkerProtocolStub(session._channel)
             return session
         except Exception as exc:
-            logger.error("Connection failed: %s", exc)
+            logger.error("Connection failed to %s: %s", config.endpoint, exc)
             raise
 
     async def handshake(self, config: WorkerConfig) -> None:

@@ -53,6 +53,8 @@ class FakeSession:
     log: list[str] = field(default_factory=list)
     handshakes: list[tuple[str, str]] = field(default_factory=list)
     registrations: list[list[str]] = field(default_factory=list)
+    drop_after_events: bool = False
+    closed: bool = False
 
     async def handshake(self, worker_config: WorkerConfig) -> None:
         self.handshakes.append((worker_config.task_queue, worker_config.identity))
@@ -96,6 +98,10 @@ class FakeSession:
     ) -> None:
         self.log.append(f"heartbeat:{activity.sequence_position}")
 
+    async def close(self) -> None:
+        self.closed = True
+        self.log.append("close")
+
     def receive_tasks(self) -> AsyncIterator[WorkerSessionEvent]:
         return self._receive()
 
@@ -103,6 +109,8 @@ class FakeSession:
         while True:
             event = await self.events.get()
             if event is None:
+                if self.drop_after_events:
+                    raise OSError("stream dropped")
                 return
             self.log.append("receive")
             yield event
@@ -207,6 +215,62 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
     assert dispatcher.dispatched == [8]
 
 
+async def test_reconnect_after_stream_drop_uses_backoff_and_replays_unacked(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = FakeSession(drop_after_events=True)
+    second = FakeSession()
+    dispatcher = RecordingDispatcher()
+    await first.push(task(7))
+    await first.finish()
+    await second.push(task(8))
+    await second.finish()
+    sessions = [first, second]
+    sleeps: list[float] = []
+
+    async def connect() -> FakeSession:
+        return sessions.pop(0)
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    with caplog.at_level("WARNING"):
+        await connect_register_replay_and_serve(config(), connect, dispatcher, sleep=record_sleep)
+
+    assert first.closed is True
+    assert sleeps == [0.01]
+    assert first.log[-1] == "close"
+    assert second.log[:3] == ["handshake", "register", "result:7"]
+    assert dispatcher.dispatched == [7, 8]
+
+
+async def test_reconnect_logs_attempts_delays_and_exhausts_cleanly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sleeps: list[float] = []
+    attempts = 0
+
+    async def fail_connect() -> NoReturn:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("dial refused")
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    worker_config = config()
+    with caplog.at_level("WARNING"), pytest.raises(ReconnectError, match=worker_config.endpoint):
+        await connect_register_replay_and_serve(worker_config, fail_connect, RecordingDispatcher(), sleep=record_sleep)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Connected" not in messages
+    assert "Connected successfully" not in messages
+    assert "Reconnecting in 0.01s (attempt 1/3)" in messages
+    assert "Reconnecting in 0.02s (attempt 2/3)" in messages
+    assert sleeps == [0.01, 0.02]
+    assert attempts == 3
+
+
 async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_completion(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,7 +296,10 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
         await connect_register_replay_and_serve(worker_config, connect, dispatcher)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "Connected successfully" in messages
+    assert "Connected successfully" not in messages
+    assert "Connected" in messages
+    assert messages.index("Connected") < messages.index("Registered activities: greet")
+    assert session.log[:2] == ["handshake", "register"]
     assert "Registered activities: greet" in messages
     assert "Waiting for tasks" in messages
     assert "Received task greet for workflow workflow-1" in messages
@@ -263,6 +330,6 @@ async def test_reconnect_logs_connection_failure_reason(caplog: pytest.LogCaptur
     with caplog.at_level("ERROR"), pytest.raises(ReconnectError, match="dial refused"):
         await connect_register_replay_and_serve(worker_config, fail_connect, RecordingDispatcher())
 
-    failure_records = [record for record in caplog.records if record.getMessage() == "Connection failed: dial refused"]
+    failure_records = [record for record in caplog.records if record.getMessage() == f"Connection failed to {worker_config.endpoint}: dial refused"]
     assert failure_records
     assert all(record.levelname == "ERROR" for record in failure_records)
