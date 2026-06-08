@@ -1,6 +1,8 @@
 //! The standalone deployable. Wraps the transport-agnostic engine with HTTP/gRPC APIs, WebSocket event streaming, the remote-worker protocol endpoint, multi-tenancy, and dashboard hosting.
 
 pub mod api;
+#[cfg(feature = "auth")]
+pub mod auth;
 pub mod config;
 pub mod dashboard;
 pub mod error;

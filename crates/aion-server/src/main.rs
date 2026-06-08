@@ -36,6 +36,7 @@ async fn run() -> Result<()> {
 
     let cli = parse_cli(std::env::args_os().skip(1))?;
     let config = ServerConfig::load(&cli)?;
+    reject_auth_without_feature(&config)?;
     let state = ServerState::build(config).await?;
     reject_tls_until_supported(&state)?;
 
@@ -119,6 +120,16 @@ async fn shutdown_signal() -> Result<()> {
     tokio::signal::ctrl_c()
         .await
         .context("shutdown signal listener failed")
+}
+
+fn reject_auth_without_feature(config: &ServerConfig) -> Result<()> {
+    if cfg!(not(feature = "auth")) && config.auth.enabled {
+        return Err(ServerError::Config {
+            message: "auth.enabled=true but binary compiled without auth feature".to_owned(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn reject_tls_until_supported(state: &ServerState) -> Result<()> {

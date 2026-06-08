@@ -14,6 +14,8 @@ use aion_proto::{
     ProtoUpdateScheduleRequest, ProtoUpdateScheduleResponse, WireError, WireErrorCode,
 };
 use aion_store::visibility::{ListWorkflowsFilter, SearchAttributePredicate, WorkflowSummary};
+#[cfg(feature = "auth")]
+use axum::http::header;
 use axum::{
     Json, Router,
     extract::{FromRequestParts, Path, Query, State},
@@ -25,8 +27,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::{
-    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers,
-    config::AuthConfig, dashboard::assets,
+    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
 };
 
 /// Build the public HTTP application: workflow-management routes first, then
@@ -37,7 +38,16 @@ use crate::{
 /// Returns [`ServerError::Config`] when dashboard assets are misconfigured.
 pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
     let dashboard = assets::dashboard_router(&state.runtime_config().dashboard)?;
-    Ok(workflow_router(state).merge(dashboard))
+    Ok(observability_router()
+        .merge(workflow_router(state))
+        .merge(dashboard))
+}
+
+fn observability_router() -> Router {
+    Router::new()
+        .route("/health/live", get(live))
+        .route("/health/ready", get(ready))
+        .route("/metrics", get(metrics))
 }
 
 /// Build the public workflow-management HTTP router.
@@ -63,6 +73,18 @@ pub fn workflow_router(state: ServerState) -> Router {
         .with_state(state)
 }
 
+async fn live() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn ready() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn metrics() -> &'static str {
+    "# aion metrics endpoint\n"
+}
+
 #[derive(Deserialize)]
 struct NamespaceQuery {
     namespace: String,
@@ -77,10 +99,10 @@ impl FromRequestParts<ServerState> for HttpCaller {
         parts: &mut Parts,
         state: &ServerState,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Self(caller_from_headers(
-            &parts.headers,
-            &state.runtime_config().auth,
-        )))
+        let caller = caller_from_headers(&parts.headers, state)
+            .await
+            .map_err(|error| error.into_response())?;
+        Ok(Self(caller))
     }
 }
 
@@ -416,7 +438,38 @@ fn parse_datetime(value: &str) -> Result<DateTime<Utc>, WireError> {
         .map_err(|_error| WireError::unknown_query("datetime query parameter is malformed"))
 }
 
-fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> CallerIdentity {
+async fn caller_from_headers(
+    headers: &axum::http::HeaderMap,
+    state: &ServerState,
+) -> Result<CallerIdentity, HttpAuthError> {
+    let auth = &state.runtime_config().auth;
+    if !auth.enabled {
+        return Ok(development_caller_from_headers(headers));
+    }
+    #[cfg(feature = "auth")]
+    {
+        let bearer = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_bearer)
+            .ok_or(HttpAuthError)?;
+        let Some(cache) = state.jwks_cache() else {
+            return Err(HttpAuthError);
+        };
+        return cache
+            .validate(&bearer)
+            .await
+            .map(|claims| claims.caller_identity())
+            .map_err(|_error| HttpAuthError);
+    }
+    #[cfg(not(feature = "auth"))]
+    {
+        let _headers = headers;
+        Err(HttpAuthError)
+    }
+}
+
+fn development_caller_from_headers(headers: &axum::http::HeaderMap) -> CallerIdentity {
     let subject = headers
         .get("x-aion-subject")
         .and_then(|value| value.to_str().ok())
@@ -426,20 +479,23 @@ fn caller_from_headers(headers: &axum::http::HeaderMap, auth: &AuthConfig) -> Ca
         .get("x-aion-namespaces")
         .and_then(|value| value.to_str().ok())
         .map_or_else(Vec::new, parse_namespaces);
-    if !auth.enabled {
-        return CallerIdentity::new(subject, namespaces);
-    }
-    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
-    let expected = format!("Bearer {bearer_token}");
-    let authorized = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == expected);
+    CallerIdentity::new(subject, namespaces)
+}
 
-    if authorized {
-        CallerIdentity::new(subject, namespaces)
-    } else {
-        CallerIdentity::new(subject, Vec::new())
+#[cfg(feature = "auth")]
+fn parse_bearer(value: &str) -> Option<String> {
+    let token = value.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_owned())
+}
+
+struct HttpAuthError;
+
+impl IntoResponse for HttpAuthError {
+    fn into_response(self) -> Response {
+        StatusCode::UNAUTHORIZED.into_response()
     }
 }
 

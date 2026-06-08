@@ -6,6 +6,8 @@ use aion::{EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRou
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 
+#[cfg(feature = "auth")]
+use crate::auth::JwksCache;
 use crate::{
     config::{RuntimeConfig, ServerConfig, StoreBackend, StoreConfig},
     error::ServerError,
@@ -24,6 +26,8 @@ struct ServerStateInner {
     runtime: RuntimeConfig,
     worker_registry: ConnectedWorkerRegistry,
     pending_activities: PendingActivities,
+    #[cfg(feature = "auth")]
+    jwks_cache: Option<JwksCache>,
 }
 
 impl ServerState {
@@ -77,12 +81,16 @@ impl ServerState {
             .await?;
         let engine = Arc::new(engine);
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
+        #[cfg(feature = "auth")]
+        let jwks_cache = build_jwks_cache(&runtime).await?;
         Ok(Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
                 worker_registry,
                 pending_activities,
+                #[cfg(feature = "auth")]
+                jwks_cache,
             }),
         })
     }
@@ -96,6 +104,8 @@ impl ServerState {
                 runtime,
                 worker_registry: ConnectedWorkerRegistry::default(),
                 pending_activities: PendingActivities::default(),
+                #[cfg(feature = "auth")]
+                jwks_cache: None,
             }),
         }
     }
@@ -113,6 +123,8 @@ impl ServerState {
                 runtime,
                 worker_registry,
                 pending_activities: PendingActivities::default(),
+                #[cfg(feature = "auth")]
+                jwks_cache: None,
             }),
         }
     }
@@ -141,6 +153,13 @@ impl ServerState {
         &self.inner.pending_activities
     }
 
+    /// Borrow the shared JWKS cache when authentication is enabled.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn jwks_cache(&self) -> Option<&JwksCache> {
+        self.inner.jwks_cache.as_ref()
+    }
+
     /// Shut down the embedded engine so in-flight durable appends can finish.
     ///
     /// # Errors
@@ -150,6 +169,25 @@ impl ServerState {
     pub fn shutdown(&self) -> Result<(), ServerError> {
         self.inner.namespace_guard.resolver().shutdown_engine()
     }
+}
+
+#[cfg(feature = "auth")]
+async fn build_jwks_cache(runtime: &RuntimeConfig) -> Result<Option<JwksCache>, ServerError> {
+    if !runtime.auth.enabled {
+        return Ok(None);
+    }
+    let Some(url) = runtime.auth.jwks_url.clone() else {
+        return Err(ServerError::Config {
+            message: "auth.jwks_url must not be empty when auth.enabled is true".to_owned(),
+        });
+    };
+    let interval = std::time::Duration::from_secs(runtime.auth.jwks_refresh_seconds);
+    let cache = JwksCache::new(url, interval)
+        .await
+        .map_err(|error| ServerError::Config {
+            message: format!("auth jwks initial fetch failed: {error}"),
+        })?;
+    Ok(Some(cache))
 }
 
 async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, ServerError> {
