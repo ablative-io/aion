@@ -8,13 +8,13 @@ Install these before starting:
 
 - Rust toolchain and Cargo (`rustup` is recommended)
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP on your `PATH`
-- Python 3.11 or newer, optional unless you run the Python worker used below
+- Python 3.10 or newer, optional unless you run the Python worker used below
 - `jq`, optional but useful for extracting fields from the CLI's JSON output
 
 ## 1. Clone and enter the repository
 
 ```sh
-git clone https://github.com/ablative/aion.git
+git clone https://github.com/ablative-io/aion.git
 cd aion
 ```
 
@@ -43,7 +43,7 @@ Leave this process running in terminal 1. The dashboard/static UI at `http://127
 
 ### Server environment variables and JSON logs
 
-The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags where a matching flag exists (`--listen-address`, `--store-url`, `--scheduler-threads`, and `--drain-timeout-seconds`). Supported server environment variables are:
+The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags where a matching flag exists (`--listen-address`, `--store-url`, `--scheduler-threads`, and `--drain-timeout`). Supported server environment variables are:
 
 | Variable | Description | Default |
 |---|---|---|
@@ -63,7 +63,7 @@ The server starts from built-in defaults, then applies config-file values, then 
 Server logs are emitted as JSON on stdout. For interactive development, pipe them through `jq` for readability, for example:
 
 ```sh
-AION_LOG=debug cargo run -p aion-server -- --config aion-hello-world.toml | jq .
+AION_LOG=debug cargo run -p aion-server -- --config dev-config.toml | jq .
 ```
 
 ### Config auto-discovery
