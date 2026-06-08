@@ -286,7 +286,13 @@ impl EngineBuilder {
         let mut loaded_workflows = LoadedWorkflows::new();
         for source in self.workflow_sources {
             let package = package_from_source(source)?;
-            loaded_workflows.load_package(runtime.as_ref(), &package)?;
+            let loaded_workflow = loaded_workflows.load_package(runtime.as_ref(), &package)?;
+            tracing::info!(
+                workflow_type = loaded_workflow.workflow_type(),
+                content_hash = %loaded_workflow.version(),
+                "loaded workflow package {}",
+                loaded_workflow.workflow_type()
+            );
         }
 
         let registry = self

@@ -39,7 +39,32 @@ The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.
 cargo run -p aion-server -- --config dev-config.toml
 ```
 
-Leave this process running in terminal 1. The dashboard/static UI is served at `http://127.0.0.1:8080/`.
+Leave this process running in terminal 1. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API commands below (or Aion CLI commands where available) to observe workflows for now.
+
+### Server environment variables and JSON logs
+
+The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags where a matching flag exists (`--listen-address`, `--store-url`, `--scheduler-threads`, and `--drain-timeout-seconds`). Supported server environment variables are:
+
+| Variable | Description | Default |
+|---|---|---|
+| `AION_SERVER_LISTEN_ADDRESS` | HTTP listen socket address for the server API/static assets, formatted as `host:port` with a non-zero port. | `127.0.0.1:8080` |
+| `AION_SERVER_GRPC_ADDRESS` | gRPC listen socket address for the worker/client protocol, formatted as `host:port` with a non-zero port. | `127.0.0.1:50051` |
+| `AION_STORE_BACKEND` | Store backend selection; accepted values are `memory` or `libsql` (case-insensitive). | `memory` |
+| `AION_STORE_URL` | Non-empty backend connection URL/path when the selected store needs one; setting it also selects `libsql` if the backend is still `memory`. | unset |
+| `AION_RUNTIME_SCHEDULER_THREADS` | Positive integer number of scheduler runtime threads. | `1` |
+| `AION_DRAIN_TIMEOUT_SECONDS` | Positive integer graceful shutdown drain timeout in seconds. | `30` |
+| `AION_AUTH_ENABLED` | Enables or disables server auth; accepted booleans are `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off` (case-insensitive). | `false` |
+| `AION_AUTH_JWKS_URL` | Non-empty JWKS endpoint used when auth is enabled with JWKS validation. | unset |
+| `AION_AUTH_JWKS_REFRESH_SECONDS` | Positive integer JWKS refresh interval in seconds. | `300` |
+| `AION_METRICS_ENABLED` | Enables or disables metrics endpoints/export; uses the same boolean forms as `AION_AUTH_ENABLED`. | `true` |
+| `AION_NAMESPACES_DEFAULT` | Non-empty default namespace used when one is not otherwise configured. | `default` |
+| `AION_LOG` | Tracing filter for server logs; takes precedence over `RUST_LOG`. Example: `AION_LOG=debug`. | `info` |
+
+Server logs are emitted as JSON on stdout. For interactive development, pipe them through `jq` for readability, for example:
+
+```sh
+AION_LOG=debug cargo run -p aion-server -- --config aion-hello-world.toml | jq .
+```
 
 ### Config auto-discovery
 
