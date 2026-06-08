@@ -40,6 +40,7 @@ async fn run() -> Result<ExitCode> {
 
     let cli = parse_cli(std::env::args_os().skip(1))?;
     let config = ServerConfig::load(&cli)?;
+    reject_auth_without_feature(&config)?;
     let state = ServerState::build(config).await?;
     reject_tls_until_supported(&state)?;
 
@@ -52,30 +53,44 @@ async fn run() -> Result<ExitCode> {
         "aion-server starting"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let grpc = serve_grpc(state.clone(), grpc_address, shutdown_rx.clone());
-    let http = serve_http(state.clone(), http_address, shutdown_rx);
+    let mut grpc = tokio::spawn(serve_grpc(state.clone(), grpc_address, shutdown_rx.clone()));
+    let mut http = tokio::spawn(serve_http(state.clone(), http_address, shutdown_rx));
 
     let outcome = tokio::select! {
-        result = grpc => {
-            result.context("gRPC transport stopped")?;
+        result = &mut grpc => {
+            transport_result("gRPC", result)?;
             state.shutdown()?;
             ShutdownOutcome::Clean
         },
-        result = http => {
-            result.context("HTTP transport stopped")?;
+        result = &mut http => {
+            transport_result("HTTP", result)?;
             state.shutdown()?;
             ShutdownOutcome::Clean
         },
         result = shutdown_signal() => {
             result?;
             let _receiver_count = shutdown_tx.send(true);
-            shutdown::drain_after_first_signal(state.clone(), async {
+            let outcome = shutdown::drain_after_first_signal(state.clone(), async {
                 let _ = shutdown_signal().await;
-            }).await?
+            }).await?;
+            if !matches!(outcome, ShutdownOutcome::Forced) {
+                transport_result("gRPC", grpc.await)?;
+                transport_result("HTTP", http.await)?;
+            }
+            outcome
         },
     };
 
     Ok(outcome.exit_code())
+}
+
+fn transport_result(
+    transport: &'static str,
+    result: std::result::Result<Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    result
+        .with_context(|| format!("{transport} transport task failed"))?
+        .with_context(|| format!("{transport} transport stopped"))
 }
 
 fn init_tracing() -> Result<()> {
@@ -148,6 +163,16 @@ async fn shutdown_signal() -> Result<()> {
             .await
             .context("shutdown signal listener failed")
     }
+}
+
+fn reject_auth_without_feature(config: &ServerConfig) -> Result<()> {
+    if cfg!(not(feature = "auth")) && config.auth.enabled {
+        return Err(ServerError::Config {
+            message: "auth.enabled=true but binary compiled without auth feature".to_owned(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn reject_tls_until_supported(state: &ServerState) -> Result<()> {

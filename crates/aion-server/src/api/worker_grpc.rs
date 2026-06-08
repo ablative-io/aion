@@ -11,10 +11,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::ServerState;
 use crate::worker::PendingActivities;
 use crate::worker::dispatch::{ActivityCompletion, ActivityCompletionSink};
 use crate::worker::registry::{WorkerId, WorkerMessage};
+use crate::{CallerIdentity, ServerState};
 
 /// Cloneable tonic implementation for the worker bidirectional stream.
 #[derive(Clone)]
@@ -44,6 +44,10 @@ impl WorkerProtocol for WorkerGrpcService {
         &self,
         request: Request<Streaming<generated::WorkerToServer>>,
     ) -> Result<Response<Self::StreamWorkerStream>, Status> {
+        let metadata = request.metadata().clone();
+        let caller = worker_caller_from_metadata(&metadata, &self.state).await?;
+        let token_expires_at = token_expiration_from_metadata(&metadata, &self.state).await?;
+        let heartbeat_grace = self.state.runtime_config().worker.heartbeat_window;
         let mut inbound = request.into_inner();
 
         let first = inbound
@@ -67,12 +71,8 @@ impl WorkerProtocol for WorkerGrpcService {
         let registration = self
             .state
             .worker_registry()
-            .register(
-                &register.namespace,
-                register.activity_types.iter(),
-                worker_tx,
-            )
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .accept_registration(self.state.namespace_guard(), &caller, &register, worker_tx)
+            .map_err(|error| status_from_server_error(&error))?;
 
         let pending = self.state.pending_activities().clone();
         let heartbeat = self.state.heartbeat_tracker().clone();
@@ -94,8 +94,16 @@ impl WorkerProtocol for WorkerGrpcService {
                 }
             });
 
-            let _read_result =
-                process_inbound(inbound, worker_id, &pending, &heartbeat, &drain).await;
+            let session = WorkerSession {
+                worker_id,
+                pending: &pending,
+                heartbeat: &heartbeat,
+                drain: &drain,
+                token_expires_at,
+                heartbeat_grace,
+                task_tx: task_tx.clone(),
+            };
+            let _read_result = process_inbound(inbound, session).await;
 
             write_handle.abort();
             drop(task_tx);
@@ -106,13 +114,21 @@ impl WorkerProtocol for WorkerGrpcService {
     }
 }
 
+struct WorkerSession<'a> {
+    worker_id: WorkerId,
+    pending: &'a PendingActivities,
+    heartbeat: &'a crate::worker::HeartbeatTracker,
+    drain: &'a crate::shutdown::DrainState,
+    token_expires_at: Option<u64>,
+    heartbeat_grace: std::time::Duration,
+    task_tx: mpsc::Sender<Result<generated::ServerToWorker, Status>>,
+}
+
 async fn process_inbound(
     mut inbound: Streaming<generated::WorkerToServer>,
-    worker_id: WorkerId,
-    pending: &PendingActivities,
-    heartbeat: &crate::worker::HeartbeatTracker,
-    drain: &crate::shutdown::DrainState,
+    session: WorkerSession<'_>,
 ) -> Result<(), Status> {
+    let mut expired_since: Option<std::time::Instant> = None;
     while let Some(msg) = inbound.message().await? {
         let Some(inner) = msg.message else {
             continue;
@@ -121,26 +137,108 @@ async fn process_inbound(
             generated::worker_to_server::Message::Result(result) => {
                 let proto_result = decode_activity_result(result);
                 if let Ok(completion) = ActivityCompletion::try_from(proto_result) {
-                    let _ = heartbeat.complete_task(
-                        worker_id,
+                    let _ = session.heartbeat.complete_task(
+                        session.worker_id,
                         &completion.workflow_id,
                         &completion.activity_id,
                     );
-                    drain.notify_activity_drained();
-                    let _ = pending.complete_activity(completion);
+                    session.drain.notify_activity_drained();
+                    let _ = session.pending.complete_activity(completion);
                 }
             }
+            generated::worker_to_server::Message::Register(_) => {}
             generated::worker_to_server::Message::Heartbeat(heartbeat_msg) => {
-                let _ = heartbeat.record_heartbeat(
-                    worker_id,
+                let _ = session.heartbeat.record_heartbeat(
+                    session.worker_id,
                     decode_heartbeat(heartbeat_msg),
                     std::time::Instant::now(),
                 );
+                if token_expired(session.token_expires_at) {
+                    let first_expired = *expired_since.get_or_insert_with(std::time::Instant::now);
+                    let _ = session
+                        .task_tx
+                        .send(Err(Status::unauthenticated(
+                            "worker token expired; re-authentication required",
+                        )))
+                        .await;
+                    if first_expired.elapsed() >= session.heartbeat_grace {
+                        return Err(Status::unauthenticated("worker token expired"));
+                    }
+                }
             }
-            generated::worker_to_server::Message::Register(_) => {}
         }
     }
     Ok(())
+}
+
+async fn worker_caller_from_metadata(
+    metadata: &tonic::metadata::MetadataMap,
+    state: &ServerState,
+) -> Result<CallerIdentity, Status> {
+    crate::api::grpc::caller_from_metadata(metadata, state).await
+}
+
+async fn token_expiration_from_metadata(
+    metadata: &tonic::metadata::MetadataMap,
+    state: &ServerState,
+) -> Result<Option<u64>, Status> {
+    if !state.runtime_config().auth.enabled {
+        return Ok(None);
+    }
+    #[cfg(feature = "auth")]
+    {
+        let bearer = metadata
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_bearer)
+            .ok_or_else(|| Status::unauthenticated("missing bearer token"))?;
+        let Some(cache) = state.jwks_cache() else {
+            return Err(Status::unauthenticated("invalid bearer token"));
+        };
+        return cache
+            .validate(&bearer)
+            .await
+            .map(|claims| Some(claims.expires_at()))
+            .map_err(|_error| Status::unauthenticated("invalid bearer token"));
+    }
+    #[cfg(not(feature = "auth"))]
+    {
+        let _ = metadata;
+        std::future::ready(()).await;
+        Err(Status::unauthenticated("authentication unavailable"))
+    }
+}
+
+#[cfg(feature = "auth")]
+fn parse_bearer(value: &str) -> Option<String> {
+    let token = value.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_owned())
+}
+
+fn token_expired(expires_at: Option<u64>) -> bool {
+    expires_at.is_some_and(|expires_at| {
+        #[cfg(feature = "auth")]
+        {
+            crate::auth::jwks::is_expired(expires_at)
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = expires_at;
+            false
+        }
+    })
+}
+
+fn status_from_server_error(error: &crate::ServerError) -> Status {
+    let wire = error.to_wire_error();
+    if wire.code == aion_proto::WireErrorCode::NamespaceDenied {
+        Status::permission_denied(wire.message)
+    } else {
+        Status::internal(wire.message)
+    }
 }
 
 fn decode_register(r: generated::RegisterWorker) -> ProtoRegisterWorker {

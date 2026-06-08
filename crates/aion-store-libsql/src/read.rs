@@ -92,6 +92,35 @@ pub(crate) async fn query(
     Ok(summaries)
 }
 
+/// Validate that every stored event blob can be decoded by the current Aion event schema.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL failures and `StoreError::Serialization` when any
+/// stored event blob is incompatible with the current event schema.
+pub(crate) async fn validate_all_events(conn: &libsql::Connection) -> Result<(), StoreError> {
+    let mut rows = conn
+        .query(
+            "SELECT event FROM events ORDER BY workflow_id ASC, seq ASC",
+            (),
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let blob: Vec<u8> = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        decode_event(&blob)?;
+    }
+
+    Ok(())
+}
+
 async fn load_summaries(
     conn: &libsql::Connection,
     filter: &WorkflowFilter,

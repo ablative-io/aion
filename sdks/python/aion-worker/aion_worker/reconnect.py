@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from .session import ActivityError, ActivityId, Payload, WorkerConfig, WorkerSes
 
 ActivitySequence: TypeAlias = int
 ConnectFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
+logger = logging.getLogger(__name__)
+
 SleepFactory: TypeAlias = Callable[[float], Awaitable[None]]
 
 
@@ -123,11 +126,12 @@ async def reconnect_with_backoff(
             await session.register(activity_types, available_handlers)
             return session
         except Exception as exc:
+            logger.error("Connection failed: %s", exc)
             last_error = exc
             if attempt == backoff.max_attempts:
                 break
             await sleep(backoff.delay_for_attempt(attempt))
-    raise ReconnectError("worker reconnect attempts exhausted") from last_error
+    raise ReconnectError(f"worker reconnect attempts exhausted: {last_error}") from last_error
 
 
 async def reconnect_register_and_replay(

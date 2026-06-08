@@ -6,6 +6,8 @@ use aion::{EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRou
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 
+#[cfg(feature = "auth")]
+use crate::auth::JwksCache;
 use crate::{
     config::{RuntimeConfig, ServerConfig, StoreBackend, StoreConfig},
     error::ServerError,
@@ -29,6 +31,8 @@ struct ServerStateInner {
     pending_activities: PendingActivities,
     heartbeat_tracker: HeartbeatTracker,
     drain_state: DrainState,
+    #[cfg(feature = "auth")]
+    jwks_cache: Option<JwksCache>,
 }
 
 impl ServerState {
@@ -86,6 +90,8 @@ impl ServerState {
             .await?;
         let engine = Arc::new(engine);
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
+        #[cfg(feature = "auth")]
+        let jwks_cache = build_jwks_cache(&runtime).await?;
         Ok(Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
@@ -94,6 +100,8 @@ impl ServerState {
                 pending_activities,
                 heartbeat_tracker,
                 drain_state,
+                #[cfg(feature = "auth")]
+                jwks_cache,
             }),
         })
     }
@@ -109,6 +117,8 @@ impl ServerState {
                 pending_activities: PendingActivities::default(),
                 heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
                 drain_state: DrainState::default(),
+                #[cfg(feature = "auth")]
+                jwks_cache: None,
             }),
         }
     }
@@ -128,6 +138,8 @@ impl ServerState {
                 pending_activities: PendingActivities::default(),
                 heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
                 drain_state: DrainState::default(),
+                #[cfg(feature = "auth")]
+                jwks_cache: None,
             }),
         }
     }
@@ -168,6 +180,13 @@ impl ServerState {
         &self.inner.drain_state
     }
 
+    /// Borrow the shared JWKS cache when authentication is enabled.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn jwks_cache(&self) -> Option<&JwksCache> {
+        self.inner.jwks_cache.as_ref()
+    }
+
     /// Shut down the embedded engine so in-flight durable appends can finish.
     ///
     /// # Errors
@@ -179,6 +198,25 @@ impl ServerState {
     }
 }
 
+#[cfg(feature = "auth")]
+async fn build_jwks_cache(runtime: &RuntimeConfig) -> Result<Option<JwksCache>, ServerError> {
+    if !runtime.auth.enabled {
+        return Ok(None);
+    }
+    let Some(url) = runtime.auth.jwks_url.clone() else {
+        return Err(ServerError::Config {
+            message: "auth.jwks_url must not be empty when auth.enabled is true".to_owned(),
+        });
+    };
+    let interval = std::time::Duration::from_secs(runtime.auth.jwks_refresh_seconds);
+    let cache = JwksCache::new(url, interval)
+        .await
+        .map_err(|error| ServerError::Config {
+            message: format!("auth jwks initial fetch failed: {error}"),
+        })?;
+    Ok(Some(cache))
+}
+
 async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, ServerError> {
     match config.backend {
         StoreBackend::Memory => Ok(Arc::new(aion_store::InMemoryStore::default())),
@@ -188,7 +226,20 @@ async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, Serve
                     message: "store.url must not be empty when store.backend is libsql".to_owned(),
                 });
             };
-            let store = LibSqlStore::open(url).await.map_err(ServerError::from)?;
+            let store = LibSqlStore::open(url.clone())
+                .await
+                .map_err(ServerError::from)?;
+            store
+                .validate_event_compatibility()
+                .await
+                .map_err(|error| match error {
+                    aion_store::StoreError::Serialization(_) => ServerError::Config {
+                        message: format!(
+                            "Database schema mismatch — delete {url} and restart, or run migrations."
+                        ),
+                    },
+                    other => ServerError::from(other),
+                })?;
             Ok(Arc::new(store))
         }
     }
