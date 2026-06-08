@@ -5,13 +5,13 @@ use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
 use aion_server::{
     ServerConfig, ServerError, ServerState, api,
     config::CliOverrides,
+    observability,
     shutdown::{self, ShutdownOutcome},
 };
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tonic::transport::Server as TonicServer;
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
     match run_main() {
@@ -36,7 +36,7 @@ fn run_main() -> Result<ExitCode> {
 }
 
 async fn run() -> Result<ExitCode> {
-    init_tracing()?;
+    observability::tracing::init()?;
 
     let cli = parse_cli(std::env::args_os().skip(1))?;
     let config = ServerConfig::load(&cli)?;
@@ -91,18 +91,6 @@ fn transport_result(
     result
         .with_context(|| format!("{transport} transport task failed"))?
         .with_context(|| format!("{transport} transport stopped"))
-}
-
-fn init_tracing() -> Result<()> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(true)
-        .with_timer(tracing_subscriber::fmt::time::SystemTime)
-        .try_init()
-        .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
-    Ok(())
 }
 
 async fn serve_grpc(
