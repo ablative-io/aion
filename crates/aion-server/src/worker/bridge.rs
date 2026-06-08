@@ -170,6 +170,30 @@ impl WorkerActivityDispatcher {
 }
 
 impl WorkerActivityDispatcher {
+    fn ensure_accepting(
+        &self,
+        activity_type: &str,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        worker_id: Option<WorkerId>,
+    ) -> Result<(), String> {
+        self.drain_state
+            .ensure_accepting(&self.namespace, activity_type)
+            .map_err(|error| {
+                let reason = error.to_string();
+                log_worker_error(
+                    "WorkerDispatch",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    worker_id,
+                    &reason,
+                );
+                reason
+            })
+    }
+
     fn select_worker(
         &self,
         activity_type: &str,
@@ -212,6 +236,7 @@ impl WorkerActivityDispatcher {
     fn track_worker_task(
         &self,
         worker_id: WorkerId,
+        activity_type: &str,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<(), String> {
@@ -224,7 +249,19 @@ impl WorkerActivityDispatcher {
                 },
                 Instant::now(),
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| {
+                let reason = error.to_string();
+                log_worker_error(
+                    "WorkerHeartbeatTracker",
+                    &self.namespace,
+                    activity_type,
+                    workflow_id,
+                    activity_id,
+                    Some(worker_id),
+                    &reason,
+                );
+                reason
+            })
     }
 
     fn cleanup_activity(
@@ -275,6 +312,7 @@ impl WorkerActivityDispatcher {
     ) -> Result<String, String> {
         match rx.recv_timeout(self.timeout) {
             Ok(result) => {
+                self.pending.pending.remove(context.activity_id);
                 log_activity_completion(context, result.is_ok());
                 result.inspect_err(|reason| {
                     log_worker_error(
@@ -307,6 +345,7 @@ impl WorkerActivityDispatcher {
                 Err(reason)
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.cleanup_activity(context.worker_id, context.workflow_id, context.activity_id);
                 let reason = "activity response channel dropped".to_owned();
                 log_worker_error(
                     "WorkerChannelClosed",
@@ -326,13 +365,11 @@ impl WorkerActivityDispatcher {
 impl ActivityDispatcher for WorkerActivityDispatcher {
     fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
         let _ = config;
-        self.drain_state
-            .ensure_accepting(&self.namespace, name)
-            .map_err(|error| error.to_string())?;
         let started_at = Instant::now();
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
         let activity_id = ActivityId::from_sequence_position(sequence);
         let workflow_id = WorkflowId::new_v4();
+        self.ensure_accepting(name, &workflow_id, &activity_id, None)?;
         let worker = self.select_worker(name, &workflow_id, &activity_id)?;
         let worker_id = worker.id();
         let span = info_span!(
@@ -345,13 +382,11 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
             worker_id = ?worker_id,
         );
         let _span_guard = span.enter();
-        self.drain_state
-            .ensure_accepting(&self.namespace, name)
-            .map_err(|error| error.to_string())?;
+        self.ensure_accepting(name, &workflow_id, &activity_id, Some(worker_id))?;
 
         let task = activity_task(name, input, &workflow_id, &activity_id);
         let rx = self.pending.insert(activity_id.clone());
-        self.track_worker_task(worker_id, &workflow_id, &activity_id)?;
+        self.track_worker_task(worker_id, name, &workflow_id, &activity_id)?;
         self.send_activity_task(&worker, task, name, &workflow_id, &activity_id)?;
         let context = ActivityDispatchContext {
             namespace: &self.namespace,
