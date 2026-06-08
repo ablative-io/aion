@@ -97,6 +97,7 @@ dependencies = [
  "aion",
  "aion-core",
  "aion-proto",
+ "aion-store",
  "async-trait",
  "chrono",
  "futures",

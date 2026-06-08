@@ -12,7 +12,8 @@ use crate::output::{
     AcknowledgementOutput, DescribeOutput, QueryOutput, print_json, start_output, to_value,
 };
 use crate::payload::{
-    empty_query_payload, json_payload, parse_status, parse_workflow_id, payload_to_json,
+    empty_query_payload, json_payload, parse_run_id, parse_status, parse_workflow_id,
+    payload_to_json,
 };
 
 mod output;
@@ -59,6 +60,9 @@ enum Command {
         workflow_id: String,
         /// Signal name.
         signal_name: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
         /// JSON signal payload.
         #[arg(long, default_value = "null")]
         payload: String,
@@ -69,6 +73,9 @@ enum Command {
         workflow_id: String,
         /// Query name.
         query_name: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
     },
     /// Request workflow cancellation.
     Cancel {
@@ -77,6 +84,9 @@ enum Command {
         /// Cancellation reason.
         #[arg(long, default_value = "cancelled by aion-cli")]
         reason: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
     },
     /// List workflow executions.
     List {
@@ -88,6 +98,9 @@ enum Command {
     Describe {
         /// Workflow identifier.
         workflow_id: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
     },
 }
 
@@ -119,18 +132,24 @@ async fn execute(client: &Client, command: &Command) -> Result<Value> {
         Command::Signal {
             workflow_id,
             signal_name,
+            run_id,
             payload,
-        } => signal_workflow(client, workflow_id, signal_name, payload).await,
+        } => signal_workflow(client, workflow_id, signal_name, run_id.as_deref(), payload).await,
         Command::Query {
             workflow_id,
             query_name,
-        } => query_workflow(client, workflow_id, query_name).await,
+            run_id,
+        } => query_workflow(client, workflow_id, query_name, run_id.as_deref()).await,
         Command::Cancel {
             workflow_id,
             reason,
-        } => cancel_workflow(client, workflow_id, reason).await,
+            run_id,
+        } => cancel_workflow(client, workflow_id, reason, run_id.as_deref()).await,
         Command::List { status } => list_workflows(client, *status).await,
-        Command::Describe { workflow_id } => describe_workflow(client, workflow_id).await,
+        Command::Describe {
+            workflow_id,
+            run_id,
+        } => describe_workflow(client, workflow_id, run_id.as_deref()).await,
     }
 }
 
@@ -147,12 +166,19 @@ async fn signal_workflow(
     client: &Client,
     workflow_id: &str,
     signal_name: &str,
+    run_id: Option<&str>,
     payload: &str,
 ) -> Result<Value> {
     let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
     let payload = json_payload(payload).context("invalid --payload JSON")?;
     client
-        .signal(&workflow_id, None, signal_name.to_owned(), payload)
+        .signal(
+            &workflow_id,
+            run_id.as_ref(),
+            signal_name.to_owned(),
+            payload,
+        )
         .await
         .context("failed to signal workflow")?;
     to_value(AcknowledgementOutput {
@@ -161,12 +187,18 @@ async fn signal_workflow(
     })
 }
 
-async fn query_workflow(client: &Client, workflow_id: &str, query_name: &str) -> Result<Value> {
+async fn query_workflow(
+    client: &Client,
+    workflow_id: &str,
+    query_name: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
     let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
     let payload = client
         .query(
             &workflow_id,
-            None,
+            run_id.as_ref(),
             query_name.to_owned(),
             empty_query_payload(),
             QUERY_DEADLINE,
@@ -178,10 +210,16 @@ async fn query_workflow(client: &Client, workflow_id: &str, query_name: &str) ->
     })
 }
 
-async fn cancel_workflow(client: &Client, workflow_id: &str, reason: &str) -> Result<Value> {
+async fn cancel_workflow(
+    client: &Client,
+    workflow_id: &str,
+    reason: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
     let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
     client
-        .cancel(&workflow_id, None, reason.to_owned())
+        .cancel(&workflow_id, run_id.as_ref(), reason.to_owned())
         .await
         .context("failed to cancel workflow")?;
     to_value(AcknowledgementOutput {
@@ -202,10 +240,15 @@ async fn list_workflows(client: &Client, status: Option<WorkflowStatus>) -> Resu
     to_value(summaries)
 }
 
-async fn describe_workflow(client: &Client, workflow_id: &str) -> Result<Value> {
+async fn describe_workflow(
+    client: &Client,
+    workflow_id: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
     let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
     let description = client
-        .describe(&workflow_id, None)
+        .describe(&workflow_id, run_id.as_ref())
         .await
         .context("failed to describe workflow")?;
     to_value(DescribeOutput {
