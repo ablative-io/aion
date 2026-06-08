@@ -52,7 +52,32 @@ EOF
 cargo run -p aion-server -- --config aion-hello-world.toml
 ```
 
-Leave this process running in terminal 1. The dashboard/static UI is served at `http://127.0.0.1:8080/`.
+Leave this process running in terminal 1. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API commands below (or Aion CLI commands where available) to observe workflows for now.
+
+### Server environment variables and JSON logs
+
+The server starts from built-in defaults, then applies config-file values, then `AION_` environment variable overrides, then CLI flags. Supported server environment variables are:
+
+| Variable | Description | Default |
+|---|---|---|
+| `AION_SERVER_LISTEN_ADDRESS` | HTTP listen address for the server API/static assets. | `127.0.0.1:8080` |
+| `AION_SERVER_GRPC_ADDRESS` | gRPC listen address for the worker/client protocol. | `127.0.0.1:50051` |
+| `AION_STORE_BACKEND` | Store backend selection, such as `memory` for the in-memory dev store. | `memory` |
+| `AION_STORE_URL` | Backend connection URL/path when the selected store needs one. | unset |
+| `AION_RUNTIME_SCHEDULER_THREADS` | Number of scheduler runtime threads. | `1` |
+| `AION_DRAIN_TIMEOUT_SECONDS` | Graceful shutdown drain timeout in seconds. | `30` |
+| `AION_AUTH_ENABLED` | Enables or disables server auth. | `false` |
+| `AION_AUTH_JWKS_URL` | JWKS endpoint used when auth is enabled with JWKS validation. | unset |
+| `AION_AUTH_JWKS_REFRESH_SECONDS` | JWKS refresh interval in seconds. | `300` |
+| `AION_METRICS_ENABLED` | Enables or disables metrics endpoints/export. | `true` |
+| `AION_NAMESPACES_DEFAULT` | Default namespace used when one is not otherwise configured. | `default` |
+| `AION_LOG` | Tracing filter for server logs; takes precedence over `RUST_LOG`. Example: `AION_LOG=debug`. | `info` |
+
+Server logs are emitted as JSON on stdout. For interactive development, pipe them through `jq` for readability, for example:
+
+```sh
+AION_LOG=debug cargo run -p aion-server -- --config aion-hello-world.toml | jq .
+```
 
 ## 4. Start the Python activity worker
 

@@ -78,15 +78,7 @@ In terminal 1:
 cargo run -p aion-server -- dev-config.json
 ```
 
-Leave this process running.
-
-Open the dashboard:
-
-```sh
-open http://127.0.0.1:8080/
-```
-
-If you are not on macOS, open `http://127.0.0.1:8080/` in your browser.
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API observe commands below (or Aion CLI commands where available) to inspect workflows for now.
 
 ## 4. Start the Python activity worker
 

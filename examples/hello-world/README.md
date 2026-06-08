@@ -7,7 +7,7 @@ This example takes you from a fresh checkout to a running Aion workflow. You wil
 3. start the Aion dev server with the repo-root `dev-config.json`,
 4. start a Python activity worker for the `greet` activity,
 5. start a workflow instance with `curl`, and
-6. inspect the run from the dashboard and HTTP API.
+6. inspect the run from the HTTP API while the dashboard UI is under development.
 
 ## Prerequisites
 
@@ -62,15 +62,7 @@ In terminal 1:
 cargo run -p aion-server -- dev-config.json
 ```
 
-Leave this process running.
-
-Open the dashboard:
-
-```sh
-open http://127.0.0.1:8080/
-```
-
-If you are not on macOS, open `http://127.0.0.1:8080/` in your browser.
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API commands in the observe section below (or Aion CLI commands where available) to inspect workflows for now.
 
 ## 4. Start the Python activity worker
 
@@ -87,6 +79,21 @@ Then run the worker:
 
 ```sh
 python examples/hello-world/worker.py
+```
+
+The worker example reads these environment variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `AION_WORKER_ENDPOINT` | gRPC endpoint for the Aion server. | `127.0.0.1:50051` |
+| `AION_TASK_QUEUE` | Task queue where the worker registers and polls for activities. | `default` |
+| `AION_WORKER_IDENTITY` | Worker identity reported to the server. | `hello-world-python-worker` |
+| `AION_WORKER_CONCURRENCY` | Maximum concurrent activity tasks handled by the worker. | `4` |
+
+For example, to point the worker at another server:
+
+```sh
+AION_WORKER_ENDPOINT=127.0.0.1:50051 AION_WORKER_CONCURRENCY=4 python examples/hello-world/worker.py
 ```
 
 The worker connects to `127.0.0.1:50051`, registers `greet`, and returns:
@@ -181,7 +188,7 @@ curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   }"
 ```
 
-You should see workflow events for start, `greet` scheduling/completion, and workflow completion. The dashboard at `http://127.0.0.1:8080/` should show the same run.
+You should see workflow events for start, `greet` scheduling/completion, and workflow completion. The dashboard UI is still under development, so prefer these HTTP API responses (or Aion CLI commands where available) when observing runs.
 
 ## Clean up
 
