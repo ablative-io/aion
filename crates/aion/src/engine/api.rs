@@ -58,7 +58,7 @@ pub(crate) struct EngineComponents {
     pub(crate) visibility_store: Arc<dyn VisibilityStore>,
     pub(crate) runtime: Arc<RuntimeHandle>,
     pub(crate) loaded_workflows: LoadedWorkflows,
-    pub(crate) registry: Registry,
+    pub(crate) registry: Arc<Registry>,
     pub(crate) supervision: SupervisionTree,
     pub(crate) delegated: DelegatedSeams,
     pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
@@ -84,7 +84,7 @@ impl Engine {
             Arc::clone(&store),
         )));
         let runtime_arc = runtime;
-        let registry_arc = Arc::new(registry);
+        let registry_arc = registry;
         let supervision_arc = Arc::new(supervision);
         let schedule_evaluator = Arc::new(AsyncMutex::new(default_schedule_evaluator(
             schedule_coordinator_workflow_id.clone(),
@@ -1149,7 +1149,7 @@ mod tests {
             visibility_store,
             runtime: Arc::new(runtime),
             loaded_workflows: loaded_workflows(workflow_type, deployed_module),
-            registry: Registry::default(),
+            registry: Arc::new(Registry::default()),
             supervision: SupervisionTree::new(),
             delegated: DelegatedSeams::default(),
             signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),

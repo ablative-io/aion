@@ -82,6 +82,7 @@ pub struct EngineBuilder {
     delegated: DelegatedSeams,
     signal_router_factory: Option<SignalRouterFactory>,
     activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
+    active_registry: Option<Arc<Registry>>,
 }
 
 impl Default for EngineBuilder {
@@ -105,6 +106,7 @@ impl EngineBuilder {
             delegated: DelegatedSeams::default(),
             signal_router_factory: None,
             activity_dispatcher: None,
+            active_registry: None,
         }
     }
 
@@ -242,6 +244,16 @@ impl EngineBuilder {
         self
     }
 
+    /// Supply the active workflow registry used by the built engine.
+    ///
+    /// Server-owned dispatchers that run behind raw NIFs use this to correlate a
+    /// calling BEAM pid to the same workflow handle the engine registers.
+    #[must_use]
+    pub fn active_registry(mut self, registry: Arc<Registry>) -> Self {
+        self.active_registry = Some(registry);
+        self
+    }
+
     /// Inspect the configured scheduler thread count.
     #[must_use]
     pub const fn scheduler_thread_count(&self) -> Option<usize> {
@@ -261,9 +273,7 @@ impl EngineBuilder {
             .visibility_store
             .unwrap_or_else(|| Arc::new(InMemoryStore::default()));
 
-        if let Some(dispatcher) = self.activity_dispatcher {
-            install_activity_dispatcher(dispatcher);
-        }
+        let activity_dispatcher = self.activity_dispatcher;
 
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(
             self.scheduler_threads,
@@ -279,14 +289,19 @@ impl EngineBuilder {
             loaded_workflows.load_package(runtime.as_ref(), &package)?;
         }
 
-        let registry = Registry::default();
+        let registry = self
+            .active_registry
+            .unwrap_or_else(|| Arc::new(Registry::default()));
+        if let Some(dispatcher) = activity_dispatcher {
+            install_activity_dispatcher(dispatcher);
+        }
         let supervision = SupervisionTree::new();
         bootstrap_schedule_coordinator(Arc::clone(&store)).await?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),
             &loaded_workflows,
-            &registry,
+            registry.as_ref(),
             &supervision,
             self.recovery.as_ref(),
         )

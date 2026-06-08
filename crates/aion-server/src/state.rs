@@ -79,23 +79,26 @@ impl ServerState {
         ));
         let exported_metrics = runtime.metrics.enabled.then_some(metrics.clone());
         let worker_registry = ConnectedWorkerRegistry::default();
+        let active_registry = Arc::new(aion::Registry::default());
         let pending_activities = PendingActivities::default();
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         let drain_state = DrainState::default();
-        let dispatcher = Arc::new(
-            WorkerActivityDispatcher::new(
-                worker_registry.clone(),
-                runtime.default_namespace.clone(),
-            )
-            .with_pending(pending_activities.clone())
-            .with_heartbeat_tracker(heartbeat_tracker.clone())
-            .with_drain_state(drain_state.clone()),
-        );
+        let dispatcher = WorkerActivityDispatcher::new(
+            worker_registry.clone(),
+            runtime.default_namespace.clone(),
+        )
+        .with_pending(pending_activities.clone())
+        .with_heartbeat_tracker(heartbeat_tracker.clone())
+        .with_drain_state(drain_state.clone())
+        .with_workflow_registry(active_registry.clone())
+        .with_tokio_handle(tokio::runtime::Handle::current());
+        let dispatcher = Arc::new(dispatcher);
 
         let engine = EngineBuilder::new()
             .store_arc(instrumented_store.clone())
             .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
+            .active_registry(active_registry)
             .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
                 Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
             })

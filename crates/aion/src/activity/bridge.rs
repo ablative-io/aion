@@ -26,6 +26,27 @@ pub trait ActivityDispatcher: Send + Sync {
     /// Returns the error string surfaced by the activity execution path —
     /// worker rejection, decode failure, timeout, or activity body error.
     fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String>;
+
+    /// Dispatch the named activity with the calling workflow process id when
+    /// the runtime can provide it.
+    ///
+    /// Implementations that need to correlate a raw NIF call back to an active
+    /// workflow handle can override this method. The default preserves the
+    /// original dispatcher contract for tests and non-workflow callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::dispatch`].
+    fn dispatch_from_process(
+        &self,
+        name: &str,
+        input: &str,
+        config: &str,
+        caller_pid: Option<u64>,
+    ) -> Result<String, String> {
+        let _ = caller_pid;
+        self.dispatch(name, input, config)
+    }
 }
 
 static DISPATCHER: OnceLock<Arc<dyn ActivityDispatcher>> = OnceLock::new();
