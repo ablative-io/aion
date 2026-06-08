@@ -104,6 +104,7 @@ async fn build_client(cli: &Cli) -> Result<Client> {
     ClientBuilder::new(normalize_endpoint(&cli.endpoint))
         .with_namespace(cli.namespace.clone())
         .with_subject(cli.subject.clone())
+        .with_authorized_namespaces([cli.namespace.clone()])
         .build()
         .await
         .context("failed to connect to Aion server")
