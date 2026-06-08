@@ -12,7 +12,7 @@ Aion replaces that with durable typed workflows:
 
 - **Type safety:** the orchestration logic lives in `src/orchestrator.gleam` with typed `TaskInput`, `DevOutput`, `ReviewOutput`, and `WorkflowError` values.
 - **Durability:** activity completions are recorded in Aion history. On replay, a completed `develop` result is read from history and the workflow resumes at `review` instead of invoking `develop` again.
-- **Observability:** the dashboard and `describe` API show the ordered event history: develop attempt 1, review revise, develop attempt 2, review land, workflow complete.
+- **Observability:** the `describe` HTTP API shows the ordered event history: develop attempt 1, review revise, develop attempt 2, review land, workflow complete. The dashboard UI is under development; use the HTTP API or Aion CLI commands where available for workflow observation.
 
 ## Prerequisites
 
@@ -76,13 +76,7 @@ In terminal 1:
 cargo run -p aion-server -- dev-config.json
 ```
 
-Leave this process running. Open the dashboard:
-
-```sh
-open http://127.0.0.1:8080/
-```
-
-If you are not on macOS, open `http://127.0.0.1:8080/` in your browser.
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API observe commands below (or Aion CLI commands where available) to inspect workflows for now.
 
 ## 4. Start the Python activity worker
 
@@ -170,7 +164,7 @@ curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
   }"
 ```
 
-In the event history and dashboard, observe the sequence:
+In the event history returned by the HTTP API, observe the sequence:
 
 1. workflow started with the task brief,
 2. `develop` scheduled and completed for attempt 1,

@@ -65,7 +65,7 @@ crates/            Rust crates (the engine, store, package, proto, server, nif, 
 gleam/             Gleam packages (aion_flow authoring SDK, aion_client)
 sdks/python/       Python worker + client SDKs
 sdks/typescript/   TypeScript worker + client SDKs
-apps/              The monitoring dashboard (React + Vite)
+apps/              The under-development monitoring dashboard (React + Vite)
 conformance/       Cross-language conformance suites
 docs/design/       The design — one folder per cluster, plus the overview
 tools/             Workspace tooling (scaffold.py)
@@ -89,7 +89,7 @@ workspace.json     Machine-readable description of every component
 | `gleam/aion_flow` | The Gleam authoring SDK |
 | `gleam/aion_client` | The Gleam caller SDK |
 | `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs |
-| `apps/aion-dashboard` | Monitoring UI |
+| `apps/aion-dashboard` | Monitoring UI under development |
 
 ## Status
 
@@ -115,8 +115,8 @@ Still maturing:
   and [`gleam/aion_flow/README.md`](gleam/aion_flow/README.md).
 - SDK packages and conformance coverage continue to harden around the
   implemented server and engine surfaces.
-- The dashboard/static UI is included and served by the server; continue to
-  treat the observability UI as evolving rather than production-polished.
+- The dashboard/static UI is included and served by the server but remains
+  under development; use the CLI or HTTP API to observe workflows for now.
 
 ## Scaffolding
 
