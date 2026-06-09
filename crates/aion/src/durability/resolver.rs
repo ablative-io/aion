@@ -225,6 +225,7 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
         | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }
+        | Event::SignalSent { .. }
         | Event::ScheduleCreated { .. }
         | Event::ScheduleUpdated { .. }
         | Event::SchedulePaused { .. }
@@ -264,6 +265,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
         Event::SignalReceived { .. } => "SignalReceived",
+        Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",
         Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
         Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",

@@ -291,7 +291,9 @@ fn family_for_event(event: &Event) -> Option<RecordedEventFamily> {
     match event {
         Event::ActivityScheduled { .. } => Some(RecordedEventFamily::Activity),
         Event::TimerStarted { .. } => Some(RecordedEventFamily::Timer),
-        Event::SignalReceived { .. } => Some(RecordedEventFamily::Signal),
+        Event::SignalReceived { .. } | Event::SignalSent { .. } => {
+            Some(RecordedEventFamily::Signal)
+        }
         Event::ChildWorkflowStarted { .. } => Some(RecordedEventFamily::Child),
         _ => None,
     }
@@ -315,6 +317,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
         Event::SignalReceived { .. } => "SignalReceived",
+        Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",
         Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
         Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",
