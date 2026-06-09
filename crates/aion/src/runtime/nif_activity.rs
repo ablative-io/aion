@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload};
+use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload};
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
@@ -109,6 +109,10 @@ fn json_payload(text: &str, label: &str) -> Result<Payload, Term> {
     })
 }
 
+fn result_payload(result: &str) -> Payload {
+    Payload::new(ContentType::Json, result.as_bytes().to_vec())
+}
+
 fn activity_error(reason: String) -> ActivityError {
     ActivityError {
         kind: ActivityErrorKind::Terminal,
@@ -185,8 +189,7 @@ fn run_live(
     record_started(context, activity_id.clone(), name.to_owned(), input_payload)?;
     match dispatcher.dispatch_from_process(name, input_text, config, Some(context.pid())) {
         Ok(result) => {
-            let result_payload = json_payload(&result, "result")?;
-            record_completed(context, activity_id, result_payload)?;
+            record_completed(context, activity_id, result_payload(&result))?;
             Ok(ok_result_term(result.as_bytes()).unwrap_or(Term::NIL))
         }
         Err(reason) => {
@@ -323,6 +326,29 @@ mod tests {
         }
     }
 
+    struct OrderCheckingDispatcher {
+        calls: AtomicUsize,
+        runtime: tokio::runtime::Handle,
+        store: Arc<dyn EventStore>,
+        workflow_id: aion_core::WorkflowId,
+        observed_pre_dispatch_events: AtomicUsize,
+        result: Result<String, String>,
+    }
+
+    impl ActivityDispatcher for OrderCheckingDispatcher {
+        fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
+            let _ = (name, input, config);
+            let history = self
+                .runtime
+                .block_on(self.store.read_history(&self.workflow_id))
+                .unwrap_or_default();
+            self.observed_pre_dispatch_events
+                .store(history.len(), Ordering::SeqCst);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.result.clone()
+        }
+    }
+
     fn payload(value: serde_json::Value) -> Result<Payload, Box<dyn std::error::Error>> {
         Ok(Payload::from_json(&value)?)
     }
@@ -331,13 +357,12 @@ mod tests {
         workflow_id: &aion_core::WorkflowId,
         seq: u64,
     ) -> Result<EventEnvelope, Box<dyn std::error::Error>> {
-        let recorded_at = Utc
-            .timestamp_opt(i64::try_from(seq)?, 0)
-            .single()
-            .ok_or_else(|| "invalid timestamp".to_owned())?;
         Ok(EventEnvelope {
             seq,
-            recorded_at,
+            recorded_at: Utc
+                .timestamp_opt(i64::try_from(seq)?, 0)
+                .single()
+                .ok_or_else(|| "invalid timestamp".to_owned())?,
             workflow_id: workflow_id.clone(),
         })
     }
@@ -349,11 +374,11 @@ mod tests {
     fn context_with_history(
         runtime: &tokio::runtime::Runtime,
         pid: u64,
+        workflow_id: aion_core::WorkflowId,
         history: &[Event],
     ) -> Result<(NifContext, Arc<dyn EventStore>, aion_core::WorkflowId), Box<dyn std::error::Error>>
     {
         let registry = Registry::default();
-        let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         if !history.is_empty() {
@@ -417,7 +442,8 @@ mod tests {
                 result: result.clone(),
             },
         ];
-        let (context, _store, _workflow_id) = context_with_history(&runtime, 91, &history)?;
+        let (context, _store, _workflow_id) =
+            context_with_history(&runtime, 91, workflow_id, &history)?;
         let dispatcher = RecordingDispatcher {
             calls: AtomicUsize::new(0),
             result: Ok("{\"unexpected\":true}".to_owned()),
@@ -443,10 +469,15 @@ mod tests {
     fn live_success_records_scheduled_started_completed_around_dispatch() -> TestResult {
         clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
-        let (context, store, workflow_id) = context_with_history(&runtime, 92, &[])?;
-        let dispatcher = RecordingDispatcher {
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let (context, store, workflow_id) = context_with_history(&runtime, 92, workflow_id, &[])?;
+        let dispatcher = OrderCheckingDispatcher {
             calls: AtomicUsize::new(0),
-            result: Ok("{\"done\":true}".to_owned()),
+            runtime: runtime.handle().clone(),
+            store: Arc::clone(&store),
+            workflow_id: workflow_id.clone(),
+            observed_pre_dispatch_events: AtomicUsize::new(0),
+            result: Ok("plain result".to_owned()),
         };
 
         let term = run_activity_with_context_and_dispatcher(
@@ -460,8 +491,14 @@ mod tests {
 
         let (tag, bytes) = decode_result_tuple(term)?;
         assert_eq!(tag, "ok");
-        assert_eq!(bytes, b"{\"done\":true}");
+        assert_eq!(bytes, b"plain result");
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            dispatcher
+                .observed_pre_dispatch_events
+                .load(Ordering::SeqCst),
+            2
+        );
         let history = runtime.block_on(store.read_history(&workflow_id))?;
         assert!(matches!(
             history.first(),
@@ -485,7 +522,8 @@ mod tests {
     fn live_failure_records_terminal_failed_with_same_activity_id() -> TestResult {
         clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
-        let (context, store, workflow_id) = context_with_history(&runtime, 93, &[])?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let (context, store, workflow_id) = context_with_history(&runtime, 93, workflow_id, &[])?;
         let dispatcher = RecordingDispatcher {
             calls: AtomicUsize::new(0),
             result: Err("boom".to_owned()),
