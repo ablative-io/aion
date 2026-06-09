@@ -975,6 +975,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn describe_handler_maps_omitted_run_missing_workflow_to_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+
+        let error = describe(
+            &context.guard,
+            &context.caller,
+            describe_request(false, None),
+        )
+        .await;
+
+        assert_workflow_not_found(error)?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn describe_handler_maps_empty_history_to_not_found()
     -> Result<(), Box<dyn std::error::Error>> {
         let context = context().await?;
@@ -987,7 +1004,54 @@ mod tests {
         )
         .await;
 
-        let error = error
+        assert_workflow_not_found(error)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn signal_handler_maps_omitted_run_missing_workflow_to_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        let mut request = signal_request()?;
+        request.run_id = None;
+
+        let error = signal(&context.guard, &context.caller, request).await;
+
+        assert_workflow_not_found(error)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_handler_maps_omitted_run_missing_workflow_to_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        let mut request = query_request();
+        request.run_id = None;
+
+        let error = query(&context.guard, &context.caller, request).await;
+
+        assert_workflow_not_found(error)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_handler_maps_omitted_run_missing_workflow_to_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        let mut request = cancel_request();
+        request.run_id = None;
+
+        let error = cancel(&context.guard, &context.caller, request).await;
+
+        assert_workflow_not_found(error)?;
+        Ok(())
+    }
+
+    fn assert_workflow_not_found<T>(result: Result<T, WireError>) -> Result<(), WireError> {
+        let error = result
             .err()
             .ok_or_else(|| WireError::backend("expected error"))?;
         assert_eq!(error.code, WireErrorCode::NotFound);
