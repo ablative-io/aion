@@ -49,6 +49,10 @@ impl ReadableEventStore for ReadableEventStoreAdapter {
         self.store.list_active().await
     }
 
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.store.list_workflow_ids().await
+    }
+
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         self.store.query(filter).await
     }
