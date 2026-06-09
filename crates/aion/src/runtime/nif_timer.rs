@@ -1,6 +1,6 @@
 //! Timer NIF implementations for the `aion_flow_ffi` namespace.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use aion_core::{Event, TimerId, WorkflowId};
@@ -20,7 +20,7 @@ use crate::runtime::engine_nifs::{decode_string_arg, error_result_term, ok_resul
 use crate::runtime::nif_context::{NifContext, NifContextError};
 use crate::time::{self, TimerService};
 
-static TIMER_BRIDGE: OnceLock<Arc<TimerNifBridge>> = OnceLock::new();
+static TIMER_BRIDGE: OnceLock<Mutex<Option<Arc<TimerNifBridge>>>> = OnceLock::new();
 
 struct TimerNifBridge {
     registry: Arc<Registry>,
@@ -170,12 +170,16 @@ pub(crate) fn install_timer_nif_bridge(
     store: Arc<dyn EventStore>,
     tokio_handle: Handle,
 ) {
-    let bridge = TimerNifBridge {
+    let bridge = Arc::new(TimerNifBridge {
         registry,
         store,
         tokio_handle,
-    };
-    let _ = TIMER_BRIDGE.set(Arc::new(bridge));
+    });
+    let bridge_slot = TIMER_BRIDGE.get_or_init(|| Mutex::new(None));
+    match bridge_slot.lock() {
+        Ok(mut installed) => *installed = Some(bridge),
+        Err(poisoned) => *poisoned.into_inner() = Some(bridge),
+    }
 }
 
 /// NIF backing `aion_flow_ffi:sleep/1`.
@@ -191,7 +195,7 @@ pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term
             ResolveOutcome::Recorded(_) => Ok(error_result("sleep history mismatch")),
             ResolveOutcome::ResumeLive => {
                 record_started(&context, recorded_now, timer_id.clone(), fire_at)?;
-                schedule_timer(&context, timer_id.clone(), fire_at, TimerKind::Anonymous)?;
+                schedule_sleep_timer(&context, duration, recorded_now, timer_id.clone(), fire_at)?;
                 wait_duration(duration)?;
                 record_fired(&context, fire_at, timer_id)?;
                 Ok(ok_result("fired"))
@@ -256,7 +260,7 @@ pub(super) fn with_timeout_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
             ResolveOutcome::Recorded(_) => Ok(error_result("with_timeout history mismatch")),
             ResolveOutcome::ResumeLive => {
                 record_started(&context, recorded_now, timer_id.clone(), fire_at)?;
-                schedule_timer(&context, timer_id.clone(), fire_at, TimerKind::Anonymous)?;
+                schedule_sleep_timer(&context, duration, recorded_now, timer_id.clone(), fire_at)?;
                 if operation == "timeout" || duration.is_zero() {
                     record_fired(&context, fire_at, timer_id)?;
                     Ok(error_result("timeout"))
@@ -410,8 +414,32 @@ fn record_cancelled(
 
 #[derive(Clone, Copy)]
 enum TimerKind {
-    Anonymous,
+    Anonymous {
+        duration: Duration,
+        recorded_now: DateTime<Utc>,
+    },
     Named,
+}
+
+fn schedule_sleep_timer(
+    context: &NifContext,
+    duration: Duration,
+    recorded_now: DateTime<Utc>,
+    timer_id: TimerId,
+    fire_at: DateTime<Utc>,
+) -> Result<(), NifTimerError> {
+    let kind = TimerKind::Anonymous {
+        duration,
+        recorded_now,
+    };
+    let scheduled = schedule_timer(context, timer_id.clone(), fire_at, kind)?;
+    if scheduled == timer_id {
+        Ok(())
+    } else {
+        Err(NifTimerError::Context(
+            "AT sleep service returned a mismatched timer id".to_owned(),
+        ))
+    }
 }
 
 fn schedule_timer(
@@ -419,17 +447,34 @@ fn schedule_timer(
     timer_id: TimerId,
     fire_at: DateTime<Utc>,
     kind: TimerKind,
-) -> Result<(), NifTimerError> {
+) -> Result<TimerId, NifTimerError> {
     let workflow_id = context.workflow_id().clone();
     let bridge = timer_bridge()?;
     let service = bridge.service();
-    bridge.tokio_handle.block_on(async {
+    let scheduled = bridge.tokio_handle.block_on(async {
         match kind {
-            TimerKind::Anonymous => service.schedule(workflow_id, timer_id, fire_at).await,
-            TimerKind::Named => time::start_timer(&service, workflow_id, timer_id, fire_at).await,
+            TimerKind::Anonymous {
+                duration,
+                recorded_now,
+            } => time::sleep(
+                &service,
+                workflow_id,
+                duration,
+                recorded_now,
+                timer_id.sequence_position().ok_or_else(|| {
+                    NifTimerError::Context("sleep timer id is not anonymous".to_owned())
+                })?,
+            )
+            .await
+            .map(|sleep| sleep.timer_id)
+            .map_err(NifTimerError::from),
+            TimerKind::Named => time::start_timer(&service, workflow_id, timer_id.clone(), fire_at)
+                .await
+                .map(|()| timer_id)
+                .map_err(NifTimerError::from),
         }
     })?;
-    Ok(())
+    Ok(scheduled)
 }
 
 fn cancel_live_timer(context: &NifContext, timer_id: TimerId) -> Result<(), NifTimerError> {
@@ -449,16 +494,19 @@ fn wait_duration(duration: Duration) -> Result<(), NifTimerError> {
 }
 
 fn timer_bridge() -> Result<Arc<TimerNifBridge>, NifTimerError> {
-    TIMER_BRIDGE
+    let bridge_slot = TIMER_BRIDGE
         .get()
-        .cloned()
+        .ok_or_else(|| NifTimerError::Context("timer bridge is not configured".to_owned()))?;
+    bridge_slot
+        .lock()
+        .map_err(|_| NifTimerError::Context("timer bridge lock is poisoned".to_owned()))?
+        .clone()
         .ok_or_else(|| NifTimerError::Context("timer bridge is not configured".to_owned()))
 }
 
 fn deterministic_epoch() -> DateTime<Utc> {
     DateTime::<Utc>::UNIX_EPOCH
 }
-
 fn event_kind(event: &Event) -> &'static str {
     match event {
         Event::TimerFired { .. } => "TimerFired",
@@ -490,6 +538,8 @@ enum NifTimerError {
     Durability(#[from] DurabilityError),
     #[error("timer:{0}")]
     Timer(#[from] crate::time::TimerServiceError),
+    #[error("sleep:{0}")]
+    Sleep(#[from] crate::time::SleepTimerError),
 }
 
 impl From<NifContextError> for NifTimerError {
