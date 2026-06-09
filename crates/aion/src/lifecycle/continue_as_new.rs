@@ -24,11 +24,11 @@ pub struct ContinueAsNewContext<'a> {
     /// Loader-owned workflow records keyed by logical workflow type and version.
     pub loaded_workflows: &'a LoadedWorkflows,
     /// Runtime boundary used to spawn the replacement workflow process.
-    pub runtime: &'a RuntimeHandle,
+    pub runtime: &'a Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
     pub supervision: &'a SupervisionTree,
     /// Active execution registry keyed by workflow/run identifiers.
-    pub registry: &'a Registry,
+    pub registry: &'a Arc<Registry>,
 }
 
 /// Request payload carried into the replacement run.
@@ -82,9 +82,9 @@ pub async fn continue_as_new(
             store: context.store,
             visibility_store: context.visibility_store,
             loaded_workflows: context.loaded_workflows,
-            runtime: context.runtime,
+            runtime: Arc::clone(context.runtime),
             supervision: context.supervision,
-            registry: context.registry,
+            registry: Arc::clone(context.registry),
             signal_handoff: None,
         },
         workflow_type,
@@ -221,9 +221,9 @@ mod tests {
         store: Arc<dyn EventStore>,
         visibility_store: Arc<dyn VisibilityStore>,
         loaded: LoadedWorkflows,
-        runtime: RuntimeHandle,
+        runtime: Arc<RuntimeHandle>,
         supervision: SupervisionTree,
-        registry: Registry,
+        registry: Arc<Registry>,
         handle: WorkflowHandle,
     }
 
@@ -253,11 +253,11 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
         let visibility_store: Arc<dyn VisibilityStore> = backing;
         let loaded = loaded_workflows();
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         runtime.register_waiting_test_module("checkout_deployed", "run");
         runtime.register_waiting_test_module("checkout_v2_deployed", "run");
         let supervision = SupervisionTree::new();
-        let registry = Registry::default();
+        let registry = Arc::new(Registry::default());
         let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
         let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));

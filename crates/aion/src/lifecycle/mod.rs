@@ -1,5 +1,6 @@
 //! Workflow lifecycle operations: start, terminate, suspend, and resume.
 
+pub mod completion;
 pub mod continue_as_new;
 pub mod start;
 pub mod terminate;

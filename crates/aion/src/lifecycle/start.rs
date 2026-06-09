@@ -7,6 +7,7 @@ use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
+use super::completion::{ProcessExitContext, handle_process_exit};
 use super::visibility::upsert_workflow_visibility;
 use crate::durability::Recorder;
 use crate::loader::LoadedWorkflows;
@@ -33,11 +34,11 @@ pub struct StartWorkflowContext<'a> {
     /// Loader-owned workflow records keyed by logical workflow type and version.
     pub loaded_workflows: &'a LoadedWorkflows,
     /// Runtime boundary used to spawn the workflow process.
-    pub runtime: &'a RuntimeHandle,
+    pub runtime: Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
     pub supervision: &'a SupervisionTree,
     /// Active execution registry keyed by workflow/run identifiers.
-    pub registry: &'a Registry,
+    pub registry: Arc<Registry>,
     /// Shared non-resident signal handoff to flush after resident registration.
     pub signal_handoff: Option<Arc<SignalResumeHandoff>>,
 }
@@ -135,7 +136,7 @@ pub async fn start_workflow_with_options(
         .ensure_type_supervisor(loaded.workflow_type())?;
     let runtime_input = RuntimeInput::from_payload(&input)?;
     let pid = spawn_workflow_with_policy(
-        context.runtime,
+        &context.runtime,
         loaded.deployed_entry_module(),
         loaded.entry_function(),
         runtime_input,
@@ -170,21 +171,53 @@ pub async fn start_workflow_with_options(
         return Err(error);
     }
 
-    if let Some(handoff) = &context.signal_handoff {
-        let adapter = StartResumeEngineHandle {
-            runtime: context.runtime,
-            registry: context.registry,
-        };
-        if let Err(error) = handoff.deliver_deferred(&adapter, handle.workflow_id()) {
-            tracing::warn!(
-                workflow_id = %handle.workflow_id(),
-                error = %error,
-                "failed to flush deferred signals after workflow became resident"
-            );
-        }
+    if let Err(error) = install_completion_monitor(&context, pid, &handle) {
+        let _ = context
+            .registry
+            .remove(handle.workflow_id(), handle.run_id());
+        let _ = context.runtime.cancel_pid(pid);
+        return Err(error);
     }
+    deliver_deferred_signals(&context, &handle);
 
     Ok(handle)
+}
+
+fn install_completion_monitor(
+    context: &StartWorkflowContext<'_>,
+    pid: crate::Pid,
+    handle: &WorkflowHandle,
+) -> Result<(), EngineError> {
+    let completion_context = ProcessExitContext {
+        store: Arc::clone(&context.store),
+        visibility_store: Arc::clone(&context.visibility_store),
+        registry: Arc::clone(&context.registry),
+        tokio_handle: tokio::runtime::Handle::current(),
+    };
+    let completion_handle = handle.clone();
+    context.runtime.monitor_process(pid, move |outcome| {
+        if let Err(error) = handle_process_exit(completion_context, completion_handle, outcome) {
+            tracing::error!(workflow_pid = pid, error = %error, "workflow process monitor completion failed");
+        }
+    })?;
+    Ok(())
+}
+
+fn deliver_deferred_signals(context: &StartWorkflowContext<'_>, handle: &WorkflowHandle) {
+    let Some(handoff) = &context.signal_handoff else {
+        return;
+    };
+    let adapter = StartResumeEngineHandle {
+        runtime: &context.runtime,
+        registry: &context.registry,
+    };
+    if let Err(error) = handoff.deliver_deferred(&adapter, handle.workflow_id()) {
+        tracing::warn!(
+            workflow_id = %handle.workflow_id(),
+            error = %error,
+            "failed to flush deferred signals after workflow became resident"
+        );
+    }
 }
 
 struct StartResumeEngineHandle<'a> {
@@ -297,278 +330,5 @@ impl EngineHandle for StartResumeEngineHandle<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use aion_core::{Event, Payload};
-    use aion_package::ContentHash;
-    use aion_store::visibility::VisibilityStore;
-    use aion_store::{EventStore, InMemoryStore};
-    use serde_json::json;
-
-    use super::{
-        StartWorkflowContext, StartWorkflowOptions, start_workflow, start_workflow_with_options,
-    };
-    use crate::EngineError;
-    use crate::loader::LoadedWorkflows;
-    use crate::registry::{HandleResidency, Registry};
-    use crate::runtime::{RuntimeConfig, RuntimeHandle};
-    use crate::supervision::SupervisionTree;
-
-    fn payload(label: &str) -> Result<Payload, aion_core::PayloadError> {
-        Payload::from_json(&json!({ "label": label }))
-    }
-
-    fn load_without_runtime_registration(workflow_type: &str) -> LoadedWorkflows {
-        let mut loaded = LoadedWorkflows::new();
-        loaded.note_loaded_workflow_for_test(
-            workflow_type,
-            format!("{workflow_type}__deployed"),
-            "run",
-            ContentHash::from_bytes([3; 32]),
-        );
-        loaded
-    }
-
-    fn context<'a>(
-        store: Arc<dyn EventStore>,
-        visibility_store: Arc<dyn VisibilityStore>,
-        loaded_workflows: &'a LoadedWorkflows,
-        runtime: &'a RuntimeHandle,
-        supervision: &'a SupervisionTree,
-        registry: &'a Registry,
-    ) -> StartWorkflowContext<'a> {
-        StartWorkflowContext {
-            store,
-            visibility_store,
-            loaded_workflows,
-            runtime,
-            supervision,
-            registry,
-            signal_handoff: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn unknown_workflow_type_returns_not_found_and_appends_nothing()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let store = Arc::new(InMemoryStore::default());
-        let loaded = LoadedWorkflows::new();
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
-        let supervision = SupervisionTree::new();
-        let registry = Registry::default();
-        let input = payload("input")?;
-
-        let result = start_workflow(
-            context(
-                store.clone(),
-                store.clone(),
-                &loaded,
-                &runtime,
-                &supervision,
-                &registry,
-            ),
-            "checkout",
-            input,
-        )
-        .await;
-
-        assert!(matches!(
-            result,
-            Err(EngineError::WorkflowNotFound { workflow_type }) if workflow_type == "checkout"
-        ));
-        assert_eq!(store.list_active().await?, Vec::new());
-        assert_eq!(registry.list()?.len(), 0);
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let store = Arc::new(InMemoryStore::default());
-        let loaded = load_without_runtime_registration("checkout");
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
-        let supervision = SupervisionTree::new();
-        let registry = Registry::default();
-        let input = payload("input")?;
-
-        let result = start_workflow(
-            context(
-                store.clone(),
-                store.clone(),
-                &loaded,
-                &runtime,
-                &supervision,
-                &registry,
-            ),
-            "checkout",
-            input.clone(),
-        )
-        .await;
-
-        assert!(matches!(result, Err(EngineError::Runtime { .. })));
-        let active = store.list_active().await?;
-        assert_eq!(active.len(), 1);
-        let history = store.read_history(&active[0]).await?;
-        assert_eq!(history.len(), 1);
-        match &history[0] {
-            Event::WorkflowStarted {
-                envelope,
-                workflow_type,
-                input: recorded_input,
-                run_id: _,
-                parent_run_id: None,
-            } => {
-                assert_eq!(envelope.seq, 1);
-                assert_eq!(&envelope.workflow_id, &active[0]);
-                assert_eq!(workflow_type, "checkout");
-                assert_eq!(recorded_input, &input);
-            }
-            other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
-        }
-        assert_eq!(registry.list()?.len(), 0);
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn successful_start_appends_spawns_places_registers_and_returns_handle()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let store = Arc::new(InMemoryStore::default());
-        let deployed_module = "checkout__deployed";
-        let loaded = load_without_runtime_registration("checkout");
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
-        runtime.register_waiting_test_module(deployed_module, "run");
-        let supervision = SupervisionTree::new();
-        let registry = Registry::default();
-        let input = payload("input")?;
-
-        let handle = start_workflow(
-            context(
-                store.clone(),
-                store.clone(),
-                &loaded,
-                &runtime,
-                &supervision,
-                &registry,
-            ),
-            "checkout",
-            input.clone(),
-        )
-        .await?;
-
-        assert_eq!(handle.workflow_type(), "checkout");
-        assert_eq!(handle.loaded_version(), &ContentHash::from_bytes([3; 32]));
-        assert_eq!(handle.cached_status(), aion_core::WorkflowStatus::Running);
-        assert_eq!(handle.residency(), HandleResidency::Resident);
-        assert!(!handle.completion().is_completed());
-        runtime.wait_for_process_ready(handle.pid())?;
-        assert!(runtime.trap_exit(handle.pid())?);
-        assert_eq!(
-            supervision
-                .workflow(handle.pid())?
-                .map(|node| node.workflow_pid()),
-            Some(handle.pid())
-        );
-
-        let registered = registry.get(handle.workflow_id(), handle.run_id())?;
-        assert_eq!(registered, Some(handle.clone()));
-        let active = store.list_active().await?;
-        assert_eq!(active, vec![handle.workflow_id().clone()]);
-        let history = store.read_history(handle.workflow_id()).await?;
-        assert_eq!(history.len(), 1);
-        match &history[0] {
-            Event::WorkflowStarted {
-                envelope,
-                workflow_type,
-                input: recorded_input,
-                run_id: recorded_run_id,
-                parent_run_id: None,
-            } => {
-                assert_eq!(envelope.seq, 1);
-                assert_eq!(&envelope.workflow_id, handle.workflow_id());
-                assert_eq!(workflow_type, "checkout");
-                assert_eq!(recorded_input, &input);
-                assert_eq!(recorded_run_id, handle.run_id());
-            }
-            other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
-        }
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn start_with_existing_workflow_id_resumes_history_sequence()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let store = Arc::new(InMemoryStore::default());
-        let deployed_module = "checkout__deployed";
-        let loaded = load_without_runtime_registration("checkout");
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
-        runtime.register_waiting_test_module(deployed_module, "run");
-        let supervision = SupervisionTree::new();
-        let registry = Registry::default();
-        let workflow_id = aion_core::WorkflowId::new_v4();
-        let parent_run_id = aion_core::RunId::new_v4();
-
-        let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), store.clone());
-        recorder
-            .record_workflow_started(
-                chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("first")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
-            )
-            .await?;
-        recorder
-            .record_workflow_continued_as_new(
-                chrono::Utc::now(),
-                payload("second")?,
-                None,
-                parent_run_id.clone(),
-            )
-            .await?;
-
-        let handle = start_workflow_with_options(
-            context(
-                store.clone(),
-                store.clone(),
-                &loaded,
-                &runtime,
-                &supervision,
-                &registry,
-            ),
-            "checkout",
-            payload("second")?,
-            StartWorkflowOptions {
-                workflow_id: Some(workflow_id.clone()),
-                parent_run_id: Some(parent_run_id.clone()),
-            },
-        )
-        .await?;
-
-        assert_eq!(handle.workflow_id(), &workflow_id);
-        let history = store.read_history(&workflow_id).await?;
-        assert_eq!(history.len(), 3);
-        match &history[2] {
-            Event::WorkflowStarted {
-                envelope,
-                workflow_type,
-                run_id: _,
-                parent_run_id: started_parent,
-                ..
-            } => {
-                assert_eq!(envelope.seq, 3);
-                assert_eq!(workflow_type, "checkout");
-                assert_eq!(started_parent, &Some(parent_run_id));
-            }
-            other => {
-                return Err(
-                    format!("expected replacement WorkflowStarted, found {other:?}").into(),
-                );
-            }
-        }
-        runtime.shutdown()?;
-        Ok(())
-    }
-}
+#[path = "start_tests.rs"]
+mod start_tests;
