@@ -1,0 +1,39 @@
+{
+    "cluster": "aion-publish",
+    "sections": [
+        {
+            "title": "Crate Metadata",
+            "items": [
+                {"id": "C1", "text": "Every crate has a description in Cargo.toml"},
+                {"id": "C2", "text": "Every crate has keywords and categories for crates.io discovery"},
+                {"id": "C3", "text": "Every crate inherits license, repository, edition, rust-version from workspace"},
+                {"id": "C4", "text": "Every crate has a documentation URL pointing to docs.rs"}
+            ]
+        },
+        {
+            "title": "Dependencies",
+            "items": [
+                {"id": "C5", "text": "No path-only dependencies remain — all inter-crate deps use version + path"},
+                {"id": "C6", "text": "All external dependencies are available on crates.io"},
+                {"id": "C7", "text": "beamr dependency is pinned to a published crates.io version"}
+            ]
+        },
+        {
+            "title": "Documentation",
+            "items": [
+                {"id": "C8", "text": "Every published crate has a README.md"},
+                {"id": "C9", "text": "All public types and functions have doc comments"},
+                {"id": "C10", "text": "Each crate lib.rs has a crate-level doc comment with usage example"},
+                {"id": "C11", "text": "cargo doc --workspace --no-deps builds without warnings"}
+            ]
+        },
+        {
+            "title": "Publication",
+            "items": [
+                {"id": "C12", "text": "Publish order documented and validated against dependency graph"},
+                {"id": "C13", "text": "cargo publish --dry-run succeeds for every crate in order"},
+                {"id": "C14", "text": "Publish script or CI job automates the ordered publish"}
+            ]
+        }
+    ]
+}

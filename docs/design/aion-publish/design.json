@@ -1,0 +1,38 @@
+{
+    "cluster": "aion-publish",
+    "prefix": "PK",
+    "title": "Crates.io Packaging and Publication",
+    "purpose": "Make the Aion crate family publishable on crates.io as a production-quality, documented, versioned set of crates that external consumers can depend on.",
+    "scope": "Cargo.toml metadata, per-crate README files, API documentation, dependency audit, publish ordering, and the publish workflow itself.",
+    "decisions": [
+        {
+            "id": "D1",
+            "title": "Leaf-first publish order",
+            "rationale": "crates.io requires all dependencies to be published before dependents. The publish order must follow the dependency graph: aion-core → aion-store → aion-package / aion-nif → aion → aion-proto → aion-server / aion-worker / aion-client / aion-cli."
+        },
+        {
+            "id": "D2",
+            "title": "Workspace-inherited metadata",
+            "rationale": "license, repository, edition, and rust-version are already workspace-level. Per-crate fields (description, keywords, categories, documentation) must be set per crate because they differ."
+        },
+        {
+            "id": "D3",
+            "title": "Version 0.1.0 initial publish",
+            "rationale": "All crates start at 0.1.0 (already set in workspace). First publish establishes the namespace. Semantic versioning from there."
+        }
+    ],
+    "crates": [
+        "aion-core",
+        "aion-store",
+        "aion-store-libsql",
+        "aion-package",
+        "aion-nif",
+        "aion",
+        "aion-proto",
+        "aion-server",
+        "aion-worker",
+        "aion-client",
+        "aion-cli"
+    ],
+    "briefs": ["PK-001", "PK-002", "PK-003"]
+}

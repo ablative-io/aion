@@ -1,0 +1,23 @@
+{
+    "cluster": "aion-publish",
+    "personas": [
+        {
+            "name": "Rust Developer",
+            "role": "External consumer who wants to embed Aion or build on its primitives",
+            "stories": [
+                {"id": "S1", "text": "I can add aion-core to my Cargo.toml and use the event model and identifiers without pulling in the engine or beamr."},
+                {"id": "S2", "text": "I can discover Aion crates on crates.io by searching for 'workflow engine' or 'durable execution'."},
+                {"id": "S3", "text": "I can read docs.rs documentation for any Aion crate and find usage examples."},
+                {"id": "S4", "text": "I can run cargo publish --dry-run on any crate to verify it's publishable."}
+            ]
+        },
+        {
+            "name": "Aion Maintainer",
+            "role": "Team member who publishes new versions to crates.io",
+            "stories": [
+                {"id": "S5", "text": "I can run a single script that publishes all crates in the correct dependency order."},
+                {"id": "S6", "text": "I can verify that no crate has path-only dependencies that would prevent crates.io publication."}
+            ]
+        }
+    ]
+}

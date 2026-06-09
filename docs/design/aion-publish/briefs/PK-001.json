@@ -1,0 +1,102 @@
+{
+    "id": "PK-001",
+    "cluster": "aion-publish",
+    "title": "Crate metadata and dependency audit for crates.io",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": ["C1", "C2", "C3", "C4", "C5", "C6", "C7"],
+    "stories": ["S2", "S4", "S6"],
+    "purpose": "Add crates.io-required metadata to all 11 Aion crates and ensure inter-crate dependencies use version+path so cargo publish succeeds.",
+    "task": "For each crate in the workspace: add description, keywords, categories, and documentation fields to Cargo.toml. Ensure license, repository, edition, and rust-version inherit from workspace. Audit all inter-crate dependencies to use version = \"0.1.0\" alongside path references. Verify beamr is pinned to a published crates.io version. Run cargo publish --dry-run for every crate in dependency order.",
+    "requirements": [
+        {
+            "id": "R1",
+            "title": "Per-crate description and discovery metadata",
+            "spec": "THE SYSTEM SHALL have a description, keywords array, and categories array in every crate's Cargo.toml. Keywords SHALL include 'workflow', 'durable-execution', and crate-specific terms. Categories SHALL include 'development-tools' or 'asynchronous' as appropriate.",
+            "acceptance": [
+                "All 11 crates have a non-empty description field.",
+                "All 11 crates have keywords and categories arrays.",
+                "cargo metadata --format-version 1 shows description for every workspace member."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "crates/aion-core/Cargo.toml",
+                    "crates/aion-store/Cargo.toml",
+                    "crates/aion-store-libsql/Cargo.toml",
+                    "crates/aion-package/Cargo.toml",
+                    "crates/aion-nif/Cargo.toml",
+                    "crates/aion/Cargo.toml",
+                    "crates/aion-proto/Cargo.toml",
+                    "crates/aion-server/Cargo.toml",
+                    "crates/aion-worker/Cargo.toml",
+                    "crates/aion-client/Cargo.toml",
+                    "crates/aion-cli/Cargo.toml"
+                ]
+            },
+            "checklist": ["C1", "C2", "C4"],
+            "stories": ["S2"]
+        },
+        {
+            "id": "R2",
+            "title": "Workspace inheritance verification",
+            "spec": "THE SYSTEM SHALL ensure every crate inherits license, repository, edition, and rust-version from the workspace package section.",
+            "acceptance": [
+                "Every crate's Cargo.toml contains license.workspace = true.",
+                "Every crate's Cargo.toml contains repository.workspace = true.",
+                "cargo metadata confirms uniform license and repository across all members."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "crates/aion-core/Cargo.toml",
+                    "crates/aion-store/Cargo.toml",
+                    "crates/aion-package/Cargo.toml",
+                    "crates/aion-nif/Cargo.toml",
+                    "crates/aion/Cargo.toml"
+                ]
+            },
+            "checklist": ["C3"],
+            "stories": []
+        },
+        {
+            "id": "R3",
+            "title": "Inter-crate version+path dependencies",
+            "spec": "THE SYSTEM SHALL specify both version and path for every inter-crate dependency so that cargo publish resolves the version from crates.io while local development uses the path.",
+            "acceptance": [
+                "Every dependency on a workspace crate uses { version = \"0.1.0\", path = \"../crate-name\" } syntax.",
+                "No dependency uses path-only without a version.",
+                "cargo publish --dry-run succeeds for every crate."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "Cargo.toml",
+                    "crates/aion/Cargo.toml",
+                    "crates/aion-store/Cargo.toml",
+                    "crates/aion-store-libsql/Cargo.toml",
+                    "crates/aion-server/Cargo.toml",
+                    "crates/aion-worker/Cargo.toml",
+                    "crates/aion-client/Cargo.toml",
+                    "crates/aion-cli/Cargo.toml"
+                ]
+            },
+            "checklist": ["C5", "C6", "C7"],
+            "stories": ["S4", "S6"]
+        }
+    ],
+    "boundaries": [
+        "SHALL add metadata to all 11 workspace crates.",
+        "SHALL verify beamr is available on crates.io at the pinned version.",
+        "SHALL NOT change any crate's public API or functionality.",
+        "SHALL NOT bump version numbers (stays at 0.1.0 for initial publish).",
+        "SHALL NOT actually publish to crates.io — dry-run only."
+    ],
+    "verification": [
+        "cargo clippy --workspace --all-targets -- -D warnings passes.",
+        "cargo test --workspace passes.",
+        "cargo fmt --check passes.",
+        "cargo publish --dry-run succeeds for every crate in dependency order.",
+        "cargo metadata --format-version 1 shows description, license, and repository for every member."
+    ]
+}
