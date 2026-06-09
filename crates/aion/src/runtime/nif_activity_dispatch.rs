@@ -50,7 +50,7 @@ pub(super) fn dispatch_activity_impl(
         context,
         dispatcher,
         runtime.runtime,
-        runtime.tokio_handle,
+        &runtime.tokio_handle,
         name,
         input,
         config,
@@ -95,7 +95,7 @@ pub(super) fn await_activity_result_impl(
         Ok(context) => context,
         Err(error) => return Ok(context_error_term(&error)),
     };
-    await_activity_result_with_context(context, runtime.runtime, ctx, &correlation)
+    await_activity_result_with_context(context, &runtime.runtime, ctx, &correlation)
 }
 
 fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
@@ -108,11 +108,18 @@ fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
     Ok((name, input, config))
 }
 
+/// Grouped parameters for the activity being dispatched.
+struct ActivityCall {
+    name: String,
+    input: String,
+    config: String,
+}
+
 fn dispatch_activity_with_context(
     mut context: NifContext,
     dispatcher: Option<Arc<dyn ActivityDispatcher>>,
     runtime: Arc<crate::RuntimeHandle>,
-    tokio_handle: tokio::runtime::Handle,
+    tokio_handle: &tokio::runtime::Handle,
     name: String,
     input_text: String,
     config: String,
@@ -141,15 +148,18 @@ fn dispatch_activity_with_context(
                 .unwrap_or(Term::NIL));
             };
             record_started(&context, activity_id, name.clone(), input_payload)?;
+            let call = ActivityCall {
+                name,
+                input: input_text,
+                config,
+            };
             spawn_completion_task(
                 tokio_handle,
                 runtime,
                 dispatcher,
                 context.pid(),
                 correlation.clone(),
-                name,
-                input_text,
-                config,
+                call,
             );
             Ok(alloc_binary_term(correlation.as_bytes()).unwrap_or(Term::NIL))
         }
@@ -157,24 +167,22 @@ fn dispatch_activity_with_context(
 }
 
 fn spawn_completion_task(
-    tokio_handle: tokio::runtime::Handle,
+    tokio_handle: &tokio::runtime::Handle,
     runtime: Arc<crate::RuntimeHandle>,
     dispatcher: Arc<dyn ActivityDispatcher>,
     workflow_pid: u64,
     correlation_id: String,
-    name: String,
-    input: String,
-    config: String,
+    call: ActivityCall,
 ) {
     let future = futures::future::lazy(move |_| {
-        dispatcher.dispatch_from_process(&name, &input, &config, Some(workflow_pid))
+        dispatcher.dispatch_from_process(&call.name, &call.input, &call.config, Some(workflow_pid))
     })
     .map(move |result| {
         match result {
             Ok(payload) => {
                 if let Err(error) = runtime.deliver_activity_completion_message(
                     workflow_pid,
-                    correlation_id.clone(),
+                    &correlation_id,
                     payload,
                 ) {
                     tracing::warn!(%error, workflow_pid, correlation_id, "activity completion delivery failed");
@@ -183,7 +191,7 @@ fn spawn_completion_task(
             Err(reason) => {
                 if let Err(error) = runtime.deliver_activity_failure_message(
                     workflow_pid,
-                    correlation_id.clone(),
+                    &correlation_id,
                     reason,
                 ) {
                     tracing::warn!(%error, workflow_pid, correlation_id, "activity failure delivery failed");
@@ -196,15 +204,15 @@ fn spawn_completion_task(
 
 fn await_activity_result_with_context(
     mut context: NifContext,
-    runtime: Arc<crate::RuntimeHandle>,
+    runtime: &Arc<crate::RuntimeHandle>,
     process_context: &mut ProcessContext,
     correlation: &str,
 ) -> Result<Term, Term> {
     let activity_id = activity_id_from_correlation(correlation)?;
-    if let Some(recorded) = recorded_resolution_for(&mut context, activity_id.clone())? {
+    if let Some(recorded) = recorded_resolution_for(&mut context, &activity_id)? {
         return Ok(recorded_result_term(recorded));
     }
-    if let Some(term) = live_completion_term(&context, &runtime, activity_id, process_context)? {
+    if let Some(term) = live_completion_term(&context, runtime, activity_id, process_context)? {
         return Ok(term);
     }
     process_context.request_suspend(None);
@@ -213,7 +221,7 @@ fn await_activity_result_with_context(
 
 fn recorded_resolution_for(
     context: &mut NifContext,
-    activity_id: ActivityId,
+    activity_id: &ActivityId,
 ) -> Result<Option<Resolution>, Term> {
     let ordinal = activity_id.sequence_position();
     let input = json_payload("null", "await_activity_result", "replay input")?;
@@ -252,7 +260,7 @@ fn live_completion_term(
     process_context: &mut ProcessContext,
 ) -> Result<Option<Term>, Term> {
     let Some(select) = process_context.select_facility() else {
-        return Ok(take_runtime_completion(context, runtime, activity_id)?);
+        return take_runtime_completion(context, runtime, activity_id);
     };
     for index in 0..select.message_count() {
         let Some(message) = select.peek_message(index) else {
@@ -265,7 +273,7 @@ fn live_completion_term(
             activity_id.sequence_position(),
         ) {
             select.remove_message(index);
-            return Ok(take_runtime_completion(context, runtime, activity_id)?);
+            return take_runtime_completion(context, runtime, activity_id);
         }
     }
     Ok(None)

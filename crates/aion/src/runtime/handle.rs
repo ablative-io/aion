@@ -334,17 +334,17 @@ impl RuntimeHandle {
     pub(crate) fn deliver_activity_completion_message(
         &self,
         workflow_pid: Pid,
-        correlation_id: String,
+        correlation_id: &str,
         result: String,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
-        let activity_id = correlation_to_activity_pid(&correlation_id)?;
+        let activity_id = correlation_to_activity_pid(correlation_id)?;
         self.activity_results.insert(
             (workflow_pid, activity_id),
             Payload::new(ContentType::Json, result.into_bytes()),
         );
         let marker = self.atom_table.intern("activity_complete");
-        self.enqueue_activity_marker(workflow_pid, marker, &correlation_id)
+        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
     }
 
     /// Deliver a two-phase activity failure marker to the workflow mailbox.
@@ -356,15 +356,15 @@ impl RuntimeHandle {
     pub(crate) fn deliver_activity_failure_message(
         &self,
         workflow_pid: Pid,
-        correlation_id: String,
+        correlation_id: &str,
         reason: String,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
-        let activity_id = correlation_to_activity_pid(&correlation_id)?;
+        let activity_id = correlation_to_activity_pid(correlation_id)?;
         self.activity_errors
             .insert((workflow_pid, activity_id), activity_error(reason));
         let marker = self.atom_table.intern("activity_failed");
-        self.enqueue_activity_marker(workflow_pid, marker, &correlation_id)
+        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
     }
 
     /// Deliver a successful activity result payload to the workflow mailbox surface.

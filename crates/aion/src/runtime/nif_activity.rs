@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload};
+use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload};
 use beamr::atom::Atom;
 use beamr::term::Term;
 use beamr::term::binary::{self, Binary};
@@ -62,10 +62,6 @@ fn park_heap(heap: Box<[u64]>) {
     ACTIVITY_NIF_HEAP.with_borrow_mut(|parked| parked.push(heap));
 }
 
-pub(super) fn clear_parked_heap() {
-    ACTIVITY_NIF_HEAP.with_borrow_mut(Vec::clear);
-}
-
 pub(super) fn alloc_binary_term(bytes: &[u8]) -> Option<Term> {
     let word_count = 2 + binary::packed_word_count(bytes.len());
     let mut heap = vec![0_u64; word_count].into_boxed_slice();
@@ -108,10 +104,6 @@ pub(super) fn json_payload(text: &str, phase: &str, label: &str) -> Result<Paylo
     Payload::from_json(&value).map_err(|error| {
         error_result_term(&format!("{phase} {label}: {error}")).unwrap_or(Term::NIL)
     })
-}
-
-pub(super) fn result_payload(result: &str) -> Payload {
-    Payload::new(ContentType::Json, result.as_bytes().to_vec())
 }
 
 pub(super) fn activity_error(reason: String) -> ActivityError {
