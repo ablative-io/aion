@@ -110,9 +110,10 @@ fn activity_error_message(activity_error: error.ActivityError) -> String {
     error.Retryable(message: message, details: _) -> message
     error.Terminal(message: message, details: _) -> message
     error.ActivityDecodeFailed(_) -> "activity result could not be decoded"
-    error.ActivityTimedOut(_) -> "activity timed out"
-    error.ActivityCancelled(_) -> "activity was cancelled"
-    error.ActivityNonDeterministic(_) -> "activity was non-deterministic"
-    error.ActivityEngineFailure(message:) -> message
+    error.ActivityTimedOut(error.TimedOut(message: message)) -> message
+    error.ActivityCancelled(error.Cancelled(reason: reason)) -> reason
+    error.ActivityNonDeterministic(error.NonDeterminismViolation(message: message)) ->
+      message
+    error.ActivityEngineFailure(message: message) -> message
   }
 }
