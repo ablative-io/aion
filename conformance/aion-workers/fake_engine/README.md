@@ -42,58 +42,58 @@ Recordings are normalized before assertion and cross-SDK comparison:
   "registrations": [
     {
       "namespace": "conformance",
-      "activityTypes": ["conformance.echo"],
-      "afterReconnect": false
+      "activity_types": ["conformance.echo"],
+      "after_reconnect": false
     }
   ],
   "reports": [
     {
-      "workflowId": "wf-reconnect",
-      "activityId": "act-reconnect-1",
+      "workflow_id": {"uuid": "wf-reconnect"},
+      "activity_id": {"sequence_position": 1},
       "outcome": "result",
-      "contentType": "application/json",
+      "content_type": "application/json",
       "json": {"message": "before disconnect"},
-      "reReport": true
+      "re_report": true
     }
   ],
   "failures": [
     {
-      "workflowId": "wf-fail-terminal",
-      "activityId": "act-fail-terminal-1",
+      "workflow_id": {"uuid": "wf-fail-terminal"},
+      "activity_id": {"sequence_position": 1},
       "outcome": "error",
-      "wireKind": "ACTIVITY_ERROR_KIND_TERMINAL",
+      "wire_kind": "ACTIVITY_ERROR_KIND_TERMINAL",
       "message": "terminal fixture failure",
-      "details": {"contentType": "application/json", "json": {}}
+      "details": {"content_type": "application/json", "json": {}}
     }
   ],
   "heartbeats": [
     {
-      "workflowId": "wf-heartbeat",
-      "activityId": "act-heartbeat-1",
-      "contentType": "application/json",
+      "workflow_id": {"uuid": "wf-heartbeat"},
+      "activity_id": {"sequence_position": 1},
+      "content_type": "application/json",
       "json": {"phase": "halfway", "percent": 50}
     }
   ],
   "reReports": [
-    {"activityId": "act-reconnect-1", "before": "dispatch:act-reconnect-2"}
+    {"activity_id": {"sequence_position": 1}, "before": "dispatch:2"}
   ],
-  "peakConcurrency": 1,
-  "cancellationObserved": false,
-  "forcedTermination": false
+  "peak_concurrency": 1,
+  "cancellation_observed": false,
+  "forced_termination": false
 }
 ```
 
 Normalization rules:
 
-- Sort `activityTypes` lexicographically for comparison.
-- Compare `workflowId` and `activityId` as strings.
-- Decode JSON payload bytes only when `contentType` is the JSON baseline; otherwise preserve raw bytes and fail expectations requiring `payloadEquals`.
+- Sort `activity_types` lexicographically for comparison.
+- Compare `workflow_id.uuid` and `activity_id.sequence_position` using the AW wrapper shapes from `common.proto`.
+- Decode JSON payload bytes only when `content_type` is the JSON baseline; otherwise preserve raw bytes and fail expectations requiring `payload_equals`.
 - Map numeric proto enum values to `ACTIVITY_ERROR_KIND_RETRYABLE` or `ACTIVITY_ERROR_KIND_TERMINAL` strings before diffing.
 - Preserve message order for assertions that include `mustOccurBefore` or reconnect replay ordering.
 
 ## Reconnect and acknowledgements
 
-The current `worker.proto` has no acknowledgement frame. For `reconnect-and-re-report`, the fake endpoint treats the first observed result for `act-reconnect-1` as received but unacknowledged, closes the stream immediately, waits for the worker to reconnect and re-register, and expects the same `ActivityResult` to be sent again before it dispatches `act-reconnect-2`. The engine-side de-duplication contract is outside this harness; this suite only verifies the SDK does not drop locally-computed unacknowledged work across reconnect.
+The current `worker.proto` has no acknowledgement frame. For `reconnect-and-re-report`, the fake endpoint treats the first observed result for activity sequence position `1` as received but unacknowledged, closes the stream immediately, waits for the worker to reconnect and re-register, and expects the same `ActivityResult` to be sent again before it dispatches activity sequence position `2`. The engine-side de-duplication contract is outside this harness; this suite only verifies the SDK does not drop locally-computed unacknowledged work across reconnect.
 
 ## Cancellation
 
@@ -120,7 +120,7 @@ If the Rust runner or the test binary is not available in a local checkout, the 
 Every mismatch includes the SDK, scenario id, field path, expected value, and actual value:
 
 ```text
-DIVERGENCE sdk=rust scenario=reconnect-and-re-report path=reports[1].mustOccurBefore expected="dispatch:act-reconnect-2" actual="dispatch observed before re-report"
+DIVERGENCE sdk=rust scenario=reconnect-and-re-report path=reports[1].must_occur_before expected="dispatch:2" actual="dispatch observed before re-report"
 ```
 
 The same diff format is used for per-SDK scenario validation and three-way equivalence comparisons.

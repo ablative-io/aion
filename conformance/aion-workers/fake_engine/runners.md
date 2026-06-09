@@ -125,18 +125,18 @@ SKIP sdk=typescript reason="aion-worker TypeScript activity API unavailable"
 
 After each SDK has produced a normalized recording, the harness compares:
 
-- `registrations[*].namespace` and sorted `activityTypes`.
-- Report count, workflow/activity ids, result JSON, and content type.
-- Failure count, workflow/activity ids, `wireKind`, message predicate, details content type, and details JSON.
+- `registrations[*].namespace` and sorted `activity_types`.
+- Report count, `workflow_id.uuid`, `activity_id.sequence_position`, result JSON, and content type.
+- Failure count, `workflow_id.uuid`, `activity_id.sequence_position`, `wire_kind`, message predicate, details content type, and details JSON.
 - Heartbeat count minimums and heartbeat progress payloads.
-- Reconnect replay order, especially `reReport` before `dispatch:<activityId>`.
-- `cancellationObserved` and `forcedTermination`.
-- `peakConcurrency`.
+- Reconnect replay order, especially `re_report` before `dispatch:<sequence_position>`.
+- `cancellation_observed` and `forced_termination`.
+- `peak_concurrency`.
 
 A drift in any SDK fails the suite with a per-scenario, per-language diff:
 
 ```text
-DIVERGENCE sdk=python scenario=fail-retryable path=failures[0].wireKind expected="ACTIVITY_ERROR_KIND_RETRYABLE" actual="ACTIVITY_ERROR_KIND_TERMINAL"
+DIVERGENCE sdk=python scenario=fail-retryable path=failures[0].wire_kind expected="ACTIVITY_ERROR_KIND_RETRYABLE" actual="ACTIVITY_ERROR_KIND_TERMINAL"
 ```
 
 Unavailable toolchains produce `SKIP` lines and are omitted from local equivalence comparison, but CI should install all three toolchains before declaring AR-011 complete.

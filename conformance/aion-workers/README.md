@@ -17,7 +17,7 @@ The suite is fake-endpoint-only. It never connects to `aion-server`, never exerc
 7. `reconnect-and-re-report` — harness drops the stream after receiving a result but before acknowledging it; on reconnect, the worker must re-register and re-report the unacknowledged `ActivityResult` before any new task is dispatched.
 8. `backpressure` — harness offers five tasks with `maxConcurrency = 2` and verifies observed peak concurrency is exactly two while all five tasks eventually complete.
 
-Every scenario uses AW proto names (`RegisterWorker`, `ActivityTask`, `ActivityResult`, `ActivityErrorKind`, `Heartbeat`) and stores payload expectations as JSON values plus the `application/json` content-type tag. Activity ids are normalized as strings so Rust `u64`, Python integers, and TypeScript `bigint`/string representations compare consistently.
+Every scenario uses AW proto names (`RegisterWorker`, `ActivityTask`, `ActivityResult`, `ActivityErrorKind`, `Heartbeat`) and stores payload expectations as JSON values plus the `application/json` `Payload.content_type` tag. `workflow_id` and `activity_id` are represented with their AW wrapper shapes (`WorkflowId.uuid` and `ActivityId.sequence_position`) so the catalogue stays aligned with `worker.proto` while runner output can still normalize SDK-native id types before comparison.
 
 ## Fake endpoint
 
@@ -30,15 +30,21 @@ A normalized recording has this shape:
   "sdk": "rust",
   "scenario": "receive-complete",
   "registrations": [
-    {"namespace": "conformance", "activityTypes": ["conformance.echo"]}
+    {"namespace": "conformance", "activity_types": ["conformance.echo"]}
   ],
   "reports": [
-    {"workflowId": "wf", "activityId": "act", "outcome": "result", "contentType": "application/json", "json": {}}
+    {
+      "workflow_id": {"uuid": "wf"},
+      "activity_id": {"sequence_position": 1},
+      "outcome": "result",
+      "content_type": "application/json",
+      "json": {}
+    }
   ],
   "failures": [],
   "heartbeats": [],
-  "reReports": [],
-  "peakConcurrency": 1
+  "re_reports": [],
+  "peak_concurrency": 1
 }
 ```
 
@@ -69,14 +75,14 @@ A scenario is conformant only when Rust, Python, and TypeScript produce identica
 Report divergences with SDK, scenario, field path, expected observable, and actual observable, for example:
 
 ```text
-DIVERGENCE sdk=typescript scenario=fail-terminal path=failures[0].wireKind expected="ACTIVITY_ERROR_KIND_TERMINAL" actual="ACTIVITY_ERROR_KIND_RETRYABLE"
+DIVERGENCE sdk=typescript scenario=fail-terminal path=failures[0].wire_kind expected="ACTIVITY_ERROR_KIND_TERMINAL" actual="ACTIVITY_ERROR_KIND_RETRYABLE"
 ```
 
 ## Adding a new SDK
 
 To add another worker SDK to the suite:
 
-1. Implement a thin conformance worker that connects to the fake endpoint and registers the fixture activities listed in `scenarios.json` under `fixtures.registeredActivityTypes`.
+1. Implement a thin conformance worker that connects to the fake endpoint and registers the fixture activities listed in `scenarios.json` under `fixtures.registered_activity_types`.
 2. Use the SDK's public API only. Do not call harness internals from the worker process and do not patch SDK behaviour in this conformance directory.
 3. Normalize observations through the fake endpoint recorder, not through SDK-specific logs.
 4. Add the SDK command, toolchain probe, skip message, and activity implementation notes to `fake_engine/runners.md`.

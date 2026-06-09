@@ -38,7 +38,7 @@ For every value above, each SDK emits a normalized payload record:
 {
   "sdk": "rust",
   "case": "nested-object",
-  "contentType": "application/json",
+  "content_type": "application/json",
   "jsonText": "{\"count\":3,\"flags\":[true,false],\"inner\":{\"empty\":null,\"unicode\":\"snowman ☃\"},\"message\":\"nested object\"}",
   "decoded": {
     "message": "nested object",
@@ -65,7 +65,7 @@ SKIP sdk=python reason="JSON activity codec unavailable"
 
 Encoded JSON bytes are compared modulo insignificant whitespace and object member order:
 
-1. Assert `contentType === "application/json"`. Any other tag is an immediate failure, even if the bytes contain valid JSON.
+1. Assert `content_type === "application/json"` (or the SDK-native field that maps directly to AW `Payload.content_type`). Any other tag is an immediate failure, even if the bytes contain valid JSON.
 2. Decode the bytes as UTF-8.
 3. Parse as JSON.
 4. Recursively canonicalize objects by sorting keys lexicographically. Arrays keep order. Numbers, booleans, strings, and null keep their JSON values.
@@ -91,7 +91,7 @@ For each cell, the decoded value must equal the canonical representative value a
 A successful parity runner emits one normalized line per SDK and case:
 
 ```text
-AION_WORKER_PAYLOAD_PARITY sdk=typescript case=unicode result={"contentType":"application/json","canonical":"\"unicode: café, 東京, 🚀\""}
+AION_WORKER_PAYLOAD_PARITY sdk=typescript case=unicode result={"content_type":"application/json","canonical":"\"unicode: café, 東京, 🚀\""}
 ```
 
 A cross-decode mismatch reports encoder SDK, decoder SDK, case, field path, expected value, and actual value:
@@ -103,14 +103,14 @@ DIVERGENCE payload encoder=python decoder=rust case=nested-object path=inner.uni
 A content-type mismatch is reported before JSON comparison:
 
 ```text
-DIVERGENCE payload encoder=typescript decoder=python case=array path=contentType expected="application/json" actual="text/json"
+DIVERGENCE payload encoder=typescript decoder=python case=array path=content_type expected="application/json" actual="text/json"
 ```
 
 ## Deliberate negative checks
 
 The parity harness should include two negative fixtures in its own self-test:
 
-- Change one SDK record's content type from `application/json` to another string and assert the diff points at `contentType`.
+- Change one SDK record's content type from `application/json` to another string and assert the diff points at `content_type`.
 - Remove one field from the nested object and assert the diff points at the missing field path.
 
 These negative checks validate that the parity suite fails loudly when an SDK silently changes content type or loses data on round-trip.
