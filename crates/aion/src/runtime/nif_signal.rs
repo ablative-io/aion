@@ -106,17 +106,10 @@ fn payload_to_json_string(payload: &Payload) -> Result<String, String> {
     serde_json::to_string(&value).map_err(|error| format!("payload json: {error}"))
 }
 
-fn receive_occurrence_index(history: &[Event], name: &str) -> usize {
+fn signal_occurrence_index(history: &[Event], name: &str) -> usize {
     history
         .iter()
-        .filter(|event| matches!(event, Event::SignalReceived { name: event_name, .. } if event_name == name))
-        .count()
-}
-
-fn send_occurrence_index(history: &[Event], name: &str) -> usize {
-    history
-        .iter()
-        .filter(|event| matches!(event, Event::SignalSent { name: event_name, .. } if event_name == name))
+        .filter(|event| matches!(event, Event::SignalReceived { name: event_name, .. } | Event::SignalSent { name: event_name, .. } if event_name == name))
         .count()
 }
 
@@ -161,7 +154,7 @@ fn receive_signal_impl(name: &str, config: &str, pid: Pid) -> Result<String, Str
         bridge.tokio_handle.clone(),
     )
     .map_err(signal_error)?;
-    let index = receive_occurrence_index(context.history(), name);
+    let index = signal_occurrence_index(context.history(), name);
     let command = Command::AwaitSignal {
         key: CorrelationKey::Signal {
             name: name.to_owned(),
@@ -210,7 +203,7 @@ fn send_signal_impl(
         bridge.tokio_handle.clone(),
     )
     .map_err(signal_error)?;
-    let index = send_occurrence_index(context.history(), name);
+    let index = signal_occurrence_index(context.history(), name);
     let delivery = SignalDelivery {
         target_workflow_id: target_workflow_id.clone(),
         name: name.to_owned(),
@@ -338,7 +331,7 @@ pub(super) fn send_signal(args: &[Term], ctx: &mut ProcessContext) -> Result<Ter
 
 #[cfg(test)]
 mod tests {
-    use super::{receive_occurrence_index, send_occurrence_index};
+    use super::signal_occurrence_index;
     use aion_core::{Event, EventEnvelope, Payload, WorkflowId};
     use chrono::Utc;
     use serde_json::json;
@@ -356,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn derives_receive_and_send_occurrences_from_matching_event_kinds()
+    fn derives_signal_occurrences_from_matching_signal_names()
     -> Result<(), Box<dyn std::error::Error>> {
         let history = vec![
             Event::SignalReceived {
@@ -370,10 +363,16 @@ mod tests {
                 name: "ready".to_owned(),
                 payload: payload()?,
             },
+            Event::SignalSent {
+                envelope: envelope(3),
+                target_workflow_id: WorkflowId::new_v4(),
+                name: "other".to_owned(),
+                payload: payload()?,
+            },
         ];
 
-        assert_eq!(receive_occurrence_index(&history, "ready"), 1);
-        assert_eq!(send_occurrence_index(&history, "ready"), 1);
+        assert_eq!(signal_occurrence_index(&history, "ready"), 2);
+        assert_eq!(signal_occurrence_index(&history, "other"), 1);
         Ok(())
     }
 }
