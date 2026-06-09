@@ -171,6 +171,17 @@ pub async fn start_workflow_with_options(
         return Err(error);
     }
 
+    install_completion_monitor(&context, pid, &handle)?;
+    deliver_deferred_signals(&context, &handle);
+
+    Ok(handle)
+}
+
+fn install_completion_monitor(
+    context: &StartWorkflowContext<'_>,
+    pid: crate::Pid,
+    handle: &WorkflowHandle,
+) -> Result<(), EngineError> {
     let completion_context = ProcessExitContext {
         store: Arc::clone(&context.store),
         visibility_store: Arc::clone(&context.visibility_store),
@@ -183,22 +194,24 @@ pub async fn start_workflow_with_options(
             tracing::error!(workflow_pid = pid, error = %error, "workflow process monitor completion failed");
         }
     })?;
+    Ok(())
+}
 
-    if let Some(handoff) = &context.signal_handoff {
-        let adapter = StartResumeEngineHandle {
-            runtime: &context.runtime,
-            registry: &context.registry,
-        };
-        if let Err(error) = handoff.deliver_deferred(&adapter, handle.workflow_id()) {
-            tracing::warn!(
-                workflow_id = %handle.workflow_id(),
-                error = %error,
-                "failed to flush deferred signals after workflow became resident"
-            );
-        }
+fn deliver_deferred_signals(context: &StartWorkflowContext<'_>, handle: &WorkflowHandle) {
+    let Some(handoff) = &context.signal_handoff else {
+        return;
+    };
+    let adapter = StartResumeEngineHandle {
+        runtime: &context.runtime,
+        registry: &context.registry,
+    };
+    if let Err(error) = handoff.deliver_deferred(&adapter, handle.workflow_id()) {
+        tracing::warn!(
+            workflow_id = %handle.workflow_id(),
+            error = %error,
+            "failed to flush deferred signals after workflow became resident"
+        );
     }
-
-    Ok(handle)
 }
 
 struct StartResumeEngineHandle<'a> {
