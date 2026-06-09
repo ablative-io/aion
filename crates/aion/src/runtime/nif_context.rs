@@ -137,7 +137,7 @@ impl NifContext {
     ) -> Result<Self, NifContextError> {
         let handle = registry
             .list()
-            .map_err(registry_error_to_context)?
+            .map_err(|error| registry_error_to_context(&error))?
             .into_iter()
             .find(|handle| handle.pid() == pid)
             .ok_or(NifContextError::UnknownProcess { pid })?;
@@ -219,7 +219,7 @@ impl NifContext {
     }
 }
 
-fn registry_error_to_context(error: EngineError) -> NifContextError {
+fn registry_error_to_context(error: &EngineError) -> NifContextError {
     match error {
         EngineError::RegistryPoisoned => NifContextError::RecorderPoisoned,
         _ => NifContextError::TermEncoding {
@@ -288,12 +288,14 @@ mod tests {
         })
     }
 
+    type TestContext = (Registry, Arc<dyn EventStore>, WorkflowHandle);
+
     fn context_with_history(
         runtime: &tokio::runtime::Runtime,
         pid: u64,
         workflow_id: aion_core::WorkflowId,
         history: &[Event],
-    ) -> Result<(Registry, Arc<dyn EventStore>, WorkflowHandle), Box<dyn std::error::Error>> {
+    ) -> Result<TestContext, Box<dyn std::error::Error>> {
         let registry = Registry::default();
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
