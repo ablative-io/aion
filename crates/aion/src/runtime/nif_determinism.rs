@@ -1,7 +1,7 @@
 //! Deterministic workflow-visible time and random NIF implementations.
 
 use std::cell::RefCell;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use aion_core::{RunId, WorkflowId};
 use aion_store::EventStore;
@@ -26,7 +26,7 @@ thread_local! {
     static NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
 }
 
-static CONTEXT_SOURCE: OnceLock<Arc<NifContextSource>> = OnceLock::new();
+static CONTEXT_SOURCE: OnceLock<RwLock<Arc<NifContextSource>>> = OnceLock::new();
 
 /// Inputs required to resolve per-call workflow NIF context from a raw process id.
 pub(crate) struct NifContextSource {
@@ -59,7 +59,25 @@ impl NifContextSource {
 
 /// Installs the process-wide context source used by production deterministic NIFs.
 pub(crate) fn install_nif_context_source(source: Arc<NifContextSource>) {
-    let _ = CONTEXT_SOURCE.set(source);
+    match CONTEXT_SOURCE.get() {
+        Some(installed) => match installed.write() {
+            Ok(mut guard) => *guard = source,
+            Err(poisoned) => *poisoned.into_inner() = source,
+        },
+        None => {
+            if let Err(source_lock) = CONTEXT_SOURCE.set(RwLock::new(source)) {
+                if let Some(installed) = CONTEXT_SOURCE.get() {
+                    let source = source_lock
+                        .into_inner()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    match installed.write() {
+                        Ok(mut guard) => *guard = source,
+                        Err(poisoned) => *poisoned.into_inner() = source,
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn park_heap(heap: Box<[u64]>) {
@@ -109,7 +127,10 @@ fn context_from_process(ctx: &ProcessContext) -> Result<NifContext, String> {
     let source = CONTEXT_SOURCE
         .get()
         .ok_or_else(|| "determinism NIF context source is not installed".to_owned())?;
-    source.context_for_pid(pid)
+    let guard = source
+        .read()
+        .map_err(|_| "determinism NIF context source lock is poisoned".to_owned())?;
+    guard.context_for_pid(pid)
 }
 
 fn error_term(message: &str) -> Term {
@@ -310,8 +331,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        clear_parked_heap, deterministic_float, deterministic_i64, now_from_context,
-        random_from_context, random_int_from_context,
+        NifContextSource, clear_parked_heap, deterministic_float, deterministic_i64,
+        install_nif_context_source, now_from_context, now_impl, random_from_context,
+        random_int_from_context,
     };
     use crate::durability::Recorder;
     use crate::registry::{
@@ -362,7 +384,8 @@ mod tests {
             envelope: envelope(workflow_id, seq, millis)?,
             workflow_type: "checkout".to_owned(),
             input: payload("input")?,
-            package_version: hash(),
+            run_id: run_id(),
+            parent_run_id: None,
         })
     }
 
@@ -377,14 +400,20 @@ mod tests {
         })
     }
 
-    fn context_with_history(
+    struct ContextFixture {
+        registry: Arc<Registry>,
+        store: Arc<dyn EventStore>,
+        context: NifContext,
+    }
+
+    fn context_fixture_with_history(
         runtime: &tokio::runtime::Runtime,
         pid: u64,
         workflow_id: aion_core::WorkflowId,
         run_id: aion_core::RunId,
         history: &[Event],
-    ) -> TestResult<NifContext> {
-        let registry = Registry::default();
+    ) -> TestResult<ContextFixture> {
+        let registry = Arc::new(Registry::default());
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         if !history.is_empty() {
             runtime.block_on(store.append(&workflow_id, history, 0))?;
@@ -403,12 +432,27 @@ mod tests {
             completion: CompletionNotifier::new(),
         });
         registry.insert((workflow_id, run_id), handle)?;
-        Ok(NifContext::new_with_history_store(
+        let context = NifContext::new_with_history_store(
             pid,
-            &registry,
+            registry.as_ref(),
             runtime.handle().clone(),
-            Some(store),
-        )?)
+            Some(Arc::clone(&store)),
+        )?;
+        Ok(ContextFixture {
+            registry,
+            store,
+            context,
+        })
+    }
+
+    fn context_with_history(
+        runtime: &tokio::runtime::Runtime,
+        pid: u64,
+        workflow_id: aion_core::WorkflowId,
+        run_id: aion_core::RunId,
+        history: &[Event],
+    ) -> TestResult<NifContext> {
+        Ok(context_fixture_with_history(runtime, pid, workflow_id, run_id, history)?.context)
     }
 
     fn decode_result_tuple(term: Term) -> TestResult<(String, String)> {
@@ -437,6 +481,44 @@ mod tests {
         let context = context_with_history(&runtime, 41, workflow_id, run_id(), &history)?;
 
         let (tag, value) = decode_result_tuple(now_from_context(&context))?;
+
+        assert_eq!(tag, "ok");
+        assert_eq!(value, "1700000999456");
+        Ok(())
+    }
+
+    #[test]
+    fn install_context_source_replaces_stale_engine_context() -> TestResult {
+        clear_parked_heap();
+        let runtime = tokio::runtime::Runtime::new()?;
+        let workflow_id = workflow_id();
+        let first_history = vec![started_event(&workflow_id, 1, 1_700_000_000_123)?];
+        let first = context_fixture_with_history(
+            &runtime,
+            51,
+            workflow_id.clone(),
+            run_id(),
+            &first_history,
+        )?;
+        install_nif_context_source(Arc::new(NifContextSource::new(
+            Arc::clone(&first.registry),
+            runtime.handle().clone(),
+            Arc::clone(&first.store),
+        )));
+
+        let second_history = vec![completed_event(&workflow_id, 1, 1_700_000_999_456)?];
+        let second =
+            context_fixture_with_history(&runtime, 52, workflow_id, run_id(), &second_history)?;
+        install_nif_context_source(Arc::new(NifContextSource::new(
+            Arc::clone(&second.registry),
+            runtime.handle().clone(),
+            Arc::clone(&second.store),
+        )));
+        let mut ctx = ProcessContext::new();
+        ctx.set_pid(Some(52));
+
+        let result = now_impl(&[], &mut ctx).map_err(|_| "now should return Ok at beamr level")?;
+        let (tag, value) = decode_result_tuple(result)?;
 
         assert_eq!(tag, "ok");
         assert_eq!(value, "1700000999456");
