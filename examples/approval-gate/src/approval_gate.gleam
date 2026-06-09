@@ -14,6 +14,7 @@ import aion/signal
 import aion/workflow
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option.{type Option, None, Some}
 
 pub type ApprovalInput {
   ApprovalInput(document_id: String, timeout_minutes: Int)
@@ -66,7 +67,7 @@ pub fn run(input: ApprovalInput) -> Result(ApprovalResult, WorkflowError) {
   // `workflow.with_timeout`; `workflow.race` is activity-only and cannot race a
   // signal receive against a timer reference directly.
   case workflow.start_timer(deadline_name, timeout) {
-    Ok(deadline) -> wait_for_decision(input, timeout, deadline)
+    Ok(deadline) -> wait_for_decision(input, timeout, Some(deadline))
     Error(engine_error) -> Error(TimerFailed(engine_error_message(engine_error)))
   }
 }
@@ -74,26 +75,23 @@ pub fn run(input: ApprovalInput) -> Result(ApprovalResult, WorkflowError) {
 fn wait_for_decision(
   input: ApprovalInput,
   timeout: duration.Duration,
-  deadline: workflow.TimerRef,
+  deadline: Option(workflow.TimerRef),
 ) -> Result(ApprovalResult, WorkflowError) {
   case
     workflow.with_timeout(fn() { workflow.receive(approval_decision_signal()) }, timeout)
   {
-    Ok(ApprovalSignal(decision: Approved)) ->
-      case cancel_deadline(deadline) {
-        Ok(_) -> publish_document(input.document_id)
-        Error(timer_error) -> Error(timer_error)
-      }
-    Ok(ApprovalSignal(decision: Rejected)) ->
-      case cancel_deadline(deadline) {
-        Ok(_) ->
-          archive_document(
-            input.document_id,
-            "approval signal rejected the document",
-            "rejected",
-          )
-        Error(timer_error) -> Error(timer_error)
-      }
+    Ok(ApprovalSignal(decision: Approved)) -> {
+      cancel_deadline(deadline)
+      publish_document(input.document_id)
+    }
+    Ok(ApprovalSignal(decision: Rejected)) -> {
+      cancel_deadline(deadline)
+      archive_document(
+        input.document_id,
+        "approval signal rejected the document",
+        "rejected",
+      )
+    }
     Error(error.TimedOutError(error.TimedOut(message: _))) ->
       archive_document(
         input.document_id,
@@ -105,10 +103,13 @@ fn wait_for_decision(
   }
 }
 
-fn cancel_deadline(deadline: workflow.TimerRef) -> Result(Nil, WorkflowError) {
-  case workflow.cancel_timer(deadline) {
-    Ok(_) -> Ok(Nil)
-    Error(engine_error) -> Error(TimerFailed(engine_error_message(engine_error)))
+fn cancel_deadline(deadline: Option(workflow.TimerRef)) -> Nil {
+  case deadline {
+    Some(timer_ref) -> {
+      let _ = workflow.cancel_timer(timer_ref)
+      Nil
+    }
+    None -> Nil
   }
 }
 
@@ -223,8 +224,8 @@ fn approval_signal_to_json(signal: ApprovalSignal) -> json.Json {
 }
 
 fn approval_signal_decoder() -> decode.Decoder(ApprovalSignal) {
-  use decision <- decode.field("decision", decode.string)
-  decode.success(ApprovalSignal(decision: approval_decision_from_string(decision)))
+  use decision <- decode.field("decision", approval_decision_decoder())
+  decode.success(ApprovalSignal(decision: decision))
 }
 
 fn approval_decision_to_json(decision: ApprovalDecision) -> json.Json {
@@ -234,11 +235,14 @@ fn approval_decision_to_json(decision: ApprovalDecision) -> json.Json {
   }
 }
 
-fn approval_decision_from_string(decision: String) -> ApprovalDecision {
-  case decision {
-    "approved" -> Approved
-    _ -> Rejected
-  }
+fn approval_decision_decoder() -> decode.Decoder(ApprovalDecision) {
+  decode.then(decode.string, fn(decision) {
+    case decision {
+      "approved" -> decode.success(Approved)
+      "rejected" -> decode.success(Rejected)
+      _ -> decode.failure(Rejected, expected: "approved or rejected")
+    }
+  })
 }
 
 fn approval_result_codec() -> codec.Codec(ApprovalResult) {
