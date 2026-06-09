@@ -25,13 +25,21 @@ class FakeSession implements WorkerSession {
 		yield { kind: "closed" };
 	}
 
-	public async reportResult(): Promise<void> {}
+	public reportResult(): Promise<void> {
+		return Promise.resolve();
+	}
 
-	public async reportFailure(): Promise<void> {}
+	public reportFailure(): Promise<void> {
+		return Promise.resolve();
+	}
 
-	public async sendHeartbeat(): Promise<void> {}
+	public sendHeartbeat(): Promise<void> {
+		return Promise.resolve();
+	}
 
-	public async close(): Promise<void> {}
+	public close(): Promise<void> {
+		return Promise.resolve();
+	}
 }
 
 describe("WorkerSession", () => {
@@ -96,11 +104,18 @@ class RecordingStream implements AsyncIterable<ServerToWorker> {
 		return true;
 	}
 
-	public end(): void {}
+	public end(): void {
+		this.messages.push({});
+	}
 
 	public on(): this {
 		return this;
 	}
 
-	public async *[Symbol.asyncIterator](): AsyncIterableIterator<ServerToWorker> {}
+	public async *[Symbol.asyncIterator](): AsyncIterableIterator<ServerToWorker> {
+		const message = undefined as ServerToWorker | undefined;
+		if (message !== undefined) {
+			yield message;
+		}
+	}
 }

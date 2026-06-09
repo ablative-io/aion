@@ -131,11 +131,11 @@ describe("ActivityRegistry", () => {
 			],
 			{
 				logger: {
-					info: () => {},
+					info: () => undefined,
 					warn: (message, fields) => {
 						warnings.push(`${message}:${String(fields?.retryable)}`);
 					},
-					error: () => {},
+					error: () => undefined,
 				},
 			},
 		);
@@ -162,7 +162,7 @@ describe("ActivityContext", () => {
 				workflowId: "workflow",
 				activityId: "activity",
 				attempt: 1,
-				heartbeatSender: async () => {},
+				heartbeatSender: () => Promise.resolve(),
 			},
 			handle,
 		);

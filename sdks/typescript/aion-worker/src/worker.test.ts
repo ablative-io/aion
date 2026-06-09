@@ -18,7 +18,9 @@ class QueueSession implements WorkerSession {
 	private resolver?: () => void;
 	private closed = false;
 
-	public async handshake(): Promise<void> {}
+	public handshake(): Promise<void> {
+		return Promise.resolve();
+	}
 
 	public async register(activityTypes: readonly string[]): Promise<void> {
 		this.registrations.push([...activityTypes]);
@@ -57,7 +59,9 @@ class QueueSession implements WorkerSession {
 		this.failures.push(failure);
 	}
 
-	public async sendHeartbeat(): Promise<void> {}
+	public sendHeartbeat(): Promise<void> {
+		return Promise.resolve();
+	}
 
 	public async close(): Promise<void> {
 		this.closed = true;

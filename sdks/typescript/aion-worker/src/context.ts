@@ -79,10 +79,6 @@ export class ActivityContext {
 	public cancelled(): Promise<void> {
 		return this.cancellation.cancelled();
 	}
-
-	public cancellationHandle(): ActivityCancellationHandle {
-		return this.cancellation;
-	}
 }
 
 function payloadFromDetail(detail: Payload | unknown, contentType: string): Payload {

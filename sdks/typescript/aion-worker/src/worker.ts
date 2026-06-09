@@ -97,11 +97,15 @@ export class Worker {
 		};
 		if (signal.aborted) {
 			abort();
-			return () => {};
+			return noop;
 		}
 		signal.addEventListener("abort", abort, { once: true });
 		return () => {
 			signal.removeEventListener("abort", abort);
 		};
 	}
+}
+
+function noop() {
+	return undefined;
 }

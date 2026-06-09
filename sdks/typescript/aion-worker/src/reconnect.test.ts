@@ -52,9 +52,13 @@ class RecordingSession implements WorkerSession {
 		this.events.push(`failure:${activityId}`);
 	}
 
-	public async sendHeartbeat(): Promise<void> {}
+	public sendHeartbeat(): Promise<void> {
+		return Promise.resolve();
+	}
 
-	public async close(): Promise<void> {}
+	public close(): Promise<void> {
+		return Promise.resolve();
+	}
 }
 
 describe("reconnect", () => {
@@ -70,7 +74,7 @@ describe("reconnect", () => {
 
 		const session = await reconnectWithBackoff(config(), ["charge"], {
 			createSession: async () => new RecordingSession(events),
-			sleep: async () => {},
+			sleep: () => Promise.resolve(),
 		});
 		await reReportUnacked(session, tracker);
 

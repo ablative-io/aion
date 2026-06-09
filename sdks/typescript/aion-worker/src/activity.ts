@@ -229,4 +229,6 @@ function isPayload(value: unknown): value is Payload {
 	);
 }
 
-async function noopHeartbeat(): Promise<void> {}
+function noopHeartbeat(): Promise<void> {
+	return Promise.resolve();
+}
