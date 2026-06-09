@@ -8,7 +8,6 @@ use beamr::native::ProcessContext;
 use beamr::term::Term;
 use beamr::term::binary::{self, Binary};
 use beamr::term::boxed;
-use chrono::Utc;
 
 use crate::child::{ChildWorkflowError, ChildWorkflowRecordingContext, await_child, spawn};
 use crate::durability::{Command, CorrelationKey, DurabilityError, Resolution, ResolveOutcome};
@@ -54,7 +53,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
     let workflow_type =
         decode_string_arg(args[0]).map_err(|error| format!("workflow_type:{error}"))?;
     let input = decode_payload_arg(args[1]).map_err(|error| format!("input:{error}"))?;
-    let _options = decode_string_arg(args[2]).map_err(|error| format!("options:{error}"))?;
+    decode_string_arg(args[2]).map_err(|error| format!("options:{error}"))?;
     let bridge = child_bridge()?;
     let pid = ctx.pid().ok_or_else(|| "missing_caller_pid".to_owned())?;
     let mut nif = new_context(&bridge, pid)?;
@@ -106,10 +105,10 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
         .map_err(|error| context_error(&error))?
     {
         ResolveOutcome::Recorded(Resolution::ChildCompleted(result)) => {
-            term_or_encoding_error(ok_result_term(&prefixed_payload("ok:", &result)?))
+            term_or_encoding_error(ok_result_term(&payload_text(&result)?))
         }
         ResolveOutcome::Recorded(Resolution::ChildFailed(error)) => {
-            term_or_encoding_error(ok_result_term(&prefixed_error("error:", &error)))
+            term_or_encoding_error(error_result_term(&workflow_error_text(&error)))
         }
         ResolveOutcome::Recorded(other) => {
             Err(format!("unexpected_child_await_resolution:{other:?}"))
@@ -119,11 +118,9 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             let mut recording = recording_context(&nif)?;
             let mut mailbox = CompletionMailbox::new(&bridge, &child_workflow_id)?;
             match await_child(&engine, &mut recording, &mut mailbox, &child_workflow_id) {
-                Ok(result) => {
-                    term_or_encoding_error(ok_result_term(&prefixed_payload("ok:", &result)?))
-                }
+                Ok(result) => term_or_encoding_error(ok_result_term(&payload_text(&result)?)),
                 Err(ChildWorkflowError::Failed { error, .. }) => {
-                    term_or_encoding_error(ok_result_term(&prefixed_error("error:", &error)))
+                    term_or_encoding_error(error_result_term(&workflow_error_text(&error)))
                 }
                 Err(error) => Err(child_error(&error)),
             }
@@ -156,24 +153,19 @@ fn new_context(bridge: &ChildNifBridge, pid: u64) -> Result<NifContext, String> 
 }
 
 fn next_child_key(nif: &NifContext) -> Result<CorrelationKey, String> {
-    let next_seq = nif
-        .block_on_recorder(|recorder| {
-            Box::pin(async move { next_sequence(recorder.current_head()) })
-        })
-        .map_err(|error| context_error(&error))?;
+    let next_seq = next_sequence(nif.current_recorder_head())
+        .map_err(|error| context_error(&NifContextError::Durability(error)))?;
     Ok(CorrelationKey::Child(next_seq))
 }
 
 fn recording_context(nif: &NifContext) -> Result<ChildWorkflowRecordingContext, String> {
-    let next_seq = nif
-        .block_on_recorder(|recorder| {
-            Box::pin(async move { next_sequence(recorder.current_head()) })
-        })
-        .map_err(|error| context_error(&error))?;
+    let next_seq = next_sequence(nif.current_recorder_head())
+        .map_err(|error| context_error(&NifContextError::Durability(error)))?;
     Ok(ChildWorkflowRecordingContext::new(
         nif.workflow_id().clone(),
         next_seq,
-        Utc::now(),
+        nif.last_recorded_at()
+            .ok_or_else(|| "child NIF history has no workflow start timestamp".to_owned())?,
     ))
 }
 
@@ -222,17 +214,14 @@ fn require_arity(name: &str, args: &[Term], expected: usize) -> Result<(), Strin
     }
 }
 
-fn prefixed_payload(prefix: &str, payload: &Payload) -> Result<String, String> {
-    let body = String::from_utf8(payload.bytes().to_vec())
-        .map_err(|_| "payload is not valid UTF-8".to_owned())?;
-    Ok(format!("{prefix}{body}"))
+fn payload_text(payload: &Payload) -> Result<String, String> {
+    String::from_utf8(payload.bytes().to_vec()).map_err(|_| "payload is not valid UTF-8".to_owned())
 }
 
-fn prefixed_error(prefix: &str, error: &WorkflowError) -> String {
+fn workflow_error_text(error: &WorkflowError) -> String {
     match &error.details {
-        Some(details) => prefixed_payload(prefix, details)
-            .unwrap_or_else(|_| format!("{prefix}{}", error.message)),
-        None => format!("{prefix}{}", error.message),
+        Some(details) => payload_text(details).unwrap_or_else(|_| error.message.clone()),
+        None => error.message.clone(),
     }
 }
 

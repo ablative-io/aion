@@ -332,7 +332,7 @@ impl NifContext {
             .map_err(Into::into)
     }
 
-    fn current_recorder_head(&self) -> u64 {
+    pub(crate) fn current_recorder_head(&self) -> u64 {
         self.tokio_handle.block_on(async {
             let recorder = self.recorder.lock().await;
             recorder.current_head()
