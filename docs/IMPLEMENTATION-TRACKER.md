@@ -1,6 +1,7 @@
 # Aion Implementation Tracker
 
-117 briefs across 12 clusters, dispatched in 42 waves across 6 phases. **117/117 COMPLETE.**
+174 briefs across 19 clusters. Original 117 across 12 clusters complete.
+Extended phases add AX, AH, AK, AV, AO, DX, NB, plus issue-driven briefs.
 Peak parallelism: 10 briefs (Wave 17, engine core).
 
 ## Team Assignments
@@ -282,11 +283,66 @@ Three independent tracks running concurrently.
 - [x] **AR-009** — aion-worker-typescript: packaging, session, loop · _landed 3c2b0ea_
 
 ### Wave 41 (2 parallel)
-- [ ] **AR-008** — aion-worker-python: @activity, context, errors · _depends: AR-007_
-- [ ] **AR-010** — aion-worker-typescript: defineActivity, context · _depends: AR-009_
+- [x] **AR-008** — aion-worker-python: @activity, context, errors · _landed_
+- [x] **AR-010** — aion-worker-typescript: defineActivity, context · _landed_
 
 ### Wave 42
-- [ ] **AR-011** — Cross-SDK conformance suite · _depends: AR-006, AR-008, AR-010_
+- [x] **AR-011** — Cross-SDK conformance suite (scenarios only, harness follow-up pending) · _landed_
+
+---
+
+## Phase 7 — AX + AH + AK + AV (hardening, history, schedules, visibility) · 22 briefs
+
+### AX (aion-hardening) — 7 briefs
+- [x] **AX-001** through **AX-007** · _all landed_
+
+### AH (aion-history) — 5 briefs
+- [x] **AH-001** through **AH-005** · _all landed_
+
+### AK (aion-schedules) — 5 briefs
+- [x] **AK-001** through **AK-005** · _all landed_
+
+### AV (aion-visibility) — 5 briefs
+- [x] **AV-001** through **AV-005** · _all landed_
+
+---
+
+## Phase 8 — AO (operations) · 6 briefs
+
+- [x] **AO-001** through **AO-006** · _all landed_
+
+---
+
+## Phase 9 — DX (developer experience) · 15 briefs
+
+- [x] **DX-001** through **DX-015** · _all landed_
+
+---
+
+## Phase 10 — NB (NIF bridge) · 9 briefs
+
+Wires all 18 aion_flow_ffi functions through the durability layer.
+
+- [x] **NB-001** — NifContext infrastructure · _landed_
+- [x] **NB-002** — run_activity durability · _landed_
+- [x] **NB-003** — Deterministic now/random · _landed_
+- [x] **NB-004** — Timer NIFs · _landed_
+- [x] **NB-005** — Signal NIFs · _landed_
+- [x] **NB-006** — Query NIFs · _landed c5074cb_
+- [ ] **NB-007** — Child workflow NIFs · _rejected, re-dispatch pending_
+- [x] **NB-008** — Concurrency NIFs · _landed_
+- [x] **NB-009** — Process exit detection · _landed_
+
+---
+
+## Phase 11 — Issue-driven briefs · 4 briefs
+
+Raised from GitHub issues #7–#10 (Josh/Mrs Willoughby architectural review).
+
+- [ ] **AS-009** — Enforce single-writer discipline at the type level · _GitHub #10_
+- [ ] **AE-015** — Eliminate silent visibility store fallback · _GitHub #9_
+- [ ] **AV-006** — Crash-consistency recovery for visibility projection · _GitHub #8_
+- [ ] **AT-013** — Fix signal delivery failure on beamr 0.3.15 · _GitHub #7_
 
 ---
 
@@ -300,8 +356,9 @@ Three independent tracks running concurrently.
 | 3 | AE + AD + AT | Charge | 36 | 8 | 10 |
 | 4+5 | AF + AN + AW | Lemmy + Max | 31 | 12 | 5 |
 | 6 | AR + AL + AU | Max Power | 28 | 8 | 7 |
-| **Total** | **12** | **3** | **117** | **42** | **10** |
-
-**Critical path:** AC (7 waves, serial) → Phase 3 engine core (8 waves, heavy parallel) → AF linear tail (12 waves).
-
-**Aggressive optimization:** Phase 6 can overlap with late Phase 4+5 — AL starts after AW-002 (Wave 24), AR after AW-005 (Wave 25), AU after AW-010 (Wave 28). This compresses the tail by up to 6 waves.
+| 7 | AX + AH + AK + AV | — | 22 | — | — |
+| 8 | AO | — | 6 | — | — |
+| 9 | DX | — | 15 | — | — |
+| 10 | NB | Frodo | 9 | — | — |
+| 11 | Issue-driven | — | 4 | — | — |
+| **Total** | **19** | — | **174** | — | — |
