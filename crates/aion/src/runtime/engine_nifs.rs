@@ -74,6 +74,18 @@ fn run_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     super::nif_activity::run_activity_impl(args, ctx)
 }
 
+fn collect_all(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    super::nif_concurrency::collect_all_impl(args, ctx)
+}
+
+fn collect_race(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    super::nif_concurrency::collect_race_impl(args, ctx)
+}
+
+fn collect_map(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    super::nif_concurrency::collect_map_impl(args, ctx)
+}
+
 fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     let _ = ctx.pid();
     if args.len() > 255 {
@@ -120,9 +132,9 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
         dirty_entry("dispatch_query", 2),
         dirty_entry("spawn_child", 3),
         dirty_entry("await_child", 1),
-        dirty_entry("collect_all", 2),
-        dirty_entry("collect_race", 2),
-        dirty_entry("collect_map", 2),
+        NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_all", 2), collect_all),
+        NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_race", 2), collect_race),
+        NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_map", 2), collect_map),
     ]
 }
 
@@ -134,8 +146,8 @@ mod tests {
     use beamr::term::boxed::Tuple;
 
     use super::{
-        NOT_YET_IMPLEMENTED, alloc_binary_term, clear_parked_heap, engine_nif_entries,
-        not_yet_implemented, run_activity,
+        NOT_YET_IMPLEMENTED, alloc_binary_term, clear_parked_heap, collect_all, collect_map,
+        collect_race, engine_nif_entries, not_yet_implemented, run_activity,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -170,7 +182,8 @@ mod tests {
 
         struct TestDispatcher;
         impl ActivityDispatcher for TestDispatcher {
-            fn dispatch(&self, _name: &str, input: &str, _config: &str) -> Result<String, String> {
+            fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
+                let _ = (name, config);
                 Ok(format!("dispatched:{input}"))
             }
         }
@@ -219,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn registers_all_engine_nifs_as_unique_entries_with_pure_determinism_nifs() {
+    fn registers_all_engine_nifs_as_unique_entries_with_correct_scheduling() -> TestResult {
         let entries = engine_nif_entries();
         let unique = entries
             .iter()
@@ -243,6 +256,22 @@ mod tests {
                 ))
                 .all(|entry| entry.is_dirty)
         );
+        for (name, function) in [
+            ("collect_all", collect_all as beamr::native::NativeFn),
+            ("collect_race", collect_race as beamr::native::NativeFn),
+            ("collect_map", collect_map as beamr::native::NativeFn),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.mfa.function == name)
+                .ok_or_else(|| format!("missing {name}"))?;
+            assert!(std::ptr::fn_addr_eq(entry.function, function));
+            assert!(!std::ptr::fn_addr_eq(
+                entry.function,
+                not_yet_implemented as beamr::native::NativeFn
+            ));
+        }
+        Ok(())
     }
 
     #[test]

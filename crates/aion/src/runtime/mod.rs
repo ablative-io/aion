@@ -7,6 +7,7 @@ pub mod module;
 pub mod monitor;
 pub mod nif;
 mod nif_activity;
+mod nif_concurrency;
 pub mod nif_context;
 pub(crate) mod nif_determinism;
 mod nif_signal;

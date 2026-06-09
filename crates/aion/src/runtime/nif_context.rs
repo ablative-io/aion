@@ -306,6 +306,26 @@ impl NifContext {
             .map_err(Into::into)
     }
 
+    /// Records activity cancellation through the workflow's single-writer recorder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_activity_cancelled(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        activity_id: ActivityId,
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder
+                    .record_activity_cancelled(recorded_at, activity_id)
+                    .await
+            })
+            .map_err(Into::into)
+    }
+
     fn current_recorder_head(&self) -> u64 {
         self.tokio_handle.block_on(async {
             let recorder = self.recorder.lock().await;
