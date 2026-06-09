@@ -4,7 +4,7 @@
 //! safe Rust functions and currently relies only on beamr's public safe APIs.
 //!
 //! The `owned_*` functions retain heap allocations in the caller-provided
-//! [`NifContext`](crate::NifContext). That storage is dropped with the generated
+//! [`NifContext`]. That storage is dropped with the generated
 //! NIF shim invocation. The non-owned functions with caller-provided heap slices
 //! remain the zero-overhead path.
 

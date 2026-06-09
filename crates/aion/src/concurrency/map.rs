@@ -1,7 +1,7 @@
 //! map: dynamic fan-out from a runtime list
 //!
 //! `map` turns a runtime list into child workflow specs in input order, then delegates to the
-//! [`all`](crate::concurrency::all) collector for linked spawning, ordered result collection, and
+//! [`all()`](crate::concurrency::all::all) collector for linked spawning, ordered result collection, and
 //! fail-fast cancellation. Empty input produces no children and returns an empty result.
 
 use aion_core::Payload;
@@ -19,10 +19,10 @@ where
     items.iter().map(f).collect()
 }
 
-/// Dynamically fans out child workflows from runtime `items` and collects results like [`all`].
+/// Dynamically fans out child workflows from runtime `items` and collects results like [`all()`].
 ///
 /// The spec-producing function is called exactly once for each item, in input order. The produced
-/// specs are then passed to [`all`], so results are ordered by input element position and any child
+/// specs are then passed to [`all()`], so results are ordered by input element position and any child
 /// failure fails fast while cancelling remaining linked children. Empty input produces zero child
 /// spawns and returns an empty result.
 ///

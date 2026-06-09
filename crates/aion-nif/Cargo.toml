@@ -7,6 +7,7 @@ description = "Native function declaration helpers for Gleam and Elixir Aion wor
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-nif"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "nif", "beam"]
 categories = ["development-tools"]
 

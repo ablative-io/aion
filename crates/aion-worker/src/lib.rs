@@ -1,11 +1,54 @@
-//! The Rust remote-worker SDK. Registers activity types, receives pushed tasks over the gRPC worker protocol, executes them out-of-process, reports results and heartbeats.
+//! Rust remote-worker SDK for executing Aion activities over gRPC.
+//!
+//! The SDK registers typed activity handlers, receives pushed tasks from an
+//! `aion-server`, executes them out-of-process, reports results, and sends
+//! heartbeats for long-running work.
+//!
+//! # Example
+//!
+//! ```no_run
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use aion_worker::{ActivityContext, HandlerFuture, Worker, WorkerConfig};
+//! use serde::{Deserialize, Serialize};
+//!
+//! #[derive(Deserialize)]
+//! struct Input { name: String }
+//!
+//! #[derive(Serialize)]
+//! struct Output { message: String }
+//!
+//! fn greet(input: Input, _context: &ActivityContext) -> HandlerFuture<'_, Output> {
+//!     Box::pin(async move { Ok(Output { message: format!("hello, {}", input.name) }) })
+//! }
+//!
+//! let config = WorkerConfig::builder()
+//!     .endpoint("http://127.0.0.1:50051")
+//!     .task_queue("default")
+//!     .identity("rust-worker-1")
+//!     .build()?;
+//!
+//! Worker::builder(config)
+//!     .register_activity("examples.greet", greet)?
+//!     .build()?
+//!     .run()
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
 
+/// Typed activity registration and failure classification.
 pub mod activity;
+/// Worker endpoint, identity, transport, and reconnect configuration.
 pub mod config;
+/// Per-activity execution context, heartbeat, and cancellation handles.
 pub mod context;
+/// Worker runtime and configuration errors.
 pub mod error;
+/// Worker-session protocol abstractions and task types.
 pub mod protocol;
+/// Activity dispatch and task-serving loops.
 pub mod runtime;
+/// High-level worker builder and run loop.
 pub mod worker;
 
 pub use activity::{

@@ -7,6 +7,7 @@ description = "Persistence contracts and in-memory event stores for Aion durable
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-store"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "event-store", "persistence"]
 categories = ["asynchronous", "development-tools"]
 

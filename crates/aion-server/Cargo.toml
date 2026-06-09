@@ -7,6 +7,7 @@ description = "Deployable HTTP, gRPC, WebSocket, and worker endpoint for Aion wo
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-server"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "server", "grpc"]
 categories = ["asynchronous", "development-tools"]
 

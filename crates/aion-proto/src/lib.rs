@@ -1,13 +1,37 @@
-//! The shared wire contract: gRPC service definitions and serde wire types used by the server, all client SDKs, and all worker SDKs. Depends only on aion-core for type parity.
+//! Shared gRPC and serde wire contracts for Aion servers, clients, and workers.
+//!
+//! This crate mirrors core domain values into transport-safe protobuf and JSON
+//! shapes, provides conversion helpers, and optionally exposes generated tonic
+//! service definitions behind the `generated` feature.
+//!
+//! # Example
+//!
+//! ```
+//! use aion_core::WorkflowId;
+//! use aion_proto::{decode_core_value, encode_core_value};
+//!
+//! let id = WorkflowId::new_v4();
+//! let envelope = encode_core_value("default", Some("request-1".to_owned()), &id)?;
+//! let decoded: WorkflowId = decode_core_value(&envelope)?;
+//! assert_eq!(decoded, id);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
+/// Conversion helpers between wire structures and `aion-core` values.
 pub mod convert;
+/// Wire-level error types and protobuf-friendly error payloads.
 pub mod error;
+/// Event-stream subscription and streamed-event contracts.
 pub mod events;
+/// Schedule management wire contracts.
 pub mod schedule;
+/// Remote-worker protocol wire contracts.
 pub mod worker;
+/// Workflow operation wire contracts.
 pub mod workflow;
 
 #[cfg(feature = "generated")]
+/// Generated tonic service definitions compiled from Aion protobuf files.
 pub mod generated;
 
 pub use convert::{

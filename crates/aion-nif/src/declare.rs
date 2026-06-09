@@ -13,7 +13,7 @@ use crate::{FromTerm, IntoTerm, Nif, NifContext, TermError, into_term_via_payloa
 
 /// Builds a deterministic NIF descriptor around a generated typed shim.
 ///
-/// Determinism is fixed by this builder: it can only emit [`Determinism::Pure`].
+/// Determinism is fixed by this builder: it can only emit [`crate::Determinism::Pure`].
 /// The [`deterministic_nif!`] macro is the public declaration surface. Its shim
 /// checks arity, decodes each positional argument with [`FromTerm`], invokes the
 /// typed author body, and encodes the return value with [`IntoTerm`]. It also
@@ -32,7 +32,7 @@ pub fn pure_descriptor(
 /// Builds a side-effectful activity NIF descriptor around a generated typed shim.
 ///
 /// Determinism is fixed by this builder: it can only emit
-/// [`Determinism::SideEffectful`]. Side-effectful NIFs are activity bodies, not
+/// [`crate::Determinism::SideEffectful`]. Side-effectful NIFs are activity bodies, not
 /// inline helpers. The engine invokes them through the activity contract so a
 /// completed or failed result is recorded once and returned from history on
 /// replay, never re-run as inline workflow code.
@@ -272,7 +272,7 @@ macro_rules! __aion_nif_decode_activity_argument {
 /// Declares a pure deterministic NIF from a typed Rust body.
 ///
 /// Determinism is a type-level declaration choice: this macro can only produce
-/// [`Determinism::Pure`](crate::Determinism). Pure helpers may be bound inline
+/// [`crate::Determinism::Pure`]. Pure helpers may be bound inline
 /// and re-executed during replay. Side-effectful work must use [`activity_nif!`],
 /// which the engine invokes through the recorded activity contract and returns
 /// from history on replay instead of re-running.
@@ -353,12 +353,12 @@ macro_rules! deterministic_nif {
 /// Declares a side-effectful native activity NIF from a typed Rust body.
 ///
 /// Determinism is a type-level declaration choice: this macro can only produce
-/// [`Determinism::SideEffectful`](crate::Determinism). The body must return
+/// [`crate::Determinism::SideEffectful`]. The body must return
 /// `Result<T, aion_core::ActivityError>`, so retryable/terminal failure
 /// classification is preserved. The engine must invoke these NIFs through the
 /// recorded activity contract; replay returns history instead of re-running.
 ///
-/// The generated shim mirrors [`deterministic_nif!`]: it checks arity, decodes
+/// The generated shim mirrors [`crate::deterministic_nif!`]: it checks arity, decodes
 /// each positional argument with [`FromTerm`], never exposes raw `&[Term]` to
 /// author code, encodes `Ok(T)` as the return term, and encodes `Err(ActivityError)`
 /// on the native error path.

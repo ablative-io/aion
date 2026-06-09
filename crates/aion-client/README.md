@@ -2,6 +2,14 @@
 
 Rust caller SDK for connecting to an `aion-server` deployment and operating Aion workflows. The crate exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
 
+## Key public types
+
+- `Client`, `ClientBuilder`, `ClientAuth`, and `TlsOptions` configure gRPC connections.
+- `WorkflowHandle` scopes operations to a started workflow run.
+- `StartOptions`, `WorkflowDescription`, and `ListPage` model workflow operations.
+- `EventStream`, `ResumingEventStream`, and `SubscribeTarget` stream events.
+- `to_payload` and `from_payload` bridge typed values with `aion-core` payloads.
+
 ## Install
 
 ```toml
