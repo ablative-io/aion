@@ -48,7 +48,6 @@ pub type BatchSummary {
 pub type WorkflowError {
   ActivityFailed(message: String)
   QueryRegistrationFailed(message: String)
-  SpawnFailed(item_id: String, message: String)
 }
 
 type SpawnedChild {
@@ -417,12 +416,6 @@ fn workflow_error_to_json(workflow_error: WorkflowError) -> json.Json {
         #("type", json.string("query_registration_failed")),
         #("message", json.string(message)),
       ])
-    SpawnFailed(item_id, message) ->
-      json.object([
-        #("type", json.string("spawn_failed")),
-        #("item_id", json.string(item_id)),
-        #("message", json.string(message)),
-      ])
   }
 }
 
@@ -436,11 +429,6 @@ fn workflow_error_decoder() -> decode.Decoder(WorkflowError) {
     "query_registration_failed" -> {
       use message <- decode.field("message", decode.string)
       decode.success(QueryRegistrationFailed(message: message))
-    }
-    "spawn_failed" -> {
-      use item_id <- decode.field("item_id", decode.string)
-      use message <- decode.field("message", decode.string)
-      decode.success(SpawnFailed(item_id: item_id, message: message))
     }
     _ -> {
       use message <- decode.field("message", decode.string)
@@ -478,7 +466,6 @@ fn workflow_error_message(workflow_error: WorkflowError) -> String {
   case workflow_error {
     ActivityFailed(message) -> message
     QueryRegistrationFailed(message) -> message
-    SpawnFailed(item_id, message) -> "spawn failed for " <> item_id <> ": " <> message
   }
 }
 

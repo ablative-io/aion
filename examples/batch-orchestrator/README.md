@@ -37,7 +37,7 @@ The source lives in `examples/batch-orchestrator/src/batch_orchestrator.gleam` a
 
 ## 2. Package and load the workflow
 
-This example currently provides the standalone Gleam project and source requested by DX-025. It does not include a Rust packager subcrate. To run it against `aion-server`, package the compiled module using the same manifest shape as the sibling examples and load the resulting `.aion` archive in `dev-config.toml`.
+This example currently provides the standalone Gleam project and source requested by DX-025. It does not include a Rust packager subcrate. To run it against `aion-server`, package the compiled module using the same manifest shape as the sibling examples and load the resulting `.aion` archive in `dev-config.toml`. The generated `manifest.toml` is committed so dependency resolution is reproducible, matching the other Gleam examples.
 
 A package for this example should expose:
 
