@@ -48,10 +48,27 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
         }
 
         match target.residency() {
-            HandleResidency::Resident => {
-                self.runtime
-                    .deliver_signal_received(target.pid(), name, payload)
-            }
+            HandleResidency::Resident => self
+                .runtime
+                .deliver_signal_received(target.pid(), name.clone(), payload)
+                .map_err(|error| {
+                    let reason = error.to_string();
+                    tracing::warn!(
+                        workflow_id = %target.workflow_id(),
+                        run_id = %target.run_id(),
+                        signal_name = %name,
+                        process = target.pid(),
+                        error = %reason,
+                        "durably recorded signal could not be delivered to resident workflow mailbox"
+                    );
+                    EngineError::from(SignalRouterError::DeliveryFailed {
+                        workflow_id: target.workflow_id().clone(),
+                        run_id: target.run_id().clone(),
+                        process_id: target.pid(),
+                        signal_name: name,
+                        reason,
+                    })
+                }),
             HandleResidency::Suspended => self
                 .handoff
                 .defer(target.workflow_id().clone(), name, payload)

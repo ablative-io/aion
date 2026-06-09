@@ -20,7 +20,7 @@ pub mod outcome;
 pub mod payload;
 pub mod workflow;
 
-pub use config::RuntimeConfig;
+pub use config::{RuntimeConfig, SignalDeliveryConfig};
 pub use handle::{Pid, RuntimeHandle, RuntimeInput};
 pub use nif::{Mfa, NifEntry, NifRegistration};
 pub(crate) use nif_activity::install_nif_runtime_context;

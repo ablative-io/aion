@@ -105,6 +105,23 @@ pub enum SignalRouterError {
         /// Human-readable handoff failure reason.
         reason: String,
     },
+
+    /// The signal was durably recorded but could not be delivered to the live mailbox.
+    #[error(
+        "signal `{signal_name}` for workflow {workflow_id}/{run_id} could not be delivered to process {process_id}: {reason}"
+    )]
+    DeliveryFailed {
+        /// Target workflow id.
+        workflow_id: WorkflowId,
+        /// Target run id.
+        run_id: RunId,
+        /// Embedded runtime process identifier selected for delivery.
+        process_id: u64,
+        /// Signal name that was recorded and attempted.
+        signal_name: String,
+        /// Human-readable delivery failure reason.
+        reason: String,
+    },
 }
 
 impl From<ScheduleError> for EngineError {
