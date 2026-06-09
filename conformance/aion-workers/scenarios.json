@@ -1,1 +1,523 @@
-{}
+{
+  "schemaVersion": 1,
+  "contract": "docs/design/aion-workers/DESIGN.md",
+  "wireContract": "crates/aion-proto/proto/worker.proto",
+  "defaults": {
+    "namespace": "conformance",
+    "payloadEncoding": "application/json",
+    "maxConcurrency": 2,
+    "receiveMode": "fake-worker-endpoint-only"
+  },
+  "assertionVocabulary": {
+    "registered": "worker sends RegisterWorker with the scenario namespace and required activity_types before work is dispatched",
+    "resultReported": "worker sends ActivityResult.result for the requested workflow_id and activity_id",
+    "failureReported": "worker sends ActivityResult.error with the expected ActivityErrorKind wire classification",
+    "heartbeatObserved": "worker sends Heartbeat for the requested workflow_id and activity_id; progress is compared as an opaque Payload",
+    "cancellationObserved": "harness-issued cooperative cancellation signal is observed through the SDK runner seam without forcibly killing the handler",
+    "reReportedBeforeNewTask": "after reconnect and re-registration, an unacknowledged ActivityResult is sent before any newly-dispatched ActivityTask is processed",
+    "peakConcurrencyEquals": "observed in-flight handler count never exceeds and at least once reaches the expected value",
+    "payloadEquals": "decoded JSON payload equals the provided value and preserves the contentType tag"
+  },
+  "fixtures": {
+    "registeredActivityTypes": [
+      "conformance.echo",
+      "conformance.fail-retryable",
+      "conformance.fail-terminal",
+      "conformance.heartbeat-slow",
+      "conformance.cancel-observing",
+      "conformance.blocking-echo"
+    ],
+    "payloads": {
+      "echo": {
+        "contentType": "application/json",
+        "json": {
+          "message": "hello worker",
+          "counter": 1
+        }
+      },
+      "retryableFailureDetails": {
+        "contentType": "application/json",
+        "json": {
+          "reason": "transient fixture failure"
+        }
+      },
+      "terminalFailureDetails": {
+        "contentType": "application/json",
+        "json": {
+          "reason": "invalid fixture input"
+        }
+      },
+      "heartbeatProgress": {
+        "contentType": "application/json",
+        "json": {
+          "phase": "halfway",
+          "percent": 50
+        }
+      },
+      "cancelRequest": {
+        "contentType": "application/json",
+        "json": {
+          "reason": "conformance cooperative cancellation"
+        }
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "id": "register",
+      "description": "A worker connects to the fake WorkerProtocol endpoint and advertises its namespace and fixed conformance activities before receiving work.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [],
+        "signals": []
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [],
+        "failures": [],
+        "heartbeats": [],
+        "peakConcurrency": 0
+      }
+    },
+    {
+      "id": "receive-complete",
+      "description": "The fake endpoint dispatches one echo ActivityTask and the worker reports a successful ActivityResult with an equivalent JSON payload.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-receive-complete",
+            "activityId": "act-receive-complete-1",
+            "activityType": "conformance.echo",
+            "input": "${fixtures.payloads.echo}"
+          }
+        ],
+        "signals": []
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [
+          {
+            "workflowId": "wf-receive-complete",
+            "activityId": "act-receive-complete-1",
+            "outcome": "result",
+            "payloadEquals": {
+              "message": "hello worker",
+              "counter": 1
+            },
+            "contentType": "application/json"
+          }
+        ],
+        "failures": [],
+        "heartbeats": [],
+        "peakConcurrency": 1
+      }
+    },
+    {
+      "id": "fail-retryable",
+      "description": "A retryable fixture activity fails explicitly and maps to the retryable wire classification.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-fail-retryable",
+            "activityId": "act-fail-retryable-1",
+            "activityType": "conformance.fail-retryable",
+            "input": "${fixtures.payloads.retryableFailureDetails}"
+          }
+        ],
+        "signals": []
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [],
+        "failures": [
+          {
+            "workflowId": "wf-fail-retryable",
+            "activityId": "act-fail-retryable-1",
+            "outcome": "error",
+            "classification": "Retryable",
+            "wireKind": "ACTIVITY_ERROR_KIND_RETRYABLE",
+            "messageContains": "retryable"
+          }
+        ],
+        "heartbeats": [],
+        "peakConcurrency": 1
+      }
+    },
+    {
+      "id": "fail-terminal",
+      "description": "A terminal fixture activity fails explicitly and maps to the terminal wire classification, distinct from retryable failure.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-fail-terminal",
+            "activityId": "act-fail-terminal-1",
+            "activityType": "conformance.fail-terminal",
+            "input": "${fixtures.payloads.terminalFailureDetails}"
+          }
+        ],
+        "signals": []
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [],
+        "failures": [
+          {
+            "workflowId": "wf-fail-terminal",
+            "activityId": "act-fail-terminal-1",
+            "outcome": "error",
+            "classification": "Terminal",
+            "wireKind": "ACTIVITY_ERROR_KIND_TERMINAL",
+            "messageContains": "terminal"
+          }
+        ],
+        "heartbeats": [],
+        "peakConcurrency": 1
+      }
+    },
+    {
+      "id": "heartbeat",
+      "description": "A long-running fixture activity cooperatively heartbeats progress before completing.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-heartbeat",
+            "activityId": "act-heartbeat-1",
+            "activityType": "conformance.heartbeat-slow",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "heartbeatAfterMs": 10,
+                "completeAfterMs": 20
+              }
+            }
+          }
+        ],
+        "signals": []
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [
+          {
+            "workflowId": "wf-heartbeat",
+            "activityId": "act-heartbeat-1",
+            "outcome": "result",
+            "payloadEquals": {
+              "status": "completed-after-heartbeat"
+            },
+            "contentType": "application/json"
+          }
+        ],
+        "failures": [],
+        "heartbeats": [
+          {
+            "workflowId": "wf-heartbeat",
+            "activityId": "act-heartbeat-1",
+            "progress": "${fixtures.payloads.heartbeatProgress}",
+            "minimumCount": 1
+          }
+        ],
+        "peakConcurrency": 1
+      }
+    },
+    {
+      "id": "cancellation",
+      "description": "The harness requests cooperative cancellation for an in-flight cancellation-observing activity; the SDK runner observes the flag and reports terminal cancellation without forced termination.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-cancellation",
+            "activityId": "act-cancellation-1",
+            "activityType": "conformance.cancel-observing",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "pollEveryMs": 10
+              }
+            }
+          }
+        ],
+        "signals": [
+          {
+            "kind": "harness.cancelActivity",
+            "workflowId": "wf-cancellation",
+            "activityId": "act-cancellation-1",
+            "after": "task-dispatched",
+            "payload": "${fixtures.payloads.cancelRequest}",
+            "wireNote": "worker.proto currently has no cancellation frame; this is a harness control signal delivered through the runner seam, not a new protocol message."
+          }
+        ]
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [],
+        "failures": [
+          {
+            "workflowId": "wf-cancellation",
+            "activityId": "act-cancellation-1",
+            "outcome": "error",
+            "classification": "Terminal",
+            "wireKind": "ACTIVITY_ERROR_KIND_TERMINAL",
+            "messageContains": "cancelled"
+          }
+        ],
+        "heartbeats": [],
+        "cancellationObserved": true,
+        "forcedTermination": false,
+        "peakConcurrency": 1
+      }
+    },
+    {
+      "id": "reconnect-and-re-report",
+      "description": "The endpoint drops the stream after receiving but before acknowledging a completion; after reconnect and re-registration, the worker re-reports the unacknowledged result before serving new work.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-reconnect",
+            "activityId": "act-reconnect-1",
+            "activityType": "conformance.echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "message": "before disconnect"
+              }
+            }
+          },
+          {
+            "workflowId": "wf-reconnect",
+            "activityId": "act-reconnect-2",
+            "activityType": "conformance.echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "message": "after reconnect"
+              }
+            },
+            "dispatchAfter": "re-report-observed"
+          }
+        ],
+        "signals": [
+          {
+            "kind": "harness.disconnectStream",
+            "after": "result-received",
+            "beforeAck": true,
+            "activityId": "act-reconnect-1"
+          }
+        ]
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          },
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}",
+            "afterReconnect": true
+          }
+        ],
+        "reports": [
+          {
+            "workflowId": "wf-reconnect",
+            "activityId": "act-reconnect-1",
+            "outcome": "result",
+            "payloadEquals": {
+              "message": "before disconnect"
+            },
+            "contentType": "application/json"
+          },
+          {
+            "workflowId": "wf-reconnect",
+            "activityId": "act-reconnect-1",
+            "outcome": "result",
+            "payloadEquals": {
+              "message": "before disconnect"
+            },
+            "contentType": "application/json",
+            "reReport": true,
+            "mustOccurBefore": "dispatch:act-reconnect-2"
+          },
+          {
+            "workflowId": "wf-reconnect",
+            "activityId": "act-reconnect-2",
+            "outcome": "result",
+            "payloadEquals": {
+              "message": "after reconnect"
+            },
+            "contentType": "application/json"
+          }
+        ],
+        "failures": [],
+        "heartbeats": [],
+        "reReportedBeforeNewTask": true,
+        "peakConcurrency": 1
+      }
+    },
+    {
+      "id": "backpressure",
+      "description": "With max concurrency set to 2 and five blocking tasks available, the worker never runs more than two handlers concurrently while eventually completing all five.",
+      "given": {
+        "maxConcurrency": 2,
+        "tasks": [
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-1",
+            "activityType": "conformance.blocking-echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "slot": 1
+              }
+            }
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-2",
+            "activityType": "conformance.blocking-echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "slot": 2
+              }
+            }
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-3",
+            "activityType": "conformance.blocking-echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "slot": 3
+              }
+            }
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-4",
+            "activityType": "conformance.blocking-echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "slot": 4
+              }
+            }
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-5",
+            "activityType": "conformance.blocking-echo",
+            "input": {
+              "contentType": "application/json",
+              "json": {
+                "slot": 5
+              }
+            }
+          }
+        ],
+        "signals": [
+          {
+            "kind": "harness.releaseBlockedTasks",
+            "after": "peak-concurrency-observed"
+          }
+        ]
+      },
+      "expect": {
+        "registrations": [
+          {
+            "namespace": "${defaults.namespace}",
+            "activityTypes": "${fixtures.registeredActivityTypes}"
+          }
+        ],
+        "reports": [
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-1",
+            "outcome": "result",
+            "payloadEquals": {
+              "slot": 1
+            },
+            "contentType": "application/json"
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-2",
+            "outcome": "result",
+            "payloadEquals": {
+              "slot": 2
+            },
+            "contentType": "application/json"
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-3",
+            "outcome": "result",
+            "payloadEquals": {
+              "slot": 3
+            },
+            "contentType": "application/json"
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-4",
+            "outcome": "result",
+            "payloadEquals": {
+              "slot": 4
+            },
+            "contentType": "application/json"
+          },
+          {
+            "workflowId": "wf-backpressure",
+            "activityId": "act-backpressure-5",
+            "outcome": "result",
+            "payloadEquals": {
+              "slot": 5
+            },
+            "contentType": "application/json"
+          }
+        ],
+        "failures": [],
+        "heartbeats": [],
+        "taskCount": 5,
+        "peakConcurrency": 2,
+        "peakConcurrencyEquals": 2
+      }
+    }
+  ]
+}
