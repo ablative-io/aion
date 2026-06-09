@@ -9,7 +9,7 @@ use aion_nif::{
 };
 use beamr::{atom::AtomTable, native::ProcessContext};
 
-fn context() -> ProcessContext {
+fn context() -> ProcessContext<'static> {
     let mut ctx = ProcessContext::new();
     ctx.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
     ctx

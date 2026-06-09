@@ -60,6 +60,6 @@ tower = "0.5"
 futures = "0.3"
 dashmap = "6.2"
 saffron = { version = "0.1", features = ["std"] }
-beamr = { version = "0.3.15", features = ["json"] }
+beamr = { version = "0.4.0", features = ["json"] }
 
 

@@ -64,7 +64,10 @@ pub fn payload_from_term(term: Term, ctx: &ProcessContext) -> Result<Payload, Te
 ///
 /// Returns [`TermError`] when the payload is not valid JSON for its content tag
 /// or beamr cannot encode the JSON value as a term.
-pub fn payload_into_term(payload: &Payload, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+pub fn payload_into_term(
+    payload: &Payload,
+    ctx: &mut NifContext<'_, '_>,
+) -> Result<Term, TermError> {
     let value = payload.to_json().map_err(|error| TermError::Conversion {
         context: "payload to json value",
         message: error.to_string(),
@@ -101,7 +104,7 @@ where
 ///
 /// Returns [`TermError`] when serde cannot serialize `value`, payload creation
 /// fails, or beamr cannot encode the JSON value as a term.
-pub fn into_term_via_payload<T>(value: T, ctx: &mut NifContext<'_>) -> Result<Term, TermError>
+pub fn into_term_via_payload<T>(value: T, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError>
 where
     T: Serialize,
 {
@@ -117,7 +120,7 @@ where
     payload_into_term(&payload, ctx)
 }
 
-fn value_into_term(value: &Value, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+fn value_into_term(value: &Value, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
     match value {
         Value::Null => Ok(ctx.process_mut().allocate_term(Term::atom(Atom::NIL))),
         Value::Array(elements) => {
@@ -160,7 +163,7 @@ fn value_into_term(value: &Value, ctx: &mut NifContext<'_>) -> Result<Term, Term
     }
 }
 
-fn number_into_term(number: &Number, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+fn number_into_term(number: &Number, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
     if let Some(value) = number.as_i64() {
         if let Some(term) = Term::try_small_int(value) {
             return Ok(ctx.process_mut().allocate_term(term));
@@ -200,7 +203,7 @@ impl FromTerm for Payload {
 }
 
 impl IntoTerm for Payload {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         payload_into_term(&self, ctx)
     }
 }
@@ -222,7 +225,7 @@ mod tests {
     };
     use crate::TermError;
 
-    fn context() -> ProcessContext {
+    fn context() -> ProcessContext<'static> {
         let mut ctx = ProcessContext::new();
         ctx.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
         ctx

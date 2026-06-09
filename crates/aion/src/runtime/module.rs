@@ -192,7 +192,6 @@ fn rewrite_operand_atom(operand: &mut Operand, rename_map: &ModuleRenameMap) {
                 *atom = new_atom;
             }
         }
-        Operand::Literal(literal) => rewrite_literal_atom(literal, rename_map),
         Operand::List(items) => {
             for item in items {
                 rewrite_operand_atom(item, rename_map);
@@ -201,7 +200,8 @@ fn rewrite_operand_atom(operand: &mut Operand, rename_map: &ModuleRenameMap) {
         Operand::TypedRegister { register, .. } => {
             rewrite_operand_atom(register, rename_map);
         }
-        Operand::Integer(_)
+        Operand::Literal(_)
+        | Operand::Integer(_)
         | Operand::Unsigned(_)
         | Operand::Atom(_)
         | Operand::X(_)

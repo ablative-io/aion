@@ -67,7 +67,7 @@ where
 
 /// Encodes an arity mismatch as a typed NIF error term.
 #[doc(hidden)]
-pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut NifContext<'_>) -> Term {
+pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut NifContext<'_, '_>) -> Term {
     let error = TermError::Conversion {
         context: "nif arity",
         message: format!("expected {expected} arguments, received {actual}"),
@@ -77,13 +77,13 @@ pub fn arity_error_term(expected: usize, actual: usize, ctx: &mut NifContext<'_>
 
 /// Encodes a conversion error as a typed deterministic NIF error term.
 #[doc(hidden)]
-pub fn term_error_to_term(error: &TermError, ctx: &mut NifContext<'_>) -> Term {
+pub fn term_error_to_term(error: &TermError, ctx: &mut NifContext<'_, '_>) -> Term {
     error_message_to_term(error.to_string(), ctx)
 }
 
 /// Encodes a conversion error as a terminal activity failure term.
 #[doc(hidden)]
-pub fn activity_term_error_to_term(error: &TermError, ctx: &mut NifContext<'_>) -> Term {
+pub fn activity_term_error_to_term(error: &TermError, ctx: &mut NifContext<'_, '_>) -> Term {
     activity_error_to_term(term_error_activity(error), ctx)
 }
 
@@ -95,7 +95,7 @@ pub fn activity_term_error_to_term(error: &TermError, ctx: &mut NifContext<'_>) 
 /// Returns an error term when the body panics or the return value cannot be
 /// encoded through [`IntoTerm`].
 #[doc(hidden)]
-pub fn invoke_pure<R, F>(ctx: &mut NifContext<'_>, body: F) -> Result<Term, Term>
+pub fn invoke_pure<R, F>(ctx: &mut NifContext<'_, '_>, body: F) -> Result<Term, Term>
 where
     R: IntoTerm,
     F: FnOnce() -> R,
@@ -124,7 +124,7 @@ where
 /// are classified as [`ActivityErrorKind::Terminal`] so retry policy evaluation
 /// can preserve the invariant that unwinding never crosses the FFI boundary.
 #[doc(hidden)]
-pub fn invoke_activity<R, F>(ctx: &mut NifContext<'_>, body: F) -> Result<Term, Term>
+pub fn invoke_activity<R, F>(ctx: &mut NifContext<'_, '_>, body: F) -> Result<Term, Term>
 where
     R: IntoTerm,
     F: FnOnce() -> Result<R, ActivityError>,
@@ -148,14 +148,14 @@ where
 /// Encodes an [`ActivityError`] as a JSON-shaped term that preserves kind,
 /// message, and details for the engine's activity-failure reconstruction.
 #[doc(hidden)]
-pub fn activity_error_to_term(error: ActivityError, ctx: &mut NifContext<'_>) -> Term {
+pub fn activity_error_to_term(error: ActivityError, ctx: &mut NifContext<'_, '_>) -> Term {
     match into_term_via_payload(error, ctx) {
         Ok(term) => term,
         Err(error) => fallback_activity_error_term(error.to_string(), ctx),
     }
 }
 
-fn fallback_activity_error_term(message: String, ctx: &mut NifContext<'_>) -> Term {
+fn fallback_activity_error_term(message: String, ctx: &mut NifContext<'_, '_>) -> Term {
     let error = ActivityError {
         kind: ActivityErrorKind::Terminal,
         message,
@@ -224,7 +224,7 @@ pub fn request_activity_suspend<'scheduler>(
     Ok(ActivityWakeHandle { scheduler, pid })
 }
 
-fn error_message_to_term(message: String, ctx: &mut NifContext<'_>) -> Term {
+fn error_message_to_term(message: String, ctx: &mut NifContext<'_, '_>) -> Term {
     match Result::<String, String>::Err(message).into_term(ctx) {
         Ok(term) => term,
         Err(_) => ctx.process_mut().allocate_term(Term::NIL),
@@ -466,7 +466,7 @@ mod tests {
         Determinism, FromTerm, IntoTerm, TermError, from_term_via_payload, request_activity_suspend,
     };
 
-    fn context() -> ProcessContext {
+    fn context() -> ProcessContext<'static> {
         let mut ctx = ProcessContext::new();
         ctx.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
         ctx
@@ -487,6 +487,7 @@ mod tests {
         Scheduler::with_code_server(
             SchedulerConfig {
                 thread_count: Some(1),
+                ..Default::default()
             },
             Arc::new(ModuleRegistry::new()),
             Arc::new(AtomTable::with_common_atoms()),

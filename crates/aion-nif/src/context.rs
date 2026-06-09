@@ -17,15 +17,15 @@ thread_local! {
 }
 
 /// Scoped context used by generated NIF shims during one native invocation.
-pub struct NifContext<'ctx> {
-    process: &'ctx mut ProcessContext,
+pub struct NifContext<'ctx, 'pc> {
+    process: &'ctx mut ProcessContext<'pc>,
     retained_heap: Vec<Box<[u64]>>,
 }
 
-impl<'ctx> NifContext<'ctx> {
+impl<'ctx, 'pc> NifContext<'ctx, 'pc> {
     /// Creates a context, draining any parked heap from the previous invocation.
     #[must_use]
-    pub fn new(process: &'ctx mut ProcessContext) -> Self {
+    pub fn new(process: &'ctx mut ProcessContext<'pc>) -> Self {
         PARKED_HEAP.with_borrow_mut(Vec::clear);
         Self {
             process,
@@ -35,12 +35,12 @@ impl<'ctx> NifContext<'ctx> {
 
     /// Borrows the wrapped process context for atom resolution and term reads.
     #[must_use]
-    pub fn process(&self) -> &ProcessContext {
+    pub fn process(&self) -> &ProcessContext<'pc> {
         self.process
     }
 
     /// Mutably borrows the wrapped process context for immediate term allocation.
-    pub fn process_mut(&mut self) -> &mut ProcessContext {
+    pub fn process_mut(&mut self) -> &mut ProcessContext<'pc> {
         self.process
     }
 
@@ -66,7 +66,7 @@ impl<'ctx> NifContext<'ctx> {
     }
 }
 
-impl Drop for NifContext<'_> {
+impl Drop for NifContext<'_, '_> {
     fn drop(&mut self) {
         if !self.retained_heap.is_empty() {
             PARKED_HEAP.with_borrow_mut(|parked| {
@@ -85,7 +85,7 @@ mod tests {
     use super::NifContext;
     use crate::{IntoTerm, TermError};
 
-    fn context() -> ProcessContext {
+    fn context() -> ProcessContext<'static> {
         let mut ctx = ProcessContext::new();
         ctx.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
         ctx

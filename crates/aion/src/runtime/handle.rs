@@ -90,6 +90,7 @@ impl RuntimeHandle {
         let module_registry = Arc::new(ModuleRegistry::new());
         let scheduler_config = SchedulerConfig {
             thread_count: config.thread_count,
+            ..Default::default()
         };
         let native_registry = Arc::new(BifRegistryImpl::new());
         register_all_bifs(&native_registry, &atom_table)?;
@@ -137,6 +138,7 @@ impl RuntimeHandle {
                     function,
                     mfa.arity,
                     entry.function,
+                    beamr::scheduler::dirty::DirtySchedulerKind::Cpu,
                     capability,
                 )
             } else {
@@ -254,7 +256,7 @@ impl RuntimeHandle {
         let function = self.atom_table.intern(function);
         self.native_registry
             .lookup(module, function, arity)
-            .is_some_and(|entry| entry.is_dirty)
+            .is_some_and(|entry| entry.dirty_kind.is_some())
     }
 
     /// Block until an activity exits, then surface its success or failure to the parent.
@@ -685,6 +687,7 @@ impl RuntimeHandle {
         self.module_registry.insert(Module {
             name: module,
             generation: 0,
+            origin: beamr::module::ModuleOrigin::Preloaded,
             exports: HashMap::from([((function, 1), label)]),
             label_index: HashMap::from([(label, 0)]),
             code: vec![
@@ -693,7 +696,10 @@ impl RuntimeHandle {
                     fail: Operand::Label(label),
                 },
             ],
+            function_table: Vec::new(),
+            line_table: Vec::new(),
             literals: Vec::new(),
+            constant_pool: beamr::constant_pool::ConstantPool::new(),
             resolved_imports: Vec::new(),
             lambdas: Vec::new(),
             string_table: Vec::new(),
@@ -976,10 +982,14 @@ mod tests {
         let mut module_data = Module {
             name: module,
             generation: 0,
+            origin: beamr::module::ModuleOrigin::Preloaded,
             exports: std::collections::HashMap::from([((function, arity), label)]),
             label_index: std::collections::HashMap::from([(label, 0)]),
             code,
+            function_table: Vec::new(),
+            line_table: Vec::new(),
             literals: Vec::new(),
+            constant_pool: beamr::constant_pool::ConstantPool::new(),
             resolved_imports: Vec::new(),
             lambdas: Vec::new(),
             string_table: Vec::new(),
@@ -1208,7 +1218,7 @@ mod tests {
         assert!(
             runtime
                 .lookup_native_for_test("host", "thirteen", 0)
-                .is_some_and(|entry| entry.is_dirty)
+                .is_some_and(|entry| entry.dirty_kind.is_some())
         );
 
         let host_nif_call = native_call_module_for_test(

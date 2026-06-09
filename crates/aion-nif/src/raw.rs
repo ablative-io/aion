@@ -38,7 +38,7 @@ pub const fn binary_word_len(byte_len: usize) -> usize {
 ///
 /// Returns [`TermError::HeapAllocation`] when the binary layout cannot be
 /// written into retained storage.
-pub fn owned_binary_term(ctx: &mut NifContext<'_>, bytes: &[u8]) -> Result<Term, TermError> {
+pub fn owned_binary_term(ctx: &mut NifContext<'_, '_>, bytes: &[u8]) -> Result<Term, TermError> {
     ctx.retain_heap(binary_word_len(bytes.len()), |heap| {
         binary_term(heap, bytes)
     })
@@ -71,7 +71,10 @@ pub fn tuple_term(heap: &mut [u64], elements: &[Term]) -> Result<Term, TermError
 ///
 /// Returns [`TermError::HeapAllocation`] when the tuple layout cannot be written
 /// into retained storage.
-pub fn owned_tuple_term(ctx: &mut NifContext<'_>, elements: &[Term]) -> Result<Term, TermError> {
+pub fn owned_tuple_term(
+    ctx: &mut NifContext<'_, '_>,
+    elements: &[Term],
+) -> Result<Term, TermError> {
     ctx.retain_heap(tuple_word_len(elements.len()), |heap| {
         tuple_term(heap, elements)
     })
@@ -99,7 +102,7 @@ pub fn float_term(heap: &mut [u64], value: f64) -> Result<Term, TermError> {
 ///
 /// Returns [`TermError::HeapAllocation`] when the float layout cannot be written
 /// into retained storage.
-pub fn owned_float_term(ctx: &mut NifContext<'_>, value: f64) -> Result<Term, TermError> {
+pub fn owned_float_term(ctx: &mut NifContext<'_, '_>, value: f64) -> Result<Term, TermError> {
     ctx.retain_heap(float_word_len(), |heap| float_term(heap, value))
 }
 
@@ -126,7 +129,7 @@ pub fn bigint_term(heap: &mut [u64], negative: bool, limbs: &[u64]) -> Result<Te
 /// Returns [`TermError::HeapAllocation`] when the bigint layout cannot be
 /// written into retained storage.
 pub fn owned_bigint_term(
-    ctx: &mut NifContext<'_>,
+    ctx: &mut NifContext<'_, '_>,
     negative: bool,
     limbs: &[u64],
 ) -> Result<Term, TermError> {
@@ -168,7 +171,7 @@ pub fn cons_term(words: &mut [u64], head: Term, tail: Term) -> Result<Term, Term
 /// Returns [`TermError::HeapAllocation`] when the cons layout cannot be written
 /// into retained storage.
 pub fn owned_cons_term(
-    ctx: &mut NifContext<'_>,
+    ctx: &mut NifContext<'_, '_>,
     head: Term,
     tail: Term,
 ) -> Result<Term, TermError> {
@@ -210,7 +213,7 @@ pub fn list_term(heap: &mut [u64], elements: &[Term]) -> Result<Term, TermError>
 ///
 /// Returns [`TermError::HeapAllocation`] when the list layout cannot be written
 /// into retained storage.
-pub fn owned_list_term(ctx: &mut NifContext<'_>, elements: &[Term]) -> Result<Term, TermError> {
+pub fn owned_list_term(ctx: &mut NifContext<'_, '_>, elements: &[Term]) -> Result<Term, TermError> {
     ctx.retain_heap(list_word_len(elements.len()), |heap| {
         list_term(heap, elements)
     })
@@ -239,7 +242,7 @@ pub fn map_term(heap: &mut [u64], keys: &[Term], values: &[Term]) -> Result<Term
 /// Returns [`TermError::HeapAllocation`] when the map layout cannot be written
 /// into retained storage.
 pub fn owned_map_term(
-    ctx: &mut NifContext<'_>,
+    ctx: &mut NifContext<'_, '_>,
     keys: &[Term],
     values: &[Term],
 ) -> Result<Term, TermError> {

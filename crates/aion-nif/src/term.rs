@@ -40,7 +40,7 @@ pub trait IntoTerm {
     ///
     /// Returns [`TermError`] when heap allocation or atom interning support is
     /// unavailable.
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError>;
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError>;
 }
 
 /// Owned atom name used for typed atom conversion.
@@ -113,7 +113,7 @@ pub(crate) fn mismatch(expected: &'static str, term: Term) -> TermError {
     }
 }
 
-fn small_int_term(value: i64, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+fn small_int_term(value: i64, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
     Term::try_small_int(value)
         .map(|term| ctx.process_mut().allocate_term(term))
         .ok_or(TermError::HeapAllocation { shape: "integer" })
@@ -126,7 +126,7 @@ impl FromTerm for i64 {
 }
 
 impl IntoTerm for i64 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         small_int_term(self, ctx)
     }
 }
@@ -141,7 +141,7 @@ impl FromTerm for u64 {
 }
 
 impl IntoTerm for u64 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         let value =
             i64::try_from(self).map_err(|_| TermError::HeapAllocation { shape: "integer" })?;
         small_int_term(value, ctx)
@@ -157,7 +157,7 @@ impl FromTerm for f64 {
 }
 
 impl IntoTerm for f64 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         raw::owned_float_term(ctx, self)
     }
 }
@@ -173,7 +173,7 @@ impl FromTerm for bool {
 }
 
 impl IntoTerm for bool {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         let atom = if self { Atom::TRUE } else { Atom::FALSE };
         Ok(ctx.process_mut().allocate_term(Term::atom(atom)))
     }
@@ -188,7 +188,7 @@ impl FromTerm for Vec<u8> {
 }
 
 impl IntoTerm for Vec<u8> {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         raw::owned_binary_term(ctx, &self)
     }
 }
@@ -201,7 +201,7 @@ impl FromTerm for String {
 }
 
 impl IntoTerm for String {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         raw::owned_binary_term(ctx, self.as_bytes())
     }
 }
@@ -223,7 +223,7 @@ impl FromTerm for AtomName {
 }
 
 impl IntoTerm for AtomName {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         let atom = {
             let table = ctx
                 .process()
@@ -244,7 +244,7 @@ mod tests {
     use super::{AtomName, FromTerm, IntoTerm};
     use crate::TermError;
 
-    fn context() -> ProcessContext {
+    fn context() -> ProcessContext<'static> {
         let mut ctx = ProcessContext::new();
         ctx.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
         ctx

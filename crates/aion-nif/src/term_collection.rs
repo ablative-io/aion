@@ -41,7 +41,7 @@ impl<T> IntoTerm for Option<T>
 where
     T: IntoTerm,
 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         match self {
             Some(value) => value.into_term(ctx),
             None => Ok(ctx.process_mut().allocate_term(Term::NIL)),
@@ -75,7 +75,7 @@ where
     T: IntoTerm,
     E: IntoTerm,
 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         let (tag, value) = match self {
             Ok(value) => (Term::atom(Atom::OK), value.into_term(ctx)?),
             Err(error) => (Term::atom(Atom::ERROR), error.into_term(ctx)?),
@@ -107,7 +107,7 @@ impl<T> IntoTerm for Vec<T>
 where
     T: ListElement,
 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         let terms = self
             .into_iter()
             .map(|value| value.into_term(ctx))
@@ -140,7 +140,7 @@ impl<T> IntoTerm for BTreeMap<String, T>
 where
     T: IntoTerm,
 {
-    fn into_term(self, ctx: &mut NifContext<'_>) -> Result<Term, TermError> {
+    fn into_term(self, ctx: &mut NifContext<'_, '_>) -> Result<Term, TermError> {
         let mut keys = Vec::with_capacity(self.len());
         let mut values = Vec::with_capacity(self.len());
 
@@ -161,7 +161,7 @@ mod tests {
 
     use super::*;
 
-    fn context() -> ProcessContext {
+    fn context() -> ProcessContext<'static> {
         let mut ctx = ProcessContext::new();
         ctx.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
         ctx
