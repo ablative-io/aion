@@ -1,10 +1,11 @@
 //! Workflow process outcome conversion at the beamr boundary.
 
 use aion_core::{Payload, WorkflowError};
-use beamr::atom::AtomTable;
+use beamr::atom::{Atom, AtomTable};
 use beamr::process::ExitReason;
 use beamr::scheduler::Scheduler;
 use beamr::term::Term;
+use beamr::term::boxed::Tuple;
 
 use crate::{EngineError, Pid};
 
@@ -45,9 +46,7 @@ pub(super) fn convert_process_outcome(
     result: Term,
 ) -> Result<WorkflowProcessOutcome, EngineError> {
     if reason == ExitReason::Normal {
-        Ok(WorkflowProcessOutcome::Completed(term_to_payload(
-            result, atoms,
-        )?))
+        unwrap_gleam_result(result, atoms, pid)
     } else {
         let details = term_to_payload(result, atoms).ok();
         Ok(WorkflowProcessOutcome::Failed(WorkflowError {
@@ -55,4 +54,34 @@ pub(super) fn convert_process_outcome(
             details,
         }))
     }
+}
+
+fn unwrap_gleam_result(
+    result: Term,
+    atoms: &AtomTable,
+    pid: Pid,
+) -> Result<WorkflowProcessOutcome, EngineError> {
+    if let Some(tuple) = Tuple::new(result) {
+        if tuple.arity() == 2 {
+            if let (Some(tag), Some(value)) = (tuple.get(0), tuple.get(1)) {
+                if let Some(atom) = tag.as_atom() {
+                    if atom == Atom::OK {
+                        return Ok(WorkflowProcessOutcome::Completed(term_to_payload(
+                            value, atoms,
+                        )?));
+                    }
+                    if atom == Atom::ERROR {
+                        let details = term_to_payload(value, atoms).ok();
+                        return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
+                            message: format!("workflow {pid} returned error"),
+                            details,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    Ok(WorkflowProcessOutcome::Completed(term_to_payload(
+        result, atoms,
+    )?))
 }
