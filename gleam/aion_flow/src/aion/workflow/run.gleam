@@ -38,16 +38,21 @@ pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
   let encoded_input = input_codec.encode(activity.input(activity_value))
 
   case
-    ffi.run_activity(
+    ffi.dispatch_activity(
       activity.name(activity_value),
       encoded_input,
       activity_config(activity_value),
     )
   {
-    Ok(payload) -> {
-      case output_codec.decode(payload) {
-        Ok(output) -> Ok(output)
-        Error(decode_error) -> Error(error.ActivityDecodeFailed(decode_error))
+    Ok(correlation_id) -> {
+      case ffi.await_activity_result(correlation_id) {
+        Ok(payload) -> {
+          case output_codec.decode(payload) {
+            Ok(output) -> Ok(output)
+            Error(decode_error) -> Error(error.ActivityDecodeFailed(decode_error))
+          }
+        }
+        Error(raw_error) -> Error(activity_error(raw_error))
       }
     }
     Error(raw_error) -> Error(activity_error(raw_error))

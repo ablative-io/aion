@@ -1,8 +1,8 @@
 //! Engine-owned NIF implementations for the `aion_flow_ffi` namespace.
 //!
 //! These NIFs back the `@external(erlang, "aion_flow_ffi", ...)` declarations
-//! in the Gleam `aion_flow` SDK. `run_activity` is registered as a dirty NIF
-//! because activity dispatch may block on network I/O.
+//! in the Gleam `aion_flow` SDK. Activity dispatch is split into a normal
+//! dispatch NIF plus a selective-receive await NIF.
 
 use std::cell::RefCell;
 
@@ -66,13 +66,12 @@ pub(super) fn decode_string_arg(term: Term) -> Result<String, String> {
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
-/// NIF backing `aion_flow_ffi:run_activity/3`.
-///
-/// Heap from the previous NIF invocation is drained first (matching
-/// `NifContext`'s one-call retention window), then fresh allocations for
-/// the return value are parked for the scheduler to copy.
-fn run_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    super::nif_activity::run_activity_impl(args, ctx)
+fn dispatch_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    super::nif_activity_dispatch::dispatch_activity_impl(args, ctx)
+}
+
+fn await_activity_result(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    super::nif_activity_dispatch::await_activity_result_impl(args, ctx)
 }
 
 fn collect_all(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
@@ -100,7 +99,14 @@ fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, 
 /// Collect engine-owned NIF entries for `aion_flow_ffi`.
 pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
     vec![
-        NifEntry::dirty(Mfa::new(FFI_MODULE, "run_activity", 3), run_activity),
+        NifEntry::new(
+            Mfa::new(FFI_MODULE, "dispatch_activity", 3),
+            dispatch_activity,
+        ),
+        NifEntry::new(
+            Mfa::new(FFI_MODULE, "await_activity_result", 1),
+            await_activity_result,
+        ),
         NifEntry::new(Mfa::new(FFI_MODULE, "now", 0), now_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "random", 0), random_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "random_int", 2), random_int_impl),
@@ -159,15 +165,11 @@ mod tests {
     use beamr::term::boxed::Tuple;
 
     use super::{
-        NOT_YET_IMPLEMENTED, alloc_binary_term, clear_parked_heap, engine_nif_entries,
-        not_yet_implemented, run_activity,
+        NOT_YET_IMPLEMENTED, clear_parked_heap, dispatch_activity, engine_nif_entries,
+        not_yet_implemented,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    fn binary_arg(value: &str) -> Term {
-        alloc_binary_term(value.as_bytes()).unwrap_or(Term::NIL)
-    }
 
     fn decode_result_tuple(term: Term) -> Result<(String, String), Box<dyn std::error::Error>> {
         let tuple = Tuple::new(term).ok_or("result should be a tuple")?;
@@ -188,47 +190,11 @@ mod tests {
     }
 
     #[test]
-    fn returns_result_tuple_for_valid_call() -> TestResult {
-        use std::sync::Arc;
-
-        use crate::activity::bridge::{ActivityDispatcher, install_activity_dispatcher};
-
-        struct TestDispatcher;
-        impl ActivityDispatcher for TestDispatcher {
-            fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
-                let _ = (name, config);
-                Ok(format!("dispatched:{input}"))
-            }
-        }
-        install_activity_dispatcher(Arc::new(TestDispatcher));
-
-        clear_parked_heap();
-        let name = binary_arg("greet");
-        let input = binary_arg("{\"name\":\"Alice\"}");
-        let config = binary_arg("{}");
-        let mut ctx = ProcessContext::new();
-
-        let result = run_activity(&[name, input, config], &mut ctx);
-
-        match result {
-            Ok(term) => {
-                let (tag, _value) = decode_result_tuple(term)?;
-                assert!(
-                    tag == "ok" || tag == "error",
-                    "result should be a tagged tuple"
-                );
-            }
-            Err(_) => return Err("NIF should return Ok at the beamr level".into()),
-        }
-        Ok(())
-    }
-
-    #[test]
     fn returns_error_on_wrong_arity() -> TestResult {
         clear_parked_heap();
         let mut ctx = ProcessContext::new();
 
-        let result = run_activity(&[], &mut ctx);
+        let result = dispatch_activity(&[], &mut ctx);
 
         match result {
             Ok(term) => {
@@ -252,9 +218,16 @@ mod tests {
             .map(|entry| entry.mfa.display())
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(entries.len(), 18);
+        assert_eq!(entries.len(), 19);
         assert_eq!(unique.len(), entries.len());
-        for normal_nif in ["now", "random", "random_int", "register_query"] {
+        for normal_nif in [
+            "dispatch_activity",
+            "await_activity_result",
+            "now",
+            "random",
+            "random_int",
+            "register_query",
+        ] {
             let found = entries
                 .iter()
                 .any(|entry| entry.mfa.function == normal_nif && !entry.is_dirty);
@@ -265,7 +238,12 @@ mod tests {
                 .iter()
                 .filter(|entry| !matches!(
                     entry.mfa.function.as_str(),
-                    "now" | "random" | "random_int" | "register_query"
+                    "dispatch_activity"
+                        | "await_activity_result"
+                        | "now"
+                        | "random"
+                        | "random_int"
+                        | "register_query"
                 ))
                 .all(|entry| entry.is_dirty)
         );

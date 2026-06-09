@@ -168,9 +168,13 @@ mod tests {
         let entries = registration.into_entries();
         let host_entry = entries.iter().find(|e| e.mfa.display() == "host:zero/0");
         assert!(host_entry.is_some_and(|e| e.is_dirty));
-        let run_activity = entries
+        let dispatch_activity = entries
             .iter()
-            .find(|e| e.mfa.display() == "aion_flow_ffi:run_activity/3");
-        assert!(run_activity.is_some_and(|e| e.is_dirty));
+            .find(|e| e.mfa.display() == "aion_flow_ffi:dispatch_activity/3");
+        assert!(dispatch_activity.is_some_and(|e| !e.is_dirty));
+        let await_activity = entries
+            .iter()
+            .find(|e| e.mfa.display() == "aion_flow_ffi:await_activity_result/1");
+        assert!(await_activity.is_some_and(|e| !e.is_dirty));
     }
 }

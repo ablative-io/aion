@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use aion_core::{ActivityError, ActivityErrorKind, Payload};
+use aion_core::{ActivityError, ActivityErrorKind, ContentType, Payload};
 use beamr::atom::{Atom, AtomTable};
 use beamr::module::ModuleRegistry;
 use beamr::native::{BifRegistryImpl, NativeRegistrationError};
@@ -320,6 +320,53 @@ impl RuntimeHandle {
         }
     }
 
+    /// Deliver a two-phase activity completion marker to the workflow mailbox.
+    ///
+    /// The structured `{activity_complete, CorrelationId, Result}` payload is
+    /// retained in the runtime boundary, and an atom marker wakes any suspended
+    /// selective receive. The await NIF resolves the retained payload by
+    /// correlation id after consuming the marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// marker cannot be queued.
+    pub(crate) fn deliver_activity_completion_message(
+        &self,
+        workflow_pid: Pid,
+        correlation_id: &str,
+        result: String,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        let activity_id = correlation_to_activity_pid(correlation_id)?;
+        self.activity_results.insert(
+            (workflow_pid, activity_id),
+            Payload::new(ContentType::Json, result.into_bytes()),
+        );
+        let marker = self.atom_table.intern("activity_complete");
+        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+    }
+
+    /// Deliver a two-phase activity failure marker to the workflow mailbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// marker cannot be queued.
+    pub(crate) fn deliver_activity_failure_message(
+        &self,
+        workflow_pid: Pid,
+        correlation_id: &str,
+        reason: String,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        let activity_id = correlation_to_activity_pid(correlation_id)?;
+        self.activity_errors
+            .insert((workflow_pid, activity_id), activity_error(reason));
+        let marker = self.atom_table.intern("activity_failed");
+        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+    }
+
     /// Deliver a successful activity result payload to the workflow mailbox surface.
     ///
     /// # Errors
@@ -341,6 +388,26 @@ impl RuntimeHandle {
         } else {
             Err(runtime_error(format!(
                 "failed to deliver activity result from {activity_pid} to {parent_pid}"
+            )))
+        }
+    }
+
+    fn enqueue_activity_marker(
+        &self,
+        workflow_pid: Pid,
+        marker: Atom,
+        correlation_id: &str,
+    ) -> Result<(), EngineError> {
+        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+            tracing::debug!(
+                workflow_pid,
+                correlation_id,
+                "delivered activity completion marker to workflow mailbox via scheduler queue"
+            );
+            Ok(())
+        } else {
+            Err(runtime_error(format!(
+                "failed to deliver activity completion marker {correlation_id} to {workflow_pid}"
             )))
         }
     }
@@ -404,6 +471,34 @@ impl RuntimeHandle {
         self.activity_errors
             .get(&(parent_pid, activity_pid))
             .map(|entry| entry.clone())
+    }
+
+    pub(crate) fn take_activity_result(
+        &self,
+        parent_pid: Pid,
+        activity_sequence: Pid,
+    ) -> Option<Payload> {
+        self.activity_results
+            .remove(&(parent_pid, activity_sequence))
+            .map(|(_, payload)| payload)
+    }
+
+    pub(crate) fn take_activity_error(
+        &self,
+        parent_pid: Pid,
+        activity_sequence: Pid,
+    ) -> Option<ActivityError> {
+        self.activity_errors
+            .remove(&(parent_pid, activity_sequence))
+            .map(|(_, error)| error)
+    }
+
+    pub(crate) fn activity_complete_atom(&self) -> Atom {
+        self.atom_table.intern("activity_complete")
+    }
+
+    pub(crate) fn activity_failed_atom(&self) -> Atom {
+        self.atom_table.intern("activity_failed")
     }
 
     /// Cancel a live process by PID.
@@ -728,6 +823,27 @@ impl RuntimeHandle {
 
 fn runtime_error(reason: String) -> EngineError {
     EngineError::Runtime { reason }
+}
+
+fn activity_error(message: String) -> ActivityError {
+    ActivityError {
+        kind: ActivityErrorKind::Terminal,
+        message,
+        details: None,
+    }
+}
+
+fn correlation_to_activity_pid(correlation_id: &str) -> Result<Pid, EngineError> {
+    let Some(raw) = correlation_id.strip_prefix("activity:") else {
+        return Err(runtime_error(format!(
+            "invalid activity correlation id {correlation_id}"
+        )));
+    };
+    raw.parse::<Pid>().map_err(|error| {
+        runtime_error(format!(
+            "invalid activity correlation sequence {correlation_id}: {error}"
+        ))
+    })
 }
 
 fn next_signal_delivery_backoff(

@@ -7,6 +7,7 @@ pub mod module;
 pub mod monitor;
 pub mod nif;
 mod nif_activity;
+mod nif_activity_dispatch;
 mod nif_child;
 mod nif_child_engine;
 mod nif_concurrency;

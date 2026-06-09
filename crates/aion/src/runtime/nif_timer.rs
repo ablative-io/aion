@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use aion_core::{Event, TimerId, WorkflowId};
-use aion_store::{EventStore, ReadableEventStore};
+use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_store::{EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry};
 use beamr::native::ProcessContext;
 use beamr::term::Term;
 use chrono::{DateTime, Utc};
@@ -24,8 +24,53 @@ static TIMER_BRIDGE: OnceLock<Mutex<Option<Arc<TimerNifBridge>>>> = OnceLock::ne
 
 struct TimerNifBridge {
     registry: Arc<Registry>,
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn ReadableEventStore>,
     tokio_handle: Handle,
+}
+
+struct ReadableEventStoreAdapter {
+    store: Arc<dyn EventStore>,
+}
+
+#[async_trait::async_trait]
+impl ReadableEventStore for ReadableEventStoreAdapter {
+    async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
+        self.store.read_history(workflow_id).await
+    }
+
+    async fn read_run_chain(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<RunSummary>, StoreError> {
+        self.store.read_run_chain(workflow_id).await
+    }
+
+    async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.store.list_active().await
+    }
+
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.store.list_workflow_ids().await
+    }
+
+    async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
+        self.store.query(filter).await
+    }
+
+    async fn schedule_timer(
+        &self,
+        workflow_id: &WorkflowId,
+        timer_id: &TimerId,
+        fire_at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.store
+            .schedule_timer(workflow_id, timer_id, fire_at)
+            .await
+    }
+
+    async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
+        self.store.expired_timers(as_of).await
+    }
 }
 
 impl TimerNifBridge {
@@ -171,6 +216,7 @@ pub(crate) fn install_timer_nif_bridge(
     store: Arc<dyn EventStore>,
     tokio_handle: Handle,
 ) {
+    let store: Arc<dyn ReadableEventStore> = Arc::new(ReadableEventStoreAdapter { store });
     let bridge = Arc::new(TimerNifBridge {
         registry,
         store,
@@ -306,13 +352,7 @@ fn build_context(process_context: &ProcessContext) -> Result<NifContext, NifTime
         .pid()
         .ok_or_else(|| NifTimerError::Context("missing calling pid".to_owned()))?;
     let bridge = timer_bridge()?;
-    NifContext::new_with_history_store(
-        pid,
-        bridge.registry.as_ref(),
-        bridge.tokio_handle.clone(),
-        Some(Arc::clone(&bridge.store)),
-    )
-    .map_err(Into::into)
+    NifContext::new(pid, bridge.registry.as_ref(), bridge.tokio_handle.clone()).map_err(Into::into)
 }
 
 fn decode_duration_arg(label: &str, term: Term) -> Result<Duration, NifTimerError> {
