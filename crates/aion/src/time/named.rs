@@ -106,7 +106,7 @@ mod tests {
     use std::time::Duration;
 
     use aion_core::{Event, IdError, TimerId, WorkflowId};
-    use aion_store::{EventStore, InMemoryStore, StoreError};
+    use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
     use super::{SleepTimerError, cancel_timer, sleep, start_timer};
@@ -142,9 +142,10 @@ mod tests {
 
     fn service() -> (Arc<InMemoryStore>, Arc<FakeEngineHandle>, TimerService) {
         let concrete_store = Arc::new(InMemoryStore::default());
-        let store: Arc<dyn EventStore> = concrete_store.clone();
-        let engine = Arc::new(FakeEngineHandle::recording_to(store.clone()));
-        let service = TimerService::with_recorded_at(engine.clone(), store, recorded_at);
+        let writable: Arc<dyn WritableEventStore> = concrete_store.clone();
+        let readable: Arc<dyn ReadableEventStore> = concrete_store.clone();
+        let engine = Arc::new(FakeEngineHandle::recording_to(writable));
+        let service = TimerService::with_recorded_at(engine.clone(), readable, recorded_at);
         (concrete_store, engine, service)
     }
 

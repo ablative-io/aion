@@ -277,9 +277,8 @@ mod tests {
     const RUN_ID: &str = "00000000-0000-0000-0000-000000000002";
 
     #[test]
-    fn describe_accepts_optional_run_id() {
-        let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--run-id", RUN_ID])
-            .unwrap_or_else(|error| panic!("describe with --run-id should parse: {error}"));
+    fn describe_accepts_optional_run_id() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--run-id", RUN_ID])?;
 
         let Command::Describe {
             workflow_id,
@@ -287,11 +286,12 @@ mod tests {
             raw,
         } = cli.command
         else {
-            panic!("expected describe command");
+            anyhow::bail!("expected describe command");
         };
         assert_eq!(workflow_id, WORKFLOW_ID);
         assert_eq!(run_id.as_deref(), Some(RUN_ID));
         assert!(!raw);
+        Ok(())
     }
 
     #[test]
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_operations_allow_omitted_run_id() {
+    fn workflow_operations_allow_omitted_run_id() -> anyhow::Result<()> {
         let commands = [
             vec!["aion-cli", "describe", WORKFLOW_ID],
             vec!["aion-cli", "signal", WORKFLOW_ID, "poke", "--payload", "{}"],
@@ -328,21 +328,22 @@ mod tests {
         ];
 
         for args in commands {
-            let cli = Cli::try_parse_from(args).expect("command without --run-id should parse");
+            let cli = Cli::try_parse_from(args)?;
             match cli.command {
                 Command::Describe { run_id, .. }
                 | Command::Signal { run_id, .. }
                 | Command::Cancel { run_id, .. }
                 | Command::Query { run_id, .. } => assert!(run_id.is_none()),
                 Command::Start { .. } | Command::List { .. } => {
-                    panic!("expected workflow operation command")
+                    anyhow::bail!("expected workflow operation command")
                 }
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn signal_cancel_and_query_accept_optional_run_id() {
+    fn signal_cancel_and_query_accept_optional_run_id() -> anyhow::Result<()> {
         let commands = [
             vec![
                 "aion-cli",
@@ -366,16 +367,17 @@ mod tests {
         ];
 
         for args in commands {
-            let cli = Cli::try_parse_from(args).expect("command with --run-id should parse");
+            let cli = Cli::try_parse_from(args)?;
             match cli.command {
                 Command::Signal { run_id, .. }
                 | Command::Cancel { run_id, .. }
                 | Command::Query { run_id, .. } => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
                 Command::Start { .. } | Command::List { .. } | Command::Describe { .. } => {
-                    panic!("expected run-targeted workflow operation command")
+                    anyhow::bail!("expected run-targeted workflow operation command")
                 }
             }
         }
+        Ok(())
     }
 
     #[test]

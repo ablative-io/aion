@@ -31,7 +31,7 @@ struct TimerNifBridge {
 impl TimerNifBridge {
     fn service(self: &Arc<Self>) -> TimerService {
         let engine: Arc<dyn EngineHandle> = self.clone();
-        TimerService::with_recorded_at(engine, Arc::clone(&self.store), deterministic_epoch)
+        TimerService::with_recorded_at(engine, self.store.clone(), deterministic_epoch)
     }
 }
 

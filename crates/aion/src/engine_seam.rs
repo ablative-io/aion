@@ -311,7 +311,7 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
 
-    use aion_store::{EventStore, WriteToken};
+    use aion_store::{WritableEventStore, WriteToken};
 
     use super::*;
 
@@ -376,7 +376,7 @@ pub(crate) mod test_support {
         terminated_activities: Vec<(WorkflowId, Pid, u64)>,
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
-        recorder_store: Option<Arc<dyn EventStore>>,
+        recorder_store: Option<Arc<dyn WritableEventStore>>,
         record_responses: VecDeque<Result<(), EngineSeamError>>,
         linked_children: HashMap<WorkflowId, Vec<WorkflowId>>,
         propagated_child_exits: Vec<(WorkflowId, WorkflowId)>,
@@ -476,7 +476,7 @@ pub(crate) mod test_support {
 
         /// Creates a fake whose recorder seam appends to the supplied store with event sequencing.
         #[must_use]
-        pub fn recording_to(store: Arc<dyn EventStore>) -> Self {
+        pub fn recording_to(store: Arc<dyn WritableEventStore>) -> Self {
             Self {
                 state: Mutex::new(FakeEngineState {
                     recorder_store: Some(store),
