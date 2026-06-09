@@ -185,13 +185,16 @@ impl HistoryCursor {
                 | Event::ChildWorkflowFailed {
                     child_workflow_id, ..
                 },
-            ) => self.resolve_child_outcome(child_workflow_id),
+            ) if self.child_was_started(child_workflow_id) => self.consume_one(),
+            Some(Event::ChildWorkflowCompleted { .. } | Event::ChildWorkflowFailed { .. }) => {
+                CursorResolveResult::Exhausted
+            }
             _ => self.mismatch_at_current(expected_key),
         }
     }
 
-    fn resolve_child_outcome(&mut self, child_workflow_id: &WorkflowId) -> CursorResolveResult {
-        if self.events[..self.position].iter().any(|event| {
+    fn child_was_started(&self, child_workflow_id: &WorkflowId) -> bool {
+        self.events[..self.position].iter().any(|event| {
             matches!(
                 event,
                 Event::ChildWorkflowStarted {
@@ -199,11 +202,7 @@ impl HistoryCursor {
                     ..
                 } if started_child == child_workflow_id
             )
-        }) {
-            self.consume_one()
-        } else {
-            CursorResolveResult::Exhausted
-        }
+        })
     }
 
     fn resolve_activity(&mut self, expected_key: CorrelationKey) -> CursorResolveResult {
