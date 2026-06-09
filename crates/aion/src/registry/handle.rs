@@ -1,6 +1,7 @@
 //! `WorkflowHandle` process id, type, version, status, residency, and completion metadata.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use aion_core::{Payload, RunId, WorkflowError, WorkflowId, WorkflowStatus};
 use aion_package::ContentHash;
@@ -131,6 +132,7 @@ pub struct WorkflowHandle {
     residency: Residency,
     recorder: Arc<Mutex<Recorder>>,
     completion: CompletionNotifier,
+    deterministic_nif_sequence: Arc<AtomicU64>,
 }
 
 impl WorkflowHandle {
@@ -147,6 +149,7 @@ impl WorkflowHandle {
             residency: parts.residency,
             recorder: Arc::new(Mutex::new(parts.recorder)),
             completion: parts.completion,
+            deterministic_nif_sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -204,6 +207,13 @@ impl WorkflowHandle {
         &self.completion
     }
 
+    /// Returns and advances the workflow-local deterministic NIF call sequence.
+    #[must_use]
+    pub fn next_deterministic_nif_sequence(&self) -> u64 {
+        self.deterministic_nif_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Replaces the cached status with the durable event projection result.
     pub(in crate::registry) const fn replace_projected_status(&mut self, status: WorkflowStatus) {
         self.cached_status = status;
@@ -242,6 +252,10 @@ impl PartialEq for WorkflowHandle {
             && self.residency == other.residency
             && Arc::ptr_eq(&self.recorder, &other.recorder)
             && self.completion == other.completion
+            && Arc::ptr_eq(
+                &self.deterministic_nif_sequence,
+                &other.deterministic_nif_sequence,
+            )
     }
 }
 

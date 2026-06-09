@@ -6,6 +6,7 @@ pub mod handle;
 pub mod module;
 pub mod nif;
 pub mod nif_context;
+pub(crate) mod nif_determinism;
 pub mod outcome;
 pub mod payload;
 pub mod workflow;

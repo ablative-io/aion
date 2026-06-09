@@ -17,7 +17,10 @@ use crate::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
         Recorder,
     },
-    runtime::{NifEntry, NifRegistration},
+    runtime::{
+        NifEntry, NifRegistration,
+        nif_determinism::{NifContextSource, install_nif_context_source},
+    },
     signal::SignalResumeHandoff,
 };
 
@@ -298,6 +301,11 @@ impl EngineBuilder {
         let registry = self
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
+        install_nif_context_source(Arc::new(NifContextSource::new(
+            Arc::clone(&registry),
+            tokio::runtime::Handle::current(),
+            Arc::clone(&store),
+        )));
         if let Some(dispatcher) = activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }
