@@ -9,9 +9,9 @@ import logging
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Executor
 from dataclasses import dataclass
-from typing import Any, get_type_hints
+from typing import get_type_hints
 
-from .context import ActivityContext, JSON_CONTENT_TYPE, encode_detail
+from .context import JSON_CONTENT_TYPE, ActivityContext, encode_detail
 from .errors import ActivityFailureError, RetryableError, TerminalError
 from .loop import Completed, DispatchOutcome, Failed
 from .proto import common_pb2, worker_pb2
@@ -66,11 +66,14 @@ class ActivityRegistry:
 
         spec = self._activities.get(task.activity_type)
         if spec is None:
-            return Failed(_activity_error(worker_pb2.ACTIVITY_ERROR_KIND_TERMINAL, f"missing activity handler {task.activity_type!r}"))
+            message = f"missing activity handler {task.activity_type!r}"
+            return Failed(_activity_error(worker_pb2.ACTIVITY_ERROR_KIND_TERMINAL, message))
         try:
             argument = decode_json_payload(task.input)
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
-            return Failed(_activity_error(worker_pb2.ACTIVITY_ERROR_KIND_TERMINAL, f"failed to decode activity input: {exc}"))
+            return Failed(
+                _activity_error(worker_pb2.ACTIVITY_ERROR_KIND_TERMINAL, f"failed to decode activity input: {exc}")
+            )
         try:
             result = await self._invoke(spec, argument, context)
             return Completed(encode_json_payload(result, task.input.content_type))
@@ -81,7 +84,7 @@ class ActivityRegistry:
         except Exception as exc:
             logger.warning(
                 "unclassified activity exception escaped handler; reporting as retryable",
-                exc_info=exc,
+                exc_info=True,
                 extra={"activity_type": task.activity_type},
             )
             return Failed(_activity_error(worker_pb2.ACTIVITY_ERROR_KIND_RETRYABLE, str(exc)))
@@ -119,7 +122,8 @@ def decode_json_payload(payload: Payload) -> object:
 def _build_spec(name: str, func: Callable[..., object]) -> _ActivitySpec:
     signature = inspect.signature(func)
     parameters = list(signature.parameters.values())
-    if any(parameter.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD} for parameter in parameters):
+    variadic_kinds = {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
+    if any(parameter.kind in variadic_kinds for parameter in parameters):
         raise ActivityRegistrationError(f"activity {name!r} must not use *args or **kwargs")
     hints = get_type_hints(func)
     input_parameter: str | None = None
@@ -127,6 +131,8 @@ def _build_spec(name: str, func: Callable[..., object]) -> _ActivitySpec:
     for parameter in parameters:
         annotation = hints.get(parameter.name, parameter.annotation)
         if annotation is ActivityContext or parameter.name in {"ctx", "context"}:
+            if context_parameter is not None:
+                raise ActivityRegistrationError(f"activity {name!r} must accept at most one context parameter")
             context_parameter = parameter.name
         elif input_parameter is None:
             input_parameter = parameter.name
@@ -166,7 +172,11 @@ def _call_sync(handler: Callable[..., object], args: tuple[object, ...]) -> obje
     return handler(*args)
 
 
-def _classified_error(kind: worker_pb2.ActivityErrorKind, exc: ActivityFailureError, content_type: str) -> ActivityError:
+def _classified_error(
+    kind: worker_pb2.ActivityErrorKind,
+    exc: ActivityFailureError,
+    content_type: str,
+) -> ActivityError:
     return _activity_error(kind, str(exc), encode_detail(exc.detail, content_type))
 
 
@@ -180,13 +190,17 @@ def _activity_error(kind: worker_pb2.ActivityErrorKind, message: str, details: P
 def clone_registry(registry: ActivityRegistry, *, executor: Executor | None = None) -> ActivityRegistry:
     """Clone activity registrations so a Worker can attach its executor."""
 
-    cloned = ActivityRegistry(executor=executor)
+    cloned = ActivityRegistry(executor=executor if executor is not None else registry._executor)
     for name, spec in registry._activities.items():
         cloned._activities[name] = spec
     return cloned
 
 
-def registry_from_mapping(activities: Mapping[str, Callable[..., object]], *, executor: Executor | None = None) -> ActivityRegistry:
+def registry_from_mapping(
+    activities: Mapping[str, Callable[..., object]],
+    *,
+    executor: Executor | None = None,
+) -> ActivityRegistry:
     """Build a registry from an explicit mapping of activity names to handlers."""
 
     registry = ActivityRegistry(executor=executor)

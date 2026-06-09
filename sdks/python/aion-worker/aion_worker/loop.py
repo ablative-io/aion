@@ -8,9 +8,9 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, cast
 
-from .context import ActivityCancellationHandle, ActivityContext, WIRE_DEFAULT_ATTEMPT
+from .context import WIRE_DEFAULT_ATTEMPT, ActivityCancellationHandle, ActivityContext
 from .reconnect import (
     PendingCompletedReport,
     PendingFailedReport,
@@ -92,24 +92,19 @@ async def serve(
 
     try:
         while shutdown is None or not shutdown.is_set():
-            await semaphore.acquire()
-            try:
-                event = await _receive_next_or_shutdown(stream, shutdown)
-            except Exception:
-                semaphore.release()
-                raise
+            event = await _receive_next_or_shutdown(stream, shutdown)
             if isinstance(event, ShutdownRequested):
-                semaphore.release()
                 break
             if isinstance(event, StreamFinished):
-                semaphore.release()
                 break
             if isinstance(event, TaskReceived):
-                task = asyncio.create_task(_run_and_report(session, dispatcher, event.task, unacked, semaphore, in_flight))
+                await semaphore.acquire()
+                task = asyncio.create_task(
+                    _run_and_report(session, dispatcher, event.task, unacked, semaphore, in_flight)
+                )
                 running.add(task)
                 task.add_done_callback(running.discard)
             else:
-                semaphore.release()
                 _handle_control_event(event, in_flight)
     finally:
         if shutdown is not None and shutdown.is_set():
@@ -157,7 +152,9 @@ async def connect_register_replay_and_serve(
             dropped_attempt += 1
             last_drop = exc
             if dropped_attempt >= backoff.max_attempts:
-                raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {last_drop}") from last_drop
+                raise ReconnectError(
+                    f"worker reconnect attempts exhausted for {config.endpoint}: {last_drop}"
+                ) from last_drop
             delay = backoff.delay_for_attempt(dropped_attempt)
             logger.warning(
                 "Reconnecting in %ss (attempt %s/%s)",
@@ -172,15 +169,16 @@ async def _receive_next_or_shutdown(
     stream: AsyncIterator[WorkerSessionEvent],
     shutdown: asyncio.Event | None,
 ) -> WorkerSessionEvent | ShutdownRequested | StreamFinished:
-    next_task = asyncio.create_task(stream.__anext__())
+    next_task = asyncio.ensure_future(stream.__anext__())
     if shutdown is None:
         try:
             return await next_task
         except StopAsyncIteration:
             return StreamFinished()
-    shutdown_task = asyncio.create_task(shutdown.wait())
+    shutdown_task: asyncio.Task[bool] = asyncio.create_task(shutdown.wait())
     try:
-        done, pending = await asyncio.wait({next_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED)
+        wait_tasks = cast(set[asyncio.Future[object]], {next_task, shutdown_task})
+        done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
         for pending_task in pending:
             pending_task.cancel()
         if shutdown_task in done:

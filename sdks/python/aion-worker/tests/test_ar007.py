@@ -4,6 +4,16 @@ import asyncio
 from typing import Any, NoReturn, cast
 
 import pytest
+from ar007_fakes import (
+    FakeGrpcStream,
+    FakeSession,
+    RecordingDispatcher,
+    activity_id,
+    config,
+    payload,
+    task,
+    workflow_id,
+)
 
 import aion_worker
 from aion_worker import (
@@ -14,17 +24,6 @@ from aion_worker import (
     WorkerConfig,
     connect_register_replay_and_serve,
     serve,
-)
-
-from ar007_fakes import (
-    FakeGrpcStream,
-    FakeSession,
-    RecordingDispatcher,
-    activity_id,
-    config,
-    payload,
-    task,
-    workflow_id,
 )
 
 
@@ -306,6 +305,7 @@ async def test_reconnect_logs_connection_failure_reason(caplog: pytest.LogCaptur
     with caplog.at_level("ERROR"), pytest.raises(ReconnectError, match="dial refused"):
         await connect_register_replay_and_serve(worker_config, fail_connect, RecordingDispatcher())
 
-    failure_records = [record for record in caplog.records if record.getMessage() == f"Connection failed to {worker_config.endpoint}: dial refused"]
+    expected_message = f"Connection failed to {worker_config.endpoint}: dial refused"
+    failure_records = [record for record in caplog.records if record.getMessage() == expected_message]
     assert failure_records
     assert all(record.levelname == "ERROR" for record in failure_records)

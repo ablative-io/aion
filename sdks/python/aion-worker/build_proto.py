@@ -6,10 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hatchling.builders.config import BuilderConfig
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
-class CustomBuildHook(BuildHookInterface):
+class CustomBuildHook(BuildHookInterface[BuilderConfig]):
     """Generate Python gRPC stubs from crates/aion-proto before packaging."""
 
     def initialize(self, version: str, build_data: dict[str, object]) -> None:
