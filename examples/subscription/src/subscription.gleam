@@ -55,6 +55,7 @@ pub type WorkflowError {
   TimerFailed(message: String)
   SignalFailed(message: String)
   ContinueAsNewFailed(message: String)
+  InvalidConfiguration(message: String)
 }
 
 pub fn definition() ->
@@ -73,25 +74,76 @@ pub fn plan_change_signal() -> signal.SignalRef(PlanChange) {
 }
 
 pub fn run(input: SubscriptionInput) -> Result(SubscriptionSummary, WorkflowError) {
-  billing_loop(input)
+  case validate_input(input) {
+    Ok(valid_input) -> billing_loop(valid_input)
+    Error(configuration_error) -> Error(configuration_error)
+  }
+}
+
+fn validate_input(input: SubscriptionInput) -> Result(SubscriptionInput, WorkflowError) {
+  case input.billing_period_seconds > 0, input.max_cycles > 0, input.cycles_in_run >= 0 {
+    True, True, True -> Ok(input)
+    False, _, _ -> Error(InvalidConfiguration("billing_period_seconds must be greater than zero"))
+    _, False, _ -> Error(InvalidConfiguration("max_cycles must be greater than zero"))
+    _, _, False -> Error(InvalidConfiguration("cycles_in_run must not be negative"))
+  }
 }
 
 fn billing_loop(input: SubscriptionInput) -> Result(SubscriptionSummary, WorkflowError) {
-  case wait_for_billing_period(input) {
+  case wait_for_billing_period(input, input.billing_period_seconds * 1000) {
     Ok(updated_input) -> bill_cycle(updated_input)
     Error(wait_error) -> Error(wait_error)
   }
 }
 
-fn wait_for_billing_period(input: SubscriptionInput) -> Result(SubscriptionInput, WorkflowError) {
+fn wait_for_billing_period(
+  input: SubscriptionInput,
+  remaining_milliseconds: Int,
+) -> Result(SubscriptionInput, WorkflowError) {
+  case workflow.now() {
+    Ok(started_at) -> wait_for_billing_period_from(input, remaining_milliseconds, started_at)
+    Error(engine_error) -> Error(TimerFailed(engine_error_message(engine_error)))
+  }
+}
+
+fn wait_for_billing_period_from(
+  input: SubscriptionInput,
+  remaining_milliseconds: Int,
+  started_at: workflow.Timestamp,
+) -> Result(SubscriptionInput, WorkflowError) {
   case timer.with_timeout(
     fn() { signal.receive(plan_change_signal()) },
-    duration.seconds(input.billing_period_seconds),
+    duration.milliseconds(remaining_milliseconds),
   ) {
-    Ok(change) -> wait_for_billing_period(apply_plan_change(input, change))
+    Ok(change) -> {
+      let updated_input = apply_plan_change(input, change)
+      case remaining_after_signal(started_at, remaining_milliseconds) {
+        Ok(next_remaining) -> wait_for_billing_period(updated_input, next_remaining)
+        Error(timer_error) -> Error(timer_error)
+      }
+    }
     Error(error.TimedOutError(error.TimedOut(message: _))) -> Ok(input)
     Error(error.InnerError(receive_error)) ->
       Error(SignalFailed(receive_error_message(receive_error)))
+  }
+}
+
+fn remaining_after_signal(
+  started_at: workflow.Timestamp,
+  remaining_milliseconds: Int,
+) -> Result(Int, WorkflowError) {
+  case workflow.now() {
+    Ok(received_at) -> {
+      let elapsed_milliseconds =
+        workflow.timestamp_to_milliseconds(received_at)
+        - workflow.timestamp_to_milliseconds(started_at)
+      let next_remaining = remaining_milliseconds - elapsed_milliseconds
+      case next_remaining > 0 {
+        True -> Ok(next_remaining)
+        False -> Ok(0)
+      }
+    }
+    Error(engine_error) -> Error(TimerFailed(engine_error_message(engine_error)))
   }
 }
 
@@ -335,7 +387,7 @@ fn plan_change_decoder() -> decode.Decoder(PlanChange) {
   case direction {
     "upgrade" -> decode.success(Upgrade(plan: plan))
     "downgrade" -> decode.success(Downgrade(plan: plan))
-    _ -> decode.success(Upgrade(plan: plan))
+    _ -> decode.failure(Upgrade(plan: ""), expected: "plan_change direction upgrade or downgrade")
   }
 }
 
@@ -349,6 +401,7 @@ fn workflow_error_to_json(workflow_error: WorkflowError) -> json.Json {
     TimerFailed(message) -> error_json("timer_failed", message)
     SignalFailed(message) -> error_json("signal_failed", message)
     ContinueAsNewFailed(message) -> error_json("continue_as_new_failed", message)
+    InvalidConfiguration(message) -> error_json("invalid_configuration", message)
   }
 }
 
@@ -366,6 +419,7 @@ fn workflow_error_decoder() -> decode.Decoder(WorkflowError) {
     "timer_failed" -> decode.success(TimerFailed(message: message))
     "signal_failed" -> decode.success(SignalFailed(message: message))
     "continue_as_new_failed" -> decode.success(ContinueAsNewFailed(message: message))
+    "invalid_configuration" -> decode.success(InvalidConfiguration(message: message))
     _ -> decode.success(ActivityFailed(message: message))
   }
 }
