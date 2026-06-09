@@ -491,8 +491,14 @@ mod tests {
                 name: String::from("approve"),
                 payload: payload("signal")?,
             },
-            Event::ChildWorkflowStarted {
+            Event::SignalSent {
                 envelope: envelope(15),
+                target_workflow_id: WorkflowId::new(uuid::Uuid::from_u128(5)),
+                name: String::from("approve"),
+                payload: payload("signal-sent")?,
+            },
+            Event::ChildWorkflowStarted {
+                envelope: envelope(16),
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: String::from("fulfillment"),
                 input: payload("child-input")?,
