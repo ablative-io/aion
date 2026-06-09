@@ -15,7 +15,7 @@ mod write_capability {
     /// recorder append path may hold write authority for a workflow. `SequenceConflict` remains the
     /// runtime defense-in-depth signal for any internal misuse or future bypass that attempts to
     /// append with a stale head.
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug)]
     pub struct WriteToken {
         _private: (),
     }
