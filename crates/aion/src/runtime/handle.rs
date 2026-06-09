@@ -493,7 +493,7 @@ impl RuntimeHandle {
         }
     }
 
-    fn ensure_live_pid(&self, pid: Pid) -> Result<(), EngineError> {
+    pub(super) fn ensure_live_pid(&self, pid: Pid) -> Result<(), EngineError> {
         if self.scheduler.process_table().get(pid).is_some() {
             Ok(())
         } else {

@@ -486,9 +486,9 @@ impl Engine {
                 store: self.store(),
                 visibility_store: self.visibility_store(),
                 loaded_workflows: &self.loaded_workflows,
-                runtime: &self.runtime,
+                runtime: Arc::clone(&self.runtime),
                 supervision: &self.supervision,
-                registry: &self.registry,
+                registry: Arc::clone(&self.registry),
                 signal_handoff: Some(self.signal_handoff()),
             },
             workflow_type,
@@ -602,45 +602,6 @@ impl Engine {
         id: &WorkflowId,
         run: &RunId,
     ) -> Result<Result<Payload, WorkflowError>, EngineError> {
-        if let Some(outcome) = terminal_outcome_from_history(&self.store.read_history(id).await?) {
-            return Ok(outcome_to_result(outcome));
-        }
-
-        let handle = self
-            .registry
-            .get(id, run)?
-            .ok_or_else(|| workflow_not_found(id, run))?;
-        let runtime_outcome = self.runtime.workflow_outcome(handle.pid())?;
-        match runtime_outcome {
-            Ok(payload) => {
-                terminate::complete(
-                    TerminateWorkflowContext {
-                        runtime: &self.runtime,
-                        store: self.store(),
-                        visibility_store: self.visibility_store(),
-                        registry: &self.registry,
-                    },
-                    id,
-                    run,
-                    payload,
-                )
-                .await?;
-            }
-            Err(error) => {
-                terminate::fail(
-                    TerminateWorkflowContext {
-                        runtime: &self.runtime,
-                        store: self.store(),
-                        visibility_store: self.visibility_store(),
-                        registry: &self.registry,
-                    },
-                    id,
-                    run,
-                    error,
-                )
-                .await?;
-            }
-        }
         if let Some(outcome) = terminal_outcome_from_history(&self.store.read_history(id).await?) {
             return Ok(outcome_to_result(outcome));
         }
@@ -1042,9 +1003,9 @@ impl ScheduleWorkflowStarter for EngineScheduleStarter {
                 store: Arc::clone(&self.deps.store),
                 visibility_store: Arc::clone(&self.deps.visibility_store),
                 loaded_workflows: &self.deps.loaded_workflows,
-                runtime: &self.deps.runtime,
+                runtime: Arc::clone(&self.deps.runtime),
                 supervision: &self.deps.supervision,
-                registry: &self.deps.registry,
+                registry: Arc::clone(&self.deps.registry),
                 signal_handoff: None,
             },
             workflow_type,

@@ -7,6 +7,7 @@ use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
+use super::completion::{ProcessExitContext, handle_process_exit};
 use super::visibility::upsert_workflow_visibility;
 use crate::durability::Recorder;
 use crate::loader::LoadedWorkflows;
@@ -33,11 +34,11 @@ pub struct StartWorkflowContext<'a> {
     /// Loader-owned workflow records keyed by logical workflow type and version.
     pub loaded_workflows: &'a LoadedWorkflows,
     /// Runtime boundary used to spawn the workflow process.
-    pub runtime: &'a RuntimeHandle,
+    pub runtime: Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
     pub supervision: &'a SupervisionTree,
     /// Active execution registry keyed by workflow/run identifiers.
-    pub registry: &'a Registry,
+    pub registry: Arc<Registry>,
     /// Shared non-resident signal handoff to flush after resident registration.
     pub signal_handoff: Option<Arc<SignalResumeHandoff>>,
 }
@@ -135,7 +136,7 @@ pub async fn start_workflow_with_options(
         .ensure_type_supervisor(loaded.workflow_type())?;
     let runtime_input = RuntimeInput::from_payload(&input)?;
     let pid = spawn_workflow_with_policy(
-        context.runtime,
+        &context.runtime,
         loaded.deployed_entry_module(),
         loaded.entry_function(),
         runtime_input,
@@ -170,10 +171,23 @@ pub async fn start_workflow_with_options(
         return Err(error);
     }
 
+    let completion_context = ProcessExitContext {
+        store: Arc::clone(&context.store),
+        visibility_store: Arc::clone(&context.visibility_store),
+        registry: Arc::clone(&context.registry),
+        tokio_handle: tokio::runtime::Handle::current(),
+    };
+    let completion_handle = handle.clone();
+    context.runtime.monitor_process(pid, move |outcome| {
+        if let Err(error) = handle_process_exit(completion_context, completion_handle, outcome) {
+            tracing::error!(workflow_pid = pid, error = %error, "workflow process monitor completion failed");
+        }
+    })?;
+
     if let Some(handoff) = &context.signal_handoff {
         let adapter = StartResumeEngineHandle {
-            runtime: context.runtime,
-            registry: context.registry,
+            runtime: &context.runtime,
+            registry: &context.registry,
         };
         if let Err(error) = handoff.deliver_deferred(&adapter, handle.workflow_id()) {
             tracing::warn!(
@@ -334,9 +348,9 @@ mod tests {
         store: Arc<dyn EventStore>,
         visibility_store: Arc<dyn VisibilityStore>,
         loaded_workflows: &'a LoadedWorkflows,
-        runtime: &'a RuntimeHandle,
+        runtime: Arc<RuntimeHandle>,
         supervision: &'a SupervisionTree,
-        registry: &'a Registry,
+        registry: Arc<Registry>,
     ) -> StartWorkflowContext<'a> {
         StartWorkflowContext {
             store,
@@ -354,9 +368,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let store = Arc::new(InMemoryStore::default());
         let loaded = LoadedWorkflows::new();
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         let supervision = SupervisionTree::new();
-        let registry = Registry::default();
+        let registry = Arc::new(Registry::default());
         let input = payload("input")?;
 
         let result = start_workflow(
@@ -364,9 +378,9 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 &loaded,
-                &runtime,
+                Arc::clone(&runtime),
                 &supervision,
-                &registry,
+                Arc::clone(&registry),
             ),
             "checkout",
             input,
@@ -388,9 +402,9 @@ mod tests {
     {
         let store = Arc::new(InMemoryStore::default());
         let loaded = load_without_runtime_registration("checkout");
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         let supervision = SupervisionTree::new();
-        let registry = Registry::default();
+        let registry = Arc::new(Registry::default());
         let input = payload("input")?;
 
         let result = start_workflow(
@@ -398,9 +412,9 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 &loaded,
-                &runtime,
+                Arc::clone(&runtime),
                 &supervision,
-                &registry,
+                Arc::clone(&registry),
             ),
             "checkout",
             input.clone(),
@@ -438,10 +452,10 @@ mod tests {
         let store = Arc::new(InMemoryStore::default());
         let deployed_module = "checkout__deployed";
         let loaded = load_without_runtime_registration("checkout");
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         runtime.register_waiting_test_module(deployed_module, "run");
         let supervision = SupervisionTree::new();
-        let registry = Registry::default();
+        let registry = Arc::new(Registry::default());
         let input = payload("input")?;
 
         let handle = start_workflow(
@@ -449,9 +463,9 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 &loaded,
-                &runtime,
+                Arc::clone(&runtime),
                 &supervision,
-                &registry,
+                Arc::clone(&registry),
             ),
             "checkout",
             input.clone(),
@@ -504,10 +518,10 @@ mod tests {
         let store = Arc::new(InMemoryStore::default());
         let deployed_module = "checkout__deployed";
         let loaded = load_without_runtime_registration("checkout");
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(Some(1)))?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         runtime.register_waiting_test_module(deployed_module, "run");
         let supervision = SupervisionTree::new();
-        let registry = Registry::default();
+        let registry = Arc::new(Registry::default());
         let workflow_id = aion_core::WorkflowId::new_v4();
         let parent_run_id = aion_core::RunId::new_v4();
 
@@ -534,9 +548,9 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 &loaded,
-                &runtime,
+                Arc::clone(&runtime),
                 &supervision,
-                &registry,
+                Arc::clone(&registry),
             ),
             "checkout",
             payload("second")?,
