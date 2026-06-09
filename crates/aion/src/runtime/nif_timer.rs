@@ -408,6 +408,7 @@ fn record_cancelled(
         .map_err(Into::into)
 }
 
+#[derive(Clone, Copy)]
 enum TimerKind {
     Anonymous,
     Named,
