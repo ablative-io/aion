@@ -136,38 +136,6 @@ python3 tools/scaffold.py --dry-run  # preview
 python3 tools/scaffold.py --force    # regenerate (overwrites)
 ```
 
-## Publishing crates
-
-Rust crates are published leaf-first because crates.io requires internal
-workspace dependencies to be available before dependent crates are packaged.
-The canonical publish order, derived from `cargo metadata --format-version=1
---no-deps`, is:
-
-1. `aion-core`
-2. `aion-store`
-3. `aion-store-libsql`
-4. `aion-package`
-5. `aion-nif`
-6. `aion`
-7. `aion-proto`
-8. `aion-server`
-9. `aion-worker`
-10. `aion-client`
-11. `aion-cli`
-
-The publish helper validates that dependency graph before it publishes any
-crate. By default it performs a full dry run and stops on the first failure:
-
-```sh
-scripts/publish-crates.sh
-```
-
-Use `--live` only when intentionally publishing to crates.io:
-
-```sh
-scripts/publish-crates.sh --live
-```
-
 ## License
 
 MIT.
