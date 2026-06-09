@@ -1,6 +1,6 @@
 //! `HistoryCursor` over recorded events.
 
-use aion_core::{ActivityId, Event};
+use aion_core::{ActivityId, Event, WorkflowId};
 
 use crate::durability::{
     correlation::{CorrelationKey, key_for_event},
@@ -109,6 +109,35 @@ impl HistoryCursor {
         }
     }
 
+    /// Resolves the next recorded child terminal outcome for `child_workflow_id`.
+    #[must_use]
+    pub fn resolve_child_terminal(
+        &mut self,
+        child_workflow_id: &WorkflowId,
+    ) -> CursorResolveResult {
+        let Some(found_index) = self.next_matchable_index() else {
+            return CursorResolveResult::Exhausted;
+        };
+        self.position = found_index;
+        match self.events.get(found_index) {
+            Some(
+                Event::ChildWorkflowCompleted {
+                    child_workflow_id: completed_child,
+                    ..
+                }
+                | Event::ChildWorkflowFailed {
+                    child_workflow_id: completed_child,
+                    ..
+                },
+            ) if completed_child == child_workflow_id => self.consume_one(),
+            Some(event) => CursorResolveResult::Mismatch {
+                expected_key: CorrelationKey::Child(0),
+                found: self.descriptor_at(found_index, event),
+            },
+            None => CursorResolveResult::Exhausted,
+        }
+    }
+
     /// Resolves the next recorded outcome for the expected family and correlation key.
     #[must_use]
     pub fn resolve_next(
@@ -131,13 +160,49 @@ impl HistoryCursor {
 
         match family {
             RecordedEventFamily::Activity => self.resolve_activity(expected_key),
-            RecordedEventFamily::Timer | RecordedEventFamily::Child => {
+            RecordedEventFamily::Timer => {
                 self.resolve_started_with_immediate_outcome(&expected_key)
             }
+            RecordedEventFamily::Child => self.resolve_child(expected_key),
             RecordedEventFamily::Signal => match expected_key {
                 CorrelationKey::Signal { .. } => self.consume_one(),
                 _ => self.mismatch_at_current(expected_key),
             },
+        }
+    }
+
+    fn resolve_child(&mut self, expected_key: CorrelationKey) -> CursorResolveResult {
+        let CorrelationKey::Child(_) = expected_key else {
+            return self.mismatch_at_current(expected_key);
+        };
+
+        match self.events.get(self.position) {
+            Some(Event::ChildWorkflowStarted { .. }) => self.consume_one(),
+            Some(
+                Event::ChildWorkflowCompleted {
+                    child_workflow_id, ..
+                }
+                | Event::ChildWorkflowFailed {
+                    child_workflow_id, ..
+                },
+            ) => self.resolve_child_outcome(child_workflow_id.clone()),
+            _ => self.mismatch_at_current(expected_key),
+        }
+    }
+
+    fn resolve_child_outcome(&mut self, child_workflow_id: WorkflowId) -> CursorResolveResult {
+        if self.events[..self.position].iter().any(|event| {
+            matches!(
+                event,
+                Event::ChildWorkflowStarted {
+                    child_workflow_id: started_child,
+                    ..
+                } if started_child == &child_workflow_id
+            )
+        }) {
+            self.consume_one()
+        } else {
+            CursorResolveResult::Exhausted
         }
     }
 
@@ -303,7 +368,9 @@ fn family_for_event(event: &Event) -> Option<RecordedEventFamily> {
         Event::SignalReceived { .. } | Event::SignalSent { .. } => {
             Some(RecordedEventFamily::Signal)
         }
-        Event::ChildWorkflowStarted { .. } => Some(RecordedEventFamily::Child),
+        Event::ChildWorkflowStarted { .. }
+        | Event::ChildWorkflowCompleted { .. }
+        | Event::ChildWorkflowFailed { .. } => Some(RecordedEventFamily::Child),
         _ => None,
     }
 }

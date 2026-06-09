@@ -442,7 +442,7 @@ mod tests {
             runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
             loaded_workflows: LoadedWorkflows::new(),
             registry: Arc::new(Registry::default()),
-            supervision: SupervisionTree::new(),
+            supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
             signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
         }))

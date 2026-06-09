@@ -13,6 +13,7 @@ use beamr::term::binary::{self, Binary};
 use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
+use super::nif_child;
 use super::nif_determinism::{now_impl, random_impl, random_int_impl};
 use super::nif_signal;
 use super::nif_timer;
@@ -138,8 +139,14 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "dispatch_query", 2),
             super::nif_query::dispatch_query,
         ),
-        dirty_entry("spawn_child", 3),
-        dirty_entry("await_child", 1),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "spawn_child", 3),
+            nif_child::spawn_child_impl,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "await_child", 1),
+            nif_child::await_child_impl,
+        ),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_all", 2), collect_all),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_race", 2), collect_race),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_map", 2), collect_map),
@@ -271,6 +278,8 @@ mod tests {
             "register_query",
             "reply_query",
             "dispatch_query",
+            "spawn_child",
+            "await_child",
         ] {
             let entry = entries
                 .iter()
