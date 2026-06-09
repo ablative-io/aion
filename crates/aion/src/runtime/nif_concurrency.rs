@@ -176,10 +176,10 @@ fn decode_recorded(resolution: Resolution, label: &str) -> Result<ActivityRunRes
 fn resolve_spec(
     context: &mut NifContext,
     spec: &ActivitySpec,
+    ordinal: u64,
     label: &str,
 ) -> Result<(ActivityId, ResolveOutcome, Payload), Term> {
     let input_payload = json_payload(&spec.input, label)?;
-    let ordinal = context.next_activity_ordinal();
     let activity_id = ActivityId::from_sequence_position(ordinal);
     let outcome = context
         .resolve_command(Command::RunActivity {
@@ -244,8 +244,11 @@ fn collect_all_with_context(
 ) -> Result<Term, Term> {
     std::hint::black_box(std::any::type_name::<crate::concurrency::AllRecordingContext>());
     let mut results = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let (activity_id, outcome, input_payload) = resolve_spec(&mut context, spec, label)?;
+    let base_ordinal = context.next_activity_ordinal();
+    for (offset, spec) in specs.iter().enumerate() {
+        let ordinal = base_ordinal + u64::try_from(offset).map_err(|_| Term::NIL)?;
+        let (activity_id, outcome, input_payload) =
+            resolve_spec(&mut context, spec, ordinal, label)?;
         let run_result = match outcome {
             ResolveOutcome::Recorded(resolution) => decode_recorded(resolution, label)?,
             ResolveOutcome::ResumeLive => {
@@ -278,13 +281,12 @@ fn collect_race_with_context(
             error_result_term("collect_race: expected at least one activity").unwrap_or(Term::NIL),
         );
     }
-    let Some(dispatcher) = dispatcher else {
-        return Ok(missing_dispatcher_term());
-    };
     let mut winner = None;
-    for spec in specs {
+    let base_ordinal = context.next_activity_ordinal();
+    for (offset, spec) in specs.iter().enumerate() {
+        let ordinal = base_ordinal + u64::try_from(offset).map_err(|_| Term::NIL)?;
         let (activity_id, outcome, input_payload) =
-            resolve_spec(&mut context, spec, "collect_race")?;
+            resolve_spec(&mut context, spec, ordinal, "collect_race")?;
         match outcome {
             ResolveOutcome::Recorded(resolution) => {
                 let recorded = decode_recorded(resolution, "collect_race")?;
@@ -298,6 +300,9 @@ fn collect_race_with_context(
                 };
             }
             ResolveOutcome::ResumeLive => {
+                let Some(dispatcher) = dispatcher else {
+                    return Ok(missing_dispatcher_term());
+                };
                 record_started(
                     &context,
                     activity_id.clone(),
