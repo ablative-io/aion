@@ -1,5 +1,15 @@
 """Public surface for the Aion Python worker SDK."""
 
+from .activity import (
+    ActivityRegistrationError,
+    ActivityRegistry,
+    activity,
+    decode_json_payload,
+    default_registry,
+    encode_json_payload,
+)
+from .context import ActivityCancellationHandle, ActivityContext
+from .errors import RetryableError, TerminalError
 from .loop import (
     ActivityDispatcher,
     ActivityExecutionContext,
@@ -35,11 +45,16 @@ from .session import (
     WorkerSessionEvent,
     validate_activity_handlers,
 )
+from .worker import Worker
 
 __all__ = [
+    "ActivityCancellationHandle",
     "ActivityCancelled",
+    "ActivityContext",
     "ActivityDispatcher",
     "ActivityExecutionContext",
+    "ActivityRegistrationError",
+    "ActivityRegistry",
     "ActivityTask",
     "Completed",
     "DispatchOutcome",
@@ -52,15 +67,22 @@ __all__ = [
     "ReconnectConfig",
     "ReconnectError",
     "RegistrationError",
+    "RetryableError",
     "TaskReceived",
+    "TerminalError",
     "TransportCredentials",
     "TransportError",
     "UnackedResultTracker",
+    "Worker",
     "WorkerConfig",
     "WorkerSession",
     "WorkerSessionError",
     "WorkerSessionEvent",
+    "activity",
     "connect_register_replay_and_serve",
+    "decode_json_payload",
+    "default_registry",
+    "encode_json_payload",
     "re_report_unacked",
     "reconnect_register_and_replay",
     "reconnect_with_backoff",
