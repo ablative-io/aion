@@ -1,0 +1,108 @@
+{
+  "id": "DX-024",
+  "cluster": "aion-dx",
+  "title": "Subscription lifecycle with continue-as-new and timers",
+  "depends_on": ["DX-016"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "Long-running workflows that span months or years accumulate unbounded event history, degrading replay performance and memory usage. Developers need a concrete example showing how to use continue-as-new to periodically checkpoint state and start a fresh execution, combined with durable timers for periodic billing and signals for plan changes. This pattern applies to any subscription, lease, or recurring-schedule workflow.",
+  "task": "Create a subscription-lifecycle example that defines a Gleam workflow using the aion_flow SDK. The workflow represents a monthly subscription: it sleeps for one billing period using timer.sleep(), executes a bill_subscriber activity, handles upgrade/downgrade signals, and after a configurable number of billing cycles calls workflow.continue_as_new() to keep event history bounded. Include a gleam.toml and a README explaining the continue-as-new pattern and long-lived workflow management.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Periodic billing with durable timers",
+      "spec": "THE SYSTEM SHALL define a workflow using workflow.define() that loops through billing cycles, sleeping for a configurable period using timer.sleep() between each cycle and executing a bill_subscriber activity on each iteration.",
+      "acceptance": [
+        "subscription.gleam imports from aion_flow and uses workflow.define().",
+        "The workflow accepts configuration for billing period and max cycles before continue-as-new.",
+        "timer.sleep() is used to wait between billing cycles.",
+        "A bill_subscriber activity executes each cycle with the current plan and cycle number.",
+        "The workflow survives engine restart mid-sleep and resumes at the correct point in the billing cycle."
+      ],
+      "files": {
+        "create": [
+          "examples/subscription/src/subscription.gleam"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Signal handling for plan changes",
+      "spec": "THE SYSTEM SHALL use signal.receive() to listen for upgrade and downgrade signals concurrently with the billing timer. WHEN a plan-change signal arrives, THE SYSTEM SHALL update the subscription state for the next billing cycle.",
+      "acceptance": [
+        "The workflow listens for a 'plan_change' signal using signal.receive().",
+        "concurrency.race() or equivalent is used to handle signals arriving during a billing sleep.",
+        "An upgrade signal changes the plan level for subsequent billing cycles.",
+        "A downgrade signal changes the plan level for subsequent billing cycles.",
+        "Plan changes are reflected in the next bill_subscriber activity execution."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/subscription/src/subscription.gleam"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Continue-as-new for history management",
+      "spec": "WHEN the workflow has completed a configurable number of billing cycles, THE SYSTEM SHALL call workflow.continue_as_new() with the current subscription state as input, starting a fresh execution with clean event history.",
+      "acceptance": [
+        "workflow.continue_as_new() is called after the configured max_cycles threshold.",
+        "The current subscription state (plan, cycle count, subscriber info) is passed as input to the new execution.",
+        "The new execution resumes billing from the correct cycle number.",
+        "Event history in the old execution is bounded to max_cycles worth of events."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/subscription/src/subscription.gleam"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Project setup and documentation",
+      "spec": "THE SYSTEM SHALL provide a gleam.toml with the aion_flow dependency and a README explaining the continue-as-new pattern, why history management matters for long-lived workflows, and step-by-step instructions for building and running the example.",
+      "acceptance": [
+        "gleam.toml lists aion_flow as a dependency and has correct project metadata.",
+        "README.md explains why unbounded event history is a problem and how continue-as-new solves it.",
+        "README.md describes the subscription lifecycle including billing, plan changes, and history rotation.",
+        "README.md provides build and run instructions including how to send plan-change signals."
+      ],
+      "files": {
+        "create": [
+          "examples/subscription/gleam.toml",
+          "examples/subscription/README.md"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the aion_flow SDK, engine, or server code — only consume them.",
+    "SHALL NOT add dependencies beyond aion_flow to the Gleam example.",
+    "SHALL NOT implement real billing or payment integrations — stub activities are sufficient.",
+    "SHALL NOT use real calendar durations — use short timer values (seconds) for demonstration purposes with a note about production values.",
+    "SHALL NOT handle cancellation in this example — cancellation patterns are a separate concern."
+  ],
+  "verification": [
+    "gleam build succeeds in the subscription directory without warnings.",
+    "The .aion package can be built from the compiled source.",
+    "The workflow completes multiple billing cycles with timer.sleep() between each.",
+    "Sending a plan_change signal mid-cycle updates the plan for subsequent billing.",
+    "After max_cycles, the workflow calls continue_as_new and a new execution starts with carried-over state.",
+    "Event history in the original execution is bounded to the configured cycle count.",
+    "README instructions are complete and accurate."
+  ]
+}

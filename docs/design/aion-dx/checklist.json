@@ -1,0 +1,33 @@
+{
+    "cluster": "aion-dx",
+    "sections": [
+        {
+            "title": "Examples",
+            "items": [
+                {"id": "C1", "text": "Hello-world example uses the typed aion_flow SDK"},
+                {"id": "C2", "text": "Advanced examples cover saga, signals, concurrency, children, and queries"},
+                {"id": "C3", "text": "Each example has a README with setup and run instructions"},
+                {"id": "C4", "text": "Each example packages as a valid .aion archive"}
+            ]
+        },
+        {
+            "title": "CLI and Server",
+            "items": [
+                {"id": "C5", "text": "CLI error messages are actionable and specific"},
+                {"id": "C6", "text": "CLI decodes JSON payloads inline in describe output"},
+                {"id": "C7", "text": "Server supports --help with clean output"},
+                {"id": "C8", "text": "Server supports zero-config --workflow-package mode"}
+            ]
+        },
+        {
+            "title": "Publishing",
+            "items": [
+                {"id": "C9", "text": "Rust crates published to crates.io"},
+                {"id": "C10", "text": "Gleam SDK published to Hex"},
+                {"id": "C11", "text": "Python SDKs published to PyPI"},
+                {"id": "C12", "text": "TypeScript SDKs published to npm"},
+                {"id": "C13", "text": "All worker SDKs have README documentation"}
+            ]
+        }
+    ]
+}

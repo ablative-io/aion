@@ -1,0 +1,20 @@
+{
+    "cluster": "aion-dx",
+    "prefix": "DX",
+    "title": "Developer Experience",
+    "purpose": "Make Aion approachable, well-documented, and frictionless across all consumer surfaces — library embedding, CLI operation, SDK authoring, and AI-driven development.",
+    "scope": "Hello-world and advanced examples, CLI polish, error messages, payload decoding, documentation, SDK publishing, and server configuration.",
+    "decisions": [
+        {
+            "id": "D1",
+            "title": "Examples use the typed Gleam SDK",
+            "rationale": "All workflow examples must use aion_flow, not raw NIFs. The SDK is the authoring surface we want developers to learn."
+        },
+        {
+            "id": "D2",
+            "title": "Each example is a standalone .aion package",
+            "rationale": "Examples should be self-contained: their own gleam.toml, their own worker if needed, their own README. A developer should be able to copy one example and modify it."
+        }
+    ],
+    "briefs": ["DX-001", "DX-002", "DX-003", "DX-004", "DX-005", "DX-006", "DX-007", "DX-008", "DX-009", "DX-010", "DX-011", "DX-012", "DX-013", "DX-014", "DX-015", "DX-016", "DX-017", "DX-018", "DX-019", "DX-020", "DX-021", "DX-022", "DX-023", "DX-024", "DX-025"]
+}

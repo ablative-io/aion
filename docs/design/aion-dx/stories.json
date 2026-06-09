@@ -1,0 +1,30 @@
+{
+    "cluster": "aion-dx",
+    "personas": [
+        {
+            "name": "New Developer",
+            "role": "First-time Aion user following the getting-started guide",
+            "stories": [
+                {"id": "S1", "text": "I can run the hello-world example end-to-end within 10 minutes of cloning the repo."},
+                {"id": "S2", "text": "I can find and run an advanced example that matches my use case (saga, approval, pipeline)."},
+                {"id": "S3", "text": "I can understand error messages from the CLI without reading source code."}
+            ]
+        },
+        {
+            "name": "Platform Engineer",
+            "role": "Operator deploying Aion as infrastructure",
+            "stories": [
+                {"id": "S4", "text": "I can start the server with a single command and load workflows without editing config files."},
+                {"id": "S5", "text": "I can inspect workflow state and event history through the CLI with human-readable output."}
+            ]
+        },
+        {
+            "name": "SDK Consumer",
+            "role": "Developer writing activities in Python, TypeScript, or Rust",
+            "stories": [
+                {"id": "S6", "text": "I can install the worker SDK from the language's package registry and follow the README to register activities."},
+                {"id": "S7", "text": "I can install the client SDK and start/signal/query workflows from my application."}
+            ]
+        }
+    ]
+}

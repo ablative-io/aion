@@ -1,0 +1,107 @@
+{
+  "id": "DX-023",
+  "cluster": "aion-dx",
+  "title": "Data pipeline example with fan-out/fan-in concurrency",
+  "depends_on": ["DX-016"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "Batch data processing is one of the most common workflow patterns — fetch many items in parallel, transform each, then aggregate results. Developers need a concrete example exercising all three concurrency primitives (concurrency.all for fan-out, concurrency.map for parallel transform, and a single aggregation activity for fan-in). Without this, teams will serialize work that should be parallel or build ad-hoc concurrency that breaks deterministic replay.",
+  "task": "Create a data-pipeline example that defines a Gleam workflow using the aion_flow SDK. The workflow accepts a list of URLs, fans out to fetch each URL concurrently using concurrency.all(), processes the fetched results in parallel using concurrency.map(), and aggregates the processed results with a single activity. Include a Python worker implementing the fetch, process, and aggregate activity stubs, a gleam.toml, and a README explaining the fan-out/fan-in pattern.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Fan-out fetch with concurrency.all",
+      "spec": "THE SYSTEM SHALL define a workflow using workflow.define() that accepts a list of URLs as input. THE SYSTEM SHALL use concurrency.all() to execute a fetch_url activity for each URL concurrently, collecting all results before proceeding.",
+      "acceptance": [
+        "data_pipeline.gleam imports from aion_flow and uses workflow.define().",
+        "The workflow input is a list of URLs (or equivalent identifiers).",
+        "concurrency.all() is used to fan out fetch_url activity executions.",
+        "All fetch results are collected before the processing step begins.",
+        "The fan-out is deterministic on replay — each activity executes or replays from history exactly once."
+      ],
+      "files": {
+        "create": [
+          "examples/data-pipeline/src/data_pipeline.gleam"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Parallel transform with concurrency.map and single aggregation",
+      "spec": "THE SYSTEM SHALL use concurrency.map() to apply a process_item activity to each fetched result in parallel. THE SYSTEM SHALL then call a single aggregate_results activity to combine all processed items into a final output.",
+      "acceptance": [
+        "concurrency.map() is used to transform each fetched result through process_item.",
+        "A single aggregate_results activity receives all processed items and returns the final result.",
+        "The workflow result contains the aggregated output.",
+        "All three concurrency phases (fan-out, parallel transform, aggregation) are distinct and visible in event history."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/data-pipeline/src/data_pipeline.gleam"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Python worker with pipeline activity stubs",
+      "spec": "THE SYSTEM SHALL provide a Python worker that registers fetch_url, process_item, and aggregate_results activities using the aion-worker SDK.",
+      "acceptance": [
+        "worker.py registers fetch_url, process_item, and aggregate_results activities.",
+        "fetch_url accepts a URL string and returns simulated content.",
+        "process_item accepts raw content and returns a processed result (e.g., word count, summary).",
+        "aggregate_results accepts a list of processed items and returns a combined summary.",
+        "The worker starts and connects to the Aion server."
+      ],
+      "files": {
+        "create": [
+          "examples/data-pipeline/worker/worker.py"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Project setup and documentation",
+      "spec": "THE SYSTEM SHALL provide a gleam.toml with the aion_flow dependency and a README explaining the fan-out/fan-in pattern, the three concurrency primitives, and step-by-step instructions for building and running the example.",
+      "acceptance": [
+        "gleam.toml lists aion_flow as a dependency and has correct project metadata.",
+        "README.md explains the fan-out/fan-in pattern and when to use each concurrency primitive.",
+        "README.md includes a diagram or textual flow showing the three pipeline stages.",
+        "README.md provides build and run instructions."
+      ],
+      "files": {
+        "create": [
+          "examples/data-pipeline/gleam.toml",
+          "examples/data-pipeline/README.md"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the aion_flow SDK, engine, or server code — only consume them.",
+    "SHALL NOT add dependencies beyond aion_flow to the Gleam example.",
+    "SHALL NOT make real HTTP requests from activities — stubs with simulated data are sufficient.",
+    "SHALL NOT introduce error handling or retry logic — this example focuses purely on the concurrency primitives."
+  ],
+  "verification": [
+    "gleam build succeeds in the data-pipeline directory without warnings.",
+    "The .aion package can be built from the compiled source.",
+    "The Python worker starts and registers all three activities without errors.",
+    "The workflow completes end-to-end with a list of 3+ URLs, producing an aggregated result.",
+    "Event history shows concurrent execution of fetch_url activities (fan-out) and process_item activities (parallel transform).",
+    "The workflow replays correctly after simulated engine restart mid-pipeline.",
+    "README instructions are complete and accurate."
+  ]
+}

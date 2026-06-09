@@ -1,0 +1,87 @@
+{
+  "id": "DX-021",
+  "cluster": "aion-dx",
+  "title": "Order saga example with compensating rollbacks",
+  "depends_on": ["DX-016"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "Sagas with compensating rollbacks are the bread-and-butter of durable workflow engines. Developers adopting Aion need a concrete, copy-pasteable example showing how to sequence activities (reserve_inventory, charge_payment, ship_order), detect failures at any step, and execute compensating actions in reverse order (cancel_shipment, refund_payment, release_inventory). Without this example, every team will reinvent the saga pattern incorrectly.",
+  "task": "Create a complete order-saga example that defines a multi-step workflow in Gleam using the aion_flow SDK. The workflow runs three activities in sequence — reserve_inventory, charge_payment, ship_order — and if any step fails, runs the corresponding compensating activities in reverse order. Include a Python worker implementing the activity stubs, a gleam.toml with the aion_flow dependency, and a README explaining the saga pattern and how to run the example.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Saga workflow with sequential activities and compensation",
+      "spec": "THE SYSTEM SHALL define a workflow using workflow.define() that executes reserve_inventory, charge_payment, and ship_order activities in sequence using activity.new(). WHEN any activity fails, THE SYSTEM SHALL execute the compensating activities for all previously completed steps in reverse order.",
+      "acceptance": [
+        "order_saga.gleam imports from aion_flow and uses workflow.define().",
+        "Three forward activities are declared with activity.new() and executed in sequence.",
+        "At least three compensating activities (release_inventory, refund_payment, cancel_shipment) are declared.",
+        "On charge_payment failure, release_inventory runs. On ship_order failure, refund_payment then release_inventory run.",
+        "The workflow returns Ok on full success and Error with compensation details on failure."
+      ],
+      "files": {
+        "create": [
+          "examples/order-saga/src/order_saga.gleam"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Python worker with activity stubs",
+      "spec": "THE SYSTEM SHALL provide a Python worker that registers all six activities (three forward, three compensating) using the aion-worker SDK. Each activity SHALL accept typed input and return typed output suitable for chaining.",
+      "acceptance": [
+        "worker.py registers reserve_inventory, charge_payment, ship_order, release_inventory, refund_payment, and cancel_shipment.",
+        "Each activity accepts JSON input and returns JSON output.",
+        "At least one activity can be configured to simulate failure for testing the compensation path.",
+        "The worker starts and connects to the Aion server."
+      ],
+      "files": {
+        "create": [
+          "examples/order-saga/worker/worker.py"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Project setup and documentation",
+      "spec": "THE SYSTEM SHALL provide a gleam.toml with the aion_flow dependency and a README explaining the saga pattern, the compensation strategy, and step-by-step instructions for building the .aion archive and running the example end-to-end.",
+      "acceptance": [
+        "gleam.toml lists aion_flow as a dependency and has correct project metadata.",
+        "README.md explains the saga pattern and why compensating actions are needed.",
+        "README.md includes a sequence diagram or textual flow showing the happy path and compensation path.",
+        "README.md provides build and run instructions (gleam build, .aion packaging, worker startup, workflow trigger)."
+      ],
+      "files": {
+        "create": [
+          "examples/order-saga/gleam.toml",
+          "examples/order-saga/README.md"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the aion_flow SDK, engine, or server code — only consume them.",
+    "SHALL NOT add dependencies beyond aion_flow to the Gleam example.",
+    "SHALL NOT implement real payment or inventory integrations — activity stubs with simulated behaviour are sufficient.",
+    "SHALL NOT introduce retry logic within the saga — compensation is the error-handling strategy demonstrated here."
+  ],
+  "verification": [
+    "gleam build succeeds in the order-saga directory without warnings.",
+    "The .aion package can be built from the compiled source.",
+    "The Python worker starts and registers all six activities without errors.",
+    "The happy-path workflow completes successfully with all three forward activities executed in order.",
+    "When charge_payment is configured to fail, release_inventory runs as compensation.",
+    "When ship_order is configured to fail, refund_payment and release_inventory run in reverse order.",
+    "README instructions are complete and accurate."
+  ]
+}
