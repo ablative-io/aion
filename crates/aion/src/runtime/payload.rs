@@ -3,6 +3,8 @@
 use aion_core::{ContentType, Payload};
 use beamr::atom::AtomTable;
 use beamr::term::Term;
+use beamr::term::binary::Binary;
+use beamr::term::boxed::Tuple;
 
 use crate::EngineError;
 
@@ -66,9 +68,36 @@ fn term_to_json(term: Term, atoms: &AtomTable) -> Result<serde_json::Value, Engi
             return Ok(serde_json::Value::String(name.to_owned()));
         }
     }
+    if let Some(bin) = Binary::new(term) {
+        return binary_to_json(bin.as_bytes());
+    }
+    if let Some(tuple) = Tuple::new(term) {
+        return tuple_to_json(tuple, atoms);
+    }
     Err(runtime_error(format!(
-        "activity result term {term:?} cannot become a payload"
+        "term {term:?} cannot become a payload"
     )))
+}
+
+fn binary_to_json(bytes: &[u8]) -> Result<serde_json::Value, EngineError> {
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|_| runtime_error("binary term is not valid UTF-8".to_owned()))?;
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(serde_json::Value::String(text)),
+    }
+}
+
+fn tuple_to_json(tuple: Tuple, atoms: &AtomTable) -> Result<serde_json::Value, EngineError> {
+    let elements: Result<Vec<serde_json::Value>, EngineError> = (0..tuple.arity())
+        .map(|i| {
+            let element = tuple
+                .get(i)
+                .ok_or_else(|| runtime_error(format!("tuple element {i} out of bounds")))?;
+            term_to_json(element, atoms)
+        })
+        .collect();
+    Ok(serde_json::Value::Array(elements?))
 }
 
 fn runtime_error(reason: String) -> EngineError {
