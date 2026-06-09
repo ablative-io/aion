@@ -26,8 +26,13 @@ fn park_heap(heap: Box<[u64]>) {
     ERROR_HEAP.with_borrow_mut(|parked| parked.push(heap));
 }
 
+fn clear_parked_heap() {
+    ERROR_HEAP.with_borrow_mut(Vec::clear);
+}
+
 fn alloc_binary_term(bytes: &[u8]) -> Option<Term> {
     let word_count = 2 + binary::packed_word_count(bytes.len());
+    clear_parked_heap();
     let mut heap = vec![0_u64; word_count].into_boxed_slice();
     let term = binary::write_binary(&mut heap, bytes)?;
     park_heap(heap);
@@ -141,7 +146,7 @@ impl NifContext {
         let history = match store {
             Some(store) => tokio_handle
                 .block_on(store.read_history(&workflow_id))
-                .map_err(|error| NifContextError::Durability(error.into()))?,
+                .map_err(DurabilityError::from)?,
             None => tokio_handle.block_on(async {
                 let recorder = recorder.lock().await;
                 recorder.read_history().await
