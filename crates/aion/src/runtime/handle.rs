@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use aion_core::{ActivityError, ActivityErrorKind, Payload};
-use beamr::atom::AtomTable;
+use beamr::atom::{Atom, AtomTable};
 use beamr::module::ModuleRegistry;
 use beamr::native::{BifRegistryImpl, NativeRegistrationError};
 use beamr::process::ExitReason;
@@ -12,7 +12,7 @@ use beamr::term::Term;
 
 use crate::error::EngineError;
 
-use super::config::RuntimeConfig;
+use super::config::{RuntimeConfig, SignalDeliveryConfig};
 use super::nif::{Mfa, NifRegistration};
 use super::payload::{payload_to_term, term_to_payload};
 
@@ -76,6 +76,7 @@ pub struct RuntimeHandle {
     signal_messages: Arc<dashmap::DashMap<Pid, Vec<(String, Payload)>>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
+    signal_delivery: SignalDeliveryConfig,
 }
 
 impl RuntimeHandle {
@@ -110,6 +111,7 @@ impl RuntimeHandle {
             signal_messages: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
+            signal_delivery: config.signal_delivery,
         })
     }
 
@@ -305,16 +307,16 @@ impl RuntimeHandle {
         payload: Payload,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
+        self.wait_for_process_ready(workflow_pid)?;
         let mut messages = self.signal_messages.entry(workflow_pid).or_default();
         messages.push((name, payload));
         let marker = self.atom_table.intern("aion_signal_received");
-        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
-            Ok(())
-        } else {
-            let _ = messages.pop();
-            Err(runtime_error(format!(
-                "failed to deliver signal to workflow process {workflow_pid}"
-            )))
+        match self.enqueue_signal_marker_with_retry(workflow_pid, marker) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = messages.pop();
+                Err(error)
+            }
         }
     }
 
@@ -522,17 +524,52 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn wait_for_process_ready(&self, pid: Pid) -> Result<(), EngineError> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        let deadline = std::time::Instant::now() + self.signal_delivery.ready_timeout;
         while std::time::Instant::now() < deadline {
             if self.scheduler.trap_exit(pid).is_some() {
                 return Ok(());
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            sleep_signal_delivery_backoff(self.signal_delivery.initial_backoff);
         }
         self.scheduler
             .trap_exit(pid)
             .map(|_| ())
             .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
+    }
+
+    fn enqueue_signal_marker_with_retry(
+        &self,
+        workflow_pid: Pid,
+        marker: Atom,
+    ) -> Result<(), EngineError> {
+        let attempts = self.signal_delivery.max_enqueue_attempts.max(1);
+        let mut backoff = self.signal_delivery.initial_backoff;
+        for attempt in 1..=attempts {
+            if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+                return Ok(());
+            }
+
+            if self.scheduler.process_table().get(workflow_pid).is_none() {
+                return Err(runtime_error(format!(
+                    "failed to deliver signal to workflow process {workflow_pid}: process is not live"
+                )));
+            }
+
+            if attempt < attempts {
+                // beamr 0.3.15 normal spawn publishes the PID before a scheduler
+                // worker materializes the process body from its SpawnRequest. It
+                // also exposes an Executing slot while the process is running.
+                // enqueue_atom_message only accepts a Present slot, so an alive
+                // just-spawned or currently executing process can transiently
+                // return false even after the liveness/ready gate above.
+                sleep_signal_delivery_backoff(backoff);
+                backoff = next_signal_delivery_backoff(backoff, self.signal_delivery.max_backoff);
+            }
+        }
+
+        Err(runtime_error(format!(
+            "failed to deliver signal to workflow process {workflow_pid} after {attempts} attempts"
+        )))
     }
 
     /// Register a test module whose exported function waits indefinitely.
@@ -693,6 +730,22 @@ fn runtime_error(reason: String) -> EngineError {
     EngineError::Runtime { reason }
 }
 
+fn next_signal_delivery_backoff(
+    current: std::time::Duration,
+    max: std::time::Duration,
+) -> std::time::Duration {
+    let doubled = current.saturating_mul(2);
+    if doubled > max { max } else { doubled }
+}
+
+fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
+    if duration.is_zero() {
+        std::thread::yield_now();
+    } else {
+        std::thread::sleep(duration);
+    }
+}
+
 fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
     runtime_error(reason.to_string())
 }
@@ -733,6 +786,8 @@ mod test_support;
 #[cfg(test)]
 mod tests {
     use aion_core::Payload;
+    use std::time::Duration;
+
     use beamr::loader::Instruction;
     use beamr::loader::decode::compact::Operand;
     use beamr::module::{Module, ResolvedImport, ResolvedImportTarget};
@@ -742,7 +797,7 @@ mod tests {
 
     use super::{RuntimeHandle, RuntimeInput};
     use crate::error::EngineError;
-    use crate::runtime::{Mfa, NifEntry, NifRegistration, RuntimeConfig};
+    use crate::runtime::{Mfa, NifEntry, NifRegistration, RuntimeConfig, SignalDeliveryConfig};
 
     fn forty_two(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
         if args.len() > 255 {
@@ -844,6 +899,31 @@ mod tests {
         let pid =
             runtime.spawn_workflow("aion_fixture_workflow", "wait", RuntimeInput::default())?;
         assert!(runtime.cancel_pid(pid).is_ok());
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn signal_delivery_failure_rolls_back_retained_message()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let signal_delivery =
+            SignalDeliveryConfig::new(Duration::ZERO, 1, Duration::ZERO, Duration::ZERO);
+        let runtime =
+            RuntimeHandle::new(RuntimeConfig::new(Some(1)).with_signal_delivery(signal_delivery))?;
+        let pid = runtime.spawn_test_process()?;
+        runtime.terminate_test_process_with_error(pid)?;
+
+        let error = runtime
+            .deliver_signal_received(
+                pid,
+                "wake".to_owned(),
+                Payload::from_json(&serde_json::json!(true))?,
+            )
+            .err()
+            .ok_or("dead process delivery unexpectedly succeeded")?;
+
+        assert!(matches!(error, EngineError::Runtime { .. }));
+        assert!(runtime.signal_messages(pid).is_empty());
         runtime.shutdown()?;
         Ok(())
     }

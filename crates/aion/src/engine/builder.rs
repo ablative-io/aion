@@ -11,7 +11,7 @@ use aion_store::{EventStore, InMemoryStore};
 
 use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
-    RuntimeHandle, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
+    RuntimeHandle, SignalDeliveryConfig, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
     activity::bridge::{ActivityDispatcher, install_activity_dispatcher},
     durability::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
@@ -80,6 +80,7 @@ pub struct EngineBuilder {
     store: Option<Arc<dyn EventStore>>,
     visibility_store: Option<Arc<dyn VisibilityStore>>,
     scheduler_threads: Option<usize>,
+    signal_delivery: SignalDeliveryConfig,
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
     recovery: Arc<dyn ActiveWorkflowRecoverySeam>,
@@ -104,6 +105,7 @@ impl EngineBuilder {
             store: None,
             visibility_store: None,
             scheduler_threads: None,
+            signal_delivery: SignalDeliveryConfig::default(),
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
             recovery: Arc::new(DeferredActiveWorkflowRecovery),
@@ -165,6 +167,13 @@ impl EngineBuilder {
     #[must_use]
     pub const fn scheduler_threads(mut self, threads: usize) -> Self {
         self.scheduler_threads = Some(threads);
+        self
+    }
+
+    /// Record the caller-supplied signal delivery readiness and retry policy.
+    #[must_use]
+    pub const fn signal_delivery(mut self, signal_delivery: SignalDeliveryConfig) -> Self {
+        self.signal_delivery = signal_delivery;
         self
     }
 
@@ -290,9 +299,9 @@ impl EngineBuilder {
 
         let activity_dispatcher = self.activity_dispatcher;
 
-        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(
-            self.scheduler_threads,
-        ))?);
+        let runtime = Arc::new(RuntimeHandle::new(
+            RuntimeConfig::new(self.scheduler_threads).with_signal_delivery(self.signal_delivery),
+        )?);
 
         let mut nifs = NifRegistration::new();
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);
