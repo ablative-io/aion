@@ -22,6 +22,7 @@ async fn signal_records_history_and_delivers_mailbox_marker()
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
         .scheduler_threads(1)
         .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
             Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
@@ -72,6 +73,7 @@ async fn terminal_and_unknown_signals_return_errors_without_appending_events()
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
         .scheduler_threads(1)
         .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
             Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
@@ -138,6 +140,7 @@ async fn non_resident_signal_records_defers_and_resume_delivers()
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
         .scheduler_threads(1)
         .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
             Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>

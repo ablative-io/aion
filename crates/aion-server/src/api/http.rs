@@ -966,6 +966,7 @@ mod tests {
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(store)
+                .in_memory_visibility()
                 .scheduler_threads(1)
                 .build()
                 .await?,
@@ -1144,6 +1145,7 @@ mod tests {
         let engine = Arc::new(
             EngineBuilder::new()
                 .store_arc(Arc::clone(&store))
+                .in_memory_visibility()
                 .scheduler_threads(1)
                 .build()
                 .await?,

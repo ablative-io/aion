@@ -125,6 +125,7 @@ async fn engine_with_store(
 ) -> Result<Engine, Box<dyn std::error::Error>> {
     Ok(EngineBuilder::new()
         .store_arc(store)
+        .in_memory_visibility()
         .scheduler_threads(1)
         .recovery_seam(recovery)
         .load_workflows(common::fixture_package("wait")?)

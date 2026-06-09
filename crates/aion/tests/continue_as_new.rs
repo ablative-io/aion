@@ -137,6 +137,7 @@ async fn recovery_active_listing_contains_only_current_continuation_run()
     let untouched_version = untouched.loaded_version().clone();
     let recovered = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
         .scheduler_threads(1)
         .load_workflows(common::fixture_package("wait")?)
         .recovery_seam(Arc::new(TestRecovery {

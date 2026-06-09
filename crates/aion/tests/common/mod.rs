@@ -50,6 +50,7 @@ pub async fn engine_with_fixture(
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
         .scheduler_threads(1)
         .load_workflows(fixture_package(entry_function)?)
         .build()

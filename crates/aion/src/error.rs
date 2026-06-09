@@ -14,6 +14,12 @@ pub enum EngineError {
     #[error("engine store is required")]
     MissingStore,
 
+    /// The builder was asked to construct an engine without a visibility store.
+    #[error(
+        "engine visibility store is required; call EngineBuilder::visibility_store() or EngineBuilder::in_memory_visibility()"
+    )]
+    MissingVisibilityStore,
+
     /// A workflow package failed to load or validate for engine registration.
     #[error("workflow package load failed: {reason}")]
     Load {

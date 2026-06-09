@@ -148,6 +148,17 @@ impl EngineBuilder {
         self
     }
 
+    /// Explicitly opt in to an ephemeral in-memory visibility store.
+    ///
+    /// This is intended for tests and local scenarios that do not need durable
+    /// visibility projections. Visibility data stored this way does not survive
+    /// process restarts.
+    #[must_use]
+    pub fn in_memory_visibility(mut self) -> Self {
+        self.visibility_store = Some(Arc::new(InMemoryStore::default()));
+        self
+    }
+
     /// Record the caller-supplied scheduler thread count.
     ///
     /// If this setter is never called, `None` is passed through to beamr.
@@ -275,7 +286,7 @@ impl EngineBuilder {
         let store = self.store.ok_or(EngineError::MissingStore)?;
         let visibility_store = self
             .visibility_store
-            .unwrap_or_else(|| Arc::new(InMemoryStore::default()));
+            .ok_or(EngineError::MissingVisibilityStore)?;
 
         let activity_dispatcher = self.activity_dispatcher;
 
@@ -651,6 +662,30 @@ mod tests {
         assert!(matches!(error, Some(EngineError::MissingStore)));
     }
 
+    #[tokio::test]
+    async fn build_without_visibility_store_returns_missing_visibility_store() {
+        let error = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .build()
+            .await
+            .err();
+
+        assert!(matches!(error, Some(EngineError::MissingVisibilityStore)));
+    }
+
+    #[tokio::test]
+    async fn in_memory_visibility_allows_build_without_visibility_store() -> Result<(), EngineError>
+    {
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .in_memory_visibility()
+            .build()
+            .await?;
+
+        engine.shutdown()?;
+        Ok(())
+    }
+
     #[test]
     fn scheduler_threads_are_only_set_by_caller() {
         assert_eq!(EngineBuilder::new().scheduler_thread_count(), None);
@@ -667,6 +702,7 @@ mod tests {
         let mfa = Mfa::new("host", "zero", 0);
         let error = EngineBuilder::new()
             .store(InMemoryStore::default())
+            .in_memory_visibility()
             .register_nifs([
                 NifEntry::new(mfa.clone(), crate::runtime::nif::test_native_zero),
                 NifEntry::dirty(mfa, crate::runtime::nif::test_native_zero),
@@ -687,6 +723,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::default());
         let engine = EngineBuilder::new()
             .store_arc(store.clone())
+            .in_memory_visibility()
             .build()
             .await?;
 
@@ -736,6 +773,7 @@ mod tests {
         engine.shutdown()?;
         let rebuilt = EngineBuilder::new()
             .store_arc(store.clone())
+            .in_memory_visibility()
             .build()
             .await?;
         let rebuilt_history = store.read_history(&coordinator_id).await?;
@@ -753,6 +791,7 @@ mod tests {
 
         let engine = EngineBuilder::new()
             .store(InMemoryStore::default())
+            .in_memory_visibility()
             .load_workflows(package)
             .build()
             .await?;
@@ -778,6 +817,7 @@ mod tests {
 
         let engine = EngineBuilder::new()
             .store(InMemoryStore::default())
+            .in_memory_visibility()
             .load_workflows(path.as_path())
             .build()
             .await?;
@@ -801,6 +841,7 @@ mod tests {
 
         let engine = EngineBuilder::new()
             .store(store)
+            .in_memory_visibility()
             .recovery_seam(Arc::new(TestRecovery {
                 run_id: run_id.clone(),
                 version: version.clone(),

@@ -248,6 +248,9 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
             }
         },
         EngineError::MissingStore => simple_engine_fields("MissingStore", source),
+        EngineError::MissingVisibilityStore => {
+            simple_engine_fields("MissingVisibilityStore", source)
+        }
         EngineError::Load { .. } => simple_engine_fields("Load", source),
         EngineError::Package(_) => simple_engine_fields("Package", source),
         EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
@@ -308,6 +311,9 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         },
         EngineError::MissingStore => {
             WireError::backend_with_type("MissingStore", source.to_string())
+        }
+        EngineError::MissingVisibilityStore => {
+            WireError::backend_with_type("MissingVisibilityStore", source.to_string())
         }
         EngineError::Load { .. } => WireError::backend_with_type("Load", source.to_string()),
         EngineError::Package(_) => WireError::backend_with_type("Package", source.to_string()),

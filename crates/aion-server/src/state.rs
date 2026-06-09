@@ -96,6 +96,7 @@ impl ServerState {
 
         let engine = EngineBuilder::new()
             .store_arc(instrumented_store.clone())
+            .in_memory_visibility()
             .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
             .active_registry(active_registry)
