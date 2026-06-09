@@ -1,0 +1,59 @@
+{
+  "id": "DX-010",
+  "cluster": "aion-dx",
+  "title": "Fix hello-world workflow and example code",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The hello-world workflow ignores its input and always greets 'Alice' regardless of what the developer sends. The Gleam source has 7 unused functions that confuse anyone reading it. The example should actually demonstrate passing data through a workflow — that's the whole point of a demo.",
+  "task": "Fix hello_world.gleam to use the input parameter so the workflow greets the name the developer provides. Remove dead code (unused definition, codecs, error functions). Ensure the workflow demonstrates the core concept: input flows through an activity and produces a result.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Workflow uses input parameter",
+      "spec": "WHEN a developer starts the hello_world workflow with input {\"name\":\"Ada\"}, THE SYSTEM SHALL pass \"Ada\" to the greet activity and the workflow result SHALL contain \"Hello, Ada!\". THE SYSTEM SHALL NOT hardcode any name.",
+      "acceptance": [
+        "Starting with {\"name\":\"Ada\"} produces a greeting containing 'Ada'.",
+        "Starting with {\"name\":\"Bob\"} produces a greeting containing 'Bob'.",
+        "The Gleam run function uses its input parameter (no leading underscore)."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/hello-world/src/hello_world.gleam"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Remove dead code from example",
+      "spec": "THE SYSTEM SHALL remove unused functions from hello_world.gleam: definition(), greet_activity(), local_greet(), greeting_input_codec(), greeting_output_codec(), workflow_error_codec(), activity_error_message(). Only the run function and its direct dependencies SHALL remain.",
+      "acceptance": [
+        "hello_world.gleam contains only the run function and imports it actually uses.",
+        "gleam build succeeds with no warnings about unused functions.",
+        "The example is short enough that a developer can read it in under 30 seconds."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/hello-world/src/hello_world.gleam"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the .aion package format or the NIF bridge contract.",
+    "SHALL NOT add new Gleam dependencies.",
+    "SHALL rebuild the hello-world.aion package if the Gleam source changes."
+  ],
+  "verification": [
+    "gleam build succeeds in examples/hello-world/.",
+    "The rebuilt .aion package loads in the server.",
+    "Workflow started with {\"name\":\"Test\"} returns a result containing 'Test'."
+  ]
+}

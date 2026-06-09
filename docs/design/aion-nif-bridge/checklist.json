@@ -1,0 +1,86 @@
+{
+  "cluster": "aion-nif-bridge",
+  "sections": [
+    {
+      "name": "NIF Context and Infrastructure",
+      "items": [
+        {"id": "C1", "text": "NifContext resolves a calling BEAM PID to its WorkflowHandle via the Registry.", "done": false},
+        {"id": "C2", "text": "NifContext provides synchronous access to the workflow's Recorder from a dirty NIF thread via tokio Handle::block_on.", "done": false},
+        {"id": "C3", "text": "WorkflowHandle wraps its Recorder in Arc<Mutex<Recorder>> for interior-mutable access from the NIF bridge.", "done": false},
+        {"id": "C4", "text": "engine_nifs.rs registers NIF entries for all 18 aion_flow_ffi functions.", "done": false},
+        {"id": "C5", "text": "Every NIF checks recorded history via the Resolver before executing a side effect.", "done": false}
+      ]
+    },
+    {
+      "name": "Activity NIF",
+      "items": [
+        {"id": "C6", "text": "run_activity/3 NIF records ActivityScheduled and ActivityStarted events before dispatching.", "done": false},
+        {"id": "C7", "text": "run_activity/3 NIF records ActivityCompleted on success or ActivityFailed on terminal failure.", "done": false},
+        {"id": "C8", "text": "run_activity/3 on replay returns the recorded result without dispatching to a worker.", "done": false},
+        {"id": "C9", "text": "The workflow_id in activity events matches the actual workflow's WorkflowId, not a random UUID.", "done": false}
+      ]
+    },
+    {
+      "name": "Deterministic NIFs",
+      "items": [
+        {"id": "C10", "text": "now/0 returns the recorded_at timestamp of the last event in the workflow's history.", "done": false},
+        {"id": "C11", "text": "random/0 returns a deterministic float seeded from WorkflowId + RunId + sequence position.", "done": false},
+        {"id": "C12", "text": "random_int/2 returns a deterministic integer in the given range seeded from WorkflowId + RunId + sequence position.", "done": false},
+        {"id": "C13", "text": "now, random, and random_int produce identical values on replay as on first execution.", "done": false}
+      ]
+    },
+    {
+      "name": "Timer NIFs",
+      "items": [
+        {"id": "C14", "text": "sleep/1 NIF records TimerScheduled, blocks until the timer fires or is cancelled, and records TimerFired.", "done": false},
+        {"id": "C15", "text": "start_timer/2 NIF records TimerScheduled and returns the timer ID.", "done": false},
+        {"id": "C16", "text": "cancel_timer/1 NIF records TimerCancelled for the named timer.", "done": false},
+        {"id": "C17", "text": "with_timeout/2 NIF wraps an operation with a deadline; records timeout expiry if the deadline fires first.", "done": false},
+        {"id": "C18", "text": "Timer NIFs on replay return recorded results without scheduling real timers.", "done": false}
+      ]
+    },
+    {
+      "name": "Signal NIFs",
+      "items": [
+        {"id": "C19", "text": "receive_signal/2 NIF blocks until a signal arrives and records SignalReceived.", "done": false},
+        {"id": "C20", "text": "send_signal/3 NIF delivers a signal to a target workflow and records SignalSent.", "done": false},
+        {"id": "C21", "text": "Signal NIFs on replay return recorded results without delivering or waiting for real signals.", "done": false}
+      ]
+    },
+    {
+      "name": "Query NIFs",
+      "items": [
+        {"id": "C22", "text": "register_query/3 NIF registers a query handler for the workflow.", "done": false},
+        {"id": "C23", "text": "reply_query/2 NIF sends a query response.", "done": false},
+        {"id": "C24", "text": "dispatch_query/2 NIF dispatches a query to a workflow and returns the response.", "done": false}
+      ]
+    },
+    {
+      "name": "Child Workflow NIFs",
+      "items": [
+        {"id": "C25", "text": "spawn_child/3 NIF starts a child workflow and records ChildWorkflowStarted.", "done": false},
+        {"id": "C26", "text": "await_child/1 NIF blocks until the child completes and records ChildWorkflowCompleted or ChildWorkflowFailed.", "done": false},
+        {"id": "C27", "text": "Child NIFs on replay return recorded results without spawning real child processes.", "done": false}
+      ]
+    },
+    {
+      "name": "Concurrency NIFs",
+      "items": [
+        {"id": "C28", "text": "collect_all/2 NIF dispatches multiple activities and waits for all results.", "done": false},
+        {"id": "C29", "text": "collect_race/2 NIF dispatches multiple activities and returns the first result, cancelling the rest.", "done": false},
+        {"id": "C30", "text": "collect_map/2 NIF dispatches activities from a mapped collection.", "done": false},
+        {"id": "C31", "text": "Concurrency NIFs record individual activity events for each dispatched activity.", "done": false}
+      ]
+    },
+    {
+      "name": "Process Exit Detection",
+      "items": [
+        {"id": "C32", "text": "The engine monitors each workflow process via beamr process monitoring.", "done": false},
+        {"id": "C33", "text": "Normal process exit records WorkflowCompleted with the return value as the result payload.", "done": false},
+        {"id": "C34", "text": "Abnormal process exit records WorkflowFailed with the exit reason as the error payload.", "done": false},
+        {"id": "C35", "text": "After terminal event recording, the workflow handle's cached status is updated in the Registry.", "done": false},
+        {"id": "C36", "text": "Zombie workflows (Running status with dead process) do not occur after this cluster lands.", "done": false}
+      ]
+    }
+  ]
+}

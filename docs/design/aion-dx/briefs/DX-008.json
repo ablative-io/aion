@@ -1,0 +1,66 @@
+{
+  "id": "DX-008",
+  "cluster": "aion-dx",
+  "title": "CLI tool for workflow operations",
+  "depends_on": ["DX-007"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "Developers and AI agents should not have to construct curl commands with byte-array payloads and auth headers to interact with workflows. The aion-client library already has start/signal/query/cancel/list/describe operations. A thin CLI binary on top gives both humans and AI a natural command-line interface: 'aion start hello_world --input {\"name\":\"Ada\"}'.",
+  "task": "Create an aion-cli binary crate that wraps the aion-client library with clap-based subcommands for start, signal, query, cancel, list, and describe. Support --endpoint, --namespace, --subject flags. Output JSON by default, with --pretty for human-readable formatting. Update GETTING-STARTED.md and hello-world README to use the CLI instead of curl.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "CLI binary with workflow subcommands",
+      "spec": "THE SYSTEM SHALL provide an aion-cli binary with subcommands: start <workflow_type> [--input JSON], signal <workflow_id> <signal_name> [--payload JSON], query <workflow_id> <query_name>, cancel <workflow_id> [--reason TEXT], list [--status STATUS], describe <workflow_id>. Global flags: --endpoint (default 127.0.0.1:50051), --namespace (default 'default'), --subject (default 'cli-user').",
+      "acceptance": [
+        "cargo run -p aion-cli -- start hello_world --input '{\"name\":\"Ada\"}' starts a workflow and prints the workflow ID.",
+        "cargo run -p aion-cli -- describe <workflow_id> prints workflow status and events.",
+        "cargo run -p aion-cli -- list shows active workflows.",
+        "--help on any subcommand shows usage.",
+        "Output is JSON by default, parseable by jq."
+      ],
+      "files": {
+        "create": [
+          "crates/aion-cli/Cargo.toml",
+          "crates/aion-cli/src/main.rs"
+        ],
+        "modify": [
+          "Cargo.toml"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Update docs to use CLI instead of curl",
+      "spec": "GETTING-STARTED.md and examples/hello-world/README.md SHALL show the CLI commands as the primary interaction method. Curl examples MAY be retained in a 'HTTP API' section for reference but SHALL NOT be the main path.",
+      "acceptance": [
+        "GETTING-STARTED.md 'Start a workflow' step uses aion-cli, not curl.",
+        "hello-world README uses aion-cli for start, describe, and signal.",
+        "A developer can complete the hello-world tutorial using only the CLI."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "GETTING-STARTED.md",
+          "examples/hello-world/README.md"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the aion-client library API — only build a CLI wrapper on top.",
+    "SHALL NOT add schedule management subcommands in this brief — keep it to core workflow operations.",
+    "SHALL use clap for argument parsing — no hand-rolled CLI parser."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo run -p aion-cli -- --help prints usage for all subcommands.",
+    "cargo run -p aion-cli -- start hello_world --input '{\"name\":\"Ada\"}' returns a workflow ID when the server is running."
+  ]
+}

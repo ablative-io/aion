@@ -1,0 +1,148 @@
+{
+  "id": "NB-009",
+  "cluster": "aion-nif-bridge",
+  "title": "Process exit detection and WorkflowCompleted/WorkflowFailed recording",
+  "depends_on": ["NB-001"],
+  "blocked_by": [],
+  "checklist": ["C32", "C33", "C34", "C35", "C36"],
+  "stories": ["S10", "S11", "S12", "S13", "S14"],
+  "purpose": "Close the workflow lifecycle gap: when a BEAM workflow process exits (normal return or crash), the engine must detect the exit, record the terminal event (WorkflowCompleted or WorkflowFailed), update the registry, and fulfil the completion notifier. Without this, workflows stay in Running status forever after their process dies — the zombie workflow problem (C36). This is the final piece needed for end-to-end workflow lifecycle: start, run activities, complete, describe full history.",
+  "task": "Create lifecycle/completion.rs with process exit detection using beamr's process monitoring (D5). Wire the monitor on workflow spawn in lifecycle/start.rs. On normal exit, extract the return value and record WorkflowCompleted through the Recorder (CO2). On abnormal exit, extract the exit reason and record WorkflowFailed. After recording, update the WorkflowHandle's cached status in the Registry (C35) and fulfil the CompletionNotifier. The monitor callback runs outside the workflow's dirty NIF thread — it accesses the Recorder through the handle's Arc<Mutex<Recorder>>.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Process monitor installed on workflow spawn",
+      "spec": "WHEN a workflow process is spawned, THE SYSTEM SHALL install a beamr process monitor on the PID so that process exit is detected automatically (D5). THE SYSTEM SHALL NOT poll for process liveness.",
+      "acceptance": [
+        "lifecycle/start.rs is modified to call RuntimeHandle::monitor_process (or equivalent) on the spawned PID immediately after successful spawn and registry insertion.",
+        "The monitor callback is a function or closure that receives the exit reason and has access to the WorkflowHandle (via Registry lookup or captured reference).",
+        "No polling loop or periodic liveness check exists.",
+        "A test spawns a workflow process, asserts the monitor is installed, kills the process, and asserts the monitor callback fires."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/start.rs"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R2",
+      "title": "Normal exit records WorkflowCompleted",
+      "spec": "WHEN a workflow process exits normally (return value), THE SYSTEM SHALL extract the return value as the result Payload and record WorkflowCompleted through the Recorder (CO2). THE SYSTEM SHALL NOT record WorkflowCompleted for abnormal exits.",
+      "acceptance": [
+        "completion.rs implements a handle_process_exit function (or equivalent) that distinguishes normal from abnormal exit.",
+        "On normal exit, the return value is decoded into a Payload and WorkflowCompleted is recorded through the handle's Arc<Mutex<Recorder>> via tokio Handle::block_on.",
+        "The WorkflowCompleted event's result payload matches the process return value.",
+        "A test spawns a workflow process that returns a value, waits for exit, and asserts WorkflowCompleted is the last event in the store with the correct result."
+      ],
+      "files": {
+        "create": ["crates/aion/src/lifecycle/completion.rs"],
+        "modify": ["crates/aion/src/lifecycle/mod.rs"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S10", "S13"]
+    },
+    {
+      "id": "R3",
+      "title": "Abnormal exit records WorkflowFailed",
+      "spec": "WHEN a workflow process exits abnormally (crash, error, killed), THE SYSTEM SHALL extract the exit reason as a WorkflowError and record WorkflowFailed through the Recorder (CO2). THE SYSTEM SHALL NOT record WorkflowFailed for normal exits.",
+      "acceptance": [
+        "On abnormal exit, the exit reason is decoded into a WorkflowError and WorkflowFailed is recorded through the handle's Recorder.",
+        "The WorkflowFailed event's error preserves the crash reason (class, term, stacktrace where available).",
+        "A test spawns a workflow process that crashes, waits for exit, and asserts WorkflowFailed is the last event in the store with the crash reason."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"]
+      },
+      "checklist": ["C34"],
+      "stories": ["S12", "S14"]
+    },
+    {
+      "id": "R4",
+      "title": "Registry status updated after terminal event",
+      "spec": "AFTER recording the terminal event, THE SYSTEM SHALL update the WorkflowHandle's cached_status in the Registry to reflect the terminal status (Completed or Failed) (C35). THE SYSTEM SHALL set the residency to Suspended since the process is no longer alive.",
+      "acceptance": [
+        "After recording WorkflowCompleted, the handle's cached_status is updated to WorkflowStatus::Completed and residency to Residency::Suspended.",
+        "After recording WorkflowFailed, the handle's cached_status is updated to WorkflowStatus::Failed and residency to Residency::Suspended.",
+        "The registry update happens after the durable event is recorded (crash between record and update is safe because status is a projection that can be recomputed).",
+        "A test completes a workflow via normal exit and asserts the registry shows Completed + Suspended; a test crashes a workflow and asserts Failed + Suspended."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"]
+      },
+      "checklist": ["C35"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R5",
+      "title": "CompletionNotifier fulfilled on terminal event",
+      "spec": "AFTER recording the terminal event, THE SYSTEM SHALL fulfil the WorkflowHandle's CompletionNotifier with the terminal outcome so that any pending Engine::result() awaiter is unblocked.",
+      "acceptance": [
+        "After recording WorkflowCompleted, the CompletionNotifier is fulfilled with TerminalOutcome::Completed(result_payload).",
+        "After recording WorkflowFailed, the CompletionNotifier is fulfilled with TerminalOutcome::Failed(error).",
+        "A test subscribes to the completion notifier before exit, verifies the subscription blocks, then triggers exit and asserts the subscriber wakes with the correct outcome.",
+        "A test subscribes after exit and asserts the outcome is immediately available (no hang)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"]
+      },
+      "checklist": ["C35", "C36"],
+      "stories": ["S10", "S11"]
+    },
+    {
+      "id": "R6",
+      "title": "No zombie workflows after process death",
+      "spec": "AFTER this brief lands, THE SYSTEM SHALL guarantee that no workflow remains in Running status with a dead process (C36). Every process exit triggers the monitor, which records the terminal event and updates the registry.",
+      "acceptance": [
+        "An integration test starts 5 workflows, kills 3 of them (2 normal, 1 crash), and asserts that after a brief settle period all 3 dead workflows are in terminal status (Completed or Failed) in the registry — none remain Running.",
+        "The 2 still-alive workflows remain Running and Resident.",
+        "A test that starts and immediately kills a workflow asserts it transitions to terminal status without manual intervention."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"]
+      },
+      "checklist": ["C36"],
+      "stories": ["S11", "S14"]
+    },
+    {
+      "id": "R7",
+      "title": "Monitor callback does not run on workflow's dirty NIF thread",
+      "spec": "THE SYSTEM SHALL run the process exit monitor callback outside the workflow's dirty NIF thread. The callback accesses the Recorder through the handle's Arc<Mutex<Recorder>> and the tokio runtime through a captured Handle. THE SYSTEM SHALL NOT deadlock if the NIF thread and the monitor callback contend for the Recorder mutex.",
+      "acceptance": [
+        "The monitor callback runs on beamr's scheduler thread or a dedicated monitor thread, not on the workflow's dirty NIF thread.",
+        "The callback acquires the Recorder mutex, records the terminal event, and releases it.",
+        "A test verifies that a workflow whose NIF thread is blocking (e.g. on a sleep) can still have its exit detected and recorded when the process is killed externally.",
+        "No deadlock occurs when the NIF thread holds the Recorder and the monitor fires concurrently."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"]
+      },
+      "checklist": ["C32", "C33", "C34"],
+      "stories": ["S12"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT poll for process liveness — use beamr's process monitoring (D5).",
+    "SHALL NOT bypass the Recorder to call EventStore::append directly (CO2).",
+    "SHALL NOT compute WorkflowStatus independently — status is a projection of the terminal event appended to history.",
+    "SHALL NOT import beamr outside the runtime module (CO8) — RuntimeHandle wraps monitor installation.",
+    "SHALL NOT handle workflow restart or recovery here — that is the recovery module (AD).",
+    "SHALL NOT handle continue-as-new transitions — those have their own lifecycle path."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Normal exit produces WorkflowCompleted; abnormal exit produces WorkflowFailed.",
+    "Registry shows terminal status + Suspended residency after process death.",
+    "CompletionNotifier is fulfilled in both normal and abnormal exit paths.",
+    "No zombie workflows remain Running after process death.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

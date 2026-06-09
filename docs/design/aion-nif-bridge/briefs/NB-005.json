@@ -1,0 +1,94 @@
+{
+  "id": "NB-005",
+  "cluster": "aion-nif-bridge",
+  "title": "Signal NIFs (receive_signal, send_signal)",
+  "depends_on": ["NB-001"],
+  "blocked_by": [],
+  "checklist": ["C19", "C20", "C21"],
+  "stories": ["S5"],
+  "purpose": "Implement the signal NIFs that workflow code calls to receive external signals and send signals to other workflows. Each NIF goes through the durability handoff: on replay, recorded signal events are returned without delivering or waiting for real signals; on live execution, the NIF delegates to AT's ConcreteSignalRouter (D4) and records durable events through the Recorder. Signals are the primary mechanism for external interaction with a running workflow (approvals, cancellations, data updates).",
+  "task": "Create nif_signal.rs with production NIF implementations for receive_signal/2 and send_signal/3. Each NIF constructs a NifContext (NB-001), builds the appropriate Command, calls resolve_or_execute_live. On replay, return the recorded result. On live, delegate to AT's ConcreteSignalRouter, record events through the Recorder (CO2), and return the result. Replace the stubs in engine_nifs.rs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "receive_signal/2 blocks until signal arrives and records SignalReceived",
+      "spec": "WHEN receive_signal/2 is called on the live path, THE SYSTEM SHALL block the dirty NIF thread until a signal with the given name arrives (delivered by ConcreteSignalRouter) and record SignalReceived through the Recorder (CO2). WHEN called during replay, THE SYSTEM SHALL return the recorded signal payload without waiting for a real signal (C21).",
+      "acceptance": [
+        "nif_signal.rs implements receive_signal_impl that takes a signal name and optional timeout, constructs a NifContext, resolves the receive-signal Command, and on ResumeLive delegates to AT's ConcreteSignalRouter signal-wait path.",
+        "On the live path, the NIF blocks (via Handle::block_on on a signal-wait future) until the signal arrives, then records SignalReceived with the signal name and payload.",
+        "On the replay path, the recorded SignalReceived payload is returned immediately.",
+        "A test pre-populates a history with SignalReceived, constructs a NifContext, and asserts the replay path returns the recorded payload; a live-path test asserts SignalReceived is recorded after delivery."
+      ],
+      "files": {
+        "create": ["crates/aion/src/runtime/nif_signal.rs"],
+        "modify": ["crates/aion/src/runtime/mod.rs"]
+      },
+      "checklist": ["C19", "C21"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "send_signal/3 delivers signal and records SignalSent",
+      "spec": "WHEN send_signal/3 is called on the live path, THE SYSTEM SHALL deliver the signal to the target workflow through AT's ConcreteSignalRouter and record SignalSent through the Recorder (CO2). WHEN called during replay, THE SYSTEM SHALL return the recorded result without delivering a real signal (C21).",
+      "acceptance": [
+        "nif_signal.rs implements send_signal_impl that takes a target WorkflowId, signal name, and payload, constructs a NifContext, resolves the send-signal Command, and on ResumeLive delegates to AT's ConcreteSignalRouter signal-delivery path.",
+        "On the live path, SignalSent is recorded with the target workflow_id, signal name, and payload.",
+        "On the replay path, the recorded SignalSent result is returned without delivering.",
+        "A test asserts SignalSent is recorded on the live path; a replay test asserts the recorded result is returned without router interaction."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_signal.rs"]
+      },
+      "checklist": ["C20", "C21"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Signal NIFs delegate to ConcreteSignalRouter, not reimplemented routing",
+      "spec": "THE SYSTEM SHALL delegate all signal routing to AT's ConcreteSignalRouter (D4). THE SYSTEM SHALL NOT reimplement signal delivery, buffering, or non-resident handoff in the NIF bridge.",
+      "acceptance": [
+        "nif_signal.rs imports crate::signal::ConcreteSignalRouter (or its trait) and calls its delivery/wait methods.",
+        "No signal buffering, routing table, or delivery retry logic exists in nif_signal.rs.",
+        "The ConcreteSignalRouter handles both resident and non-resident workflow delivery; the NIF does not distinguish these cases."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_signal.rs"]
+      },
+      "checklist": ["C19", "C20"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R4",
+      "title": "engine_nifs.rs wiring for signal NIFs",
+      "spec": "THE SYSTEM SHALL replace the receive_signal/2 and send_signal/3 stub entries in engine_nifs.rs with calls to nif_signal.rs implementations.",
+      "acceptance": [
+        "The NIF functions registered in engine_nif_entries() for receive_signal/2 and send_signal/3 delegate to nif_signal implementations.",
+        "Both signal NIFs are registered as dirty (receive_signal blocks on signal arrival; send_signal blocks on delivery via block_on).",
+        "The stub {error, not_yet_implemented} responses are removed for these two NIFs."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/engine_nifs.rs"]
+      },
+      "checklist": ["C19", "C20"],
+      "stories": ["S5"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT reimplement signal routing, delivery, buffering, or non-resident handoff — those are AT's ConcreteSignalRouter (D4).",
+    "SHALL NOT bypass the Recorder to call EventStore::append directly (CO2).",
+    "SHALL NOT bypass the Resolver to skip replay checks (CO1).",
+    "SHALL NOT modify the ConcreteSignalRouter or SignalResumeHandoff types.",
+    "SHALL NOT import beamr outside the runtime module (CO8)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Live path records SignalReceived and SignalSent events.",
+    "Replay path returns recorded results without signal interaction.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

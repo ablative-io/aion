@@ -1,0 +1,112 @@
+{
+  "id": "NB-003",
+  "cluster": "aion-nif-bridge",
+  "title": "Deterministic time and random NIFs",
+  "depends_on": ["NB-001"],
+  "blocked_by": [],
+  "checklist": ["C10", "C11", "C12", "C13"],
+  "stories": ["S2", "S3"],
+  "purpose": "Implement the deterministic now/0, random/0, and random_int/2 NIFs that workflow code uses for time-dependent and randomised branching. These are pure functions that read from recorded history and deterministic seeds (D3) — they never touch a wall clock or OS entropy source. On replay, they produce identical values to first execution, which is the core determinism guarantee (CO3).",
+  "task": "Create nif_determinism.rs with production NIF implementations for now/0, random/0, and random_int/2. now/0 returns the recorded_at timestamp of the last event in the workflow's history via the DeterminismContext (or Resolver cursor). random/0 returns a deterministic float seeded from WorkflowId + RunId + the current command sequence position. random_int/2 returns a deterministic integer in [min, max] using the same seed. Replace the stubs in engine_nifs.rs with calls to these implementations.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "now/0 returns last recorded event timestamp",
+      "spec": "WHEN now/0 is called, THE SYSTEM SHALL return the recorded_at timestamp of the last event consumed by the Resolver's history cursor (D3, CO3). THE SYSTEM SHALL NOT read the wall clock.",
+      "acceptance": [
+        "nif_determinism.rs implements now_impl that constructs a NifContext and reads the last consumed event's recorded_at timestamp from the DeterminismContext or Resolver cursor.",
+        "The returned value is an integer (milliseconds since epoch) or an ISO-8601 binary — matching the aion_flow SDK's expected term format.",
+        "A test pre-populates a history with events at known timestamps, constructs a NifContext, calls now_impl, and asserts the returned timestamp matches the last event's recorded_at.",
+        "No std::time::SystemTime, chrono::Utc::now(), or other wall-clock call appears in the now path."
+      ],
+      "files": {
+        "create": ["crates/aion/src/runtime/nif_determinism.rs"],
+        "modify": ["crates/aion/src/runtime/mod.rs"]
+      },
+      "checklist": ["C10"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R2",
+      "title": "random/0 returns deterministic float",
+      "spec": "WHEN random/0 is called, THE SYSTEM SHALL return a deterministic f64 in [0.0, 1.0) seeded from WorkflowId + RunId + the current sequence position (D3, CO3). THE SYSTEM SHALL NOT use any OS entropy source.",
+      "acceptance": [
+        "nif_determinism.rs implements random_impl that derives a seed from workflow_id bytes + run_id bytes + the sequence position counter, hashes or feeds them into a deterministic PRNG, and returns an f64 in [0.0, 1.0).",
+        "The NIF returns the float as a BEAM float term.",
+        "A test calls random_impl twice with the same workflow_id, run_id, and sequence position and asserts the same value; a test with a different sequence position asserts a different value.",
+        "No rand::thread_rng(), OsRng, or getrandom call appears in the random path."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_determinism.rs"]
+      },
+      "checklist": ["C11"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R3",
+      "title": "random_int/2 returns deterministic integer in range",
+      "spec": "WHEN random_int/2 is called with min and max arguments, THE SYSTEM SHALL return a deterministic integer in [min, max] seeded from WorkflowId + RunId + the current sequence position (D3, CO3). IF min > max, THEN THE SYSTEM SHALL return an error term.",
+      "acceptance": [
+        "nif_determinism.rs implements random_int_impl that takes min: i64 and max: i64, derives a seed identically to random/0, and maps the output to [min, max].",
+        "The NIF returns the integer as a BEAM integer term.",
+        "A test calls random_int_impl with min=1, max=100 twice at the same position and asserts the same value; a test with min > max asserts an error term.",
+        "The mapping from seed to integer range is uniform and deterministic."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_determinism.rs"]
+      },
+      "checklist": ["C12"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R4",
+      "title": "Replay produces identical values",
+      "spec": "WHEN now/0, random/0, or random_int/2 are called during replay, THE SYSTEM SHALL produce the same values as the original execution (C13, CO3). THE SYSTEM SHALL NOT introduce any non-deterministic input that could vary between executions.",
+      "acceptance": [
+        "A test runs a sequence of now, random, and random_int calls against a fresh history, records the returned values, then replays the same sequence over the recorded history and asserts all values match.",
+        "The seed derivation uses only workflow_id, run_id, and sequence position — no wall clock, no thread id, no random salt.",
+        "The same DeterminismContext (or cursor) advances consistently during both first execution and replay."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_determinism.rs"]
+      },
+      "checklist": ["C13"],
+      "stories": ["S2", "S3"]
+    },
+    {
+      "id": "R5",
+      "title": "engine_nifs.rs wiring",
+      "spec": "THE SYSTEM SHALL replace the now/0, random/0, and random_int/2 stub entries in engine_nifs.rs with calls to nif_determinism.rs implementations.",
+      "acceptance": [
+        "The NIF functions registered in engine_nif_entries() for now/0, random/0, and random_int/2 delegate to nif_determinism implementations.",
+        "now/0 is registered as a normal (non-dirty) NIF since it performs no I/O.",
+        "random/0 and random_int/2 are registered as normal NIFs since they are pure computations.",
+        "The stub {error, not_yet_implemented} responses are removed for these three NIFs."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/engine_nifs.rs"]
+      },
+      "checklist": ["C10", "C11", "C12"],
+      "stories": ["S2", "S3"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT read the wall clock or any OS entropy source from any code path in this brief (CO3).",
+    "SHALL NOT record any events — these are pure read-only functions, not command-issued side effects.",
+    "SHALL NOT depend on any AT or AD service — these NIFs read from the Resolver's history cursor and deterministic seeds only (D3).",
+    "SHALL NOT change the Resolver, HistoryCursor, or DeterminismContext types — consume them as-is."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "now/0 returns last recorded timestamp, not wall clock.",
+    "random/0 and random_int/2 produce identical values for identical (workflow_id, run_id, sequence_position) inputs.",
+    "Replay produces the same values as first execution.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

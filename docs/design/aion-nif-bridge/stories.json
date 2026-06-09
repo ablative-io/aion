@@ -1,0 +1,37 @@
+{
+  "cluster": "aion-nif-bridge",
+  "personas": [
+    {
+      "name": "Workflow Author",
+      "role": "Writing durable workflows in Gleam using the aion_flow SDK",
+      "stories": [
+        {"id": "S1", "text": "As a workflow author, I want my activity calls to be durable so that if the engine crashes and restarts, the activity result is returned from history instead of re-dispatching to the worker."},
+        {"id": "S2", "text": "As a workflow author, I want workflow.now to return a deterministic timestamp so that my workflow logic produces the same decisions on replay as on first execution."},
+        {"id": "S3", "text": "As a workflow author, I want workflow.random to return a deterministic value so that randomised branching in my workflow replays correctly."},
+        {"id": "S4", "text": "As a workflow author, I want to sleep for a duration and have the engine wake my workflow after that time so that I can implement polling, backoff, and scheduled delays."},
+        {"id": "S5", "text": "As a workflow author, I want to receive signals from external callers so that my workflow can react to events like approvals, cancellations, or data updates."},
+        {"id": "S6", "text": "As a workflow author, I want to register query handlers so that external callers can inspect my workflow's current state without modifying it."},
+        {"id": "S7", "text": "As a workflow author, I want to spawn child workflows and await their results so that I can compose complex workflows from simpler building blocks."},
+        {"id": "S8", "text": "As a workflow author, I want to dispatch multiple activities in parallel and collect all results so that I can fan out work for better throughput."},
+        {"id": "S9", "text": "As a workflow author, I want to race multiple activities and take the first result so that I can implement timeout patterns and competitive dispatch."}
+      ]
+    },
+    {
+      "name": "Platform Operator",
+      "role": "Running and monitoring Aion workflows in production",
+      "stories": [
+        {"id": "S10", "text": "As a platform operator, I want completed workflows to show a full event history so that I can audit what happened, when, and in what order."},
+        {"id": "S11", "text": "As a platform operator, I want workflow completion to be detected automatically so that workflows do not stay in Running status after their process exits."},
+        {"id": "S12", "text": "As a platform operator, I want crashed workflows to be recoverable by restarting the engine so that I have Temporal-class durability guarantees."}
+      ]
+    },
+    {
+      "name": "Temporal Developer",
+      "role": "Evaluating Aion as a Temporal replacement",
+      "stories": [
+        {"id": "S13", "text": "As a Temporal developer, I want the getting-started tutorial to demonstrate a complete workflow lifecycle (start, activity, complete, describe history) so that I can evaluate whether Aion meets my durability expectations."},
+        {"id": "S14", "text": "As a Temporal developer, I want activities, timers, signals, queries, and child workflows to work as I expect from Temporal so that I can port my existing workflow patterns without surprises."}
+      ]
+    }
+  ]
+}

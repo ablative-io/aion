@@ -1,0 +1,116 @@
+{
+  "id": "NB-008",
+  "cluster": "aion-nif-bridge",
+  "title": "Concurrency NIFs (collect_all, collect_race, collect_map)",
+  "depends_on": ["NB-001", "NB-002"],
+  "blocked_by": [],
+  "checklist": ["C28", "C29", "C30", "C31"],
+  "stories": ["S8", "S9"],
+  "purpose": "Implement the concurrency NIFs that workflow code calls to fan out multiple activities in parallel. These NIFs compose the activity dispatch path (NB-002) with AT's concurrency primitives (D6) to provide collect_all (wait for all), collect_race (first wins, cancel rest), and collect_map (map over a collection). Each dispatched activity produces its own individual activity events in the store (C31), providing full per-activity audit and replay fidelity.",
+  "task": "Create nif_concurrency.rs with production NIF implementations for collect_all/2, collect_race/2, and collect_map/2. Each NIF constructs a NifContext (NB-001), builds a batch of activity Commands, and delegates to AT's concurrency module (crate::concurrency::{all, race, map}). Individual activity events are recorded per dispatched activity (C31) through the Recorder, composing the NB-002 activity recording path. On replay, recorded per-activity results are returned without dispatching. Replace the stubs in engine_nifs.rs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "collect_all/2 dispatches multiple activities and waits for all results",
+      "spec": "WHEN collect_all/2 is called on the live path, THE SYSTEM SHALL dispatch each activity in the batch, wait for all results, record individual activity events for each dispatched activity (C31), and return the collected results to the BEAM process. WHEN called during replay, THE SYSTEM SHALL return the recorded per-activity results without dispatching (D6).",
+      "acceptance": [
+        "nif_concurrency.rs implements collect_all_impl that takes an activity list and options, constructs a NifContext, and delegates to crate::concurrency::all.",
+        "On the live path, each activity in the batch produces its own ActivityScheduled + ActivityCompleted/ActivityFailed events in the store.",
+        "The NIF returns a list of results (one per activity) to the BEAM process.",
+        "On the replay path, per-activity recorded results are collected from history and returned without dispatching.",
+        "A test dispatches 3 activities via collect_all, asserts 3 x (ActivityScheduled + ActivityCompleted) events in the store, and asserts all 3 results are returned."
+      ],
+      "files": {
+        "create": ["crates/aion/src/runtime/nif_concurrency.rs"],
+        "modify": ["crates/aion/src/runtime/mod.rs"]
+      },
+      "checklist": ["C28", "C31"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "collect_race/2 dispatches multiple activities and returns the first result",
+      "spec": "WHEN collect_race/2 is called on the live path, THE SYSTEM SHALL dispatch each activity in the batch, return the first result that completes, and cancel the remaining activities (D6). THE SYSTEM SHALL record individual activity events for each dispatched activity (C31) including cancellation events for the losers. WHEN called during replay, THE SYSTEM SHALL return the recorded winner without dispatching.",
+      "acceptance": [
+        "nif_concurrency.rs implements collect_race_impl that takes an activity list and options, constructs a NifContext, and delegates to crate::concurrency::race.",
+        "On the live path, all activities are dispatched; the first to complete is returned; remaining activities are cancelled.",
+        "ActivityScheduled is recorded for each dispatched activity. The winner gets ActivityCompleted; losers get cancellation events.",
+        "On the replay path, the recorded race winner is returned immediately.",
+        "A test dispatches 3 activities via collect_race where one completes before the others, asserts the winner's result is returned, and asserts cancellation events exist for the losers."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_concurrency.rs"]
+      },
+      "checklist": ["C29", "C31"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R3",
+      "title": "collect_map/2 dispatches activities from a mapped collection",
+      "spec": "WHEN collect_map/2 is called on the live path, THE SYSTEM SHALL generate child activity specs from the input collection items, dispatch each, wait for all results, and record individual activity events per dispatched activity (C31). WHEN called during replay, THE SYSTEM SHALL return the recorded per-activity results without dispatching.",
+      "acceptance": [
+        "nif_concurrency.rs implements collect_map_impl that takes a collection and a mapping descriptor, constructs a NifContext, and delegates to crate::concurrency::map.",
+        "On the live path, each collection item produces an activity dispatch with its own activity events.",
+        "The NIF returns a list of results keyed to the original collection items.",
+        "On the replay path, per-activity recorded results are returned without dispatching.",
+        "A test maps over a 3-element collection, asserts 3 x (ActivityScheduled + ActivityCompleted) events, and asserts the results correspond to the original items."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_concurrency.rs"]
+      },
+      "checklist": ["C30", "C31"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R4",
+      "title": "Concurrency NIFs compose activity dispatch, not a separate service",
+      "spec": "THE SYSTEM SHALL implement concurrency NIFs as coordination patterns over the activity dispatch path (NB-002), not as independent services (D6). THE SYSTEM SHALL NOT create a dedicated concurrency service — the coordination is workflow-local logic.",
+      "acceptance": [
+        "nif_concurrency.rs does not define a ConcurrencyService or equivalent shared resource.",
+        "Each concurrency NIF composes the NB-002 activity recording path (Command construction + resolve_or_execute_live) for multiple activities.",
+        "The AT concurrency module (all, race, map) is used for coordination logic — not reimplemented."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_concurrency.rs"]
+      },
+      "checklist": ["C28", "C29", "C30"],
+      "stories": ["S8", "S9"]
+    },
+    {
+      "id": "R5",
+      "title": "engine_nifs.rs wiring for concurrency NIFs",
+      "spec": "THE SYSTEM SHALL replace the collect_all/2, collect_race/2, and collect_map/2 stub entries in engine_nifs.rs with calls to nif_concurrency.rs implementations.",
+      "acceptance": [
+        "The NIF functions registered in engine_nif_entries() for the three concurrency NIFs delegate to nif_concurrency implementations.",
+        "All three concurrency NIFs are registered as dirty (they block on multiple activity dispatches via block_on).",
+        "The stub {error, not_yet_implemented} responses are removed for these three NIFs."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/engine_nifs.rs"]
+      },
+      "checklist": ["C28", "C29", "C30"],
+      "stories": ["S8", "S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT create a dedicated concurrency service — coordination is workflow-local, composing the activity path (D6).",
+    "SHALL NOT reimplement AT's concurrency primitives (all, race, map) — consume them as-is.",
+    "SHALL NOT bypass the Recorder to call EventStore::append directly (CO2).",
+    "SHALL NOT bypass the Resolver to skip replay checks (CO1).",
+    "SHALL NOT import beamr outside the runtime module (CO8).",
+    "SHALL NOT record a single aggregate concurrency event — individual per-activity events are the contract (C31)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "Each dispatched activity in a concurrency batch produces its own individual activity events.",
+    "Replay returns recorded per-activity results without dispatching.",
+    "Race correctly cancels losing activities and records cancellation events.",
+    "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "id": "NB-001",
+  "cluster": "aion-nif-bridge",
+  "title": "NifContext infrastructure, WorkflowHandle interior mutability, and NIF entry registration expansion",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5"],
+  "stories": ["S10", "S12"],
+  "purpose": "Establish the foundation every NIF bridge brief depends on: a NifContext that resolves the calling BEAM process to its workflow's durability context (Recorder + Resolver), interior-mutable Recorder access on WorkflowHandle, and expanded NIF entry registration for all 18 aion_flow_ffi functions. Without this, no NIF can reach the durability layer and no side effect is recorded or replayed.",
+  "task": "Create nif_context.rs with the NifContext struct that resolves a calling PID to a WorkflowHandle via the Registry, provides synchronous Recorder access from a dirty NIF thread via tokio Handle::block_on (D2), and carries a Resolver for replay checks (CO1). Expand engine_nifs.rs to register NIF entries for all 18 aion_flow_ffi functions (stubs for NB-002 through NB-008 that return {error, not_yet_implemented}). Confirm WorkflowHandle's existing Arc<Mutex<Recorder>> wrapping (D7) is sufficient for the NIF bridge's interior-mutable access pattern and add any missing accessor methods.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "NifContext PID-to-handle resolution",
+      "spec": "WHEN a dirty NIF is invoked, THE SYSTEM SHALL construct a NifContext from the calling process's PID by looking up the WorkflowHandle in the active-execution Registry (D1). IF no handle exists for the PID, THEN THE SYSTEM SHALL return an error term to the BEAM process without panicking.",
+      "acceptance": [
+        "nif_context.rs defines NifContext with a constructor that takes a PID, a reference to the Registry, and a tokio Handle.",
+        "The constructor resolves the PID to a WorkflowHandle by scanning the Registry's active handles; returns Result<NifContext, NifContextError> where the error case is UnknownProcess.",
+        "NifContext exposes workflow_id(), run_id(), and recorder() accessors derived from the resolved handle.",
+        "A unit test constructs a Registry with a registered handle, resolves the PID to a NifContext, and asserts the workflow_id matches; a second test uses an unregistered PID and asserts UnknownProcess."
+      ],
+      "files": {
+        "create": ["crates/aion/src/runtime/nif_context.rs"],
+        "modify": ["crates/aion/src/runtime/mod.rs"]
+      },
+      "checklist": ["C1"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R2",
+      "title": "Synchronous Recorder access from dirty NIF thread",
+      "spec": "WHEN the NifContext needs to record or resolve events, THE SYSTEM SHALL use tokio Handle::block_on to run async Recorder methods synchronously from the dirty NIF thread (D2). THE SYSTEM SHALL NOT spawn async tasks that outlive the NIF call.",
+      "acceptance": [
+        "NifContext carries a tokio::runtime::Handle and exposes a block_on_recorder() or equivalent method that locks the Arc<Mutex<Recorder>> and executes an async closure synchronously via Handle::block_on.",
+        "The method returns the closure's Result, propagating DurabilityError as NifContextError::Durability.",
+        "A test verifies that a Recorder method (e.g. current_head()) can be called synchronously through the NifContext's block_on path without deadlock.",
+        "No async task is spawned that outlives the NIF call scope."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_context.rs"]
+      },
+      "checklist": ["C2"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R3",
+      "title": "WorkflowHandle Recorder accessor sufficiency",
+      "spec": "THE SYSTEM SHALL expose on WorkflowHandle all accessor methods the NIF bridge requires: recorder() returning Arc<Mutex<Recorder>>, workflow_id(), run_id(), and pid(). IF any accessor is missing, THE SYSTEM SHALL add it to handle.rs.",
+      "acceptance": [
+        "WorkflowHandle::recorder() returns Arc<Mutex<Recorder>> (already present — verify no changes needed).",
+        "WorkflowHandle::workflow_id(), run_id(), and pid() are all pub and return the expected types.",
+        "The NifContext's resolved handle provides all fields the downstream NIF briefs (NB-002 through NB-009) need without breaking encapsulation.",
+        "No new pub(crate) field is added that was not already part of the handle's API surface."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/registry/handle.rs"]
+      },
+      "checklist": ["C3"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R4",
+      "title": "Expanded NIF entry registration for all 18 FFI functions",
+      "spec": "THE SYSTEM SHALL register NIF entries in engine_nifs.rs for all 18 aion_flow_ffi functions declared by the Gleam SDK. WHEN a not-yet-implemented NIF is called, THE SYSTEM SHALL return {error, <<\"not_yet_implemented\">>} to the BEAM process.",
+      "acceptance": [
+        "engine_nif_entries() returns a Vec<NifEntry> with 18 entries covering: run_activity/3, now/0, random/0, random_int/2, sleep/1, start_timer/2, cancel_timer/1, with_timeout/2, receive_signal/2, send_signal/3, register_query/3, reply_query/2, dispatch_query/2, spawn_child/3, await_child/1, collect_all/2, collect_race/2, collect_map/2.",
+        "Each stub NIF returns {error, <<\"not_yet_implemented\">>} as a BEAM term.",
+        "run_activity/3 retains its existing dirty registration; all other NIFs are registered dirty (they may block on service calls via block_on).",
+        "A test asserts engine_nif_entries().len() == 18 and that each MFA is unique."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/engine_nifs.rs"]
+      },
+      "checklist": ["C4"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R5",
+      "title": "Replay-check contract for every NIF",
+      "spec": "THE SYSTEM SHALL provide on NifContext a resolve_command() method (or equivalent) that wraps the Resolver's resolve() call so every NIF can check recorded history before executing a side effect (CO1). WHEN the Resolver returns a recorded result, THE SYSTEM SHALL return it to the NIF without executing the live path.",
+      "acceptance": [
+        "NifContext exposes a method that accepts a Command and returns ResolveOutcome (Recorded or ResumeLive).",
+        "The method delegates to a Resolver constructed from the workflow's recorded history via the HistoryCursor.",
+        "NifContext construction builds or receives the Resolver from the workflow's durability state so each NIF call can check history.",
+        "A test constructs a NifContext over a history containing a recorded activity event, calls resolve_command with a matching Command, and asserts the Recorded resolution is returned."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_context.rs"]
+      },
+      "checklist": ["C5"],
+      "stories": ["S12"]
+    },
+    {
+      "id": "R6",
+      "title": "NifContextError taxonomy",
+      "spec": "THE SYSTEM SHALL define NifContextError as a thiserror enum with variants UnknownProcess, RecorderPoisoned, Durability wrapping DurabilityError, and TermEncoding. THE SYSTEM SHALL NOT use anyhow.",
+      "acceptance": [
+        "nif_context.rs defines NifContextError with at least UnknownProcess { pid: u64 }, RecorderPoisoned, Durability(DurabilityError), and TermEncoding { reason: String }.",
+        "The error type derives thiserror::Error and Debug.",
+        "From<DurabilityError> is implemented for the ? operator.",
+        "A helper method converts NifContextError to a BEAM error term for return from any NIF."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/runtime/nif_context.rs"]
+      },
+      "checklist": ["C1", "C2"],
+      "stories": ["S12"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the production logic for any specific NIF (activity, timer, signal, etc.) — those are NB-002 through NB-008.",
+    "SHALL NOT change the WorkflowHandle's existing Arc<Mutex<Recorder>> wrapping — it is already the correct D7 implementation.",
+    "SHALL NOT import beamr outside the runtime module (CO8).",
+    "SHALL NOT add any #[allow], #[expect], or #[ignore] directives (CO6).",
+    "SHALL NOT use unsafe code (CO5).",
+    "SHALL NOT add networking or transport dependencies to the aion crate (CO4)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion passes.",
+    "cargo fmt --check passes.",
+    "engine_nif_entries() returns exactly 18 entries with no duplicate MFAs.",
+    "NifContext resolves a registered PID and rejects an unknown PID without panicking.",
+    "No #[allow], #[expect], or #[ignore] in new code; no anyhow; no .unwrap()/.expect() outside tests."
+  ]
+}

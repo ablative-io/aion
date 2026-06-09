@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-nif-bridge",
+  "title": "NIF Bridge — Production NIF Implementations Wired Through the Durability Layer",
+  "intention": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this cluster lands, a workflow that starts, runs activities on remote workers, sleeps, receives signals, spawns children, and completes produces a full, replayable event history — the Temporal developer expectation, not just for basic cases, but for all of them.",
+  "problem": [
+    "The aion_flow SDK declares 18 FFI functions that workflow code calls through @external(erlang, \"aion_flow_ffi\", ...). Only run_activity/3 has a production NIF implementation, and even that one bypasses the durability layer — it dispatches to the worker but records no events.",
+    "The durability cluster (AD) built the full handoff pipeline: Resolver checks history (replay path), Recorder appends events (live path), and resolve_or_execute_live() orchestrates the two. But this pipeline is never invoked from the NIF boundary.",
+    "The time/signals cluster (AT) built timer scheduling, signal routing, query dispatch, child workflow spawning, and concurrency primitives. These are all tested through the Erlang test double, never through production NIFs connected to the real services.",
+    "The result: workflows start and run code, but no durable events are recorded beyond WorkflowStarted. Activities dispatch to workers but produce no ActivityScheduled/ActivityCompleted events. Workflow completion is never detected. The engine has all the pieces — they are just not connected through the NIF boundary.",
+    "A Temporal developer trying Aion today would find: activities run but workflows never complete, no event history, no replay on crash, no timers, no signals, no queries, no children. The engine looks broken even though every subsystem works in isolation."
+  ],
+  "solution": {
+    "summary": "Implement production NIFs for all 18 aion_flow_ffi functions. Each NIF resolves its calling BEAM process to the workflow's durability context (Recorder + Resolver), constructs a Command, and passes it through resolve_or_execute_live(). On replay, the recorded result is returned without re-executing the side effect. On live execution, the side effect runs and events are recorded. A NifContext struct bundles the per-call durability state (workflow handle lookup by PID, Recorder access, tokio handle for async-from-sync). Process exit detection records WorkflowCompleted/WorkflowFailed. The existing AD/AT implementations are consumed, not reimplemented.",
+    "nif_context": "A NifContext constructed per NIF call: looks up the calling PID in the workflow Registry to find the WorkflowHandle, accesses the Recorder through interior mutability on the handle, and provides the tokio Handle for running async Recorder methods from the sync dirty NIF thread. The NifContext is the single integration point between the NIF boundary and the durability layer.",
+    "replay_path": "When a NIF call matches an already-recorded event in history (crash recovery / replay), the Resolver returns the recorded result directly. The NIF returns it to the BEAM process without executing any side effect. This is the determinism guarantee: re-executing a workflow produces the same sequence of results.",
+    "live_path": "When no recorded event matches (first execution), the NIF records the scheduling event, executes the side effect (dispatch to worker, schedule timer, deliver signal, etc.), records the completion event, and returns the result. All recording goes through the single-writer Recorder.",
+    "completion_detection": "When a BEAM workflow process exits (normal return or crash), the engine detects the exit through beamr's process monitoring, records WorkflowCompleted or WorkflowFailed, and updates the registry. This closes the lifecycle gap where workflows stay Running forever after their process dies."
+  },
+  "decisions": [
+    {"id": "D1", "title": "NifContext resolved per call, not cached", "status": "active", "choice": "Each NIF call resolves the calling PID to a workflow handle. This is O(n) over active workflows but correct: a cached reference could go stale across process lifecycle events. The Registry is the source of truth. Rejected caching: stale references would violate the single-writer invariant."},
+    {"id": "D2", "title": "Async Recorder methods run via tokio Handle::block_on from dirty NIF thread", "status": "active", "choice": "Dirty NIF threads have no async runtime. The WorkerActivityDispatcher already carries a tokio_handle for this purpose. NifContext uses Handle::block_on to run Recorder::record_* methods synchronously from the dirty thread. Rejected spawning async tasks: it would break the blocking NIF contract (the BEAM process expects a return value, not a future)."},
+    {"id": "D3", "title": "Deterministic now/random are pure functions, not NIF-to-service calls", "status": "active", "choice": "workflow.now returns the last recorded event's timestamp. workflow.random is seeded from WorkflowId + RunId. These require no service call — they read from the Resolver's history cursor. Rejected routing through a service: it would add latency for pure computations."},
+    {"id": "D4", "title": "Timer/signal/query/child NIFs delegate to AT's concrete services", "status": "active", "choice": "The AT cluster built ConcreteSignalRouter, timer scheduling, query dispatch, and child workflow spawning. The NIFs call these through the engine's delegated seams (DelegatedSeams struct). Rejected reimplementing: it would violate the single-owner principle and duplicate tested code."},
+    {"id": "D5", "title": "Process exit detection uses beamr monitor, not polling", "status": "active", "choice": "The engine monitors each workflow process via beamr's process_monitor. On exit, the monitor callback records the terminal event. Rejected polling: it wastes CPU and introduces detection latency."},
+    {"id": "D6", "title": "Concurrency NIFs (collect_all/race/map) compose activity dispatch, not independent services", "status": "active", "choice": "collect_all, collect_race, and collect_map are coordination patterns over multiple activity dispatches. They compose the activity NIF path, not a separate service. Rejected a dedicated concurrency service: the coordination is workflow-local logic, not a shared resource."},
+    {"id": "D7", "title": "WorkflowHandle gains interior-mutable Recorder access for NIF bridge", "status": "active", "choice": "The Recorder requires &mut self. WorkflowHandle is shared (Clone). The handle wraps the Recorder in Arc<Mutex<Recorder>> so the NIF bridge can access it without exclusive handle ownership. The Mutex is fine because the single-writer invariant means only one thread (the workflow's dirty NIF thread) ever calls into the Recorder. Rejected passing Recorder separately: it would break the handle's ownership of its writer."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "Every NIF goes through resolve_or_execute_live (or its equivalent replay check). No NIF may execute a side effect without first checking recorded history."},
+    {"id": "CO2", "description": "All event recording goes through the workflow's single-writer Recorder. No NIF calls EventStore::append directly."},
+    {"id": "CO3", "description": "Deterministic execution: workflow.now returns recorded timestamp, workflow.random is seeded from WorkflowId+RunId. No wall clock or entropy source in NIF-visible paths."},
+    {"id": "CO4", "description": "The aion crate remains transport-agnostic. Remote worker dispatch stays in aion-server's WorkerActivityDispatcher; the NIF bridge calls the ActivityDispatcher trait, not the concrete server type."},
+    {"id": "CO5", "description": "unsafe_code = deny. No unsafe in any new code."},
+    {"id": "CO6", "description": "No #[allow]/#[expect]/#[ignore] lint bypasses."},
+    {"id": "CO7", "description": "500-line file limit (excluding tests/comments/whitespace)."},
+    {"id": "CO8", "description": "Only the runtime module imports beamr. NIF bridge code uses RuntimeHandle, not beamr directly."},
+    {"id": "CO9", "description": "Tests run against InMemoryStore. No test requires a database or live server."}
+  ],
+  "goals": [
+    "All 18 aion_flow_ffi functions have production NIF implementations that record durable events through the Recorder.",
+    "A workflow that runs activities, sleeps, receives signals, queries state, spawns children, and completes produces a complete, ordered event history in the EventStore.",
+    "Crashing a workflow mid-execution and restarting the engine replays the history and returns recorded results without re-executing side effects.",
+    "Workflow process exit (normal or crash) is detected and recorded as WorkflowCompleted or WorkflowFailed.",
+    "The hello-world tutorial works end-to-end: start, activity dispatches to worker, result recorded, workflow completes, describe shows full event history.",
+    "Deterministic execution: workflow.now and workflow.random produce the same values on replay as on first execution.",
+    "All existing AD/AT/AE tests continue to pass. No regression in the engine, durability, or time/signals clusters."
+  ],
+  "non_goals": [
+    "No new AD/AT/AE design — this cluster consumes those implementations, it does not redesign them.",
+    "No changes to the aion_flow Gleam SDK — the FFI interface is fixed; only the Rust NIF implementations change.",
+    "No changes to the wire protocol (gRPC) — remote worker dispatch continues through WorkerActivityDispatcher.",
+    "No changes to aion-server beyond what is needed to pass durability context to the engine (if any).",
+    "No retry policy implementation — that is AT's machinery, consumed here via the existing seam.",
+    "No new event types — all events (ActivityScheduled, ActivityCompleted, TimerScheduled, etc.) are already defined in aion-core."
+  ],
+  "structure": {
+    "crates/aion/src/runtime/engine_nifs.rs": "[NB-001] NifContext + expanded NIF entry registration for all 18 functions",
+    "crates/aion/src/runtime/nif_context.rs": "[NB-001] NifContext: PID-to-handle resolution, Recorder access, tokio handle",
+    "crates/aion/src/runtime/nif_activity.rs": "[NB-002] run_activity NIF wired through durability handoff",
+    "crates/aion/src/runtime/nif_determinism.rs": "[NB-003] now/0, random/0, random_int/2 NIFs — pure deterministic functions",
+    "crates/aion/src/runtime/nif_timer.rs": "[NB-004] sleep/1, start_timer/2, cancel_timer/1, with_timeout/2 NIFs",
+    "crates/aion/src/runtime/nif_signal.rs": "[NB-005] receive_signal/2, send_signal/3 NIFs",
+    "crates/aion/src/runtime/nif_query.rs": "[NB-006] register_query/3, reply_query/2, dispatch_query/2 NIFs",
+    "crates/aion/src/runtime/nif_child.rs": "[NB-007] spawn_child/3, await_child/1 NIFs",
+    "crates/aion/src/runtime/nif_concurrency.rs": "[NB-008] collect_all/2, collect_race/2, collect_map/2 NIFs",
+    "crates/aion/src/lifecycle/completion.rs": "[NB-009] Process exit detection and WorkflowCompleted/WorkflowFailed recording",
+    "crates/aion/src/registry/handle.rs": "[NB-001] Interior-mutable Recorder access (Arc<Mutex<Recorder>>)"
+  }
+}
