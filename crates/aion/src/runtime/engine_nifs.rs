@@ -19,6 +19,7 @@ use super::nif_signal;
 use super::nif_timer;
 
 const FFI_MODULE: &str = "aion_flow_ffi";
+#[cfg(test)]
 const NOT_YET_IMPLEMENTED: &str = "not_yet_implemented";
 
 thread_local! {
@@ -86,6 +87,7 @@ fn collect_map(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     super::nif_concurrency::collect_map_impl(args, ctx)
 }
 
+#[cfg(test)]
 fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     let _ = ctx.pid();
     if args.len() > 255 {
@@ -93,10 +95,6 @@ fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, 
     }
 
     Ok(error_result_term(NOT_YET_IMPLEMENTED).unwrap_or(Term::NIL))
-}
-
-fn dirty_entry(function: &str, arity: u8) -> NifEntry {
-    NifEntry::dirty(Mfa::new(FFI_MODULE, function, arity), not_yet_implemented)
 }
 
 /// Collect engine-owned NIF entries for `aion_flow_ffi`.

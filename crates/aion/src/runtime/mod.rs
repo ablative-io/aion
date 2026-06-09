@@ -25,7 +25,7 @@ pub use handle::{Pid, RuntimeHandle, RuntimeInput};
 pub use nif::{Mfa, NifEntry, NifRegistration};
 pub(crate) use nif_activity::install_nif_runtime_context;
 pub(crate) use nif_child::install_child_nif_bridge;
-pub(crate) use nif_child_engine::ChildNifBridge;
+pub(crate) use nif_child_engine::{ChildNifBridge, ChildNifBridgeParts};
 pub(crate) use nif_query::install_query_bridge;
 pub(crate) use nif_signal::{SignalNifBridge, install_signal_nif_bridge};
 pub use outcome::WorkflowProcessOutcome;

@@ -6,8 +6,9 @@ rust-version.workspace = true
 description = "Rust caller SDK for connecting to aion-server and operating Aion workflows."
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/aion-client"
 readme = "README.md"
-keywords = ["aion", "workflow", "sdk", "client"]
+keywords = ["aion", "workflow", "durable-execution", "sdk", "client"]
 categories = ["api-bindings", "asynchronous"]
 
 [lints]

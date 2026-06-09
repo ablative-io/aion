@@ -32,19 +32,32 @@ pub(crate) struct ChildNifBridge {
     tokio_handle: Handle,
 }
 
+/// Constructor dependencies for [`ChildNifBridge`].
+pub(crate) struct ChildNifBridgeParts {
+    pub(crate) store: Arc<dyn EventStore>,
+    pub(crate) visibility_store: Arc<dyn VisibilityStore>,
+    pub(crate) runtime: Arc<RuntimeHandle>,
+    pub(crate) loaded_workflows: LoadedWorkflows,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) supervision: Arc<SupervisionTree>,
+    pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
+    pub(crate) tokio_handle: Handle,
+}
+
 impl ChildNifBridge {
     /// Creates a bridge from engine components.
     #[must_use]
-    pub(crate) fn new(
-        store: Arc<dyn EventStore>,
-        visibility_store: Arc<dyn VisibilityStore>,
-        runtime: Arc<RuntimeHandle>,
-        loaded_workflows: LoadedWorkflows,
-        registry: Arc<Registry>,
-        supervision: Arc<SupervisionTree>,
-        signal_handoff: Arc<SignalResumeHandoff>,
-        tokio_handle: Handle,
-    ) -> Self {
+    pub(crate) fn new(parts: ChildNifBridgeParts) -> Self {
+        let ChildNifBridgeParts {
+            store,
+            visibility_store,
+            runtime,
+            loaded_workflows,
+            registry,
+            supervision,
+            signal_handoff,
+            tokio_handle,
+        } = parts;
         Self {
             store,
             visibility_store,

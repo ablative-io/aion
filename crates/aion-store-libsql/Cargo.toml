@@ -3,12 +3,18 @@ name = "aion-store-libsql"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Durable libSQL-backed event store implementation for Aion workflows."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-store-libsql"
+keywords = ["aion", "workflow", "durable-execution", "libsql", "persistence"]
+categories = ["asynchronous", "database"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion-store = { path = "../aion-store" }
+aion-store = { version = "0.1.0", path = "../aion-store" }
 libsql = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

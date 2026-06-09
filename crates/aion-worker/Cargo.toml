@@ -3,13 +3,19 @@ name = "aion-worker"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Rust remote-worker SDK for executing Aion activities over the gRPC worker protocol."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-worker"
+keywords = ["aion", "workflow", "durable-execution", "worker", "activities"]
+categories = ["asynchronous", "development-tools"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion-core = { path = "../aion-core" }
-aion-proto = { path = "../aion-proto", features = ["generated"] }
+aion-core = { version = "0.1.0", path = "../aion-core" }
+aion-proto = { version = "0.1.0", path = "../aion-proto", features = ["generated"] }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
 prost = { workspace = true }

@@ -3,6 +3,12 @@ name = "aion-proto"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Shared gRPC and serde wire contracts for Aion servers, clients, and workers."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-proto"
+keywords = ["aion", "workflow", "durable-execution", "grpc", "protobuf"]
+categories = ["api-bindings", "asynchronous"]
 
 [lints]
 workspace = true
@@ -12,7 +18,7 @@ default = []
 generated = []
 
 [dependencies]
-aion-core = { path = "../aion-core" }
+aion-core = { version = "0.1.0", path = "../aion-core" }
 tonic = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -28,4 +34,4 @@ tonic-build = { workspace = true }
 tonic-prost-build = "=0.14.5"
 
 [dev-dependencies]
-aion-store = { path = "../aion-store" }
+aion-store = { version = "0.1.0", path = "../aion-store" }

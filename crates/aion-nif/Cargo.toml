@@ -3,12 +3,18 @@ name = "aion-nif"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Native function declaration helpers for Gleam and Elixir Aion workflows."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-nif"
+keywords = ["aion", "workflow", "durable-execution", "nif", "beam"]
+categories = ["development-tools"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion-core = { path = "../aion-core" }
+aion-core = { version = "0.1.0", path = "../aion-core" }
 beamr = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

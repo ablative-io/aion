@@ -29,12 +29,24 @@ pub(crate) fn install_child_nif_bridge(bridge: Arc<ChildNifBridge>) {
 
 /// NIF backing `aion_flow_ffi:spawn_child/3`.
 pub(super) fn spawn_child_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    checked_child_result(run_spawn_child(args, ctx), "spawn_child")
+    if args.len() > 255 {
+        return Err(Term::NIL);
+    }
+    Ok(checked_child_result(
+        run_spawn_child(args, ctx),
+        "spawn_child",
+    ))
 }
 
 /// NIF backing `aion_flow_ffi:await_child/1`.
 pub(super) fn await_child_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    checked_child_result(run_await_child(args, ctx), "await_child")
+    if args.len() > 255 {
+        return Err(Term::NIL);
+    }
+    Ok(checked_child_result(
+        run_await_child(args, ctx),
+        "await_child",
+    ))
 }
 
 fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, String> {
@@ -53,7 +65,10 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
         input: input.clone(),
     };
 
-    match nif.resolve_command(command).map_err(context_error)? {
+    match nif
+        .resolve_command(command)
+        .map_err(|error| context_error(&error))?
+    {
         ResolveOutcome::Recorded(Resolution::ChildStarted(child_id)) => {
             term_or_encoding_error(ok_result_term(&child_id.to_string()))
         }
@@ -70,7 +85,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                 input,
                 RunId::new_v4(),
             )
-            .map_err(child_error)?;
+            .map_err(|error| child_error(&error))?;
             term_or_encoding_error(ok_result_term(&child.child_workflow_id.to_string()))
         }
     }
@@ -86,7 +101,10 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
         child_workflow_id: child_workflow_id.clone(),
     };
 
-    match nif.resolve_command(command).map_err(context_error)? {
+    match nif
+        .resolve_command(command)
+        .map_err(|error| context_error(&error))?
+    {
         ResolveOutcome::Recorded(Resolution::ChildCompleted(result)) => {
             term_or_encoding_error(ok_result_term(&prefixed_payload("ok:", &result)?))
         }
@@ -107,16 +125,16 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                 Err(ChildWorkflowError::Failed { error, .. }) => {
                     term_or_encoding_error(ok_result_term(&prefixed_error("error:", &error)))
                 }
-                Err(error) => Err(child_error(error)),
+                Err(error) => Err(child_error(&error)),
             }
         }
     }
 }
 
-fn checked_child_result(result: Result<Term, String>, name: &str) -> Result<Term, Term> {
+fn checked_child_result(result: Result<Term, String>, name: &str) -> Term {
     match result {
-        Ok(term) => Ok(term),
-        Err(message) => Ok(error_result_term(&format!("{name}:{message}")).unwrap_or(Term::NIL)),
+        Ok(term) => term,
+        Err(message) => error_result_term(&format!("{name}:{message}")).unwrap_or(Term::NIL),
     }
 }
 
@@ -134,7 +152,7 @@ fn new_context(bridge: &ChildNifBridge, pid: u64) -> Result<NifContext, String> 
         bridge.tokio_handle(),
         Some(bridge.store()),
     )
-    .map_err(context_error)
+    .map_err(|error| context_error(&error))
 }
 
 fn next_child_key(nif: &NifContext) -> Result<CorrelationKey, String> {
@@ -142,7 +160,7 @@ fn next_child_key(nif: &NifContext) -> Result<CorrelationKey, String> {
         .block_on_recorder(|recorder| {
             Box::pin(async move { next_sequence(recorder.current_head()) })
         })
-        .map_err(context_error)?;
+        .map_err(|error| context_error(&error))?;
     Ok(CorrelationKey::Child(next_seq))
 }
 
@@ -151,7 +169,7 @@ fn recording_context(nif: &NifContext) -> Result<ChildWorkflowRecordingContext, 
         .block_on_recorder(|recorder| {
             Box::pin(async move { next_sequence(recorder.current_head()) })
         })
-        .map_err(context_error)?;
+        .map_err(|error| context_error(&error))?;
     Ok(ChildWorkflowRecordingContext::new(
         nif.workflow_id().clone(),
         next_seq,
@@ -166,11 +184,11 @@ fn next_sequence(head: u64) -> Result<u64, DurabilityError> {
         })
 }
 
-fn context_error(error: NifContextError) -> String {
+fn context_error(error: &NifContextError) -> String {
     error.to_string()
 }
 
-fn child_error(error: ChildWorkflowError) -> String {
+fn child_error(error: &ChildWorkflowError) -> String {
     error.to_string()
 }
 

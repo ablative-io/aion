@@ -185,19 +185,19 @@ impl HistoryCursor {
                 | Event::ChildWorkflowFailed {
                     child_workflow_id, ..
                 },
-            ) => self.resolve_child_outcome(child_workflow_id.clone()),
+            ) => self.resolve_child_outcome(child_workflow_id),
             _ => self.mismatch_at_current(expected_key),
         }
     }
 
-    fn resolve_child_outcome(&mut self, child_workflow_id: WorkflowId) -> CursorResolveResult {
+    fn resolve_child_outcome(&mut self, child_workflow_id: &WorkflowId) -> CursorResolveResult {
         if self.events[..self.position].iter().any(|event| {
             matches!(
                 event,
                 Event::ChildWorkflowStarted {
                     child_workflow_id: started_child,
                     ..
-                } if started_child == &child_workflow_id
+                } if started_child == child_workflow_id
             )
         }) {
             self.consume_one()

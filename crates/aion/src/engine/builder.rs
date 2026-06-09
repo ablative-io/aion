@@ -18,7 +18,7 @@ use crate::{
         Recorder,
     },
     runtime::{
-        ChildNifBridge, NifEntry, NifRegistration, install_child_nif_bridge,
+        ChildNifBridge, ChildNifBridgeParts, NifEntry, NifRegistration, install_child_nif_bridge,
         install_nif_runtime_context, install_query_bridge, install_signal_nif_bridge,
         nif_determinism::{NifContextSource, install_nif_context_source},
     },
@@ -347,16 +347,16 @@ impl EngineBuilder {
             tokio::runtime::Handle::current(),
             delegated.signal_router_arc(),
         )));
-        install_child_nif_bridge(Arc::new(ChildNifBridge::new(
-            Arc::clone(&store),
-            Arc::clone(&visibility_store),
-            Arc::clone(&runtime),
-            loaded_workflows.clone(),
-            Arc::clone(&registry),
-            Arc::clone(&supervision),
-            Arc::clone(&signal_handoff),
-            tokio::runtime::Handle::current(),
-        )));
+        install_child_nif_bridge(Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
+            store: Arc::clone(&store),
+            visibility_store: Arc::clone(&visibility_store),
+            runtime: Arc::clone(&runtime),
+            loaded_workflows: loaded_workflows.clone(),
+            registry: Arc::clone(&registry),
+            supervision: Arc::clone(&supervision),
+            signal_handoff: Arc::clone(&signal_handoff),
+            tokio_handle: tokio::runtime::Handle::current(),
+        })));
 
         let engine = Engine::new(EngineComponents {
             store,
