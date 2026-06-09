@@ -663,7 +663,7 @@ mod tests {
     use std::sync::Arc;
 
     use aion::{Engine, EngineBuilder};
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus, WriteToken};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus};
     use aion_proto::{
         WireErrorCode,
         convert::{decode_core_value, decode_event, decode_workflow_summary, encode_core_value},

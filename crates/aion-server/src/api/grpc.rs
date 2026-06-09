@@ -617,7 +617,7 @@ mod tests {
     use std::{net::SocketAddr, sync::Arc};
 
     use aion::EngineBuilder;
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus, WriteToken};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
     use aion_proto::{
         WireErrorCode,
         convert::{decode_core_value, encode_core_value},

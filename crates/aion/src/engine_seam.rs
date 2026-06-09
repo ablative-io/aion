@@ -6,7 +6,7 @@
 //! target workflow's single AD Recorder. AT does not manage workflow process lifecycle,
 //! supervision, or module loading directly.
 
-use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId, WriteToken};
+use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId};
 
 use crate::Pid;
 use chrono::{DateTime, Utc};
@@ -311,7 +311,7 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
 
-    use aion_store::EventStore;
+    use aion_store::{EventStore, WriteToken};
 
     use super::*;
 
@@ -748,7 +748,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{ContentType, Payload, WorkflowId, WriteToken};
+    use aion_core::{ContentType, Payload, WorkflowId};
 
     use super::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
     use super::{

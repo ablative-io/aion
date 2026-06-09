@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId, WriteToken};
+use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId};
 use aion_store::EventStore;
 use beamr::atom::Atom;
 use beamr::term::Term;
@@ -381,7 +381,7 @@ fn registry_error_to_context(error: &EngineError) -> NifContextError {
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::{ActivityId, Event, EventEnvelope, Payload, WorkflowStatus, WriteToken};
+    use aion_core::{ActivityId, Event, EventEnvelope, Payload, WorkflowStatus};
     use aion_package::ContentHash;
     use aion_store::{EventStore, InMemoryStore, WriteToken};
     use chrono::{TimeZone, Utc};

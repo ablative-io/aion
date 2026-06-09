@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use aion_core::{RunId, WorkflowId, WriteToken};
+use aion_core::{RunId, WorkflowId};
 use aion_store::EventStore;
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
@@ -318,7 +318,7 @@ fn seed_from_ids_and_sequence(workflow_id: &WorkflowId, run_id: &RunId, sequence
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus, WriteToken};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus};
     use aion_package::ContentHash;
     use aion_store::{EventStore, InMemoryStore, WriteToken};
     use beamr::atom::Atom;

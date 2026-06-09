@@ -297,7 +297,7 @@ pub(super) fn run_activity_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use aion_core::{Event, EventEnvelope, WorkflowStatus, WriteToken};
+    use aion_core::{Event, EventEnvelope, WorkflowStatus};
     use aion_package::ContentHash;
     use aion_store::{EventStore, InMemoryStore, WriteToken};
     use beamr::term::binary::Binary;

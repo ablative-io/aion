@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use aion_core::{Event, RunId, SearchAttributeValue, WorkflowId, status_from_events};
-use aion_store::ReadableEventStore;
+use aion_store::EventStore;
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
 use chrono::{DateTime, Utc};
 
@@ -17,7 +17,7 @@ use crate::EngineError;
 /// Returns store errors when history cannot be read or visibility cannot be recorded, and a load
 /// error if the workflow history has no `WorkflowStarted` event to project.
 pub async fn upsert_workflow_visibility(
-    event_store: Arc<dyn ReadableEventStore>,
+    event_store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
     workflow_id: &WorkflowId,
     run_id: &RunId,

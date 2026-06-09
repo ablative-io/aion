@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use aion_core::{SearchAttributeValue, WorkflowStatus, WriteToken};
+use aion_core::{SearchAttributeValue, WorkflowStatus};
 use aion_proto::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
     ProtoCreateScheduleRequest, ProtoCreateScheduleResponse, ProtoDeleteScheduleResponse,

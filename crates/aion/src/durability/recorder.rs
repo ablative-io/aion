@@ -724,7 +724,7 @@ mod tests {
         SearchAttributeValue, TimerId,
     };
     use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
-    use aion_store::{EventStore, InMemoryStore, StoreError};
+    use aion_store::{EventStore, InMemoryStore, StoreError, WriteToken};
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
@@ -1018,7 +1018,9 @@ mod tests {
             workflow_started(1, &workflow_id)?,
             workflow_started(2, &workflow_id)?,
         ];
-        store.append(&workflow_id, &seeded, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &seeded, 0)
+            .await?;
 
         let mut recorder = Recorder::resume_at(workflow_id.clone(), store.clone(), 2);
         recorder
@@ -1039,7 +1041,9 @@ mod tests {
         let store = Arc::new(InMemoryStore::default());
         let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
         let rogue_event = workflow_started(1, &workflow_id)?;
-        store.append(&workflow_id, &[rogue_event], 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &[rogue_event], 0)
+            .await?;
 
         let error = recorder
             .record_timer_fired(recorded_at(2), TimerId::anonymous(2))

@@ -7,7 +7,7 @@ use chrono::Utc;
 use aion_core::{Event, Payload, RunId, status_from_events};
 use aion_package::Package;
 use aion_store::visibility::VisibilityStore;
-use aion_store::{EventStore, InMemoryStore, WriteToken};
+use aion_store::{EventStore, InMemoryStore};
 
 use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
@@ -543,12 +543,12 @@ fn started_run_id(
 mod tests {
     use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
 
-    use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus, WriteToken};
+    use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
     use aion_package::{
         BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ContentHash, DeclaredActivity, Manifest,
         ManifestVersion, Package, PackageBuilder,
     };
-    use aion_store::{EventStore, InMemoryStore, WriteToken};
+    use aion_store::{EventStore, InMemoryStore};
     use chrono::Utc;
     use serde_json::json;
 
