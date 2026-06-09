@@ -5,6 +5,7 @@ mod engine_nifs;
 pub mod handle;
 pub mod module;
 pub mod nif;
+pub mod nif_context;
 pub mod outcome;
 pub mod payload;
 pub mod workflow;

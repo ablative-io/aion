@@ -17,6 +17,7 @@ use crate::activity::bridge::activity_dispatcher;
 use super::nif::{Mfa, NifEntry};
 
 const FFI_MODULE: &str = "aion_flow_ffi";
+const NOT_YET_IMPLEMENTED: &str = "not_yet_implemented";
 
 thread_local! {
     static NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
@@ -113,12 +114,41 @@ fn run_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     }
 }
 
+fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = ctx.pid();
+    if args.len() > 255 {
+        return Err(Term::NIL);
+    }
+
+    Ok(error_result_term(NOT_YET_IMPLEMENTED).unwrap_or(Term::NIL))
+}
+
+fn dirty_entry(function: &str, arity: u8) -> NifEntry {
+    NifEntry::dirty(Mfa::new(FFI_MODULE, function, arity), not_yet_implemented)
+}
+
 /// Collect engine-owned NIF entries for `aion_flow_ffi`.
 pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
-    vec![NifEntry::dirty(
-        Mfa::new(FFI_MODULE, "run_activity", 3),
-        run_activity,
-    )]
+    vec![
+        NifEntry::dirty(Mfa::new(FFI_MODULE, "run_activity", 3), run_activity),
+        dirty_entry("now", 0),
+        dirty_entry("random", 0),
+        dirty_entry("random_int", 2),
+        dirty_entry("sleep", 1),
+        dirty_entry("start_timer", 2),
+        dirty_entry("cancel_timer", 1),
+        dirty_entry("with_timeout", 2),
+        dirty_entry("receive_signal", 2),
+        dirty_entry("send_signal", 3),
+        dirty_entry("register_query", 3),
+        dirty_entry("reply_query", 2),
+        dirty_entry("dispatch_query", 2),
+        dirty_entry("spawn_child", 3),
+        dirty_entry("await_child", 1),
+        dirty_entry("collect_all", 2),
+        dirty_entry("collect_race", 2),
+        dirty_entry("collect_map", 2),
+    ]
 }
 
 #[cfg(test)]
@@ -128,7 +158,10 @@ mod tests {
     use beamr::term::binary::Binary;
     use beamr::term::boxed::Tuple;
 
-    use super::{alloc_binary_term, clear_parked_heap, run_activity};
+    use super::{
+        NOT_YET_IMPLEMENTED, alloc_binary_term, clear_parked_heap, engine_nif_entries,
+        not_yet_implemented, run_activity,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -206,6 +239,37 @@ mod tests {
                 );
             }
             Err(_) => return Err("NIF should return Ok at the beamr level".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn registers_all_engine_nifs_as_unique_dirty_entries() {
+        let entries = engine_nif_entries();
+        let unique = entries
+            .iter()
+            .map(|entry| entry.mfa.display())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(entries.len(), 18);
+        assert_eq!(unique.len(), entries.len());
+        assert!(entries.iter().all(|entry| entry.is_dirty));
+    }
+
+    #[test]
+    fn unimplemented_stub_returns_standard_error_tuple() -> TestResult {
+        clear_parked_heap();
+        let mut ctx = ProcessContext::new();
+
+        let result = not_yet_implemented(&[], &mut ctx);
+
+        match result {
+            Ok(term) => {
+                let (tag, message) = decode_result_tuple(term)?;
+                assert_eq!(tag, "error");
+                assert_eq!(message, NOT_YET_IMPLEMENTED);
+            }
+            Err(_) => return Err("stub should return Ok at the beamr level".into()),
         }
         Ok(())
     }

@@ -68,6 +68,21 @@ impl Recorder {
         self.sequence.current()
     }
 
+    /// Reads this workflow's recorded history without appending new events.
+    ///
+    /// This narrow read seam lets replay contexts build a history cursor from the same store the
+    /// recorder writes to while preserving the recorder as the only event append authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError::Store`] when the backing event store rejects the read.
+    pub async fn read_history(&self) -> Result<Vec<Event>, DurabilityError> {
+        self.store
+            .read_history(&self.workflow_id)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Records workflow start.
     ///
     /// # Errors
