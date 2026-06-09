@@ -117,25 +117,25 @@ fn activity_error(reason: String) -> ActivityError {
     }
 }
 
-fn context_error_term(error: NifContextError) -> Term {
+fn context_error_term(error: &NifContextError) -> Term {
     match error.to_error_term() {
         Ok(term) => term,
         Err(_) => Term::NIL,
     }
 }
 
-fn run_recorded(resolution: Resolution) -> Result<Term, Term> {
+fn run_recorded(resolution: Resolution) -> Term {
     match resolution {
         Resolution::ActivityCompleted(payload) => {
-            Ok(ok_result_term(payload.bytes()).unwrap_or(Term::NIL))
+            ok_result_term(payload.bytes()).unwrap_or(Term::NIL)
         }
         Resolution::ActivityFailedTerminal(error) => {
-            Ok(error_result_term(&error.message).unwrap_or(Term::NIL))
+            error_result_term(&error.message).unwrap_or(Term::NIL)
         }
-        other => Ok(error_result_term(&format!(
+        other => error_result_term(&format!(
             "run_activity: recorded non-activity resolution {other:?}"
         ))
-        .unwrap_or(Term::NIL)),
+        .unwrap_or(Term::NIL),
     }
 }
 
@@ -148,7 +148,7 @@ fn record_started(
     let recorded_at = Utc::now();
     context
         .record_activity_scheduled_started(recorded_at, activity_id, activity_type, input)
-        .map_err(context_error_term)
+        .map_err(|error| context_error_term(&error))
 }
 
 fn record_completed(
@@ -159,7 +159,7 @@ fn record_completed(
     let recorded_at = Utc::now();
     context
         .record_activity_completed(recorded_at, activity_id, result)
-        .map_err(context_error_term)
+        .map_err(|error| context_error_term(&error))
 }
 
 fn record_failed(
@@ -170,7 +170,7 @@ fn record_failed(
     let recorded_at = Utc::now();
     context
         .record_activity_failed(recorded_at, activity_id, error, 1)
-        .map_err(context_error_term)
+        .map_err(|error| context_error_term(&error))
 }
 
 fn run_live(
@@ -200,23 +200,23 @@ fn run_live(
 fn run_activity_with_context_and_dispatcher(
     mut context: NifContext,
     dispatcher: Option<&dyn ActivityDispatcher>,
-    name: String,
-    input_text: String,
-    config: String,
+    name: &str,
+    input_text: &str,
+    config: &str,
 ) -> Result<Term, Term> {
-    let input_payload = json_payload(&input_text, "input")?;
+    let input_payload = json_payload(input_text, "input")?;
     let ordinal = context.next_activity_ordinal();
     let key = CorrelationKey::Activity(ordinal);
     let activity_id = ActivityId::from_sequence_position(ordinal);
     match context
         .resolve_command(Command::RunActivity {
             key,
-            activity_type: name.clone(),
+            activity_type: name.to_owned(),
             input: input_payload.clone(),
         })
-        .map_err(context_error_term)?
+        .map_err(|error| context_error_term(&error))?
     {
-        ResolveOutcome::Recorded(resolution) => run_recorded(resolution),
+        ResolveOutcome::Recorded(resolution) => Ok(run_recorded(resolution)),
         ResolveOutcome::ResumeLive => {
             let Some(dispatcher) = dispatcher else {
                 return Ok(error_result_term(
@@ -228,9 +228,9 @@ fn run_activity_with_context_and_dispatcher(
                 &context,
                 dispatcher,
                 activity_id,
-                &name,
-                &input_text,
-                &config,
+                name,
+                input_text,
+                config,
                 input_payload,
             )
         }
@@ -279,15 +279,15 @@ pub(super) fn run_activity_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
     };
     let runtime = match runtime_context() {
         Ok(runtime) => runtime,
-        Err(error) => return Ok(context_error_term(error)),
+        Err(error) => return Ok(context_error_term(&error)),
     };
     let context = match NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle) {
         Ok(context) => context,
-        Err(error) => return Ok(context_error_term(error)),
+        Err(error) => return Ok(context_error_term(&error)),
     };
     let dispatcher = activity_dispatcher();
 
-    run_activity_with_context_and_dispatcher(context, dispatcher.as_deref(), name, input, config)
+    run_activity_with_context_and_dispatcher(context, dispatcher.as_deref(), &name, &input, &config)
 }
 
 #[cfg(test)]
@@ -426,9 +426,9 @@ mod tests {
         let term = run_activity_with_context_and_dispatcher(
             context,
             Some(&dispatcher),
-            "greet".to_owned(),
-            "{\"name\":\"Ada\"}".to_owned(),
-            "{}".to_owned(),
+            "greet",
+            "{\"name\":\"Ada\"}",
+            "{}",
         )
         .map_err(|_| "activity NIF returned a beam-level error")?;
 
@@ -452,9 +452,9 @@ mod tests {
         let term = run_activity_with_context_and_dispatcher(
             context,
             Some(&dispatcher),
-            "greet".to_owned(),
-            "{\"name\":\"Ada\"}".to_owned(),
-            "{}".to_owned(),
+            "greet",
+            "{\"name\":\"Ada\"}",
+            "{}",
         )
         .map_err(|_| "activity NIF returned a beam-level error")?;
 
@@ -494,9 +494,9 @@ mod tests {
         let term = run_activity_with_context_and_dispatcher(
             context,
             Some(&dispatcher),
-            "greet".to_owned(),
-            "{\"name\":\"Ada\"}".to_owned(),
-            "{}".to_owned(),
+            "greet",
+            "{\"name\":\"Ada\"}",
+            "{}",
         )
         .map_err(|_| "activity NIF returned a beam-level error")?;
 
