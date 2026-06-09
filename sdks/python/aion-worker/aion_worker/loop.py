@@ -6,10 +6,11 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
+from .context import ActivityCancellationHandle, ActivityContext, WIRE_DEFAULT_ATTEMPT
 from .reconnect import (
     PendingCompletedReport,
     PendingFailedReport,
@@ -33,14 +34,16 @@ from .session import (
 logger = logging.getLogger(__name__)
 SessionFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
 SleepFactory: TypeAlias = Callable[[float], Awaitable[None]]
+ActivityExecutionContext: TypeAlias = ActivityContext
+_InFlightKey: TypeAlias = tuple[str, int]
 
 
-@dataclass(frozen=True)
-class ActivityExecutionContext:
-    """Minimal AR-007 dispatch context placeholder."""
+class ShutdownRequested:
+    """Sentinel returned when the serve loop observes shutdown."""
 
-    workflow_id: WorkflowId
-    activity_id: ActivityId
+
+class StreamFinished:
+    """Sentinel returned when the receive stream ends normally."""
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,7 @@ async def serve(
     session: WorkerSession,
     dispatcher: ActivityDispatcher,
     tracker: UnackedResultTracker | None = None,
+    shutdown: asyncio.Event | None = None,
 ) -> None:
     """Serve tasks from an already connected and registered session."""
 
@@ -83,27 +87,34 @@ async def serve(
     unacked = tracker if tracker is not None else UnackedResultTracker()
     semaphore = asyncio.Semaphore(config.max_concurrency)
     running: set[asyncio.Task[None]] = set()
+    in_flight: dict[_InFlightKey, ActivityCancellationHandle] = {}
     stream = session.receive_tasks().__aiter__()
 
     try:
-        while True:
+        while shutdown is None or not shutdown.is_set():
             await semaphore.acquire()
             try:
-                event = await stream.__anext__()
-            except StopAsyncIteration:
-                semaphore.release()
-                break
+                event = await _receive_next_or_shutdown(stream, shutdown)
             except Exception:
                 semaphore.release()
                 raise
+            if isinstance(event, ShutdownRequested):
+                semaphore.release()
+                break
+            if isinstance(event, StreamFinished):
+                semaphore.release()
+                break
             if isinstance(event, TaskReceived):
-                task = asyncio.create_task(_run_and_report(session, dispatcher, event.task, unacked, semaphore))
+                task = asyncio.create_task(_run_and_report(session, dispatcher, event.task, unacked, semaphore, in_flight))
                 running.add(task)
                 task.add_done_callback(running.discard)
             else:
                 semaphore.release()
-                _handle_control_event(event)
+                _handle_control_event(event, in_flight)
     finally:
+        if shutdown is not None and shutdown.is_set():
+            for handle in in_flight.values():
+                handle.cancel()
         if running:
             await asyncio.gather(*running)
 
@@ -114,6 +125,7 @@ async def connect_register_replay_and_serve(
     dispatcher: ActivityDispatcher,
     tracker: UnackedResultTracker | None = None,
     sleep: SleepFactory = asyncio.sleep,
+    shutdown: asyncio.Event | None = None,
 ) -> None:
     """Connect, register, replay unacked reports, then enter the serve loop."""
 
@@ -124,7 +136,7 @@ async def connect_register_replay_and_serve(
     backoff = ReconnectBackoff.from_config(config)
     dropped_attempt = 0
     last_drop: BaseException | None = None
-    while True:
+    while shutdown is None or not shutdown.is_set():
         session = await reconnect_register_and_replay(
             connect=connect,
             config=config,
@@ -137,7 +149,7 @@ async def connect_register_replay_and_serve(
             logger.info("Connected")
             logger.info("Registered activities: %s", ", ".join(activity_types))
             logger.info("Waiting for tasks")
-            await serve(config, session, dispatcher, unacked)
+            await serve(config, session, dispatcher, unacked, shutdown)
             return
         except Exception as exc:
             logger.exception("worker session dropped; reconnecting before receiving more tasks")
@@ -145,9 +157,7 @@ async def connect_register_replay_and_serve(
             dropped_attempt += 1
             last_drop = exc
             if dropped_attempt >= backoff.max_attempts:
-                raise ReconnectError(
-                    f"worker reconnect attempts exhausted for {config.endpoint}: {last_drop}"
-                ) from last_drop
+                raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {last_drop}") from last_drop
             delay = backoff.delay_for_attempt(dropped_attempt)
             logger.warning(
                 "Reconnecting in %ss (attempt %s/%s)",
@@ -156,6 +166,32 @@ async def connect_register_replay_and_serve(
                 backoff.max_attempts,
             )
             await sleep(delay)
+
+
+async def _receive_next_or_shutdown(
+    stream: AsyncIterator[WorkerSessionEvent],
+    shutdown: asyncio.Event | None,
+) -> WorkerSessionEvent | ShutdownRequested | StreamFinished:
+    next_task = asyncio.create_task(stream.__anext__())
+    if shutdown is None:
+        try:
+            return await next_task
+        except StopAsyncIteration:
+            return StreamFinished()
+    shutdown_task = asyncio.create_task(shutdown.wait())
+    try:
+        done, pending = await asyncio.wait({next_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED)
+        for pending_task in pending:
+            pending_task.cancel()
+        if shutdown_task in done:
+            next_task.cancel()
+            return ShutdownRequested()
+        try:
+            return next_task.result()
+        except StopAsyncIteration:
+            return StreamFinished()
+    finally:
+        shutdown_task.cancel()
 
 
 async def _close_session(session: WorkerSession) -> None:
@@ -176,7 +212,9 @@ async def _run_and_report(
     task: ActivityTask,
     tracker: UnackedResultTracker,
     semaphore: asyncio.Semaphore,
+    in_flight: dict[_InFlightKey, ActivityCancellationHandle],
 ) -> None:
+    key = _in_flight_key(task.workflow_id, task.activity_id)
     try:
         logger.info(
             "Received task %s for workflow %s",
@@ -185,7 +223,14 @@ async def _run_and_report(
             extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
         )
         started_at = time.perf_counter()
-        context = ActivityExecutionContext(workflow_id=task.workflow_id, activity_id=task.activity_id)
+        context = ActivityContext(
+            workflow_id=task.workflow_id,
+            activity_id=task.activity_id,
+            attempt=WIRE_DEFAULT_ATTEMPT,
+            session=session,
+            content_type=task.input.content_type,
+        )
+        in_flight[key] = ActivityCancellationHandle(context)
         outcome = await dispatcher.dispatch(task, context)
         await _report_outcome(session, task, outcome, tracker)
         elapsed_ms = round((time.perf_counter() - started_at) * 1000)
@@ -215,6 +260,7 @@ async def _run_and_report(
         )
         raise
     finally:
+        in_flight.pop(key, None)
         semaphore.release()
 
 
@@ -241,7 +287,7 @@ async def _report_outcome(
     logger.info("reported activity failure", extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type))
 
 
-def _handle_control_event(event: WorkerSessionEvent) -> None:
+def _handle_control_event(event: WorkerSessionEvent, in_flight: dict[_InFlightKey, ActivityCancellationHandle]) -> None:
     if isinstance(event, ActivityCancelled):
         logger.info(
             "received cooperative activity cancellation",
@@ -250,6 +296,13 @@ def _handle_control_event(event: WorkerSessionEvent) -> None:
                 "activity_id": event.activity_id.sequence_position,
             },
         )
+        handle = in_flight.get(_in_flight_key(event.workflow_id, event.activity_id))
+        if handle is not None:
+            handle.cancel()
+
+
+def _in_flight_key(workflow_id: WorkflowId, activity_id: ActivityId) -> _InFlightKey:
+    return (workflow_id.uuid, activity_id.sequence_position)
 
 
 def _log_fields(workflow_id: WorkflowId, activity_id: ActivityId, activity_type: str) -> dict[str, object]:
