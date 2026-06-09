@@ -320,7 +320,7 @@ mod tests {
 
     use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus};
     use aion_package::ContentHash;
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{EventStore, InMemoryStore, WriteToken};
     use beamr::atom::Atom;
     use beamr::native::ProcessContext;
     use beamr::term::Term;
@@ -416,7 +416,7 @@ mod tests {
         let registry = Arc::new(Registry::default());
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         if !history.is_empty() {
-            runtime.block_on(store.append(&workflow_id, history, 0))?;
+            runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, history, 0))?;
         }
         let head = u64::try_from(history.len())?;
         let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), head);

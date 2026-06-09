@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aion_store::{Event, EventStore, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus};
+use aion_store::{
+    Event, EventStore, StoreError, WorkflowFilter, WorkflowId, WorkflowStatus, WriteToken,
+};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
@@ -25,7 +27,9 @@ async fn read_history_returns_events_in_appended_order() -> Result<(), StoreErro
         workflow_completed(3, &workflow_id),
     ];
 
-    store.append(&workflow_id, &events, 0).await?;
+    store
+        .append(WriteToken::recorder(), &workflow_id, &events, 0)
+        .await?;
 
     assert_eq!(store.read_history(&workflow_id).await?, events);
     Ok(())
@@ -89,10 +93,16 @@ async fn status_projection_reports_running_and_completed() -> Result<(), StoreEr
     let completed = workflow_id(2);
 
     store
-        .append(&running, &[workflow_started(1, &running, "checkout")], 0)
+        .append(
+            WriteToken::recorder(),
+            &running,
+            &[workflow_started(1, &running, "checkout")],
+            0,
+        )
         .await?;
     store
         .append(
+            WriteToken::recorder(),
             &completed,
             &[
                 workflow_started(1, &completed, "checkout"),
@@ -134,10 +144,16 @@ async fn list_active_returns_only_running_workflows() -> Result<(), StoreError> 
     let failed = workflow_id(3);
 
     store
-        .append(&running, &[workflow_started(1, &running, "checkout")], 0)
+        .append(
+            WriteToken::recorder(),
+            &running,
+            &[workflow_started(1, &running, "checkout")],
+            0,
+        )
         .await?;
     store
         .append(
+            WriteToken::recorder(),
             &completed,
             &[
                 workflow_started(1, &completed, "checkout"),
@@ -148,6 +164,7 @@ async fn list_active_returns_only_running_workflows() -> Result<(), StoreError> 
         .await?;
     store
         .append(
+            WriteToken::recorder(),
             &failed,
             &[
                 workflow_started(1, &failed, "billing"),
@@ -291,10 +308,20 @@ async fn query_binds_filter_values_with_sql_metacharacters() -> Result<(), Store
     let workflow_type = "checkout' OR 1=1 --";
 
     store
-        .append(&tricky, &[workflow_started(1, &tricky, workflow_type)], 0)
+        .append(
+            WriteToken::recorder(),
+            &tricky,
+            &[workflow_started(1, &tricky, workflow_type)],
+            0,
+        )
         .await?;
     store
-        .append(&normal, &[workflow_started(1, &normal, "checkout")], 0)
+        .append(
+            WriteToken::recorder(),
+            &normal,
+            &[workflow_started(1, &normal, "checkout")],
+            0,
+        )
         .await?;
 
     let summaries = store
@@ -319,6 +346,7 @@ async fn seeded_store(name: &str) -> Result<(LibSqlStore, SeedIds), StoreError> 
 
     store
         .append(
+            WriteToken::recorder(),
             &ids.parent,
             &[
                 workflow_started(1, &ids.parent, "parent"),
@@ -329,6 +357,7 @@ async fn seeded_store(name: &str) -> Result<(LibSqlStore, SeedIds), StoreError> 
         .await?;
     store
         .append(
+            WriteToken::recorder(),
             &ids.running_checkout,
             &[workflow_started_at(
                 1,
@@ -341,6 +370,7 @@ async fn seeded_store(name: &str) -> Result<(LibSqlStore, SeedIds), StoreError> 
         .await?;
     store
         .append(
+            WriteToken::recorder(),
             &ids.completed_checkout,
             &[
                 workflow_started_at(1, &ids.completed_checkout, "checkout", 20),
@@ -351,6 +381,7 @@ async fn seeded_store(name: &str) -> Result<(LibSqlStore, SeedIds), StoreError> 
         .await?;
     store
         .append(
+            WriteToken::recorder(),
             &ids.failed_billing,
             &[
                 workflow_started_at(1, &ids.failed_billing, "billing", 30),

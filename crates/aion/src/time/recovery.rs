@@ -3,14 +3,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use aion_store::{EventStore, StoreError};
+use aion_store::{ReadableEventStore, StoreError};
 use chrono::{DateTime, Utc};
 
 use crate::time::{TimerService, TimerServiceError};
 
 /// Recovery service for durable timers that elapsed outside the live wheel path.
 pub struct TimerRecovery {
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn ReadableEventStore>,
     timer_service: Arc<TimerService>,
     recovery_interval: Duration,
     now: fn() -> DateTime<Utc>,
@@ -32,7 +32,7 @@ impl TimerRecovery {
     /// Creates a timer recovery service with an engine-configured recovery cadence.
     #[must_use]
     pub fn new(
-        store: Arc<dyn EventStore>,
+        store: Arc<dyn ReadableEventStore>,
         timer_service: Arc<TimerService>,
         recovery_interval: Duration,
     ) -> Self {
@@ -42,7 +42,7 @@ impl TimerRecovery {
     /// Creates a timer recovery service with an injected clock for deterministic ticking.
     #[must_use]
     pub fn with_clock(
-        store: Arc<dyn EventStore>,
+        store: Arc<dyn ReadableEventStore>,
         timer_service: Arc<TimerService>,
         recovery_interval: Duration,
         now: fn() -> DateTime<Utc>,
@@ -106,7 +106,7 @@ mod tests {
     use std::time::Duration;
 
     use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
-    use aion_store::{EventStore, InMemoryStore, StoreError};
+    use aion_store::{InMemoryStore, ReadableEventStore, StoreError};
     use chrono::{DateTime, Utc};
 
     use super::{TimerRecovery, TimerRecoveryError};
@@ -152,7 +152,7 @@ mod tests {
 
     fn recovery() -> (Arc<InMemoryStore>, Arc<FakeEngineHandle>, TimerRecovery) {
         let concrete_store = Arc::new(InMemoryStore::default());
-        let store: Arc<dyn EventStore> = concrete_store.clone();
+        let store: Arc<dyn ReadableEventStore> = concrete_store.clone();
         let engine = Arc::new(FakeEngineHandle::recording_to(store.clone()));
         let timer_service = Arc::new(TimerService::with_recorded_at(
             engine.clone(),

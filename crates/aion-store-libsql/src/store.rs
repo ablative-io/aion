@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use aion_store::{
-    Event, EventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
-    WorkflowSummary,
+    Event, ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter,
+    WorkflowId, WorkflowSummary, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -85,16 +85,20 @@ impl LibSqlStore {
 }
 
 #[async_trait]
-impl EventStore for LibSqlStore {
+impl WritableEventStore for LibSqlStore {
     async fn append(
         &self,
+        _token: WriteToken,
         workflow_id: &WorkflowId,
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError> {
         crate::append::append(self.connection(), workflow_id, events, expected_seq).await
     }
+}
 
+#[async_trait]
+impl ReadableEventStore for LibSqlStore {
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         crate::read::read_history(self.connection(), workflow_id).await
     }
@@ -134,7 +138,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use aion_store::{EventStore, StoreError};
+    use aion_store::{EventStore, ReadableEventStore, StoreError};
 
     use super::LibSqlStore;
 

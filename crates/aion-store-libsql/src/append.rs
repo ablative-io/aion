@@ -236,7 +236,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use aion_store::{Event, EventStore, StoreError, WorkflowId};
+    use aion_store::{Event, EventStore, StoreError, WorkflowId, WriteToken};
     use chrono::{DateTime, Utc};
     use libsql::params;
     use serde_json::{Value, json};
@@ -249,7 +249,9 @@ mod tests {
         let workflow_id = WorkflowId::new_v4();
         let events = vec![workflow_started(&workflow_id, 1, "first")?];
 
-        store.append(&workflow_id, &events, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &events, 0)
+            .await?;
 
         let stats = event_stats(store.connection(), &workflow_id).await?;
         assert_eq!(stats, EventStats { count: 1, head: 1 });
@@ -266,7 +268,9 @@ mod tests {
             signal_received(&workflow_id, 3, "done")?,
         ];
 
-        store.append(&workflow_id, &events, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &events, 0)
+            .await?;
 
         assert_eq!(
             stored_sequences(store.connection(), &workflow_id).await?,
@@ -284,7 +288,9 @@ mod tests {
         let store = open_test_store("empty-batch").await?;
         let workflow_id = WorkflowId::new_v4();
 
-        store.append(&workflow_id, &[], 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &[], 0)
+            .await?;
 
         assert_eq!(
             event_stats(store.connection(), &workflow_id).await?,
@@ -300,8 +306,12 @@ mod tests {
         let first = vec![workflow_started(&workflow_id, 1, "stale")?];
         let stale = vec![signal_received(&workflow_id, 2, "loser")?];
 
-        store.append(&workflow_id, &first, 0).await?;
-        let result = store.append(&workflow_id, &stale, 0).await;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &first, 0)
+            .await?;
+        let result = store
+            .append(WriteToken::recorder(), &workflow_id, &stale, 0)
+            .await;
 
         assert_sequence_conflict(&result, 0, 1)?;
         assert_eq!(
@@ -321,7 +331,9 @@ mod tests {
         let workflow_id = WorkflowId::new_v4();
         let events = vec![workflow_started(&workflow_id, 1, "ahead")?];
 
-        let result = store.append(&workflow_id, &events, 2).await;
+        let result = store
+            .append(WriteToken::recorder(), &workflow_id, &events, 2)
+            .await;
 
         assert_sequence_conflict(&result, 2, 0)?;
         assert_eq!(
@@ -340,7 +352,10 @@ mod tests {
             signal_received(&workflow_id, 3, "gap")?,
         ];
 
-        match store.append(&workflow_id, &events, 0).await {
+        match store
+            .append(WriteToken::recorder(), &workflow_id, &events, 0)
+            .await
+        {
             Err(StoreError::Backend(message)) => {
                 assert!(message.contains("event sequence must be contiguous"));
             }
@@ -374,11 +389,15 @@ mod tests {
 
         let first = tokio::spawn(async move {
             let events = vec![workflow_started(&first_workflow_id, 1, "first")?];
-            first_store.append(&first_workflow_id, &events, 0).await
+            first_store
+                .append(WriteToken::recorder(), &first_workflow_id, &events, 0)
+                .await
         });
         let second = tokio::spawn(async move {
             let events = vec![workflow_started(&second_workflow_id, 1, "second")?];
-            second_store.append(&second_workflow_id, &events, 0).await
+            second_store
+                .append(WriteToken::recorder(), &second_workflow_id, &events, 0)
+                .await
         });
 
         let first = join_append(first).await?;

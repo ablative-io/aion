@@ -311,7 +311,7 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
 
-    use aion_store::EventStore;
+    use aion_store::{EventStore, WriteToken};
 
     use super::*;
 
@@ -731,10 +731,15 @@ pub(crate) mod test_support {
 
             if let Some(store) = recorder_store {
                 let expected_seq = event.seq().saturating_sub(1);
-                futures::executor::block_on(store.append(workflow_id, &[event], expected_seq))
-                    .map_err(|error| EngineSeamError::Recorder {
-                        reason: error.to_string(),
-                    })?;
+                futures::executor::block_on(store.append(
+                    WriteToken::recorder(),
+                    workflow_id,
+                    &[event],
+                    expected_seq,
+                ))
+                .map_err(|error| EngineSeamError::Recorder {
+                    reason: error.to_string(),
+                })?;
             }
             Ok(())
         }

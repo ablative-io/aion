@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
-use aion_store::{EventStore, RunSummary, StoreError, TimerEntry};
+use aion_store::{
+    EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore,
+    WriteToken,
+};
 use async_trait::async_trait;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderValue, StatusCode};
@@ -385,22 +388,29 @@ impl std::fmt::Debug for InstrumentedEventStore {
 }
 
 #[async_trait]
-impl EventStore for InstrumentedEventStore {
+impl WritableEventStore for InstrumentedEventStore {
     async fn append(
         &self,
+        token: WriteToken,
         workflow_id: &WorkflowId,
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError> {
         let started = Instant::now();
-        let result = self.inner.append(workflow_id, events, expected_seq).await;
+        let result = self
+            .inner
+            .append(token, workflow_id, events, expected_seq)
+            .await;
         self.observe_since("append", started);
         if result.is_ok() {
             self.record_events(events);
         }
         result
     }
+}
 
+#[async_trait]
+impl ReadableEventStore for InstrumentedEventStore {
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let started = Instant::now();
         let result = self.inner.read_history(workflow_id).await;

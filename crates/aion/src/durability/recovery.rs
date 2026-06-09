@@ -259,7 +259,10 @@ mod tests {
     use aion_core::{
         Event, EventEnvelope, Payload, RunId, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
     };
-    use aion_store::{EventStore, RunSummary, StoreError, TimerEntry};
+    use aion_store::{
+        EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore,
+        WriteToken,
+    };
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use serde_json::json;
@@ -281,9 +284,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl EventStore for CountingStore {
+    impl WritableEventStore for CountingStore {
         async fn append(
             &self,
+            _token: WriteToken,
             workflow_id: &WorkflowId,
             events: &[Event],
             expected_seq: u64,
@@ -309,7 +313,10 @@ mod tests {
                 .extend(events.iter().cloned());
             Ok(())
         }
+    }
 
+    #[async_trait]
+    impl ReadableEventStore for CountingStore {
         async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
             self.reads
                 .lock()

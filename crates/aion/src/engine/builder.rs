@@ -852,7 +852,12 @@ mod tests {
         let store = InMemoryStore::default();
         let workflow_id = WorkflowId::new_v4();
         store
-            .append(&workflow_id, &[started(&workflow_id, "checkout")?], 0)
+            .append(
+                WriteToken::recorder(),
+                &workflow_id,
+                &[started(&workflow_id, "checkout")?],
+                0,
+            )
             .await?;
         let run_id = RunId::new_v4();
         let version = hash(7);

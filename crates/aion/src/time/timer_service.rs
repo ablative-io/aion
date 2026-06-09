@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
-use aion_store::{EventStore, StoreError};
+use aion_store::{ReadableEventStore, StoreError};
 use chrono::{DateTime, Utc};
 use dashmap::DashSet;
 
@@ -18,7 +18,7 @@ use crate::engine_seam::{
 /// timer row and later asynchronous arrival/cancellation history through the engine recorder seam.
 pub struct TimerService {
     engine: Arc<dyn EngineHandle>,
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn ReadableEventStore>,
     recorded_at: fn() -> DateTime<Utc>,
     terminal_updates: DashSet<(WorkflowId, TimerId)>,
 }
@@ -56,7 +56,7 @@ pub enum TimerServiceError {
 impl TimerService {
     /// Creates a durable timer service from the engine seam and timer store.
     #[must_use]
-    pub fn new(engine: Arc<dyn EngineHandle>, store: Arc<dyn EventStore>) -> Self {
+    pub fn new(engine: Arc<dyn EngineHandle>, store: Arc<dyn ReadableEventStore>) -> Self {
         Self::with_recorded_at(engine, store, Utc::now)
     }
 
@@ -64,7 +64,7 @@ impl TimerService {
     #[must_use]
     pub fn with_recorded_at(
         engine: Arc<dyn EngineHandle>,
-        store: Arc<dyn EventStore>,
+        store: Arc<dyn ReadableEventStore>,
         recorded_at: fn() -> DateTime<Utc>,
     ) -> Self {
         Self {
@@ -255,7 +255,7 @@ mod tests {
     use std::sync::Arc;
 
     use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
-    use aion_store::{EventStore, InMemoryStore, StoreError};
+    use aion_store::{InMemoryStore, ReadableEventStore, StoreError};
     use chrono::{DateTime, Utc};
 
     use super::{TimerService, TimerServiceError};
@@ -280,9 +280,10 @@ mod tests {
 
     fn service() -> (Arc<InMemoryStore>, Arc<FakeEngineHandle>, TimerService) {
         let concrete_store = Arc::new(InMemoryStore::default());
-        let store: Arc<dyn EventStore> = concrete_store.clone();
-        let engine = Arc::new(FakeEngineHandle::recording_to(store.clone()));
-        let service = TimerService::with_recorded_at(engine.clone(), store, recorded_at);
+        let recorder_store = concrete_store.clone();
+        let readable_store: Arc<dyn ReadableEventStore> = concrete_store.clone();
+        let engine = Arc::new(FakeEngineHandle::recording_to(recorder_store));
+        let service = TimerService::with_recorded_at(engine.clone(), readable_store, recorded_at);
         (concrete_store, engine, service)
     }
 

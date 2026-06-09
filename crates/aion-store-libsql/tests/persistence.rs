@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{
     Event, EventEnvelope, EventStore, Payload, StoreError, TimerEntry, TimerId, WorkflowId,
+    WriteToken,
 };
 use aion_store_libsql::LibSqlStore;
 use chrono::{DateTime, Utc};
@@ -38,8 +39,12 @@ async fn history_active_list_and_timers_survive_reopen() -> Result<(), StoreErro
 
     {
         let store = LibSqlStore::open(path.clone()).await?;
-        store.append(&running, &running_history, 0).await?;
-        store.append(&completed, &completed_history, 0).await?;
+        store
+            .append(WriteToken::recorder(), &running, &running_history, 0)
+            .await?;
+        store
+            .append(WriteToken::recorder(), &completed, &completed_history, 0)
+            .await?;
         store
             .schedule_timer(
                 &due_timer.workflow_id,
@@ -81,15 +86,21 @@ async fn sequence_guard_uses_persisted_head_after_reopen() -> Result<(), StoreEr
 
     {
         let store = LibSqlStore::open(path.clone()).await?;
-        store.append(&workflow, &first_batch, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow, &first_batch, 0)
+            .await?;
     }
 
     let reopened = LibSqlStore::open(path).await?;
-    reopened.append(&workflow, &second_batch, 2).await?;
+    reopened
+        .append(WriteToken::recorder(), &workflow, &second_batch, 2)
+        .await?;
 
     let stale_batch = vec![signal_received(4, &workflow, "stale")?];
     assert_eq!(
-        reopened.append(&workflow, &stale_batch, 0).await,
+        reopened
+            .append(WriteToken::recorder(), &workflow, &stale_batch, 0)
+            .await,
         Err(StoreError::SequenceConflict {
             expected: 0,
             found: 3,

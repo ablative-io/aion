@@ -7,8 +7,8 @@ use aion_core::{
     ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId,
     SearchAttributeSchema, SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
 };
-use aion_store::EventStore;
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
+use aion_store::{EventStore, WriteToken};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
@@ -22,6 +22,7 @@ pub struct Recorder {
     workflow_id: WorkflowId,
     store: Arc<dyn EventStore>,
     sequence: SequenceHead,
+    write_token: WriteToken,
     visibility: Option<RecorderVisibility>,
 }
 
@@ -43,6 +44,7 @@ impl Recorder {
         Self {
             workflow_id,
             store,
+            write_token: WriteToken::recorder(),
             sequence: SequenceHead::from_head(head),
             visibility: None,
         }
@@ -632,6 +634,7 @@ impl Recorder {
         let expected_seq = self.sequence.current();
         self.store
             .append(
+                self.write_token,
                 &self.workflow_id,
                 std::slice::from_ref(&event),
                 expected_seq,
@@ -721,7 +724,7 @@ mod tests {
         SearchAttributeValue, TimerId,
     };
     use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
-    use aion_store::{EventStore, InMemoryStore, StoreError};
+    use aion_store::{EventStore, InMemoryStore, StoreError, WriteToken};
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
@@ -1015,7 +1018,9 @@ mod tests {
             workflow_started(1, &workflow_id)?,
             workflow_started(2, &workflow_id)?,
         ];
-        store.append(&workflow_id, &seeded, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &seeded, 0)
+            .await?;
 
         let mut recorder = Recorder::resume_at(workflow_id.clone(), store.clone(), 2);
         recorder
@@ -1036,7 +1041,9 @@ mod tests {
         let store = Arc::new(InMemoryStore::default());
         let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
         let rogue_event = workflow_started(1, &workflow_id)?;
-        store.append(&workflow_id, &[rogue_event], 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id, &[rogue_event], 0)
+            .await?;
 
         let error = recorder
             .record_timer_fired(recorded_at(2), TimerId::anonymous(2))

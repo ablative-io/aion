@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aion_store::{Event, EventEnvelope, EventStore, Payload, StoreError, WorkflowId};
+use aion_store::{Event, EventEnvelope, EventStore, Payload, StoreError, WorkflowId, WriteToken};
 use aion_store_libsql::{LibSqlConfig, LibSqlMode, LibSqlStore};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -42,7 +42,9 @@ async fn embedded_replica_sync_round_trips_through_primary() -> Result<(), Store
         signal_received(2, &workflow_id, "remote-round-trip")?,
     ];
 
-    writer.append(&workflow_id, &events, 0).await?;
+    writer
+        .append(WriteToken::recorder(), &workflow_id, &events, 0)
+        .await?;
     assert_eq!(writer.read_history(&workflow_id).await?, events);
     writer.sync().await?;
 

@@ -383,7 +383,7 @@ mod tests {
 
     use aion_core::{ActivityId, Event, EventEnvelope, Payload, WorkflowStatus};
     use aion_package::ContentHash;
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{EventStore, InMemoryStore, WriteToken};
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
@@ -449,7 +449,7 @@ mod tests {
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         if !history.is_empty() {
-            runtime.block_on(store.append(&workflow_id, history, 0))?;
+            runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, history, 0))?;
         }
         let recorder = Recorder::resume_at(
             workflow_id.clone(),

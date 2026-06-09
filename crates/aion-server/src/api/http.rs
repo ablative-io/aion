@@ -748,7 +748,7 @@ mod tests {
         WireError, WireErrorCode, convert::ProtoPayload,
     };
     use aion_store::{
-        EventStore, InMemoryStore,
+        EventStore, InMemoryStore, WriteToken,
         visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore, WorkflowSummary},
     };
     use axum::{body, http::Request};
@@ -782,7 +782,14 @@ mod tests {
                 .build()
                 .await?,
         );
-        store.append(&workflow_id(), &[started_event()?], 0).await?;
+        store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id(),
+                &[started_event()?],
+                0,
+            )
+            .await?;
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
@@ -909,7 +916,14 @@ mod tests {
                 .build()
                 .await?,
         );
-        store.append(&workflow_id(), &[started_event()?], 0).await?;
+        store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id(),
+                &[started_event()?],
+                0,
+            )
+            .await?;
         let ownership = WorkflowOwnership::default();
         ownership.record(workflow_id(), NAMESPACE)?;
         let resolver =

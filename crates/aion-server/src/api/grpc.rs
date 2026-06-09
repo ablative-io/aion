@@ -624,7 +624,7 @@ mod tests {
         generated::workflow_service_server::WorkflowService,
     };
     use aion_store::{
-        EventStore, InMemoryStore,
+        EventStore, InMemoryStore, WriteToken,
         visibility::{VisibilityRecord, VisibilityStore},
     };
     use chrono::Utc;
@@ -657,7 +657,14 @@ mod tests {
                 .build()
                 .await?,
         );
-        store.append(&workflow_id(), &[started_event()?], 0).await?;
+        store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id(),
+                &[started_event()?],
+                0,
+            )
+            .await?;
         visibility_store
             .record_visibility(VisibilityRecord {
                 workflow_id: workflow_id(),

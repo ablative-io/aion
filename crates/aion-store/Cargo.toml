@@ -13,6 +13,9 @@ categories = ["asynchronous", "development-tools"]
 [lints]
 workspace = true
 
+[features]
+recorder-write-token = []
+
 [dependencies]
 aion-core = { version = "0.1.0", path = "../aion-core" }
 serde = { workspace = true, features = ["derive"] }
