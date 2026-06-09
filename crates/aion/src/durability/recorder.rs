@@ -7,8 +7,8 @@ use aion_core::{
     ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId,
     SearchAttributeSchema, SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
 };
-use aion_store::EventStore;
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
+use aion_store::{EventStore, WriteToken};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
@@ -22,6 +22,7 @@ pub struct Recorder {
     workflow_id: WorkflowId,
     store: Arc<dyn EventStore>,
     sequence: SequenceHead,
+    write_token: WriteToken,
     visibility: Option<RecorderVisibility>,
 }
 
@@ -43,6 +44,7 @@ impl Recorder {
         Self {
             workflow_id,
             store,
+            write_token: WriteToken::recorder(),
             sequence: SequenceHead::from_head(head),
             visibility: None,
         }
@@ -632,6 +634,7 @@ impl Recorder {
         let expected_seq = self.sequence.current();
         self.store
             .append(
+                self.write_token,
                 &self.workflow_id,
                 std::slice::from_ref(&event),
                 expected_seq,

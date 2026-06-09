@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aion_core::WorkflowId;
-use aion_store::EventStore;
+use aion_store::ReadableEventStore;
 use axum::extract::State;
 use axum::http::StatusCode;
 use tokio::time::timeout;
@@ -15,14 +15,14 @@ const READINESS_TIMEOUT: Duration = Duration::from_millis(100);
 /// Cloneable state used by health probe handlers.
 #[derive(Clone)]
 pub struct HealthState {
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn ReadableEventStore>,
     runtime_initialized: bool,
 }
 
 impl HealthState {
     /// Build health state from the store and runtime initialization flag.
     #[must_use]
-    pub fn new(store: Arc<dyn EventStore>, runtime_initialized: bool) -> Self {
+    pub fn new(store: Arc<dyn ReadableEventStore>, runtime_initialized: bool) -> Self {
         Self {
             store,
             runtime_initialized,

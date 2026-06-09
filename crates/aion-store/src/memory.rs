@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
-use crate::{EventStore, RunSummary, StoreError, TimerEntry};
+use crate::{
+    ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
+};
 
 /// Correct non-durable [`EventStore`] implementation for tests and backend equivalence.
 #[derive(Debug, Default)]
@@ -97,9 +99,10 @@ fn history_in_sequence_order(history: &[Event]) -> Vec<Event> {
 }
 
 #[async_trait]
-impl EventStore for InMemoryStore {
+impl WritableEventStore for InMemoryStore {
     async fn append(
         &self,
+        _token: WriteToken,
         workflow_id: &WorkflowId,
         events: &[Event],
         expected_seq: u64,
@@ -139,7 +142,10 @@ impl EventStore for InMemoryStore {
             .extend(events.iter().cloned());
         Ok(())
     }
+}
 
+#[async_trait]
+impl ReadableEventStore for InMemoryStore {
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let state = self.lock_state()?;
         Ok(state
@@ -251,7 +257,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::InMemoryStore;
-    use crate::{EventStore, StoreError, TimerEntry};
+    use crate::{ReadableEventStore, StoreError, TimerEntry, WritableEventStore, WriteToken};
+
+    fn write_token() -> WriteToken {
+        WriteToken::recorder()
+    }
 
     fn recorded_at(offset_seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0).unwrap_or_default()
@@ -325,10 +335,15 @@ mod tests {
         let second = workflow_completed(2, &workflow_id);
 
         store
-            .append(&workflow_id, std::slice::from_ref(&first), 0)
+            .append(write_token(), &workflow_id, std::slice::from_ref(&first), 0)
             .await?;
         store
-            .append(&workflow_id, std::slice::from_ref(&second), 1)
+            .append(
+                write_token(),
+                &workflow_id,
+                std::slice::from_ref(&second),
+                1,
+            )
             .await?;
 
         assert_eq!(store.read_history(&workflow_id).await?, vec![first, second]);
@@ -342,10 +357,16 @@ mod tests {
         let completed = workflow_id(2);
 
         store
-            .append(&running, &[workflow_started(1, &running, "checkout")], 0)
+            .append(
+                write_token(),
+                &running,
+                &[workflow_started(1, &running, "checkout")],
+                0,
+            )
             .await?;
         store
             .append(
+                write_token(),
                 &completed,
                 &[
                     workflow_started(1, &completed, "checkout"),
@@ -366,6 +387,7 @@ mod tests {
 
         store
             .append(
+                write_token(),
                 &workflow_id,
                 &[
                     workflow_started(1, &workflow_id, "checkout"),
@@ -394,6 +416,7 @@ mod tests {
 
         store
             .append(
+                write_token(),
                 &running_checkout,
                 &[workflow_started(1, &running_checkout, "checkout")],
                 0,
@@ -401,6 +424,7 @@ mod tests {
             .await?;
         store
             .append(
+                write_token(),
                 &completed_checkout,
                 &[
                     workflow_started(1, &completed_checkout, "checkout"),
@@ -411,6 +435,7 @@ mod tests {
             .await?;
         store
             .append(
+                write_token(),
                 &failed_billing,
                 &[
                     workflow_started(1, &failed_billing, "billing"),
@@ -442,10 +467,15 @@ mod tests {
         let first = workflow_started(1, &workflow_id, "checkout");
 
         store
-            .append(&workflow_id, std::slice::from_ref(&first), 0)
+            .append(write_token(), &workflow_id, std::slice::from_ref(&first), 0)
             .await?;
         let conflict = store
-            .append(&workflow_id, &[workflow_completed(2, &workflow_id)], 0)
+            .append(
+                write_token(),
+                &workflow_id,
+                &[workflow_completed(2, &workflow_id)],
+                0,
+            )
             .await;
 
         assert_eq!(
@@ -466,6 +496,7 @@ mod tests {
 
         let result = store
             .append(
+                write_token(),
                 &wf,
                 &[
                     workflow_started(1, &wf, "checkout"),
@@ -494,6 +525,7 @@ mod tests {
         let first = task::spawn(async move {
             first_store
                 .append(
+                    write_token(),
                     &first_workflow,
                     &[workflow_started(1, &first_workflow, "checkout")],
                     0,
@@ -503,6 +535,7 @@ mod tests {
         let second = task::spawn(async move {
             second_store
                 .append(
+                    write_token(),
                     &second_workflow,
                     &[workflow_completed(1, &second_workflow)],
                     0,

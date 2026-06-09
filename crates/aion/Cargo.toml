@@ -15,7 +15,7 @@ workspace = true
 
 [dependencies]
 aion-core = { version = "0.1.0", path = "../aion-core" }
-aion-store = { version = "0.1.0", path = "../aion-store" }
+aion-store = { version = "0.1.0", path = "../aion-store", features = ["recorder-write-token"] }
 aion-package = { version = "0.1.0", path = "../aion-package" }
 beamr = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

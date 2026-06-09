@@ -6,7 +6,7 @@
 //! target workflow's single AD Recorder. AT does not manage workflow process lifecycle,
 //! supervision, or module loading directly.
 
-use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId};
+use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId, WriteToken};
 
 use crate::Pid;
 use chrono::{DateTime, Utc};
@@ -731,10 +731,15 @@ pub(crate) mod test_support {
 
             if let Some(store) = recorder_store {
                 let expected_seq = event.seq().saturating_sub(1);
-                futures::executor::block_on(store.append(workflow_id, &[event], expected_seq))
-                    .map_err(|error| EngineSeamError::Recorder {
-                        reason: error.to_string(),
-                    })?;
+                futures::executor::block_on(store.append(
+                    WriteToken::recorder(),
+                    workflow_id,
+                    &[event],
+                    expected_seq,
+                ))
+                .map_err(|error| EngineSeamError::Recorder {
+                    reason: error.to_string(),
+                })?;
             }
             Ok(())
         }
@@ -743,7 +748,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{ContentType, Payload, WorkflowId};
+    use aion_core::{ContentType, Payload, WorkflowId, WriteToken};
 
     use super::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
     use super::{

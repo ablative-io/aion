@@ -7,7 +7,7 @@ use chrono::Utc;
 use aion_core::{Event, Payload, RunId, status_from_events};
 use aion_package::Package;
 use aion_store::visibility::VisibilityStore;
-use aion_store::{EventStore, InMemoryStore};
+use aion_store::{EventStore, InMemoryStore, WriteToken};
 
 use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
@@ -543,12 +543,12 @@ fn started_run_id(
 mod tests {
     use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
 
-    use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus, WriteToken};
     use aion_package::{
         BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ContentHash, DeclaredActivity, Manifest,
         ManifestVersion, Package, PackageBuilder,
     };
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{EventStore, InMemoryStore, WriteToken};
     use chrono::Utc;
     use serde_json::json;
 
@@ -843,7 +843,12 @@ mod tests {
         let store = InMemoryStore::default();
         let workflow_id = WorkflowId::new_v4();
         store
-            .append(&workflow_id, &[started(&workflow_id, "checkout")?], 0)
+            .append(
+                WriteToken::recorder(),
+                &workflow_id,
+                &[started(&workflow_id, "checkout")?],
+                0,
+            )
             .await?;
         let run_id = RunId::new_v4();
         let version = hash(7);

@@ -2,11 +2,13 @@
 
 use aion_core::WorkflowId;
 
-/// Errors returned by [`crate::EventStore`] implementations.
+/// Errors returned by [`crate::ReadableEventStore`] and [`crate::EventStore`] implementations.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// The workflow history head did not match the caller's optimistic-concurrency guard.
-    #[error("sequence conflict: expected workflow head {expected}, found {found}")]
+    #[error(
+        "sequence conflict (double-writer bug indicator): expected workflow head {expected}, found {found}"
+    )]
     SequenceConflict {
         /// Sequence number the caller expected to be the current workflow head.
         expected: u64,

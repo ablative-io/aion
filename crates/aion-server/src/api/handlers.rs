@@ -663,13 +663,13 @@ mod tests {
     use std::sync::Arc;
 
     use aion::{Engine, EngineBuilder};
-    use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowStatus, WriteToken};
     use aion_proto::{
         WireErrorCode,
         convert::{decode_core_value, decode_event, decode_workflow_summary, encode_core_value},
     };
     use aion_store::{
-        EventStore, InMemoryStore,
+        EventStore, InMemoryStore, WriteToken,
         visibility::{VisibilityRecord, VisibilityStore},
     };
     use chrono::Utc;
@@ -1204,7 +1204,9 @@ mod tests {
 
     async fn append_started(store: &dyn EventStore) -> Result<(), Box<dyn std::error::Error>> {
         let event = started_event()?;
-        store.append(&workflow_id(), &[event], 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id(), &[event], 0)
+            .await?;
         Ok(())
     }
 
@@ -1216,7 +1218,9 @@ mod tests {
                 result: payload()?,
             },
         ];
-        store.append(&workflow_id(), &events, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id(), &events, 0)
+            .await?;
         Ok(())
     }
 
@@ -1231,7 +1235,9 @@ mod tests {
                 },
             },
         ];
-        store.append(&workflow_id(), &events, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id(), &events, 0)
+            .await?;
         Ok(())
     }
 
@@ -1262,7 +1268,9 @@ mod tests {
                 parent_run_id: Some(first.clone()),
             },
         ];
-        store.append(&workflow_id(), &events, 0).await?;
+        store
+            .append(WriteToken::recorder(), &workflow_id(), &events, 0)
+            .await?;
         Ok(())
     }
 

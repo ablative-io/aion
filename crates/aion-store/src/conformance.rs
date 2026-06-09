@@ -53,7 +53,14 @@ async fn append_and_read_history_round_trip(store: Arc<dyn EventStore>) -> Resul
         signal_received(4, &workflow_id, "payment-authorized")?,
     ];
 
-    store.append(&workflow_id, &events, 0).await?;
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &workflow_id,
+            &events,
+            0,
+        )
+        .await?;
 
     expect_eq(
         store.read_history(&workflow_id).await?,
@@ -73,9 +80,21 @@ async fn multi_batch_append_advances_sequence(
     ];
 
     store
-        .append(&workflow_id, std::slice::from_ref(&first), 0)
+        .append(
+            crate::store::conformance_write_token(),
+            &workflow_id,
+            std::slice::from_ref(&first),
+            0,
+        )
         .await?;
-    store.append(&workflow_id, &second_batch, 1).await?;
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &workflow_id,
+            &second_batch,
+            1,
+        )
+        .await?;
 
     let mut expected = vec![first];
     expected.extend(second_batch);
@@ -94,9 +113,21 @@ async fn stale_expected_sequence_writes_nothing(
     let rejected = vec![workflow_completed(2, &workflow_id)?];
 
     store
-        .append(&workflow_id, std::slice::from_ref(&first), 0)
+        .append(
+            crate::store::conformance_write_token(),
+            &workflow_id,
+            std::slice::from_ref(&first),
+            0,
+        )
         .await?;
-    let conflict = store.append(&workflow_id, &rejected, 0).await;
+    let conflict = store
+        .append(
+            crate::store::conformance_write_token(),
+            &workflow_id,
+            &rejected,
+            0,
+        )
+        .await;
 
     expect_eq(
         conflict,
@@ -126,10 +157,16 @@ async fn list_active_reflects_projected_status(
     let continuing = workflow_id();
 
     store
-        .append(&running, &[workflow_started(1, &running, "checkout")?], 0)
+        .append(
+            crate::store::conformance_write_token(),
+            &running,
+            &[workflow_started(1, &running, "checkout")?],
+            0,
+        )
         .await?;
     store
         .append(
+            crate::store::conformance_write_token(),
             &completing,
             &[workflow_started(1, &completing, "billing")?],
             0,
@@ -137,6 +174,7 @@ async fn list_active_reflects_projected_status(
         .await?;
     store
         .append(
+            crate::store::conformance_write_token(),
             &continuing,
             &[workflow_started(1, &continuing, "fulfillment")?],
             0,
@@ -150,10 +188,16 @@ async fn list_active_reflects_projected_status(
     )?;
 
     store
-        .append(&completing, &[workflow_completed(2, &completing)?], 1)
+        .append(
+            crate::store::conformance_write_token(),
+            &completing,
+            &[workflow_completed(2, &completing)?],
+            1,
+        )
         .await?;
     store
         .append(
+            crate::store::conformance_write_token(),
             &continuing,
             &[workflow_continued_as_new(2, &continuing)?],
             1,
@@ -175,6 +219,7 @@ async fn query_applies_all_filters(store: Arc<dyn EventStore>) -> Result<(), Sto
 
     store
         .append(
+            crate::store::conformance_write_token(),
             &running_checkout,
             &[workflow_started_at(1, &running_checkout, "checkout", 1)?],
             0,
@@ -182,6 +227,7 @@ async fn query_applies_all_filters(store: Arc<dyn EventStore>) -> Result<(), Sto
         .await?;
     store
         .append(
+            crate::store::conformance_write_token(),
             &completed_checkout,
             &[
                 workflow_started_at(1, &completed_checkout, "checkout", 10)?,
@@ -192,6 +238,7 @@ async fn query_applies_all_filters(store: Arc<dyn EventStore>) -> Result<(), Sto
         .await?;
     store
         .append(
+            crate::store::conformance_write_token(),
             &failed_billing,
             &[
                 workflow_started_at(1, &failed_billing, "billing", 20)?,
@@ -277,6 +324,7 @@ async fn read_run_chain_orders_continuations(store: Arc<dyn EventStore>) -> Resu
     let second_continuation_run = run_id(102);
     store
         .append(
+            crate::store::conformance_write_token(),
             &one_continuation,
             &[
                 workflow_started_with_run(
@@ -331,6 +379,7 @@ async fn read_run_chain_single_and_multi_continuations(
     let single_run = run_id(1);
     store
         .append(
+            crate::store::conformance_write_token(),
             &single,
             &[workflow_started_with_run(
                 1,
@@ -360,6 +409,7 @@ async fn read_run_chain_single_and_multi_continuations(
     let third = run_id(13);
     store
         .append(
+            crate::store::conformance_write_token(),
             &workflow,
             &[
                 workflow_started_with_run(1, &workflow, "checkout", &first, None)?,

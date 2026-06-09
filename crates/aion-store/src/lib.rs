@@ -14,7 +14,7 @@ pub use aion_core::{
 };
 pub use error::StoreError;
 pub use memory::InMemoryStore;
-pub use store::{EventStore, RunSummary};
+pub use store::{EventStore, ReadableEventStore, RunSummary, WritableEventStore, WriteToken};
 pub use timer::TimerEntry;
 pub use visibility::{
     ListWorkflowsFilter, SearchAttributePredicate, VisibilityRecord, VisibilityStore,

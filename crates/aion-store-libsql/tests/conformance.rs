@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{
-    Event, EventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
-    WorkflowSummary, conformance::run_event_store_suite,
+    Event, EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId,
+    WorkflowFilter, WorkflowId, WorkflowSummary, WritableEventStore, WriteToken,
+    conformance::run_event_store_suite,
 };
 use aion_store_libsql::LibSqlStore;
 use async_trait::async_trait;
@@ -39,18 +40,22 @@ impl StoreOpenResult {
 }
 
 #[async_trait]
-impl EventStore for StoreOpenResult {
+impl WritableEventStore for StoreOpenResult {
     async fn append(
         &self,
+        token: WriteToken,
         workflow_id: &WorkflowId,
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError> {
         self.store()?
-            .append(workflow_id, events, expected_seq)
+            .append(token, workflow_id, events, expected_seq)
             .await
     }
+}
 
+#[async_trait]
+impl ReadableEventStore for StoreOpenResult {
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         self.store()?.read_history(workflow_id).await
     }

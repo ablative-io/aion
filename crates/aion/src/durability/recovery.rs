@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use aion_core::{Event, RunId, WorkflowId};
 use aion_package::ContentHash;
-use aion_store::EventStore;
+use aion_store::ReadableEventStore;
 use chrono::{DateTime, Utc};
 
 use crate::durability::{
@@ -94,7 +94,7 @@ pub struct RecoveryReport {
 /// Returns an error only when the store cannot enumerate active workflows. Per-workflow read,
 /// planning, replay, and deterministic-failure-recording errors are captured in the returned report.
 pub async fn recover(
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn ReadableEventStore>,
     executor: &dyn LiveExecutor,
     driver: &dyn RecoveryDriver,
 ) -> Result<Vec<RecoveryReport>, DurabilityError> {
@@ -118,7 +118,7 @@ pub async fn recover(
 }
 
 async fn recover_one(
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn ReadableEventStore>,
     executor: &dyn LiveExecutor,
     driver: &dyn RecoveryDriver,
     workflow_id: &WorkflowId,
@@ -259,7 +259,7 @@ mod tests {
     use aion_core::{
         Event, EventEnvelope, Payload, RunId, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
     };
-    use aion_store::{EventStore, RunSummary, StoreError, TimerEntry};
+    use aion_store::{ReadableEventStore, RunSummary, StoreError, TimerEntry};
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use serde_json::json;
@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl EventStore for CountingStore {
+    impl ReadableEventStore for CountingStore {
         async fn append(
             &self,
             workflow_id: &WorkflowId,
@@ -483,7 +483,7 @@ mod tests {
                 (first.clone(), vec![started_event(first.clone())?]),
                 (second.clone(), vec![started_event(second.clone())?]),
             ]);
-        let store_for_recovery: Arc<dyn EventStore> = store.clone();
+        let store_for_recovery: Arc<dyn ReadableEventStore> = store.clone();
 
         let report = recover(store_for_recovery, &NoLiveExecutor, &StaticDriver).await?;
 

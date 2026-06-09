@@ -297,9 +297,9 @@ pub(super) fn run_activity_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use aion_core::{Event, EventEnvelope, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, WorkflowStatus, WriteToken};
     use aion_package::ContentHash;
-    use aion_store::{EventStore, InMemoryStore};
+    use aion_store::{EventStore, InMemoryStore, WriteToken};
     use beamr::term::binary::Binary;
     use beamr::term::boxed::Tuple;
     use chrono::{TimeZone, Utc};
@@ -383,7 +383,7 @@ mod tests {
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         if !history.is_empty() {
-            runtime.block_on(store.append(&workflow_id, history, 0))?;
+            runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, history, 0))?;
         }
         let recorder = Recorder::resume_at(
             workflow_id.clone(),
