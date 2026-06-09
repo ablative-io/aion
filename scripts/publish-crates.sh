@@ -145,12 +145,12 @@ WARNING
   fi
 
   for crate in "${PUBLISH_ORDER[@]}"; do
-    echo "==> Publishing ${crate} (${mode})"
+    echo "==> Running cargo publish for ${crate} (${mode})"
     if cargo publish -p "$crate" "${publish_args[@]}"; then
-      echo "==> Published ${crate} (${mode})"
+      echo "==> cargo publish succeeded for ${crate} (${mode})"
     else
       status=$?
-      echo "error: publishing ${crate} (${mode}) failed with exit status ${status}" >&2
+      echo "error: cargo publish failed for ${crate} (${mode}) with exit status ${status}" >&2
       exit "$status"
     fi
   done
