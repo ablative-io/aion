@@ -1,6 +1,8 @@
-//! pub mod + re-exports only
+//! Activity dispatch bridges and helpers.
 
+/// Shared dispatcher installation and invocation bridge.
 pub mod bridge;
+/// Activity outcome dispatch and error propagation helpers.
 pub mod dispatch;
 
 pub use bridge::{ActivityDispatcher, install_activity_dispatcher};

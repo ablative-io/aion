@@ -1,5 +1,6 @@
-//! child-workflow module declarations + re-exports
+//! Child-workflow spawning and completion helpers.
 
+/// Child-workflow spawn, await, and mailbox recording primitives.
 pub mod spawn;
 
 pub use spawn::{
