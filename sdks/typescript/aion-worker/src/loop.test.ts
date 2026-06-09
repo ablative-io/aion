@@ -23,9 +23,13 @@ class ArraySession implements WorkerSession {
 
 	public constructor(private readonly events: readonly WorkerSessionEvent[]) {}
 
-	public async handshake(): Promise<void> {}
+	public handshake(): Promise<void> {
+		return Promise.resolve();
+	}
 
-	public async register(): Promise<void> {}
+	public register(): Promise<void> {
+		return Promise.resolve();
+	}
 
 	public async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
 		for (const event of this.events) {
@@ -48,9 +52,13 @@ class ArraySession implements WorkerSession {
 		this.reports.push(activityId);
 	}
 
-	public async sendHeartbeat(): Promise<void> {}
+	public sendHeartbeat(): Promise<void> {
+		return Promise.resolve();
+	}
 
-	public async close(): Promise<void> {}
+	public close(): Promise<void> {
+		return Promise.resolve();
+	}
 }
 
 class SlowDispatcher implements ActivityDispatcher {
@@ -112,15 +120,15 @@ describe("runWorkerLoop", () => {
 		await runWorkerLoop({
 			config: config(1),
 			session,
-			dispatcher,
-			logger: {
-				info: () => {},
-				warn: () => {},
-				error: (message, fields) => {
-					warnings.push(`${message}:${String(fields?.retryable)}`);
+				dispatcher,
+				logger: {
+					info: () => undefined,
+					warn: (message, fields) => {
+						warnings.push(`${message}:${String(fields?.retryable)}`);
+					},
+					error: () => undefined,
 				},
-			},
-		});
+			});
 
 		expect(session.reports).toEqual(["1"]);
 		expect(warnings).toEqual([
