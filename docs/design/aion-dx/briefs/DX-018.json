@@ -1,0 +1,84 @@
+{
+  "id": "DX-018",
+  "cluster": "aion-dx",
+  "title": "Decode JSON payloads inline in CLI describe output",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The CLI describe command shows event history payloads as raw byte arrays ({\"bytes\": [123,34,...], \"content_type\": \"Json\"}) instead of decoded JSON. The CLI already decodes summary fields but not event payloads, making it impossible to inspect workflow state without manually converting byte arrays. Operators need to see decoded JSON inline to debug workflows effectively.",
+  "task": "Update the CLI describe output formatting to detect payloads with content_type Json and decode the bytes to inline JSON. For non-JSON content types, fall back to hex or base64 representation. Add a --raw flag to preserve the current byte-array output for scripting or debugging purposes.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Detect Json content_type and decode bytes inline",
+      "spec": "WHEN the CLI describe command renders an event payload with content_type Json, THE SYSTEM SHALL decode the bytes field as UTF-8 JSON and display the decoded JSON inline instead of the raw byte array.",
+      "acceptance": [
+        "Event payloads with content_type Json display as readable JSON objects/values.",
+        "Nested JSON structures are properly formatted.",
+        "ActivityScheduled, ActivityCompleted, WorkflowCompleted payloads all render as decoded JSON.",
+        "Invalid UTF-8 or malformed JSON falls back gracefully without crashing."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-cli/src/output.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Fallback to hex or base64 for non-JSON payloads",
+      "spec": "WHEN the CLI describe command renders an event payload with a content_type other than Json, THE SYSTEM SHALL display the bytes as hex-encoded or base64-encoded string with the content_type label.",
+      "acceptance": [
+        "Non-JSON payloads display with their content_type label and encoded bytes.",
+        "The encoding format (hex or base64) is clearly indicated in the output.",
+        "Empty payloads render as a clear empty indicator, not an empty byte array."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-cli/src/output.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Raw flag preserves current byte output",
+      "spec": "WHEN the user passes --raw to the describe command, THE SYSTEM SHALL display payloads in the current raw byte-array format, bypassing JSON decoding.",
+      "acceptance": [
+        "aion describe <id> --raw shows the original {\"bytes\": [...], \"content_type\": \"Json\"} format.",
+        "aion describe <id> (without --raw) shows decoded JSON.",
+        "--raw flag is documented in --help output.",
+        "The flag does not affect non-payload fields."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-cli/src/main.rs",
+          "crates/aion-cli/src/output.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the wire format or API response schema — decoding is CLI-side only.",
+    "SHALL NOT change the Payload type in aion-core.",
+    "SHALL NOT add heavy formatting dependencies (e.g. no colored JSON libraries) — keep the CLI lean.",
+    "SHALL handle malformed payloads gracefully without panicking."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "Manual test: describe a completed hello-world workflow shows decoded JSON payloads.",
+    "Manual test: describe --raw shows raw byte arrays.",
+    "Manual test: describe a workflow with non-JSON payloads shows hex/base64 fallback."
+  ]
+}

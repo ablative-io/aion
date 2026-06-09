@@ -1,0 +1,84 @@
+{
+  "id": "DX-019",
+  "cluster": "aion-dx",
+  "title": "Server --help and zero-config workflow loading",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "Running aion-server --help outputs a JSON error log instead of clean help text, making it impossible to discover available flags. Additionally, the --workflow-package flag crashes when used without --config because the visibility store is not configured in zero-config mode. These two issues block the getting-started experience: a developer cannot discover how to run the server or load a workflow without a full config file.",
+  "task": "Fix the server binary so --help produces clean clap-formatted help text instead of JSON error output. Ensure --workflow-package works without --config by falling back to in-memory defaults for the visibility store and any other required configuration. Document the --workflow-package flag in dev-config.toml as a comment showing the zero-config usage pattern.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Proper --help output via clap",
+      "spec": "WHEN a user runs aion-server --help, THE SYSTEM SHALL display clean, clap-formatted help text listing all available flags and subcommands. THE SYSTEM SHALL NOT emit JSON error logs or tracing output as part of the help text.",
+      "acceptance": [
+        "aion-server --help prints structured help text with flag descriptions.",
+        "No JSON log lines appear in the help output.",
+        "No tracing initialization occurs before help is displayed.",
+        "Exit code is 0 after printing help."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/main.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Workflow-package works without --config",
+      "spec": "WHEN a user runs aion-server --workflow-package <path> without providing --config, THE SYSTEM SHALL start successfully using in-memory defaults for the event store, visibility store, and any other required configuration rather than crashing.",
+      "acceptance": [
+        "aion-server --workflow-package hello-world.aion starts without error.",
+        "The server loads the workflow package and registers the workflow type.",
+        "An in-memory event store and visibility store are used when no config file is provided.",
+        "The server is usable for local development without creating a config file."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/main.rs",
+          "crates/aion-server/src/config/mod.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Document --workflow-package in dev-config.toml",
+      "spec": "THE SYSTEM SHALL add a comment block to dev-config.toml showing the zero-config usage pattern with --workflow-package, so developers can discover it without reading source code.",
+      "acceptance": [
+        "dev-config.toml contains a comment block explaining --workflow-package usage.",
+        "The comment shows the minimal command to start the server with a workflow package.",
+        "The comment explains that --config is optional when using --workflow-package."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "dev-config.toml"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the config file format or break existing config files.",
+    "SHALL NOT remove the --config flag or change its behavior when provided.",
+    "SHALL NOT change the default production behavior — zero-config is a dev convenience only.",
+    "SHALL NOT add new CLI frameworks — continue using clap."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo fmt --check passes.",
+    "cargo test --workspace passes.",
+    "Manual test: aion-server --help prints clean help text with no JSON logs.",
+    "Manual test: aion-server --workflow-package hello-world.aion starts without --config.",
+    "dev-config.toml contains --workflow-package documentation comment."
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "id": "DX-020",
+  "cluster": "aion-dx",
+  "title": "Publish SDKs to language package registries",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The aion_flow Gleam SDK, Python SDKs (worker + client), and TypeScript SDKs (worker + client) are not published to their respective package registries (Hex, PyPI, npm). The three worker SDKs (Python, TypeScript, Rust) also lack README files. Until the SDKs are published and documented, developers cannot add Aion as a dependency in their projects through standard package management workflows.",
+  "task": "Write README files for the three worker SDKs that lack them. Prepare and publish aion_flow to Hex, the Python packages (aion-worker, aion-client) to PyPI, and the TypeScript packages (aion-worker, aion-client) to npm. Ensure each package has correct metadata (name, version, description, license, repository URL) before publishing.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Worker SDK READMEs",
+      "spec": "THE SYSTEM SHALL create README.md files for the Python worker SDK, TypeScript worker SDK, and Rust worker SDK. Each README SHALL contain: a one-line description, installation instructions, a minimal usage example showing activity registration and worker startup, and a link to the main Aion repository.",
+      "acceptance": [
+        "sdks/python/aion-worker/README.md exists with installation and usage example.",
+        "sdks/typescript/aion-worker/README.md exists with installation and usage example.",
+        "crates/aion-worker/README.md exists with installation and usage example.",
+        "Each README shows how to register an activity and start the worker.",
+        "Each README includes the correct package name for its registry."
+      ],
+      "files": {
+        "create": [
+          "sdks/python/aion-worker/README.md",
+          "sdks/typescript/aion-worker/README.md",
+          "crates/aion-worker/README.md"
+        ],
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Publish Python packages to PyPI",
+      "spec": "THE SYSTEM SHALL publish aion-worker and aion-client Python packages to PyPI with correct metadata in pyproject.toml including name, version, description, license, repository URL, and Python version constraints.",
+      "acceptance": [
+        "aion-worker is installable via pip install aion-worker.",
+        "aion-client is installable via pip install aion-client.",
+        "pyproject.toml for each package has correct name, version, description, and license.",
+        "Both packages include their README as the long description."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "sdks/python/aion-worker/pyproject.toml",
+          "sdks/python/aion-client/pyproject.toml"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Publish TypeScript packages to npm",
+      "spec": "THE SYSTEM SHALL publish aion-worker and aion-client TypeScript packages to npm with correct metadata in package.json including name, version, description, license, repository URL, and main/types entry points.",
+      "acceptance": [
+        "aion-worker is installable via npm install @aion/worker.",
+        "aion-client is installable via npm install @aion/client.",
+        "package.json for each package has correct name, version, description, and license.",
+        "TypeScript type declarations are included in the published package."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "sdks/typescript/aion-worker/package.json",
+          "sdks/typescript/aion-client/package.json"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Publish aion_flow to Hex",
+      "spec": "THE SYSTEM SHALL publish the aion_flow Gleam package to Hex with correct metadata in gleam.toml including name, version, description, licences, and repository link.",
+      "acceptance": [
+        "aion_flow is installable via gleam add aion_flow.",
+        "gleam.toml has correct name, version, description, and licences fields.",
+        "The package includes all source files under src/.",
+        "The published version matches the current source."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "gleam/aion_flow/gleam.toml"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change any SDK source code — only metadata files and READMEs.",
+    "SHALL NOT publish packages with version 1.0.0 — use 0.x.y pre-release versions.",
+    "SHALL NOT include test files, build artifacts, or example code in published packages.",
+    "SHALL use the @aion npm scope for TypeScript packages.",
+    "SHALL coordinate package names to avoid conflicts with existing registry entries."
+  ],
+  "verification": [
+    "All three worker SDK README.md files exist and contain installation + usage sections.",
+    "pyproject.toml files pass python -m build --sdist --wheel dry run.",
+    "package.json files pass npm pack --dry-run without errors.",
+    "gleam.toml passes gleam publish --dry-run.",
+    "No test files or build artifacts are included in package manifests."
+  ]
+}
