@@ -330,4 +330,5 @@ impl EngineHandle for StartResumeEngineHandle<'_> {
 }
 
 #[cfg(test)]
+#[path = "start_tests.rs"]
 mod start_tests;

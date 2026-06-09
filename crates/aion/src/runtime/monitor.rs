@@ -62,6 +62,10 @@ impl RuntimeHandle {
     }
 
     /// Test-only monitor installation status probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the runtime rejects the monitor installation.
     #[cfg(test)]
     pub fn monitor_process_for_test<F>(
         self: &Arc<Self>,
