@@ -529,7 +529,7 @@ impl RuntimeHandle {
             if self.scheduler.trap_exit(pid).is_some() {
                 return Ok(());
             }
-            self.sleep_signal_delivery_backoff(self.signal_delivery.initial_backoff);
+            sleep_signal_delivery_backoff(self.signal_delivery.initial_backoff);
         }
         self.scheduler
             .trap_exit(pid)
@@ -562,7 +562,7 @@ impl RuntimeHandle {
                 // enqueue_atom_message only accepts a Present slot, so an alive
                 // just-spawned or currently executing process can transiently
                 // return false even after the liveness/ready gate above.
-                self.sleep_signal_delivery_backoff(backoff);
+                sleep_signal_delivery_backoff(backoff);
                 backoff = next_signal_delivery_backoff(backoff, self.signal_delivery.max_backoff);
             }
         }
@@ -570,14 +570,6 @@ impl RuntimeHandle {
         Err(runtime_error(format!(
             "failed to deliver signal to workflow process {workflow_pid} after {attempts} attempts"
         )))
-    }
-
-    fn sleep_signal_delivery_backoff(&self, duration: std::time::Duration) {
-        if duration.is_zero() {
-            std::thread::yield_now();
-        } else {
-            std::thread::sleep(duration);
-        }
     }
 
     /// Register a test module whose exported function waits indefinitely.
@@ -744,6 +736,14 @@ fn next_signal_delivery_backoff(
 ) -> std::time::Duration {
     let doubled = current.saturating_mul(2);
     if doubled > max { max } else { doubled }
+}
+
+fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
+    if duration.is_zero() {
+        std::thread::yield_now();
+    } else {
+        std::thread::sleep(duration);
+    }
 }
 
 fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
