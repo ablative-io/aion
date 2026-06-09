@@ -10,7 +10,7 @@ npm install @aion/worker
 
 ## Minimal worker
 
-Define activities, pass them to a worker, and start the async run loop. Provide either a `clientFactory` for the gRPC transport or a custom `sessionFactory` for your runtime.
+Define activities, pass them to a worker, and start the async run loop. Provide either a `clientFactory` for the gRPC transport or a custom `sessionFactory` for your runtime; the example below uses a placeholder factory for brevity.
 
 ```ts
 import { Worker, defineActivity, type WorkerSessionFactory } from "@aion/worker";
@@ -34,7 +34,7 @@ const config = {
 
 const sessionFactory: WorkerSessionFactory = async (workerConfig) => {
   // Return a WorkerSession connected to workerConfig.endpoint for your transport.
-  return connectWorkerSession(workerConfig);
+  throw new Error(`connect WorkerSession for ${workerConfig.endpoint}`);
 };
 
 await new Worker(config, [greet], { sessionFactory }).run();
