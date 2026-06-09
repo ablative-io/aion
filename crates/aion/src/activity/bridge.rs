@@ -1,4 +1,4 @@
-//! Global activity dispatch bridge for the `aion_flow_ffi:run_activity` NIF.
+//! Global activity dispatch bridge for the `aion_flow_ffi` activity NIFs.
 //!
 //! The bridge decouples the raw NIF function pointer (which cannot capture
 //! state) from the engine's activity execution path. A concrete dispatcher
@@ -7,14 +7,16 @@
 
 use std::sync::{Arc, OnceLock};
 
+use futures::future::{BoxFuture, ready};
+
 /// Executes an activity request originating from workflow code.
 ///
 /// Implementations receive the activity name, JSON-encoded input, and
 /// JSON-encoded config as strings — the same wire format that the Gleam SDK
-/// sends through the `aion_flow_ffi:run_activity/3` binding. The return
+/// sends through the `aion_flow_ffi:dispatch_activity/3` binding. The return
 /// value is the JSON-encoded activity result or a prefixed error string
 /// matching the SDK's error-decoding convention.
-pub trait ActivityDispatcher: Send + Sync {
+pub trait ActivityDispatcher: Send + Sync + 'static {
     /// Dispatch the named activity and block until completion.
     ///
     /// Returns `Ok(encoded_output)` on success or `Err(error_string)` on
@@ -46,6 +48,27 @@ pub trait ActivityDispatcher: Send + Sync {
     ) -> Result<String, String> {
         let _ = caller_pid;
         self.dispatch(name, input, config)
+    }
+
+    /// Dispatch the named activity from a Tokio task.
+    ///
+    /// The default keeps existing synchronous dispatchers and tests source
+    /// compatible while moving the blocking wait off BEAM scheduler threads.
+    /// Future nonblocking dispatchers can override this method directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::dispatch_from_process`].
+    fn dispatch_async_from_process<'a>(
+        &'a self,
+        name: &'a str,
+        input: &'a str,
+        config: &'a str,
+        caller_pid: Option<u64>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(ready(
+            self.dispatch_from_process(name, input, config, caller_pid),
+        ))
     }
 }
 

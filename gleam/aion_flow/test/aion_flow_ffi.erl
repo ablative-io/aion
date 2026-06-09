@@ -7,7 +7,8 @@
 -module(aion_flow_ffi).
 
 -export([
-    run_activity/3,
+    dispatch_activity/3,
+    await_activity_result/1,
     now/0,
     random/0,
     random_int/2,
@@ -35,11 +36,20 @@
 
 -define(DEFAULT_NOW, 1700000000000).
 
-run_activity(Name, Input, Config) ->
+dispatch_activity(Name, Input, Config) ->
     observe(<<"activity:", Name/binary, ":", Input/binary>>),
-    case lookup_mock(Name) of
+    Result = case lookup_mock(Name) of
         {ok, Handler} -> Handler(Input);
         error -> legacy_run_activity(Name, Input, Config)
+    end,
+    CorrelationId = next_activity_correlation(),
+    erlang:put({aion_activity_result, self(), CorrelationId}, Result),
+    {ok, CorrelationId}.
+
+await_activity_result(CorrelationId) ->
+    case erlang:get({aion_activity_result, self(), CorrelationId}) of
+        undefined -> {error, <<"terminal:unknown activity correlation">>};
+        Result -> Result
     end.
 
 now() ->
@@ -229,7 +239,16 @@ collect_all_loop([Spec | Rest], Acc) ->
 activity_result(Spec) ->
     Name = extract_string(Spec, <<"name">>),
     Input = extract_string(Spec, <<"input">>),
-    run_activity(Name, Input, <<"{}">>).
+    case dispatch_activity(Name, Input, <<"{}">>) of
+        {ok, CorrelationId} -> await_activity_result(CorrelationId);
+        {error, Reason} -> {error, Reason}
+    end.
+
+next_activity_correlation() ->
+    Key = {aion_activity_correlation, self()},
+    Current = case erlang:get(Key) of undefined -> 0; Value -> Value end,
+    erlang:put(Key, Current + 1),
+    <<"activity:", (integer_to_binary(Current))/binary>>.
 
 earliest_activity([First | Rest]) ->
     lists:foldl(

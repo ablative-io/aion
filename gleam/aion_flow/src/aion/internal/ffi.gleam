@@ -12,12 +12,15 @@
 //// encoded payload/config strings, handles, and `Result(String, String)` error
 //// seams.
 
-@external(erlang, "aion_flow_ffi", "run_activity")
-pub fn run_activity(
+@external(erlang, "aion_flow_ffi", "dispatch_activity")
+pub fn dispatch_activity(
   name: String,
   input: String,
   config: String,
 ) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "await_activity_result")
+pub fn await_activity_result(correlation_id: String) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "now")
 pub fn now() -> Result(String, String)

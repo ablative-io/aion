@@ -309,10 +309,10 @@ impl EngineBuilder {
         self
     }
 
-    /// Supply the activity dispatcher that backs `aion_flow_ffi:run_activity`.
+    /// Supply the activity dispatcher that backs activity dispatch NIFs.
     ///
     /// When set, the dispatcher is installed in the global bridge before
-    /// workflow modules are loaded. Without a dispatcher, `run_activity`
+    /// workflow modules are loaded. Without a dispatcher, `dispatch_activity`
     /// returns an error to workflow code instead of crashing the process.
     #[must_use]
     pub fn activity_dispatcher(mut self, dispatcher: Arc<dyn ActivityDispatcher>) -> Self {
@@ -370,7 +370,11 @@ impl EngineBuilder {
         let registry = self
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
-        install_nif_runtime_context(Arc::clone(&registry), tokio::runtime::Handle::current());
+        install_nif_runtime_context(
+            Arc::clone(&registry),
+            Arc::clone(&runtime),
+            tokio::runtime::Handle::current(),
+        );
         crate::runtime::nif_timer::install_timer_nif_bridge(
             Arc::clone(&registry),
             Arc::clone(&store),
