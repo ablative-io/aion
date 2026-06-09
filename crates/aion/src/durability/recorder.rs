@@ -424,6 +424,24 @@ impl Recorder {
         .await
     }
 
+    /// Records activity cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_activity_cancelled(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        activity_id: ActivityId,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::ActivityCancelled {
+            envelope,
+            activity_id,
+        })
+        .await
+    }
+
     /// Records timer scheduling.
     ///
     /// # Errors

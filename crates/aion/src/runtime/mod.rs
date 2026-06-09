@@ -6,6 +6,7 @@ pub mod handle;
 pub mod module;
 pub mod nif;
 mod nif_activity;
+mod nif_concurrency;
 pub mod nif_context;
 pub mod outcome;
 pub mod payload;

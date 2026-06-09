@@ -22,9 +22,9 @@ thread_local! {
 }
 
 #[derive(Clone)]
-struct RuntimeContext {
-    registry: Arc<Registry>,
-    tokio_handle: Handle,
+pub(super) struct RuntimeContext {
+    pub(super) registry: Arc<Registry>,
+    pub(super) tokio_handle: Handle,
 }
 
 static RUNTIME_CONTEXT: OnceLock<RwLock<Option<RuntimeContext>>> = OnceLock::new();
@@ -40,7 +40,7 @@ pub(crate) fn install_nif_runtime_context(registry: Arc<Registry>, tokio_handle:
     }
 }
 
-fn runtime_context() -> Result<RuntimeContext, NifContextError> {
+pub(super) fn runtime_context() -> Result<RuntimeContext, NifContextError> {
     let Some(cell) = RUNTIME_CONTEXT.get() else {
         return Err(NifContextError::TermEncoding {
             reason: "nif runtime context is not installed".to_owned(),
@@ -378,8 +378,7 @@ mod tests {
         pid: u64,
         workflow_id: aion_core::WorkflowId,
         history: &[Event],
-    ) -> Result<TestContext, Box<dyn std::error::Error>>
-    {
+    ) -> Result<TestContext, Box<dyn std::error::Error>> {
         let registry = Registry::default();
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
