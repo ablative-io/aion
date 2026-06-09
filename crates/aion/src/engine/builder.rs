@@ -17,7 +17,7 @@ use crate::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
         Recorder,
     },
-    runtime::{NifEntry, NifRegistration},
+    runtime::{NifEntry, NifRegistration, install_nif_runtime_context},
     signal::SignalResumeHandoff,
 };
 
@@ -298,6 +298,7 @@ impl EngineBuilder {
         let registry = self
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
+        install_nif_runtime_context(Arc::clone(&registry), tokio::runtime::Handle::current());
         if let Some(dispatcher) = activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }
