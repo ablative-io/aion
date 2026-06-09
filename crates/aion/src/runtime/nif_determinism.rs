@@ -533,8 +533,8 @@ mod tests {
         let second = deterministic_float(&workflow_id, &run_id, 7);
         let different = deterministic_float(&workflow_id, &run_id, 8);
 
-        assert_eq!(first, second);
-        assert_ne!(first, different);
+        assert!((first - second).abs() < f64::EPSILON);
+        assert!((first - different).abs() > f64::EPSILON);
         assert!((0.0..1.0).contains(&first));
     }
 

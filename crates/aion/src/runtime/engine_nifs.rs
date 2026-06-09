@@ -255,11 +255,10 @@ mod tests {
         assert_eq!(entries.len(), 18);
         assert_eq!(unique.len(), entries.len());
         for deterministic in ["now", "random", "random_int"] {
-            let entry = entries
+            let found = entries
                 .iter()
-                .find(|entry| entry.mfa.function == deterministic)
-                .expect("deterministic NIF should be registered");
-            assert!(!entry.is_dirty, "{deterministic} should be a normal NIF");
+                .any(|entry| entry.mfa.function == deterministic && !entry.is_dirty);
+            assert!(found, "{deterministic} should be a registered normal NIF");
         }
         assert!(
             entries
