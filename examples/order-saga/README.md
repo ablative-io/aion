@@ -1,13 +1,54 @@
 # Aion order fulfillment saga
 
-This example demonstrates the canonical durable workflow saga pattern in Aion. The workflow processes an order through four forward activities:
+This example demonstrates the durable workflow **saga** pattern in Aion. A saga breaks a business transaction into ordered steps and records compensating actions that undo already-completed work when a later step fails. That is useful for external systems such as inventory, payments, and shipping where a single database transaction cannot cover every side effect.
 
-1. `charge_payment`
-2. `reserve_inventory`
+The workflow runs three forward activities in order:
+
+1. `reserve_inventory`
+2. `charge_payment`
 3. `ship_order`
-4. `confirm_order`
 
-If a later step fails after earlier steps have completed, the workflow schedules compensating activities in reverse order. For example, when `ship_order` fails, the workflow first runs `release_inventory` and then `refund_payment`, and finally returns a structured `SagaFailed` error describing the failed step and compensation results.
+It declares three compensating activities:
+
+1. `release_inventory`
+2. `refund_payment`
+3. `cancel_shipment`
+
+If `charge_payment` fails, inventory has already been reserved, so the workflow runs `release_inventory` and returns a structured `SagaFailed` error. If `ship_order` fails, inventory and payment have both completed, so the workflow runs `refund_payment` and then `release_inventory` in reverse order. `cancel_shipment` is registered and ready for workflows that need to compensate a completed shipment; this three-step example has no later forward step after shipping, so the mandatory failure paths do not call it.
+
+## Flow
+
+Happy path:
+
+```text
+OrderInput
+  -> reserve_inventory
+  -> charge_payment
+  -> ship_order
+  -> Ok({"order_id":"...","shipment_id":"..."})
+```
+
+Charge failure compensation path:
+
+```text
+OrderInput
+  -> reserve_inventory succeeds
+  -> charge_payment fails
+  -> release_inventory
+  -> Error({"failed_step":"charge_payment", "compensations":["release_inventory"]})
+```
+
+Shipping failure compensation path:
+
+```text
+OrderInput
+  -> reserve_inventory succeeds
+  -> charge_payment succeeds
+  -> ship_order fails
+  -> refund_payment
+  -> release_inventory
+  -> Error({"failed_step":"ship_order", "compensations":["refund_payment", "release_inventory"]})
+```
 
 You will:
 
@@ -16,8 +57,8 @@ You will:
 3. start the Aion dev server with the repo-root `dev-config.toml`,
 4. start a Python activity worker for all six saga activities,
 5. run a happy-path workflow instance,
-6. run a compensation-path workflow instance, and
-7. inspect the durable event history for both paths.
+6. run charge-failure and shipping-failure compensation instances, and
+7. inspect the durable event history.
 
 ## Prerequisites
 
@@ -44,7 +85,7 @@ The workflow source lives in `examples/order-saga/src/order_saga.gleam`. It expo
 {"order_id":"order-1001","item":"widget","quantity":2,"amount":5000}
 ```
 
-The `amount` field is an integer amount in cents. The workflow dispatches forward activities through `aion_flow` and records compensating activity decisions in the same durable workflow history.
+The `amount` field is an integer amount in cents. The workflow dispatches forward and compensating activities through `aion_flow` and records those decisions in durable workflow history.
 
 ## 2. Package `order-saga.aion`
 
@@ -57,8 +98,8 @@ This reads the BEAM files produced by `gleam build`, builds a manifest with:
 - entry module: `order_saga`
 - entry function: `run`
 - input schema: object with required fields `order_id`, `item`, `quantity`, and `amount`
-- output schema: successful `OrderConfirmation` or failed `SagaFailed` shape
-- activities: `charge_payment`, `reserve_inventory`, `ship_order`, `confirm_order`, `release_inventory`, `refund_payment`
+- output schema: successful `Shipment` or failed `SagaFailed` shape
+- activities: `reserve_inventory`, `charge_payment`, `ship_order`, `release_inventory`, `refund_payment`, `cancel_shipment`
 
 It writes:
 
@@ -94,10 +135,10 @@ python -m pip install -e sdks/python/aion-worker
 Then run the worker for the happy path:
 
 ```sh
-python examples/order-saga/worker.py
+python examples/order-saga/worker/worker.py
 ```
 
-The worker connects to `127.0.0.1:50051`, registers all six activities, and logs each activity as it runs. Leave this process running for the happy-path demo.
+The worker connects to `127.0.0.1:50051`, registers exactly `reserve_inventory`, `charge_payment`, `ship_order`, `release_inventory`, `refund_payment`, and `cancel_shipment`, and logs each activity as it runs. Leave this process running for the happy-path demo.
 
 ## 5. Happy path demo
 
@@ -105,11 +146,7 @@ In terminal 3:
 
 ```sh
 ORDER_JSON='{"order_id":"order-1001","item":"widget","quantity":2,"amount":5000}'
-ORDER_BYTES=$(python3 - <<'PY' <<<"$ORDER_JSON"
-import sys
-print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))
-PY
-)
+ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))')
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
@@ -129,51 +166,38 @@ printf '%s\n' "$START_RESPONSE"
 Capture the workflow id for observation:
 
 ```sh
-WORKFLOW_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["workflow_id"]["uuid"])
-PY
-)
-RUN_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["run_id"]["uuid"])
-PY
-)
+WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["workflow_id"]["uuid"])')
+RUN_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["run_id"]["uuid"])')
 printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 ```
 
 The worker logs should show the forward sequence only:
 
 ```text
-Charging payment ...
 Reserving inventory ...
+Charging payment ...
 Shipping order ...
-Confirming order ...
 ```
 
 The completed workflow result should be shaped like:
 
 ```json
-{"order_id":"order-1001","shipment_id":"ship-order-1001","confirmation_id":"conf-order-1001"}
+{"order_id":"order-1001","shipment_id":"ship-order-1001"}
 ```
 
-## 6. Compensation path demo
+## 6. Charge failure compensation demo
 
-Stop the worker from terminal 2 with `Ctrl-C`, then restart it with shipping failure enabled:
+Stop the worker from terminal 2 with `Ctrl-C`, then restart it with charge failure enabled:
 
 ```sh
-SIMULATE_SHIPPING_FAILURE=true python examples/order-saga/worker.py
+SIMULATE_CHARGE_FAILURE=true python examples/order-saga/worker/worker.py
 ```
 
 In terminal 3, start a second workflow:
 
 ```sh
 ORDER_JSON='{"order_id":"order-1002","item":"widget","quantity":2,"amount":5000}'
-ORDER_BYTES=$(python3 - <<'PY' <<<"$ORDER_JSON"
-import sys
-print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))
-PY
-)
+ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))')
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
@@ -190,30 +214,65 @@ START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
 printf '%s\n' "$START_RESPONSE"
 ```
 
-Capture the ids again:
+The worker logs should show inventory reservation, the simulated charge failure, and only inventory release:
+
+```text
+Reserving inventory ...
+Payment failed intentionally ...
+Compensating inventory reservation ...
+```
+
+The workflow error payload should be shaped like:
+
+```json
+{
+  "type": "saga_failed",
+  "failed_step": "charge_payment",
+  "reason": "simulated charge failure for order order-1002",
+  "completed_steps": ["reserve_inventory"],
+  "compensations": [
+    {"step": "release_inventory", "status": "released", "detail": "released 2 x widget from res-order-1002"}
+  ]
+}
+```
+
+## 7. Shipping failure compensation demo
+
+Restart the worker with shipping failure enabled:
 
 ```sh
-WORKFLOW_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["workflow_id"]["uuid"])
-PY
-)
-RUN_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["run_id"]["uuid"])
-PY
-)
-printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
+SIMULATE_SHIPPING_FAILURE=true python examples/order-saga/worker/worker.py
+```
+
+In terminal 3, start another workflow:
+
+```sh
+ORDER_JSON='{"order_id":"order-1003","item":"widget","quantity":2,"amount":5000}'
+ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))')
+
+START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
+  -H 'content-type: application/json' \
+  -H 'x-aion-subject: order-saga-user' \
+  -H 'x-aion-namespaces: default' \
+  --data "{
+    \"namespace\": \"default\",
+    \"workflow_type\": \"order_saga\",
+    \"input\": {
+      \"content_type\": \"application/json\",
+      \"bytes\": [$ORDER_BYTES]
+    }
+  }")
+printf '%s\n' "$START_RESPONSE"
 ```
 
 The worker logs should show the forward steps until shipping fails, followed by reverse compensation:
 
 ```text
-Charging payment ...
 Reserving inventory ...
+Charging payment ...
 Shipping failed intentionally ...
-Compensating inventory reservation ...
 Compensating payment charge ...
+Compensating inventory reservation ...
 ```
 
 The workflow error payload should be shaped like:
@@ -222,16 +281,16 @@ The workflow error payload should be shaped like:
 {
   "type": "saga_failed",
   "failed_step": "ship_order",
-  "reason": "simulated shipping failure for order order-1002",
-  "completed_steps": ["charge_payment", "reserve_inventory"],
+  "reason": "simulated shipping failure for order order-1003",
+  "completed_steps": ["reserve_inventory", "charge_payment"],
   "compensations": [
-    {"step": "release_inventory", "status": "released", "detail": "released 2 x widget from res-order-1002"},
-    {"step": "refund_payment", "status": "refunded", "detail": "refunded 5000 from pay-order-1002"}
+    {"step": "refund_payment", "status": "refunded", "detail": "refunded 5000 from pay-order-1003"},
+    {"step": "release_inventory", "status": "released", "detail": "released 2 x widget from res-order-1003"}
   ]
 }
 ```
 
-## 7. Observe the event history
+## 8. Observe the event history
 
 List workflows:
 
@@ -260,15 +319,18 @@ curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
 
 In the happy-path history, observe durable scheduling and completion events for:
 
-1. `charge_payment`
-2. `reserve_inventory`
+1. `reserve_inventory`
+2. `charge_payment`
 3. `ship_order`
-4. `confirm_order`
 
-In the compensation-path history, observe that `ship_order` fails after payment and inventory have completed, then the workflow records the compensating activities in reverse order:
+In the charge-failure history, observe that `charge_payment` fails after inventory has completed, then the workflow records:
 
 1. `release_inventory`
-2. `refund_payment`
+
+In the shipping-failure history, observe that `ship_order` fails after inventory and payment have completed, then the workflow records reverse compensation:
+
+1. `refund_payment`
+2. `release_inventory`
 
 That event history is the durable saga guarantee: after a failure, recovery/replay can see exactly which forward steps completed and which compensations were scheduled or completed.
 
