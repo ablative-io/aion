@@ -5,13 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Command-line client for operating Aion durable workflows over gRPC."
+documentation = "https://docs.rs/aion-cli"
+keywords = ["aion", "workflow", "durable-execution", "cli", "grpc"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion-client = { path = "../aion-client" }
-aion-core = { path = "../aion-core" }
+aion-client = { version = "0.1.0", path = "../aion-client" }
+aion-core = { version = "0.1.0", path = "../aion-core" }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }

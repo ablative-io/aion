@@ -3,6 +3,12 @@ name = "aion-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Pure domain model and shared vocabulary for Aion durable workflows."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-core"
+keywords = ["aion", "workflow", "durable-execution", "domain", "events"]
+categories = ["development-tools"]
 
 [lints]
 workspace = true

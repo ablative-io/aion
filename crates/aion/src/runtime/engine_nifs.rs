@@ -13,11 +13,13 @@ use beamr::term::binary::{self, Binary};
 use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
+use super::nif_child;
 use super::nif_determinism::{now_impl, random_impl, random_int_impl};
 use super::nif_signal;
 use super::nif_timer;
 
 const FFI_MODULE: &str = "aion_flow_ffi";
+#[cfg(test)]
 const NOT_YET_IMPLEMENTED: &str = "not_yet_implemented";
 
 thread_local! {
@@ -85,6 +87,7 @@ fn collect_map(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     super::nif_concurrency::collect_map_impl(args, ctx)
 }
 
+#[cfg(test)]
 fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     let _ = ctx.pid();
     if args.len() > 255 {
@@ -92,10 +95,6 @@ fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, 
     }
 
     Ok(error_result_term(NOT_YET_IMPLEMENTED).unwrap_or(Term::NIL))
-}
-
-fn dirty_entry(function: &str, arity: u8) -> NifEntry {
-    NifEntry::dirty(Mfa::new(FFI_MODULE, function, arity), not_yet_implemented)
 }
 
 /// Collect engine-owned NIF entries for `aion_flow_ffi`.
@@ -138,8 +137,14 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "dispatch_query", 2),
             super::nif_query::dispatch_query,
         ),
-        dirty_entry("spawn_child", 3),
-        dirty_entry("await_child", 1),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "spawn_child", 3),
+            nif_child::spawn_child_impl,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "await_child", 1),
+            nif_child::await_child_impl,
+        ),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_all", 2), collect_all),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_race", 2), collect_race),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_map", 2), collect_map),
@@ -271,6 +276,8 @@ mod tests {
             "register_query",
             "reply_query",
             "dispatch_query",
+            "spawn_child",
+            "await_child",
         ] {
             let entry = entries
                 .iter()

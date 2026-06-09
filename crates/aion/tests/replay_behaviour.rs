@@ -464,6 +464,9 @@ async fn fully_recorded_history_replays_to_terminal_with_zero_live_calls()
         timer_command(TimerId::anonymous(4))?,
         signal_command("ready", 0),
         child_command(7)?,
+        Command::AwaitChild {
+            child_workflow_id: child_workflow_id(),
+        },
     ];
     let outcome = replay.drive(commands)?;
 
@@ -475,6 +478,7 @@ async fn fully_recorded_history_replays_to_terminal_with_zero_live_calls()
                 Resolution::ActivityCompleted(payload("activity-result")?),
                 Resolution::TimerFired,
                 Resolution::SignalDelivered(payload("signal-payload")?),
+                Resolution::ChildStarted(child_workflow_id()),
                 Resolution::ChildCompleted(payload("child-result")?),
             ],
         }

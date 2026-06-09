@@ -3,14 +3,20 @@ name = "aion"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Transport-agnostic Aion workflow engine with durability, replay, timers, and supervision."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion"
+keywords = ["aion", "workflow", "durable-execution", "engine", "replay"]
+categories = ["asynchronous", "development-tools"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion-core = { path = "../aion-core" }
-aion-store = { path = "../aion-store" }
-aion-package = { path = "../aion-package" }
+aion-core = { version = "0.1.0", path = "../aion-core" }
+aion-store = { version = "0.1.0", path = "../aion-store" }
+aion-package = { version = "0.1.0", path = "../aion-package" }
 beamr = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
@@ -29,5 +35,5 @@ async-trait.workspace = true
 saffron.workspace = true
 
 [dev-dependencies]
-aion-package = { path = "../aion-package", features = ["test-support"] }
+aion-package = { version = "0.1.0", path = "../aion-package", features = ["test-support"] }
 beamr = { workspace = true, features = ["test-support"] }

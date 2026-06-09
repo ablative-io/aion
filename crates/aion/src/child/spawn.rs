@@ -261,7 +261,22 @@ pub fn spawn_and_wait(
     run_id: RunId,
 ) -> Result<Payload, ChildWorkflowError> {
     let child = spawn(engine, recording, child_type, input, run_id)?;
-    wait_for_child_result(engine, recording, mailbox, &child.child_workflow_id)
+    await_child(engine, recording, mailbox, &child.child_workflow_id)
+}
+
+/// Waits for a previously spawned linked child workflow and records its terminal outcome.
+///
+/// # Errors
+///
+/// Returns [`ChildWorkflowError::Failed`] after recording `ChildWorkflowFailed` when the child
+/// reports terminal failure. Other variants report seam or mailbox failures.
+pub fn await_child(
+    engine: &impl EngineHandle,
+    recording: &mut ChildWorkflowRecordingContext,
+    mailbox: &mut impl ChildWorkflowMailbox,
+    child_workflow_id: &WorkflowId,
+) -> Result<Payload, ChildWorkflowError> {
+    wait_for_child_result(engine, recording, mailbox, child_workflow_id)
 }
 
 fn spawn_with_mode(

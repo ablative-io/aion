@@ -3,15 +3,21 @@ name = "aion-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Deployable HTTP, gRPC, WebSocket, and worker endpoint for Aion workflows."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-server"
+keywords = ["aion", "workflow", "durable-execution", "server", "grpc"]
+categories = ["asynchronous", "development-tools"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion = { path = "../aion" }
-aion-proto = { path = "../aion-proto", features = ["generated"] }
-aion-store-libsql = { path = "../aion-store-libsql" }
-aion-store = { path = "../aion-store" }
+aion = { version = "0.1.0", path = "../aion" }
+aion-proto = { version = "0.1.0", path = "../aion-proto", features = ["generated"] }
+aion-store-libsql = { version = "0.1.0", path = "../aion-store-libsql" }
+aion-store = { version = "0.1.0", path = "../aion-store" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }

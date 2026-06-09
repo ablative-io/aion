@@ -3,12 +3,18 @@ name = "aion-store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Persistence contracts and in-memory event stores for Aion durable workflows."
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-store"
+keywords = ["aion", "workflow", "durable-execution", "event-store", "persistence"]
+categories = ["asynchronous", "development-tools"]
 
 [lints]
 workspace = true
 
 [dependencies]
-aion-core = { path = "../aion-core" }
+aion-core = { version = "0.1.0", path = "../aion-core" }
 serde = { workspace = true, features = ["derive"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

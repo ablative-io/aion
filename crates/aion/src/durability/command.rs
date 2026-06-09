@@ -1,6 +1,6 @@
 //! `Command` and `Resolution` types at the AD seam.
 
-use aion_core::{ActivityError, Payload, WorkflowError};
+use aion_core::{ActivityError, Payload, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{CorrelationKey, SignalDelivery};
@@ -45,6 +45,11 @@ pub enum Command {
         /// Opaque child workflow input payload.
         input: Payload,
     },
+    /// Await a previously spawned child workflow's terminal outcome.
+    AwaitChild {
+        /// Child workflow identity returned by [`Command::SpawnChild`].
+        child_workflow_id: WorkflowId,
+    },
     /// Complete the current workflow with a terminal result payload.
     ///
     /// Workflow completion is terminal intent rather than a cursor-matched replay family, so it has
@@ -68,7 +73,7 @@ impl Command {
             | Self::SendSignal { key, .. }
             | Self::StartTimer { key, .. }
             | Self::SpawnChild { key, .. } => Some(key),
-            Self::CompleteWorkflow { .. } => None,
+            Self::AwaitChild { .. } | Self::CompleteWorkflow { .. } => None,
         }
     }
 }
@@ -90,6 +95,8 @@ pub enum Resolution {
     TimerCancelled,
     /// A recorded successful signal send.
     SignalSent,
+    /// A recorded child workflow start with its child identifier.
+    ChildStarted(WorkflowId),
     /// A recorded child workflow completion with its result payload.
     ChildCompleted(Payload),
     /// A recorded child workflow failure.
@@ -163,6 +170,12 @@ mod tests {
                 Some(child_key),
             ),
             (
+                Command::AwaitChild {
+                    child_workflow_id: aion_core::WorkflowId::new_v4(),
+                },
+                None,
+            ),
+            (
                 Command::CompleteWorkflow {
                     result: payload("workflow-result")?,
                 },
@@ -192,6 +205,7 @@ mod tests {
             Resolution::ActivityFailedTerminal(activity_error),
             Resolution::TimerFired,
             Resolution::SignalDelivered(payload("signal")?),
+            Resolution::ChildStarted(aion_core::WorkflowId::new_v4()),
             Resolution::ChildCompleted(payload("child-result")?),
             Resolution::ChildFailed(workflow_error),
         ];

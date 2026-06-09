@@ -78,6 +78,21 @@ impl Resolver {
         &mut self,
         command: Command,
     ) -> Result<ResolvedCommand, DurabilityError> {
+        if let Command::AwaitChild { child_workflow_id } = command {
+            return match self.cursor.resolve_child_terminal(&child_workflow_id) {
+                CursorResolveResult::Matched(events) => resolution_from_matched(&events),
+                CursorResolveResult::Exhausted => {
+                    Ok(ResolvedCommand::ResumeLive { recorded_at: None })
+                }
+                CursorResolveResult::Mismatch {
+                    expected_key,
+                    found,
+                } => Err(self
+                    .mismatch_error(RecordedEventFamily::Child, &expected_key, &found)
+                    .into()),
+            };
+        }
+
         let Some((family, key)) = family_and_key(command) else {
             return Ok(ResolvedCommand::ResumeLive { recorded_at: None });
         };
@@ -167,7 +182,7 @@ fn family_and_key(command: Command) -> Option<(RecordedEventFamily, CorrelationK
         }
         Command::StartTimer { key, .. } => Some((RecordedEventFamily::Timer, key)),
         Command::SpawnChild { key, .. } => Some((RecordedEventFamily::Child, key)),
-        Command::CompleteWorkflow { .. } => None,
+        Command::AwaitChild { .. } | Command::CompleteWorkflow { .. } => None,
     }
 }
 
@@ -214,9 +229,12 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
             Resolution::ChildFailed(error.clone()),
             recorded_at,
         )),
-        Event::ChildWorkflowStarted { .. } => Ok(ResolvedCommand::ResumeLive {
-            recorded_at: Some(recorded_at),
-        }),
+        Event::ChildWorkflowStarted {
+            child_workflow_id, ..
+        } => Ok(recorded(
+            Resolution::ChildStarted(child_workflow_id.clone()),
+            recorded_at,
+        )),
         Event::ActivityCancelled { .. } | Event::ChildWorkflowCancelled { .. } => {
             Err(DurabilityError::HistoryShape {
                 reason: format!(
@@ -471,6 +489,12 @@ mod tests {
                 workflow_type: "child".to_owned(),
                 input: payload("child-input")?,
             })?,
+            ResolveOutcome::Recorded(Resolution::ChildStarted(child_workflow_id()))
+        );
+        assert_eq!(
+            resolver.resolve(Command::AwaitChild {
+                child_workflow_id: child_workflow_id(),
+            })?,
             ResolveOutcome::Recorded(Resolution::ChildCompleted(child_result))
         );
         Ok(())
@@ -510,6 +534,12 @@ mod tests {
                 key: CorrelationKey::Child(3),
                 workflow_type: "child".to_owned(),
                 input: payload("child-input")?,
+            })?,
+            ResolveOutcome::Recorded(Resolution::ChildStarted(child_workflow_id()))
+        );
+        assert_eq!(
+            resolver.resolve(Command::AwaitChild {
+                child_workflow_id: child_workflow_id(),
             })?,
             ResolveOutcome::Recorded(Resolution::ChildFailed(child_error))
         );

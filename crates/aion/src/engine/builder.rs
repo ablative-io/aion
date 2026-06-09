@@ -18,8 +18,8 @@ use crate::{
         Recorder,
     },
     runtime::{
-        NifEntry, NifRegistration, install_nif_runtime_context, install_query_bridge,
-        install_signal_nif_bridge,
+        ChildNifBridge, ChildNifBridgeParts, NifEntry, NifRegistration, install_child_nif_bridge,
+        install_nif_runtime_context, install_query_bridge, install_signal_nif_bridge,
         nif_determinism::{NifContextSource, install_nif_context_source},
     },
     signal::SignalResumeHandoff,
@@ -328,14 +328,14 @@ impl EngineBuilder {
         if let Some(dispatcher) = activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }
-        let supervision = SupervisionTree::new();
+        let supervision = Arc::new(SupervisionTree::new());
         bootstrap_schedule_coordinator(Arc::clone(&store)).await?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),
             &loaded_workflows,
             registry.as_ref(),
-            &supervision,
+            supervision.as_ref(),
             self.recovery.as_ref(),
         )
         .await?;
@@ -358,6 +358,16 @@ impl EngineBuilder {
             tokio::runtime::Handle::current(),
             delegated.signal_router_arc(),
         )));
+        install_child_nif_bridge(Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
+            store: Arc::clone(&store),
+            visibility_store: Arc::clone(&visibility_store),
+            runtime: Arc::clone(&runtime),
+            loaded_workflows: loaded_workflows.clone(),
+            registry: Arc::clone(&registry),
+            supervision: Arc::clone(&supervision),
+            signal_handoff: Arc::clone(&signal_handoff),
+            tokio_handle: tokio::runtime::Handle::current(),
+        })));
 
         let engine = Engine::new(EngineComponents {
             store,

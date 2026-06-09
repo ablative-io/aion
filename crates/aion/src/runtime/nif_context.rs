@@ -188,6 +188,12 @@ impl NifContext {
             .unwrap_or_else(|| self.current_recorder_head())
     }
 
+    /// Returns a clone of the resolved workflow handle.
+    #[must_use]
+    pub fn workflow_handle(&self) -> WorkflowHandle {
+        self.handle.clone()
+    }
+
     /// Returns the runtime process identifier for the resolved handle.
     #[must_use]
     pub const fn pid(&self) -> u64 {
@@ -326,7 +332,7 @@ impl NifContext {
             .map_err(Into::into)
     }
 
-    fn current_recorder_head(&self) -> u64 {
+    pub(crate) fn current_recorder_head(&self) -> u64 {
         self.tokio_handle.block_on(async {
             let recorder = self.recorder.lock().await;
             recorder.current_head()

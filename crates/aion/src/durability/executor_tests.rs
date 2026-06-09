@@ -363,6 +363,19 @@ async fn recorded_history_returns_resolutions_without_live_calls()
             timestamp(20)?,
         )
         .await?,
+        HandoffOutcome::Resolved(Resolution::ChildStarted(child_workflow_id()))
+    );
+    assert_eq!(
+        resolve_or_execute_live(
+            &mut resolver,
+            &mut recorder,
+            &executor,
+            Command::AwaitChild {
+                child_workflow_id: child_workflow_id(),
+            },
+            timestamp(20)?,
+        )
+        .await?,
         HandoffOutcome::Resolved(Resolution::ChildCompleted(child_result))
     );
     Ok(())
