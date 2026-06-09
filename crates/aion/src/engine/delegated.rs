@@ -293,6 +293,7 @@ fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
             | Event::SignalReceived { .. }
+            | Event::SignalSent { .. }
             | Event::ChildWorkflowStarted { .. }
             | Event::ChildWorkflowCompleted { .. }
             | Event::ChildWorkflowFailed { .. }
@@ -330,7 +331,7 @@ const fn event_family(event: &Event) -> EventFamily {
         Event::TimerStarted { .. } | Event::TimerFired { .. } | Event::TimerCancelled { .. } => {
             EventFamily::Timer
         }
-        Event::SignalReceived { .. } => EventFamily::Signal,
+        Event::SignalReceived { .. } | Event::SignalSent { .. } => EventFamily::Signal,
         Event::ChildWorkflowStarted { .. }
         | Event::ChildWorkflowCompleted { .. }
         | Event::ChildWorkflowFailed { .. }

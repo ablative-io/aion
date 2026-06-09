@@ -11,6 +11,7 @@ pub mod recovery;
 pub mod replay;
 pub mod resolver;
 pub mod seq;
+pub mod signal;
 
 pub use command::{Command, Resolution, ResolveOutcome};
 pub use correlation::CorrelationKey;
@@ -30,3 +31,4 @@ pub use resolver::{
     NON_DETERMINISM_WORKFLOW_ERROR_PREFIX, ResolvedCommand, Resolver, fail_on_violation,
 };
 pub use seq::SequenceHead;
+pub use signal::SignalDelivery;

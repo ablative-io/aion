@@ -24,7 +24,7 @@ pub enum CorrelationKey {
     ),
     /// Signal delivery by name and zero-based occurrence for that name in history order.
     Signal {
-        /// Signal name selected by the sender and requested by workflow code.
+        /// Signal name selected by workflow code.
         name: String,
         /// Zero-based occurrence of this signal name in recorded history order.
         index: usize,
@@ -52,11 +52,11 @@ pub fn correlation_keys_for_history(events: &[Event]) -> Vec<Option<CorrelationK
 pub fn key_for_event(events: &[Event], index: usize) -> Option<CorrelationKey> {
     let event = events.get(index)?;
     match event {
-        Event::SignalReceived { name, .. } => {
+        Event::SignalReceived { name, .. } | Event::SignalSent { name, .. } => {
             let prior_same_name = events
                 .iter()
                 .take(index)
-                .filter(|prior| matches!(prior, Event::SignalReceived { name: prior_name, .. } if prior_name == name))
+                .filter(|prior| matches!(prior, Event::SignalReceived { name: prior_name, .. } | Event::SignalSent { name: prior_name, .. } if prior_name == name))
                 .count();
             Some(CorrelationKey::Signal {
                 name: name.clone(),
@@ -72,7 +72,7 @@ fn key_for_event_with_signal_counts(
     signal_counts: &mut HashMap<String, usize>,
 ) -> Option<CorrelationKey> {
     match event {
-        Event::SignalReceived { name, .. } => {
+        Event::SignalReceived { name, .. } | Event::SignalSent { name, .. } => {
             let index = signal_counts.get(name).copied().unwrap_or_default();
             signal_counts.insert(name.clone(), index + 1);
             Some(CorrelationKey::Signal {

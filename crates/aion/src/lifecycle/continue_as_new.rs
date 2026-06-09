@@ -148,6 +148,7 @@ fn guard_no_pending_work(events: &[Event]) -> Result<(), EngineError> {
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
             | Event::SignalReceived { .. }
+            | Event::SignalSent { .. }
             | Event::ScheduleCreated { .. }
             | Event::ScheduleUpdated { .. }
             | Event::SchedulePaused { .. }

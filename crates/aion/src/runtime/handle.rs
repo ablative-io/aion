@@ -368,6 +368,26 @@ impl RuntimeHandle {
             .map_or_else(Vec::new, |entry| entry.clone())
     }
 
+    /// Remove and return the oldest retained signal with `name` for the workflow process.
+    #[must_use]
+    pub fn take_signal_message(&self, workflow_pid: Pid, name: &str) -> Option<Payload> {
+        let mut messages = self.signal_messages.get_mut(&workflow_pid)?;
+        let index = messages
+            .iter()
+            .position(|(message_name, _)| message_name == name)?;
+        Some(messages.remove(index).1)
+    }
+
+    /// Wait until a delivered signal with `name` is retained for the workflow process.
+    pub fn wait_for_signal_message(&self, workflow_pid: Pid, name: &str) -> Payload {
+        loop {
+            if let Some(payload) = self.take_signal_message(workflow_pid, name) {
+                return payload;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Read a previously delivered activity result payload.
     #[must_use]
     pub fn activity_result(&self, parent_pid: Pid, activity_pid: Pid) -> Option<Payload> {

@@ -500,6 +500,28 @@ impl Recorder {
         .await
     }
 
+    /// Records a signal sent by this workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_signal_sent(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        target_workflow_id: WorkflowId,
+        name: String,
+        payload: Payload,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::SignalSent {
+            envelope,
+            target_workflow_id,
+            name,
+            payload,
+        })
+        .await
+    }
+
     /// Records child workflow start.
     ///
     /// # Errors

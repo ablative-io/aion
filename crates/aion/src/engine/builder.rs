@@ -18,7 +18,7 @@ use crate::{
         Recorder,
     },
     runtime::{
-        NifEntry, NifRegistration, install_nif_runtime_context,
+        NifEntry, NifRegistration, install_nif_runtime_context, install_signal_nif_bridge,
         nif_determinism::{NifContextSource, install_nif_context_source},
     },
     signal::SignalResumeHandoff,
@@ -301,21 +301,17 @@ impl EngineBuilder {
         let registry = self
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
-<<<<<<< HEAD
         install_nif_runtime_context(Arc::clone(&registry), tokio::runtime::Handle::current());
         crate::runtime::nif_timer::install_timer_nif_bridge(
             Arc::clone(&registry),
             Arc::clone(&store),
             tokio::runtime::Handle::current(),
         );
-||||||| be47a58
-=======
         install_nif_context_source(Arc::new(NifContextSource::new(
             Arc::clone(&registry),
             tokio::runtime::Handle::current(),
             Arc::clone(&store),
         )));
->>>>>>> workflow/onatopp-dev-norn/2e8f4161
         if let Some(dispatcher) = activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }
@@ -342,6 +338,13 @@ impl EngineBuilder {
         } else {
             self.delegated
         };
+
+        install_signal_nif_bridge(Arc::new(crate::runtime::SignalNifBridge::new(
+            Arc::clone(&registry),
+            Arc::clone(&runtime),
+            tokio::runtime::Handle::current(),
+            delegated.signal_router_arc(),
+        )));
 
         let engine = Engine::new(EngineComponents {
             store,

@@ -3,7 +3,7 @@
 use aion_core::{ActivityError, Payload, WorkflowError};
 use chrono::{DateTime, Utc};
 
-use crate::durability::CorrelationKey;
+use crate::durability::{CorrelationKey, SignalDelivery};
 
 /// World-touching workflow intent presented to the durability resolver.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +21,13 @@ pub enum Command {
     AwaitSignal {
         /// Correlation key naming the signal and occurrence index to deliver.
         key: CorrelationKey,
+    },
+    /// Send a signal to another workflow.
+    SendSignal {
+        /// Correlation key naming the sent signal occurrence.
+        key: CorrelationKey,
+        /// Delivery selected by workflow code.
+        delivery: SignalDelivery,
     },
     /// Start or await a timer identified by a deterministic timer key.
     StartTimer {
@@ -58,6 +65,7 @@ impl Command {
         match self {
             Self::RunActivity { key, .. }
             | Self::AwaitSignal { key }
+            | Self::SendSignal { key, .. }
             | Self::StartTimer { key, .. }
             | Self::SpawnChild { key, .. } => Some(key),
             Self::CompleteWorkflow { .. } => None,
@@ -80,6 +88,8 @@ pub enum Resolution {
     SignalDelivered(Payload),
     /// A recorded timer cancellation.
     TimerCancelled,
+    /// A recorded successful signal send.
+    SignalSent,
     /// A recorded child workflow completion with its result payload.
     ChildCompleted(Payload),
     /// A recorded child workflow failure.

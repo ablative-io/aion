@@ -14,6 +14,7 @@ use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
 use super::nif_determinism::{now_impl, random_impl, random_int_impl};
+use super::nif_signal;
 use super::nif_timer;
 
 const FFI_MODULE: &str = "aion_flow_ffi";
@@ -106,8 +107,14 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "with_timeout", 2),
             nif_timer::with_timeout_impl,
         ),
-        dirty_entry("receive_signal", 2),
-        dirty_entry("send_signal", 3),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "receive_signal", 2),
+            nif_signal::receive_signal,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "send_signal", 3),
+            nif_signal::send_signal,
+        ),
         dirty_entry("register_query", 3),
         dirty_entry("reply_query", 2),
         dirty_entry("dispatch_query", 2),

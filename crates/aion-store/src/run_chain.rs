@@ -76,6 +76,7 @@ fn terminal_recorded_at(event: &Event) -> Option<chrono::DateTime<chrono::Utc>> 
         | Event::TimerFired { .. }
         | Event::TimerCancelled { .. }
         | Event::SignalReceived { .. }
+        | Event::SignalSent { .. }
         | Event::ChildWorkflowStarted { .. }
         | Event::ChildWorkflowCompleted { .. }
         | Event::ChildWorkflowFailed { .. }

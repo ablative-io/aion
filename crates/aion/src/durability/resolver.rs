@@ -36,6 +36,12 @@ impl Resolver {
         }
     }
 
+    /// Returns the ordered history snapshot backing this resolver.
+    #[must_use]
+    pub fn history(&self) -> &[Event] {
+        self.cursor.events()
+    }
+
     /// Resolves a command from recorded history or returns [`ResolveOutcome::ResumeLive`].
     ///
     /// # Errors
@@ -156,7 +162,9 @@ pub async fn fail_on_violation(
 fn family_and_key(command: Command) -> Option<(RecordedEventFamily, CorrelationKey)> {
     match command {
         Command::RunActivity { key, .. } => Some((RecordedEventFamily::Activity, key)),
-        Command::AwaitSignal { key } => Some((RecordedEventFamily::Signal, key)),
+        Command::AwaitSignal { key } | Command::SendSignal { key, .. } => {
+            Some((RecordedEventFamily::Signal, key))
+        }
         Command::StartTimer { key, .. } => Some((RecordedEventFamily::Timer, key)),
         Command::SpawnChild { key, .. } => Some((RecordedEventFamily::Child, key)),
         Command::CompleteWorkflow { .. } => None,
@@ -197,6 +205,7 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
             Resolution::SignalDelivered(payload.clone()),
             recorded_at,
         )),
+        Event::SignalSent { .. } => Ok(recorded(Resolution::SignalSent, recorded_at)),
         Event::ChildWorkflowCompleted { result, .. } => Ok(recorded(
             Resolution::ChildCompleted(result.clone()),
             recorded_at,
@@ -264,6 +273,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
         Event::SignalReceived { .. } => "SignalReceived",
+        Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",
         Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
         Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",

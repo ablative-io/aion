@@ -134,6 +134,7 @@ fn terminal_recorded_at_for_current_run(events: &[Event]) -> Option<DateTime<Utc
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
             | Event::SignalReceived { .. }
+            | Event::SignalSent { .. }
             | Event::ChildWorkflowStarted { .. }
             | Event::ChildWorkflowCompleted { .. }
             | Event::ChildWorkflowFailed { .. }

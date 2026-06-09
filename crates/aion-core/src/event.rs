@@ -180,6 +180,17 @@ pub enum Event {
         /// Opaque signal payload.
         payload: Payload,
     },
+    /// A signal was sent by this workflow to another workflow.
+    SignalSent {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Target workflow identifier selected by workflow code.
+        target_workflow_id: WorkflowId,
+        /// Signal name selected by workflow code.
+        name: String,
+        /// Opaque signal payload.
+        payload: Payload,
+    },
     /// A child workflow was started.
     ChildWorkflowStarted {
         /// Recording metadata for this event.
@@ -289,6 +300,7 @@ impl Event {
             | Self::TimerFired { envelope, .. }
             | Self::TimerCancelled { envelope, .. }
             | Self::SignalReceived { envelope, .. }
+            | Self::SignalSent { envelope, .. }
             | Self::ChildWorkflowStarted { envelope, .. }
             | Self::ChildWorkflowCompleted { envelope, .. }
             | Self::ChildWorkflowFailed { envelope, .. }
@@ -479,8 +491,14 @@ mod tests {
                 name: String::from("approve"),
                 payload: payload("signal")?,
             },
-            Event::ChildWorkflowStarted {
+            Event::SignalSent {
                 envelope: envelope(15),
+                target_workflow_id: WorkflowId::new(uuid::Uuid::from_u128(5)),
+                name: String::from("approve"),
+                payload: payload("signal-sent")?,
+            },
+            Event::ChildWorkflowStarted {
+                envelope: envelope(16),
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: String::from("fulfillment"),
                 input: payload("child-input")?,
