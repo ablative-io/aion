@@ -20,7 +20,7 @@ use crate::registry::Registry;
 use super::nif_context::NifContext;
 
 const RANDOM_SEED_DOMAIN: &[u8] = b"aion.runtime.nif.determinism.rng.v1.sha256.chacha20";
-const FLOAT_SCALE: f64 = (1_u64 << 53) as f64;
+const FLOAT_SCALE: f64 = 9_007_199_254_740_992.0;
 
 thread_local! {
     static NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
@@ -113,7 +113,17 @@ fn context_from_process(ctx: &ProcessContext) -> Result<NifContext, String> {
 }
 
 fn error_term(message: &str) -> Term {
-    error_result_term(message).unwrap_or(Term::NIL)
+    match error_result_term(message) {
+        Some(term) => term,
+        None => Term::NIL,
+    }
+}
+
+fn ok_term_or_nil(value: &str) -> Term {
+    match ok_result_term(value) {
+        Some(term) => term,
+        None => Term::NIL,
+    }
 }
 
 /// NIF backing `aion_flow_ffi:now/0`.
@@ -194,19 +204,19 @@ fn now_from_context(context: &NifContext) -> Term {
     let Some(recorded_at) = context.last_recorded_at() else {
         return error_term("now: workflow history is empty");
     };
-    ok_result_term(&recorded_at.timestamp_millis().to_string()).unwrap_or(Term::NIL)
+    ok_term_or_nil(&recorded_at.timestamp_millis().to_string())
 }
 
 fn random_from_context(context: &NifContext) -> Term {
     let sequence = context.next_deterministic_sequence();
     let value = deterministic_float(context.workflow_id(), context.run_id(), sequence);
-    ok_result_term(&value.to_string()).unwrap_or(Term::NIL)
+    ok_term_or_nil(&value.to_string())
 }
 
 fn random_int_from_context(context: &NifContext, min: i64, max: i64) -> Term {
     let sequence = context.next_deterministic_sequence();
     let value = deterministic_i64(context.workflow_id(), context.run_id(), sequence, min, max);
-    ok_result_term(&value.to_string()).unwrap_or(Term::NIL)
+    ok_term_or_nil(&value.to_string())
 }
 
 fn deterministic_u64(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> u64 {
@@ -215,8 +225,16 @@ fn deterministic_u64(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) ->
 }
 
 fn deterministic_float(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> f64 {
-    let random = deterministic_u64(workflow_id, run_id, sequence);
-    ((random >> 11) as f64) / FLOAT_SCALE
+    let random = deterministic_u64(workflow_id, run_id, sequence) >> 11;
+    let high = match u32::try_from(random >> 32) {
+        Ok(value) => value,
+        Err(_) => return 0.0,
+    };
+    let low = match u32::try_from(random & u64::from(u32::MAX)) {
+        Ok(value) => value,
+        Err(_) => return 0.0,
+    };
+    (f64::from(high) * 4_294_967_296.0 + f64::from(low)) / FLOAT_SCALE
 }
 
 fn deterministic_i64(
@@ -226,9 +244,16 @@ fn deterministic_i64(
     min: i64,
     max: i64,
 ) -> i64 {
-    let width = (i128::from(max) - i128::from(min) + 1) as u128;
+    let span = i128::from(max) - i128::from(min);
+    let width = u128::try_from(span).map_or(1, |value| value.saturating_add(1));
     let offset = uniform_u128(width, workflow_id, run_id, sequence);
-    (i128::from(min) + offset as i128) as i64
+    let offset = i128::try_from(offset).unwrap_or(i128::MAX);
+    let value = i128::from(min) + offset;
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) if value.is_negative() => i64::MIN,
+        Err(_) => i64::MAX,
+    }
 }
 
 fn uniform_u128(width: u128, workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> u128 {
@@ -366,11 +391,8 @@ mod tests {
         if !history.is_empty() {
             runtime.block_on(store.append(&workflow_id, history, 0))?;
         }
-        let recorder = Recorder::resume_at(
-            workflow_id.clone(),
-            Arc::clone(&store),
-            history.len() as u64,
-        );
+        let head = u64::try_from(history.len())?;
+        let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), head);
         let handle = WorkflowHandle::new(WorkflowHandleParts {
             workflow_id: workflow_id.clone(),
             run_id: run_id.clone(),
