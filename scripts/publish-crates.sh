@@ -10,6 +10,18 @@ readonly SCRIPT_NAME="$(basename "$0")"
 readonly MODE_DRY_RUN="dry-run"
 readonly MODE_LIVE="live"
 
+# Leaf-first publish order derived from workspace-internal crate dependencies:
+#   aion-core: no Aion crate dependencies
+#   aion-store: aion-core
+#   aion-store-libsql: aion-core, aion-store
+#   aion-package: aion-core
+#   aion-nif: aion-core
+#   aion: aion-core, aion-package, aion-store
+#   aion-proto: aion-core, aion-store
+#   aion-server: aion, aion-core, aion-proto, aion-store, aion-store-libsql
+#   aion-worker: aion-core, aion-proto
+#   aion-client: aion, aion-core, aion-proto, aion-store
+#   aion-cli: aion-client, aion-core
 readonly PUBLISH_ORDER=(
   aion-core
   aion-store
@@ -97,9 +109,10 @@ validate_publish_order() {
           | .name as $dependent
           | .dependencies[]?
           | select(.source == null)
-          | select(.name as $dependency | $index[$dependency] != null)
-          | select($index[.name] >= $index[$dependent])
-          | "\($dependent) depends on \(.name), but \(.name) appears later in PUBLISH_ORDER"
+          | .name as $dependency
+          | select($index[$dependency] != null)
+          | select($index[$dependency] >= $index[$dependent])
+          | "\($dependent) depends on \($dependency), but \($dependency) appears later in PUBLISH_ORDER"
         ]
         | if length > 0 then .[] else empty end
       end'

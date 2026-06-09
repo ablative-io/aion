@@ -91,6 +91,37 @@ workspace.json     Machine-readable description of every component
 | `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs |
 | `apps/aion-dashboard` | Monitoring UI under development |
 
+## Publishing crates
+
+Aion's Rust crates are published leaf-first so each workspace dependency is
+available on crates.io before any crate that depends on it. The publish order is
+derived from `cargo metadata --format-version=1 --no-deps` and validated by the
+publish script before every run:
+
+1. `aion-core`
+2. `aion-store`
+3. `aion-store-libsql`
+4. `aion-package`
+5. `aion-nif`
+6. `aion`
+7. `aion-proto`
+8. `aion-server`
+9. `aion-worker`
+10. `aion-client`
+11. `aion-cli`
+
+Use [`scripts/publish-crates.sh`](scripts/publish-crates.sh) for the full ordered
+pass. It requires `cargo` and `jq`; live publication also requires valid crates.io
+credentials.
+
+```sh
+scripts/publish-crates.sh          # validate the order, then cargo publish --dry-run each crate
+scripts/publish-crates.sh --live   # validate the order, then cargo publish each crate for real
+```
+
+The default mode is a dry run and stops on the first crate that fails. Do not use
+`--live` until the full dry-run pass succeeds in the documented order.
+
 ## Status
 
 **The core engine is implemented and functional.**
