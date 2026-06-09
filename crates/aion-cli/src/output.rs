@@ -55,9 +55,17 @@ where
 {
     let mut value = to_value(DescribeOutput { summary, history })?;
     if !raw {
-        decode_payloads_in_value(&mut value);
+        decode_payloads_in_history(&mut value);
     }
     Ok(value)
+}
+
+fn decode_payloads_in_history(value: &mut Value) {
+    if let Value::Object(object) = value {
+        if let Some(history) = object.get_mut("history") {
+            decode_payloads_in_value(history);
+        }
+    }
 }
 
 fn decode_payloads_in_value(value: &mut Value) {
@@ -87,8 +95,7 @@ fn payload_display_value(object: &Map<String, Value>) -> Option<Value> {
     if bytes.is_empty() {
         return Some(json!({
             "content_type": content_type,
-            "encoding": "empty",
-            "data": ""
+            "empty": true
         }));
     }
 
@@ -183,6 +190,24 @@ mod tests {
     }
 
     #[test]
+    fn describe_output_only_decodes_payloads_inside_history() -> anyhow::Result<()> {
+        let summary = json!({
+            "workflow_id": "wf",
+            "metadata": payload(r#"{"should":"remain raw"}"#)
+        });
+        let history = json!([{ "input": payload(r#"{"should":"decode"}"#) }]);
+
+        let output = describe_output(summary, history, false)?;
+
+        assert_eq!(
+            output["summary"]["metadata"],
+            payload(r#"{"should":"remain raw"}"#)
+        );
+        assert_eq!(output["history"][0]["input"], json!({ "should": "decode" }));
+        Ok(())
+    }
+
+    #[test]
     fn malformed_json_payload_falls_back_to_hex() {
         let mut value = json!({
             "payload": {
@@ -199,6 +224,27 @@ mod tests {
                 "content_type": "Json",
                 "encoding": "hex",
                 "data": "7b6e6f74"
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_json_payload_falls_back_to_hex() {
+        let mut value = json!({
+            "payload": {
+                "content_type": "Json",
+                "bytes": [255, 254, 253]
+            }
+        });
+
+        decode_payloads_in_value(&mut value);
+
+        assert_eq!(
+            value["payload"],
+            json!({
+                "content_type": "Json",
+                "encoding": "hex",
+                "data": "fffefd"
             })
         );
     }
@@ -239,8 +285,7 @@ mod tests {
             value["payload"],
             json!({
                 "content_type": "Json",
-                "encoding": "empty",
-                "data": ""
+                "empty": true
             })
         );
     }
