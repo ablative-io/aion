@@ -208,6 +208,24 @@ impl NifContext {
             .map_err(Into::into)
     }
 
+    /// Returns a snapshot of the recorded history visible to this NIF context.
+    #[must_use]
+    pub fn history(&self) -> &[aion_core::Event] {
+        self.resolver.history()
+    }
+
+    /// Reads the current workflow history through the recorder-owned store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NifContextError::Durability`] when the backing store rejects the read.
+    pub fn read_current_history(&self) -> Result<Vec<aion_core::Event>, NifContextError> {
+        self.tokio_handle.block_on(async {
+            let recorder = self.recorder.lock().await;
+            recorder.read_history().await
+        })
+    }
+
     /// Resolves a workflow command against recorded history before any live side effect runs.
     ///
     /// # Errors

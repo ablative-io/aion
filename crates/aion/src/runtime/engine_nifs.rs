@@ -15,6 +15,7 @@ use beamr::term::boxed;
 use crate::activity::bridge::activity_dispatcher;
 
 use super::nif::{Mfa, NifEntry};
+use super::nif_signal;
 
 const FFI_MODULE: &str = "aion_flow_ffi";
 const NOT_YET_IMPLEMENTED: &str = "not_yet_implemented";
@@ -138,8 +139,14 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
         dirty_entry("start_timer", 2),
         dirty_entry("cancel_timer", 1),
         dirty_entry("with_timeout", 2),
-        dirty_entry("receive_signal", 2),
-        dirty_entry("send_signal", 3),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "receive_signal", 2),
+            nif_signal::receive_signal,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "send_signal", 3),
+            nif_signal::send_signal,
+        ),
         dirty_entry("register_query", 3),
         dirty_entry("reply_query", 2),
         dirty_entry("dispatch_query", 2),

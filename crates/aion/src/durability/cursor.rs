@@ -85,6 +85,12 @@ impl HistoryCursor {
         self.events.get(self.position).map(Event::seq)
     }
 
+    /// Returns the ordered history backing this cursor.
+    #[must_use]
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
     /// Returns the current zero-based index into the owned history.
     #[must_use]
     pub const fn position_index(&self) -> usize {
@@ -116,7 +122,10 @@ impl HistoryCursor {
             RecordedEventFamily::Timer | RecordedEventFamily::Child => {
                 self.resolve_started_with_immediate_outcome(&expected_key)
             }
-            RecordedEventFamily::Signal => self.consume_one(),
+            RecordedEventFamily::Signal => match expected_key {
+                CorrelationKey::Signal { .. } => self.consume_one(),
+                _ => self.mismatch_at_current(expected_key),
+            },
         }
     }
 
@@ -279,7 +288,9 @@ fn family_for_event(event: &Event) -> Option<RecordedEventFamily> {
     match event {
         Event::ActivityScheduled { .. } => Some(RecordedEventFamily::Activity),
         Event::TimerStarted { .. } => Some(RecordedEventFamily::Timer),
-        Event::SignalReceived { .. } => Some(RecordedEventFamily::Signal),
+        Event::SignalReceived { .. } | Event::SignalSent { .. } => {
+            Some(RecordedEventFamily::Signal)
+        }
         Event::ChildWorkflowStarted { .. } => Some(RecordedEventFamily::Child),
         _ => None,
     }
@@ -303,6 +314,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
         Event::SignalReceived { .. } => "SignalReceived",
+        Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",
         Event::ChildWorkflowCompleted { .. } => "ChildWorkflowCompleted",
         Event::ChildWorkflowFailed { .. } => "ChildWorkflowFailed",

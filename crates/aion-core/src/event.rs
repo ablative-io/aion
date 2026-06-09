@@ -180,6 +180,17 @@ pub enum Event {
         /// Opaque signal payload.
         payload: Payload,
     },
+    /// A signal was sent by this workflow to another workflow.
+    SignalSent {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Target workflow identifier selected by workflow code.
+        target_workflow_id: WorkflowId,
+        /// Signal name selected by workflow code.
+        name: String,
+        /// Opaque signal payload.
+        payload: Payload,
+    },
     /// A child workflow was started.
     ChildWorkflowStarted {
         /// Recording metadata for this event.
@@ -289,6 +300,7 @@ impl Event {
             | Self::TimerFired { envelope, .. }
             | Self::TimerCancelled { envelope, .. }
             | Self::SignalReceived { envelope, .. }
+            | Self::SignalSent { envelope, .. }
             | Self::ChildWorkflowStarted { envelope, .. }
             | Self::ChildWorkflowCompleted { envelope, .. }
             | Self::ChildWorkflowFailed { envelope, .. }

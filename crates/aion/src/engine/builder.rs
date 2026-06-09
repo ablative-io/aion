@@ -17,7 +17,7 @@ use crate::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
         Recorder,
     },
-    runtime::{NifEntry, NifRegistration},
+    runtime::{NifEntry, NifRegistration, install_signal_nif_bridge},
     signal::SignalResumeHandoff,
 };
 
@@ -324,6 +324,13 @@ impl EngineBuilder {
         } else {
             self.delegated
         };
+
+        install_signal_nif_bridge(Arc::new(crate::runtime::SignalNifBridge::new(
+            Arc::clone(&registry),
+            Arc::clone(&runtime),
+            tokio::runtime::Handle::current(),
+            delegated.signal_router_arc(),
+        )));
 
         let engine = Engine::new(EngineComponents {
             store,
