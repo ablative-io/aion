@@ -486,6 +486,10 @@ pub(crate) mod test_support {
         }
 
         /// Sets the residency response returned for a workflow.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn set_residency(
             &self,
             workflow_id: WorkflowId,
@@ -496,6 +500,10 @@ pub(crate) mod test_support {
         }
 
         /// Queues the next response returned by mailbox-delivery seam calls.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn push_delivery_response(
             &self,
             response: Result<(), EngineSeamError>,
@@ -505,11 +513,19 @@ pub(crate) mod test_support {
         }
 
         /// Returns a snapshot of seam operations in observed order.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn operations(&self) -> Result<Vec<FakeEngineOperation>, EngineSeamError> {
             Ok(self.state()?.operations.clone())
         }
 
         /// Returns a snapshot of delivered mailbox messages.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn delivered_messages(
             &self,
         ) -> Result<Vec<(WorkflowProcessHandle, DeliveredWorkflowMessage)>, EngineSeamError>
@@ -518,11 +534,19 @@ pub(crate) mod test_support {
         }
 
         /// Returns a snapshot of armed timer-wheel entries.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn armed_timers(&self) -> Result<Vec<TimerWheelEntry>, EngineSeamError> {
             Ok(self.state()?.armed_timers.clone())
         }
 
         /// Queues the next child-spawn response returned by the fake.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn push_child_spawn_response(
             &self,
             response: Result<ChildWorkflowSpawnResult, EngineSeamError>,
@@ -532,6 +556,10 @@ pub(crate) mod test_support {
         }
 
         /// Returns captured child-spawn requests in observed order.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn child_spawn_requests(
             &self,
         ) -> Result<Vec<ChildWorkflowSpawnRequest>, EngineSeamError> {
@@ -539,11 +567,19 @@ pub(crate) mod test_support {
         }
 
         /// Returns events recorded through the fake recorder seam.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
             Ok(self.state()?.recorded_events.clone())
         }
 
         /// Returns linked child workflow termination calls observed by the fake.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn terminated_child_workflows(
             &self,
         ) -> Result<Vec<(WorkflowId, WorkflowProcessHandle, u64)>, EngineSeamError> {
@@ -551,6 +587,10 @@ pub(crate) mod test_support {
         }
 
         /// Returns linked activity termination calls observed by the fake.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn terminated_activities(
             &self,
         ) -> Result<Vec<(WorkflowId, Pid, u64)>, EngineSeamError> {
@@ -558,6 +598,10 @@ pub(crate) mod test_support {
         }
 
         /// Simulates AE terminating a parent process and propagating exits to linked children.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn terminate_parent(&self, parent: &WorkflowId) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
             if let Some(children) = state.linked_children.get(parent).cloned() {
@@ -569,6 +613,10 @@ pub(crate) mod test_support {
         }
 
         /// Returns propagated linked-child exits observed by the fake.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn propagated_child_exits(
             &self,
         ) -> Result<Vec<(WorkflowId, WorkflowId)>, EngineSeamError> {

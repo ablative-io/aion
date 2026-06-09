@@ -7,6 +7,7 @@ description = "Rust remote-worker SDK for executing Aion activities over the gRP
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-worker"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "worker", "activities"]
 categories = ["asynchronous", "development-tools"]
 

@@ -2,6 +2,14 @@
 
 Rust remote-worker SDK for registering typed Aion activities and serving them from an `aion-server` task queue.
 
+## Key public types
+
+- `Worker`, `WorkerBuilder`, and `WorkerConfig` configure and run a remote worker.
+- `ActivityRegistry`, `TypedActivityDispatcher`, and `ActivityDispatcher` register activity handlers.
+- `ActivityContext`, `HeartbeatRequest`, and cancellation handles provide per-task context.
+- `WorkerSession`, `GrpcWorkerSession`, and `WorkerSessionEvent` model the worker protocol.
+- `ActivityFailure`, `WorkerError`, and `WorkerConfigBuildError` report handler and runtime failures.
+
 ## Install
 
 ```toml

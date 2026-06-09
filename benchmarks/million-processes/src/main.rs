@@ -4,7 +4,7 @@
 //! durable workflow. This demonstrates the per-process memory overhead that
 //! makes Aion competitive at scale where goroutine-based engines cannot.
 //!
-//! Usage: cargo run --release -p million-processes [count]
+//! Usage: `cargo run --release -p million-processes [count]`
 //!   count defaults to 100_000
 
 use std::time::Instant;

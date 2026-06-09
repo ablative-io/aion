@@ -1,6 +1,8 @@
-//! Module declarations.
+//! Worker activity dispatch runtime support.
 
+/// Typed activity dispatch and payload conversion helpers.
 pub mod dispatch;
+/// Activity polling loop and shutdown primitives.
 pub mod loop_;
 
 pub use dispatch::{TypedActivityDispatcher, decode_payload, encode_payload};

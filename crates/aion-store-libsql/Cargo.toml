@@ -7,6 +7,7 @@ description = "Durable libSQL-backed event store implementation for Aion workflo
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-store-libsql"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "libsql", "persistence"]
 categories = ["asynchronous", "database"]
 

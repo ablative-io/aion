@@ -14,7 +14,7 @@ use crate::{
     ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 
-/// Correct non-durable [`EventStore`] implementation for tests and backend equivalence.
+/// Correct non-durable [`crate::EventStore`] implementation for tests and backend equivalence.
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     state: Mutex<InMemoryState>,

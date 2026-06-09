@@ -1,22 +1,60 @@
-//! The core engine. Embeds beamr; owns workflow lifecycle, process-per-workflow management, the supervision tree, .aion module loading, durability and replay (durability module), and timers/signals/queries/children/concurrency (time module). Transport-agnostic.
+//! Transport-agnostic Aion workflow engine with durability, replay, timers, and supervision.
+//!
+//! The engine embeds beamr, loads `.aion` packages, owns workflow lifecycle and
+//! process residency, records and replays durable history, and exposes seams for
+//! activities, events, signals, queries, and server transports.
+//!
+//! # Example
+//!
+//! ```no_run
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use aion::EngineBuilder;
+//! use aion_store::InMemoryStore;
+//!
+//! let store = InMemoryStore::default();
+//! let engine = EngineBuilder::new()
+//!     .store(store.clone())
+//!     .visibility_store(store)
+//!     .build()
+//!     .await?;
+//! # let _ = engine;
+//! # Ok(())
+//! # }
+//! ```
 
 #![deny(unsafe_code)]
 
+/// Activity dispatch bridge and error propagation helpers.
 pub mod activity;
+/// Child-workflow spawn support.
 pub mod child;
+/// Deterministic concurrency combinators for workflow code.
 pub mod concurrency;
+/// Durable command recording, replay, and recovery support.
 pub mod durability;
+/// Engine builder, runtime APIs, and delegated seams.
 pub mod engine;
+/// Handle type exposed by embedded engine seams.
 pub mod engine_seam;
+/// Engine and routing error types.
 pub mod error;
+/// Workflow lifecycle start, transition, visibility, and termination helpers.
 pub mod lifecycle;
+/// `.aion` package loading into runtime modules.
 pub mod loader;
+/// Query dispatch services and mailbox support.
 pub mod query;
+/// Active workflow registry and handle residency tracking.
 pub mod registry;
+/// BEAM runtime configuration, handles, NIFs, and workflow process support.
 pub mod runtime;
+/// Schedule evaluation and cron parsing support.
 pub mod schedule;
+/// Signal routing and resume handoff support.
 pub mod signal;
+/// Supervision tree models for engines, workflow types, and workflow instances.
 pub mod supervision;
+/// Timer creation, recovery, and wake-up services.
 pub mod time;
 
 pub use activity::{

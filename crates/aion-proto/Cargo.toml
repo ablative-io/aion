@@ -7,6 +7,7 @@ description = "Shared gRPC and serde wire contracts for Aion servers, clients, a
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-proto"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "grpc", "protobuf"]
 categories = ["api-bindings", "asynchronous"]
 

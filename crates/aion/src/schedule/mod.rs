@@ -1,8 +1,12 @@
 //! Schedule trigger parsing, state projection, policy, and timer-driven evaluation.
 
+/// Timer-driven schedule evaluation orchestration.
 pub mod evaluator;
+/// Catch-up and overlap policy evaluation.
 pub mod policy;
+/// Schedule state projection from durable events.
 pub mod state;
+/// Cron parsing and next-fire-time calculation.
 pub mod trigger;
 
 pub use evaluator::{

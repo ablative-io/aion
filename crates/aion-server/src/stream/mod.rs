@@ -1,6 +1,8 @@
-//! Module declarations.
+//! Event subscription streaming surfaces.
 
+/// WebSocket frame encoding and subscription forwarding helpers.
 pub mod socket;
+/// Event subscription request mapping and store subscription helpers.
 pub mod subscribe;
 
 pub use socket::{

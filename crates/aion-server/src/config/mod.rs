@@ -12,7 +12,9 @@ use serde::Deserialize;
 
 use crate::error::ServerError;
 
+/// Environment variable configuration loader.
 pub mod env;
+/// File-based configuration loader.
 pub mod file;
 
 const DEFAULT_HTTP_ADDRESS: SocketAddr =

@@ -4,7 +4,7 @@ use aion_core::{TimerId, WorkflowId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Durable timer record returned by [`crate::EventStore::expired_timers`].
+/// Durable timer record returned by [`crate::ReadableEventStore::expired_timers`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TimerEntry {
     /// Workflow that owns the timer.

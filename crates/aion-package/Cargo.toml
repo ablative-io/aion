@@ -7,6 +7,7 @@ description = "Archive validation, content hashing, and namespacing for Aion wor
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-package"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "package", "archive"]
 categories = ["development-tools"]
 

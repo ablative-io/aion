@@ -7,6 +7,7 @@ description = "Transport-agnostic Aion workflow engine with durability, replay, 
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion"
+readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "engine", "replay"]
 categories = ["asynchronous", "development-tools"]
 
