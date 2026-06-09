@@ -445,6 +445,7 @@ mod tests {
             supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
             signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
+            visibility_reconciliation_task: None,
         }))
     }
 

@@ -621,7 +621,7 @@ mod tests {
         ManifestVersion, Package, PackageBuilder,
     };
     use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
-    use aion_store::{EventStore, InMemoryStore, WriteToken};
+    use aion_store::{InMemoryStore, ReadableEventStore, WritableEventStore, WriteToken};
     use chrono::Utc;
     use serde_json::json;
 
@@ -863,8 +863,8 @@ mod tests {
             } => {
                 assert_eq!(workflow_type, schedule_coordinator_workflow_type());
                 assert_eq!(
-                    *input,
-                    Payload::from_json(&json!({})).map_err(|error| {
+                    input,
+                    &Payload::from_json(&json!({})).map_err(|error| {
                         EngineError::Load {
                             reason: format!("failed to build expected payload: {error}"),
                         }

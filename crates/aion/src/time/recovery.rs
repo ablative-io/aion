@@ -106,7 +106,7 @@ mod tests {
     use std::time::Duration;
 
     use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
-    use aion_store::{InMemoryStore, ReadableEventStore, StoreError};
+    use aion_store::{EventStore, InMemoryStore, ReadableEventStore, StoreError};
     use chrono::{DateTime, Utc};
 
     use super::{TimerRecovery, TimerRecoveryError};
@@ -152,8 +152,9 @@ mod tests {
 
     fn recovery() -> (Arc<InMemoryStore>, Arc<FakeEngineHandle>, TimerRecovery) {
         let concrete_store = Arc::new(InMemoryStore::default());
+        let event_store: Arc<dyn EventStore> = concrete_store.clone();
         let store: Arc<dyn ReadableEventStore> = concrete_store.clone();
-        let engine = Arc::new(FakeEngineHandle::recording_to(store.clone()));
+        let engine = Arc::new(FakeEngineHandle::recording_to(event_store));
         let timer_service = Arc::new(TimerService::with_recorded_at(
             engine.clone(),
             store.clone(),
