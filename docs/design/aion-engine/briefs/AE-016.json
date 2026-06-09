@@ -1,0 +1,156 @@
+{
+    "id": "AE-016",
+    "cluster": "aion-engine",
+    "title": "Two-phase activity dispatch with async completion via MailboxSender",
+    "depends_on": ["NB-002", "AE-007"],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "Replace the blocking dirty-NIF activity dispatch with a two-phase normal-NIF dispatch plus BEAM-receive await, eliminating dirty scheduler thread consumption during long-running activities and enabling hundreds of concurrent activities per engine.",
+    "task": "Split run_activity/3 into dispatch_activity/3 (normal NIF) and await_activity_result/1 (BEAM selective receive). dispatch_activity records ActivityScheduled/Started, clones a MailboxSender for the caller PID, spawns a Tokio fire-and-forget task that calls ActivityDispatcher and delivers the result via MailboxSender::send. await_activity_result waits for the completion message and records ActivityCompleted/ActivityFailed. Update the ActivityDispatcher trait to an async fire-and-forget model. Update the aion_flow Gleam SDK to use the two-phase pattern. Ensure the Resolver handles both phases on replay.",
+    "requirements": [
+        {
+            "id": "R1",
+            "title": "dispatch_activity normal NIF",
+            "spec": "THE SYSTEM SHALL register dispatch_activity/3 as a normal (non-dirty) NIF that records ActivityScheduled and ActivityStarted events through the Recorder, obtains a MailboxSender for the calling BEAM process, spawns a Tokio task via Handle::spawn that calls the ActivityDispatcher and delivers the result via MailboxSender::send, and returns a correlation ID binary to the calling process.",
+            "acceptance": [
+                "dispatch_activity/3 is registered as NifEntry::new (not dirty).",
+                "ActivityScheduled and ActivityStarted events are recorded in the event store on dispatch.",
+                "The Tokio task holds a cloned MailboxSender (Clone+Send+Sync) captured at dispatch time.",
+                "The NIF returns within microseconds — no blocking on activity execution.",
+                "On replay, the Resolver returns the recorded correlation ID without spawning a Tokio task."
+            ],
+            "files": {
+                "create": [
+                    "crates/aion/src/runtime/nif_activity_dispatch.rs"
+                ],
+                "modify": [
+                    "crates/aion/src/runtime/engine_nifs.rs",
+                    "crates/aion/src/runtime/mod.rs",
+                    "crates/aion/src/runtime/nif_activity.rs"
+                ]
+            },
+            "checklist": [],
+            "stories": []
+        },
+        {
+            "id": "R2",
+            "title": "Tokio completion task with MailboxSender delivery",
+            "spec": "THE SYSTEM SHALL spawn a Tokio task from the dispatch NIF that calls ActivityDispatcher::dispatch, constructs a completion message tuple {activity_complete, CorrelationId, ResultBinary}, and delivers it to the workflow process via MailboxSender::send. On activity failure, the message SHALL be {activity_failed, CorrelationId, ErrorBinary}.",
+            "acceptance": [
+                "The Tokio task is spawned via tokio::runtime::Handle::spawn (fire-and-forget from the NIF).",
+                "MailboxSender::send is called from the Tokio worker thread with a structured Term tuple.",
+                "Activity success delivers {activity_complete, correlation_id, result_payload}.",
+                "Activity failure delivers {activity_failed, correlation_id, error_payload}.",
+                "The spawned task does not hold any BEAM scheduler resources."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "crates/aion/src/runtime/nif_activity_dispatch.rs",
+                    "crates/aion/src/activity/bridge.rs"
+                ]
+            },
+            "checklist": [],
+            "stories": []
+        },
+        {
+            "id": "R3",
+            "title": "await_activity_result BEAM receive",
+            "spec": "THE SYSTEM SHALL implement await_activity_result/1 as a NIF that performs a BEAM selective receive on the correlation ID, wakes when the completion message arrives, records ActivityCompleted or ActivityFailed through the Recorder, and returns the result to the calling Gleam code.",
+            "acceptance": [
+                "await_activity_result/1 blocks the BEAM process in a selective receive (zero NIF threads consumed during wait).",
+                "On receiving {activity_complete, id, result}, records ActivityCompleted and returns {ok, result}.",
+                "On receiving {activity_failed, id, error}, records ActivityFailed and returns {error, reason}.",
+                "On replay, the Resolver returns the cached ActivityCompleted/ActivityFailed result immediately without entering a receive."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "crates/aion/src/runtime/nif_activity_dispatch.rs",
+                    "crates/aion/src/runtime/engine_nifs.rs"
+                ]
+            },
+            "checklist": [],
+            "stories": []
+        },
+        {
+            "id": "R4",
+            "title": "ActivityDispatcher trait async adaptation",
+            "spec": "THE SYSTEM SHALL update the ActivityDispatcher trait from synchronous dispatch(&self, name, input, config) -> Result<String, String> to an async model compatible with fire-and-forget Tokio task execution. The trait SHALL support both the new async path and maintain backward compatibility for the existing server dispatcher.",
+            "acceptance": [
+                "ActivityDispatcher can be called from a Tokio task without blocking a BEAM thread.",
+                "The existing server-side dispatcher (gRPC worker dispatch) works with the new trait shape.",
+                "Test dispatchers can be constructed without async runtime setup."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "crates/aion/src/activity/bridge.rs"
+                ]
+            },
+            "checklist": [],
+            "stories": []
+        },
+        {
+            "id": "R5",
+            "title": "aion_flow Gleam SDK two-phase activity call",
+            "spec": "THE SYSTEM SHALL update the aion_flow Gleam SDK activity.run() to use the two-phase pattern: call dispatch_activity/3 to get a correlation ID, then call await_activity_result/1 to get the result. The SDK surface SHALL remain unchanged — activity.run() still returns the activity result directly.",
+            "acceptance": [
+                "aion_flow activity.run() internally calls dispatch_activity then await_activity_result.",
+                "The public API of activity.run() is unchanged — callers see no difference.",
+                "The @external declarations in aion/internal/ffi.gleam are updated for the new NIF names.",
+                "gleam build succeeds for aion_flow and examples/hello-world."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "gleam/aion_flow/src/aion/activity.gleam",
+                    "gleam/aion_flow/src/aion/internal/ffi.gleam"
+                ]
+            },
+            "checklist": [],
+            "stories": []
+        },
+        {
+            "id": "R6",
+            "title": "Remove blocking run_activity NIF",
+            "spec": "THE SYSTEM SHALL remove the old blocking run_activity/3 NIF entry and its implementation once the two-phase dispatch is wired end-to-end.",
+            "acceptance": [
+                "run_activity/3 is no longer registered in engine_nif_entries().",
+                "nif_activity.rs blocking dispatch path is removed.",
+                "No dirty NIF entries remain for activity dispatch.",
+                "All tests pass with the new dispatch model."
+            ],
+            "files": {
+                "create": [],
+                "modify": [
+                    "crates/aion/src/runtime/engine_nifs.rs",
+                    "crates/aion/src/runtime/nif_activity.rs"
+                ]
+            },
+            "checklist": [],
+            "stories": []
+        }
+    ],
+    "boundaries": [
+        "SHALL split run_activity into dispatch_activity (normal NIF) and await_activity_result (BEAM receive).",
+        "SHALL use MailboxSender::send from Tokio worker threads for completion delivery.",
+        "SHALL record the same event sequence: ActivityScheduled, ActivityStarted, ActivityCompleted/Failed.",
+        "SHALL ensure Resolver handles both phases on replay without spawning Tokio tasks.",
+        "SHALL NOT change the aion_flow public SDK surface — activity.run() signature stays the same.",
+        "SHALL NOT introduce dirty NIF usage for dispatch — the dispatch phase is a normal NIF.",
+        "SHALL NOT require any beamr changes — all primitives (MailboxSender, Handle::spawn) already exist.",
+        "SHALL NOT change the event schema or EventStore contract."
+    ],
+    "verification": [
+        "cargo clippy --workspace --all-targets -- -D warnings passes.",
+        "cargo test --workspace passes.",
+        "cargo fmt --check passes.",
+        "dispatch_activity NIF is registered as normal (not dirty) in engine_nif_entries().",
+        "No dirty NIF entries exist for activity dispatch after migration.",
+        "Integration test: dispatch + await round-trips correctly with a test dispatcher.",
+        "Replay test: recorded history replays both phases without live dispatch.",
+        "gleam build succeeds for aion_flow and examples/hello-world."
+    ]
+}
