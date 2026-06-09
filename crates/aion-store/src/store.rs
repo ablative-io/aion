@@ -65,6 +65,12 @@ pub trait ReadableEventStore: Send + Sync + 'static {
     async fn read_run_chain(&self, workflow_id: &WorkflowId)
     -> Result<Vec<RunSummary>, StoreError>;
 
+    /// Lists every workflow identifier that has at least one event in history.
+    ///
+    /// Unlike [`Self::list_active`], this includes terminal workflows and exists to let projection
+    /// repair jobs reconcile derived indexes against the authoritative event history.
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError>;
+
     /// Lists workflow identifiers whose projected status is non-terminal.
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError>;
 

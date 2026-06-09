@@ -316,7 +316,8 @@ impl Recorder {
             parent_run_id,
         })
         .await?;
-        self.upsert_visibility_projection().await
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
     }
 
     /// Records a validated search-attribute update for this workflow.
@@ -341,7 +342,8 @@ impl Recorder {
             attributes,
         })
         .await?;
-        self.upsert_visibility_projection().await
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
     }
 
     /// Records activity scheduling.
@@ -652,6 +654,21 @@ impl Recorder {
         visibility.store.record_visibility(record).await?;
         Ok(())
     }
+
+    async fn upsert_visibility_projection_nonfatal(&self) {
+        if let Err(error) = self.upsert_visibility_projection().await {
+            let run_id = self
+                .visibility
+                .as_ref()
+                .map(|visibility| &visibility.run_id);
+            tracing::warn!(
+                workflow_id = %self.workflow_id,
+                run_id = run_id.map(ToString::to_string).as_deref().unwrap_or("unknown"),
+                error = %error,
+                "visibility upsert failed after durable append; crash-consistency window remains until reconciliation repairs visibility"
+            );
+        }
+    }
 }
 
 fn visibility_record_from_history(
@@ -717,19 +734,44 @@ fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAt
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::io;
+    use std::sync::{Arc, Mutex};
 
     use aion_core::{
         Event, Payload, SearchAttributeError, SearchAttributeSchema, SearchAttributeType,
         SearchAttributeValue, TimerId,
     };
-    use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
+    use aion_store::visibility::{
+        ListWorkflowsFilter, VisibilityRecord, VisibilityStore, WorkflowSummary,
+    };
     use aion_store::{EventStore, InMemoryStore, StoreError, WriteToken};
+    use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
     use super::Recorder;
     use crate::durability::DurabilityError;
+
+    #[derive(Debug)]
+    struct FailingVisibilityStore;
+
+    #[async_trait]
+    impl VisibilityStore for FailingVisibilityStore {
+        async fn record_visibility(&self, _record: VisibilityRecord) -> Result<(), StoreError> {
+            Err(StoreError::Backend(String::from("visibility unavailable")))
+        }
+
+        async fn list_workflows(
+            &self,
+            _filter: ListWorkflowsFilter,
+        ) -> Result<Vec<WorkflowSummary>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn count_workflows(&self, _filter: ListWorkflowsFilter) -> Result<u64, StoreError> {
+            Ok(0)
+        }
+    }
 
     fn workflow_id(value: u128) -> aion_core::WorkflowId {
         aion_core::WorkflowId::new(uuid::Uuid::from_u128(value))

@@ -67,6 +67,10 @@ impl ReadableEventStore for StoreOpenResult {
         self.store()?.read_run_chain(workflow_id).await
     }
 
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.store()?.list_workflow_ids().await
+    }
+
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         self.store()?.list_active().await
     }

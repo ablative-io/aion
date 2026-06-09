@@ -37,3 +37,4 @@ saffron.workspace = true
 [dev-dependencies]
 aion-package = { version = "0.1.0", path = "../aion-package", features = ["test-support"] }
 beamr = { workspace = true, features = ["test-support"] }
+tracing-subscriber.workspace = true

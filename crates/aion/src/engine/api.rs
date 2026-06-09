@@ -10,6 +10,7 @@ use aion_core::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
 
 use crate::durability::Recorder;
 use crate::schedule::{
@@ -50,6 +51,7 @@ pub struct Engine {
     delegated: DelegatedSeams,
     signal_handoff: Arc<SignalResumeHandoff>,
     shutdown_gate: ShutdownGate,
+    visibility_reconciliation_task: Option<JoinHandle<()>>,
 }
 
 /// Components required to construct an [`Engine`].
@@ -62,6 +64,7 @@ pub(crate) struct EngineComponents {
     pub(crate) supervision: Arc<SupervisionTree>,
     pub(crate) delegated: DelegatedSeams,
     pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
+    pub(crate) visibility_reconciliation_task: Option<JoinHandle<()>>,
 }
 
 impl Engine {
@@ -77,6 +80,7 @@ impl Engine {
             supervision,
             delegated,
             signal_handoff,
+            visibility_reconciliation_task,
         } = components;
         let schedule_coordinator_workflow_id = schedule_coordinator_workflow_id();
         let schedule_recorder = Arc::new(AsyncMutex::new(Recorder::new(
@@ -111,6 +115,7 @@ impl Engine {
             delegated,
             signal_handoff,
             shutdown_gate: ShutdownGate::default(),
+            visibility_reconciliation_task,
         }
     }
 
@@ -678,6 +683,9 @@ impl Engine {
     ///
     /// Returns registry poison or runtime shutdown failures as typed errors.
     pub fn shutdown(&self) -> Result<(), EngineError> {
+        if let Some(task) = &self.visibility_reconciliation_task {
+            task.abort();
+        }
         self.shutdown_gate.close_and_wait()?;
         self.runtime.shutdown()
     }
@@ -1115,6 +1123,7 @@ mod tests {
             supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::default(),
             signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
+            visibility_reconciliation_task: None,
         }))
     }
 
