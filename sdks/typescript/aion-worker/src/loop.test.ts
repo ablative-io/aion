@@ -112,15 +112,15 @@ describe("runWorkerLoop", () => {
 		await runWorkerLoop({
 			config: config(1),
 			session,
-			dispatcher,
-			logger: {
-				info: () => {},
-				warn: () => {},
-				error: (message, fields) => {
-					warnings.push(`${message}:${String(fields?.retryable)}`);
+				dispatcher,
+				logger: {
+					info: () => {},
+					warn: (message, fields) => {
+						warnings.push(`${message}:${String(fields?.retryable)}`);
+					},
+					error: () => {},
 				},
-			},
-		});
+			});
 
 		expect(session.reports).toEqual(["1"]);
 		expect(warnings).toEqual([

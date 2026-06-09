@@ -22,6 +22,7 @@ export type DispatchOutcome =
 export interface ActivityDispatcher {
 	activityTypes(): readonly string[];
 	dispatch(task: ActivityTask): Promise<DispatchOutcome>;
+	cancelAll?(): void;
 }
 
 export interface RunWorkerLoopOptions {
@@ -153,7 +154,7 @@ async function dispatchWithClassification(
 		return await options.dispatcher.dispatch(task);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		options.logger?.error("worker dispatcher threw unclassified error", {
+		options.logger?.warn("worker dispatcher threw unclassified error", {
 			activityId: task.activityId,
 			activityType: task.activityType,
 			retryable: true,

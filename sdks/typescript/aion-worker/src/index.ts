@@ -1,4 +1,19 @@
 export type {
+	ActivityDefinition,
+	ActivityHandler,
+	ActivityRegistryOptions,
+} from "./activity.js";
+export {
+	ActivityRegistry,
+	decodeJsonPayload,
+	defineActivity,
+	encodeJsonPayload,
+} from "./activity.js";
+export type { ActivityContextOptions, HeartbeatSender } from "./context.js";
+export { ActivityCancellationHandle, ActivityContext } from "./context.js";
+export type { ActivityErrorOptions, FailureDetail } from "./errors.js";
+export { RetryableError, TerminalError } from "./errors.js";
+export type {
 	ActivityDispatcher,
 	DispatchOutcome,
 	RunWorkerLoopOptions,
@@ -38,3 +53,5 @@ export {
 	encodePayload,
 	GrpcWorkerSession,
 } from "./session.js";
+export type { WorkerActivities, WorkerOptions, WorkerRunOptions } from "./worker.js";
+export { Worker } from "./worker.js";
