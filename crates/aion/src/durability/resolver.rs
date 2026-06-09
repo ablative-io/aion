@@ -48,6 +48,15 @@ impl Resolver {
             .map(ResolvedCommand::into_outcome)
     }
 
+    /// Returns the correlation ordinal at the current replay cursor for the requested family.
+    #[must_use]
+    pub fn next_command_ordinal(&self, family: RecordedEventFamily) -> Option<u64> {
+        self.cursor.next_key(family).and_then(|key| match key {
+            CorrelationKey::Activity(ordinal) | CorrelationKey::Child(ordinal) => Some(ordinal),
+            CorrelationKey::Signal { .. } | CorrelationKey::Timer(_) => None,
+        })
+    }
+
     /// Resolves a command and includes the consumed recorded timestamp for replay bookkeeping.
     ///
     /// The returned [`ResolvedCommand`] preserves the existing recorded/resume-live decision while

@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use aion_core::{RunId, WorkflowId};
+use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId};
 use aion_store::EventStore;
 use beamr::atom::Atom;
 use beamr::term::Term;
@@ -14,7 +14,8 @@ use tokio::sync::Mutex;
 
 use crate::EngineError;
 use crate::durability::{
-    Command, DurabilityError, HistoryCursor, Recorder, ResolveOutcome, Resolver,
+    Command, DurabilityError, HistoryCursor, RecordedEventFamily, Recorder, ResolveOutcome,
+    Resolver,
 };
 use crate::registry::{Registry, WorkflowHandle};
 
@@ -175,6 +176,14 @@ impl NifContext {
         self.handle.run_id()
     }
 
+    /// Returns the next deterministic activity key ordinal.
+    #[must_use]
+    pub fn next_activity_ordinal(&self) -> u64 {
+        self.resolver
+            .next_command_ordinal(RecordedEventFamily::Activity)
+            .unwrap_or_else(|| self.current_recorder_head())
+    }
+
     /// Returns the runtime process identifier for the resolved handle.
     #[must_use]
     pub const fn pid(&self) -> u64 {
@@ -206,6 +215,86 @@ impl NifContext {
                 f(&mut recorder).await
             })
             .map_err(Into::into)
+    }
+
+    /// Records activity scheduling and start through the workflow's single-writer recorder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_activity_scheduled_started(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        activity_id: ActivityId,
+        activity_type: String,
+        input: Payload,
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder
+                    .record_activity_scheduled(
+                        recorded_at,
+                        activity_id.clone(),
+                        activity_type,
+                        input,
+                    )
+                    .await?;
+                recorder
+                    .record_activity_started(recorded_at, activity_id)
+                    .await
+            })
+            .map_err(Into::into)
+    }
+
+    /// Records successful activity completion through the workflow's single-writer recorder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_activity_completed(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        activity_id: ActivityId,
+        result: Payload,
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder
+                    .record_activity_completed(recorded_at, activity_id, result)
+                    .await
+            })
+            .map_err(Into::into)
+    }
+
+    /// Records terminal activity failure through the workflow's single-writer recorder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_activity_failed(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        activity_id: ActivityId,
+        error: ActivityError,
+        attempt: u32,
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder
+                    .record_activity_failed(recorded_at, activity_id, error, attempt)
+                    .await
+            })
+            .map_err(Into::into)
+    }
+
+    fn current_recorder_head(&self) -> u64 {
+        self.tokio_handle.block_on(async {
+            let recorder = self.recorder.lock().await;
+            recorder.current_head()
+        })
     }
 
     /// Resolves a workflow command against recorded history before any live side effect runs.

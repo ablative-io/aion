@@ -91,6 +91,18 @@ impl HistoryCursor {
         self.position
     }
 
+    /// Returns the next matchable correlation key for `family` without consuming history.
+    #[must_use]
+    pub fn next_key(&self, family: RecordedEventFamily) -> Option<CorrelationKey> {
+        let index = self.next_matchable_index()?;
+        let descriptor = self.descriptor_at(index, &self.events[index]);
+        if descriptor.family == Some(family) {
+            descriptor.key
+        } else {
+            None
+        }
+    }
+
     /// Resolves the next recorded outcome for the expected family and correlation key.
     #[must_use]
     pub fn resolve_next(

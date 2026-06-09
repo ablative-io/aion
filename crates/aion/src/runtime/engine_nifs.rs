@@ -9,10 +9,8 @@ use std::cell::RefCell;
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
 use beamr::term::boxed;
-
-use crate::activity::bridge::activity_dispatcher;
 
 use super::nif::{Mfa, NifEntry};
 
@@ -48,19 +46,9 @@ fn alloc_tuple_term(elements: &[Term]) -> Option<Term> {
     Some(term)
 }
 
-fn ok_result_term(value: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(value.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::OK), value_term])
-}
-
 fn error_result_term(message: &str) -> Option<Term> {
     let value_term = alloc_binary_term(message.as_bytes())?;
     alloc_tuple_term(&[Term::atom(Atom::ERROR), value_term])
-}
-
-fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
-    String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
 /// NIF backing `aion_flow_ffi:run_activity/3`.
@@ -69,49 +57,7 @@ fn decode_string_arg(term: Term) -> Result<String, String> {
 /// `NifContext`'s one-call retention window), then fresh allocations for
 /// the return value are parked for the scheduler to copy.
 fn run_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    if args.len() > 255 {
-        return Err(Term::NIL);
-    }
-
-    if args.len() != 3 {
-        let msg = format!("run_activity: expected 3 arguments, got {}", args.len());
-        return Ok(error_result_term(&msg).unwrap_or(Term::NIL));
-    }
-
-    let name = match decode_string_arg(args[0]) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!("run_activity name: {e}");
-            return Ok(error_result_term(&msg).unwrap_or(Term::NIL));
-        }
-    };
-    let input = match decode_string_arg(args[1]) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!("run_activity input: {e}");
-            return Ok(error_result_term(&msg).unwrap_or(Term::NIL));
-        }
-    };
-    let config = match decode_string_arg(args[2]) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!("run_activity config: {e}");
-            return Ok(error_result_term(&msg).unwrap_or(Term::NIL));
-        }
-    };
-
-    let Some(dispatcher) = activity_dispatcher() else {
-        return Ok(error_result_term(
-            "no activity dispatcher configured — \
-             set one via EngineBuilder::activity_dispatcher",
-        )
-        .unwrap_or(Term::NIL));
-    };
-
-    match dispatcher.dispatch_from_process(&name, &input, &config, ctx.pid()) {
-        Ok(result) => Ok(ok_result_term(&result).unwrap_or(Term::NIL)),
-        Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
-    }
+    super::nif_activity::run_activity_impl(args, ctx)
 }
 
 fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
