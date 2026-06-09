@@ -68,6 +68,57 @@ async fn signal_records_history_and_delivers_mailbox_marker()
 }
 
 #[tokio::test]
+async fn resident_delivery_failure_returns_typed_error_after_recording_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .load_workflows(fixture_package("wait")?)
+        .build()
+        .await?;
+    let handle = engine
+        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .await?;
+    engine.runtime().cancel_pid(handle.pid())?;
+    let sent_payload = payload(&json!({ "wake": "recorded" }))?;
+
+    let error = engine
+        .signal(
+            handle.workflow_id(),
+            handle.run_id(),
+            "wake",
+            sent_payload.clone(),
+        )
+        .await
+        .err()
+        .ok_or("dead resident signal delivery unexpectedly succeeded")?;
+
+    assert!(matches!(
+        error,
+        EngineError::SignalRouter(aion::SignalRouterError::DeliveryFailed { .. })
+    ));
+    let history = store.read_history(handle.workflow_id()).await?;
+    let signal = history
+        .iter()
+        .find_map(|event| match event {
+            Event::SignalReceived { name, payload, .. } => Some((name, payload)),
+            _ => None,
+        })
+        .ok_or("SignalReceived event was not recorded before delivery failure")?;
+    assert_eq!(signal.0, "wake");
+    assert_eq!(signal.1, &sent_payload);
+    assert!(engine.runtime().signal_messages(handle.pid()).is_empty());
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn terminal_and_unknown_signals_return_errors_without_appending_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
