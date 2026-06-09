@@ -9,6 +9,7 @@ use beamr::atom::Atom;
 use beamr::term::Term;
 use beamr::term::binary;
 use beamr::term::boxed;
+use chrono::{DateTime, Utc};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
@@ -103,6 +104,7 @@ pub struct NifContext {
     recorder: Arc<Mutex<Recorder>>,
     tokio_handle: Handle,
     resolver: Resolver,
+    last_recorded_at: Option<DateTime<Utc>>,
 }
 
 impl NifContext {
@@ -153,6 +155,7 @@ impl NifContext {
                 recorder.read_history().await
             })?,
         };
+        let last_recorded_at = history.last().map(|event| *event.recorded_at());
         let cursor = HistoryCursor::new(history)?;
         let resolver = Resolver::new(workflow_id, cursor);
 
@@ -161,6 +164,7 @@ impl NifContext {
             recorder,
             tokio_handle,
             resolver,
+            last_recorded_at,
         })
     }
 
@@ -188,6 +192,18 @@ impl NifContext {
     #[must_use]
     pub const fn pid(&self) -> u64 {
         self.handle.pid()
+    }
+
+    /// Returns the recorded timestamp of the last event in the resolved history.
+    #[must_use]
+    pub const fn last_recorded_at(&self) -> Option<DateTime<Utc>> {
+        self.last_recorded_at
+    }
+
+    /// Returns and advances the workflow-local deterministic NIF call sequence.
+    #[must_use]
+    pub fn next_deterministic_sequence(&self) -> u64 {
+        self.handle.next_deterministic_nif_sequence()
     }
 
     /// Returns the shared single-writer recorder for the resolved workflow.

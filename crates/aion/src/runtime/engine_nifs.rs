@@ -13,6 +13,7 @@ use beamr::term::binary::{self, Binary};
 use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
+use super::nif_determinism::{now_impl, random_impl, random_int_impl};
 use super::nif_timer;
 
 const FFI_MODULE: &str = "aion_flow_ffi";
@@ -89,9 +90,9 @@ fn dirty_entry(function: &str, arity: u8) -> NifEntry {
 pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
     vec![
         NifEntry::dirty(Mfa::new(FFI_MODULE, "run_activity", 3), run_activity),
-        dirty_entry("now", 0),
-        dirty_entry("random", 0),
-        dirty_entry("random_int", 2),
+        NifEntry::new(Mfa::new(FFI_MODULE, "now", 0), now_impl),
+        NifEntry::new(Mfa::new(FFI_MODULE, "random", 0), random_impl),
+        NifEntry::new(Mfa::new(FFI_MODULE, "random_int", 2), random_int_impl),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "sleep", 1), nif_timer::sleep_impl),
         NifEntry::dirty(
             Mfa::new(FFI_MODULE, "start_timer", 2),
@@ -211,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn registers_all_engine_nifs_as_unique_dirty_entries() {
+    fn registers_all_engine_nifs_as_unique_entries_with_pure_determinism_nifs() {
         let entries = engine_nif_entries();
         let unique = entries
             .iter()
@@ -220,7 +221,21 @@ mod tests {
 
         assert_eq!(entries.len(), 18);
         assert_eq!(unique.len(), entries.len());
-        assert!(entries.iter().all(|entry| entry.is_dirty));
+        for deterministic in ["now", "random", "random_int"] {
+            let found = entries
+                .iter()
+                .any(|entry| entry.mfa.function == deterministic && !entry.is_dirty);
+            assert!(found, "{deterministic} should be a registered normal NIF");
+        }
+        assert!(
+            entries
+                .iter()
+                .filter(|entry| !matches!(
+                    entry.mfa.function.as_str(),
+                    "now" | "random" | "random_int"
+                ))
+                .all(|entry| entry.is_dirty)
+        );
     }
 
     #[test]
