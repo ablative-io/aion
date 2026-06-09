@@ -221,8 +221,8 @@ fn run_live_activity(
     }
 }
 
-fn encoded_results(results: Vec<String>) -> Result<Term, Term> {
-    let payload = serde_json::to_vec(&results).map_err(|error| {
+fn encoded_results(results: &[String]) -> Result<Term, Term> {
+    let payload = serde_json::to_vec(results).map_err(|error| {
         error_result_term(&format!("collect: failed to encode result list: {error}"))
             .unwrap_or(Term::NIL)
     })?;
@@ -262,7 +262,7 @@ fn collect_all_with_context(
             }
         }
     }
-    encoded_results(results)
+    encoded_results(&results)
 }
 
 fn collect_race_with_context(
