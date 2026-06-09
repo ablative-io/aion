@@ -41,6 +41,24 @@ pub enum WorkflowPackageSource {
     Package(Box<Package>),
 }
 
+fn load_workflow_sources(
+    runtime: &RuntimeHandle,
+    sources: Vec<WorkflowPackageSource>,
+) -> Result<LoadedWorkflows, EngineError> {
+    let mut loaded_workflows = LoadedWorkflows::new();
+    for source in sources {
+        let package = package_from_source(source)?;
+        let loaded_workflow = loaded_workflows.load_package(runtime, &package)?;
+        tracing::info!(
+            workflow_type = loaded_workflow.workflow_type(),
+            content_hash = %loaded_workflow.version(),
+            "loaded workflow package {}",
+            loaded_workflow.workflow_type()
+        );
+    }
+    Ok(loaded_workflows)
+}
+
 impl From<Package> for WorkflowPackageSource {
     fn from(package: Package) -> Self {
         Self::Package(Box::new(package))
@@ -347,17 +365,7 @@ impl EngineBuilder {
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);
         runtime.install_nifs(nifs)?;
 
-        let mut loaded_workflows = LoadedWorkflows::new();
-        for source in self.workflow_sources {
-            let package = package_from_source(source)?;
-            let loaded_workflow = loaded_workflows.load_package(runtime.as_ref(), &package)?;
-            tracing::info!(
-                workflow_type = loaded_workflow.workflow_type(),
-                content_hash = %loaded_workflow.version(),
-                "loaded workflow package {}",
-                loaded_workflow.workflow_type()
-            );
-        }
+        let loaded_workflows = load_workflow_sources(runtime.as_ref(), self.workflow_sources)?;
 
         let registry = self
             .active_registry
