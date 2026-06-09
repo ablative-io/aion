@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use crate::output::{
-    AcknowledgementOutput, DescribeOutput, QueryOutput, print_json, start_output, to_value,
+    AcknowledgementOutput, QueryOutput, describe_output, print_json, start_output, to_value,
 };
 use crate::payload::{
     empty_query_payload, json_payload, parse_run_id, parse_status, parse_workflow_id,
@@ -101,6 +101,9 @@ enum Command {
         /// Specific run identifier. Defaults to the latest run when omitted.
         #[arg(long)]
         run_id: Option<String>,
+        /// Show raw payload byte arrays instead of decoded payloads.
+        #[arg(long)]
+        raw: bool,
     },
 }
 
@@ -149,7 +152,8 @@ async fn execute(client: &Client, command: &Command) -> Result<Value> {
         Command::Describe {
             workflow_id,
             run_id,
-        } => describe_workflow(client, workflow_id, run_id.as_deref()).await,
+            raw,
+        } => describe_workflow(client, workflow_id, run_id.as_deref(), *raw).await,
     }
 }
 
@@ -244,6 +248,7 @@ async fn describe_workflow(
     client: &Client,
     workflow_id: &str,
     run_id: Option<&str>,
+    raw: bool,
 ) -> Result<Value> {
     let workflow_id = parse_workflow_id(workflow_id)?;
     let run_id = run_id.map(parse_run_id).transpose()?;
@@ -251,10 +256,7 @@ async fn describe_workflow(
         .describe(&workflow_id, run_id.as_ref())
         .await
         .context("failed to describe workflow")?;
-    to_value(DescribeOutput {
-        summary: description.summary,
-        history: description.history,
-    })
+    describe_output(description.summary, description.history, raw)
 }
 
 fn normalize_endpoint(endpoint: &str) -> String {
@@ -267,7 +269,7 @@ fn normalize_endpoint(endpoint: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::{Cli, Command, normalize_endpoint};
 
@@ -277,17 +279,43 @@ mod tests {
     #[test]
     fn describe_accepts_optional_run_id() {
         let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--run-id", RUN_ID])
-            .expect("describe with --run-id should parse");
+            .unwrap_or_else(|error| panic!("describe with --run-id should parse: {error}"));
 
         let Command::Describe {
             workflow_id,
             run_id,
+            raw,
         } = cli.command
         else {
             panic!("expected describe command");
         };
         assert_eq!(workflow_id, WORKFLOW_ID);
         assert_eq!(run_id.as_deref(), Some(RUN_ID));
+        assert!(!raw);
+    }
+
+    #[test]
+    fn describe_accepts_raw_payload_flag() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--raw"])?;
+
+        let Command::Describe { raw, .. } = cli.command else {
+            anyhow::bail!("expected describe command");
+        };
+        assert!(raw);
+        Ok(())
+    }
+
+    #[test]
+    fn describe_help_documents_raw_payload_flag() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(describe) = command.find_subcommand_mut("describe") else {
+            anyhow::bail!("describe subcommand should be registered");
+        };
+        let help = describe.render_long_help().to_string();
+
+        assert!(help.contains("--raw"));
+        assert!(help.contains("Show raw payload byte arrays instead of decoded payloads"));
+        Ok(())
     }
 
     #[test]
