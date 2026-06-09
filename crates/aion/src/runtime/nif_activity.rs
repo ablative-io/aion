@@ -349,8 +349,8 @@ mod tests {
         }
     }
 
-    fn payload(value: serde_json::Value) -> Result<Payload, Box<dyn std::error::Error>> {
-        Ok(Payload::from_json(&value)?)
+    fn payload(value: &serde_json::Value) -> Result<Payload, Box<dyn std::error::Error>> {
+        Ok(Payload::from_json(value)?)
     }
 
     fn envelope(
@@ -371,12 +371,14 @@ mod tests {
         ContentHash::from_bytes([3; 32])
     }
 
+    type TestContext = (NifContext, Arc<dyn EventStore>, aion_core::WorkflowId);
+
     fn context_with_history(
         runtime: &tokio::runtime::Runtime,
         pid: u64,
         workflow_id: aion_core::WorkflowId,
         history: &[Event],
-    ) -> Result<(NifContext, Arc<dyn EventStore>, aion_core::WorkflowId), Box<dyn std::error::Error>>
+    ) -> Result<TestContext, Box<dyn std::error::Error>>
     {
         let registry = Registry::default();
         let run_id = aion_core::RunId::new_v4();
@@ -428,13 +430,13 @@ mod tests {
         clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
         let workflow_id = aion_core::WorkflowId::new_v4();
-        let result = payload(json!({ "ok": true }))?;
+        let result = payload(&json!({ "ok": true }))?;
         let history = vec![
             Event::ActivityScheduled {
                 envelope: envelope(&workflow_id, 1)?,
                 activity_id: ActivityId::from_sequence_position(0),
                 activity_type: "greet".to_owned(),
-                input: payload(json!({ "name": "Ada" }))?,
+                input: payload(&json!({ "name": "Ada" }))?,
             },
             Event::ActivityCompleted {
                 envelope: envelope(&workflow_id, 2)?,
