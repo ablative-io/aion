@@ -717,6 +717,32 @@ mod tests {
     }
 
     #[test]
+    fn zero_config_cli_workflow_package_uses_in_memory_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let original_dir = std::env::current_dir()?;
+        std::env::set_current_dir(temp_dir.path())?;
+
+        let cli = CliOverrides {
+            workflow_packages: vec!["hello-world.aion".into()],
+            ..CliOverrides::default()
+        };
+        let config = ServerConfig::load(&cli);
+
+        std::env::set_current_dir(&original_dir)?;
+        let config = config?;
+
+        assert_eq!(config.store.backend, StoreBackend::Memory);
+        assert_eq!(config.store.url, None);
+        assert_eq!(
+            config.workflow_packages,
+            vec![std::path::PathBuf::from("hello-world.aion")]
+        );
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
     fn cli_packages_are_additive() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = ServerConfig::from_slice(
             br#"
