@@ -24,29 +24,31 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x63ommon.proto\x12\x04\x61ion\"\x1a\n\nWorkflowId\x12\x0c\n\x04uuid\x18\x01 \x01(\t\"\x15\n\x05RunId\x12\x0c\n\x04uuid\x18\x01 \x01(\t\"\'\n\nActivityId\x12\x19\n\x11sequence_position\x18\x01 \x01(\x04\">\n\x07TimerId\x12\x0e\n\x04name\x18\x01 \x01(\tH\x00\x12\x1b\n\x11sequence_position\x18\x02 \x01(\x04H\x00\x42\x06\n\x04kind\".\n\x07Payload\x12\x14\n\x0c\x63ontent_type\x18\x01 \x01(\t\x12\r\n\x05\x62ytes\x18\x02 \x01(\x0c\"i\n\x0cWireEnvelope\x12\x11\n\tnamespace\x18\x01 \x01(\t\x12\x17\n\nrequest_id\x18\x02 \x01(\tH\x00\x88\x01\x01\x12\x1e\n\x07payload\x18\x03 \x01(\x0b\x32\r.aion.PayloadB\r\n\x0b_request_id\"?\n\tWireError\x12!\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x13.aion.WireErrorCode\x12\x0f\n\x07message\x18\x02 \x01(\t*\xc7\x01\n\x0eWorkflowStatus\x12\x1f\n\x1bWORKFLOW_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n\x17WORKFLOW_STATUS_RUNNING\x10\x01\x12\x1d\n\x19WORKFLOW_STATUS_COMPLETED\x10\x02\x12\x1a\n\x16WORKFLOW_STATUS_FAILED\x10\x03\x12\x1d\n\x19WORKFLOW_STATUS_CANCELLED\x10\x04\x12\x1d\n\x19WORKFLOW_STATUS_TIMED_OUT\x10\x05*\xbc\x02\n\rWireErrorCode\x12\x1f\n\x1bWIRE_ERROR_CODE_UNSPECIFIED\x10\x00\x12\x1d\n\x19WIRE_ERROR_CODE_NOT_FOUND\x10\x01\x12$\n WIRE_ERROR_CODE_NAMESPACE_DENIED\x10\x02\x12%\n!WIRE_ERROR_CODE_SEQUENCE_CONFLICT\x10\x03\x12!\n\x1dWIRE_ERROR_CODE_UNKNOWN_QUERY\x10\x04\x12!\n\x1dWIRE_ERROR_CODE_QUERY_TIMEOUT\x10\x05\x12\x1f\n\x1bWIRE_ERROR_CODE_NOT_RUNNING\x10\x06\x12\x1a\n\x16WIRE_ERROR_CODE_LAGGED\x10\x07\x12\x1b\n\x17WIRE_ERROR_CODE_BACKEND\x10\x08\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x63ommon.proto\x12\x04\x61ion\"\x1a\n\nWorkflowId\x12\x0c\n\x04uuid\x18\x01 \x01(\t\"\x15\n\x05RunId\x12\x0c\n\x04uuid\x18\x01 \x01(\t\"\x1a\n\nScheduleId\x12\x0c\n\x04uuid\x18\x01 \x01(\t\"\'\n\nActivityId\x12\x19\n\x11sequence_position\x18\x01 \x01(\x04\">\n\x07TimerId\x12\x0e\n\x04name\x18\x01 \x01(\tH\x00\x12\x1b\n\x11sequence_position\x18\x02 \x01(\x04H\x00\x42\x06\n\x04kind\".\n\x07Payload\x12\x14\n\x0c\x63ontent_type\x18\x01 \x01(\t\x12\r\n\x05\x62ytes\x18\x02 \x01(\x0c\"i\n\x0cWireEnvelope\x12\x11\n\tnamespace\x18\x01 \x01(\t\x12\x17\n\nrequest_id\x18\x02 \x01(\tH\x00\x88\x01\x01\x12\x1e\n\x07payload\x18\x03 \x01(\x0b\x32\r.aion.PayloadB\r\n\x0b_request_id\"g\n\tWireError\x12!\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x13.aion.WireErrorCode\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x17\n\nerror_type\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\r\n\x0b_error_type*\xed\x01\n\x0eWorkflowStatus\x12\x1f\n\x1bWORKFLOW_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n\x17WORKFLOW_STATUS_RUNNING\x10\x01\x12\x1d\n\x19WORKFLOW_STATUS_COMPLETED\x10\x02\x12\x1a\n\x16WORKFLOW_STATUS_FAILED\x10\x03\x12\x1d\n\x19WORKFLOW_STATUS_CANCELLED\x10\x04\x12\x1d\n\x19WORKFLOW_STATUS_TIMED_OUT\x10\x05\x12$\n WORKFLOW_STATUS_CONTINUED_AS_NEW\x10\x06*\xdf\x02\n\rWireErrorCode\x12\x1f\n\x1bWIRE_ERROR_CODE_UNSPECIFIED\x10\x00\x12\x1d\n\x19WIRE_ERROR_CODE_NOT_FOUND\x10\x01\x12$\n WIRE_ERROR_CODE_NAMESPACE_DENIED\x10\x02\x12%\n!WIRE_ERROR_CODE_SEQUENCE_CONFLICT\x10\x03\x12!\n\x1dWIRE_ERROR_CODE_UNKNOWN_QUERY\x10\x04\x12!\n\x1dWIRE_ERROR_CODE_QUERY_TIMEOUT\x10\x05\x12\x1f\n\x1bWIRE_ERROR_CODE_NOT_RUNNING\x10\x06\x12\x1a\n\x16WIRE_ERROR_CODE_LAGGED\x10\x07\x12!\n\x1dWIRE_ERROR_CODE_INVALID_INPUT\x10\x08\x12\x1b\n\x17WIRE_ERROR_CODE_BACKEND\x10\tb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'common_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_WORKFLOWSTATUS']._serialized_start=399
-  _globals['_WORKFLOWSTATUS']._serialized_end=598
-  _globals['_WIREERRORCODE']._serialized_start=601
-  _globals['_WIREERRORCODE']._serialized_end=917
+  _globals['_WORKFLOWSTATUS']._serialized_start=467
+  _globals['_WORKFLOWSTATUS']._serialized_end=704
+  _globals['_WIREERRORCODE']._serialized_start=707
+  _globals['_WIREERRORCODE']._serialized_end=1058
   _globals['_WORKFLOWID']._serialized_start=22
   _globals['_WORKFLOWID']._serialized_end=48
   _globals['_RUNID']._serialized_start=50
   _globals['_RUNID']._serialized_end=71
-  _globals['_ACTIVITYID']._serialized_start=73
-  _globals['_ACTIVITYID']._serialized_end=112
-  _globals['_TIMERID']._serialized_start=114
-  _globals['_TIMERID']._serialized_end=176
-  _globals['_PAYLOAD']._serialized_start=178
-  _globals['_PAYLOAD']._serialized_end=224
-  _globals['_WIREENVELOPE']._serialized_start=226
-  _globals['_WIREENVELOPE']._serialized_end=331
-  _globals['_WIREERROR']._serialized_start=333
-  _globals['_WIREERROR']._serialized_end=396
+  _globals['_SCHEDULEID']._serialized_start=73
+  _globals['_SCHEDULEID']._serialized_end=99
+  _globals['_ACTIVITYID']._serialized_start=101
+  _globals['_ACTIVITYID']._serialized_end=140
+  _globals['_TIMERID']._serialized_start=142
+  _globals['_TIMERID']._serialized_end=204
+  _globals['_PAYLOAD']._serialized_start=206
+  _globals['_PAYLOAD']._serialized_end=252
+  _globals['_WIREENVELOPE']._serialized_start=254
+  _globals['_WIREENVELOPE']._serialized_end=359
+  _globals['_WIREERROR']._serialized_start=361
+  _globals['_WIREERROR']._serialized_end=464
 # @@protoc_insertion_point(module_scope)

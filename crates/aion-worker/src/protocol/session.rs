@@ -233,19 +233,7 @@ fn apply_auth_metadata(
 impl WorkerSession for GrpcWorkerSession {
     async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
         self.config = config.clone();
-        self.open_stream().await?;
-        let register = aion_proto::generated::RegisterWorker {
-            namespace: config.task_queue.clone(),
-            activity_types: self.activity_types.clone(),
-        };
-        self.send_to_server(aion_proto::generated::worker_to_server::Message::Register(
-            register,
-        ))
-        .await
-        .map_err(|error| match error {
-            WorkerError::Transport { source } => WorkerError::Handshake { source },
-            other => other,
-        })
+        self.open_stream().await
     }
 
     async fn register(

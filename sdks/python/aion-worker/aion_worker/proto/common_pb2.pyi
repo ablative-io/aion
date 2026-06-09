@@ -14,6 +14,7 @@ class WorkflowStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WORKFLOW_STATUS_FAILED: _ClassVar[WorkflowStatus]
     WORKFLOW_STATUS_CANCELLED: _ClassVar[WorkflowStatus]
     WORKFLOW_STATUS_TIMED_OUT: _ClassVar[WorkflowStatus]
+    WORKFLOW_STATUS_CONTINUED_AS_NEW: _ClassVar[WorkflowStatus]
 
 class WireErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -25,6 +26,7 @@ class WireErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WIRE_ERROR_CODE_QUERY_TIMEOUT: _ClassVar[WireErrorCode]
     WIRE_ERROR_CODE_NOT_RUNNING: _ClassVar[WireErrorCode]
     WIRE_ERROR_CODE_LAGGED: _ClassVar[WireErrorCode]
+    WIRE_ERROR_CODE_INVALID_INPUT: _ClassVar[WireErrorCode]
     WIRE_ERROR_CODE_BACKEND: _ClassVar[WireErrorCode]
 WORKFLOW_STATUS_UNSPECIFIED: WorkflowStatus
 WORKFLOW_STATUS_RUNNING: WorkflowStatus
@@ -32,6 +34,7 @@ WORKFLOW_STATUS_COMPLETED: WorkflowStatus
 WORKFLOW_STATUS_FAILED: WorkflowStatus
 WORKFLOW_STATUS_CANCELLED: WorkflowStatus
 WORKFLOW_STATUS_TIMED_OUT: WorkflowStatus
+WORKFLOW_STATUS_CONTINUED_AS_NEW: WorkflowStatus
 WIRE_ERROR_CODE_UNSPECIFIED: WireErrorCode
 WIRE_ERROR_CODE_NOT_FOUND: WireErrorCode
 WIRE_ERROR_CODE_NAMESPACE_DENIED: WireErrorCode
@@ -40,6 +43,7 @@ WIRE_ERROR_CODE_UNKNOWN_QUERY: WireErrorCode
 WIRE_ERROR_CODE_QUERY_TIMEOUT: WireErrorCode
 WIRE_ERROR_CODE_NOT_RUNNING: WireErrorCode
 WIRE_ERROR_CODE_LAGGED: WireErrorCode
+WIRE_ERROR_CODE_INVALID_INPUT: WireErrorCode
 WIRE_ERROR_CODE_BACKEND: WireErrorCode
 
 class WorkflowId(_message.Message):
@@ -49,6 +53,12 @@ class WorkflowId(_message.Message):
     def __init__(self, uuid: _Optional[str] = ...) -> None: ...
 
 class RunId(_message.Message):
+    __slots__ = ("uuid",)
+    UUID_FIELD_NUMBER: _ClassVar[int]
+    uuid: str
+    def __init__(self, uuid: _Optional[str] = ...) -> None: ...
+
+class ScheduleId(_message.Message):
     __slots__ = ("uuid",)
     UUID_FIELD_NUMBER: _ClassVar[int]
     uuid: str
@@ -87,9 +97,11 @@ class WireEnvelope(_message.Message):
     def __init__(self, namespace: _Optional[str] = ..., request_id: _Optional[str] = ..., payload: _Optional[_Union[Payload, _Mapping]] = ...) -> None: ...
 
 class WireError(_message.Message):
-    __slots__ = ("code", "message")
+    __slots__ = ("code", "message", "error_type")
     CODE_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_TYPE_FIELD_NUMBER: _ClassVar[int]
     code: WireErrorCode
     message: str
-    def __init__(self, code: _Optional[_Union[WireErrorCode, str]] = ..., message: _Optional[str] = ...) -> None: ...
+    error_type: str
+    def __init__(self, code: _Optional[_Union[WireErrorCode, str]] = ..., message: _Optional[str] = ..., error_type: _Optional[str] = ...) -> None: ...

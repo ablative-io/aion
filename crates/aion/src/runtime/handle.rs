@@ -305,19 +305,13 @@ impl RuntimeHandle {
         payload: Payload,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
-        self.signal_messages
-            .entry(workflow_pid)
-            .or_default()
-            .push((name, payload));
+        let mut messages = self.signal_messages.entry(workflow_pid).or_default();
+        messages.push((name, payload));
         let marker = self.atom_table.intern("aion_signal_received");
         if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
             Ok(())
         } else {
-            self.signal_messages
-                .entry(workflow_pid)
-                .and_modify(|messages| {
-                    let _ = messages.pop();
-                });
+            let _ = messages.pop();
             Err(runtime_error(format!(
                 "failed to deliver signal to workflow process {workflow_pid}"
             )))

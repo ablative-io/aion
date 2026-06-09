@@ -25,29 +25,31 @@ _sym_db = _symbol_database.Default()
 from . import common_pb2 as common__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cworker.proto\x12\x04\x61ion\x1a\x0c\x63ommon.proto\"\x93\x01\n\x0eWorkerToServer\x12(\n\x08register\x18\x01 \x01(\x0b\x32\x14.aion.RegisterWorkerH\x00\x12&\n\x06result\x18\x02 \x01(\x0b\x32\x14.aion.ActivityResultH\x00\x12$\n\theartbeat\x18\x03 \x01(\x0b\x32\x0f.aion.HeartbeatH\x00\x42\t\n\x07message\"?\n\x0eServerToWorker\x12\"\n\x04task\x18\x01 \x01(\x0b\x32\x12.aion.ActivityTaskH\x00\x42\t\n\x07message\";\n\x0eRegisterWorker\x12\x11\n\tnamespace\x18\x01 \x01(\t\x12\x16\n\x0e\x61\x63tivity_types\x18\x02 \x03(\t\"\x91\x01\n\x0c\x41\x63tivityTask\x12%\n\x0bworkflow_id\x18\x01 \x01(\x0b\x32\x10.aion.WorkflowId\x12%\n\x0b\x61\x63tivity_id\x18\x02 \x01(\x0b\x32\x10.aion.ActivityId\x12\x15\n\ractivity_type\x18\x03 \x01(\t\x12\x1c\n\x05input\x18\x04 \x01(\x0b\x32\r.aion.Payload\"\xb0\x01\n\x0e\x41\x63tivityResult\x12%\n\x0bworkflow_id\x18\x01 \x01(\x0b\x32\x10.aion.WorkflowId\x12%\n\x0b\x61\x63tivity_id\x18\x02 \x01(\x0b\x32\x10.aion.ActivityId\x12\x1f\n\x06result\x18\x03 \x01(\x0b\x32\r.aion.PayloadH\x00\x12$\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x13.aion.ActivityErrorH\x00\x42\t\n\x07outcome\"x\n\rActivityError\x12%\n\x04kind\x18\x01 \x01(\x0e\x32\x17.aion.ActivityErrorKind\x12\x0f\n\x07message\x18\x02 \x01(\t\x12#\n\x07\x64\x65tails\x18\x03 \x01(\x0b\x32\r.aion.PayloadH\x00\x88\x01\x01\x42\n\n\x08_details\"\x8c\x01\n\tHeartbeat\x12%\n\x0bworkflow_id\x18\x01 \x01(\x0b\x32\x10.aion.WorkflowId\x12%\n\x0b\x61\x63tivity_id\x18\x02 \x01(\x0b\x32\x10.aion.ActivityId\x12$\n\x08progress\x18\x03 \x01(\x0b\x32\r.aion.PayloadH\x00\x88\x01\x01\x42\x0b\n\t_progress*}\n\x11\x41\x63tivityErrorKind\x12#\n\x1f\x41\x43TIVITY_ERROR_KIND_UNSPECIFIED\x10\x00\x12!\n\x1d\x41\x43TIVITY_ERROR_KIND_RETRYABLE\x10\x01\x12 \n\x1c\x41\x43TIVITY_ERROR_KIND_TERMINAL\x10\x02\x32P\n\x0eWorkerProtocol\x12>\n\x0cStreamWorker\x12\x14.aion.WorkerToServer\x1a\x14.aion.ServerToWorker(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cworker.proto\x12\x04\x61ion\x1a\x0c\x63ommon.proto\"\x0e\n\x0c\x44rainRequest\"\x93\x01\n\x0eWorkerToServer\x12(\n\x08register\x18\x01 \x01(\x0b\x32\x14.aion.RegisterWorkerH\x00\x12&\n\x06result\x18\x02 \x01(\x0b\x32\x14.aion.ActivityResultH\x00\x12$\n\theartbeat\x18\x03 \x01(\x0b\x32\x0f.aion.HeartbeatH\x00\x42\t\n\x07message\"d\n\x0eServerToWorker\x12\"\n\x04task\x18\x01 \x01(\x0b\x32\x12.aion.ActivityTaskH\x00\x12#\n\x05\x64rain\x18\x02 \x01(\x0b\x32\x12.aion.DrainRequestH\x00\x42\t\n\x07message\";\n\x0eRegisterWorker\x12\x11\n\tnamespace\x18\x01 \x01(\t\x12\x16\n\x0e\x61\x63tivity_types\x18\x02 \x03(\t\"\x91\x01\n\x0c\x41\x63tivityTask\x12%\n\x0bworkflow_id\x18\x01 \x01(\x0b\x32\x10.aion.WorkflowId\x12%\n\x0b\x61\x63tivity_id\x18\x02 \x01(\x0b\x32\x10.aion.ActivityId\x12\x15\n\ractivity_type\x18\x03 \x01(\t\x12\x1c\n\x05input\x18\x04 \x01(\x0b\x32\r.aion.Payload\"\xb0\x01\n\x0e\x41\x63tivityResult\x12%\n\x0bworkflow_id\x18\x01 \x01(\x0b\x32\x10.aion.WorkflowId\x12%\n\x0b\x61\x63tivity_id\x18\x02 \x01(\x0b\x32\x10.aion.ActivityId\x12\x1f\n\x06result\x18\x03 \x01(\x0b\x32\r.aion.PayloadH\x00\x12$\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x13.aion.ActivityErrorH\x00\x42\t\n\x07outcome\"x\n\rActivityError\x12%\n\x04kind\x18\x01 \x01(\x0e\x32\x17.aion.ActivityErrorKind\x12\x0f\n\x07message\x18\x02 \x01(\t\x12#\n\x07\x64\x65tails\x18\x03 \x01(\x0b\x32\r.aion.PayloadH\x00\x88\x01\x01\x42\n\n\x08_details\"\x8c\x01\n\tHeartbeat\x12%\n\x0bworkflow_id\x18\x01 \x01(\x0b\x32\x10.aion.WorkflowId\x12%\n\x0b\x61\x63tivity_id\x18\x02 \x01(\x0b\x32\x10.aion.ActivityId\x12$\n\x08progress\x18\x03 \x01(\x0b\x32\r.aion.PayloadH\x00\x88\x01\x01\x42\x0b\n\t_progress*}\n\x11\x41\x63tivityErrorKind\x12#\n\x1f\x41\x43TIVITY_ERROR_KIND_UNSPECIFIED\x10\x00\x12!\n\x1d\x41\x43TIVITY_ERROR_KIND_RETRYABLE\x10\x01\x12 \n\x1c\x41\x43TIVITY_ERROR_KIND_TERMINAL\x10\x02\x32P\n\x0eWorkerProtocol\x12>\n\x0cStreamWorker\x12\x14.aion.WorkerToServer\x1a\x14.aion.ServerToWorker(\x01\x30\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'worker_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_ACTIVITYERRORKIND']._serialized_start=904
-  _globals['_ACTIVITYERRORKIND']._serialized_end=1029
-  _globals['_WORKERTOSERVER']._serialized_start=37
-  _globals['_WORKERTOSERVER']._serialized_end=184
-  _globals['_SERVERTOWORKER']._serialized_start=186
-  _globals['_SERVERTOWORKER']._serialized_end=249
-  _globals['_REGISTERWORKER']._serialized_start=251
-  _globals['_REGISTERWORKER']._serialized_end=310
-  _globals['_ACTIVITYTASK']._serialized_start=313
-  _globals['_ACTIVITYTASK']._serialized_end=458
-  _globals['_ACTIVITYRESULT']._serialized_start=461
-  _globals['_ACTIVITYRESULT']._serialized_end=637
-  _globals['_ACTIVITYERROR']._serialized_start=639
-  _globals['_ACTIVITYERROR']._serialized_end=759
-  _globals['_HEARTBEAT']._serialized_start=762
-  _globals['_HEARTBEAT']._serialized_end=902
-  _globals['_WORKERPROTOCOL']._serialized_start=1031
-  _globals['_WORKERPROTOCOL']._serialized_end=1111
+  _globals['_ACTIVITYERRORKIND']._serialized_start=957
+  _globals['_ACTIVITYERRORKIND']._serialized_end=1082
+  _globals['_DRAINREQUEST']._serialized_start=36
+  _globals['_DRAINREQUEST']._serialized_end=50
+  _globals['_WORKERTOSERVER']._serialized_start=53
+  _globals['_WORKERTOSERVER']._serialized_end=200
+  _globals['_SERVERTOWORKER']._serialized_start=202
+  _globals['_SERVERTOWORKER']._serialized_end=302
+  _globals['_REGISTERWORKER']._serialized_start=304
+  _globals['_REGISTERWORKER']._serialized_end=363
+  _globals['_ACTIVITYTASK']._serialized_start=366
+  _globals['_ACTIVITYTASK']._serialized_end=511
+  _globals['_ACTIVITYRESULT']._serialized_start=514
+  _globals['_ACTIVITYRESULT']._serialized_end=690
+  _globals['_ACTIVITYERROR']._serialized_start=692
+  _globals['_ACTIVITYERROR']._serialized_end=812
+  _globals['_HEARTBEAT']._serialized_start=815
+  _globals['_HEARTBEAT']._serialized_end=955
+  _globals['_WORKERPROTOCOL']._serialized_start=1084
+  _globals['_WORKERPROTOCOL']._serialized_end=1164
 # @@protoc_insertion_point(module_scope)

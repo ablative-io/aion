@@ -182,7 +182,6 @@ class GrpcWorkerSession:
     async def handshake(self, config: WorkerConfig) -> None:
         self._config = config
         await self._open_stream()
-        await self._send_register(self._activity_types)
 
     async def register(self, activity_types: Iterable[str], available_handlers: Iterable[str]) -> None:
         requested = list(activity_types)

@@ -17,6 +17,10 @@ ACTIVITY_ERROR_KIND_UNSPECIFIED: ActivityErrorKind
 ACTIVITY_ERROR_KIND_RETRYABLE: ActivityErrorKind
 ACTIVITY_ERROR_KIND_TERMINAL: ActivityErrorKind
 
+class DrainRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
 class WorkerToServer(_message.Message):
     __slots__ = ("register", "result", "heartbeat")
     REGISTER_FIELD_NUMBER: _ClassVar[int]
@@ -28,10 +32,12 @@ class WorkerToServer(_message.Message):
     def __init__(self, register: _Optional[_Union[RegisterWorker, _Mapping]] = ..., result: _Optional[_Union[ActivityResult, _Mapping]] = ..., heartbeat: _Optional[_Union[Heartbeat, _Mapping]] = ...) -> None: ...
 
 class ServerToWorker(_message.Message):
-    __slots__ = ("task",)
+    __slots__ = ("task", "drain")
     TASK_FIELD_NUMBER: _ClassVar[int]
+    DRAIN_FIELD_NUMBER: _ClassVar[int]
     task: ActivityTask
-    def __init__(self, task: _Optional[_Union[ActivityTask, _Mapping]] = ...) -> None: ...
+    drain: DrainRequest
+    def __init__(self, task: _Optional[_Union[ActivityTask, _Mapping]] = ..., drain: _Optional[_Union[DrainRequest, _Mapping]] = ...) -> None: ...
 
 class RegisterWorker(_message.Message):
     __slots__ = ("namespace", "activity_types")

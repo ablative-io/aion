@@ -146,7 +146,13 @@ async fn process_inbound(
                     let _ = session.pending.complete_activity(completion);
                 }
             }
-            generated::worker_to_server::Message::Register(_) => {}
+            generated::worker_to_server::Message::Register(_) => {
+                tracing::warn!(
+                    worker_id = ?session.worker_id,
+                    "ignoring subsequent RegisterWorker message; \
+                     only the first registration is accepted per stream"
+                );
+            }
             generated::worker_to_server::Message::Heartbeat(heartbeat_msg) => {
                 let _ = session.heartbeat.record_heartbeat(
                     session.worker_id,
