@@ -299,6 +299,11 @@ impl EngineBuilder {
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
         install_nif_runtime_context(Arc::clone(&registry), tokio::runtime::Handle::current());
+        crate::runtime::nif_timer::install_timer_nif_bridge(
+            Arc::clone(&registry),
+            Arc::clone(&store),
+            tokio::runtime::Handle::current(),
+        );
         if let Some(dispatcher) = activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }

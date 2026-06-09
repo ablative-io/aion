@@ -191,6 +191,8 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
             ),
         }),
         Event::TimerFired { .. } => Ok(recorded(Resolution::TimerFired, recorded_at)),
+        Event::TimerCancelled { .. } => Ok(recorded(Resolution::TimerCancelled, recorded_at)),
+        Event::TimerStarted { .. } => Ok(recorded(Resolution::TimerStarted, recorded_at)),
         Event::SignalReceived { payload, .. } => Ok(recorded(
             Resolution::SignalDelivered(payload.clone()),
             recorded_at,
@@ -203,19 +205,17 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
             Resolution::ChildFailed(error.clone()),
             recorded_at,
         )),
-        Event::TimerStarted { .. } | Event::ChildWorkflowStarted { .. } => {
-            Ok(ResolvedCommand::ResumeLive {
-                recorded_at: Some(recorded_at),
+        Event::ChildWorkflowStarted { .. } => Ok(ResolvedCommand::ResumeLive {
+            recorded_at: Some(recorded_at),
+        }),
+        Event::ActivityCancelled { .. } | Event::ChildWorkflowCancelled { .. } => {
+            Err(DurabilityError::HistoryShape {
+                reason: format!(
+                    "recorded cancellation outcome is not representable by AD-004 resolution: {}",
+                    event_kind(last)
+                ),
             })
         }
-        Event::ActivityCancelled { .. }
-        | Event::TimerCancelled { .. }
-        | Event::ChildWorkflowCancelled { .. } => Err(DurabilityError::HistoryShape {
-            reason: format!(
-                "recorded cancellation outcome is not representable by AD-004 resolution: {}",
-                event_kind(last)
-            ),
-        }),
         Event::WorkflowStarted { .. }
         | Event::WorkflowCompleted { .. }
         | Event::WorkflowFailed { .. }

@@ -74,8 +74,12 @@ pub enum Resolution {
     ActivityFailedTerminal(ActivityError),
     /// A recorded timer firing.
     TimerFired,
+    /// A recorded timer start without a terminal timer outcome yet.
+    TimerStarted,
     /// A recorded signal delivery with its payload.
     SignalDelivered(Payload),
+    /// A recorded timer cancellation.
+    TimerCancelled,
     /// A recorded child workflow completion with its result payload.
     ChildCompleted(Payload),
     /// A recorded child workflow failure.

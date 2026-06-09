@@ -8,6 +8,7 @@ pub mod monitor;
 pub mod nif;
 mod nif_activity;
 pub mod nif_context;
+pub(crate) mod nif_timer;
 pub mod outcome;
 pub mod payload;
 pub mod workflow;
