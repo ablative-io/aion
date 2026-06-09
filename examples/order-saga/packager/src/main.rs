@@ -52,12 +52,11 @@ fn manifest() -> Manifest {
             "oneOf": [
                 {
                     "type": "object",
-                    "required": ["order_id", "shipment_id", "confirmation_id"],
+                    "required": ["order_id", "shipment_id"],
                     "additionalProperties": false,
                     "properties": {
                         "order_id": { "type": "string" },
-                        "shipment_id": { "type": "string" },
-                        "confirmation_id": { "type": "string" }
+                        "shipment_id": { "type": "string" }
                     }
                 },
                 {
@@ -91,12 +90,12 @@ fn manifest() -> Manifest {
         }),
         timeout: Duration::from_secs(60),
         activities: [
-            "charge_payment",
             "reserve_inventory",
+            "charge_payment",
             "ship_order",
-            "confirm_order",
             "release_inventory",
             "refund_payment",
+            "cancel_shipment",
         ]
         .into_iter()
         .map(|activity_type| DeclaredActivity {
