@@ -1,6 +1,5 @@
 //! Signal NIF bridge implementations.
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use aion_core::{Event, Payload, WorkflowId};

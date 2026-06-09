@@ -220,10 +220,10 @@ impl NifContext {
     ///
     /// Returns [`NifContextError::Durability`] when the backing store rejects the read.
     pub fn read_current_history(&self) -> Result<Vec<aion_core::Event>, NifContextError> {
-        self.tokio_handle.block_on(async {
+        Ok(self.tokio_handle.block_on(async {
             let recorder = self.recorder.lock().await;
             recorder.read_history().await
-        })
+        })?)
     }
 
     /// Resolves a workflow command against recorded history before any live side effect runs.

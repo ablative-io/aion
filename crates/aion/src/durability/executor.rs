@@ -207,6 +207,9 @@ async fn execute_live_and_record(
                 payload,
             )))
         }
+        Command::SendSignal { .. } => Err(DurabilityError::HistoryShape {
+            reason: "send-signal live execution is owned by the NIF signal bridge".to_owned(),
+        }),
         Command::SpawnChild {
             key,
             workflow_type,

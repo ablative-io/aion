@@ -86,6 +86,7 @@ fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
         | Event::TimerFired { .. }
         | Event::TimerCancelled { .. }
         | Event::SignalReceived { .. }
+        | Event::SignalSent { .. }
         | Event::ChildWorkflowStarted { .. }
         | Event::ChildWorkflowCompleted { .. }
         | Event::ChildWorkflowFailed { .. }
