@@ -173,11 +173,11 @@ The completed workflow output has this shape:
 ```json
 {
   "total_urls": 3,
-  "total_words": 30,
+  "total_words": 33,
   "summaries": [
-    "https://example.com/alpha: 10 words processed",
-    "https://example.com/beta: 10 words processed",
-    "https://example.com/gamma: 10 words processed"
+    "https://example.com/alpha: 11 words processed",
+    "https://example.com/beta: 11 words processed",
+    "https://example.com/gamma: 11 words processed"
   ]
 }
 ```
