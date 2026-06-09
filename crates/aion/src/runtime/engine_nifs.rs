@@ -64,7 +64,6 @@ pub(super) fn decode_string_arg(term: Term) -> Result<String, String> {
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
-
 /// NIF backing `aion_flow_ffi:run_activity/3`.
 ///
 /// Heap from the previous NIF invocation is drained first (matching
@@ -127,9 +126,18 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "send_signal", 3),
             nif_signal::send_signal,
         ),
-        dirty_entry("register_query", 3),
-        dirty_entry("reply_query", 2),
-        dirty_entry("dispatch_query", 2),
+        NifEntry::new(
+            Mfa::new(FFI_MODULE, "register_query", 3),
+            super::nif_query::register_query,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "reply_query", 2),
+            super::nif_query::reply_query,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "dispatch_query", 2),
+            super::nif_query::dispatch_query,
+        ),
         dirty_entry("spawn_child", 3),
         dirty_entry("await_child", 1),
         NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_all", 2), collect_all),
@@ -146,8 +154,8 @@ mod tests {
     use beamr::term::boxed::Tuple;
 
     use super::{
-        NOT_YET_IMPLEMENTED, alloc_binary_term, clear_parked_heap, collect_all, collect_map,
-        collect_race, engine_nif_entries, not_yet_implemented, run_activity,
+        NOT_YET_IMPLEMENTED, alloc_binary_term, clear_parked_heap, engine_nif_entries,
+        not_yet_implemented, run_activity,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -241,35 +249,40 @@ mod tests {
 
         assert_eq!(entries.len(), 18);
         assert_eq!(unique.len(), entries.len());
-        for deterministic in ["now", "random", "random_int"] {
+        for normal_nif in ["now", "random", "random_int", "register_query"] {
             let found = entries
                 .iter()
-                .any(|entry| entry.mfa.function == deterministic && !entry.is_dirty);
-            assert!(found, "{deterministic} should be a registered normal NIF");
+                .any(|entry| entry.mfa.function == normal_nif && !entry.is_dirty);
+            assert!(found, "{normal_nif} should be a registered normal NIF");
         }
         assert!(
             entries
                 .iter()
                 .filter(|entry| !matches!(
                     entry.mfa.function.as_str(),
-                    "now" | "random" | "random_int"
+                    "now" | "random" | "random_int" | "register_query"
                 ))
                 .all(|entry| entry.is_dirty)
         );
-        for (name, function) in [
-            ("collect_all", collect_all as beamr::native::NativeFn),
-            ("collect_race", collect_race as beamr::native::NativeFn),
-            ("collect_map", collect_map as beamr::native::NativeFn),
+        for name in [
+            "collect_all",
+            "collect_race",
+            "collect_map",
+            "register_query",
+            "reply_query",
+            "dispatch_query",
         ] {
             let entry = entries
                 .iter()
                 .find(|entry| entry.mfa.function == name)
                 .ok_or_else(|| format!("missing {name}"))?;
-            assert!(std::ptr::fn_addr_eq(entry.function, function));
-            assert!(!std::ptr::fn_addr_eq(
-                entry.function,
-                not_yet_implemented as beamr::native::NativeFn
-            ));
+            assert!(
+                !std::ptr::fn_addr_eq(
+                    entry.function,
+                    not_yet_implemented as beamr::native::NativeFn
+                ),
+                "{name} should not use the stub"
+            );
         }
         Ok(())
     }

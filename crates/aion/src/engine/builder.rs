@@ -18,7 +18,8 @@ use crate::{
         Recorder,
     },
     runtime::{
-        NifEntry, NifRegistration, install_nif_runtime_context, install_signal_nif_bridge,
+        NifEntry, NifRegistration, install_nif_runtime_context, install_query_bridge,
+        install_signal_nif_bridge,
         nif_determinism::{NifContextSource, install_nif_context_source},
     },
     signal::SignalResumeHandoff,
@@ -312,6 +313,7 @@ impl EngineBuilder {
             tokio::runtime::Handle::current(),
             Arc::clone(&store),
         )));
+        install_query_bridge(Arc::clone(&registry), tokio::runtime::Handle::current());
         if let Some(dispatcher) = activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }
