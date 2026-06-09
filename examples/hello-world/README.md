@@ -28,7 +28,7 @@ gleam build
 cd ../..
 ```
 
-The workflow source lives in `examples/hello-world/src/hello_world.gleam`. It exposes `run`, accepts JSON shaped like `{ "name": "Ada" }`, dispatches one `greet` activity through `aion_flow`, and returns the greeting string.
+The workflow source lives in `examples/hello-world/src/hello_world.gleam`. It imports the public `aion/workflow`, `aion/activity`, `aion/codec`, and `aion/error` modules from the `aion_flow` SDK. The source exposes `definition()` for the named `hello-world` workflow and keeps `run` as the packaged entry function. `run` accepts JSON shaped like `{ "name": "Ada" }`, creates a typed `greet` activity with `activity.new()`, executes it with `workflow.run()`, unwraps the worker's typed greeting payload, and returns the greeting string.
 
 ## 2. Package `hello-world.aion`
 
@@ -99,7 +99,7 @@ For example, to point the worker at another server:
 AION_WORKER_ENDPOINT=127.0.0.1:50051 AION_WORKER_CONCURRENCY=4 python examples/hello-world/worker.py
 ```
 
-The worker connects to `127.0.0.1:50051`, registers `greet`, and returns:
+The worker connects to `127.0.0.1:50051`, registers `greet`, and returns the JSON object decoded by `GreetingOutput` in `hello_world.gleam`:
 
 ```json
 {"greeting":"Hello, <name>! Welcome to Aion."}
