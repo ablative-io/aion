@@ -1,5 +1,5 @@
 {
-  "name": "aion-worker-typescript",
+  "name": "@aion/worker",
   "version": "0.1.0",
   "type": "module",
   "description": "The TypeScript/Node remote-worker SDK for out-of-process activities in the JS ecosystem.",
@@ -8,6 +8,9 @@
     "type": "git",
     "url": "git+https://github.com/ablative-io/aion.git",
     "directory": "sdks/typescript/aion-worker"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
