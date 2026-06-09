@@ -166,6 +166,13 @@ impl ReadableEventStore for InMemoryStore {
         crate::run_chain::run_chain_from_history(history)
     }
 
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        let state = self.lock_state()?;
+        let mut workflow_ids = state.histories.keys().cloned().collect::<Vec<_>>();
+        workflow_ids.sort_by_key(ToString::to_string);
+        Ok(workflow_ids)
+    }
+
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         let state = self.lock_state()?;
         let mut active = state
@@ -377,6 +384,36 @@ mod tests {
             .await?;
 
         assert_eq!(store.list_active().await?, vec![running]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_workflow_ids_returns_running_and_terminal_histories() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        let running = workflow_id(2);
+        let completed = workflow_id(1);
+
+        store
+            .append(
+                write_token(),
+                &running,
+                &[workflow_started(1, &running, "checkout")],
+                0,
+            )
+            .await?;
+        store
+            .append(
+                write_token(),
+                &completed,
+                &[
+                    workflow_started(1, &completed, "checkout"),
+                    workflow_completed(2, &completed),
+                ],
+                0,
+            )
+            .await?;
+
+        assert_eq!(store.list_workflow_ids().await?, vec![completed, running]);
         Ok(())
     }
 

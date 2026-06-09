@@ -110,6 +110,10 @@ impl ReadableEventStore for LibSqlStore {
         crate::read::read_run_chain(self.connection(), workflow_id).await
     }
 
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        crate::read::list_workflow_ids(self.connection()).await
+    }
+
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         crate::read::list_active(self.connection()).await
     }

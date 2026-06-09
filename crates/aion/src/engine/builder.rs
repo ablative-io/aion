@@ -1,6 +1,6 @@
 //! `EngineBuilder` and build wiring.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use chrono::Utc;
 
@@ -41,10 +41,51 @@ pub enum WorkflowPackageSource {
     Package(Box<Package>),
 }
 
+fn load_workflow_sources(
+    runtime: &RuntimeHandle,
+    sources: Vec<WorkflowPackageSource>,
+) -> Result<LoadedWorkflows, EngineError> {
+    let mut loaded_workflows = LoadedWorkflows::new();
+    for source in sources {
+        let package = package_from_source(source)?;
+        let loaded_workflow = loaded_workflows.load_package(runtime, &package)?;
+        tracing::info!(
+            workflow_type = loaded_workflow.workflow_type(),
+            content_hash = %loaded_workflow.version(),
+            "loaded workflow package {}",
+            loaded_workflow.workflow_type()
+        );
+    }
+    Ok(loaded_workflows)
+}
+
 impl From<Package> for WorkflowPackageSource {
     fn from(package: Package) -> Self {
         Self::Package(Box::new(package))
     }
+}
+
+fn spawn_visibility_reconciliation_task(
+    interval: Duration,
+    store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(error) = crate::lifecycle::visibility::reconcile_visibility(
+                Arc::clone(&store),
+                Arc::clone(&visibility_store),
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    "periodic visibility reconciliation failed; crash-consistency window may remain until a later reconciliation repairs visibility"
+                );
+            }
+        }
+    })
 }
 
 impl From<PathBuf> for WorkflowPackageSource {
@@ -88,6 +129,7 @@ pub struct EngineBuilder {
     signal_router_factory: Option<SignalRouterFactory>,
     activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
     active_registry: Option<Arc<Registry>>,
+    visibility_reconciliation_interval: Option<Duration>,
 }
 
 impl Default for EngineBuilder {
@@ -113,6 +155,7 @@ impl EngineBuilder {
             signal_router_factory: None,
             activity_dispatcher: None,
             active_registry: None,
+            visibility_reconciliation_interval: None,
         }
     }
 
@@ -167,6 +210,15 @@ impl EngineBuilder {
     #[must_use]
     pub const fn scheduler_threads(mut self, threads: usize) -> Self {
         self.scheduler_threads = Some(threads);
+        self
+    }
+
+    /// Record the caller-supplied periodic visibility reconciliation interval.
+    ///
+    /// If this setter is never called, no periodic background reconciliation task is spawned.
+    #[must_use]
+    pub const fn visibility_reconciliation_interval(mut self, interval: Duration) -> Self {
+        self.visibility_reconciliation_interval = Some(interval);
         self
     }
 
@@ -284,6 +336,12 @@ impl EngineBuilder {
         self.scheduler_threads
     }
 
+    /// Inspect the configured periodic visibility reconciliation interval.
+    #[must_use]
+    pub const fn configured_visibility_reconciliation_interval(&self) -> Option<Duration> {
+        self.visibility_reconciliation_interval
+    }
+
     /// Construct the live engine.
     ///
     /// # Errors
@@ -307,17 +365,7 @@ impl EngineBuilder {
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);
         runtime.install_nifs(nifs)?;
 
-        let mut loaded_workflows = LoadedWorkflows::new();
-        for source in self.workflow_sources {
-            let package = package_from_source(source)?;
-            let loaded_workflow = loaded_workflows.load_package(runtime.as_ref(), &package)?;
-            tracing::info!(
-                workflow_type = loaded_workflow.workflow_type(),
-                content_hash = %loaded_workflow.version(),
-                "loaded workflow package {}",
-                loaded_workflow.workflow_type()
-            );
-        }
+        let loaded_workflows = load_workflow_sources(runtime.as_ref(), self.workflow_sources)?;
 
         let registry = self
             .active_registry
@@ -339,6 +387,11 @@ impl EngineBuilder {
         }
         let supervision = Arc::new(SupervisionTree::new());
         bootstrap_schedule_coordinator(Arc::clone(&store)).await?;
+        crate::lifecycle::visibility::reconcile_visibility(
+            Arc::clone(&store),
+            Arc::clone(&visibility_store),
+        )
+        .await?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),
@@ -378,6 +431,15 @@ impl EngineBuilder {
             tokio_handle: tokio::runtime::Handle::current(),
         })));
 
+        let visibility_reconciliation_task =
+            self.visibility_reconciliation_interval.map(|interval| {
+                spawn_visibility_reconciliation_task(
+                    interval,
+                    Arc::clone(&store),
+                    Arc::clone(&visibility_store),
+                )
+            });
+
         let engine = Engine::new(EngineComponents {
             store,
             visibility_store,
@@ -387,6 +449,7 @@ impl EngineBuilder {
             supervision,
             delegated,
             signal_handoff,
+            visibility_reconciliation_task,
         });
         engine.catchup_schedule_coordinator().await?;
         engine.recover_schedules_on_startup(Utc::now()).await?;
@@ -557,6 +620,7 @@ mod tests {
         BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ContentHash, DeclaredActivity, Manifest,
         ManifestVersion, Package, PackageBuilder,
     };
+    use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
     use aion_store::{InMemoryStore, ReadableEventStore, WritableEventStore, WriteToken};
     use chrono::Utc;
     use serde_json::json;
@@ -589,6 +653,17 @@ mod tests {
             input: payload()?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+        })
+    }
+
+    fn completed(workflow_id: &WorkflowId) -> Result<Event, aion_core::PayloadError> {
+        Ok(Event::WorkflowCompleted {
+            envelope: EventEnvelope {
+                seq: 2,
+                recorded_at: Utc::now(),
+                workflow_id: workflow_id.clone(),
+            },
+            result: payload()?,
         })
     }
 
@@ -716,6 +791,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn visibility_reconciliation_interval_is_only_set_by_caller() {
+        let interval = Duration::from_millis(250);
+
+        assert_eq!(
+            EngineBuilder::new().configured_visibility_reconciliation_interval(),
+            None
+        );
+        assert_eq!(
+            EngineBuilder::new()
+                .visibility_reconciliation_interval(interval)
+                .configured_visibility_reconciliation_interval(),
+            Some(interval)
+        );
+    }
+
     #[tokio::test]
     async fn duplicate_host_nif_mfa_returns_typed_error() {
         let mfa = Mfa::new("host", "zero", 0);
@@ -825,6 +916,99 @@ mod tests {
                 .runtime()
                 .has_registered_module(&deployed_entry_module)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_backfills_running_and_completed_visibility()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = Arc::new(InMemoryStore::default());
+        let running = WorkflowId::new_v4();
+        let completed_id = WorkflowId::new_v4();
+
+        store
+            .append(
+                WriteToken::recorder(),
+                &running,
+                &[started(&running, "checkout")?],
+                0,
+            )
+            .await?;
+        store
+            .append(
+                WriteToken::recorder(),
+                &completed_id,
+                &[
+                    started(&completed_id, "billing")?,
+                    completed(&completed_id)?,
+                ],
+                0,
+            )
+            .await?;
+
+        let engine = EngineBuilder::new()
+            .store_arc(store.clone())
+            .visibility_store_arc(store.clone())
+            .recovery_seam(Arc::new(TestRecovery {
+                run_id: RunId::new_v4(),
+                version: hash(1),
+                pid: 99,
+            }))
+            .build()
+            .await?;
+
+        let summaries = store.list_workflows(ListWorkflowsFilter::default()).await?;
+        let running_summary = summaries
+            .iter()
+            .find(|summary| summary.workflow_id == running)
+            .ok_or("running workflow missing from visibility")?;
+        let completed_summary = summaries
+            .iter()
+            .find(|summary| summary.workflow_id == completed_id)
+            .ok_or("completed workflow missing from visibility")?;
+
+        assert_eq!(running_summary.status, WorkflowStatus::Running);
+        assert_eq!(completed_summary.status, WorkflowStatus::Completed);
+        assert!(completed_summary.close_time.is_some());
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn periodic_visibility_reconciliation_repairs_gap_after_startup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = Arc::new(InMemoryStore::default());
+        let engine = EngineBuilder::new()
+            .store_arc(store.clone())
+            .visibility_store_arc(store.clone())
+            .visibility_reconciliation_interval(Duration::from_millis(25))
+            .build()
+            .await?;
+        let workflow_id = WorkflowId::new_v4();
+
+        store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id,
+                &[started(&workflow_id, "checkout")?],
+                0,
+            )
+            .await?;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let summaries = store.list_workflows(ListWorkflowsFilter::default()).await?;
+                if summaries.iter().any(|summary| {
+                    summary.workflow_id == workflow_id && summary.status == WorkflowStatus::Running
+                }) {
+                    return Ok::<(), aion_store::StoreError>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+
+        engine.shutdown()?;
         Ok(())
     }
 

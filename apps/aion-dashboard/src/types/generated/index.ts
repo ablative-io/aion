@@ -336,6 +336,22 @@ name: string,
 /**
  * Opaque signal payload.
  */
+payload: Payload, } } | { "type": "SignalSent", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Target workflow identifier selected by workflow code.
+ */
+target_workflow_id: WorkflowId, 
+/**
+ * Signal name selected by workflow code.
+ */
+name: string, 
+/**
+ * Opaque signal payload.
+ */
 payload: Payload, } } | { "type": "ChildWorkflowStarted", "data": { 
 /**
  * Recording metadata for this event.

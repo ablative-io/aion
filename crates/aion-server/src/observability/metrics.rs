@@ -425,6 +425,13 @@ impl ReadableEventStore for InstrumentedEventStore {
         self.inner.read_run_chain(workflow_id).await
     }
 
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        let started = Instant::now();
+        let result = self.inner.list_workflow_ids().await;
+        self.observe_since("list_workflow_ids", started);
+        result
+    }
+
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         let started = Instant::now();
         let result = self.inner.list_active().await;

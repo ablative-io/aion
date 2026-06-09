@@ -56,6 +56,38 @@ pub(crate) async fn read_run_chain(
     aion_store::run_chain::run_chain_from_history(&history)
 }
 
+/// Return every workflow id with at least one stored event.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL failures and `StoreError::Serialization` when a stored
+/// workflow id cannot be decoded.
+pub(crate) async fn list_workflow_ids(
+    conn: &libsql::Connection,
+) -> Result<Vec<WorkflowId>, StoreError> {
+    let mut rows = conn
+        .query(
+            "SELECT DISTINCT workflow_id FROM events ORDER BY workflow_id ASC",
+            (),
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let mut workflow_ids = Vec::new();
+
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let raw: String = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        workflow_ids.push(parse_workflow_id(&raw)?);
+    }
+
+    Ok(workflow_ids)
+}
+
 /// Return workflow ids whose projected status is still running.
 ///
 /// # Errors
@@ -282,6 +314,12 @@ fn sort_summaries(summaries: &mut [WorkflowSummary]) {
 
 fn decode_event(blob: &[u8]) -> Result<Event, StoreError> {
     serde_json::from_slice(blob).map_err(|error| crate::error::serde_json_error(&error))
+}
+
+fn parse_workflow_id(raw: &str) -> Result<WorkflowId, StoreError> {
+    uuid::Uuid::parse_str(raw)
+        .map(WorkflowId::new)
+        .map_err(|error| StoreError::Serialization(format!("invalid workflow_id `{raw}`: {error}")))
 }
 
 #[cfg(test)]

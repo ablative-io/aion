@@ -316,7 +316,8 @@ impl Recorder {
             parent_run_id,
         })
         .await?;
-        self.upsert_visibility_projection().await
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
     }
 
     /// Records a validated search-attribute update for this workflow.
@@ -341,7 +342,8 @@ impl Recorder {
             attributes,
         })
         .await?;
-        self.upsert_visibility_projection().await
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
     }
 
     /// Records activity scheduling.
@@ -652,6 +654,21 @@ impl Recorder {
         visibility.store.record_visibility(record).await?;
         Ok(())
     }
+
+    async fn upsert_visibility_projection_nonfatal(&self) {
+        if let Err(error) = self.upsert_visibility_projection().await {
+            let run_id = self
+                .visibility
+                .as_ref()
+                .map(|visibility| &visibility.run_id);
+            tracing::warn!(
+                workflow_id = %self.workflow_id,
+                run_id = run_id.map(ToString::to_string).as_deref().unwrap_or("unknown"),
+                error = %error,
+                "visibility upsert failed after durable append; crash-consistency window remains until reconciliation repairs visibility"
+            );
+        }
+    }
 }
 
 fn visibility_record_from_history(
@@ -717,21 +734,92 @@ fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAt
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::io;
+    use std::sync::{Arc, Mutex};
 
+    use aion_core::RunId;
     use aion_core::{
         Event, Payload, SearchAttributeError, SearchAttributeSchema, SearchAttributeType,
         SearchAttributeValue, TimerId,
     };
-    use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
+    use aion_store::visibility::{
+        ListWorkflowsFilter, VisibilityRecord, VisibilityStore, WorkflowSummary,
+    };
     use aion_store::{
         InMemoryStore, ReadableEventStore, StoreError, WritableEventStore, WriteToken,
     };
+    use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use serde_json::json;
+    use tracing_subscriber::fmt::MakeWriter;
 
     use super::Recorder;
     use crate::durability::DurabilityError;
+
+    #[derive(Debug)]
+    struct FailingVisibilityStore;
+
+    #[async_trait]
+    impl VisibilityStore for FailingVisibilityStore {
+        async fn record_visibility(&self, _record: VisibilityRecord) -> Result<(), StoreError> {
+            Err(StoreError::Backend(String::from("visibility unavailable")))
+        }
+
+        async fn list_workflows(
+            &self,
+            _filter: ListWorkflowsFilter,
+        ) -> Result<Vec<WorkflowSummary>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn count_workflows(&self, _filter: ListWorkflowsFilter) -> Result<u64, StoreError> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct CapturedLogs {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl CapturedLogs {
+        fn contents(&self) -> Result<String, Box<dyn std::error::Error>> {
+            let bytes = self
+                .buffer
+                .lock()
+                .map_err(|error| format!("captured log buffer lock poisoned: {error}"))?
+                .clone();
+            Ok(String::from_utf8(bytes)?)
+        }
+    }
+
+    struct CapturedLogWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl io::Write for CapturedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.buffer
+                .lock()
+                .map_err(|error| io::Error::other(format!("captured log lock poisoned: {error}")))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> MakeWriter<'writer> for CapturedLogs {
+        type Writer = CapturedLogWriter;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            CapturedLogWriter {
+                buffer: Arc::clone(&self.buffer),
+            }
+        }
+    }
 
     fn workflow_id(value: u128) -> aion_core::WorkflowId {
         aion_core::WorkflowId::new(uuid::Uuid::from_u128(value))
@@ -968,6 +1056,62 @@ mod tests {
         assert_eq!(summaries[0].workflow_id, workflow_id);
         assert_eq!(summaries[0].run_id, run_id);
         assert_eq!(summaries[0].search_attributes, attributes);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn visibility_upsert_failure_after_append_logs_warning_and_succeeds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(10);
+        let run_id = RunId::new(uuid::Uuid::from_u128(100));
+        let store = Arc::new(InMemoryStore::default());
+        let visibility_store = Arc::new(FailingVisibilityStore);
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(logs.clone())
+            .without_time()
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let guard = tracing::dispatcher::set_default(&dispatch);
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone())
+            .with_visibility(run_id.clone(), visibility_store);
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("customer_id", SearchAttributeType::String)?;
+        let attributes = HashMap::from([(
+            String::from("customer_id"),
+            SearchAttributeValue::String(String::from("customer-123")),
+        )]);
+
+        recorder
+            .record_workflow_started(
+                recorded_at(1),
+                String::from("checkout"),
+                payload("input")?,
+                run_id.clone(),
+            )
+            .await?;
+        recorder
+            .record_search_attributes_updated(recorded_at(2), attributes, &schema)
+            .await?;
+        drop(guard);
+
+        let history = store.read_history(&workflow_id).await?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(recorder.current_head(), 2);
+
+        let output = logs.contents()?;
+        assert!(
+            output.contains("visibility upsert failed after durable append"),
+            "captured warning did not include visibility-upsert failure message: {output}"
+        );
+        assert!(
+            output.contains("crash-consistency window"),
+            "captured warning did not name the crash-consistency window: {output}"
+        );
+        assert!(output.contains(&workflow_id.to_string()));
+        assert!(output.contains(&run_id.to_string()));
+        assert!(output.contains("visibility unavailable"));
         Ok(())
     }
 

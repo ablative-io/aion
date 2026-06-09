@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use aion_core::{Event, RunId, SearchAttributeValue, WorkflowId, status_from_events};
 use aion_store::EventStore;
-use aion_store::visibility::{VisibilityRecord, VisibilityStore};
+use aion_store::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
 use chrono::{DateTime, Utc};
 
 use crate::EngineError;
@@ -25,6 +25,43 @@ pub async fn upsert_workflow_visibility(
     let history = event_store.read_history(workflow_id).await?;
     let record = visibility_record_from_history(&history, run_id)?;
     visibility_store.record_visibility(record).await?;
+    Ok(())
+}
+
+/// Reconciles the visibility projection with authoritative event history.
+///
+/// # Errors
+///
+/// Returns store errors while reading histories or visibility rows, and load errors for malformed
+/// workflow histories that cannot be projected.
+pub async fn reconcile_visibility(
+    event_store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
+) -> Result<(), EngineError> {
+    let existing = visibility_store
+        .list_workflows(ListWorkflowsFilter::default())
+        .await?
+        .into_iter()
+        .map(|summary| {
+            (
+                (summary.workflow_id.clone(), summary.run_id.clone()),
+                summary,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for workflow_id in event_store.list_workflow_ids().await? {
+        let history = event_store.read_history(&workflow_id).await?;
+        let run_id = started_run_id(&history)?;
+        let record = visibility_record_from_history(&history, &run_id)?;
+        let key = (record.workflow_id.clone(), record.run_id.clone());
+        let projected = aion_store::visibility::WorkflowSummary::from(record.clone());
+
+        if existing.get(&key) != Some(&projected) {
+            visibility_store.record_visibility(record).await?;
+        }
+    }
+
     Ok(())
 }
 
@@ -59,6 +96,20 @@ fn started_projection(
                 workflow_type.clone(),
                 envelope.recorded_at,
             )),
+            _ => None,
+        })
+        .ok_or_else(|| EngineError::Load {
+            reason: String::from(
+                "workflow history has no WorkflowStarted event for visibility projection",
+            ),
+        })
+}
+
+fn started_run_id(history: &[Event]) -> Result<RunId, EngineError> {
+    history
+        .iter()
+        .find_map(|event| match event {
+            Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
             _ => None,
         })
         .ok_or_else(|| EngineError::Load {

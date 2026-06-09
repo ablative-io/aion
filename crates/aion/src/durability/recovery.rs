@@ -339,6 +339,18 @@ mod tests {
             aion_store::run_chain::run_chain_from_history(&history)
         }
 
+        async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+            let mut workflow_ids = self
+                .histories
+                .lock()
+                .map_err(|error| StoreError::Backend(format!("history lock poisoned: {error}")))?
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            workflow_ids.sort_by_key(ToString::to_string);
+            Ok(workflow_ids)
+        }
+
         async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
             Ok(self
                 .active

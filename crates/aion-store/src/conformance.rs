@@ -31,12 +31,46 @@ where
     multi_batch_append_advances_sequence(make_store().await).await?;
     stale_expected_sequence_writes_nothing(make_store().await).await?;
     list_active_reflects_projected_status(make_store().await).await?;
+    list_workflow_ids_includes_running_and_terminal_histories(make_store().await).await?;
     query_applies_all_filters(make_store().await).await?;
     read_run_chain_orders_continuations(make_store().await).await?;
     read_run_chain_single_and_multi_continuations(make_store().await).await?;
     expired_timers_include_due_boundary_and_exclude_future(make_store().await).await?;
     rescheduling_same_timer_replaces_prior_fire_at(make_store().await).await?;
     Ok(())
+}
+
+async fn list_workflow_ids_includes_running_and_terminal_histories(
+    store: Arc<dyn EventStore>,
+) -> Result<(), StoreError> {
+    let running = workflow_id();
+    let completed = workflow_id();
+
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &running,
+            &[workflow_started(1, &running, "checkout")?],
+            0,
+        )
+        .await?;
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &completed,
+            &[
+                workflow_started(1, &completed, "billing")?,
+                workflow_completed(2, &completed)?,
+            ],
+            0,
+        )
+        .await?;
+
+    expect_contains_exactly(
+        store.list_workflow_ids().await?,
+        &[running, completed],
+        "all workflow-id enumeration must include running and terminal histories",
+    )
 }
 
 async fn append_and_read_history_round_trip(store: Arc<dyn EventStore>) -> Result<(), StoreError> {
