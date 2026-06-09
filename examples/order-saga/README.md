@@ -146,11 +146,7 @@ In terminal 3:
 
 ```sh
 ORDER_JSON='{"order_id":"order-1001","item":"widget","quantity":2,"amount":5000}'
-ORDER_BYTES=$(python3 - <<'PY' <<<"$ORDER_JSON"
-import sys
-print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))
-PY
-)
+ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))')
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
@@ -170,16 +166,8 @@ printf '%s\n' "$START_RESPONSE"
 Capture the workflow id for observation:
 
 ```sh
-WORKFLOW_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["workflow_id"]["uuid"])
-PY
-)
-RUN_ID=$(python3 - <<'PY' <<<"$START_RESPONSE"
-import json, sys
-print(json.load(sys.stdin)["run_id"]["uuid"])
-PY
-)
+WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["workflow_id"]["uuid"])')
+RUN_ID=$(printf '%s' "$START_RESPONSE" | python3 -c 'import json, sys; print(json.load(sys.stdin)["run_id"]["uuid"])')
 printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 ```
 
@@ -209,11 +197,7 @@ In terminal 3, start a second workflow:
 
 ```sh
 ORDER_JSON='{"order_id":"order-1002","item":"widget","quantity":2,"amount":5000}'
-ORDER_BYTES=$(python3 - <<'PY' <<<"$ORDER_JSON"
-import sys
-print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))
-PY
-)
+ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))')
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
@@ -264,11 +248,7 @@ In terminal 3, start another workflow:
 
 ```sh
 ORDER_JSON='{"order_id":"order-1003","item":"widget","quantity":2,"amount":5000}'
-ORDER_BYTES=$(python3 - <<'PY' <<<"$ORDER_JSON"
-import sys
-print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))
-PY
-)
+ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(byte) for byte in sys.stdin.read().encode("utf-8")))')
 
 START_RESPONSE=$(curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \

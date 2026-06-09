@@ -108,7 +108,7 @@ fn manifest() -> Manifest {
 }
 
 fn read_compiled_beams(workflow_root: &Path) -> Result<BeamSet> {
-    let ebin = workflow_root.join("build/dev/erlang/aion_order_saga/_gleam_artefacts");
+    let ebin = workflow_root.join("build/dev/erlang/aion_order_saga/ebin");
     if !ebin.exists() {
         bail!(
             "compiled BEAM directory {} does not exist; run `gleam build` in examples/order-saga first",
