@@ -1,11 +1,11 @@
-# aion-client-typescript
+# @aion/client
 
 TypeScript caller SDK for connecting to an `aion-server` deployment and operating workflows from Node.js or browser runtimes. It exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
 
 ## Install
 
 ```sh
-npm install aion-client-typescript
+npm install @aion/client
 ```
 
 ## Server prerequisite
@@ -23,7 +23,7 @@ See [`examples/seven-operations.ts`](examples/seven-operations.ts) for a complet
 ## Connect
 
 ```ts
-import { connect } from "aion-client-typescript";
+import { connect } from "@aion/client";
 
 const client = await connect({
   endpoint: process.env.AION_SERVER_URL ?? "http://127.0.0.1:8080",

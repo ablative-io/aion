@@ -3,10 +3,11 @@ requires = ["hatchling>=1.25", "grpcio-tools>=1.68"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aion-worker-python"
+name = "aion-worker"
 version = "0.1.0"
 requires-python = ">=3.10"
 description = "The Python remote-worker SDK for out-of-process Aion activities."
+readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "Aion Contributors" }]
 keywords = ["aion", "workflow", "worker", "activities", "sdk"]
@@ -48,7 +49,7 @@ dev = [
 packages = ["aion_worker"]
 
 [tool.hatch.build.targets.sdist]
-include = ["aion_worker", "build_proto.py", "pyproject.toml"]
+include = ["aion_worker", "build_proto.py", "README.md", "pyproject.toml"]
 
 [tool.hatch.build.hooks.custom]
 path = "build_proto.py"
