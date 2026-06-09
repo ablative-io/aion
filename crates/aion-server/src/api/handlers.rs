@@ -1,6 +1,6 @@
 //! shared handler layer over Engine
 
-use aion_core::{Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_core::{Payload, RunId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary};
 use aion_proto::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
     ProtoCountWorkflowsResponse, ProtoCreateScheduleRequest, ProtoCreateScheduleResponse,
@@ -49,8 +49,7 @@ pub async fn start(
             .map_err(|error| log_server_error("start", Some(&namespace), None, &error))?
             .start_workflow(&request.workflow_type, input)
             .await
-            .map_err(ServerError::from)
-            .map_err(|error| log_server_error("start", Some(&namespace), None, &error))
+            .map_err(|error| map_start_error(error, &request.workflow_type))
     }
     .instrument(span.clone())
     .await?;
@@ -90,16 +89,13 @@ pub async fn signal(
         .scope(caller, &NamespaceOperation::signal(&request, target))
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
-    let run_id = resolve_run_id(
-        scoped
-            .engine()
-            .map_err(|error| error.to_wire_error())?
-            .as_ref(),
-        &workflow_id,
-        request.run_id.clone(),
-    )
-    .await?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let run_id = resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
     let payload = required_payload(request.payload.clone())?;
+    if let Some(status) = terminal_status(engine.as_ref(), &workflow_id).await? {
+        return Err(signal_terminal_error(&workflow_id, status));
+    }
+
     let signal_name = request.signal_name.clone();
     let span = info_span!(
         "engine_operation",
@@ -110,17 +106,10 @@ pub async fn signal(
     );
 
     async {
-        scoped
-            .engine()
-            .map_err(|error| {
-                log_server_error("signal", Some(&namespace), Some(&workflow_id), &error)
-            })?
+        engine
             .signal(&workflow_id, &run_id, signal_name, payload)
             .await
-            .map_err(ServerError::from)
-            .map_err(|error| {
-                log_server_error("signal", Some(&namespace), Some(&workflow_id), &error)
-            })
+            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
     }
     .instrument(span)
     .await?;
@@ -145,15 +134,8 @@ pub async fn query(
         .scope(caller, &NamespaceOperation::query(&request, target))
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
-    let run_id = resolve_run_id(
-        scoped
-            .engine()
-            .map_err(|error| error.to_wire_error())?
-            .as_ref(),
-        &workflow_id,
-        request.run_id.clone(),
-    )
-    .await?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let run_id = resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
     let query_name = request.query_name.clone();
     let span = info_span!(
         "engine_operation",
@@ -164,17 +146,10 @@ pub async fn query(
     );
 
     let result = async {
-        scoped
-            .engine()
-            .map_err(|error| {
-                log_server_error("query", Some(&namespace), Some(&workflow_id), &error)
-            })?
+        engine
             .query(&workflow_id, &run_id, query_name)
             .await
-            .map_err(ServerError::from)
-            .map_err(|error| {
-                log_server_error("query", Some(&namespace), Some(&workflow_id), &error)
-            })
+            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
     }
     .instrument(span)
     .await?;
@@ -201,15 +176,12 @@ pub async fn cancel(
         .scope(caller, &NamespaceOperation::cancel(&request, target))
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
-    let run_id = resolve_run_id(
-        scoped
-            .engine()
-            .map_err(|error| error.to_wire_error())?
-            .as_ref(),
-        &workflow_id,
-        request.run_id.clone(),
-    )
-    .await?;
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let run_id = resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
+    if let Some(status) = terminal_status(engine.as_ref(), &workflow_id).await? {
+        return Err(cancel_terminal_error(&workflow_id, status));
+    }
+
     let span = info_span!(
         "engine_operation",
         operation = "cancel",
@@ -218,17 +190,10 @@ pub async fn cancel(
     );
 
     async {
-        scoped
-            .engine()
-            .map_err(|error| {
-                log_server_error("cancel", Some(&namespace), Some(&workflow_id), &error)
-            })?
+        engine
             .cancel(&workflow_id, &run_id, request.reason)
             .await
-            .map_err(ServerError::from)
-            .map_err(|error| {
-                log_server_error("cancel", Some(&namespace), Some(&workflow_id), &error)
-            })
+            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
     }
     .instrument(span)
     .await?;
@@ -321,12 +286,8 @@ pub async fn describe(
         .read_history(&workflow_id)
         .await
         .map_err(|error| ServerError::from(error).to_wire_error())?;
-    let summary = WorkflowSummary::from_history(&history).ok_or_else(|| {
-        WireError::not_found_with_type(
-            "WorkflowNotFound",
-            format!("workflow not found: {workflow_id}"),
-        )
-    })?;
+    let summary = WorkflowSummary::from_history(&history)
+        .ok_or_else(|| workflow_not_found_error(&workflow_id))?;
     let namespace = scoped.namespace().to_owned();
     let summary = encode_workflow_summary(namespace.clone(), None, &summary)?;
     let history = encode_history(request.include_history, &namespace, &history)?;
@@ -580,12 +541,59 @@ async fn resolve_run_id(
     chain
         .last()
         .map(|summary| summary.run_id.clone())
-        .ok_or_else(|| {
-            WireError::not_found_with_type(
-                "WorkflowNotFound",
-                format!("workflow not found: {workflow_id}"),
-            )
-        })
+        .ok_or_else(|| workflow_not_found_error(workflow_id))
+}
+
+fn map_start_error(error: aion::EngineError, workflow_type: &str) -> WireError {
+    match error {
+        aion::EngineError::WorkflowNotFound { .. } => WireError::not_found_with_type(
+            "WorkflowTypeNotFound",
+            format!("workflow type {workflow_type} is not registered"),
+        ),
+        other => ServerError::from(other).to_wire_error(),
+    }
+}
+
+fn map_workflow_operation_error(error: aion::EngineError, workflow_id: &WorkflowId) -> WireError {
+    match error {
+        aion::EngineError::WorkflowNotFound { .. } => workflow_not_found_error(workflow_id),
+        other => ServerError::from(other).to_wire_error(),
+    }
+}
+
+fn workflow_not_found_error(workflow_id: &WorkflowId) -> WireError {
+    WireError::not_found_with_type(
+        "WorkflowNotFound",
+        format!("workflow {workflow_id} not found"),
+    )
+}
+
+async fn terminal_status(
+    engine: &aion::Engine,
+    workflow_id: &WorkflowId,
+) -> Result<Option<WorkflowStatus>, WireError> {
+    let history = engine
+        .store()
+        .read_history(workflow_id)
+        .await
+        .map_err(|error| ServerError::from(error).to_wire_error())?;
+    Ok(WorkflowSummary::from_history(&history)
+        .map(|summary| summary.status)
+        .filter(|status| status.is_terminal()))
+}
+
+fn signal_terminal_error(workflow_id: &WorkflowId, status: WorkflowStatus) -> WireError {
+    WireError::not_running_with_type(
+        "WorkflowTerminal",
+        format!("workflow {workflow_id} has already reached terminal state {status:?}"),
+    )
+}
+
+fn cancel_terminal_error(workflow_id: &WorkflowId, status: WorkflowStatus) -> WireError {
+    WireError::not_running_with_type(
+        "WorkflowTerminal",
+        format!("workflow {workflow_id} has already completed with status {status:?}"),
+    )
 }
 
 fn required_payload(payload: Option<ProtoPayload>) -> Result<Payload, WireError> {
@@ -684,9 +692,14 @@ mod tests {
 
         let error = start(&context.guard, &context.caller, request).await;
 
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTypeNotFound"));
         assert_eq!(
-            error.err().map(|error| error.code),
-            Some(WireErrorCode::NotFound)
+            error.message,
+            "workflow type missing-workflow is not registered"
         );
         Ok(())
     }
@@ -704,7 +717,10 @@ mod tests {
             .ok_or_else(|| WireError::backend("expected error"))?;
         assert_eq!(error.code, WireErrorCode::NotFound);
         assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
-        assert!(error.message.contains(&workflow_id().to_string()));
+        assert_eq!(
+            error.message,
+            format!("workflow {} not found", workflow_id())
+        );
         Ok(())
     }
 
@@ -721,7 +737,10 @@ mod tests {
             .ok_or_else(|| WireError::backend("expected error"))?;
         assert_eq!(error.code, WireErrorCode::NotFound);
         assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
-        assert!(error.message.contains(&workflow_id().to_string()));
+        assert_eq!(
+            error.message,
+            format!("workflow {} not found", workflow_id())
+        );
         Ok(())
     }
 
@@ -738,7 +757,104 @@ mod tests {
             .ok_or_else(|| WireError::backend("expected error"))?;
         assert_eq!(error.code, WireErrorCode::NotFound);
         assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
-        assert!(error.message.contains(&workflow_id().to_string()));
+        assert_eq!(
+            error.message,
+            format!("workflow {} not found", workflow_id())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn signal_handler_rejects_completed_workflow() -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_completed(context.store.as_ref()).await?;
+
+        let error = signal(&context.guard, &context.caller, signal_request()?).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotRunning);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTerminal"));
+        assert_eq!(
+            error.message,
+            format!(
+                "workflow {} has already reached terminal state Completed",
+                workflow_id()
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn signal_handler_rejects_failed_workflow() -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_failed(context.store.as_ref()).await?;
+
+        let error = signal(&context.guard, &context.caller, signal_request()?).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotRunning);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTerminal"));
+        assert_eq!(
+            error.message,
+            format!(
+                "workflow {} has already reached terminal state Failed",
+                workflow_id()
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_handler_rejects_completed_workflow() -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_completed(context.store.as_ref()).await?;
+
+        let error = cancel(&context.guard, &context.caller, cancel_request()).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotRunning);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTerminal"));
+        assert_eq!(
+            error.message,
+            format!(
+                "workflow {} has already completed with status Completed",
+                workflow_id()
+            )
+        );
+        assert!(!error.message.contains("process 0 is not live"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_handler_rejects_failed_workflow() -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_failed(context.store.as_ref()).await?;
+
+        let error = cancel(&context.guard, &context.caller, cancel_request()).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotRunning);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTerminal"));
+        assert_eq!(
+            error.message,
+            format!(
+                "workflow {} has already completed with status Failed",
+                workflow_id()
+            )
+        );
+        assert!(!error.message.contains("process 0 is not live"));
         Ok(())
     }
 
@@ -876,7 +992,10 @@ mod tests {
             .ok_or_else(|| WireError::backend("expected error"))?;
         assert_eq!(error.code, WireErrorCode::NotFound);
         assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
-        assert!(error.message.contains(&workflow_id().to_string()));
+        assert_eq!(
+            error.message,
+            format!("workflow {} not found", workflow_id())
+        );
         Ok(())
     }
 
@@ -1022,6 +1141,33 @@ mod tests {
     async fn append_started(store: &dyn EventStore) -> Result<(), Box<dyn std::error::Error>> {
         let event = started_event()?;
         store.append(&workflow_id(), &[event], 0).await?;
+        Ok(())
+    }
+
+    async fn append_completed(store: &dyn EventStore) -> Result<(), Box<dyn std::error::Error>> {
+        let events = [
+            started_event()?,
+            Event::WorkflowCompleted {
+                envelope: event_envelope(2),
+                result: payload()?,
+            },
+        ];
+        store.append(&workflow_id(), &events, 0).await?;
+        Ok(())
+    }
+
+    async fn append_failed(store: &dyn EventStore) -> Result<(), Box<dyn std::error::Error>> {
+        let events = [
+            started_event()?,
+            Event::WorkflowFailed {
+                envelope: event_envelope(2),
+                error: aion_core::WorkflowError {
+                    message: "fixture failure".to_owned(),
+                    details: None,
+                },
+            },
+        ];
+        store.append(&workflow_id(), &events, 0).await?;
         Ok(())
     }
 
