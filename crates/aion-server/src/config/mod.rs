@@ -261,14 +261,23 @@ impl ServerConfig {
         let mut config = file::load(cli.config_path.as_deref())?.unwrap_or_default();
         env::overlay(&mut config)?;
         config.apply_cli_overrides(cli);
-        let discovered_packages = discover_workflow_packages_from_current_dir()?;
+        config.load_discovered_workflow_packages(cli, Path::new("."))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn load_discovered_workflow_packages(
+        &mut self,
+        cli: &CliOverrides,
+        directory: &Path,
+    ) -> Result<(), ServerError> {
+        let discovered_packages = discover_workflow_packages(directory)?;
         merge_workflow_packages(
-            &mut config.workflow_packages,
+            &mut self.workflow_packages,
             discovered_packages,
             &cli.workflow_packages,
         );
-        config.validate()?;
-        Ok(config)
+        Ok(())
     }
 
     /// Parse server configuration from TOML bytes and validate it.
@@ -491,10 +500,6 @@ pub(crate) fn config_error<T>(message: impl Into<String>) -> Result<T, ServerErr
     })
 }
 
-fn discover_workflow_packages_from_current_dir() -> Result<Vec<PathBuf>, ServerError> {
-    discover_workflow_packages(Path::new("."))
-}
-
 fn discover_workflow_packages(directory: &Path) -> Result<Vec<PathBuf>, ServerError> {
     let mut packages = Vec::new();
     let entries = fs::read_dir(directory).map_err(|source| ServerError::Config {
@@ -713,6 +718,29 @@ mod tests {
         merge_workflow_packages(&mut packages, discovered, &[]);
 
         assert_eq!(packages, vec![package]);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_config_cli_workflow_package_uses_in_memory_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+
+        let cli = CliOverrides {
+            workflow_packages: vec!["hello-world.aion".into()],
+            ..CliOverrides::default()
+        };
+        let mut config = ServerConfig::default();
+        config.load_discovered_workflow_packages(&cli, temp_dir.path())?;
+
+        config.validate()?;
+
+        assert_eq!(config.store.backend, StoreBackend::Memory);
+        assert_eq!(config.store.url, None);
+        assert_eq!(
+            config.workflow_packages,
+            vec![std::path::PathBuf::from("hello-world.aion")]
+        );
         Ok(())
     }
 

@@ -1,6 +1,11 @@
 //! Thin binary entry point; `anyhow` is confined to this file.
 
-use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
+use std::{
+    net::SocketAddr,
+    num::{NonZeroU64, NonZeroUsize},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use aion_server::{
     ServerConfig, ServerError, ServerState, api,
@@ -9,9 +14,47 @@ use aion_server::{
     shutdown::{self, ShutdownOutcome},
 };
 use anyhow::{Context, Result};
+use clap::Parser;
 use tokio::net::TcpListener;
 use tonic::transport::Server as TonicServer;
 use tracing::{error, info};
+
+/// Aion workflow server.
+#[derive(Debug, Parser)]
+#[command(name = "aion-server", version, about = "Run the Aion workflow server")]
+struct Cli {
+    /// Path to a TOML server configuration file. Optional when using local defaults.
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Override the HTTP/JSON and dashboard listener address.
+    #[arg(long)]
+    listen_address: Option<SocketAddr>,
+    /// Override the event-store URL and select the libSQL backend when the default is memory.
+    #[arg(long)]
+    store_url: Option<String>,
+    /// Number of engine scheduler worker threads.
+    #[arg(long)]
+    scheduler_threads: Option<NonZeroUsize>,
+    /// Maximum graceful drain duration in seconds.
+    #[arg(long = "drain-timeout")]
+    drain_timeout_seconds: Option<NonZeroU64>,
+    /// Workflow package archive to load at startup. Repeat to load multiple packages.
+    #[arg(long = "workflow-package")]
+    workflow_packages: Vec<PathBuf>,
+}
+
+impl From<Cli> for CliOverrides {
+    fn from(cli: Cli) -> Self {
+        Self {
+            config_path: cli.config,
+            listen_address: cli.listen_address,
+            store_url: cli.store_url,
+            scheduler_threads: cli.scheduler_threads.map(NonZeroUsize::get),
+            drain_timeout_seconds: cli.drain_timeout_seconds.map(NonZeroU64::get),
+            workflow_packages: cli.workflow_packages,
+        }
+    }
+}
 
 fn main() -> ExitCode {
     match run_main() {
@@ -28,17 +71,17 @@ fn main() -> ExitCode {
 }
 
 fn run_main() -> Result<ExitCode> {
+    let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to build tokio runtime")?;
-    runtime.block_on(run())
+    runtime.block_on(run(cli.into()))
 }
 
-async fn run() -> Result<ExitCode> {
+async fn run(cli: CliOverrides) -> Result<ExitCode> {
     observability::tracing::init()?;
 
-    let cli = parse_cli(std::env::args_os().skip(1))?;
     let config = ServerConfig::load(&cli)?;
     reject_auth_without_feature(&config)?;
     let store_backend = config.store.backend;
@@ -213,100 +256,6 @@ where
     }
 }
 
-fn parse_cli(args: impl IntoIterator<Item = OsString>) -> Result<CliOverrides, ServerError> {
-    let mut overrides = CliOverrides::default();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        let flag = arg.to_string_lossy();
-        match flag.as_ref() {
-            "--config" => {
-                overrides.config_path =
-                    Some(PathBuf::from(required_value("--config", args.next())?));
-            }
-            "--listen-address" => {
-                let value = required_value("--listen-address", args.next())?;
-                overrides.listen_address = Some(parse_socket_addr("--listen-address", &value)?);
-            }
-            "--store-url" => overrides.store_url = Some(required_utf8("--store-url", args.next())?),
-            "--scheduler-threads" => {
-                let value = required_utf8("--scheduler-threads", args.next())?;
-                overrides.scheduler_threads =
-                    Some(parse_positive_usize("--scheduler-threads", &value)?);
-            }
-            "--drain-timeout" => {
-                let value = required_utf8("--drain-timeout", args.next())?;
-                overrides.drain_timeout_seconds =
-                    Some(parse_positive_u64("--drain-timeout", &value)?);
-            }
-            "--workflow-package" => {
-                overrides
-                    .workflow_packages
-                    .push(PathBuf::from(required_value(
-                        "--workflow-package",
-                        args.next(),
-                    )?));
-            }
-            "--help" | "-h" => {
-                return Err(ServerError::Config { message: usage() });
-            }
-            unknown => {
-                return Err(ServerError::Config {
-                    message: format!("unknown argument `{unknown}`\n{}", usage()),
-                });
-            }
-        }
-    }
-    Ok(overrides)
-}
-
-fn required_value(flag: &str, value: Option<OsString>) -> Result<OsString, ServerError> {
-    value.ok_or_else(|| ServerError::Config {
-        message: format!("{flag} requires a value"),
-    })
-}
-
-fn required_utf8(flag: &str, value: Option<OsString>) -> Result<String, ServerError> {
-    let value = required_value(flag, value)?;
-    value.into_string().map_err(|_| ServerError::Config {
-        message: format!("{flag} must be valid UTF-8"),
-    })
-}
-
-fn parse_socket_addr(flag: &str, value: &OsString) -> Result<SocketAddr, ServerError> {
-    let value = value.to_str().ok_or_else(|| ServerError::Config {
-        message: format!("{flag} must be valid UTF-8"),
-    })?;
-    value.parse().map_err(|source| ServerError::Config {
-        message: format!("{flag} must be a socket address: {source}"),
-    })
-}
-
-fn parse_positive_usize(flag: &str, value: &str) -> Result<usize, ServerError> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|source| ServerError::Config {
-            message: format!("{flag} must be a positive integer: {source}"),
-        })?;
-    if parsed == 0 {
-        return Err(ServerError::Config {
-            message: format!("{flag} must be a positive integer"),
-        });
-    }
-    Ok(parsed)
-}
-
-fn parse_positive_u64(flag: &str, value: &str) -> Result<u64, ServerError> {
-    let parsed = value.parse::<u64>().map_err(|source| ServerError::Config {
-        message: format!("{flag} must be a positive integer: {source}"),
-    })?;
-    if parsed == 0 {
-        return Err(ServerError::Config {
-            message: format!("{flag} must be a positive integer"),
-        });
-    }
-    Ok(parsed)
-}
-
 fn is_config_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
@@ -315,32 +264,76 @@ fn is_config_error(error: &anyhow::Error) -> bool {
     })
 }
 
-fn usage() -> String {
-    "usage: aion-server [--config PATH] [--listen-address HOST:PORT] [--store-url URL] [--scheduler-threads N] [--drain-timeout SECONDS] [--workflow-package PATH]...".to_owned()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::path::PathBuf;
 
-    use super::parse_cli;
+    use clap::Parser;
+
+    use super::{Cli, CliOverrides};
 
     #[test]
     fn workflow_package_flag_is_repeatable() -> Result<(), Box<dyn std::error::Error>> {
-        let overrides = parse_cli([
-            OsString::from("--workflow-package"),
-            OsString::from("examples/hello-world/hello-world.aion"),
-            OsString::from("--workflow-package"),
-            OsString::from("local.aion"),
-        ])?;
+        let overrides = CliOverrides::from(Cli::try_parse_from([
+            "aion-server",
+            "--workflow-package",
+            "examples/hello-world/hello-world.aion",
+            "--workflow-package",
+            "local.aion",
+        ])?);
 
         assert_eq!(
             overrides.workflow_packages,
             vec![
-                std::path::PathBuf::from("examples/hello-world/hello-world.aion"),
-                std::path::PathBuf::from("local.aion"),
+                PathBuf::from("examples/hello-world/hello-world.aion"),
+                PathBuf::from("local.aion"),
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn help_is_handled_by_clap() -> Result<(), Box<dyn std::error::Error>> {
+        let error = Cli::try_parse_from(["aion-server", "--help"])
+            .err()
+            .ok_or("help should exit early")?;
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(help.contains("Run the Aion workflow server"));
+        assert!(help.contains("--workflow-package"));
+        assert!(!help.contains("{\"timestamp\""));
+        assert!(!help.contains("ERROR"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_converts_all_overrides() -> Result<(), Box<dyn std::error::Error>> {
+        let overrides = CliOverrides::from(Cli::try_parse_from([
+            "aion-server",
+            "--config",
+            "dev-config.toml",
+            "--listen-address",
+            "127.0.0.1:18080",
+            "--store-url",
+            "aion.db",
+            "--scheduler-threads",
+            "2",
+            "--drain-timeout",
+            "45",
+        ])?);
+
+        assert_eq!(
+            overrides.config_path,
+            Some(PathBuf::from("dev-config.toml"))
+        );
+        assert_eq!(
+            overrides.listen_address.map(|address| address.port()),
+            Some(18080)
+        );
+        assert_eq!(overrides.store_url.as_deref(), Some("aion.db"));
+        assert_eq!(overrides.scheduler_threads, Some(2));
+        assert_eq!(overrides.drain_timeout_seconds, Some(45));
         Ok(())
     }
 }

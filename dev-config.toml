@@ -5,6 +5,11 @@
 # `workflow_packages` when you want the server to preload them at startup.
 # For example, after building the hello-world package:
 #   workflow_packages = ["examples/hello-world/hello-world.aion"]
+#
+# You can also load a package without editing this file. `--config` is optional
+# for local development; no-config mode uses in-memory local defaults:
+#   cargo run -p aion-server -- \
+#     --workflow-package examples/hello-world/hello-world.aion
 
 workflow_packages = []
 
