@@ -226,13 +226,11 @@ fn deterministic_u64(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) ->
 
 fn deterministic_float(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> f64 {
     let random = deterministic_u64(workflow_id, run_id, sequence) >> 11;
-    let high = match u32::try_from(random >> 32) {
-        Ok(value) => value,
-        Err(_) => return 0.0,
+    let Ok(high) = u32::try_from(random >> 32) else {
+        return 0.0;
     };
-    let low = match u32::try_from(random & u64::from(u32::MAX)) {
-        Ok(value) => value,
-        Err(_) => return 0.0,
+    let Ok(low) = u32::try_from(random & u64::from(u32::MAX)) else {
+        return 0.0;
     };
     (f64::from(high) * 4_294_967_296.0 + f64::from(low)) / FLOAT_SCALE
 }
