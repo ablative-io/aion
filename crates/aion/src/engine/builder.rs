@@ -411,7 +411,6 @@ impl EngineBuilder {
             Arc::clone(&visibility_store),
         )
         .await?;
-        recover_timers_on_startup(Arc::clone(&store)).await?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),
@@ -421,6 +420,7 @@ impl EngineBuilder {
             self.recovery.as_ref(),
         )
         .await?;
+        recover_timers_on_startup(Arc::clone(&store)).await?;
 
         let signal_handoff = Arc::new(SignalResumeHandoff::new());
 

@@ -1,5 +1,6 @@
 //! Timer NIF implementations for the `aion_flow_ffi` namespace.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -28,8 +29,14 @@ struct TimerNifBridge {
     registry: Arc<Registry>,
     store: Arc<dyn ReadableEventStore>,
     tokio_handle: Handle,
-    pending_timers: DashMap<(WorkflowProcessHandle, TimerId), JoinHandle<()>>,
+    pending_timers: DashMap<(WorkflowProcessHandle, TimerId), PendingTimerTask>,
+    next_timer_generation: AtomicU64,
     delivered_timers: TimerDeliveryQueue,
+}
+
+struct PendingTimerTask {
+    generation: u64,
+    handle: JoinHandle<()>,
 }
 
 type TimerDelivery = (WorkflowProcessHandle, TimerId, DateTime<Utc>);
@@ -219,12 +226,13 @@ impl EngineHandle for TimerNifBridge {
         let workflow_id = self.workflow_id_for_process(entry.process)?;
         let key = (entry.process, entry.timer_id.clone());
         if let Some((_, previous)) = self.pending_timers.remove(&key) {
-            previous.abort();
+            previous.handle.abort();
         }
 
         let fire_at = entry.fire_at;
         let timer_id = entry.timer_id.clone();
         let task_key = key.clone();
+        let generation = self.next_timer_generation.fetch_add(1, Ordering::Relaxed);
         let delay = match (fire_at - Utc::now()).to_std() {
             Ok(delay) => delay,
             Err(_) => Duration::ZERO,
@@ -242,10 +250,17 @@ impl EngineHandle for TimerNifBridge {
                 tracing::warn!(error = %error, "timer wheel fire callback failed");
             }
             if let Ok(bridge) = timer_bridge() {
-                bridge.pending_timers.remove(&task_key);
+                if bridge
+                    .pending_timers
+                    .get(&task_key)
+                    .is_some_and(|pending| pending.generation == generation)
+                {
+                    bridge.pending_timers.remove(&task_key);
+                }
             }
         });
-        self.pending_timers.insert(key, handle);
+        self.pending_timers
+            .insert(key, PendingTimerTask { generation, handle });
         Ok(())
     }
 
@@ -254,8 +269,8 @@ impl EngineHandle for TimerNifBridge {
         process: WorkflowProcessHandle,
         timer_id: &TimerId,
     ) -> Result<(), EngineSeamError> {
-        if let Some((_, handle)) = self.pending_timers.remove(&(process, timer_id.clone())) {
-            handle.abort();
+        if let Some((_, pending)) = self.pending_timers.remove(&(process, timer_id.clone())) {
+            pending.handle.abort();
         }
         Ok(())
     }
@@ -317,6 +332,7 @@ pub(crate) fn install_timer_nif_bridge(
         store,
         tokio_handle,
         pending_timers: DashMap::new(),
+        next_timer_generation: AtomicU64::new(0),
         delivered_timers: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
     });
     let bridge_slot = TIMER_BRIDGE.get_or_init(|| Mutex::new(None));

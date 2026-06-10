@@ -1,7 +1,7 @@
 //! Expired timer polling on startup and periodic recovery tick.
 
 use aion_core::{Event, TimerId};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -125,24 +125,23 @@ fn outstanding_future_timers(
     history: &[Event],
     now: DateTime<Utc>,
 ) -> Vec<(TimerId, DateTime<Utc>)> {
-    let mut started: HashMap<TimerId, DateTime<Utc>> = HashMap::new();
-    let mut terminal: HashSet<TimerId> = HashSet::new();
+    let mut outstanding: HashMap<TimerId, DateTime<Utc>> = HashMap::new();
     for event in history {
         match event {
             Event::TimerStarted {
                 timer_id, fire_at, ..
             } => {
-                started.insert(timer_id.clone(), *fire_at);
+                outstanding.insert(timer_id.clone(), *fire_at);
             }
             Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. } => {
-                terminal.insert(timer_id.clone());
+                outstanding.remove(timer_id);
             }
             _ => {}
         }
     }
-    started
+    outstanding
         .into_iter()
-        .filter(|(timer_id, fire_at)| *fire_at > now && !terminal.contains(timer_id))
+        .filter(|(_, fire_at)| *fire_at > now)
         .collect()
 }
 
