@@ -194,43 +194,47 @@ async fn start_continuation_replacement(
 }
 
 fn terminal_outcome_from_history(events: &[Event], run_id: &RunId) -> Option<TerminalOutcome> {
-    for event in events.iter().rev() {
-        match event {
+    let run_start = events.iter().position(|event| {
+        matches!(
+            event,
             Event::WorkflowStarted {
                 run_id: event_run_id,
                 ..
-            } => {
-                if event_run_id == run_id {
-                    return None;
-                }
-            }
+            } if event_run_id == run_id
+        )
+    })?;
+    let run_end = events[run_start + 1..]
+        .iter()
+        .position(|event| matches!(event, Event::WorkflowStarted { .. }))
+        .map_or(events.len(), |offset| run_start + 1 + offset);
+
+    events[run_start + 1..run_end]
+        .iter()
+        .rev()
+        .find_map(|event| match event {
             Event::WorkflowCompleted { result, .. } => {
-                return Some(TerminalOutcome::Completed(result.clone()));
+                Some(TerminalOutcome::Completed(result.clone()))
             }
-            Event::WorkflowFailed { error, .. } => {
-                return Some(TerminalOutcome::Failed(error.clone()));
-            }
+            Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
             Event::WorkflowCancelled { reason, .. } => {
-                return Some(TerminalOutcome::Cancelled(reason.clone()));
+                Some(TerminalOutcome::Cancelled(reason.clone()))
             }
             Event::WorkflowTimedOut { timeout, .. } => {
-                return Some(TerminalOutcome::TimedOut(timeout.clone()));
+                Some(TerminalOutcome::TimedOut(timeout.clone()))
             }
             Event::WorkflowContinuedAsNew {
                 input,
                 workflow_type,
                 parent_run_id,
                 ..
-            } => {
-                if parent_run_id == run_id {
-                    return Some(TerminalOutcome::ContinuedAsNew {
-                        input: input.clone(),
-                        workflow_type: workflow_type.clone(),
-                        parent_run_id: parent_run_id.clone(),
-                    });
-                }
-            }
-            Event::SearchAttributesUpdated { .. }
+            } if parent_run_id == run_id => Some(TerminalOutcome::ContinuedAsNew {
+                input: input.clone(),
+                workflow_type: workflow_type.clone(),
+                parent_run_id: parent_run_id.clone(),
+            }),
+            Event::WorkflowStarted { .. }
+            | Event::WorkflowContinuedAsNew { .. }
+            | Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
             | Event::ActivityCompleted { .. }
@@ -250,10 +254,8 @@ fn terminal_outcome_from_history(events: &[Event], run_id: &RunId) -> Option<Ter
             | Event::SchedulePaused { .. }
             | Event::ScheduleResumed { .. }
             | Event::ScheduleDeleted { .. }
-            | Event::ScheduleTriggered { .. } => {}
-        }
-    }
-    None
+            | Event::ScheduleTriggered { .. } => None,
+        })
 }
 
 #[cfg(test)]
@@ -266,7 +268,7 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
-    use super::{ProcessExitContext, handle_process_exit_async};
+    use super::{ProcessExitContext, handle_process_exit_async, terminal_outcome_from_history};
     use crate::durability::Recorder;
     use crate::loader::LoadedWorkflows;
     use crate::registry::{
@@ -380,6 +382,61 @@ mod tests {
             }
             other => return Err(format!("expected started then completed, found {other:?}").into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_outcome_is_scoped_to_requested_run_segment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let old_run_id = aion_core::RunId::new(uuid::Uuid::from_u128(1));
+        let new_run_id = aion_core::RunId::new(uuid::Uuid::from_u128(2));
+        let input = payload("next")?;
+        let result = payload("done")?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let envelope = |seq| aion_core::EventEnvelope {
+            seq,
+            recorded_at: chrono::Utc::now(),
+            workflow_id: workflow_id.clone(),
+        };
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1),
+                workflow_type: "checkout".to_owned(),
+                input: payload("first")?,
+                run_id: old_run_id.clone(),
+                parent_run_id: None,
+            },
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2),
+                input: input.clone(),
+                workflow_type: None,
+                parent_run_id: old_run_id.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: envelope(3),
+                workflow_type: "checkout".to_owned(),
+                input,
+                run_id: new_run_id.clone(),
+                parent_run_id: Some(old_run_id.clone()),
+            },
+            Event::WorkflowCompleted {
+                envelope: envelope(4),
+                result: result.clone(),
+            },
+        ];
+
+        assert_eq!(
+            terminal_outcome_from_history(&events, &old_run_id),
+            Some(TerminalOutcome::ContinuedAsNew {
+                input: payload("next")?,
+                workflow_type: None,
+                parent_run_id: old_run_id,
+            })
+        );
+        assert_eq!(
+            terminal_outcome_from_history(&events, &new_run_id),
+            Some(TerminalOutcome::Completed(result))
+        );
         Ok(())
     }
 
