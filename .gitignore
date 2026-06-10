@@ -25,6 +25,9 @@ __pycache__
 
 # Worktrees and workflow artifacts
 .yggdrasil-worktrees/
+.meridian/
+.claude/
+server.log
 .commit-msg.tmp
 
 # OS / editor
@@ -32,4 +35,3 @@ __pycache__
 *.swp
 .idea
 .vscode
-.meridian/worksites/
