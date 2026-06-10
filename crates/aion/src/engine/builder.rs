@@ -589,17 +589,34 @@ async fn repopulate_active_workflows(
                     recorder,
                     completion,
                 });
-                registry.insert((workflow_id.clone(), run_id.clone()), handle.clone())?;
-                registry.reconcile(&workflow_id, &run_id, &history)?;
-                supervision.place_workflow(workflow_type, pid)?;
-                install_recovered_completion_monitor(
-                    Arc::clone(&store),
-                    Arc::clone(&visibility_store),
-                    &runtime,
-                    Arc::clone(&registry),
-                    pid,
-                    &handle,
-                )?;
+                if let Err(error) = registry
+                    .insert((workflow_id.clone(), run_id.clone()), handle.clone())
+                    .and_then(|_| registry.reconcile(&workflow_id, &run_id, &history))
+                    .and_then(|_| {
+                        supervision
+                            .place_workflow(workflow_type.clone(), pid)
+                            .map(|_| ())
+                    })
+                    .and_then(|()| {
+                        install_recovered_completion_monitor(
+                            Arc::clone(&store),
+                            Arc::clone(&visibility_store),
+                            &runtime,
+                            Arc::clone(&registry),
+                            &handle,
+                        )
+                    })
+                {
+                    rollback_recovered_resident(
+                        &runtime,
+                        Arc::clone(&registry),
+                        &workflow_id,
+                        &run_id,
+                        pid,
+                        &error,
+                    );
+                    return Err(error);
+                }
             }
             ActiveWorkflowRecovery::ScheduleCoordinator { run_id } => {
                 registry.reconcile(&workflow_id, &run_id, &history)?;
@@ -615,13 +632,9 @@ fn install_recovered_completion_monitor(
     visibility_store: Arc<dyn VisibilityStore>,
     runtime: &Arc<RuntimeHandle>,
     registry: Arc<Registry>,
-    pid: crate::Pid,
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
-    if !runtime.is_live(pid) {
-        return Ok(());
-    }
-
+    let pid = handle.pid();
     let completion_context = ProcessExitContext {
         store,
         visibility_store,
@@ -635,6 +648,22 @@ fn install_recovered_completion_monitor(
         }
     })?;
     Ok(())
+}
+
+fn rollback_recovered_resident(
+    runtime: &RuntimeHandle,
+    registry: Arc<Registry>,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
+    pid: crate::Pid,
+    cause: &EngineError,
+) {
+    if let Err(error) = registry.remove(workflow_id, run_id) {
+        tracing::warn!(workflow_id = %workflow_id, error = %error, "failed to roll back recovered workflow registry entry");
+    }
+    if let Err(error) = runtime.cancel_pid(pid) {
+        tracing::warn!(workflow_id = %workflow_id, pid, error = %error, cause = %cause, "failed to cancel recovered workflow process after startup registration failed");
+    }
 }
 
 fn recover_active_workflow(
