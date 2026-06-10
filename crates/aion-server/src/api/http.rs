@@ -1673,8 +1673,8 @@ mod tests {
             }
         }
 
-        fn publish(&self, event: Event) -> Result<(), broadcast::error::SendError<Event>> {
-            self.events.send(event).map(|_receivers| ())
+        fn publish(&self, event: Event) -> Result<(), String> {
+            self.events.send(event).map(|_receivers| ()).map_err(|e| e.to_string())
         }
     }
 

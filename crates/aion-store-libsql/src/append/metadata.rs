@@ -17,6 +17,7 @@ pub(super) fn event_kind(event: &Event) -> &'static str {
         Event::TimerStarted { .. } => "TimerStarted",
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
+        Event::WithTimeoutCompleted { .. } => "WithTimeoutCompleted",
         Event::SignalReceived { .. } => "SignalReceived",
         Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",

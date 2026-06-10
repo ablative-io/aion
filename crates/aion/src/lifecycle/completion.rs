@@ -243,6 +243,7 @@ fn terminal_outcome_from_history(events: &[Event], run_id: &RunId) -> Option<Ter
             | Event::TimerStarted { .. }
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
+            | Event::WithTimeoutCompleted { .. }
             | Event::SignalReceived { .. }
             | Event::SignalSent { .. }
             | Event::ChildWorkflowStarted { .. }

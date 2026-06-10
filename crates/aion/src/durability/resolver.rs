@@ -215,6 +215,15 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
         }),
         Event::TimerFired { .. } => Ok(recorded(Resolution::TimerFired, recorded_at)),
         Event::TimerCancelled { .. } => Ok(recorded(Resolution::TimerCancelled, recorded_at)),
+        Event::WithTimeoutCompleted {
+            outcome, result, ..
+        } => Ok(recorded(
+            Resolution::WithTimeout {
+                outcome: outcome.clone(),
+                result: result.clone(),
+            },
+            recorded_at,
+        )),
         Event::TimerStarted { .. } => Ok(recorded(Resolution::TimerStarted, recorded_at)),
         Event::SignalReceived { payload, .. } => Ok(recorded(
             Resolution::SignalDelivered(payload.clone()),
@@ -290,6 +299,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TimerStarted { .. } => "TimerStarted",
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
+        Event::WithTimeoutCompleted { .. } => "WithTimeoutCompleted",
         Event::SignalReceived { .. } => "SignalReceived",
         Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",

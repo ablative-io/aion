@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use aion_core::{
     ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId,
-    SearchAttributeSchema, SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
+    SearchAttributeSchema, SearchAttributeValue, TimerId, WithTimeoutOutcome, WorkflowError,
+    WorkflowId,
 };
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
 use aion_store::{EventStore, WriteToken};
@@ -498,6 +499,28 @@ impl Recorder {
         self.append_with(recorded_at, |envelope| Event::TimerCancelled {
             envelope,
             timer_id,
+        })
+        .await
+    }
+
+    /// Records a `with_timeout` terminal outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
+    /// tracker cannot advance after a successful append.
+    pub async fn record_with_timeout_completed(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        timer_id: TimerId,
+        outcome: WithTimeoutOutcome,
+        result: Option<Payload>,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::WithTimeoutCompleted {
+            envelope,
+            timer_id,
+            outcome,
+            result,
         })
         .await
     }

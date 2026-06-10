@@ -332,7 +332,9 @@ impl HistoryCursor {
     fn is_outcome_for_start_key(&self, event: &Event, expected_key: &CorrelationKey) -> bool {
         match (event, expected_key) {
             (
-                Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. },
+                Event::TimerFired { timer_id, .. }
+                | Event::TimerCancelled { timer_id, .. }
+                | Event::WithTimeoutCompleted { timer_id, .. },
                 CorrelationKey::Timer(expected_timer_id),
             ) => timer_id == expected_timer_id,
             (
@@ -363,7 +365,9 @@ impl HistoryCursor {
 fn family_for_event(event: &Event) -> Option<RecordedEventFamily> {
     match event {
         Event::ActivityScheduled { .. } => Some(RecordedEventFamily::Activity),
-        Event::TimerStarted { .. } => Some(RecordedEventFamily::Timer),
+        Event::TimerStarted { .. } | Event::WithTimeoutCompleted { .. } => {
+            Some(RecordedEventFamily::Timer)
+        }
         Event::SignalReceived { .. } | Event::SignalSent { .. } => {
             Some(RecordedEventFamily::Signal)
         }
@@ -391,6 +395,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TimerStarted { .. } => "TimerStarted",
         Event::TimerFired { .. } => "TimerFired",
         Event::TimerCancelled { .. } => "TimerCancelled",
+        Event::WithTimeoutCompleted { .. } => "WithTimeoutCompleted",
         Event::SignalReceived { .. } => "SignalReceived",
         Event::SignalSent { .. } => "SignalSent",
         Event::ChildWorkflowStarted { .. } => "ChildWorkflowStarted",

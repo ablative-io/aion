@@ -419,7 +419,7 @@ impl EngineBuilder {
             runtime: Arc::clone(&runtime),
             loaded_workflows: &loaded_workflows,
             registry: Arc::clone(&registry),
-            supervision: supervision.as_ref(),
+            supervision: Arc::clone(&supervision),
             recovery: self.recovery,
         })
         .await?;
@@ -486,7 +486,7 @@ struct StartupRecoveryContext<'a> {
     runtime: Arc<RuntimeHandle>,
     loaded_workflows: &'a LoadedWorkflows,
     registry: Arc<Registry>,
-    supervision: &'a SupervisionTree,
+    supervision: Arc<SupervisionTree>,
     recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
 }
 
@@ -510,7 +510,7 @@ async fn recover_active_workflows_on_startup(
         Arc::clone(&context.runtime),
         context.loaded_workflows,
         Arc::clone(&context.registry),
-        context.supervision,
+        Arc::clone(&context.supervision),
         recovery.as_ref(),
     )
     .await
@@ -559,7 +559,7 @@ async fn repopulate_active_workflows(
     runtime: Arc<RuntimeHandle>,
     loaded_workflows: &LoadedWorkflows,
     registry: Arc<Registry>,
-    supervision: &SupervisionTree,
+    supervision: Arc<SupervisionTree>,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
     for workflow_id in store.as_ref().list_active().await? {
@@ -619,13 +619,15 @@ async fn repopulate_active_workflows(
                             Arc::clone(&visibility_store),
                             &runtime,
                             Arc::clone(&registry),
+                            Arc::new(loaded_workflows.clone()),
+                            Arc::clone(&supervision),
                             &handle,
                         )
                     })
                 {
                     rollback_recovered_resident(
                         &runtime,
-                        Arc::clone(&registry),
+                        &registry,
                         &workflow_id,
                         &run_id,
                         pid,
@@ -648,6 +650,8 @@ fn install_recovered_completion_monitor(
     visibility_store: Arc<dyn VisibilityStore>,
     runtime: &Arc<RuntimeHandle>,
     registry: Arc<Registry>,
+    loaded_workflows: Arc<LoadedWorkflows>,
+    supervision: Arc<SupervisionTree>,
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
     let pid = handle.pid();
@@ -655,6 +659,9 @@ fn install_recovered_completion_monitor(
         store,
         visibility_store,
         registry,
+        loaded_workflows,
+        runtime: Arc::clone(runtime),
+        supervision,
         tokio_handle: tokio::runtime::Handle::current(),
     };
     let completion_handle = handle.clone();
@@ -668,7 +675,7 @@ fn install_recovered_completion_monitor(
 
 fn rollback_recovered_resident(
     runtime: &RuntimeHandle,
-    registry: Arc<Registry>,
+    registry: &Registry,
     workflow_id: &aion_core::WorkflowId,
     run_id: &RunId,
     pid: crate::Pid,
