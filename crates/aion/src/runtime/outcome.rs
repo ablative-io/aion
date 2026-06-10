@@ -36,6 +36,17 @@ pub(super) fn workflow_process_outcome(
     pid: Pid,
 ) -> Result<WorkflowProcessOutcome, EngineError> {
     let (reason, owned_result) = scheduler.run_until_exit(pid);
+    if reason != ExitReason::Normal {
+        if let Some(exception) = scheduler.take_exit_exception(pid) {
+            let formatted = exception.format_with_atoms(atoms);
+            let view = exception.view();
+            let details = term_to_payload(view.reason, atoms).ok();
+            return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
+                message: format!("workflow process {pid} exited: {formatted}"),
+                details,
+            }));
+        }
+    }
     convert_process_outcome(atoms, pid, reason, owned_result.root())
 }
 
