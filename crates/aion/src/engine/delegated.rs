@@ -332,7 +332,6 @@ const fn event_family(event: &Event) -> EventFamily {
         Event::TimerStarted { .. }
         | Event::TimerFired { .. }
         | Event::TimerCancelled { .. }
-        | Event::WithTimeoutCompleted { .. }
         | Event::WithTimeoutCompleted { .. } => EventFamily::Timer,
         Event::SignalReceived { .. } | Event::SignalSent { .. } => EventFamily::Signal,
         Event::ChildWorkflowStarted { .. }

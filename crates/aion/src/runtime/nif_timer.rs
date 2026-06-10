@@ -353,7 +353,7 @@ fn with_timeout_prepare(
 ) -> Result<WithTimeoutPrepare, NifTimerError> {
     let duration = decode_duration_arg("with_timeout duration", args[0])?;
     ensure_zero_arity_callable(args[1])?;
-    let context = build_context(process_context)?;
+    let mut context = build_context(process_context)?;
     let recorded_now = recorded_now(&context)?;
     let timer_id = TimerId::anonymous(current_head(&context)?);
     let fire_at = add_duration(recorded_now, duration)?;

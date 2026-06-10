@@ -51,9 +51,9 @@ pub use capability::{
 };
 pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
-    ExceptionClass, FileIoCompletion, FileIoContinuation, FileIoFacility, NativeContinuation,
-    ProcessContext, RemoteSpawnError, RemoteSpawnFacility, RemoteSpawnResult, SuspendRequest,
-    TcpIoFacility, TrampolineRequest,
+    AionTimeoutContinuation, ExceptionClass, FileIoCompletion, FileIoContinuation, FileIoFacility,
+    NativeContinuation, ProcessContext, RemoteSpawnError, RemoteSpawnFacility, RemoteSpawnResult,
+    SuspendRequest, TcpIoFacility, TrampolineRequest,
 };
 pub use distribution_bifs::GlobalNameFacility;
 pub use ets_bifs::EtsFacility;
