@@ -23,6 +23,7 @@ use crate::{
         nif_determinism::{NifContextSource, install_nif_context_source},
     },
     signal::SignalResumeHandoff,
+    time::TimerRecovery,
 };
 
 use super::api::{
@@ -396,6 +397,19 @@ impl EngineBuilder {
             Arc::clone(&visibility_store),
         )
         .await?;
+        let readable_store: Arc<dyn aion_store::ReadableEventStore> = store.clone();
+        let timer_service =
+            crate::runtime::nif_timer::installed_timer_service().map_err(|error| {
+                EngineError::Runtime {
+                    reason: format!("timer recovery service unavailable: {error}"),
+                }
+            })?;
+        TimerRecovery::new(readable_store, timer_service, Duration::ZERO)
+            .recover_on_startup(Utc::now())
+            .await
+            .map_err(|error| EngineError::Runtime {
+                reason: format!("timer recovery failed: {error}"),
+            })?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),

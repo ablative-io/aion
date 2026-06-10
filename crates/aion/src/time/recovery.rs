@@ -1,5 +1,7 @@
 //! Expired timer polling on startup and periodic recovery tick.
 
+use aion_core::{Event, TimerId};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -67,7 +69,9 @@ impl TimerRecovery {
         &self,
         now: DateTime<Utc>,
     ) -> Result<usize, TimerRecoveryError> {
-        self.recover_due(now).await
+        let fired = self.recover_due(now).await?;
+        self.rearm_future_from_active_histories(now).await?;
+        Ok(fired)
     }
 
     /// Runs one recovery tick using the injected clock.
@@ -98,6 +102,48 @@ impl TimerRecovery {
         }
         Ok(count)
     }
+
+    async fn rearm_future_from_active_histories(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<usize, TimerRecoveryError> {
+        let mut rearmed = 0;
+        for workflow_id in self.store.list_active().await? {
+            let history = self.store.read_history(&workflow_id).await?;
+            for (timer_id, fire_at) in outstanding_future_timers(&history, now) {
+                self.timer_service
+                    .schedule(workflow_id.clone(), timer_id, fire_at)
+                    .await?;
+                rearmed += 1;
+            }
+        }
+        Ok(rearmed)
+    }
+}
+
+fn outstanding_future_timers(
+    history: &[Event],
+    now: DateTime<Utc>,
+) -> Vec<(TimerId, DateTime<Utc>)> {
+    let mut started: HashMap<TimerId, DateTime<Utc>> = HashMap::new();
+    let mut terminal: HashSet<TimerId> = HashSet::new();
+    for event in history {
+        match event {
+            Event::TimerStarted {
+                timer_id, fire_at, ..
+            } => {
+                started.insert(timer_id.clone(), *fire_at);
+            }
+            Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. } => {
+                terminal.insert(timer_id.clone());
+            }
+            _ => {}
+        }
+    }
+    started
+        .into_iter()
+        .filter(|(timer_id, fire_at)| *fire_at > now && !terminal.contains(timer_id))
+        .collect()
 }
 
 #[cfg(test)]
