@@ -360,7 +360,7 @@ fn with_timeout_prepare(
     match context.resolve_command(timer_command(timer_id.clone(), fire_at))? {
         ResolveOutcome::Recorded(Resolution::WithTimeout { outcome, result }) => {
             Ok(WithTimeoutPrepare::Replay(replay_with_timeout_result(
-                outcome,
+                &outcome,
                 result,
                 process_context,
             )?))
@@ -430,7 +430,7 @@ fn ensure_zero_arity_callable(term: Term) -> Result<(), NifTimerError> {
 
 fn store_timeout_state(state: WithTimeoutState) -> Result<u64, NifTimerError> {
     let id = NEXT_TIMEOUT_CONTINUATION_ID.fetch_add(1, Ordering::Relaxed);
-    timeout_states()?
+    timeout_states()
         .lock()
         .map_err(|_| {
             NifTimerError::Context("with_timeout continuation lock is poisoned".to_owned())
@@ -440,7 +440,7 @@ fn store_timeout_state(state: WithTimeoutState) -> Result<u64, NifTimerError> {
 }
 
 fn take_timeout_state(id: u64) -> Result<WithTimeoutState, NifTimerError> {
-    timeout_states()?
+    timeout_states()
         .lock()
         .map_err(|_| {
             NifTimerError::Context("with_timeout continuation lock is poisoned".to_owned())
@@ -451,8 +451,8 @@ fn take_timeout_state(id: u64) -> Result<WithTimeoutState, NifTimerError> {
         })
 }
 
-fn timeout_states() -> Result<&'static Mutex<HashMap<u64, WithTimeoutState>>, NifTimerError> {
-    Ok(TIMEOUT_CONTINUATIONS.get_or_init(|| Mutex::new(HashMap::new())))
+fn timeout_states() -> &'static Mutex<HashMap<u64, WithTimeoutState>> {
+    TIMEOUT_CONTINUATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn build_context(process_context: &ProcessContext) -> Result<NifContext, NifTimerError> {
@@ -521,21 +521,21 @@ fn add_duration(
 }
 
 fn resume_with_timeout(
-    continuation: AionTimeoutContinuation,
+    AionTimeoutContinuation { state_id, .. }: AionTimeoutContinuation,
     closure_result: Term,
     context: &mut ProcessContext,
 ) -> Result<ContinuationStep, Term> {
-    let result = resume_with_timeout_inner(continuation, closure_result, context)
-        .unwrap_or_else(|error| error_result_term(&error.to_string()).unwrap_or(Term::NIL));
+    let result = resume_with_timeout_inner(state_id, closure_result, context)
+        .map_err(|error| error_result_term(&error.to_string()).unwrap_or(Term::NIL))?;
     Ok(ContinuationStep::Done(result))
 }
 
 fn resume_with_timeout_inner(
-    continuation: AionTimeoutContinuation,
+    state_id: u64,
     closure_result: Term,
     context: &mut ProcessContext,
 ) -> Result<Term, NifTimerError> {
-    let state = take_timeout_state(continuation.state_id)?;
+    let state = take_timeout_state(state_id)?;
     let nif_context = build_context(context)?;
     if state.duration.is_zero() {
         record_with_timeout_completed(
@@ -571,7 +571,7 @@ fn encode_term_payload(term: Term, context: &ProcessContext) -> Result<Payload, 
 }
 
 fn decode_term_payload(
-    payload: Payload,
+    payload: &Payload,
     context: &mut ProcessContext,
 ) -> Result<Term, NifTimerError> {
     let value = payload
@@ -583,7 +583,7 @@ fn decode_term_payload(
 }
 
 fn replay_with_timeout_result(
-    outcome: WithTimeoutOutcome,
+    outcome: &WithTimeoutOutcome,
     result: Option<Payload>,
     context: &mut ProcessContext,
 ) -> Result<Term, NifTimerError> {
@@ -595,7 +595,7 @@ fn replay_with_timeout_result(
                     "with_timeout operation outcome missing result payload".to_owned(),
                 )
             })?;
-            let value = decode_term_payload(payload, context)?;
+            let value = decode_term_payload(&payload, context)?;
             Ok(ok_term(value, context))
         }
     }
@@ -650,18 +650,6 @@ fn record_fired(
     context
         .block_on_recorder(|recorder| {
             Box::pin(async move { recorder.record_timer_fired(recorded_at, timer_id).await })
-        })
-        .map_err(Into::into)
-}
-
-fn record_cancelled(
-    context: &NifContext,
-    recorded_at: DateTime<Utc>,
-    timer_id: TimerId,
-) -> Result<(), NifTimerError> {
-    context
-        .block_on_recorder(|recorder| {
-            Box::pin(async move { recorder.record_timer_cancelled(recorded_at, timer_id).await })
         })
         .map_err(Into::into)
 }

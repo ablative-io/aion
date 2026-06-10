@@ -93,7 +93,7 @@ pub enum Resolution {
     SignalDelivered(Payload),
     /// A recorded timer cancellation.
     TimerCancelled,
-    /// A recorded with_timeout terminal outcome with an optional result payload.
+    /// A recorded `with_timeout` terminal outcome with an optional result payload.
     WithTimeout {
         /// Recorded timeout outcome.
         outcome: WithTimeoutOutcome,

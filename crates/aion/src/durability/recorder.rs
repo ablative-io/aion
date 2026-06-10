@@ -503,7 +503,7 @@ impl Recorder {
         .await
     }
 
-    /// Records a with_timeout terminal outcome.
+    /// Records a `with_timeout` terminal outcome.
     ///
     /// # Errors
     ///
