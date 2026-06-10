@@ -7,7 +7,7 @@
   "checklist": ["C7", "C8", "C9"],
   "stories": ["S2"],
   "purpose": "The Gleam SDK passes a closure to with_timeout, but the Rust NIF (nif_timer.rs) decodes args[1] as a string. Both sides pass their own tests because each tests against its own fake. This is the clearest example of the integration-seam gap pattern.",
-  "task": "Align the NIF implementation with the Gleam SDK contract so that with_timeout correctly executes the operation closure with a deadline, returning the operation result or a timeout error.",
+  "task": "Align the NIF implementation with the Gleam SDK contract so that with_timeout correctly executes the operation closure with a deadline, returning the operation result or a timeout error. Use beamr's continuation trampoline pattern (ProcessContext::set_continuation_trampoline) to call the closure — NIFs cannot re-enter the interpreter directly. Reference maps_bifs.rs (bif_maps_fold) in beamr for the canonical pattern. The NIF sets up a trampoline to call the closure, returns Ok(Term::NIL), and the scheduler calls the closure; the continuation's resume function receives the result and applies timeout logic. Multi-step continuations can be chained via ContinuationStep::Call. A NativeContinuation variant must be added for Aion's timeout continuation.",
   "requirements": [
     {
       "id": "R1",
@@ -23,10 +23,11 @@
     {
       "id": "R2",
       "title": "Operation execution with deadline",
-      "spec": "THE SYSTEM SHALL execute the operation closure within the NIF, racing it against the specified timeout duration, and return either the operation's result or a timeout error.",
+      "spec": "THE SYSTEM SHALL use beamr's continuation trampoline (ProcessContext::set_continuation_trampoline) to execute the operation closure, then apply timeout logic in the continuation's resume function. The NIF returns Ok(Term::NIL) and the scheduler calls the closure; the resume function races the result against a durable timer.",
       "acceptance": [
-        "The operation closure is invoked within the NIF.",
-        "The operation is raced against the specified timeout duration.",
+        "The operation closure is executed via the continuation trampoline pattern, not by re-entering the interpreter from the NIF.",
+        "A NativeContinuation variant is registered for the with_timeout continuation.",
+        "The continuation's resume function receives the closure result and applies timeout logic.",
         "If the operation completes before the timeout, its result is returned.",
         "If the timeout fires before the operation completes, a timeout error is returned.",
         "The timeout duration is taken from args[0] as an integer milliseconds value."
