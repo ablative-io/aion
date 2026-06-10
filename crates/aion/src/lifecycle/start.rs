@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus};
+use aion_package::ContentHash;
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
@@ -36,7 +37,7 @@ pub struct StartWorkflowContext<'a> {
     /// Runtime boundary used to spawn the workflow process.
     pub runtime: Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
-    pub supervision: &'a SupervisionTree,
+    pub supervision: Arc<SupervisionTree>,
     /// Active execution registry keyed by workflow/run identifiers.
     pub registry: Arc<Registry>,
     /// Shared non-resident signal handoff to flush after resident registration.
@@ -50,6 +51,8 @@ pub struct StartWorkflowOptions {
     pub workflow_id: Option<WorkflowId>,
     /// Parent run that continued into this run, when applicable.
     pub parent_run_id: Option<RunId>,
+    /// Exact loaded package version to spawn; omitted to use the latest version.
+    pub loaded_version: Option<ContentHash>,
 }
 
 /// Starts a loaded workflow execution and returns its active handle.
@@ -86,12 +89,13 @@ pub async fn start_workflow_with_options(
     input: Payload,
     options: StartWorkflowOptions,
 ) -> Result<WorkflowHandle, EngineError> {
-    let loaded = context
-        .loaded_workflows
-        .latest(workflow_type)
-        .ok_or_else(|| EngineError::WorkflowNotFound {
-            workflow_type: workflow_type.to_owned(),
-        })?;
+    let loaded = match &options.loaded_version {
+        Some(version) => context.loaded_workflows.get(workflow_type, version),
+        None => context.loaded_workflows.latest(workflow_type),
+    }
+    .ok_or_else(|| EngineError::WorkflowNotFound {
+        workflow_type: workflow_type.to_owned(),
+    })?;
 
     let supplied_workflow_id = options.workflow_id.is_some();
     let workflow_id = options.workflow_id.unwrap_or_else(WorkflowId::new_v4);
@@ -192,6 +196,9 @@ fn install_completion_monitor(
         store: Arc::clone(&context.store),
         visibility_store: Arc::clone(&context.visibility_store),
         registry: Arc::clone(&context.registry),
+        loaded_workflows: Arc::new(context.loaded_workflows.clone()),
+        runtime: Arc::clone(&context.runtime),
+        supervision: Arc::clone(&context.supervision),
         tokio_handle: tokio::runtime::Handle::current(),
     };
     let completion_handle = handle.clone();

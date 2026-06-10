@@ -233,7 +233,7 @@ impl EngineHandle for NifChildEngine {
                     visibility_store: Arc::clone(&self.bridge.visibility_store),
                     loaded_workflows: &self.bridge.loaded_workflows,
                     runtime: Arc::clone(&self.bridge.runtime),
-                    supervision: self.bridge.supervision.as_ref(),
+                    supervision: Arc::clone(&self.bridge.supervision),
                     registry: Arc::clone(&self.bridge.registry),
                     signal_handoff: Some(Arc::clone(&self.bridge.signal_handoff)),
                 },

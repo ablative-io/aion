@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use aion_core::{ActivityId, Event, Payload, RunId, WorkflowId};
+use aion_package::ContentHash;
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
@@ -26,7 +27,7 @@ pub struct ContinueAsNewContext<'a> {
     /// Runtime boundary used to spawn the replacement workflow process.
     pub runtime: &'a Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
-    pub supervision: &'a SupervisionTree,
+    pub supervision: Arc<SupervisionTree>,
     /// Active execution registry keyed by workflow/run identifiers.
     pub registry: &'a Arc<Registry>,
 }
@@ -62,7 +63,19 @@ pub async fn continue_as_new(
         .workflow_type
         .as_deref()
         .unwrap_or(handle.workflow_type());
-    validate_replacement_workflow_type(context.loaded_workflows, workflow_type)?;
+    if workflow_type != handle.workflow_type() {
+        return Err(EngineError::Runtime {
+            reason: format!(
+                "continue_as_new must restart the same workflow type: current={}, requested={workflow_type}",
+                handle.workflow_type()
+            ),
+        });
+    }
+    validate_replacement_workflow_type(
+        context.loaded_workflows,
+        workflow_type,
+        handle.loaded_version(),
+    )?;
 
     {
         let recorder = handle.recorder();
@@ -92,6 +105,7 @@ pub async fn continue_as_new(
         StartWorkflowOptions {
             workflow_id: Some(id.clone()),
             parent_run_id: Some(run.clone()),
+            loaded_version: Some(handle.loaded_version().clone()),
         },
     )
     .await?;
@@ -188,9 +202,10 @@ fn registered_handle(
 fn validate_replacement_workflow_type(
     loaded_workflows: &LoadedWorkflows,
     workflow_type: &str,
+    loaded_version: &ContentHash,
 ) -> Result<(), EngineError> {
     loaded_workflows
-        .latest(workflow_type)
+        .get(workflow_type, loaded_version)
         .ok_or_else(|| EngineError::WorkflowNotFound {
             workflow_type: workflow_type.to_owned(),
         })
@@ -223,7 +238,7 @@ mod tests {
         visibility_store: Arc<dyn VisibilityStore>,
         loaded: LoadedWorkflows,
         runtime: Arc<RuntimeHandle>,
-        supervision: SupervisionTree,
+        supervision: Arc<SupervisionTree>,
         registry: Arc<Registry>,
         handle: WorkflowHandle,
     }
@@ -236,15 +251,21 @@ mod tests {
         let mut loaded = LoadedWorkflows::new();
         loaded.note_loaded_workflow_for_test(
             "checkout",
-            "checkout_deployed",
+            "checkout_deployed_v1",
             "run",
             ContentHash::from_bytes([3; 32]),
         );
         loaded.note_loaded_workflow_for_test(
-            "checkout-v2",
-            "checkout_v2_deployed",
+            "checkout",
+            "checkout_deployed_v2",
             "run",
             ContentHash::from_bytes([4; 32]),
+        );
+        loaded.note_loaded_workflow_for_test(
+            "fulfillment",
+            "fulfillment_deployed",
+            "run",
+            ContentHash::from_bytes([5; 32]),
         );
         loaded
     }
@@ -255,9 +276,10 @@ mod tests {
         let visibility_store: Arc<dyn VisibilityStore> = backing;
         let loaded = loaded_workflows();
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-        runtime.register_waiting_test_module("checkout_deployed", "run");
-        runtime.register_waiting_test_module("checkout_v2_deployed", "run");
-        let supervision = SupervisionTree::new();
+        runtime.register_waiting_test_module("checkout_deployed_v1", "run");
+        runtime.register_waiting_test_module("checkout_deployed_v2", "run");
+        runtime.register_waiting_test_module("fulfillment_deployed", "run");
+        let supervision = Arc::new(SupervisionTree::new());
         let registry = Arc::new(Registry::default());
         let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
@@ -267,7 +289,7 @@ mod tests {
                 chrono::Utc::now(),
                 "checkout".to_owned(),
                 payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                run_id.clone(),
             )
             .await?;
         let pid = runtime.spawn_test_process_with_trap_exit(true)?;
@@ -301,7 +323,7 @@ mod tests {
             visibility_store: Arc::clone(&active.visibility_store),
             loaded_workflows: &active.loaded,
             runtime: &active.runtime,
-            supervision: &active.supervision,
+            supervision: Arc::clone(&active.supervision),
             registry: &active.registry,
         }
     }
@@ -421,7 +443,7 @@ mod tests {
             &old_run_id,
             ContinueAsNewRequest {
                 input: input.clone(),
-                workflow_type: Some("checkout-v2".to_owned()),
+                workflow_type: None,
             },
         )
         .await?;
@@ -429,7 +451,12 @@ mod tests {
 
         assert_eq!(new_handle.workflow_id(), &old_workflow_id);
         assert_ne!(new_handle.run_id(), &old_run_id);
-        assert_eq!(new_handle.workflow_type(), "checkout-v2");
+        assert_eq!(new_handle.workflow_type(), "checkout");
+        assert_eq!(
+            new_handle.loaded_version(),
+            &ContentHash::from_bytes([3; 32]),
+            "replacement must use the old run's loaded version, not latest"
+        );
         assert_eq!(active.registry.get(&old_workflow_id, &old_run_id)?, None);
         assert_eq!(
             active.registry.get(&old_workflow_id, new_handle.run_id())?,
@@ -439,7 +466,7 @@ mod tests {
             receiver.borrow().clone(),
             Some(TerminalOutcome::ContinuedAsNew {
                 input: input.clone(),
-                workflow_type: Some("checkout-v2".to_owned()),
+                workflow_type: None,
                 parent_run_id: old_run_id.clone(),
             })
         );
@@ -463,10 +490,10 @@ mod tests {
                 },
             ] => {
                 assert_eq!(continued_input, &input);
-                assert_eq!(workflow_type, &Some("checkout-v2".to_owned()));
+                assert_eq!(workflow_type, &None);
                 assert_eq!(parent_run_id, &old_run_id);
                 assert_eq!(started_input, &input);
-                assert_eq!(started_type, "checkout-v2");
+                assert_eq!(started_type, "checkout");
                 assert_eq!(started_run_id, new_handle.run_id());
                 assert_eq!(started_parent, &Some(old_run_id));
             }
@@ -479,7 +506,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_replacement_type_rejects_before_terminal_mutation()
+    async fn different_replacement_type_rejects_before_terminal_mutation()
     -> Result<(), Box<dyn std::error::Error>> {
         let active = active_workflow().await?;
 
@@ -489,14 +516,15 @@ mod tests {
             active.handle.run_id(),
             ContinueAsNewRequest {
                 input: payload("next")?,
-                workflow_type: Some("missing-workflow".to_owned()),
+                workflow_type: Some("fulfillment".to_owned()),
             },
         )
         .await;
 
         assert!(matches!(
             result,
-            Err(EngineError::WorkflowNotFound { workflow_type }) if workflow_type == "missing-workflow"
+            Err(EngineError::Runtime { reason })
+                if reason.contains("must restart the same workflow type")
         ));
         let history = active
             .store

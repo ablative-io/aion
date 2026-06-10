@@ -12,6 +12,7 @@ import aion/duration
 import aion/error
 import aion/signal
 import aion/workflow/concurrency
+import aion/workflow/continuation
 import aion/workflow/define as definition
 import aion/workflow/run as dispatch
 import aion/workflow/timer
@@ -88,6 +89,10 @@ pub fn with_timeout(
   deadline: duration.Duration,
 ) -> Result(value, error.TimeoutResultError(inner_error)) {
   timer.with_timeout(operation, deadline)
+}
+
+pub fn continue_as_new(input: a) -> Result(Never, error.WorkflowError) {
+  continuation.continue_as_new(input)
 }
 
 pub fn receive(

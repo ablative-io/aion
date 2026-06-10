@@ -9,9 +9,12 @@ use chrono::Utc;
 use tokio::runtime::Handle;
 
 use crate::EngineError;
+use crate::loader::LoadedWorkflows;
 use crate::registry::{Registry, Residency, TerminalOutcome, WorkflowHandle};
-use crate::runtime::WorkflowProcessOutcome;
+use crate::runtime::{RuntimeHandle, WorkflowProcessOutcome};
+use crate::supervision::SupervisionTree;
 
+use super::start::{self, StartWorkflowContext, StartWorkflowOptions};
 use super::visibility::upsert_workflow_visibility;
 
 /// Owned state needed by the runtime monitor callback.
@@ -23,6 +26,12 @@ pub struct ProcessExitContext {
     pub visibility_store: Arc<dyn VisibilityStore>,
     /// Active execution registry to reconcile status and residency.
     pub registry: Arc<Registry>,
+    /// Loaded workflow records used to start continue-as-new replacements.
+    pub loaded_workflows: Arc<LoadedWorkflows>,
+    /// Runtime boundary used to spawn continue-as-new replacements.
+    pub runtime: Arc<RuntimeHandle>,
+    /// Structural supervision tree for replacement workflow placement.
+    pub supervision: Arc<SupervisionTree>,
     /// Tokio runtime handle used to run async recorder/store work from the monitor thread.
     pub tokio_handle: Handle,
 }
@@ -54,10 +63,24 @@ async fn handle_process_exit_async(
     handle: WorkflowHandle,
     outcome: Result<WorkflowProcessOutcome, EngineError>,
 ) -> Result<(), EngineError> {
-    if let Some(existing) =
-        terminal_outcome_from_history(&context.store.read_history(handle.workflow_id()).await?)
-    {
+    let history = context.store.read_history(handle.workflow_id()).await?;
+    if let Some(existing) = terminal_outcome_from_history(&history, handle.run_id()) {
         reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
+        if let TerminalOutcome::ContinuedAsNew {
+            input,
+            workflow_type,
+            parent_run_id,
+        } = &existing
+        {
+            start_continuation_replacement(
+                &context,
+                &handle,
+                input.clone(),
+                workflow_type.clone(),
+                parent_run_id.clone(),
+            )
+            .await?;
+        }
         handle.completion().notify(existing);
         return Ok(());
     }
@@ -122,35 +145,96 @@ async fn reconcile_terminal_registry(
     Ok(())
 }
 
-fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
-    for event in events.iter().rev() {
-        match event {
-            Event::WorkflowStarted { .. } => return None,
+async fn start_continuation_replacement(
+    context: &ProcessExitContext,
+    handle: &WorkflowHandle,
+    input: Payload,
+    workflow_type: Option<String>,
+    parent_run_id: RunId,
+) -> Result<(), EngineError> {
+    let replacement_type = workflow_type.as_deref().unwrap_or(handle.workflow_type());
+    let already_started = context
+        .store
+        .read_history(handle.workflow_id())
+        .await?
+        .iter()
+        .any(|event| {
+            matches!(
+                event,
+                Event::WorkflowStarted {
+                    parent_run_id: Some(existing_parent),
+                    ..
+                } if existing_parent == &parent_run_id
+            )
+        });
+    if already_started {
+        return Ok(());
+    }
+
+    start::start_workflow_with_options(
+        StartWorkflowContext {
+            store: Arc::clone(&context.store),
+            visibility_store: Arc::clone(&context.visibility_store),
+            loaded_workflows: context.loaded_workflows.as_ref(),
+            runtime: Arc::clone(&context.runtime),
+            supervision: Arc::clone(&context.supervision),
+            registry: Arc::clone(&context.registry),
+            signal_handoff: None,
+        },
+        replacement_type,
+        input,
+        StartWorkflowOptions {
+            workflow_id: Some(handle.workflow_id().clone()),
+            parent_run_id: Some(parent_run_id),
+            loaded_version: Some(handle.loaded_version().clone()),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+fn terminal_outcome_from_history(events: &[Event], run_id: &RunId) -> Option<TerminalOutcome> {
+    let run_start = events.iter().position(|event| {
+        matches!(
+            event,
+            Event::WorkflowStarted {
+                run_id: event_run_id,
+                ..
+            } if event_run_id == run_id
+        )
+    })?;
+    let run_end = events[run_start + 1..]
+        .iter()
+        .position(|event| matches!(event, Event::WorkflowStarted { .. }))
+        .map_or(events.len(), |offset| run_start + 1 + offset);
+
+    events[run_start + 1..run_end]
+        .iter()
+        .rev()
+        .find_map(|event| match event {
             Event::WorkflowCompleted { result, .. } => {
-                return Some(TerminalOutcome::Completed(result.clone()));
+                Some(TerminalOutcome::Completed(result.clone()))
             }
-            Event::WorkflowFailed { error, .. } => {
-                return Some(TerminalOutcome::Failed(error.clone()));
-            }
+            Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
             Event::WorkflowCancelled { reason, .. } => {
-                return Some(TerminalOutcome::Cancelled(reason.clone()));
+                Some(TerminalOutcome::Cancelled(reason.clone()))
             }
             Event::WorkflowTimedOut { timeout, .. } => {
-                return Some(TerminalOutcome::TimedOut(timeout.clone()));
+                Some(TerminalOutcome::TimedOut(timeout.clone()))
             }
             Event::WorkflowContinuedAsNew {
                 input,
                 workflow_type,
                 parent_run_id,
                 ..
-            } => {
-                return Some(TerminalOutcome::ContinuedAsNew {
-                    input: input.clone(),
-                    workflow_type: workflow_type.clone(),
-                    parent_run_id: parent_run_id.clone(),
-                });
-            }
-            Event::SearchAttributesUpdated { .. }
+            } if parent_run_id == run_id => Some(TerminalOutcome::ContinuedAsNew {
+                input: input.clone(),
+                workflow_type: workflow_type.clone(),
+                parent_run_id: parent_run_id.clone(),
+            }),
+            Event::WorkflowStarted { .. }
+            | Event::WorkflowContinuedAsNew { .. }
+            | Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
             | Event::ActivityCompleted { .. }
@@ -170,10 +254,8 @@ fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
             | Event::SchedulePaused { .. }
             | Event::ScheduleResumed { .. }
             | Event::ScheduleDeleted { .. }
-            | Event::ScheduleTriggered { .. } => {}
-        }
-    }
-    None
+            | Event::ScheduleTriggered { .. } => None,
+        })
 }
 
 #[cfg(test)]
@@ -186,13 +268,15 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
     use serde_json::json;
 
-    use super::{ProcessExitContext, handle_process_exit_async};
+    use super::{ProcessExitContext, handle_process_exit_async, terminal_outcome_from_history};
     use crate::durability::Recorder;
+    use crate::loader::LoadedWorkflows;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
         WorkflowHandleParts,
     };
-    use crate::runtime::WorkflowProcessOutcome;
+    use crate::runtime::{RuntimeConfig, RuntimeHandle, WorkflowProcessOutcome};
+    use crate::supervision::SupervisionTree;
 
     struct ActiveWorkflow {
         context: ProcessExitContext,
@@ -243,6 +327,9 @@ mod tests {
                 store,
                 visibility_store,
                 registry,
+                loaded_workflows: Arc::new(LoadedWorkflows::new()),
+                runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
+                supervision: Arc::new(SupervisionTree::new()),
                 tokio_handle: tokio::runtime::Handle::current(),
             },
             handle,
@@ -295,6 +382,61 @@ mod tests {
             }
             other => return Err(format!("expected started then completed, found {other:?}").into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_outcome_is_scoped_to_requested_run_segment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let old_run_id = aion_core::RunId::new(uuid::Uuid::from_u128(1));
+        let new_run_id = aion_core::RunId::new(uuid::Uuid::from_u128(2));
+        let input = payload("next")?;
+        let result = payload("done")?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let envelope = |seq| aion_core::EventEnvelope {
+            seq,
+            recorded_at: chrono::Utc::now(),
+            workflow_id: workflow_id.clone(),
+        };
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1),
+                workflow_type: "checkout".to_owned(),
+                input: payload("first")?,
+                run_id: old_run_id.clone(),
+                parent_run_id: None,
+            },
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2),
+                input: input.clone(),
+                workflow_type: None,
+                parent_run_id: old_run_id.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: envelope(3),
+                workflow_type: "checkout".to_owned(),
+                input,
+                run_id: new_run_id.clone(),
+                parent_run_id: Some(old_run_id.clone()),
+            },
+            Event::WorkflowCompleted {
+                envelope: envelope(4),
+                result: result.clone(),
+            },
+        ];
+
+        assert_eq!(
+            terminal_outcome_from_history(&events, &old_run_id),
+            Some(TerminalOutcome::ContinuedAsNew {
+                input: payload("next")?,
+                workflow_type: None,
+                parent_run_id: old_run_id,
+            })
+        );
+        assert_eq!(
+            terminal_outcome_from_history(&events, &new_run_id),
+            Some(TerminalOutcome::Completed(result))
+        );
         Ok(())
     }
 
