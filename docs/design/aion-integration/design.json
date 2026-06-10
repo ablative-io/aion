@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "cluster": "aion-integration",
+  "title": "Integration Gap Fixes",
+  "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+  "problem": [
+    "The replay machinery (command/history resolution, single-writer Recorder) exists but the production hook DeferredActiveWorkflowRecovery errors for any non-coordinator active workflow. aion-server never installs a real recovery seam, so a server restart with in-flight workflows fails to boot.",
+    "Timer components exist (timer wheel, TimerRecovery) but are not wired: sleep uses in-memory tokio::time::sleep, arm_timer is a no-op, and TimerRecovery is never constructed outside tests. A long-duration sleep blocks a thread and does not survive restart.",
+    "The Gleam SDK passes a closure to with_timeout but the Rust NIF decodes args[1] as a string. Both sides pass their own tests because each tests against its own fake — a cross-boundary contract mismatch.",
+    "WebSocket event streaming is fully implemented server-side and three client surfaces implement the client half, but the handler is never mounted on any HTTP route.",
+    "The subscription lifecycle example calls workflow.continue_as_new which does not exist in the aion_flow SDK. Without continue_as_new, long-running workflows accumulate unbounded event history."
+  ],
+  "solution": {
+    "summary": "Five targeted briefs, each wiring an existing component pair across a seam boundary. IG-001 implements the production ActiveWorkflowRecoverySeam and installs it in aion-server. IG-002 wires the timer wheel arming, timer recovery on startup, and durable sleep. IG-003 aligns the with_timeout NIF to accept a closure matching the Gleam SDK contract. IG-004 mounts the WebSocket subscription handler on the HTTP router. IG-005 adds the continue_as_new SDK binding, NIF, and engine handling."
+  },
+  "decisions": [
+    {"id": "D1", "title": "Recovery uses existing AD replay infrastructure", "status": "active", "choice": "The production recovery seam delegates to the existing durability executor replay path rather than implementing a parallel recovery mechanism. This ensures recovery follows the same deterministic replay guarantees as normal operation."},
+    {"id": "D2", "title": "Timers are durable by default", "status": "active", "choice": "All timer operations (sleep, with_timeout) record durability events and arm in the timer wheel. In-memory-only timers are eliminated. This is the only way to satisfy the durable execution contract for workflows with long sleeps."},
+    {"id": "D3", "title": "NIF contracts match SDK signatures exactly", "status": "active", "choice": "The NIF argument decoding must match the Gleam SDK's published function signatures. When a mismatch is found, the NIF side is fixed to match the SDK, not the other way around, because the SDK is the author-facing contract."},
+    {"id": "D4", "title": "WebSocket route follows existing API conventions", "status": "active", "choice": "The WebSocket handler is mounted alongside existing REST routes using the same middleware and authentication patterns. No special-casing."},
+    {"id": "D5", "title": "continue_as_new terminates current run cleanly", "status": "active", "choice": "continue_as_new records a ContinueAsNew event, terminates the current process, and the engine starts a new run with fresh history. The new run uses the same workflow type and module version. This bounds event history growth for long-running workflows."}
+  ],
+  "constraints": [
+    {"id": "CO1", "description": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."},
+    {"id": "CO2", "description": "The Recorder's single-writer invariant is never violated."},
+    {"id": "CO3", "description": "No backwards compatibility shims — replace, don't add alongside."},
+    {"id": "CO4", "description": "No arbitrary limits or hardcoded defaults for configurable values."},
+    {"id": "CO5", "description": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."},
+    {"id": "CO6", "description": "Content-hash module namespacing invariant is preserved across continue_as_new."}
+  ],
+  "goals": [
+    "Server restart with pre-existing active workflows boots cleanly and resumes all in-flight workflows.",
+    "Timer-based sleeps are durable: they survive restart and do not block threads.",
+    "with_timeout NIF accepts a closure matching the Gleam SDK contract and executes it with a deadline.",
+    "WebSocket event streaming route is reachable by clients.",
+    "continue_as_new is available in the Gleam SDK and bounds event history growth for long-running workflows."
+  ],
+  "non_goals": [
+    "No new persistence backends or store implementations.",
+    "No changes to the aion_flow SDK's public API beyond adding continue_as_new.",
+    "No new wire protocol or transport mechanisms.",
+    "No dashboard UI changes (the dashboard already implements the WebSocket client).",
+    "No changes to the .aion package format or content-hash versioning."
+  ],
+  "structure": {
+    "crates/aion/src/durability/recovery.rs": "[IG-001] Production ActiveWorkflowRecoverySeam implementation",
+    "crates/aion-server/src/state.rs": "[IG-001] Install recovery seam in server engine builder",
+    "crates/aion/src/engine/builder.rs": "[IG-001, IG-002] Engine builder recovery and timer wiring",
+    "crates/aion/src/runtime/nif_timer.rs": "[IG-002, IG-003] Durable timer arming and with_timeout NIF fix",
+    "crates/aion/src/time/recovery.rs": "[IG-002] Timer recovery startup wiring",
+    "crates/aion-server/src/api/http.rs": "[IG-004] WebSocket route mounting",
+    "crates/aion-server/src/stream/socket.rs": "[IG-004] Existing WebSocket handler (no modification needed)",
+    "gleam/aion_flow/src/aion/workflow.gleam": "[IG-005] continue_as_new SDK binding",
+    "gleam/aion_flow/src/aion/workflow/run.gleam": "[IG-003] with_timeout SDK contract reference",
+    "crates/aion/src/runtime/engine_nifs.rs": "[IG-005] continue_as_new NIF implementation"
+  }
+}

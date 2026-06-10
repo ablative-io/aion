@@ -1,0 +1,61 @@
+{
+  "id": "IG-002",
+  "cluster": "aion-integration",
+  "title": "Wire durable timer wheel and recovery in production",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C4", "C5", "C6"],
+  "stories": ["S2"],
+  "purpose": "Timer components exist but are not production-wired: sleep uses in-memory tokio::time::sleep in nif_timer.rs, the timer wheel arm_timer() is a no-op in the timer NIF bridge, and TimerRecovery is never constructed outside tests. A 3-month sleep blocks a thread and does not survive restart.",
+  "task": "Wire the timer wheel and timer recovery into the production engine lifecycle so that durable timers are armed in the wheel, fire on schedule via the timer service, and recover after restart.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Production timer wheel arming",
+      "spec": "THE SYSTEM SHALL implement arm_timer and disarm_timer in the timer NIF bridge to delegate to the engine's actual timer wheel, replacing the current no-ops.",
+      "acceptance": [
+        "arm_timer in the timer NIF bridge delegates to the engine's timer wheel.",
+        "disarm_timer in the timer NIF bridge delegates to the engine's timer wheel.",
+        "The no-op implementations are removed.",
+        "Arming a timer results in the timer wheel scheduling a fire callback.",
+        "Disarming a timer cancels the pending fire callback."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Timer recovery on startup",
+      "spec": "THE SYSTEM SHALL construct and run TimerRecovery during engine startup, scanning expired timers from the store and delivering them to their workflows.",
+      "acceptance": [
+        "TimerRecovery is constructed during engine startup.",
+        "Expired timers from the store are scanned and delivered to their workflows.",
+        "Non-expired timers are re-armed in the timer wheel with their remaining duration.",
+        "Timer recovery runs before workflow recovery completes, so recovered workflows receive pending timer fires."
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "Sleep uses durable timer",
+      "spec": "THE SYSTEM SHALL implement sleep as a durable timer (record TimerStarted, arm in wheel, await TimerFired) rather than an in-memory tokio::time::sleep, so sleeps survive restart.",
+      "acceptance": [
+        "Calling sleep records a TimerStarted event through the Recorder.",
+        "The timer is armed in the timer wheel after the event is recorded.",
+        "When the timer fires, a TimerFired event is recorded.",
+        "On replay, sleep returns immediately using the recorded TimerFired event.",
+        "The in-memory tokio::time::sleep implementation is removed from the sleep path."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the EventStore timer persistence interface.",
+    "SHALL NOT introduce arbitrary timeout limits.",
+    "SHALL NOT change the determinism boundary (workflow.now remains the recorded timestamp)."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test passes for the timer module and integration tests.",
+    "cargo fmt --check passes.",
+    "A workflow that sleeps for 100ms fires after restart.",
+    "Timer recovery integration test demonstrates expired-timer delivery on boot.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

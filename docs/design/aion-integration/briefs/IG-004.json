@@ -1,0 +1,58 @@
+{
+  "id": "IG-004",
+  "cluster": "aion-integration",
+  "title": "Mount WebSocket event streaming route",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C10", "C11", "C12"],
+  "stories": ["S4"],
+  "purpose": "WebSocket event streaming is fully implemented server-side (handle_subscription_socket in stream/socket.rs), documented in README and API.md as shipped, and three client surfaces implement the client half (dashboard live feed, Python stream.py, TS stream.ts). But the handler is never mounted on any HTTP route.",
+  "task": "Mount the WebSocket subscription handler on the appropriate route in the HTTP router, making the already-implemented server and client code actually connected.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "WebSocket route registration",
+      "spec": "THE SYSTEM SHALL mount handle_subscription_socket on /api/v1/workflows/subscribe (or the documented path) in the HTTP router alongside existing REST routes.",
+      "acceptance": [
+        "handle_subscription_socket is registered as a route handler in the HTTP router.",
+        "The route path matches the path documented in the API documentation.",
+        "The route is registered alongside existing REST routes in the same router configuration.",
+        "The route accepts HTTP upgrade requests for the WebSocket protocol."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Configuration integration",
+      "spec": "THE SYSTEM SHALL use the existing WebSocketConfig for connection parameters (ping interval, max connections).",
+      "acceptance": [
+        "The mounted route uses WebSocketConfig for ping interval.",
+        "The mounted route uses WebSocketConfig for max connections.",
+        "No hardcoded connection parameters bypass the WebSocketConfig."
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "Client compatibility",
+      "spec": "THE SYSTEM SHALL verify that the mounted route accepts WebSocket upgrade requests and streams events in the format the existing client implementations expect.",
+      "acceptance": [
+        "A WebSocket upgrade request to the route succeeds and establishes a connection.",
+        "Events are streamed in the format the existing client implementations (dashboard, Python, TypeScript) expect.",
+        "A test client connects and receives at least one streamed event.",
+        "The connection respects the ping/pong keepalive from WebSocketConfig."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the existing WebSocket handler implementation.",
+    "SHALL NOT change the event streaming format.",
+    "SHALL NOT add authentication beyond what other API routes use."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test passes for the server HTTP module.",
+    "cargo fmt --check passes.",
+    "WebSocket upgrade to the route succeeds.",
+    "A test client receives streamed events.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "id": "IG-005",
+  "cluster": "aion-integration",
+  "title": "Add continue_as_new SDK binding and NIF",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C13", "C14", "C15"],
+  "stories": ["S3"],
+  "purpose": "The subscription lifecycle example (DX-024) calls workflow.continue_as_new which does not exist in the aion_flow SDK. Continue-as-new is essential for long-running workflows to bound event history growth — without it, workflows accumulate unbounded history.",
+  "task": "Add the continue_as_new binding to the aion_flow Gleam SDK and implement the backing NIF that records the ContinueAsNew event and terminates the current run.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SDK binding",
+      "spec": "THE SYSTEM SHALL export continue_as_new(input: a) -> Result(Never, WorkflowError) from aion/workflow that serializes the input and calls the backing NIF.",
+      "acceptance": [
+        "aion_flow exports continue_as_new from the aion/workflow module.",
+        "The function signature is continue_as_new(input: a) -> Result(Never, WorkflowError).",
+        "The input is serialized before being passed to the NIF.",
+        "The function calls the backing continue_as_new NIF.",
+        "gleam build succeeds with the new binding."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "NIF implementation",
+      "spec": "THE SYSTEM SHALL implement continue_as_new as a NIF that records a ContinueAsNew event through the Recorder and signals the process to terminate with the continuation input.",
+      "acceptance": [
+        "A continue_as_new NIF is registered and callable from Gleam.",
+        "The NIF records a ContinueAsNew event through the Recorder.",
+        "The NIF signals the current workflow process to terminate.",
+        "The continuation input is preserved in the ContinueAsNew event payload.",
+        "The NIF does not allow continue_as_new from within an activity context."
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "Engine handling",
+      "spec": "THE SYSTEM SHALL handle the ContinueAsNew termination by starting a new run of the same workflow type with the provided input and a fresh event history.",
+      "acceptance": [
+        "The engine detects ContinueAsNew process termination.",
+        "The engine starts a new run of the same workflow type.",
+        "The new run receives the continuation input from the ContinueAsNew event.",
+        "The new run starts with a fresh event history (no events from the previous run).",
+        "The previous run's events remain in the store for auditability.",
+        "The content-hash module namespacing invariant is preserved (same version module is used)."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the Event enum without updating the store conformance suite.",
+    "SHALL NOT allow continue_as_new from within an activity.",
+    "SHALL NOT break the content-hash module namespacing invariant."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test passes for the NIF and engine modules.",
+    "cargo fmt --check passes.",
+    "gleam build succeeds for the DX-024 subscription example.",
+    "Integration test demonstrates a workflow continuing as new with fresh history.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "cluster": "aion-integration",
+  "sections": [
+    {
+      "name": "Crash Recovery",
+      "items": [
+        {"id": "C1", "text": "A production ActiveWorkflowRecoverySeam is implemented that recovers active workflows by replaying their event history through the durability executor, restoring process state including workflow version, run ID, and process PID.", "done": false},
+        {"id": "C2", "text": "aion-server's engine builder installs the production recovery seam so that server restart with in-flight workflows succeeds.", "done": false},
+        {"id": "C3", "text": "An integration test demonstrates crash-resume: start workflow, stop engine, create new engine with same store, verify workflow resumes from last recorded state.", "done": false}
+      ]
+    },
+    {
+      "name": "Durable Timers",
+      "items": [
+        {"id": "C4", "text": "arm_timer and disarm_timer in the timer NIF bridge delegate to the engine's actual timer wheel, replacing the current no-ops.", "done": false},
+        {"id": "C5", "text": "TimerRecovery is constructed and run during engine startup, scanning expired timers from the store and delivering them to their workflows.", "done": false},
+        {"id": "C6", "text": "sleep is implemented as a durable timer (record TimerStarted, arm in wheel, await TimerFired) rather than an in-memory tokio::time::sleep.", "done": false}
+      ]
+    },
+    {
+      "name": "NIF Contract Alignment",
+      "items": [
+        {"id": "C7", "text": "The with_timeout NIF decodes the operation argument as a callable (Gleam function reference), matching the aion_flow SDK's with_timeout(operation: fn() -> Result(a, e), timeout_ms: Int) signature.", "done": false},
+        {"id": "C8", "text": "The NIF executes the operation closure within a deadline race and returns either the operation's result or a timeout error.", "done": false},
+        {"id": "C9", "text": "The with_timeout outcome is recorded as a durability event so replay returns the recorded result without re-executing.", "done": false}
+      ]
+    },
+    {
+      "name": "WebSocket Route",
+      "items": [
+        {"id": "C10", "text": "handle_subscription_socket is mounted on the documented API path in the HTTP router alongside existing REST routes.", "done": false},
+        {"id": "C11", "text": "The mounted route uses the existing WebSocketConfig for connection parameters.", "done": false},
+        {"id": "C12", "text": "A test client can upgrade to WebSocket on the route and receive streamed events.", "done": false}
+      ]
+    },
+    {
+      "name": "Continue As New",
+      "items": [
+        {"id": "C13", "text": "aion_flow exports continue_as_new(input: a) -> Result(Never, WorkflowError) that serializes the input and calls the backing NIF.", "done": false},
+        {"id": "C14", "text": "The continue_as_new NIF records a ContinueAsNew event through the Recorder and signals the process to terminate with the continuation input.", "done": false},
+        {"id": "C15", "text": "The engine handles ContinueAsNew termination by starting a new run of the same workflow type with the provided input and fresh event history.", "done": false}
+      ]
+    }
+  ]
+}

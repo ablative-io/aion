@@ -1,0 +1,27 @@
+{
+  "cluster": "aion-integration",
+  "personas": [
+    {
+      "name": "Operator",
+      "role": "Deploying and Operating the Aion Server",
+      "stories": [
+        {"id": "S1", "text": "As an operator, I want the server to recover all in-flight workflows after a restart so that a crash or deploy does not lose running workflow state and I do not need manual intervention to resume work."}
+      ]
+    },
+    {
+      "name": "Workflow Author",
+      "role": "Writing Durable Workflows in Gleam",
+      "stories": [
+        {"id": "S2", "text": "As a workflow author, I want timer-based sleeps to be durable and survive server restarts so that I can write workflows with long waits (hours, days, months) without worrying about the sleep being lost."},
+        {"id": "S3", "text": "As a workflow author, I want continue_as_new available in the SDK so that long-running subscription workflows can periodically reset their event history and avoid unbounded growth."}
+      ]
+    },
+    {
+      "name": "Dashboard User",
+      "role": "Monitoring Workflows via the Dashboard",
+      "stories": [
+        {"id": "S4", "text": "As a dashboard user, I want real-time workflow event streaming over WebSocket so that the dashboard live feed shows events as they happen without polling."}
+      ]
+    }
+  ]
+}

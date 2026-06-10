@@ -1,0 +1,60 @@
+{
+  "id": "IG-001",
+  "cluster": "aion-integration",
+  "title": "Wire production crash-recovery seam in aion-server",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3"],
+  "stories": ["S1"],
+  "purpose": "The replay machinery exists (command/history resolution, single-writer Recorder) but the production hook DeferredActiveWorkflowRecovery in crates/aion/src/durability/recovery.rs errors for any non-coordinator active workflow. aion-server never installs a real recovery seam. A server restart with any in-flight workflow fails to boot. This is the #1 gap between 'replay library' and 'durable engine.'",
+  "task": "Implement a production-ready ActiveWorkflowRecoverySeam that uses the existing AD replay infrastructure to recover active workflows on server startup. Install it in aion-server's EngineBuilder configuration.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Production recovery seam implementation",
+      "spec": "THE SYSTEM SHALL implement ActiveWorkflowRecoverySeam that recovers active workflows by replaying their event history through the durability executor, restoring process state including the loaded workflow version, run ID, and process PID.",
+      "acceptance": [
+        "An ActiveWorkflowRecoverySeam struct exists that implements the recovery trait.",
+        "Recovery replays event history through the existing durability executor.",
+        "Restored process state includes the loaded workflow version, run ID, and process PID.",
+        "Recovery does not violate the single-writer Recorder invariant.",
+        "Recovery handles the case where a workflow completed while the server was down (no process to restore)."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Server builder integration",
+      "spec": "THE SYSTEM SHALL install the production recovery seam in aion-server's engine builder so that server restart with in-flight workflows succeeds instead of erroring.",
+      "acceptance": [
+        "aion-server's EngineBuilder configuration installs ActiveWorkflowRecoverySeam.",
+        "Server startup with pre-existing active workflows in the store boots cleanly.",
+        "The DeferredActiveWorkflowRecovery stub is no longer the default in production paths."
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "Recovery verification",
+      "spec": "THE SYSTEM SHALL include an integration test that starts a workflow, stops the engine, creates a new engine with the same store, and verifies the workflow resumes from its last recorded state.",
+      "acceptance": [
+        "An integration test starts a multi-step workflow and advances it partway.",
+        "The test stops the engine cleanly.",
+        "The test creates a new engine using the same event store.",
+        "The test verifies the workflow resumes from its last recorded state and completes.",
+        "The test verifies no duplicate events are recorded during recovery replay."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the EventStore trait or conformance suite.",
+    "SHALL NOT change the Recorder's single-writer invariant.",
+    "SHALL NOT add backwards compatibility shims."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test passes for the recovery module and the integration test.",
+    "cargo fmt --check passes.",
+    "Server boots cleanly with pre-existing active workflows in the store.",
+    "Integration test demonstrates crash-resume behavior.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

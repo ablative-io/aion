@@ -1,0 +1,59 @@
+{
+  "id": "IG-003",
+  "cluster": "aion-integration",
+  "title": "Fix with_timeout NIF contract mismatch",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C7", "C8", "C9"],
+  "stories": ["S2"],
+  "purpose": "The Gleam SDK passes a closure to with_timeout, but the Rust NIF (nif_timer.rs) decodes args[1] as a string. Both sides pass their own tests because each tests against its own fake. This is the clearest example of the integration-seam gap pattern.",
+  "task": "Align the NIF implementation with the Gleam SDK contract so that with_timeout correctly executes the operation closure with a deadline, returning the operation result or a timeout error.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "NIF accepts closure",
+      "spec": "THE SYSTEM SHALL decode the operation argument as a callable (Gleam function reference), not a string, matching the aion_flow SDK's with_timeout(operation: fn() -> Result(a, e), timeout_ms: Int) signature.",
+      "acceptance": [
+        "The with_timeout NIF decodes args[1] as a callable function reference.",
+        "The string-decoding path is removed.",
+        "The NIF argument types match the aion_flow SDK's published with_timeout signature.",
+        "Passing a non-callable value returns a clear argument-type error."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Operation execution with deadline",
+      "spec": "THE SYSTEM SHALL execute the operation closure within the NIF, racing it against the specified timeout duration, and return either the operation's result or a timeout error.",
+      "acceptance": [
+        "The operation closure is invoked within the NIF.",
+        "The operation is raced against the specified timeout duration.",
+        "If the operation completes before the timeout, its result is returned.",
+        "If the timeout fires before the operation completes, a timeout error is returned.",
+        "The timeout duration is taken from args[0] as an integer milliseconds value."
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "Replay compatibility",
+      "spec": "THE SYSTEM SHALL record the with_timeout outcome as a durability event so that replay returns the recorded result without re-executing the operation or re-waiting.",
+      "acceptance": [
+        "The with_timeout outcome (success or timeout) is recorded as a durability event through the Recorder.",
+        "On replay, with_timeout returns the recorded result without calling the operation closure.",
+        "On replay, with_timeout returns the recorded result without waiting for the timeout duration.",
+        "The recorded event distinguishes between operation-completed and timed-out outcomes."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the aion_flow SDK's public with_timeout signature.",
+    "SHALL NOT introduce wall-clock time into the determinism boundary."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test passes for the timer NIF module.",
+    "cargo fmt --check passes.",
+    "gleam build succeeds for a workflow using with_timeout.",
+    "Integration test demonstrates timeout firing and operation completing before timeout.",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}
