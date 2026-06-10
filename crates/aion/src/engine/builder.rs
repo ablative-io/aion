@@ -398,25 +398,15 @@ impl EngineBuilder {
             install_activity_dispatcher(dispatcher);
         }
         let supervision = Arc::new(SupervisionTree::new());
-        bootstrap_schedule_coordinator(Arc::clone(&store)).await?;
-        crate::lifecycle::visibility::reconcile_visibility(
-            Arc::clone(&store),
-            Arc::clone(&visibility_store),
-        )
-        .await?;
-        let recovery = self.recovery.unwrap_or_else(|| {
-            Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(&runtime)))
-                as Arc<dyn ActiveWorkflowRecoverySeam>
-        });
-        repopulate_active_workflows(
-            Arc::clone(&store),
-            Arc::clone(&visibility_store),
-            Arc::clone(&runtime),
-            &loaded_workflows,
-            Arc::clone(&registry),
-            supervision.as_ref(),
-            recovery.as_ref(),
-        )
+        recover_active_workflows_on_startup(StartupRecoveryContext {
+            store: Arc::clone(&store),
+            visibility_store: Arc::clone(&visibility_store),
+            runtime: Arc::clone(&runtime),
+            loaded_workflows: &loaded_workflows,
+            registry: Arc::clone(&registry),
+            supervision: supervision.as_ref(),
+            recovery: self.recovery,
+        })
         .await?;
 
         let signal_handoff = Arc::new(SignalResumeHandoff::new());
@@ -472,6 +462,42 @@ impl EngineBuilder {
         engine.recover_schedules_on_startup(Utc::now()).await?;
         Ok(engine)
     }
+}
+
+struct StartupRecoveryContext<'a> {
+    store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
+    runtime: Arc<RuntimeHandle>,
+    loaded_workflows: &'a LoadedWorkflows,
+    registry: Arc<Registry>,
+    supervision: &'a SupervisionTree,
+    recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
+}
+
+async fn recover_active_workflows_on_startup(
+    context: StartupRecoveryContext<'_>,
+) -> Result<(), EngineError> {
+    bootstrap_schedule_coordinator(Arc::clone(&context.store)).await?;
+    crate::lifecycle::visibility::reconcile_visibility(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+    )
+    .await?;
+    let recovery = context.recovery.unwrap_or_else(|| {
+        Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
+            &context.runtime,
+        ))) as Arc<dyn ActiveWorkflowRecoverySeam>
+    });
+    repopulate_active_workflows(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+        Arc::clone(&context.runtime),
+        context.loaded_workflows,
+        Arc::clone(&context.registry),
+        context.supervision,
+        recovery.as_ref(),
+    )
+    .await
 }
 
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
@@ -569,7 +595,7 @@ async fn repopulate_active_workflows(
                 install_recovered_completion_monitor(
                     Arc::clone(&store),
                     Arc::clone(&visibility_store),
-                    Arc::clone(&runtime),
+                    &runtime,
                     Arc::clone(&registry),
                     pid,
                     &handle,
@@ -587,7 +613,7 @@ async fn repopulate_active_workflows(
 fn install_recovered_completion_monitor(
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
-    runtime: Arc<RuntimeHandle>,
+    runtime: &Arc<RuntimeHandle>,
     registry: Arc<Registry>,
     pid: crate::Pid,
     handle: &WorkflowHandle,
