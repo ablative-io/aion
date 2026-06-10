@@ -27,9 +27,10 @@ The three technologies meet at their points of maximum leverage:
   cannot wire mismatched types together and ship it. Compiles to BEAM
   bytecode.
 - **BEAM** (via beamr) — the execution runtime. Designed for systems that
-  run forever, handle millions of concurrent processes, recover from
-  failure automatically, and upgrade without downtime. Every workflow is a
-  process; every activity is a supervised child process.
+  run forever, handle many concurrent processes, recover from process-level
+  failures, and support hot code loading. Every workflow is a process; every
+  activity is a supervised child process. Aion's own zero-downtime upgrade
+  story is still part of the broader vision/hardening work.
 - **Rust** — the durable substrate. Persistence, the event store, the
   network API, and performance-critical infrastructure.
 

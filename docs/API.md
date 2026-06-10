@@ -11,8 +11,8 @@ Aion exposes the engine through the standalone `aion-server` plus language-speci
 
 HTTP and WebSocket routes use the same caller extraction path:
 
-- In local development with auth disabled, send `x-aion-subject` to identify the caller. If omitted, the server uses its development default subject.
-- Send `x-aion-namespaces` when you need to scope the caller to one or more namespaces.
+- In local development with auth disabled, send `x-aion-subject` to identify the caller. If omitted, the server identifies the caller as `anonymous`.
+- Send `x-aion-namespaces` as a comma-separated allow-list when the server runs in shared-engine namespace mode. The default single-tenant dev config authorizes the configured namespace without this header.
 - When auth is enabled, use the configured bearer-token/JWKS setup; WebSocket upgrades use the same headers as HTTP requests.
 
 Most examples use the default `default` namespace.
@@ -25,7 +25,7 @@ The public HTTP router currently mounts these routes:
 |---|---|---|---|---|
 | `GET` | `/workflows` | Query parameters: `namespace` (required), optional `workflow_type`, `status`, `started_after`, `started_before`, `closed_after`, `closed_before`, `search_attributes`, `limit`, `offset`. | JSON array of visibility `WorkflowSummary` values. | Implemented |
 | `GET` | `/workflows/count` | Same query parameters as `/workflows`. | `{ "count": <number> }` | Implemented |
-| `POST` | `/workflows/start` | JSON body with `namespace`, `workflow_type`, optional `input` payload. | `ProtoStartWorkflowResponse` (`workflow_id`, `run_id`). | Implemented |
+| `POST` | `/workflows/start` | JSON body with `namespace`, `workflow_type`, optional `input`. `input` may be an ordinary JSON value or a `ProtoPayload` envelope with `content_type` and byte-array `bytes`. | `ProtoStartWorkflowResponse` (`workflow_id`, `run_id`). | Implemented |
 | `POST` | `/workflows/signal` | `ProtoSignalRequest`: `namespace`, `workflow_id`, optional `run_id`, `signal_name`, optional `payload`. | Empty acknowledgement object. | Implemented |
 | `POST` | `/workflows/query` | `ProtoQueryRequest`: `namespace`, `workflow_id`, optional `run_id`, `query_name`. | `ProtoQueryResponse` with result or typed error. | Implemented |
 | `POST` | `/workflows/cancel` | `ProtoCancelRequest`: `namespace`, `workflow_id`, optional `run_id`, `reason`. | Empty acknowledgement object. | Implemented |
@@ -51,10 +51,10 @@ The `Proto*` JSON field names above are the serde names from `crates/aion-proto`
 curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
   -H 'x-aion-subject: docs-user' \
-  -d '{"namespace":"default","workflow_type":"hello-world","input":{"content_type":"application/json","bytes":"eyJuYW1lIjoiQWRhIn0="}}'
+  -d '{"namespace":"default","workflow_type":"hello-world","input":{"name":"Ada"}}'
 ```
 
-For the hello-world tutorial, `aion-cli` is the recommended path because it handles payload encoding for you.
+For non-JSON binary payloads, use the envelope form with `bytes` as a JSON array of integers. For the hello-world tutorial, `aion-cli` is the recommended path because it handles payload encoding for you.
 
 ## WebSocket event streaming
 
