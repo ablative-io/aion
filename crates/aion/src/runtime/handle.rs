@@ -71,6 +71,7 @@ pub struct RuntimeHandle {
     pub(super) atom_table: Arc<AtomTable>,
     pub(super) module_registry: Arc<ModuleRegistry>,
     pub(super) native_registry: Arc<BifRegistryImpl>,
+    nif_state: Arc<super::nif_state::EngineNifState>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
     signal_messages: Arc<dashmap::DashMap<Pid, Vec<(String, Payload)>>>,
@@ -88,8 +89,12 @@ impl RuntimeHandle {
     pub fn new(config: RuntimeConfig) -> Result<Self, EngineError> {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let module_registry = Arc::new(ModuleRegistry::new());
+        // One NIF state per runtime instance, recovered by every native call
+        // through beamr's NIF private data — never process-wide globals.
+        let nif_state = Arc::new(super::nif_state::EngineNifState::default());
         let scheduler_config = SchedulerConfig {
             thread_count: config.thread_count,
+            nif_private_data: Some(Arc::clone(&nif_state) as _),
             ..Default::default()
         };
         let native_registry = Arc::new(BifRegistryImpl::new());
@@ -107,6 +112,7 @@ impl RuntimeHandle {
             atom_table,
             module_registry,
             native_registry,
+            nif_state,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
             signal_messages: Arc::new(dashmap::DashMap::new()),
@@ -114,6 +120,11 @@ impl RuntimeHandle {
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
         })
+    }
+
+    /// This runtime instance's engine-scoped NIF state.
+    pub(crate) fn nif_state(&self) -> &Arc<super::nif_state::EngineNifState> {
+        &self.nif_state
     }
 
     /// Install collected NIF entries into beamr's native registry.
@@ -934,7 +945,7 @@ mod tests {
     use beamr::module::{Module, ResolvedImport, ResolvedImportTarget};
     use beamr::native::ProcessContext;
     use beamr::term::Term;
-    use beamr::term::binary::Binary;
+    use beamr::term::binary_ref::BinaryRef;
 
     use super::{RuntimeHandle, RuntimeInput};
     use crate::error::EngineError;
@@ -956,7 +967,7 @@ mod tests {
 
     fn binary_length(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
         match args {
-            [term] => Binary::new(*term)
+            [term] => BinaryRef::new(*term)
                 .and_then(|binary| i64::try_from(binary.as_bytes().len()).ok())
                 .map(Term::small_int)
                 .ok_or_else(|| Term::small_int(0)),

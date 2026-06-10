@@ -6,15 +6,17 @@ use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Paylo
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed::{self, Cons};
 use chrono::Utc;
 use serde::Deserialize;
 
-use crate::activity::bridge::{ActivityDispatcher, activity_dispatcher};
+use crate::activity::bridge::ActivityDispatcher;
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::runtime_context;
 use crate::runtime::nif_context::{NifContext, NifContextError};
+use crate::runtime::nif_state::{EngineNifState, engine_nif_state};
 
 thread_local! {
     static CONCURRENCY_NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
@@ -73,7 +75,7 @@ fn context_error_term(error: &NifContextError) -> Term {
 }
 
 fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
@@ -244,7 +246,8 @@ fn collect_all_with_context(
 ) -> Result<Term, Term> {
     std::hint::black_box(std::any::type_name::<crate::concurrency::AllRecordingContext>());
     let mut results = Vec::with_capacity(specs.len());
-    let base_ordinal = context.next_activity_ordinal();
+    let base_ordinal =
+        context.allocate_activity_ordinals(u64::try_from(specs.len()).map_err(|_| Term::NIL)?);
     for (offset, spec) in specs.iter().enumerate() {
         let ordinal = base_ordinal + u64::try_from(offset).map_err(|_| Term::NIL)?;
         let (activity_id, outcome, input_payload) =
@@ -282,7 +285,8 @@ fn collect_race_with_context(
         );
     }
     let mut winner = None;
-    let base_ordinal = context.next_activity_ordinal();
+    let base_ordinal =
+        context.allocate_activity_ordinals(u64::try_from(specs.len()).map_err(|_| Term::NIL)?);
     for (offset, spec) in specs.iter().enumerate() {
         let ordinal = base_ordinal + u64::try_from(offset).map_err(|_| Term::NIL)?;
         let (activity_id, outcome, input_payload) =
@@ -351,14 +355,22 @@ fn collect_race_with_context(
     }
 }
 
-fn context_from_process(ctx: &ProcessContext, label: &str) -> Result<NifContext, Term> {
+fn state_from_process(ctx: &ProcessContext) -> Result<std::sync::Arc<EngineNifState>, Term> {
+    engine_nif_state(ctx).map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))
+}
+
+fn context_from_process(
+    state: &EngineNifState,
+    ctx: &ProcessContext,
+    label: &str,
+) -> Result<NifContext, Term> {
     let Some(pid) = ctx.pid() else {
         return Err(
             error_result_term(&format!("{label}: missing calling process pid"))
                 .unwrap_or(Term::NIL),
         );
     };
-    let runtime = runtime_context().map_err(|error| context_error_term(&error))?;
+    let runtime = runtime_context(state).map_err(|error| context_error_term(&error))?;
     NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle)
         .map_err(|error| context_error_term(&error))
 }
@@ -386,11 +398,15 @@ pub(super) fn collect_all_impl(args: &[Term], ctx: &mut ProcessContext) -> Resul
         Ok(specs) => specs,
         Err(term) => return Ok(term),
     };
-    let context = match context_from_process(ctx, "collect_all") {
+    let state = match state_from_process(ctx) {
+        Ok(state) => state,
+        Err(term) => return Ok(term),
+    };
+    let context = match context_from_process(&state, ctx, "collect_all") {
         Ok(context) => context,
         Err(term) => return Ok(term),
     };
-    let dispatcher = activity_dispatcher();
+    let dispatcher = state.activity_dispatcher();
     collect_all_with_context(context, dispatcher.as_deref(), &specs, "collect_all")
 }
 
@@ -400,11 +416,15 @@ pub(super) fn collect_race_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
         Ok(specs) => specs,
         Err(term) => return Ok(term),
     };
-    let context = match context_from_process(ctx, "collect_race") {
+    let state = match state_from_process(ctx) {
+        Ok(state) => state,
+        Err(term) => return Ok(term),
+    };
+    let context = match context_from_process(&state, ctx, "collect_race") {
         Ok(context) => context,
         Err(term) => return Ok(term),
     };
-    let dispatcher = activity_dispatcher();
+    let dispatcher = state.activity_dispatcher();
     collect_race_with_context(context, dispatcher.as_deref(), &specs)
 }
 
@@ -414,11 +434,15 @@ pub(super) fn collect_map_impl(args: &[Term], ctx: &mut ProcessContext) -> Resul
         Ok(specs) => specs,
         Err(term) => return Ok(term),
     };
-    let context = match context_from_process(ctx, "collect_map") {
+    let state = match state_from_process(ctx) {
+        Ok(state) => state,
+        Err(term) => return Ok(term),
+    };
+    let context = match context_from_process(&state, ctx, "collect_map") {
         Ok(context) => context,
         Err(term) => return Ok(term),
     };
-    let dispatcher = activity_dispatcher();
+    let dispatcher = state.activity_dispatcher();
     std::hint::black_box(std::any::type_name::<crate::concurrency::AllRecordingContext>());
     collect_all_with_context(context, dispatcher.as_deref(), &specs, "collect_map")
 }

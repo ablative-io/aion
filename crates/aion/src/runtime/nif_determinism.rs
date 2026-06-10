@@ -1,14 +1,15 @@
 //! Deterministic workflow-visible time and random NIF implementations.
 
 use std::cell::RefCell;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
 use aion_core::{RunId, WorkflowId};
 use aion_store::EventStore;
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
@@ -18,6 +19,7 @@ use tokio::runtime::Handle;
 use crate::registry::Registry;
 
 use super::nif_context::NifContext;
+use super::nif_state::EngineNifState;
 
 const RANDOM_SEED_DOMAIN: &[u8] = b"aion.runtime.nif.determinism.rng.v1.sha256.chacha20";
 const FLOAT_SCALE: f64 = 9_007_199_254_740_992.0;
@@ -25,8 +27,6 @@ const FLOAT_SCALE: f64 = 9_007_199_254_740_992.0;
 thread_local! {
     static NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
 }
-
-static CONTEXT_SOURCE: OnceLock<RwLock<Arc<NifContextSource>>> = OnceLock::new();
 
 /// Inputs required to resolve per-call workflow NIF context from a raw process id.
 pub(crate) struct NifContextSource {
@@ -57,26 +57,11 @@ impl NifContextSource {
     }
 }
 
-/// Installs the process-wide context source used by production deterministic NIFs.
-pub(crate) fn install_nif_context_source(source: Arc<NifContextSource>) {
-    match CONTEXT_SOURCE.get() {
-        Some(installed) => match installed.write() {
-            Ok(mut guard) => *guard = source,
-            Err(poisoned) => *poisoned.into_inner() = source,
-        },
-        None => {
-            if let Err(source_lock) = CONTEXT_SOURCE.set(RwLock::new(source)) {
-                if let Some(installed) = CONTEXT_SOURCE.get() {
-                    let source = source_lock
-                        .into_inner()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    match installed.write() {
-                        Ok(mut guard) => *guard = source,
-                        Err(poisoned) => *poisoned.into_inner() = source,
-                    }
-                }
-            }
-        }
+/// Installs the engine-scoped context source used by production deterministic NIFs.
+pub(crate) fn install_nif_context_source(state: &EngineNifState, source: Arc<NifContextSource>) {
+    match state.context_source.write() {
+        Ok(mut guard) => *guard = Some(source),
+        Err(poisoned) => *poisoned.into_inner() = Some(source),
     }
 }
 
@@ -116,7 +101,7 @@ fn error_result_term(message: &str) -> Option<Term> {
 }
 
 fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
@@ -124,13 +109,15 @@ fn context_from_process(ctx: &ProcessContext) -> Result<NifContext, String> {
     let pid = ctx
         .pid()
         .ok_or_else(|| "determinism NIF called without a process id".to_owned())?;
-    let source = CONTEXT_SOURCE
-        .get()
-        .ok_or_else(|| "determinism NIF context source is not installed".to_owned())?;
-    let guard = source
+    let state = super::nif_state::engine_nif_state(ctx)?;
+    let guard = state
+        .context_source
         .read()
         .map_err(|_| "determinism NIF context source lock is poisoned".to_owned())?;
-    guard.context_for_pid(pid)
+    let source = guard
+        .as_ref()
+        .ok_or_else(|| "determinism NIF context source is not installed".to_owned())?;
+    source.context_for_pid(pid)
 }
 
 fn error_term(message: &str) -> Term {
@@ -324,7 +311,7 @@ mod tests {
     use beamr::atom::Atom;
     use beamr::native::ProcessContext;
     use beamr::term::Term;
-    use beamr::term::binary::Binary;
+    use beamr::term::binary_ref::BinaryRef;
     use beamr::term::boxed::Tuple;
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -340,6 +327,7 @@ mod tests {
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
     };
     use crate::runtime::nif_context::NifContext;
+    use crate::runtime::nif_state::EngineNifState;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -464,7 +452,7 @@ mod tests {
         } else {
             "error"
         };
-        let bin = Binary::new(value).ok_or("value should be a binary")?;
+        let bin = BinaryRef::new(value).ok_or("value should be a binary")?;
         let text = String::from_utf8(bin.as_bytes().to_vec())?;
         Ok((tag_name.to_owned(), text))
     }
@@ -488,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn install_context_source_replaces_stale_engine_context() -> TestResult {
+    fn each_engine_state_resolves_its_own_context_source() -> TestResult {
         clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
         let workflow_id = workflow_id();
@@ -500,28 +488,47 @@ mod tests {
             run_id(),
             &first_history,
         )?;
-        install_nif_context_source(Arc::new(NifContextSource::new(
-            Arc::clone(&first.registry),
-            runtime.handle().clone(),
-            Arc::clone(&first.store),
-        )));
+        let first_state = Arc::new(EngineNifState::default());
+        install_nif_context_source(
+            &first_state,
+            Arc::new(NifContextSource::new(
+                Arc::clone(&first.registry),
+                runtime.handle().clone(),
+                Arc::clone(&first.store),
+            )),
+        );
 
         let second_history = vec![completed_event(&workflow_id, 1, 1_700_000_999_456)?];
         let second =
             context_fixture_with_history(&runtime, 52, workflow_id, run_id(), &second_history)?;
-        install_nif_context_source(Arc::new(NifContextSource::new(
-            Arc::clone(&second.registry),
-            runtime.handle().clone(),
-            Arc::clone(&second.store),
-        )));
+        let second_state = Arc::new(EngineNifState::default());
+        install_nif_context_source(
+            &second_state,
+            Arc::new(NifContextSource::new(
+                Arc::clone(&second.registry),
+                runtime.handle().clone(),
+                Arc::clone(&second.store),
+            )),
+        );
+
+        // Both engines are live at once; each call resolves only against the
+        // state carried by its own runtime, never the other's.
         let mut ctx = ProcessContext::new();
         ctx.set_pid(Some(52));
-
+        ctx.set_nif_private_data(Some(second_state));
         let result = now_impl(&[], &mut ctx).map_err(|_| "now should return Ok at beamr level")?;
         let (tag, value) = decode_result_tuple(result)?;
-
         assert_eq!(tag, "ok");
         assert_eq!(value, "1700000999456");
+
+        let mut first_ctx = ProcessContext::new();
+        first_ctx.set_pid(Some(51));
+        first_ctx.set_nif_private_data(Some(first_state));
+        let result =
+            now_impl(&[], &mut first_ctx).map_err(|_| "now should return Ok at beamr level")?;
+        let (tag, value) = decode_result_tuple(result)?;
+        assert_eq!(tag, "ok");
+        assert_eq!(value, "1700000000123");
         Ok(())
     }
 

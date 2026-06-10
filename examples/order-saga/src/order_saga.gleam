@@ -7,6 +7,7 @@ import aion/activity
 import aion/codec
 import aion/error
 import aion/workflow
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 
@@ -56,10 +57,36 @@ pub type CompensationOutput {
 }
 
 pub fn definition() -> workflow.WorkflowDefinition(OrderInput, Shipment, SagaFailed) {
-  workflow.define("order-saga", order_input_codec(), shipment_codec(), saga_failed_codec(), run)
+  workflow.define("order-saga", order_input_codec(), shipment_codec(), saga_failed_codec(), execute)
 }
 
-pub fn run(input: OrderInput) -> Result(Shipment, SagaFailed) {
+/// Engine entry point.
+///
+/// The runtime delivers the start input as a raw JSON string: decode it with
+/// the input codec, run the typed workflow, and encode the success value back
+/// to its JSON string for the recorded result payload.
+pub fn run(raw_input: Dynamic) -> Result(String, SagaFailed) {
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) -> {
+      let input_codec = order_input_codec()
+      case input_codec.decode(raw_json) {
+        Ok(input) ->
+          case execute(input) {
+            Ok(output) -> {
+              let output_codec = shipment_codec()
+              Ok(output_codec.encode(output))
+            }
+            Error(workflow_error) -> Error(workflow_error)
+          }
+        Error(codec.DecodeError(reason: reason, path: _)) ->
+          Error(SagaFailed(failed_step: "decode_input", reason: "failed to decode workflow input: " <> reason, completed_steps: [], compensations: []))
+      }
+    }
+    Error(_) -> Error(SagaFailed(failed_step: "decode_input", reason: "workflow input payload was not a string", completed_steps: [], compensations: []))
+  }
+}
+
+pub fn execute(input: OrderInput) -> Result(Shipment, SagaFailed) {
   case workflow.run(reserve_inventory_activity(input)) {
     Ok(reservation) -> charge_payment(input, reservation)
     Error(activity_error) ->

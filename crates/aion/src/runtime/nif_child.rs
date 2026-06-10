@@ -1,12 +1,13 @@
 //! Child-workflow NIF bridge implementations.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use aion_core::{ContentType, Payload, RunId, WorkflowError, WorkflowId};
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed;
 
 use crate::child::{ChildWorkflowError, ChildWorkflowRecordingContext, await_child, spawn};
@@ -19,11 +20,15 @@ thread_local! {
     static CHILD_NIF_HEAP: std::cell::RefCell<Vec<Box<[u64]>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-static CHILD_BRIDGE: OnceLock<Arc<ChildNifBridge>> = OnceLock::new();
-
 /// Installs the engine-owned dependencies used by child workflow NIFs.
-pub(crate) fn install_child_nif_bridge(bridge: Arc<ChildNifBridge>) {
-    let _ = CHILD_BRIDGE.set(bridge);
+pub(crate) fn install_child_nif_bridge(
+    state: &super::nif_state::EngineNifState,
+    bridge: Arc<ChildNifBridge>,
+) {
+    match state.child_bridge.write() {
+        Ok(mut slot) => *slot = Some(bridge),
+        Err(poisoned) => *poisoned.into_inner() = Some(bridge),
+    }
 }
 
 /// NIF backing `aion_flow_ffi:spawn_child/3`.
@@ -54,7 +59,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
         decode_string_arg(args[0]).map_err(|error| format!("workflow_type:{error}"))?;
     let input = decode_payload_arg(args[1]).map_err(|error| format!("input:{error}"))?;
     decode_string_arg(args[2]).map_err(|error| format!("options:{error}"))?;
-    let bridge = child_bridge()?;
+    let bridge = child_bridge(ctx)?;
     let pid = ctx.pid().ok_or_else(|| "missing_caller_pid".to_owned())?;
     let mut nif = new_context(&bridge, pid)?;
     let key = next_child_key(&nif)?;
@@ -93,7 +98,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
 fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, String> {
     require_arity("await_child", args, 1)?;
     let child_workflow_id = parse_workflow_id(&decode_string_arg(args[0])?)?;
-    let bridge = child_bridge()?;
+    let bridge = child_bridge(ctx)?;
     let pid = ctx.pid().ok_or_else(|| "missing_caller_pid".to_owned())?;
     let mut nif = new_context(&bridge, pid)?;
     let command = Command::AwaitChild {
@@ -135,11 +140,13 @@ fn checked_child_result(result: Result<Term, String>, name: &str) -> Term {
     }
 }
 
-fn child_bridge() -> Result<Arc<ChildNifBridge>, String> {
-    CHILD_BRIDGE
-        .get()
-        .cloned()
-        .ok_or_else(|| "no_child_nif_bridge_configured".to_owned())
+fn child_bridge(ctx: &ProcessContext) -> Result<Arc<ChildNifBridge>, String> {
+    let state = super::nif_state::engine_nif_state(ctx)?;
+    let slot = match state.child_bridge.read() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    slot.ok_or_else(|| "no_child_nif_bridge_configured".to_owned())
 }
 
 fn new_context(bridge: &ChildNifBridge, pid: u64) -> Result<NifContext, String> {
@@ -199,7 +206,7 @@ fn term_or_encoding_error(term: Option<Term>) -> Result<Term, String> {
 }
 
 fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 

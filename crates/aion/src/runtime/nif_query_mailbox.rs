@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use aion_core::WorkflowId;
 
@@ -11,14 +11,20 @@ use crate::query::QueryError;
 use crate::registry::Registry;
 
 use super::nif_query::{payload_from_string, registered_handler};
+use super::nif_state::EngineNifState;
 
 pub(super) struct QueryMailboxEngine {
     registry: Arc<Registry>,
+    // Weak: the engine state owns this engine through its query bridge slot.
+    nif_state: Weak<EngineNifState>,
 }
 
 impl QueryMailboxEngine {
-    pub(super) fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+    pub(super) fn new(registry: Arc<Registry>, nif_state: Weak<EngineNifState>) -> Self {
+        Self {
+            registry,
+            nif_state,
+        }
     }
 }
 
@@ -51,10 +57,15 @@ impl EngineHandle for QueryMailboxEngine {
                 "query mailbox engine only accepts query messages",
             ));
         };
-        let result = match registered_handler(process.pid(), &name) {
-            Ok(Some(_handler)) => Ok(payload_from_string("{}")),
-            Ok(None) => Err(QueryError::UnknownQuery(name)),
-            Err(error) => Err(QueryError::Engine(delivery_error(error))),
+        let result = match self.nif_state.upgrade() {
+            Some(state) => match registered_handler(&state, process.pid(), &name) {
+                Ok(Some(_handler)) => Ok(payload_from_string("{}")),
+                Ok(None) => Err(QueryError::UnknownQuery(name)),
+                Err(error) => Err(QueryError::Engine(delivery_error(error))),
+            },
+            None => Err(QueryError::Engine(delivery_error(
+                "engine NIF state has been dropped",
+            ))),
         };
         reply_to
             .send(result)

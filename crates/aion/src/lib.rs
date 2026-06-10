@@ -60,8 +60,7 @@ pub mod supervision;
 pub mod time;
 
 pub use activity::{
-    ActivityDispatcher, dispatch_activity, install_activity_dispatcher, propagate_activity_outcome,
-    surface_activity_error,
+    ActivityDispatcher, dispatch_activity, propagate_activity_outcome, surface_activity_error,
 };
 pub use durability::ActiveWorkflowRecoverySeamImpl;
 pub use engine::{

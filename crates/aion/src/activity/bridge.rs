@@ -1,11 +1,9 @@
-//! Global activity dispatch bridge for the `aion_flow_ffi` activity NIFs.
+//! Activity dispatch bridge for the `aion_flow_ffi` activity NIFs.
 //!
 //! The bridge decouples the raw NIF function pointer (which cannot capture
 //! state) from the engine's activity execution path. A concrete dispatcher
-//! is installed once during engine build; the NIF accesses it through a
-//! process-wide `OnceLock`.
-
-use std::sync::{Arc, OnceLock};
+//! is installed on the engine's NIF state during build; the NIF recovers it
+//! from its calling context's NIF private data.
 
 use futures::future::{BoxFuture, ready};
 
@@ -72,26 +70,12 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     }
 }
 
-static DISPATCHER: OnceLock<Arc<dyn ActivityDispatcher>> = OnceLock::new();
-
-/// Install the activity dispatcher for the engine's NIF bridge.
-///
-/// Must be called exactly once before any workflow process runs. Subsequent
-/// calls are silently ignored — the first installed dispatcher wins.
-pub fn install_activity_dispatcher(dispatcher: Arc<dyn ActivityDispatcher>) {
-    let _ = DISPATCHER.set(dispatcher);
-}
-
-/// Look up the installed activity dispatcher.
-pub(crate) fn activity_dispatcher() -> Option<Arc<dyn ActivityDispatcher>> {
-    DISPATCHER.get().cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use super::{ActivityDispatcher, activity_dispatcher, install_activity_dispatcher};
+    use super::ActivityDispatcher;
+    use crate::runtime::EngineNifState;
 
     struct Echo;
 
@@ -102,9 +86,10 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_is_accessible_after_install() {
-        install_activity_dispatcher(Arc::new(Echo));
-        let dispatcher = activity_dispatcher();
+    fn dispatcher_is_accessible_after_install_on_engine_state() {
+        let state = EngineNifState::default();
+        state.set_activity_dispatcher(Arc::new(Echo));
+        let dispatcher = state.activity_dispatcher();
         assert!(dispatcher.is_some());
         assert_eq!(
             dispatcher

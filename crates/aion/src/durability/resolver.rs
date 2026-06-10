@@ -63,6 +63,13 @@ impl Resolver {
         })
     }
 
+    /// Advance the cursor past commands consumed by earlier resolver
+    /// instances of the same live execution. See
+    /// [`HistoryCursor::fast_forward_to_key`].
+    pub fn fast_forward_to(&mut self, key: &CorrelationKey) {
+        self.cursor.fast_forward_to_key(key);
+    }
+
     /// Resolves a command and includes the consumed recorded timestamp for replay bookkeeping.
     ///
     /// The returned [`ResolvedCommand`] preserves the existing recorded/resume-live decision while

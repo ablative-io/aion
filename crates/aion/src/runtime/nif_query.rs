@@ -5,14 +5,15 @@
 //! pending replies without touching the durability recorder or replay resolver.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use aion_core::{ContentType, Payload, WorkflowId};
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed;
 use serde::Deserialize;
 use tokio::runtime::Handle;
@@ -23,6 +24,7 @@ use crate::registry::Registry;
 
 use super::nif_context::NifContext;
 use super::nif_query_mailbox::QueryMailboxEngine;
+use super::nif_state::EngineNifState;
 
 #[cfg(test)]
 #[path = "nif_query_tests.rs"]
@@ -39,7 +41,7 @@ pub(crate) struct QueryHandlerRef {
 }
 
 #[derive(Clone)]
-struct QueryBridgeState {
+pub(super) struct QueryBridgeState {
     registry: Arc<Registry>,
     engine: Arc<dyn EngineHandle>,
     tokio_handle: Handle,
@@ -50,7 +52,7 @@ type HandlerMap = HashMap<(u64, String), QueryHandlerRef>;
 type PendingMap = HashMap<String, QueryReplySender>;
 
 #[derive(Default)]
-struct QueryHandlers {
+pub(super) struct QueryHandlers {
     handlers: Mutex<HandlerMap>,
     pending: Mutex<PendingMap>,
 }
@@ -61,12 +63,17 @@ struct DispatchConfig {
     payload: Option<String>,
 }
 
-static QUERY_BRIDGE: OnceLock<Mutex<Option<QueryBridgeState>>> = OnceLock::new();
-static QUERY_HANDLERS: OnceLock<QueryHandlers> = OnceLock::new();
-
-pub(crate) fn install_query_bridge(registry: Arc<Registry>, tokio_handle: Handle) {
-    let mailbox_engine = Arc::new(QueryMailboxEngine::new(Arc::clone(&registry)));
+pub(crate) fn install_query_bridge(
+    state: &Arc<EngineNifState>,
+    registry: Arc<Registry>,
+    tokio_handle: Handle,
+) {
+    let mailbox_engine = Arc::new(QueryMailboxEngine::new(
+        Arc::clone(&registry),
+        Arc::downgrade(state),
+    ));
     install_query_bridge_state(
+        state,
         registry,
         mailbox_engine.clone(),
         tokio_handle,
@@ -76,56 +83,67 @@ pub(crate) fn install_query_bridge(registry: Arc<Registry>, tokio_handle: Handle
 
 #[cfg(test)]
 fn install_query_bridge_with_engine(
+    state: &Arc<EngineNifState>,
     registry: Arc<Registry>,
     engine: Arc<dyn EngineHandle>,
     tokio_handle: Handle,
 ) {
-    let mailbox_engine = Arc::new(QueryMailboxEngine::new(Arc::clone(&registry)));
-    install_query_bridge_state(registry, engine, tokio_handle, mailbox_engine);
+    let mailbox_engine = Arc::new(QueryMailboxEngine::new(
+        Arc::clone(&registry),
+        Arc::downgrade(state),
+    ));
+    install_query_bridge_state(state, registry, engine, tokio_handle, mailbox_engine);
 }
 
 fn install_query_bridge_state(
+    state: &EngineNifState,
     registry: Arc<Registry>,
     engine: Arc<dyn EngineHandle>,
     tokio_handle: Handle,
     mailbox_engine: Arc<QueryMailboxEngine>,
 ) {
-    if let Ok(mut bridge) = QUERY_BRIDGE.get_or_init(|| Mutex::new(None)).lock() {
-        *bridge = Some(QueryBridgeState {
-            registry,
-            engine,
-            tokio_handle,
-            mailbox_engine,
-        });
+    let installed = QueryBridgeState {
+        registry,
+        engine,
+        tokio_handle,
+        mailbox_engine,
+    };
+    match state.query_bridge.lock() {
+        Ok(mut bridge) => *bridge = Some(installed),
+        Err(poisoned) => *poisoned.into_inner() = Some(installed),
     }
 }
 
 pub(crate) fn register_query_impl(
+    state: &EngineNifState,
     name: &str,
     handler: Term,
     config: &str,
     caller_pid: Option<u64>,
 ) -> Result<String, String> {
-    let context = context_for(caller_pid)?;
+    let context = context_for(state, caller_pid)?;
     let _ = config;
     let handler_ref = QueryHandlerRef {
         pid: context.pid(),
         handler,
     };
-    query_handlers()
+    state
+        .query_handlers
         .lock_handlers()?
         .insert((context.pid(), name.to_owned()), handler_ref);
     Ok("registered".to_owned())
 }
 
 pub(crate) fn reply_query_impl(
+    state: &EngineNifState,
     query_id: &str,
     response_payload: &str,
     caller_pid: Option<u64>,
 ) -> Result<String, String> {
-    let context = context_for(caller_pid)?;
+    let context = context_for(state, caller_pid)?;
     let _ = context.pid();
-    let sender = query_handlers()
+    let sender = state
+        .query_handlers
         .lock_pending()?
         .remove(query_id)
         .ok_or_else(|| format!("unknown_query_id:{query_id}"))?;
@@ -137,16 +155,17 @@ pub(crate) fn reply_query_impl(
 }
 
 pub(crate) fn dispatch_query_impl(
+    state: &EngineNifState,
     name: &str,
     config: &str,
     caller_pid: Option<u64>,
 ) -> Result<String, String> {
-    let context = context_for(caller_pid)?;
+    let context = context_for(state, caller_pid)?;
     let _ = context.pid();
-    let bridge = query_bridge()?;
+    let bridge = query_bridge(state)?;
     let parsed = parse_dispatch_config(config)?;
     let payload = payload_from_string(parsed.payload.as_deref().unwrap_or("{}"));
-    let engine = dispatch_engine(&bridge, &parsed.target_workflow_id, name)?;
+    let engine = dispatch_engine(state, &bridge, &parsed.target_workflow_id, name)?;
     let service = QueryService::new(engine, Duration::from_secs(30));
     let result =
         bridge
@@ -157,14 +176,20 @@ pub(crate) fn dispatch_query_impl(
         .map_err(|error| query_error_reason(&error))
 }
 
-pub(crate) fn registered_handler(pid: u64, name: &str) -> Result<Option<QueryHandlerRef>, String> {
-    Ok(query_handlers()
+pub(crate) fn registered_handler(
+    state: &EngineNifState,
+    pid: u64,
+    name: &str,
+) -> Result<Option<QueryHandlerRef>, String> {
+    Ok(state
+        .query_handlers
         .lock_handlers()?
         .get(&(pid, name.to_owned()))
         .copied())
 }
 
 fn dispatch_engine(
+    state: &EngineNifState,
     bridge: &QueryBridgeState,
     workflow_id: &WorkflowId,
     name: &str,
@@ -177,7 +202,7 @@ fn dispatch_engine(
         .find(|handle| handle.workflow_id() == workflow_id)
         .map(|handle| handle.pid());
     if let Some(pid) = process {
-        if registered_handler(pid, name)?.is_some() {
+        if registered_handler(state, pid, name)?.is_some() {
             return Ok(bridge.mailbox_engine.clone());
         }
     }
@@ -208,7 +233,11 @@ pub(crate) fn register_query(args: &[Term], ctx: &mut ProcessContext) -> Result<
             );
         }
     };
-    match register_query_impl(&name, args[1], &config, ctx.pid()) {
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match register_query_impl(&state, &name, args[1], &config, ctx.pid()) {
         Ok(value) => Ok(ok_result_term(&value).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }
@@ -236,7 +265,11 @@ pub(crate) fn reply_query(args: &[Term], ctx: &mut ProcessContext) -> Result<Ter
             );
         }
     };
-    match reply_query_impl(&query_id, &response, ctx.pid()) {
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match reply_query_impl(&state, &query_id, &response, ctx.pid()) {
         Ok(value) => Ok(ok_result_term(&value).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }
@@ -266,31 +299,45 @@ pub(crate) fn dispatch_query(args: &[Term], ctx: &mut ProcessContext) -> Result<
             );
         }
     };
-    match dispatch_query_impl(&name, &config, ctx.pid()) {
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match dispatch_query_impl(&state, &name, &config, ctx.pid()) {
         Ok(value) => Ok(ok_result_term(&value).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }
 }
 
-fn context_for(caller_pid: Option<u64>) -> Result<NifContext, String> {
+fn context_for(state: &EngineNifState, caller_pid: Option<u64>) -> Result<NifContext, String> {
     let pid = caller_pid.ok_or_else(|| "missing_process_pid".to_owned())?;
-    let bridge = query_bridge()?;
+    let bridge = query_bridge(state)?;
     NifContext::new(pid, bridge.registry.as_ref(), bridge.tokio_handle.clone())
         .map_err(|error| error.to_string())
 }
 
-fn query_bridge() -> Result<QueryBridgeState, String> {
-    QUERY_BRIDGE
-        .get()
-        .ok_or_else(|| "no query bridge configured".to_owned())?
+fn query_bridge(state: &EngineNifState) -> Result<QueryBridgeState, String> {
+    state
+        .query_bridge
         .lock()
         .map_err(|_| "query bridge lock poisoned".to_owned())?
         .clone()
         .ok_or_else(|| "no query bridge configured".to_owned())
 }
 
-fn query_handlers() -> &'static QueryHandlers {
-    QUERY_HANDLERS.get_or_init(QueryHandlers::default)
+/// Insert a pending reply sender for `query_id`, used while a query awaits
+/// its workflow-side `reply_query` call.
+#[cfg(test)]
+fn insert_pending_reply(
+    state: &EngineNifState,
+    query_id: String,
+    sender: QueryReplySender,
+) -> Result<(), String> {
+    state
+        .query_handlers
+        .lock_pending()?
+        .insert(query_id, sender);
+    Ok(())
 }
 
 impl QueryHandlers {
@@ -364,6 +411,6 @@ fn error_result_term(message: &str) -> Option<Term> {
 }
 
 fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }

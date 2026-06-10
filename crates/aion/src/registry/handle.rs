@@ -133,6 +133,7 @@ pub struct WorkflowHandle {
     recorder: Arc<Mutex<Recorder>>,
     completion: CompletionNotifier,
     deterministic_nif_sequence: Arc<AtomicU64>,
+    activity_ordinal_sequence: Arc<AtomicU64>,
 }
 
 impl WorkflowHandle {
@@ -150,7 +151,21 @@ impl WorkflowHandle {
             recorder: Arc::new(Mutex::new(parts.recorder)),
             completion: parts.completion,
             deterministic_nif_sequence: Arc::new(AtomicU64::new(0)),
+            activity_ordinal_sequence: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Allocate `count` consecutive activity/child correlation ordinals.
+    ///
+    /// The sequence is monotonic per run and shared by every NIF call the
+    /// run makes (handles clone the same counter), so distinct workflow
+    /// steps never collide on correlation keys. A re-spawned run (crash
+    /// recovery, continue-as-new) gets a fresh handle and counter, and its
+    /// replayed code re-allocates the same ordinals deterministically.
+    #[must_use]
+    pub fn allocate_activity_ordinals(&self, count: u64) -> u64 {
+        self.activity_ordinal_sequence
+            .fetch_add(count, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Returns the logical workflow identifier.

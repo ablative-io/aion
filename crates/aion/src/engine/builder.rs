@@ -12,7 +12,7 @@ use aion_store::{EventStore, InMemoryStore};
 use crate::{
     CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
     RuntimeHandle, SignalDeliveryConfig, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
-    activity::bridge::{ActivityDispatcher, install_activity_dispatcher},
+    activity::bridge::ActivityDispatcher,
     durability::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
         Recorder,
@@ -43,13 +43,17 @@ pub enum WorkflowPackageSource {
     Package(Box<Package>),
 }
 
-async fn recover_timers_on_startup(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
+async fn recover_timers_on_startup(
+    nif_state: &crate::runtime::EngineNifState,
+    store: Arc<dyn EventStore>,
+) -> Result<(), EngineError> {
     let readable_store: Arc<dyn aion_store::ReadableEventStore> = store;
-    let timer_service = crate::runtime::nif_timer::installed_timer_service().map_err(|error| {
-        EngineError::Runtime {
-            reason: format!("timer recovery service unavailable: {error}"),
-        }
-    })?;
+    let timer_service =
+        crate::runtime::nif_timer::installed_timer_service(nif_state).map_err(|error| {
+            EngineError::Runtime {
+                reason: format!("timer recovery service unavailable: {error}"),
+            }
+        })?;
     TimerRecovery::new(readable_store, timer_service, Duration::ZERO)
         .recover_on_startup(Utc::now())
         .await
@@ -57,6 +61,46 @@ async fn recover_timers_on_startup(store: Arc<dyn EventStore>) -> Result<(), Eng
         .map_err(|error| EngineError::Runtime {
             reason: format!("timer recovery failed: {error}"),
         })
+}
+
+/// Install the engine-scoped NIF seams that are available before delegated
+/// seams exist: runtime context, timer bridge, deterministic context source,
+/// query bridge, and the optional activity dispatcher.
+fn install_engine_nif_seams(
+    nif_state: &Arc<crate::runtime::EngineNifState>,
+    registry: &Arc<Registry>,
+    store: &Arc<dyn EventStore>,
+    runtime: &Arc<RuntimeHandle>,
+    activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
+) {
+    install_nif_runtime_context(
+        nif_state,
+        Arc::clone(registry),
+        Arc::clone(runtime),
+        tokio::runtime::Handle::current(),
+    );
+    crate::runtime::nif_timer::install_timer_nif_bridge(
+        nif_state,
+        Arc::clone(registry),
+        Arc::clone(store),
+        tokio::runtime::Handle::current(),
+    );
+    install_nif_context_source(
+        nif_state,
+        Arc::new(NifContextSource::new(
+            Arc::clone(registry),
+            tokio::runtime::Handle::current(),
+            Arc::clone(store),
+        )),
+    );
+    install_query_bridge(
+        nif_state,
+        Arc::clone(registry),
+        tokio::runtime::Handle::current(),
+    );
+    if let Some(dispatcher) = activity_dispatcher {
+        nif_state.set_activity_dispatcher(dispatcher);
+    }
 }
 
 fn load_workflow_sources(
@@ -393,25 +437,14 @@ impl EngineBuilder {
         let registry = self
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
-        install_nif_runtime_context(
-            Arc::clone(&registry),
-            Arc::clone(&runtime),
-            tokio::runtime::Handle::current(),
+        let nif_state = Arc::clone(runtime.nif_state());
+        install_engine_nif_seams(
+            &nif_state,
+            &registry,
+            &store,
+            &runtime,
+            self.activity_dispatcher,
         );
-        crate::runtime::nif_timer::install_timer_nif_bridge(
-            Arc::clone(&registry),
-            Arc::clone(&store),
-            tokio::runtime::Handle::current(),
-        );
-        install_nif_context_source(Arc::new(NifContextSource::new(
-            Arc::clone(&registry),
-            tokio::runtime::Handle::current(),
-            Arc::clone(&store),
-        )));
-        install_query_bridge(Arc::clone(&registry), tokio::runtime::Handle::current());
-        if let Some(dispatcher) = self.activity_dispatcher {
-            install_activity_dispatcher(dispatcher);
-        }
         let supervision = Arc::new(SupervisionTree::new());
         recover_active_workflows_on_startup(StartupRecoveryContext {
             store: Arc::clone(&store),
@@ -423,7 +456,7 @@ impl EngineBuilder {
             recovery: self.recovery,
         })
         .await?;
-        recover_timers_on_startup(Arc::clone(&store)).await?;
+        recover_timers_on_startup(&nif_state, Arc::clone(&store)).await?;
 
         let signal_handoff = Arc::new(SignalResumeHandoff::new());
 
@@ -437,22 +470,28 @@ impl EngineBuilder {
             self.delegated
         };
 
-        install_signal_nif_bridge(Arc::new(crate::runtime::SignalNifBridge::new(
-            Arc::clone(&registry),
-            Arc::clone(&runtime),
-            tokio::runtime::Handle::current(),
-            delegated.signal_router_arc(),
-        )));
-        install_child_nif_bridge(Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
-            store: Arc::clone(&store),
-            visibility_store: Arc::clone(&visibility_store),
-            runtime: Arc::clone(&runtime),
-            loaded_workflows: loaded_workflows.clone(),
-            registry: Arc::clone(&registry),
-            supervision: Arc::clone(&supervision),
-            signal_handoff: Arc::clone(&signal_handoff),
-            tokio_handle: tokio::runtime::Handle::current(),
-        })));
+        install_signal_nif_bridge(
+            &nif_state,
+            Arc::new(crate::runtime::SignalNifBridge::new(
+                Arc::clone(&registry),
+                Arc::clone(&runtime),
+                tokio::runtime::Handle::current(),
+                delegated.signal_router_arc(),
+            )),
+        );
+        install_child_nif_bridge(
+            &nif_state,
+            Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
+                store: Arc::clone(&store),
+                visibility_store: Arc::clone(&visibility_store),
+                runtime: Arc::clone(&runtime),
+                loaded_workflows: loaded_workflows.clone(),
+                registry: Arc::clone(&registry),
+                supervision: Arc::clone(&supervision),
+                signal_handoff: Arc::clone(&signal_handoff),
+                tokio_handle: tokio::runtime::Handle::current(),
+            })),
+        );
 
         let visibility_reconciliation_task =
             self.visibility_reconciliation_interval.map(|interval| {

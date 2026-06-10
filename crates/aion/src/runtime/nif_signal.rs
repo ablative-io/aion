@@ -1,12 +1,13 @@
 //! Signal NIF bridge implementations.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use aion_core::{Event, Payload, WorkflowId};
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed;
 use chrono::Utc;
 use tokio::runtime::Handle;
@@ -21,8 +22,6 @@ use crate::{EngineError, WorkflowHandle};
 thread_local! {
     static NIF_SIGNAL_HEAP: std::cell::RefCell<Vec<Box<[u64]>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
-
-static SIGNAL_BRIDGE: OnceLock<Arc<SignalNifBridge>> = OnceLock::new();
 
 /// Engine-owned signal bridge context used by raw NIF function pointers.
 pub(crate) struct SignalNifBridge {
@@ -50,13 +49,24 @@ impl SignalNifBridge {
     }
 }
 
-/// Install the process-wide signal NIF bridge.
-pub(crate) fn install_signal_nif_bridge(bridge: Arc<SignalNifBridge>) {
-    let _ = SIGNAL_BRIDGE.set(bridge);
+/// Install the engine-scoped signal NIF bridge.
+pub(crate) fn install_signal_nif_bridge(
+    state: &super::nif_state::EngineNifState,
+    bridge: Arc<SignalNifBridge>,
+) {
+    match state.signal_bridge.write() {
+        Ok(mut slot) => *slot = Some(bridge),
+        Err(poisoned) => *poisoned.into_inner() = Some(bridge),
+    }
 }
 
-fn signal_bridge() -> Option<Arc<SignalNifBridge>> {
-    SIGNAL_BRIDGE.get().cloned()
+fn signal_bridge(ctx: &ProcessContext) -> Result<Arc<SignalNifBridge>, String> {
+    let state = super::nif_state::engine_nif_state(ctx)?;
+    let slot = match state.signal_bridge.read() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    slot.ok_or_else(|| "signal NIF bridge is not configured".to_owned())
 }
 
 fn park_heap(heap: Box<[u64]>) {
@@ -90,7 +100,7 @@ fn error_result_term(message: &str) -> Option<Term> {
 }
 
 fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
@@ -145,9 +155,13 @@ fn signal_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-fn receive_signal_impl(name: &str, config: &str, pid: Pid) -> Result<String, String> {
+fn receive_signal_impl(
+    bridge: &Arc<SignalNifBridge>,
+    name: &str,
+    config: &str,
+    pid: Pid,
+) -> Result<String, String> {
     let _ = config;
-    let bridge = signal_bridge().ok_or_else(|| "signal NIF bridge is not configured".to_owned())?;
     let mut context = super::nif_context::NifContext::new(
         pid,
         bridge.registry.as_ref(),
@@ -189,12 +203,12 @@ fn receive_signal_impl(name: &str, config: &str, pid: Pid) -> Result<String, Str
 }
 
 fn send_signal_impl(
+    bridge: &Arc<SignalNifBridge>,
     target: &str,
     name: &str,
     payload_json: &str,
     pid: Pid,
 ) -> Result<String, String> {
-    let bridge = signal_bridge().ok_or_else(|| "signal NIF bridge is not configured".to_owned())?;
     let target_workflow_id = parse_workflow_id(target)?;
     let payload = payload_from_json_string(payload_json)?;
     let mut context = super::nif_context::NifContext::new(
@@ -279,7 +293,11 @@ pub(super) fn receive_signal(args: &[Term], ctx: &mut ProcessContext) -> Result<
     let Some(pid) = ctx.pid() else {
         return Ok(error_result_term("receive_signal: missing caller pid").unwrap_or(Term::NIL));
     };
-    match receive_signal_impl(&name, &config, pid) {
+    let bridge = match signal_bridge(ctx) {
+        Ok(bridge) => bridge,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match receive_signal_impl(&bridge, &name, &config, pid) {
         Ok(result) => Ok(ok_result_term(&result).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }
@@ -323,7 +341,11 @@ pub(super) fn send_signal(args: &[Term], ctx: &mut ProcessContext) -> Result<Ter
     let Some(pid) = ctx.pid() else {
         return Ok(error_result_term("send_signal: missing caller pid").unwrap_or(Term::NIL));
     };
-    match send_signal_impl(&target, &name, &payload, pid) {
+    let bridge = match signal_bridge(ctx) {
+        Ok(bridge) => bridge,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match send_signal_impl(&bridge, &target, &name, &payload, pid) {
         Ok(result) => Ok(ok_result_term(&result).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }

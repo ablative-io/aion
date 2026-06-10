@@ -36,7 +36,9 @@ pub(crate) fn continue_as_new_impl(
 }
 
 fn continue_as_new(args: &[Term], process_context: &ProcessContext) -> Result<(), Term> {
-    let runtime = runtime_context().map_err(|error| context_error_term(&error))?;
+    let state = crate::runtime::nif_state::engine_nif_state(process_context)
+        .map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))?;
+    let runtime = runtime_context(&state).map_err(|error| context_error_term(&error))?;
     let pid = process_context.pid().ok_or_else(|| {
         error_result_term("continue_as_new: missing calling pid").unwrap_or(Term::NIL)
     })?;

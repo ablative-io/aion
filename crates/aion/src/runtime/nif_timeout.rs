@@ -14,26 +14,25 @@
 //! deadline fires, sleeping timers return cancelled, and activity awaits
 //! record a durable timeout failure instead of re-suspending.
 
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use aion_core::{Event, TimerId};
 use beamr::atom::Atom;
 use beamr::native::stdlib_stubs::maps_bifs::ContinuationStep;
 use beamr::native::{AionTimeoutContinuation, NativeContinuation, ProcessContext};
 use beamr::term::Term;
-use dashmap::DashMap;
 
 use crate::durability::{Resolution, ResolveOutcome};
 use crate::runtime::engine_nifs::error_result_term;
 use crate::runtime::nif_context::NifContext;
+use crate::runtime::nif_state::EngineNifState;
 use crate::runtime::nif_timer::{
     add_duration, build_context_for_pid, cancel_live_timer, current_head, decode_duration_arg,
     drain_timer_deliveries, record_started, recorded_now, schedule_sleep_timer, timer_command,
 };
 
 /// One armed `with_timeout` deadline scope.
-struct TimeoutScope {
+pub(super) struct TimeoutScope {
     /// Workflow process the scope belongs to.
     pid: u64,
     /// Durable deadline timer racing the wrapped operation.
@@ -43,28 +42,16 @@ struct TimeoutScope {
     replay_timed_out: Option<bool>,
 }
 
-static SCOPES: OnceLock<DashMap<u64, TimeoutScope>> = OnceLock::new();
-static SCOPE_STACKS: OnceLock<DashMap<u64, Vec<u64>>> = OnceLock::new();
-static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
-
-fn scopes() -> &'static DashMap<u64, TimeoutScope> {
-    SCOPES.get_or_init(DashMap::new)
-}
-
-fn scope_stacks() -> &'static DashMap<u64, Vec<u64>> {
-    SCOPE_STACKS.get_or_init(DashMap::new)
-}
-
 /// Deadline timer ids of every live scope currently armed for `pid`,
 /// innermost last. Replay scopes are excluded — their outcome is recorded.
-pub(crate) fn active_scope_timers(pid: u64) -> Vec<TimerId> {
-    let Some(stack) = scope_stacks().get(&pid) else {
+pub(crate) fn active_scope_timers(state: &EngineNifState, pid: u64) -> Vec<TimerId> {
+    let Some(stack) = state.timeout_scope_stacks.get(&pid) else {
         return Vec::new();
     };
     stack
         .iter()
         .filter_map(|state_id| {
-            scopes().get(state_id).and_then(|scope| {
+            state.timeout_scopes.get(state_id).and_then(|scope| {
                 scope
                     .replay_timed_out
                     .is_none()
@@ -75,8 +62,8 @@ pub(crate) fn active_scope_timers(pid: u64) -> Vec<TimerId> {
 }
 
 /// True when `timer_id` is the deadline of a live scope armed for `pid`.
-pub(crate) fn is_scope_deadline(pid: u64, timer_id: &TimerId) -> bool {
-    active_scope_timers(pid)
+pub(crate) fn is_scope_deadline(state: &EngineNifState, pid: u64, timer_id: &TimerId) -> bool {
+    active_scope_timers(state, pid)
         .iter()
         .any(|scope_timer| scope_timer == timer_id)
 }
@@ -85,12 +72,12 @@ pub(crate) fn is_scope_deadline(pid: u64, timer_id: &TimerId) -> bool {
 ///
 /// Blocking awaits call this after waking: a `TimerFired` recorded for any
 /// live enclosing scope means the deadline won and the await must abort.
-pub(crate) fn expired_scope_message(pid: u64) -> Option<String> {
-    let scope_timers = active_scope_timers(pid);
+pub(crate) fn expired_scope_message(state: &EngineNifState, pid: u64) -> Option<String> {
+    let scope_timers = active_scope_timers(state, pid);
     if scope_timers.is_empty() {
         return None;
     }
-    let context = build_context_for_pid(pid).ok()?;
+    let context = build_context_for_pid(state, pid).ok()?;
     scope_timers
         .iter()
         .any(|timer_id| timer_fired_recorded(&context, timer_id).unwrap_or(false))
@@ -114,7 +101,11 @@ pub(super) fn with_timeout_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
             error_result_term("with_timeout: missing calling process pid").unwrap_or(Term::NIL),
         );
     };
-    match arm_scope(args, pid) {
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match arm_scope(&state, args, pid) {
         Ok((fun, state_id)) => {
             ctx.set_continuation_trampoline(
                 fun,
@@ -135,11 +126,11 @@ pub(super) fn with_timeout_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
 }
 
 /// Resolve the scope's durable timer command and register the scope.
-fn arm_scope(args: &[Term], pid: u64) -> Result<(Term, u64), String> {
+fn arm_scope(state: &EngineNifState, args: &[Term], pid: u64) -> Result<(Term, u64), String> {
     let duration =
         decode_duration_arg("with_timeout deadline", args[0]).map_err(|error| error.to_string())?;
     let fun = args[1];
-    let mut context = build_context_for_pid(pid).map_err(|error| error.to_string())?;
+    let mut context = build_context_for_pid(state, pid).map_err(|error| error.to_string())?;
     let now = recorded_now(&context).map_err(|error| error.to_string())?;
     let timer_id = TimerId::anonymous(current_head(&context).map_err(|error| error.to_string())?);
     let fire_at = add_duration(now, duration).map_err(|error| error.to_string())?;
@@ -153,13 +144,13 @@ fn arm_scope(args: &[Term], pid: u64) -> Result<(Term, u64), String> {
         ResolveOutcome::ResumeLive => {
             record_started(&context, now, timer_id.clone(), fire_at)
                 .map_err(|error| error.to_string())?;
-            schedule_sleep_timer(&context, duration, now, &timer_id, fire_at)
+            schedule_sleep_timer(state, &context, duration, now, &timer_id, fire_at)
                 .map_err(|error| error.to_string())?;
             None
         }
     };
-    let state_id = NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed);
-    scopes().insert(
+    let state_id = state.next_timeout_scope_id.fetch_add(1, Ordering::Relaxed);
+    state.timeout_scopes.insert(
         state_id,
         TimeoutScope {
             pid,
@@ -167,28 +158,40 @@ fn arm_scope(args: &[Term], pid: u64) -> Result<(Term, u64), String> {
             replay_timed_out,
         },
     );
-    scope_stacks().entry(pid).or_default().push(state_id);
+    state
+        .timeout_scope_stacks
+        .entry(pid)
+        .or_default()
+        .push(state_id);
     Ok((fun, state_id))
 }
 
 /// Continuation resume: the closure returned in `closure_result`.
 fn resume_with_timeout(
-    state: &AionTimeoutContinuation,
+    continuation: &AionTimeoutContinuation,
     closure_result: Term,
     ctx: &mut ProcessContext<'_>,
 ) -> Result<ContinuationStep, Term> {
-    let state_id = state.state_id;
-    let Some((_, scope)) = scopes().remove(&state_id) else {
+    let state_id = continuation.state_id;
+    let engine_state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => {
+            return Ok(ContinuationStep::Done(
+                error_result_term(&error).unwrap_or(Term::NIL),
+            ));
+        }
+    };
+    let Some((_, scope)) = engine_state.timeout_scopes.remove(&state_id) else {
         return Ok(ContinuationStep::Done(
             error_result_term("with_timeout: scope state missing").unwrap_or(Term::NIL),
         ));
     };
-    if let Some(mut stack) = scope_stacks().get_mut(&scope.pid) {
+    if let Some(mut stack) = engine_state.timeout_scope_stacks.get_mut(&scope.pid) {
         stack.retain(|entry| *entry != state_id);
     }
     let timed_out = match scope.replay_timed_out {
         Some(timed_out) => timed_out,
-        None => match settle_live_scope(&scope) {
+        None => match settle_live_scope(&engine_state, &scope) {
             Ok(timed_out) => timed_out,
             Err(message) => {
                 return Ok(ContinuationStep::Done(
@@ -212,10 +215,11 @@ fn resume_with_timeout(
 /// The cancel is a no-op when `TimerFired` is already recorded (the timer
 /// service's terminal guard), so exactly one terminal event exists after
 /// this call and both live and replay read the same outcome from it.
-fn settle_live_scope(scope: &TimeoutScope) -> Result<bool, String> {
-    let context = build_context_for_pid(scope.pid).map_err(|error| error.to_string())?;
-    cancel_live_timer(&context, scope.timer_id.clone()).map_err(|error| error.to_string())?;
-    drain_timer_deliveries(scope.pid, &scope.timer_id).map_err(|error| error.to_string())?;
+fn settle_live_scope(state: &EngineNifState, scope: &TimeoutScope) -> Result<bool, String> {
+    let context = build_context_for_pid(state, scope.pid).map_err(|error| error.to_string())?;
+    cancel_live_timer(state, &context, scope.timer_id.clone())
+        .map_err(|error| error.to_string())?;
+    drain_timer_deliveries(state, scope.pid, &scope.timer_id).map_err(|error| error.to_string())?;
     timer_fired_recorded(&context, &scope.timer_id)
 }
 

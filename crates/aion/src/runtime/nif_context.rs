@@ -15,8 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::EngineError;
 use crate::durability::{
-    Command, DurabilityError, HistoryCursor, RecordedEventFamily, Recorder, ResolveOutcome,
-    Resolver,
+    Command, DurabilityError, HistoryCursor, Recorder, ResolveOutcome, Resolver,
 };
 use crate::registry::{Registry, WorkflowHandle};
 
@@ -181,11 +180,20 @@ impl NifContext {
     }
 
     /// Returns the next deterministic activity key ordinal.
+    ///
+    /// Ordinals come from the run-scoped monotonic sequence on the workflow
+    /// handle: every NIF call shares it, so successive workflow steps get
+    /// unique correlation keys even though each call constructs a fresh
+    /// resolver over the full history.
     #[must_use]
     pub fn next_activity_ordinal(&self) -> u64 {
-        self.resolver
-            .next_command_ordinal(RecordedEventFamily::Activity)
-            .unwrap_or_else(|| self.current_recorder_head())
+        self.handle.allocate_activity_ordinals(1)
+    }
+
+    /// Allocates `count` consecutive activity key ordinals for a fan-out.
+    #[must_use]
+    pub fn allocate_activity_ordinals(&self, count: u64) -> u64 {
+        self.handle.allocate_activity_ordinals(count)
     }
 
     /// Returns a clone of the resolved workflow handle.
@@ -364,6 +372,14 @@ impl NifContext {
     /// Returns [`NifContextError::Durability`] when replay detects non-determinism or malformed
     /// command history.
     pub fn resolve_command(&mut self, command: Command) -> Result<ResolveOutcome, NifContextError> {
+        // This resolver was built fresh for one NIF call, with its cursor at
+        // the top of history; commands consumed by earlier calls in the same
+        // live execution sit before the one being resolved. Skip to this
+        // command's correlation key so sequential workflow steps never
+        // re-read earlier recorded results.
+        if let Some(key) = command.key() {
+            self.resolver.fast_forward_to(key);
+        }
         self.resolver.resolve(command).map_err(Into::into)
     }
 }

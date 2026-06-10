@@ -11,9 +11,9 @@ use aion_package::{
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-const ENTRY_MODULE: &str = "orchestrator";
+const ENTRY_MODULE: &str = "subscription";
 const ENTRY_FUNCTION: &str = "run";
-const OUTPUT: &str = "orchestrator.aion";
+const OUTPUT: &str = "subscription.aion";
 
 fn main() -> Result<()> {
     let workflow_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let manifest = manifest();
     let source = [(
         ENTRY_MODULE,
-        fs::read(workflow_root.join("src/orchestrator.gleam"))?,
+        fs::read(workflow_root.join("src/subscription.gleam"))?,
     )];
     let output_path = workflow_root.join(OUTPUT);
 
@@ -38,34 +38,43 @@ fn manifest() -> Manifest {
         input_schema: json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["title", "description", "requirements"],
+            "required": [
+                "subscriber_id",
+                "subscriber_email",
+                "plan",
+                "current_cycle",
+                "billing_period_seconds",
+                "max_cycles",
+                "cycles_in_run"
+            ],
             "additionalProperties": false,
             "properties": {
-                "title": { "type": "string", "minLength": 1 },
-                "description": { "type": "string", "minLength": 1 },
-                "requirements": {
-                    "type": "array",
-                    "items": { "type": "string", "minLength": 1 }
-                }
+                "subscriber_id": { "type": "string", "minLength": 1 },
+                "subscriber_email": { "type": "string", "minLength": 1 },
+                "plan": { "type": "string", "minLength": 1 },
+                "current_cycle": { "type": "integer", "minimum": 0 },
+                "billing_period_seconds": { "type": "integer", "minimum": 1 },
+                "max_cycles": { "type": "integer", "minimum": 1 },
+                "cycles_in_run": { "type": "integer", "minimum": 0 }
             }
         }),
         output_schema: json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["code_diff", "commit_message"],
+            "required": ["subscriber_id", "plan", "next_cycle", "cycles_in_run", "status"],
             "additionalProperties": false,
             "properties": {
-                "code_diff": { "type": "string" },
-                "commit_message": { "type": "string", "minLength": 1 }
+                "subscriber_id": { "type": "string" },
+                "plan": { "type": "string" },
+                "next_cycle": { "type": "integer" },
+                "cycles_in_run": { "type": "integer" },
+                "status": { "type": "string" }
             }
         }),
-        timeout: Duration::from_secs(60 * 60),
+        timeout: Duration::from_secs(31536000),
         activities: vec![
             DeclaredActivity {
-                activity_type: "develop".to_owned(),
-            },
-            DeclaredActivity {
-                activity_type: "review".to_owned(),
+                activity_type: "bill_subscriber".to_owned(),
             },
         ],
         version: ManifestVersion::new("unstamped"),
@@ -77,7 +86,7 @@ fn read_compiled_beams(workflow_root: &Path) -> Result<BeamSet> {
     let erlang_root = workflow_root.join("build/dev/erlang");
     if !erlang_root.exists() {
         bail!(
-            "compiled Erlang directory {} does not exist; run `gleam build` first",
+            "compiled Erlang directory {} does not exist; run `gleam build` in examples/subscription first",
             erlang_root.display()
         );
     }

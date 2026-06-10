@@ -8,6 +8,7 @@ import aion/activity
 import aion/codec
 import aion/error
 import aion/workflow
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -44,11 +45,37 @@ pub fn definition() -> workflow.WorkflowDefinition(
     pipeline_input_codec(),
     aggregate_output_codec(),
     workflow_error_codec(),
-    run,
+    execute,
   )
 }
 
-pub fn run(input: PipelineInput) -> Result(AggregateOutput, WorkflowError) {
+/// Engine entry point.
+///
+/// The runtime delivers the start input as a raw JSON string: decode it with
+/// the input codec, run the typed workflow, and encode the success value back
+/// to its JSON string for the recorded result payload.
+pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) -> {
+      let input_codec = pipeline_input_codec()
+      case input_codec.decode(raw_json) {
+        Ok(input) ->
+          case execute(input) {
+            Ok(output) -> {
+              let output_codec = aggregate_output_codec()
+              Ok(output_codec.encode(output))
+            }
+            Error(workflow_error) -> Error(workflow_error)
+          }
+        Error(codec.DecodeError(reason: reason, path: _)) ->
+          Error(ActivityFailed("failed to decode workflow input: " <> reason))
+      }
+    }
+    Error(_) -> Error(ActivityFailed("workflow input payload was not a string"))
+  }
+}
+
+pub fn execute(input: PipelineInput) -> Result(AggregateOutput, WorkflowError) {
   // Phase 1: fan out one fetch_url activity per URL, preserving input order.
   use fetched <- result_try_activity(fetch_all(input.urls))
 
@@ -269,7 +296,11 @@ fn activity_error_message(activity_error: error.ActivityError) -> String {
   case activity_error {
     error.Retryable(message: message, details: _) -> message
     error.Terminal(message: message, details: _) -> message
-    error.ActivityDecodeFailed(_) -> "activity result could not be decoded"
+    error.ActivityDecodeFailed(codec.DecodeError(reason: reason, path: path)) ->
+      "activity result could not be decoded: "
+      <> reason
+      <> " at "
+      <> string.join(path, "/")
     error.ActivityTimedOut(error.TimedOut(message: message)) -> message
     error.ActivityCancelled(error.Cancelled(reason: reason)) -> reason
     error.ActivityNonDeterministic(error.NonDeterminismViolation(message: message)) ->

@@ -11,9 +11,9 @@ use aion_package::{
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-const ENTRY_MODULE: &str = "orchestrator";
+const ENTRY_MODULE: &str = "batch_orchestrator";
 const ENTRY_FUNCTION: &str = "run";
-const OUTPUT: &str = "orchestrator.aion";
+const OUTPUT: &str = "batch-orchestrator.aion";
 
 fn main() -> Result<()> {
     let workflow_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let manifest = manifest();
     let source = [(
         ENTRY_MODULE,
-        fs::read(workflow_root.join("src/orchestrator.gleam"))?,
+        fs::read(workflow_root.join("src/batch_orchestrator.gleam"))?,
     )];
     let output_path = workflow_root.join(OUTPUT);
 
@@ -38,34 +38,38 @@ fn manifest() -> Manifest {
         input_schema: json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["title", "description", "requirements"],
+            "required": ["items"],
             "additionalProperties": false,
             "properties": {
-                "title": { "type": "string", "minLength": 1 },
-                "description": { "type": "string", "minLength": 1 },
-                "requirements": {
+                "items": {
                     "type": "array",
-                    "items": { "type": "string", "minLength": 1 }
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "payload"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "id": { "type": "string", "minLength": 1 },
+                            "payload": { "type": "string" }
+                        }
+                    }
                 }
             }
         }),
         output_schema: json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["code_diff", "commit_message"],
-            "additionalProperties": false,
+            "required": ["total_processed", "success_count", "failure_count", "items"],
             "properties": {
-                "code_diff": { "type": "string" },
-                "commit_message": { "type": "string", "minLength": 1 }
+                "total_processed": { "type": "integer", "minimum": 0 },
+                "success_count": { "type": "integer", "minimum": 0 },
+                "failure_count": { "type": "integer", "minimum": 0 },
+                "items": { "type": "array" }
             }
         }),
-        timeout: Duration::from_secs(60 * 60),
+        timeout: Duration::from_secs(3600),
         activities: vec![
             DeclaredActivity {
-                activity_type: "develop".to_owned(),
-            },
-            DeclaredActivity {
-                activity_type: "review".to_owned(),
+                activity_type: "process-batch-item".to_owned(),
             },
         ],
         version: ManifestVersion::new("unstamped"),
@@ -77,7 +81,7 @@ fn read_compiled_beams(workflow_root: &Path) -> Result<BeamSet> {
     let erlang_root = workflow_root.join("build/dev/erlang");
     if !erlang_root.exists() {
         bail!(
-            "compiled Erlang directory {} does not exist; run `gleam build` first",
+            "compiled Erlang directory {} does not exist; run `gleam build` in examples/batch-orchestrator first",
             erlang_root.display()
         );
     }

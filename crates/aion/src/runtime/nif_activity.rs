@@ -1,12 +1,13 @@
 //! Shared helpers for durable activity NIFs.
 
 use std::cell::RefCell;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
 use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload};
 use beamr::atom::Atom;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed;
 use chrono::Utc;
 use tokio::runtime::Handle;
@@ -14,6 +15,7 @@ use tokio::runtime::Handle;
 use crate::RuntimeHandle;
 use crate::registry::Registry;
 use crate::runtime::nif_context::{NifContext, NifContextError};
+use crate::runtime::nif_state::EngineNifState;
 
 thread_local! {
     static ACTIVITY_NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
@@ -26,9 +28,8 @@ pub(super) struct RuntimeContext {
     pub(super) tokio_handle: Handle,
 }
 
-static RUNTIME_CONTEXT: OnceLock<RwLock<Option<RuntimeContext>>> = OnceLock::new();
-
 pub(crate) fn install_nif_runtime_context(
+    state: &EngineNifState,
     registry: Arc<Registry>,
     runtime: Arc<RuntimeHandle>,
     tokio_handle: Handle,
@@ -38,21 +39,19 @@ pub(crate) fn install_nif_runtime_context(
         runtime,
         tokio_handle,
     };
-    let cell = RUNTIME_CONTEXT.get_or_init(|| RwLock::new(None));
-    if let Ok(mut slot) = cell.write() {
-        *slot = Some(context);
+    match state.runtime_context.write() {
+        Ok(mut slot) => *slot = Some(context),
+        Err(poisoned) => *poisoned.into_inner() = Some(context),
     }
 }
 
-pub(super) fn runtime_context() -> Result<RuntimeContext, NifContextError> {
-    let Some(cell) = RUNTIME_CONTEXT.get() else {
-        return Err(NifContextError::TermEncoding {
-            reason: "nif runtime context is not installed".to_owned(),
-        });
-    };
-    let guard = cell.read().map_err(|_| NifContextError::TermEncoding {
-        reason: "nif runtime context lock is poisoned".to_owned(),
-    })?;
+pub(super) fn runtime_context(state: &EngineNifState) -> Result<RuntimeContext, NifContextError> {
+    let guard = state
+        .runtime_context
+        .read()
+        .map_err(|_| NifContextError::TermEncoding {
+            reason: "nif runtime context lock is poisoned".to_owned(),
+        })?;
     guard.clone().ok_or_else(|| NifContextError::TermEncoding {
         reason: "nif runtime context is not installed".to_owned(),
     })
@@ -92,7 +91,7 @@ pub(super) fn error_result_term(message: &str) -> Option<Term> {
 }
 
 pub(super) fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 

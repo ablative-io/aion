@@ -9,7 +9,8 @@ use std::cell::RefCell;
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary::{self, Binary};
+use beamr::term::binary;
+use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
@@ -64,7 +65,7 @@ pub(super) fn error_result_term(message: &str) -> Option<Term> {
 }
 
 pub(super) fn decode_string_arg(term: Term) -> Result<String, String> {
-    let bin = Binary::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
+    let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
 }
 
@@ -167,7 +168,7 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
 mod tests {
     use beamr::native::ProcessContext;
     use beamr::term::Term;
-    use beamr::term::binary::Binary;
+    use beamr::term::binary_ref::BinaryRef;
     use beamr::term::boxed::Tuple;
 
     use super::{
@@ -189,7 +190,7 @@ mod tests {
         } else {
             "error"
         };
-        let bin = Binary::new(value).ok_or("value should be a binary")?;
+        let bin = BinaryRef::new(value).ok_or("value should be a binary")?;
         let text = String::from_utf8(bin.as_bytes().to_vec())
             .map_err(|_| "value should be valid UTF-8")?;
         Ok((tag_name.to_owned(), text))

@@ -23,6 +23,7 @@ pub(crate) mod nif_determinism;
 mod nif_query;
 mod nif_query_mailbox;
 mod nif_signal;
+pub(crate) mod nif_state;
 pub(crate) mod nif_timeout;
 pub(crate) mod nif_timer;
 /// Workflow process exit outcomes.
@@ -40,4 +41,5 @@ pub(crate) use nif_child::install_child_nif_bridge;
 pub(crate) use nif_child_engine::{ChildNifBridge, ChildNifBridgeParts};
 pub(crate) use nif_query::install_query_bridge;
 pub(crate) use nif_signal::{SignalNifBridge, install_signal_nif_bridge};
+pub(crate) use nif_state::EngineNifState;
 pub use outcome::WorkflowProcessOutcome;

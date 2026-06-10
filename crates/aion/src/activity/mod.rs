@@ -5,5 +5,5 @@ pub mod bridge;
 /// Activity outcome dispatch and error propagation helpers.
 pub mod dispatch;
 
-pub use bridge::{ActivityDispatcher, install_activity_dispatcher};
+pub use bridge::ActivityDispatcher;
 pub use dispatch::{dispatch_activity, propagate_activity_outcome, surface_activity_error};

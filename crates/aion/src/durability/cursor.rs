@@ -109,6 +109,27 @@ impl HistoryCursor {
         }
     }
 
+    /// Advance past recorded commands that earlier resolver instances of the
+    /// same live execution already consumed.
+    ///
+    /// NIF calls each build a fresh resolver whose cursor starts at the top
+    /// of history, so commands resolved by earlier calls sit before the one
+    /// being resolved now. Skipping stops at the first matchable entry whose
+    /// correlation key equals `key` — or at history end, leaving live
+    /// resolution to proceed — so a genuinely out-of-order command for an
+    /// already-positioned key still surfaces as a mismatch in
+    /// [`HistoryCursor::resolve_next`]. Strict full-history replay
+    /// (recovery, the replay driver) never calls this.
+    pub fn fast_forward_to_key(&mut self, key: &CorrelationKey) {
+        while let Some(index) = self.next_matchable_index() {
+            let descriptor = self.descriptor_at(index, &self.events[index]);
+            if descriptor.key.as_ref() == Some(key) {
+                return;
+            }
+            self.position = index + 1;
+        }
+    }
+
     /// Resolves the next recorded child terminal outcome for `child_workflow_id`.
     #[must_use]
     pub fn resolve_child_terminal(

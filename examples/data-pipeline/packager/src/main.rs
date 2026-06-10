@@ -11,9 +11,9 @@ use aion_package::{
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-const ENTRY_MODULE: &str = "orchestrator";
+const ENTRY_MODULE: &str = "data_pipeline";
 const ENTRY_FUNCTION: &str = "run";
-const OUTPUT: &str = "orchestrator.aion";
+const OUTPUT: &str = "data-pipeline.aion";
 
 fn main() -> Result<()> {
     let workflow_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let manifest = manifest();
     let source = [(
         ENTRY_MODULE,
-        fs::read(workflow_root.join("src/orchestrator.gleam"))?,
+        fs::read(workflow_root.join("src/data_pipeline.gleam"))?,
     )];
     let output_path = workflow_root.join(OUTPUT);
 
@@ -38,12 +38,10 @@ fn manifest() -> Manifest {
         input_schema: json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["title", "description", "requirements"],
+            "required": ["urls"],
             "additionalProperties": false,
             "properties": {
-                "title": { "type": "string", "minLength": 1 },
-                "description": { "type": "string", "minLength": 1 },
-                "requirements": {
+                "urls": {
                     "type": "array",
                     "items": { "type": "string", "minLength": 1 }
                 }
@@ -52,20 +50,24 @@ fn manifest() -> Manifest {
         output_schema: json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["code_diff", "commit_message"],
+            "required": ["total_urls", "total_words", "summaries"],
             "additionalProperties": false,
             "properties": {
-                "code_diff": { "type": "string" },
-                "commit_message": { "type": "string", "minLength": 1 }
+                "total_urls": { "type": "integer", "minimum": 0 },
+                "total_words": { "type": "integer", "minimum": 0 },
+                "summaries": { "type": "array", "items": { "type": "string" } }
             }
         }),
-        timeout: Duration::from_secs(60 * 60),
+        timeout: Duration::from_secs(3600),
         activities: vec![
             DeclaredActivity {
-                activity_type: "develop".to_owned(),
+                activity_type: "fetch_url".to_owned(),
             },
             DeclaredActivity {
-                activity_type: "review".to_owned(),
+                activity_type: "process_item".to_owned(),
+            },
+            DeclaredActivity {
+                activity_type: "aggregate_results".to_owned(),
             },
         ],
         version: ManifestVersion::new("unstamped"),
@@ -77,7 +79,7 @@ fn read_compiled_beams(workflow_root: &Path) -> Result<BeamSet> {
     let erlang_root = workflow_root.join("build/dev/erlang");
     if !erlang_root.exists() {
         bail!(
-            "compiled Erlang directory {} does not exist; run `gleam build` first",
+            "compiled Erlang directory {} does not exist; run `gleam build` in examples/data-pipeline first",
             erlang_root.display()
         );
     }

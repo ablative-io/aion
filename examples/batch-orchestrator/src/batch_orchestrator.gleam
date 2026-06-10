@@ -11,6 +11,7 @@ import aion/codec
 import aion/error
 import aion/query
 import aion/workflow
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -72,7 +73,7 @@ pub fn definition() -> workflow.WorkflowDefinition(BatchInput, BatchSummary, Wor
     batch_input_codec(),
     batch_summary_codec(),
     workflow_error_codec(),
-    run,
+    execute,
   )
 }
 
@@ -86,7 +87,33 @@ pub fn child_definition() -> workflow.WorkflowDefinition(WorkItem, ItemResult, W
   )
 }
 
-pub fn run(input: BatchInput) -> Result(BatchSummary, WorkflowError) {
+/// Engine entry point.
+///
+/// The runtime delivers the start input as a raw JSON string: decode it with
+/// the input codec, run the typed workflow, and encode the success value back
+/// to its JSON string for the recorded result payload.
+pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) -> {
+      let input_codec = batch_input_codec()
+      case input_codec.decode(raw_json) {
+        Ok(input) ->
+          case execute(input) {
+            Ok(output) -> {
+              let output_codec = batch_summary_codec()
+              Ok(output_codec.encode(output))
+            }
+            Error(workflow_error) -> Error(workflow_error)
+          }
+        Error(codec.DecodeError(reason: reason, path: _)) ->
+          Error(ActivityFailed("failed to decode workflow input: " <> reason))
+      }
+    }
+    Error(_) -> Error(ActivityFailed("workflow input payload was not a string"))
+  }
+}
+
+pub fn execute(input: BatchInput) -> Result(BatchSummary, WorkflowError) {
   let total = list.length(input.items)
   let initial_progress = BatchProgress(
     total: total,

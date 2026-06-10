@@ -1,7 +1,7 @@
 //! Timer NIF implementations for the `aion_flow_ffi` namespace.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
@@ -21,17 +21,18 @@ use crate::engine_seam::{
 use crate::registry::Registry;
 use crate::runtime::engine_nifs::{decode_string_arg, error_result_term, ok_result_term};
 use crate::runtime::nif_context::{NifContext, NifContextError};
+use crate::runtime::nif_state::EngineNifState;
 use crate::time::{self, TimerService};
 
-static TIMER_BRIDGE: OnceLock<Mutex<Option<Arc<TimerNifBridge>>>> = OnceLock::new();
-
-struct TimerNifBridge {
+pub(super) struct TimerNifBridge {
     registry: Arc<Registry>,
     store: Arc<dyn ReadableEventStore>,
     tokio_handle: Handle,
     pending_timers: DashMap<(WorkflowProcessHandle, TimerId), PendingTimerTask>,
     next_timer_generation: AtomicU64,
     delivered_timers: TimerDeliveryQueue,
+    // Weak: the engine state owns this bridge through its timer slot.
+    nif_state: Weak<EngineNifState>,
 }
 
 struct PendingTimerTask {
@@ -116,6 +117,12 @@ impl TimerNifBridge {
         process: WorkflowProcessHandle,
         timer_id: &TimerId,
     ) -> Result<TimerWait, EngineSeamError> {
+        let nif_state = self
+            .nif_state
+            .upgrade()
+            .ok_or_else(|| EngineSeamError::Delivery {
+                reason: "engine NIF state has been dropped".to_owned(),
+            })?;
         let (lock, cvar) = &*self.delivered_timers;
         let mut delivered = lock.lock().map_err(|_| EngineSeamError::Delivery {
             reason: "timer delivery queue lock is poisoned".to_owned(),
@@ -133,7 +140,7 @@ impl TimerNifBridge {
             }
             // An enclosing with_timeout deadline interrupts the wait. The
             // delivery is left queued for the scope's own settlement.
-            let scope_timers = super::nif_timeout::active_scope_timers(process.pid());
+            let scope_timers = super::nif_timeout::active_scope_timers(&nif_state, process.pid());
             if delivered
                 .iter()
                 .any(|(delivered_process, delivered_timer, _)| {
@@ -196,8 +203,14 @@ impl EngineHandle for TimerNifBridge {
     ) -> Result<(), EngineSeamError> {
         match message {
             WorkflowMailboxMessage::TimerFired { timer_id, fire_at } => {
+                let nif_state =
+                    self.nif_state
+                        .upgrade()
+                        .ok_or_else(|| EngineSeamError::Delivery {
+                            reason: "engine NIF state has been dropped".to_owned(),
+                        })?;
                 let is_scope_deadline =
-                    super::nif_timeout::is_scope_deadline(process.pid(), &timer_id);
+                    super::nif_timeout::is_scope_deadline(&nif_state, process.pid(), &timer_id);
                 let (lock, cvar) = &*self.delivered_timers;
                 let mut delivered = lock.lock().map_err(|_| EngineSeamError::Delivery {
                     reason: "timer delivery queue lock is poisoned".to_owned(),
@@ -207,7 +220,9 @@ impl EngineHandle for TimerNifBridge {
                 drop(delivered);
                 // A with_timeout deadline must also wake a process that is
                 // suspended in a non-timer await (e.g. an activity result).
-                if is_scope_deadline && let Ok(runtime) = super::nif_activity::runtime_context() {
+                if is_scope_deadline
+                    && let Ok(runtime) = super::nif_activity::runtime_context(&nif_state)
+                {
                     if let Err(error) = runtime.runtime.wake_workflow(process.pid()) {
                         tracing::warn!(
                             %error,
@@ -273,9 +288,14 @@ impl EngineHandle for TimerNifBridge {
             Ok(delay) => delay,
             Err(_) => Duration::ZERO,
         };
+        let nif_state = Weak::clone(&self.nif_state);
         let handle = self.tokio_handle.spawn(async move {
             tokio::time::sleep(delay).await;
-            let service = match timer_bridge() {
+            let bridge = nif_state
+                .upgrade()
+                .ok_or_else(|| "engine NIF state has been dropped".to_owned())
+                .and_then(|state| timer_bridge(&state).map_err(|error| error.to_string()));
+            let service = match &bridge {
                 Ok(bridge) => bridge.service(),
                 Err(error) => {
                     tracing::warn!(error = %error, "timer wheel could not resolve timer service");
@@ -285,7 +305,7 @@ impl EngineHandle for TimerNifBridge {
             if let Err(error) = service.fire_timer(workflow_id, timer_id, fire_at).await {
                 tracing::warn!(error = %error, "timer wheel fire callback failed");
             }
-            if let Ok(bridge) = timer_bridge() {
+            if let Ok(bridge) = bridge {
                 if bridge
                     .pending_timers
                     .get(&task_key)
@@ -356,8 +376,9 @@ impl EngineHandle for TimerNifBridge {
     }
 }
 
-/// Install the process-wide timer bridge used by raw NIF function pointers.
+/// Install the engine-scoped timer bridge used by raw NIF function pointers.
 pub(crate) fn install_timer_nif_bridge(
+    state: &Arc<EngineNifState>,
     registry: Arc<Registry>,
     store: Arc<dyn EventStore>,
     tokio_handle: Handle,
@@ -370,23 +391,23 @@ pub(crate) fn install_timer_nif_bridge(
         pending_timers: DashMap::new(),
         next_timer_generation: AtomicU64::new(0),
         delivered_timers: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
+        nif_state: Arc::downgrade(state),
     });
-    let bridge_slot = TIMER_BRIDGE.get_or_init(|| Mutex::new(None));
-    match bridge_slot.lock() {
+    match state.timer_bridge.lock() {
         Ok(mut installed) => *installed = Some(bridge),
         Err(poisoned) => *poisoned.into_inner() = Some(bridge),
     }
 }
 
-pub(crate) fn installed_timer_service() -> Result<Arc<TimerService>, String> {
-    timer_bridge()
+pub(crate) fn installed_timer_service(state: &EngineNifState) -> Result<Arc<TimerService>, String> {
+    timer_bridge(state)
         .map(|bridge| Arc::new(bridge.service()))
         .map_err(|error| error.to_string())
 }
 
 /// NIF backing `aion_flow_ffi:sleep/1`.
 pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    timer_call("sleep", 1, args, ctx, |mut context, args| {
+    timer_call("sleep", 1, args, ctx, |state, mut context, args| {
         let duration = decode_duration_arg("sleep duration", args[0])?;
         let recorded_now = recorded_now(&context)?;
         let timer_id = TimerId::anonymous(current_head(&context)?);
@@ -397,14 +418,14 @@ pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term
             ResolveOutcome::Recorded(_) => Ok(error_result("sleep history mismatch")),
             ResolveOutcome::ResumeLive => {
                 record_started(&context, recorded_now, timer_id.clone(), fire_at)?;
-                schedule_sleep_timer(&context, duration, recorded_now, &timer_id, fire_at)?;
-                match wait_for_timer_fired(&context, &timer_id)? {
+                schedule_sleep_timer(state, &context, duration, recorded_now, &timer_id, fire_at)?;
+                match wait_for_timer_fired(state, &context, &timer_id)? {
                     TimerWait::Fired => Ok(ok_result("fired")),
                     // The enclosing with_timeout deadline won: record the
                     // sleep's cancellation so replay returns the same
                     // "cancelled" error deterministically.
                     TimerWait::ScopeExpired => {
-                        cancel_live_timer(&context, timer_id)?;
+                        cancel_live_timer(state, &context, timer_id)?;
                         Ok(error_result("cancelled"))
                     }
                 }
@@ -415,7 +436,7 @@ pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term
 
 /// NIF backing `aion_flow_ffi:start_timer/2`.
 pub(super) fn start_timer_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    timer_call("start_timer", 2, args, ctx, |mut context, args| {
+    timer_call("start_timer", 2, args, ctx, |state, mut context, args| {
         let timer_id = decode_timer_id_arg("start_timer timer_id", args[0])?;
         let duration = decode_duration_arg("start_timer duration", args[1])?;
         let recorded_now = recorded_now(&context)?;
@@ -428,7 +449,7 @@ pub(super) fn start_timer_impl(args: &[Term], ctx: &mut ProcessContext) -> Resul
             ResolveOutcome::Recorded(_) => Ok(error_result("start_timer history mismatch")),
             ResolveOutcome::ResumeLive => {
                 record_started(&context, recorded_now, timer_id.clone(), fire_at)?;
-                schedule_timer(&context, timer_id.clone(), fire_at, TimerKind::Named)?;
+                schedule_timer(state, &context, timer_id.clone(), fire_at, TimerKind::Named)?;
                 Ok(ok_result(timer_ref(&timer_id)))
             }
         }
@@ -437,7 +458,7 @@ pub(super) fn start_timer_impl(args: &[Term], ctx: &mut ProcessContext) -> Resul
 
 /// NIF backing `aion_flow_ffi:cancel_timer/1`.
 pub(super) fn cancel_timer_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    timer_call("cancel_timer", 1, args, ctx, |mut context, args| {
+    timer_call("cancel_timer", 1, args, ctx, |state, mut context, args| {
         let timer_id = decode_timer_id_arg("cancel_timer timer_id", args[0])?;
         let recorded_now = recorded_now(&context)?;
         match context.resolve_command(timer_command(timer_id.clone(), recorded_now))? {
@@ -446,7 +467,7 @@ pub(super) fn cancel_timer_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
             }
             ResolveOutcome::Recorded(_) => Ok(error_result("cancel_timer history mismatch")),
             ResolveOutcome::ResumeLive => {
-                cancel_live_timer(&context, timer_id)?;
+                cancel_live_timer(state, &context, timer_id)?;
                 Ok(ok_result("cancelled"))
             }
         }
@@ -461,7 +482,7 @@ fn timer_call<F>(
     f: F,
 ) -> Result<Term, Term>
 where
-    F: FnOnce(NifContext, &[Term]) -> Result<NifResult, NifTimerError>,
+    F: FnOnce(&EngineNifState, NifContext, &[Term]) -> Result<NifResult, NifTimerError>,
 {
     if args.len() > 255 {
         return Err(Term::NIL);
@@ -473,23 +494,33 @@ where
         ))
         .unwrap_or(Term::NIL));
     }
-    match build_context(process_context).and_then(|context| f(context, args)) {
+    let state = match super::nif_state::engine_nif_state(process_context) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    match build_context(&state, process_context).and_then(|context| f(&state, context, args)) {
         Ok(NifResult::Ok(value)) => Ok(ok_result_term(&value).unwrap_or(Term::NIL)),
         Ok(NifResult::Error(message)) => Ok(error_result_term(&message).unwrap_or(Term::NIL)),
         Err(error) => Ok(error_result_term(&error.to_string()).unwrap_or(Term::NIL)),
     }
 }
 
-fn build_context(process_context: &ProcessContext) -> Result<NifContext, NifTimerError> {
+fn build_context(
+    state: &EngineNifState,
+    process_context: &ProcessContext,
+) -> Result<NifContext, NifTimerError> {
     let pid = process_context
         .pid()
         .ok_or_else(|| NifTimerError::Context("missing calling pid".to_owned()))?;
-    build_context_for_pid(pid)
+    build_context_for_pid(state, pid)
 }
 
 /// Build a [`NifContext`] for a workflow process by pid.
-pub(super) fn build_context_for_pid(pid: u64) -> Result<NifContext, NifTimerError> {
-    let bridge = timer_bridge()?;
+pub(super) fn build_context_for_pid(
+    state: &EngineNifState,
+    pid: u64,
+) -> Result<NifContext, NifTimerError> {
+    let bridge = timer_bridge(state)?;
     NifContext::new(pid, bridge.registry.as_ref(), bridge.tokio_handle.clone()).map_err(Into::into)
 }
 
@@ -497,8 +528,12 @@ pub(super) fn build_context_for_pid(pid: u64) -> Result<NifContext, NifTimerErro
 ///
 /// `with_timeout` settles its race from recorded history; a deadline
 /// delivery left in the queue would otherwise linger forever.
-pub(super) fn drain_timer_deliveries(pid: u64, timer_id: &TimerId) -> Result<(), NifTimerError> {
-    let bridge = timer_bridge()?;
+pub(super) fn drain_timer_deliveries(
+    state: &EngineNifState,
+    pid: u64,
+    timer_id: &TimerId,
+) -> Result<(), NifTimerError> {
+    let bridge = timer_bridge(state)?;
     let (lock, _) = &*bridge.delivered_timers;
     let mut delivered = lock
         .lock()
@@ -594,6 +629,7 @@ enum TimerKind {
 }
 
 pub(super) fn schedule_sleep_timer(
+    state: &EngineNifState,
     context: &NifContext,
     duration: Duration,
     recorded_now: DateTime<Utc>,
@@ -604,7 +640,7 @@ pub(super) fn schedule_sleep_timer(
         duration,
         recorded_now,
     };
-    let scheduled = schedule_timer(context, timer_id.clone(), fire_at, kind)?;
+    let scheduled = schedule_timer(state, context, timer_id.clone(), fire_at, kind)?;
     if scheduled == *timer_id {
         Ok(())
     } else {
@@ -615,13 +651,14 @@ pub(super) fn schedule_sleep_timer(
 }
 
 fn schedule_timer(
+    state: &EngineNifState,
     context: &NifContext,
     timer_id: TimerId,
     fire_at: DateTime<Utc>,
     kind: TimerKind,
 ) -> Result<TimerId, NifTimerError> {
     let workflow_id = context.workflow_id().clone();
-    let bridge = timer_bridge()?;
+    let bridge = timer_bridge(state)?;
     let service = bridge.service();
     let scheduled = bridge.tokio_handle.block_on(async {
         match kind {
@@ -650,11 +687,12 @@ fn schedule_timer(
 }
 
 pub(super) fn cancel_live_timer(
+    state: &EngineNifState,
     context: &NifContext,
     timer_id: TimerId,
 ) -> Result<(), NifTimerError> {
     let workflow_id = context.workflow_id().clone();
-    let bridge = timer_bridge()?;
+    let bridge = timer_bridge(state)?;
     let service = bridge.service();
     bridge
         .tokio_handle
@@ -663,20 +701,19 @@ pub(super) fn cancel_live_timer(
 }
 
 fn wait_for_timer_fired(
+    state: &EngineNifState,
     context: &NifContext,
     timer_id: &TimerId,
 ) -> Result<TimerWait, NifTimerError> {
-    let bridge = timer_bridge()?;
+    let bridge = timer_bridge(state)?;
     bridge
         .wait_for_timer_fired(WorkflowProcessHandle::new(context.pid()), timer_id)
         .map_err(|error| NifTimerError::Context(error.to_string()))
 }
 
-fn timer_bridge() -> Result<Arc<TimerNifBridge>, NifTimerError> {
-    let bridge_slot = TIMER_BRIDGE
-        .get()
-        .ok_or_else(|| NifTimerError::Context("timer bridge is not configured".to_owned()))?;
-    bridge_slot
+fn timer_bridge(state: &EngineNifState) -> Result<Arc<TimerNifBridge>, NifTimerError> {
+    state
+        .timer_bridge
         .lock()
         .map_err(|_| NifTimerError::Context("timer bridge lock is poisoned".to_owned()))?
         .clone()

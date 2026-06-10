@@ -11,6 +11,7 @@ import aion/error
 import aion/signal
 import aion/workflow
 import aion/workflow/timer
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -65,7 +66,7 @@ pub fn definition() ->
     subscription_input_codec(),
     subscription_summary_codec(),
     workflow_error_codec(),
-    run,
+    execute,
   )
 }
 
@@ -73,7 +74,33 @@ pub fn plan_change_signal() -> signal.SignalRef(PlanChange) {
   signal.new("plan_change", plan_change_codec())
 }
 
-pub fn run(input: SubscriptionInput) -> Result(SubscriptionSummary, WorkflowError) {
+/// Engine entry point.
+///
+/// The runtime delivers the start input as a raw JSON string: decode it with
+/// the input codec, run the typed workflow, and encode the success value back
+/// to its JSON string for the recorded result payload.
+pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) -> {
+      let input_codec = subscription_input_codec()
+      case input_codec.decode(raw_json) {
+        Ok(input) ->
+          case execute(input) {
+            Ok(output) -> {
+              let output_codec = subscription_summary_codec()
+              Ok(output_codec.encode(output))
+            }
+            Error(workflow_error) -> Error(workflow_error)
+          }
+        Error(codec.DecodeError(reason: reason, path: _)) ->
+          Error(InvalidConfiguration("failed to decode workflow input: " <> reason))
+      }
+    }
+    Error(_) -> Error(InvalidConfiguration("workflow input payload was not a string"))
+  }
+}
+
+pub fn execute(input: SubscriptionInput) -> Result(SubscriptionSummary, WorkflowError) {
   case validate_input(input) {
     Ok(valid_input) -> billing_loop(valid_input)
     Error(configuration_error) -> Error(configuration_error)
@@ -205,7 +232,8 @@ fn continue_with_fresh_history(
         cycles_in_run: next_input.cycles_in_run,
         status: "continued_as_new",
       ))
-    Error(engine_error) -> Error(ContinueAsNewFailed(engine_error_message(engine_error)))
+    Error(workflow_error) ->
+      Error(ContinueAsNewFailed(workflow_error_message(workflow_error)))
   }
 }
 
@@ -451,5 +479,11 @@ fn receive_error_message(receive_error: error.ReceiveError) -> String {
 fn engine_error_message(engine_error: error.EngineError) -> String {
   case engine_error {
     error.EngineFailure(message: message) -> message
+  }
+}
+
+fn workflow_error_message(workflow_error: error.WorkflowError) -> String {
+  case workflow_error {
+    error.WorkflowEngineFailure(message: message) -> message
   }
 }

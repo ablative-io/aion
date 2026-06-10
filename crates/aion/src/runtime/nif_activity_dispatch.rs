@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::activity::bridge::{ActivityDispatcher, activity_dispatcher};
+use crate::activity::bridge::ActivityDispatcher;
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::{
     activity_error, activity_id_from_correlation, context_error_term, correlation_id,
@@ -36,7 +36,11 @@ pub(super) fn dispatch_activity_impl(
                 .unwrap_or(Term::NIL),
         );
     };
-    let runtime = match runtime_context() {
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    let runtime = match runtime_context(&state) {
         Ok(runtime) => runtime,
         Err(error) => return Ok(context_error_term(&error)),
     };
@@ -45,7 +49,7 @@ pub(super) fn dispatch_activity_impl(
             Ok(context) => context,
             Err(error) => return Ok(context_error_term(&error)),
         };
-    let dispatcher = activity_dispatcher();
+    let dispatcher = state.activity_dispatcher();
     dispatch_activity_with_context(
         context,
         dispatcher,
@@ -87,7 +91,11 @@ pub(super) fn await_activity_result_impl(
                 .unwrap_or(Term::NIL),
         );
     };
-    let runtime = match runtime_context() {
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    let runtime = match runtime_context(&state) {
         Ok(runtime) => runtime,
         Err(error) => return Ok(context_error_term(&error)),
     };
@@ -95,7 +103,7 @@ pub(super) fn await_activity_result_impl(
         Ok(context) => context,
         Err(error) => return Ok(context_error_term(&error)),
     };
-    await_activity_result_with_context(context, &runtime.runtime, ctx, &correlation)
+    await_activity_result_with_context(&state, context, &runtime.runtime, ctx, &correlation)
 }
 
 fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
@@ -203,6 +211,7 @@ fn spawn_completion_task(
 }
 
 fn await_activity_result_with_context(
+    state: &crate::runtime::EngineNifState,
     mut context: NifContext,
     runtime: &Arc<crate::RuntimeHandle>,
     process_context: &mut ProcessContext,
@@ -219,7 +228,8 @@ fn await_activity_result_with_context(
     }
     // An expired enclosing with_timeout deadline aborts the await instead of
     // re-suspending. The failure is recorded so replay returns it verbatim.
-    if let Some(message) = crate::runtime::nif_timeout::expired_scope_message(context.pid()) {
+    if let Some(message) = crate::runtime::nif_timeout::expired_scope_message(state, context.pid())
+    {
         record_failed(&context, activity_id, activity_error(message.clone()))?;
         return Ok(error_result_term(&message).unwrap_or(Term::NIL));
     }

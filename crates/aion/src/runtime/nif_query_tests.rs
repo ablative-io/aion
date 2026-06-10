@@ -18,7 +18,7 @@ use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandle, Workf
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type TestContext = (
-    Arc<Registry>,
+    Arc<EngineNifState>,
     Arc<InMemoryStore>,
     Arc<FakeEngine>,
     WorkflowId,
@@ -182,34 +182,36 @@ fn install(runtime: &tokio::runtime::Runtime) -> Result<TestContext, Box<dyn std
     });
     registry.insert((workflow_id.clone(), run_id), handle)?;
     let engine = Arc::new(FakeEngine::default());
+    let state = Arc::new(EngineNifState::default());
     install_query_bridge_with_engine(
+        &state,
         Arc::clone(&registry),
         engine.clone(),
         runtime.handle().clone(),
     );
-    Ok((registry, store, engine, workflow_id))
+    Ok((state, store, engine, workflow_id))
 }
 
 #[test]
 fn register_query_replaces_handler_for_workflow_pid() -> TestResult {
     let runtime = tokio::runtime::Runtime::new()?;
-    let (_registry, _store, _engine, _workflow_id) = install(&runtime)?;
+    let (state, _store, _engine, _workflow_id) = install(&runtime)?;
     let first = Term::small_int(1);
     let second = Term::small_int(2);
 
     assert_eq!(
-        register_query_impl("state", first, "{}", Some(42))?,
+        register_query_impl(&state, "state", first, "{}", Some(42))?,
         "registered"
     );
     assert_eq!(
-        registered_handler(42, "state")?.map(|handler| handler.handler),
+        registered_handler(&state, 42, "state")?.map(|handler| handler.handler),
         Some(first)
     );
     assert_eq!(
-        register_query_impl("state", second, "{}", Some(42))?,
+        register_query_impl(&state, "state", second, "{}", Some(42))?,
         "registered"
     );
-    let handler = registered_handler(42, "state")?.ok_or("missing handler")?;
+    let handler = registered_handler(&state, 42, "state")?.ok_or("missing handler")?;
     assert_eq!(handler.pid, 42);
     assert_eq!(handler.handler, second);
     Ok(())
@@ -218,26 +220,24 @@ fn register_query_replaces_handler_for_workflow_pid() -> TestResult {
 #[test]
 fn reply_query_delivers_pending_response_and_errors_for_missing_id() -> TestResult {
     let runtime = tokio::runtime::Runtime::new()?;
-    let (_registry, _store, _engine, _workflow_id) = install(&runtime)?;
+    let (state, _store, _engine, _workflow_id) = install(&runtime)?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    query_handlers()
-        .lock_pending()?
-        .insert("q-1".to_owned(), sender);
+    insert_pending_reply(&state, "q-1".to_owned(), sender)?;
 
     assert_eq!(
-        reply_query_impl("q-1", "{\"answer\":1}", Some(42))?,
+        reply_query_impl(&state, "q-1", "{\"answer\":1}", Some(42))?,
         "replied"
     );
     let reply = runtime.block_on(receiver)??;
     assert_eq!(reply.bytes(), b"{\"answer\":1}");
-    assert!(reply_query_impl("missing", "{}", Some(42)).is_err());
+    assert!(reply_query_impl(&state, "missing", "{}", Some(42)).is_err());
     Ok(())
 }
 
 #[test]
 fn dispatch_query_round_trips_through_query_service() -> TestResult {
     let runtime = tokio::runtime::Runtime::new()?;
-    let (_registry, store, engine, workflow_id) = install(&runtime)?;
+    let (state, store, engine, workflow_id) = install(&runtime)?;
     let target = WorkflowId::new_v4();
     let mut handlers = HashMap::new();
     handlers.insert(
@@ -251,7 +251,7 @@ fn dispatch_query_round_trips_through_query_service() -> TestResult {
     })
     .to_string();
 
-    let reply = dispatch_query_impl("state", &config, Some(42))?;
+    let reply = dispatch_query_impl(&state, "state", &config, Some(42))?;
 
     assert_eq!(reply, "{\"visible\":true}");
     let history = runtime.block_on(store.read_history(&workflow_id))?;
@@ -262,23 +262,21 @@ fn dispatch_query_round_trips_through_query_service() -> TestResult {
 #[test]
 fn query_nifs_do_not_change_event_history() -> TestResult {
     let runtime = tokio::runtime::Runtime::new()?;
-    let (_registry, store, engine, workflow_id) = install(&runtime)?;
+    let (state, store, engine, workflow_id) = install(&runtime)?;
     let target = WorkflowId::new_v4();
     let mut handlers = HashMap::new();
     handlers.insert("state".to_owned(), Ok(payload_from_string("{}")));
     engine.set_workflow(target.clone(), 91, handlers)?;
     let before = runtime.block_on(store.read_history(&workflow_id))?;
 
-    register_query_impl("local", Term::small_int(7), "{}", Some(42))?;
+    register_query_impl(&state, "local", Term::small_int(7), "{}", Some(42))?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    query_handlers()
-        .lock_pending()?
-        .insert("q-2".to_owned(), sender);
-    reply_query_impl("q-2", "{}", Some(42))?;
+    insert_pending_reply(&state, "q-2".to_owned(), sender)?;
+    reply_query_impl(&state, "q-2", "{}", Some(42))?;
     let reply = runtime.block_on(receiver)??;
     assert_eq!(reply.bytes(), b"{}");
     let config = serde_json::json!({ "target_workflow_id": target, "payload": "{}" }).to_string();
-    dispatch_query_impl("state", &config, Some(42))?;
+    dispatch_query_impl(&state, "state", &config, Some(42))?;
 
     let after = runtime.block_on(store.read_history(&workflow_id))?;
     assert_eq!(before, after);
