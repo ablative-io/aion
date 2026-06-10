@@ -1,11 +1,11 @@
 # aion-client
 
-Async Python caller SDK for Aion workflows. The package is published as `aion-client` and imported as `aion_client`. It exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
+Async Python caller SDK for Aion workflows. Status: in progress/hardening. The repository package is named `aion-client` and imported as `aion_client`; install from this checkout until a release is published for your target environment. It exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
 
 ## Install
 
 ```sh
-python -m pip install aion-client
+python -m pip install -e sdks/python/aion-client
 ```
 
 ## Server prerequisite

@@ -1,11 +1,11 @@
 # aion-worker
 
-Python remote-worker SDK for registering out-of-process Aion activities and serving them from an `aion-server` task queue.
+Python remote-worker SDK for registering out-of-process Aion activities and serving them from an `aion-server` task queue. Status: in progress/hardening; install from this checkout until a release is published for your target environment.
 
 ## Install
 
 ```sh
-python -m pip install aion-worker
+python -m pip install -e sdks/python/aion-worker
 ```
 
 ## Minimal worker

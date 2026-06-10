@@ -14,9 +14,9 @@ a Rust implementation of the BEAM VM.
 > A workflow that sleeps for three months and resumes is living in eternal
 > time, not clock time.
 
-Aion is **general purpose**. It ships as an embeddable Rust library, a
-standalone server, a type-safe Gleam authoring SDK, and worker and client
-SDKs in multiple languages.
+Aion is **general purpose**. The current build includes an embeddable Rust
+library, a standalone server, a type-safe Gleam authoring SDK, and in-progress
+worker and client SDKs in multiple languages.
 
 ## Why Gleam + Rust + BEAM
 
@@ -27,9 +27,10 @@ The three technologies meet at their points of maximum leverage:
   cannot wire mismatched types together and ship it. Compiles to BEAM
   bytecode.
 - **BEAM** (via beamr) — the execution runtime. Designed for systems that
-  run forever, handle millions of concurrent processes, recover from
-  failure automatically, and upgrade without downtime. Every workflow is a
-  process; every activity is a supervised child process.
+  run forever, handle many concurrent processes, recover from process-level
+  failures, and support hot code loading. Every workflow is a process; every
+  activity is a supervised child process. Aion's own zero-downtime upgrade
+  story is still part of the broader vision/hardening work.
 - **Rust** — the durable substrate. Persistence, the event store, the
   network API, and performance-critical infrastructure.
 
@@ -45,11 +46,12 @@ Three layers:
 1. **beamr** — the BEAM runtime. Processes, mailboxes, selective receive,
    links, monitors, supervision, timers, hot code loading. (External
    dependency, already built.)
-2. **The Aion engine** (`crates/aion`) — workflow lifecycle, the
-   event-sourced durability and replay layer, durable timers, signal
-   routing, queries, child workflows. Transport-agnostic.
-3. **The SDKs** — the Gleam authoring SDK (`gleam/aion_flow`), the Rust NIF
-   helper, the network server, and worker/client SDKs.
+2. **The Aion engine** (`crates/aion`) — implemented workflow lifecycle,
+   event-sourced durability and replay, durable timers, signal routing,
+   queries, and child workflows. Transport-agnostic.
+3. **The SDKs and transports** — the Gleam authoring SDK (`gleam/aion_flow`),
+   the Rust NIF helper, the network server, and worker/client SDKs. These are
+   usable but still being hardened across languages.
 
 The full vision and the component breakdown live in
 [`docs/design/workflow-engine/`](docs/design/workflow-engine/):
@@ -88,7 +90,7 @@ workspace.json     Machine-readable description of every component
 | `aion-client` | Rust caller SDK |
 | `gleam/aion_flow` | The Gleam authoring SDK |
 | `gleam/aion_client` | The Gleam caller SDK |
-| `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs |
+| `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs, in progress/hardening |
 | `apps/aion-dashboard` | Monitoring UI under development |
 
 ## Publishing crates
@@ -126,27 +128,26 @@ The default mode is a dry run and stops on the first crate that fails. Do not us
 
 **The core engine is implemented and functional.**
 
-What works today:
+Implemented in the current build:
 
 - The `aion` engine implements workflow lifecycle, event-sourced durability
   and replay, durable timers, signals, queries, child workflows, and the
   transport-agnostic engine API.
 - `aion-server` is a functional standalone server with HTTP/JSON, gRPC,
   WebSocket event streams, package loading, and the remote-worker protocol.
-- Worker and client SDK packages are available across Rust, Gleam, Python,
-  and TypeScript; the Gleam authoring SDK lives in `gleam/aion_flow`.
 - Three working examples live under [`examples/`](examples/), with
   [`examples/hello-world/`](examples/hello-world/) as the recommended first
   run.
 
-Still maturing:
+In progress / still maturing:
 
 - Documentation and developer-experience polish are ongoing; start with
   [`GETTING-STARTED.md`](GETTING-STARTED.md), [`CONTRIBUTING.md`](CONTRIBUTING.md),
   [`docs/API.md`](docs/API.md), and
   [`gleam/aion_flow/README.md`](gleam/aion_flow/README.md).
-- SDK packages and conformance coverage continue to harden around the
-  implemented server and engine surfaces.
+- Worker and client SDK packages exist across Rust, Gleam, Python, and
+  TypeScript, but live transport coverage and conformance are still hardening
+  around the implemented server and engine surfaces.
 - The dashboard/static UI is included and served by the server but remains
   under development; use the CLI or HTTP API to observe workflows for now.
 

@@ -4,7 +4,7 @@ This example takes you from a fresh checkout to a running Aion workflow. You wil
 
 1. build a Gleam workflow that uses `aion_flow`,
 2. package the compiled BEAM modules into `hello-world.aion`,
-3. start the Aion dev server with the repo-root `dev-config.toml`,
+3. start the Aion dev server with the repo-root `dev-config.toml` and the built package preloaded,
 4. start a Python activity worker for the `greet` activity,
 5. start a workflow instance with `aion-cli`, and
 6. inspect and operate the run from `aion-cli` while the dashboard UI is under development.
@@ -52,12 +52,13 @@ examples/hello-world/hello-world.aion
 
 ## 3. Start the Aion dev server
 
-The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, and defaults to the `default` namespace. To preload this example at startup, make sure `workflow_packages` includes `examples/hello-world/hello-world.aion` after building the package.
+The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, and defaults to the `default` namespace. Pass the package path on the command line so a fresh checkout preloads this example without editing TOML.
 
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+cargo run -p aion-server -- --config dev-config.toml \
+  --workflow-package examples/hello-world/hello-world.aion
 ```
 
 Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use `aion-cli` over the gRPC endpoint (`127.0.0.1:50051`) to inspect workflows for now. The CLI global flags map to client metadata and routing:
@@ -114,7 +115,7 @@ In terminal 3:
 ```sh
 START_RESPONSE=$(cargo run -q -p aion-cli -- \
   --subject hello-world-user \
-  start hello_world --input '{"name":"Ada"}')
+  start hello-world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 
