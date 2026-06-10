@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use aion_core::{Event, WorkflowId, WorkflowStatus};
 use aion_package::ContentHash;
-use aion_store::{InMemoryStore, ReadableEventStore};
+use aion_store::{InMemoryStore, ReadableEventStore, WritableEventStore, WriteToken};
 use beamr::term::Term;
 
 use super::*;
@@ -168,7 +168,19 @@ fn install(runtime: &tokio::runtime::Runtime) -> Result<TestContext, Box<dyn std
     let store = Arc::new(InMemoryStore::default());
     let workflow_id = WorkflowId::new_v4();
     let run_id = aion_core::RunId::new_v4();
-    let recorder = Recorder::new(workflow_id.clone(), store.clone());
+    let started = Event::WorkflowStarted {
+        envelope: aion_core::EventEnvelope {
+            seq: 1,
+            recorded_at: chrono::Utc::now(),
+            workflow_id: workflow_id.clone(),
+        },
+        workflow_type: "checkout".to_owned(),
+        input: aion_core::Payload::from_json(&serde_json::json!({ "label": "input" }))?,
+        run_id: run_id.clone(),
+        parent_run_id: None,
+    };
+    runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, &[started], 0))?;
+    let recorder = Recorder::resume_at(workflow_id.clone(), store.clone(), 1);
     let handle = WorkflowHandle::new(WorkflowHandleParts {
         workflow_id: workflow_id.clone(),
         run_id: run_id.clone(),
@@ -255,7 +267,8 @@ fn dispatch_query_round_trips_through_query_service() -> TestResult {
 
     assert_eq!(reply, "{\"visible\":true}");
     let history = runtime.block_on(store.read_history(&workflow_id))?;
-    assert!(history.is_empty());
+    // Only the seeded WorkflowStarted: the query round-trip records nothing.
+    assert_eq!(history.len(), 1);
     Ok(())
 }
 
@@ -280,6 +293,7 @@ fn query_nifs_do_not_change_event_history() -> TestResult {
 
     let after = runtime.block_on(store.read_history(&workflow_id))?;
     assert_eq!(before, after);
-    assert!(after.is_empty());
+    // Only the seeded WorkflowStarted: query NIFs record nothing.
+    assert_eq!(after.len(), 1);
     Ok(())
 }

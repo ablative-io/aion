@@ -26,6 +26,7 @@ mod nif_signal;
 pub(crate) mod nif_state;
 pub(crate) mod nif_timeout;
 pub(crate) mod nif_timer;
+mod nif_wake;
 /// Workflow process exit outcomes.
 pub mod outcome;
 /// Payload conversion helpers used at the runtime boundary.

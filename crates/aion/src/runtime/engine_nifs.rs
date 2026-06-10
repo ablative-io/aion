@@ -113,7 +113,10 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
         NifEntry::new(Mfa::new(FFI_MODULE, "now", 0), now_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "random", 0), random_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "random_int", 2), random_int_impl),
-        NifEntry::dirty(Mfa::new(FFI_MODULE, "sleep", 1), nif_timer::sleep_impl),
+        // Suspending awaits run on the normal schedulers: they park via
+        // request_suspend instead of blocking, so a dirty thread would only
+        // be wasted on them.
+        NifEntry::new(Mfa::new(FFI_MODULE, "sleep", 1), nif_timer::sleep_impl),
         NifEntry::dirty(
             Mfa::new(FFI_MODULE, "start_timer", 2),
             nif_timer::start_timer_impl,
@@ -130,7 +133,7 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "continue_as_new", 1),
             nif_continue_as_new::continue_as_new_impl,
         ),
-        NifEntry::dirty(
+        NifEntry::new(
             Mfa::new(FFI_MODULE, "receive_signal", 2),
             nif_signal::receive_signal,
         ),
@@ -233,6 +236,8 @@ mod tests {
             "now",
             "random",
             "random_int",
+            "sleep",
+            "receive_signal",
             "with_timeout",
             "register_query",
         ] {
@@ -251,6 +256,8 @@ mod tests {
                         | "now"
                         | "random"
                         | "random_int"
+                        | "sleep"
+                        | "receive_signal"
                         | "with_timeout"
                         | "register_query"
                 ))

@@ -223,7 +223,7 @@ fn rotate_or_continue(input: SubscriptionInput) -> Result(SubscriptionSummary, W
 fn continue_with_fresh_history(
   next_input: SubscriptionInput,
 ) -> Result(SubscriptionSummary, WorkflowError) {
-  case workflow.continue_as_new(next_input) {
+  case workflow.continue_as_new(next_input, subscription_input_codec()) {
     Ok(_) ->
       Ok(SubscriptionSummary(
         subscriber_id: next_input.subscriber_id,

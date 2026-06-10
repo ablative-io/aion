@@ -50,15 +50,17 @@ pub async fn start_timer(
     service.schedule(workflow_id, timer_id, fire_at).await
 }
 
-/// Cancels a named timer if it has not already fired or been cancelled.
+/// Cancels a timer if it has not already fired or been cancelled.
 ///
 /// Active resident timers are disarmed through the engine seam and then recorded as
-/// `TimerCancelled`. Already-fired or already-cancelled timers are idempotent no-ops.
+/// `TimerCancelled`. Already-fired or already-cancelled timers are idempotent no-ops. Authors
+/// only ever cancel named timers (a `TimerRef` is minted by `start_timer`); the engine also
+/// settles anonymous `with_timeout` scope deadlines through this path.
 ///
 /// # Errors
 ///
-/// Returns [`TimerServiceError`] when an anonymous timer id is supplied, or when history inspection,
-/// residency resolution, disarming, or cancellation recording fails.
+/// Returns [`TimerServiceError`] when history inspection, residency resolution, disarming, or
+/// cancellation recording fails.
 pub async fn cancel_timer(
     service: &TimerService,
     workflow_id: WorkflowId,
@@ -105,13 +107,15 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use aion_core::{Event, IdError, TimerId, WorkflowId};
+    use aion_core::{Event, EventEnvelope, IdError, TimerId, WorkflowId};
     use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
     use super::{SleepTimerError, cancel_timer, sleep, start_timer};
     use crate::engine_seam::test_support::{FakeEngineHandle, FakeEngineOperation};
-    use crate::engine_seam::{TimerWheelEntry, WorkflowProcessHandle, WorkflowResidency};
+    use crate::engine_seam::{
+        EngineHandle, TimerWheelEntry, WorkflowProcessHandle, WorkflowResidency,
+    };
     use crate::time::{TimerService, TimerServiceError};
 
     #[derive(thiserror::Error, Debug)]
@@ -154,6 +158,18 @@ mod tests {
         workflow_id: &WorkflowId,
     ) -> Result<Vec<Event>, StoreError> {
         store.read_history(workflow_id).await
+    }
+
+    fn timer_started_event(workflow_id: &WorkflowId, timer_id: &TimerId, seq: u64) -> Event {
+        Event::TimerStarted {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            timer_id: timer_id.clone(),
+            fire_at: instant(5),
+        }
     }
 
     fn count_cancelled(events: &[Event], timer_id: &TimerId) -> usize {
@@ -203,6 +219,10 @@ mod tests {
         let timer_id = TimerId::named("deadline")?;
         let fire_at = instant(20);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
 
         start_timer(&service, workflow_id.clone(), timer_id.clone(), fire_at).await?;
         cancel_timer(&service, workflow_id.clone(), timer_id.clone()).await?;
@@ -210,16 +230,17 @@ mod tests {
         assert!(engine.armed_timers()?.is_empty());
         let history = history(&store, &workflow_id).await?;
         assert_eq!(count_cancelled(&history, &timer_id), 1);
-        // TimerStarted is recorded by AD's resume-live handoff, not by the timer service,
-        // so only the TimerCancelled event appears in history.
+        // Cancel only acts on a timer whose TimerStarted is recorded in the
+        // active run segment, so history is the seeded start plus the cancel.
         assert!(matches!(
             history.as_slice(),
             [
+                Event::TimerStarted { .. },
                 Event::TimerCancelled {
                     envelope,
                     timer_id: recorded,
                 }
-            ] if envelope.seq == 1 && recorded == &timer_id
+            ] if envelope.seq == 2 && recorded == &timer_id
         ));
         assert!(engine.operations()?.iter().any(|operation| matches!(
             operation,
@@ -237,6 +258,10 @@ mod tests {
         let timer_id = TimerId::named("deadline")?;
         let fire_at = instant(30);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
 
         start_timer(&service, workflow_id.clone(), timer_id.clone(), fire_at).await?;
         service
@@ -261,6 +286,10 @@ mod tests {
         let timer_id = TimerId::named("deadline")?;
         let fire_at = instant(40);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
 
         start_timer(&service, workflow_id.clone(), timer_id.clone(), fire_at).await?;
         cancel_timer(&service, workflow_id.clone(), timer_id.clone()).await?;
@@ -275,20 +304,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_timer_rejects_anonymous_sleep_timer() -> Result<(), TestError> {
+    async fn cancel_timer_settles_anonymous_scope_deadline() -> Result<(), TestError> {
+        // Authors can never address an anonymous timer (TimerRef is minted by
+        // start_timer, always named), but with_timeout settles its anonymous
+        // scope deadline through this exact path — the cancel must record the
+        // terminal event so the scope race reads signal-won deterministically.
+        let process = WorkflowProcessHandle::new(42);
         let (store, engine, service) = service();
         let workflow_id = workflow_id();
         let timer_id = TimerId::anonymous(42);
+        let fire_at = instant(40);
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
+        service
+            .schedule(workflow_id.clone(), timer_id.clone(), fire_at)
+            .await?;
 
-        let result = cancel_timer(&service, workflow_id.clone(), timer_id.clone()).await;
+        cancel_timer(&service, workflow_id.clone(), timer_id.clone()).await?;
 
-        assert!(matches!(
-            result,
-            Err(TimerServiceError::AnonymousTimerNotCancellable { timer_id: rejected })
-                if rejected == timer_id
-        ));
-        assert!(history(&store, &workflow_id).await?.is_empty());
-        assert!(engine.operations()?.is_empty());
+        let history = history(&store, &workflow_id).await?;
+        assert_eq!(count_cancelled(&history, &timer_id), 1);
+        assert_eq!(count_fired(&history, &timer_id), 0);
         Ok(())
     }
 

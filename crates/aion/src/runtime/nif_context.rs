@@ -154,6 +154,9 @@ impl NifContext {
                 recorder.read_history().await
             })?,
         };
+        // Correlation identities (ordinals, signal occurrence indices) are
+        // run-scoped; resolve only against this run's history segment.
+        let history = crate::durability::current_run_segment(history, handle.run_id())?;
         let last_recorded_at = history.last().map(|event| *event.recorded_at());
         let cursor = HistoryCursor::new(history)?;
         let resolver = Resolver::new(workflow_id, cursor);
@@ -194,6 +197,26 @@ impl NifContext {
     #[must_use]
     pub fn allocate_activity_ordinals(&self, count: u64) -> u64 {
         self.handle.allocate_activity_ordinals(count)
+    }
+
+    /// Returns the next deterministic timer ordinal.
+    ///
+    /// Same run-scoped sequence contract as [`Self::next_activity_ordinal`];
+    /// used to derive anonymous timer identities that replay deterministically.
+    #[must_use]
+    pub fn next_timer_ordinal(&self) -> u64 {
+        self.handle.allocate_timer_ordinals(1)
+    }
+
+    /// Number of `receive_signal(name)` calls this run has completed.
+    #[must_use]
+    pub fn signal_receives_consumed(&self, name: &str) -> u64 {
+        self.handle.signal_receives_consumed(name)
+    }
+
+    /// Advance the completed-receive count for `name` by one.
+    pub fn mark_signal_receive_consumed(&self, name: &str) {
+        self.handle.mark_signal_receive_consumed(name);
     }
 
     /// Returns a clone of the resolved workflow handle.
@@ -353,18 +376,6 @@ impl NifContext {
         self.resolver.history()
     }
 
-    /// Reads the current workflow history through the recorder-owned store.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NifContextError::Durability`] when the backing store rejects the read.
-    pub fn read_current_history(&self) -> Result<Vec<aion_core::Event>, NifContextError> {
-        Ok(self.tokio_handle.block_on(async {
-            let recorder = self.recorder.lock().await;
-            recorder.read_history().await
-        })?)
-    }
-
     /// Resolves a workflow command against recorded history before any live side effect runs.
     ///
     /// # Errors
@@ -434,15 +445,29 @@ mod tests {
         })
     }
 
+    fn started_event(
+        workflow_id: &aion_core::WorkflowId,
+        run_id: &aion_core::RunId,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowStarted {
+            envelope: envelope(workflow_id, 1)?,
+            workflow_type: "checkout".to_owned(),
+            input: payload("input")?,
+            run_id: run_id.clone(),
+            parent_run_id: None,
+        })
+    }
+
     fn handle(
         pid: u64,
         store: Arc<dyn EventStore>,
         workflow_id: aion_core::WorkflowId,
+        run_id: aion_core::RunId,
     ) -> WorkflowHandle {
-        let recorder = Recorder::new(workflow_id.clone(), store);
+        let recorder = Recorder::resume_at(workflow_id.clone(), store, 1);
         WorkflowHandle::new(WorkflowHandleParts {
             workflow_id,
-            run_id: aion_core::RunId::new_v4(),
+            run_id,
             pid,
             workflow_type: "checkout".to_owned(),
             loaded_version: hash(),
@@ -464,13 +489,13 @@ mod tests {
         let registry = Registry::default();
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-        if !history.is_empty() {
-            runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, history, 0))?;
-        }
+        let mut full_history = vec![started_event(&workflow_id, &run_id)?];
+        full_history.extend_from_slice(history);
+        runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, &full_history, 0))?;
         let recorder = Recorder::resume_at(
             workflow_id.clone(),
             Arc::clone(&store),
-            history.len() as u64,
+            full_history.len() as u64,
         );
         let handle = WorkflowHandle::new(WorkflowHandleParts {
             workflow_id: workflow_id.clone(),
@@ -494,7 +519,13 @@ mod tests {
         let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-        let handle = handle(44, Arc::clone(&store), workflow_id.clone());
+        runtime.block_on(store.append(
+            WriteToken::recorder(),
+            &workflow_id,
+            &[started_event(&workflow_id, &run_id)?],
+            0,
+        ))?;
+        let handle = handle(44, Arc::clone(&store), workflow_id.clone(), run_id.clone());
         registry.insert((workflow_id.clone(), run_id), handle)?;
 
         let context = NifContext::new(44, &registry, runtime.handle().clone())?;
@@ -524,6 +555,12 @@ mod tests {
         let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        runtime.block_on(store.append(
+            WriteToken::recorder(),
+            &workflow_id,
+            &[started_event(&workflow_id, &run_id)?],
+            0,
+        ))?;
         let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), 5);
         let handle = WorkflowHandle::new(WorkflowHandleParts {
             workflow_id: workflow_id.clone(),
@@ -553,13 +590,13 @@ mod tests {
         let result = payload("activity-result")?;
         let history = vec![
             Event::ActivityScheduled {
-                envelope: envelope(&workflow_id, 1)?,
+                envelope: envelope(&workflow_id, 2)?,
                 activity_id: ActivityId::from_sequence_position(0),
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
             },
             Event::ActivityCompleted {
-                envelope: envelope(&workflow_id, 2)?,
+                envelope: envelope(&workflow_id, 3)?,
                 activity_id: ActivityId::from_sequence_position(0),
                 result: result.clone(),
             },

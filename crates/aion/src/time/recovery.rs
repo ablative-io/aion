@@ -217,6 +217,18 @@ mod tests {
         store.read_history(workflow_id).await
     }
 
+    fn timer_started_event(workflow_id: &WorkflowId, timer_id: &TimerId, seq: u64) -> Event {
+        Event::TimerStarted {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            timer_id: timer_id.clone(),
+            fire_at: instant(5),
+        }
+    }
+
     fn count_timer_fired(events: &[Event], timer_id: &TimerId) -> usize {
         events
             .iter()
@@ -234,6 +246,10 @@ mod tests {
         let timer_id = timer_id(1);
         let fire_at = instant(10);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
         store
             .schedule_timer(&workflow_id, &timer_id, fire_at)
             .await?;
@@ -288,6 +304,10 @@ mod tests {
         let timer_id = timer_id(3);
         let fire_at = instant(25);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
         store
             .schedule_timer(&workflow_id, &timer_id, fire_at)
             .await?;
@@ -312,6 +332,10 @@ mod tests {
         let timer_id = timer_id(4);
         let fire_at = instant(10);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
         store
             .schedule_timer(&workflow_id, &timer_id, fire_at)
             .await?;

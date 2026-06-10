@@ -53,6 +53,7 @@ impl RuntimeHandle {
                 let outcome =
                     outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
                 runtime.release_spawn_heaps(pid);
+                runtime.nif_state().cleanup_process(pid);
                 callback(outcome);
             })
             .map_err(|error| EngineError::Runtime {

@@ -264,7 +264,7 @@ impl Engine {
     }
 }
 
-fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
+pub(crate) fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
     let mut in_requested_run = false;
     for event in history {
         match event {

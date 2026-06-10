@@ -92,7 +92,7 @@ async fn record_full_history(
             timestamp(10)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id(),
         )
         .await?;
     recorder
@@ -154,7 +154,7 @@ async fn record_partial_history_for(
             timestamp(timestamp_base)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id(),
         )
         .await?;
     recorder
@@ -185,7 +185,7 @@ async fn record_terminal_history_for(
             timestamp(200)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id(),
         )
         .await?;
     recorder
@@ -204,7 +204,7 @@ async fn record_divergent_history_for(
             timestamp(300)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id(),
         )
         .await?;
     recorder
@@ -258,6 +258,7 @@ impl RecoveryDriver for StaticRecoveryDriver {
 
 async fn record_round_trip_history(
     store: Arc<dyn EventStore>,
+    run: RunId,
 ) -> Result<Vec<aion_core::Event>, Box<dyn std::error::Error>> {
     let mut recorder = Recorder::new(workflow_id(), Arc::clone(&store));
     let first_activity_id = ActivityId::from_sequence_position(0);
@@ -269,7 +270,7 @@ async fn record_round_trip_history(
             timestamp(10)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run,
         )
         .await?;
     recorder
@@ -369,7 +370,7 @@ async fn record_partial_history(
             timestamp(10)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id(),
         )
         .await?;
     recorder
@@ -622,7 +623,7 @@ async fn recover_isolates_divergent_workflow_failure_and_continues()
 async fn record_then_replay_round_trip_reaches_terminal_without_resume_live()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-    let history = record_round_trip_history(store).await?;
+    let history = record_round_trip_history(store, run_id()).await?;
     assert_round_trip_history_shape(&history)?;
     let workflow_id = workflow_id();
     let run_id = run_id();
@@ -654,7 +655,7 @@ async fn record_then_replay_round_trip_reaches_terminal_without_resume_live()
 async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-    let history = record_round_trip_history(store).await?;
+    let history = record_round_trip_history(store, run_id()).await?;
     let workflow_id = workflow_id();
     let recorded_timestamps = assert_round_trip_history_shape(&history)?;
     let run_id = run_id();
@@ -700,8 +701,14 @@ async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
         .fill_random_bytes(&mut repeated_same_run_bytes);
     assert_eq!(same_run_bytes, repeated_same_run_bytes);
 
+    // A different run records its own history (every run starts with its own
+    // WorkflowStarted); identical content under a different run id must still
+    // produce a different determinism seed.
     let different_run_id = different_run_id();
-    let mut different_run_replay = Replay::new(&workflow_id, &different_run_id, history)?;
+    let different_store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let different_history =
+        record_round_trip_history(different_store, different_run_id.clone()).await?;
+    let mut different_run_replay = Replay::new(&workflow_id, &different_run_id, different_history)?;
     let mut different_run_bytes = [0_u8; 64];
     different_run_replay
         .determinism_mut()
@@ -772,7 +779,7 @@ async fn terminal_activity_failure_is_served_from_history_cache_without_live_cal
             timestamp(10)?,
             "workflow".to_owned(),
             payload("input")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id(),
         )
         .await?;
     recorder

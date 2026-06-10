@@ -523,7 +523,7 @@ mod tests {
             },
             workflow_type: "workflow".to_owned(),
             input: payload("input")?,
-            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(10)),
             parent_run_id: None,
         })
     }

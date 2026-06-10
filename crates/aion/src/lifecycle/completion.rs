@@ -63,45 +63,66 @@ async fn handle_process_exit_async(
     handle: WorkflowHandle,
     outcome: Result<WorkflowProcessOutcome, EngineError>,
 ) -> Result<(), EngineError> {
-    let history = context.store.read_history(handle.workflow_id()).await?;
-    if let Some(existing) = terminal_outcome_from_history(&history, handle.run_id()) {
-        reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
-        if let TerminalOutcome::ContinuedAsNew {
-            input,
-            workflow_type,
-            parent_run_id,
-        } = &existing
-        {
-            start_continuation_replacement(
-                &context,
-                &handle,
-                input.clone(),
-                workflow_type.clone(),
-                parent_run_id.clone(),
-            )
-            .await?;
+    // The terminal check and the terminal record must be atomic under the
+    // recorder lock: a concurrent cancel/complete/fail transition records
+    // through the same recorder, and a check outside the lock would let both
+    // writers append a terminal event for the same run.
+    let recorded = {
+        let recorder = handle.recorder();
+        let mut recorder = recorder.lock().await;
+        let history = context.store.read_history(handle.workflow_id()).await?;
+        if let Some(existing) = terminal_outcome_from_history(&history, handle.run_id()) {
+            Err(existing)
+        } else {
+            match outcome {
+                Ok(WorkflowProcessOutcome::Completed(result)) => {
+                    recorder
+                        .record_workflow_completed(Utc::now(), result.clone())
+                        .await?;
+                    Ok(TerminalOutcome::Completed(result))
+                }
+                Ok(WorkflowProcessOutcome::Failed(error)) => {
+                    recorder
+                        .record_workflow_failed(Utc::now(), error.clone())
+                        .await?;
+                    Ok(TerminalOutcome::Failed(error))
+                }
+                Err(error) => {
+                    let workflow_error = WorkflowError {
+                        message: format!("workflow process monitor failed: {error}"),
+                        details: None,
+                    };
+                    recorder
+                        .record_workflow_failed(Utc::now(), workflow_error.clone())
+                        .await?;
+                    Ok(TerminalOutcome::Failed(workflow_error))
+                }
+            }
         }
-        handle.completion().notify(existing);
-        return Ok(());
-    }
+    };
 
-    let terminal = match outcome {
-        Ok(WorkflowProcessOutcome::Completed(result)) => {
-            record_completed(&handle, result.clone()).await?;
-            TerminalOutcome::Completed(result)
+    let terminal = match recorded {
+        Err(existing) => {
+            reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
+            if let TerminalOutcome::ContinuedAsNew {
+                input,
+                workflow_type,
+                parent_run_id,
+            } = &existing
+            {
+                start_continuation_replacement(
+                    &context,
+                    &handle,
+                    input.clone(),
+                    workflow_type.clone(),
+                    parent_run_id.clone(),
+                )
+                .await?;
+            }
+            handle.completion().notify(existing);
+            return Ok(());
         }
-        Ok(WorkflowProcessOutcome::Failed(error)) => {
-            record_failed(&handle, error.clone()).await?;
-            TerminalOutcome::Failed(error)
-        }
-        Err(error) => {
-            let workflow_error = WorkflowError {
-                message: format!("workflow process monitor failed: {error}"),
-                details: None,
-            };
-            record_failed(&handle, workflow_error.clone()).await?;
-            TerminalOutcome::Failed(workflow_error)
-        }
+        Ok(terminal) => terminal,
     };
 
     upsert_workflow_visibility(
@@ -113,22 +134,6 @@ async fn handle_process_exit_async(
     .await?;
     reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
     handle.completion().notify(terminal);
-    Ok(())
-}
-
-async fn record_completed(handle: &WorkflowHandle, result: Payload) -> Result<(), EngineError> {
-    let recorder = handle.recorder();
-    let mut recorder = recorder.lock().await;
-    recorder
-        .record_workflow_completed(Utc::now(), result)
-        .await?;
-    Ok(())
-}
-
-async fn record_failed(handle: &WorkflowHandle, error: WorkflowError) -> Result<(), EngineError> {
-    let recorder = handle.recorder();
-    let mut recorder = recorder.lock().await;
-    recorder.record_workflow_failed(Utc::now(), error).await?;
     Ok(())
 }
 
@@ -193,7 +198,10 @@ async fn start_continuation_replacement(
     Ok(())
 }
 
-fn terminal_outcome_from_history(events: &[Event], run_id: &RunId) -> Option<TerminalOutcome> {
+pub(crate) fn terminal_outcome_from_history(
+    events: &[Event],
+    run_id: &RunId,
+) -> Option<TerminalOutcome> {
     let run_start = events.iter().position(|event| {
         matches!(
             event,

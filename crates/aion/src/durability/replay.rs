@@ -39,6 +39,7 @@ impl Replay {
         run_id: &RunId,
         history: Vec<Event>,
     ) -> Result<Self, DurabilityError> {
+        let history = crate::durability::current_run_segment(history, run_id)?;
         let started_at = workflow_started_at(workflow_id, &history)?;
         let terminal = terminal_from_history(workflow_id, &history);
         let cursor = HistoryCursor::new(history)?;
@@ -315,7 +316,7 @@ mod tests {
                 envelope: envelope(1, 10)?,
                 workflow_type: "workflow".to_owned(),
                 input: payload("input")?,
-                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                run_id: run_id(),
                 parent_run_id: None,
             },
             aion_core::Event::ActivityScheduled {
@@ -412,7 +413,7 @@ mod tests {
                 envelope: envelope(1, 10)?,
                 workflow_type: "workflow".to_owned(),
                 input: payload("input")?,
-                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                run_id: run_id.clone(),
                 parent_run_id: None,
             },
             aion_core::Event::WorkflowCompleted {

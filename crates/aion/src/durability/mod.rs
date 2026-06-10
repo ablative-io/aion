@@ -27,7 +27,10 @@ pub mod signal;
 
 pub use command::{Command, Resolution, ResolveOutcome};
 pub use correlation::CorrelationKey;
-pub use cursor::{CursorResolveResult, FoundEventDescriptor, HistoryCursor, RecordedEventFamily};
+pub use cursor::{
+    CursorResolveResult, FoundEventDescriptor, HistoryCursor, RecordedEventFamily,
+    current_run_segment,
+};
 pub use determinism::DeterminismContext;
 pub use error::{DurabilityError, NonDeterminismError};
 pub use executor::{

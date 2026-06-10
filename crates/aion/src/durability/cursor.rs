@@ -1,11 +1,48 @@
 //! `HistoryCursor` over recorded events.
 
-use aion_core::{ActivityId, Event, WorkflowId};
+use aion_core::{ActivityId, Event, RunId, WorkflowId};
 
 use crate::durability::{
     correlation::{CorrelationKey, key_for_event},
     error::DurabilityError,
 };
+
+/// Slice an ordered multi-run history down to the segment for `run_id`.
+///
+/// continue-as-new appends each replacement run's events to the same
+/// workflow history, but correlation identities (activity and timer
+/// ordinals, per-name signal occurrence indices) are run-scoped: every
+/// run's deterministic counters restart from zero. Replay and live command
+/// resolution must therefore only see events recorded at or after the run's
+/// own `WorkflowStarted`, or a replacement run would match the prior run's
+/// recorded commands.
+///
+/// # Errors
+///
+/// Returns [`DurabilityError::HistoryShape`] when the history holds no
+/// `WorkflowStarted` for `run_id`.
+pub fn current_run_segment(
+    history: Vec<Event>,
+    run_id: &RunId,
+) -> Result<Vec<Event>, DurabilityError> {
+    let start = history
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                Event::WorkflowStarted {
+                    run_id: event_run_id,
+                    ..
+                } if event_run_id == run_id
+            )
+        })
+        .ok_or_else(|| DurabilityError::HistoryShape {
+            reason: format!("history has no WorkflowStarted for run {run_id}"),
+        })?;
+    let mut segment = history;
+    segment.drain(..start);
+    Ok(segment)
+}
 
 /// Event families that can satisfy world-touching workflow commands during replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

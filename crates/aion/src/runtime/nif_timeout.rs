@@ -16,7 +16,7 @@
 
 use std::sync::atomic::Ordering;
 
-use aion_core::{Event, TimerId};
+use aion_core::TimerId;
 use beamr::atom::Atom;
 use beamr::native::stdlib_stubs::maps_bifs::ContinuationStep;
 use beamr::native::{AionTimeoutContinuation, NativeContinuation, ProcessContext};
@@ -27,14 +27,14 @@ use crate::runtime::engine_nifs::error_result_term;
 use crate::runtime::nif_context::NifContext;
 use crate::runtime::nif_state::EngineNifState;
 use crate::runtime::nif_timer::{
-    add_duration, build_context_for_pid, cancel_live_timer, current_head, decode_duration_arg,
-    drain_timer_deliveries, record_started, recorded_now, schedule_sleep_timer, timer_command,
+    add_duration, build_context_for_pid, cancel_live_timer, decode_duration_arg, record_started,
+    recorded_now, schedule_sleep_timer, timer_command, timer_terminal_recorded,
 };
 
 /// One armed `with_timeout` deadline scope.
 pub(super) struct TimeoutScope {
     /// Workflow process the scope belongs to.
-    pid: u64,
+    pub(super) pid: u64,
     /// Durable deadline timer racing the wrapped operation.
     timer_id: TimerId,
     /// `Some(timed_out)` when this run replays a recorded outcome and no
@@ -42,43 +42,33 @@ pub(super) struct TimeoutScope {
     replay_timed_out: Option<bool>,
 }
 
-/// Deadline timer ids of every live scope currently armed for `pid`,
-/// innermost last. Replay scopes are excluded — their outcome is recorded.
-pub(crate) fn active_scope_timers(state: &EngineNifState, pid: u64) -> Vec<TimerId> {
-    let Some(stack) = state.timeout_scope_stacks.get(&pid) else {
-        return Vec::new();
-    };
-    stack
-        .iter()
-        .filter_map(|state_id| {
-            state.timeout_scopes.get(state_id).and_then(|scope| {
-                scope
-                    .replay_timed_out
-                    .is_none()
-                    .then(|| scope.timer_id.clone())
-            })
-        })
-        .collect()
-}
-
-/// True when `timer_id` is the deadline of a live scope armed for `pid`.
-pub(crate) fn is_scope_deadline(state: &EngineNifState, pid: u64, timer_id: &TimerId) -> bool {
-    active_scope_timers(state, pid)
-        .iter()
-        .any(|scope_timer| scope_timer == timer_id)
-}
-
-/// Return the message recorded for an expired enclosing scope, if any.
+/// Return the message for an expired enclosing `with_timeout` scope, if any.
 ///
-/// Blocking awaits call this after waking: a `TimerFired` recorded for any
-/// live enclosing scope means the deadline won and the await must abort.
+/// Suspending awaits call this before parking and after every wake: an
+/// expired enclosing deadline means the await must abort instead of parking
+/// again. Live scopes expire when their deadline timer's `TimerFired` is
+/// recorded; replay scopes carry the recorded outcome directly, so a
+/// replayed timed-out await aborts identically instead of parking forever.
 pub(crate) fn expired_scope_message(state: &EngineNifState, pid: u64) -> Option<String> {
-    let scope_timers = active_scope_timers(state, pid);
-    if scope_timers.is_empty() {
+    let mut live_deadlines: Vec<TimerId> = Vec::new();
+    {
+        let stack = state.timeout_scope_stacks.get(&pid)?;
+        for state_id in stack.iter() {
+            let Some(scope) = state.timeout_scopes.get(state_id) else {
+                continue;
+            };
+            match scope.replay_timed_out {
+                Some(true) => return Some("timeout:deadline expired".to_owned()),
+                Some(false) => {}
+                None => live_deadlines.push(scope.timer_id.clone()),
+            }
+        }
+    }
+    if live_deadlines.is_empty() {
         return None;
     }
     let context = build_context_for_pid(state, pid).ok()?;
-    scope_timers
+    live_deadlines
         .iter()
         .any(|timer_id| timer_fired_recorded(&context, timer_id).unwrap_or(false))
         .then(|| "timeout:deadline expired".to_owned())
@@ -131,8 +121,8 @@ fn arm_scope(state: &EngineNifState, args: &[Term], pid: u64) -> Result<(Term, u
         decode_duration_arg("with_timeout deadline", args[0]).map_err(|error| error.to_string())?;
     let fun = args[1];
     let mut context = build_context_for_pid(state, pid).map_err(|error| error.to_string())?;
-    let now = recorded_now(&context).map_err(|error| error.to_string())?;
-    let timer_id = TimerId::anonymous(current_head(&context).map_err(|error| error.to_string())?);
+    let now = recorded_now(&context);
+    let timer_id = TimerId::anonymous(context.next_timer_ordinal());
     let fire_at = add_duration(now, duration).map_err(|error| error.to_string())?;
     let replay_timed_out = match context
         .resolve_command(timer_command(timer_id.clone(), fire_at))
@@ -219,25 +209,14 @@ fn settle_live_scope(state: &EngineNifState, scope: &TimeoutScope) -> Result<boo
     let context = build_context_for_pid(state, scope.pid).map_err(|error| error.to_string())?;
     cancel_live_timer(state, &context, scope.timer_id.clone())
         .map_err(|error| error.to_string())?;
-    drain_timer_deliveries(state, scope.pid, &scope.timer_id).map_err(|error| error.to_string())?;
+    // Rebuild: the cancel may have just recorded the terminal, and the
+    // first context's history snapshot predates it.
+    let context = build_context_for_pid(state, scope.pid).map_err(|error| error.to_string())?;
     timer_fired_recorded(&context, &scope.timer_id)
 }
 
 /// Whether `TimerFired` is the recorded terminal event for `timer_id`.
 fn timer_fired_recorded(context: &NifContext, timer_id: &TimerId) -> Result<bool, String> {
-    let needle = timer_id.clone();
-    context
-        .block_on_recorder(move |recorder| {
-            let needle = needle.clone();
-            Box::pin(async move {
-                let history = recorder.read_history().await?;
-                Ok(history.iter().rev().find_map(|event| match event {
-                    Event::TimerFired { timer_id, .. } if *timer_id == needle => Some(true),
-                    Event::TimerCancelled { timer_id, .. } if *timer_id == needle => Some(false),
-                    _ => None,
-                }))
-            })
-        })
-        .map_err(|error| error.to_string())?
+    timer_terminal_recorded(context, timer_id)
         .ok_or_else(|| "with_timeout: deadline timer has no recorded terminal event".to_owned())
 }

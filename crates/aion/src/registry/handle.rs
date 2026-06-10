@@ -134,6 +134,8 @@ pub struct WorkflowHandle {
     completion: CompletionNotifier,
     deterministic_nif_sequence: Arc<AtomicU64>,
     activity_ordinal_sequence: Arc<AtomicU64>,
+    timer_ordinal_sequence: Arc<AtomicU64>,
+    signal_receive_counts: Arc<dashmap::DashMap<String, u64>>,
 }
 
 impl WorkflowHandle {
@@ -152,6 +154,8 @@ impl WorkflowHandle {
             completion: parts.completion,
             deterministic_nif_sequence: Arc::new(AtomicU64::new(0)),
             activity_ordinal_sequence: Arc::new(AtomicU64::new(0)),
+            timer_ordinal_sequence: Arc::new(AtomicU64::new(0)),
+            signal_receive_counts: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -166,6 +170,41 @@ impl WorkflowHandle {
     pub fn allocate_activity_ordinals(&self, count: u64) -> u64 {
         self.activity_ordinal_sequence
             .fetch_add(count, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Allocate `count` consecutive timer ordinals.
+    ///
+    /// Same determinism contract as [`Self::allocate_activity_ordinals`]:
+    /// monotonic per run, shared by every NIF call the run makes, and
+    /// re-allocated identically by replayed code on a re-spawned run. Used
+    /// to derive anonymous timer identities (`sleep`, `with_timeout` scope
+    /// deadlines) that stay stable across crash-recovery replay.
+    #[must_use]
+    pub fn allocate_timer_ordinals(&self, count: u64) -> u64 {
+        self.timer_ordinal_sequence
+            .fetch_add(count, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Number of `receive_signal(name)` calls this run has completed.
+    ///
+    /// Drives the run-scoped consumption index for signal awaits: the k-th
+    /// completed receive for a name consumes the k-th recorded
+    /// `SignalReceived` for that name in this run's segment. Replayed code
+    /// re-executes the same receives in order and re-derives the same
+    /// indices; a timed-out receive consumes nothing and does not advance.
+    #[must_use]
+    pub fn signal_receives_consumed(&self, name: &str) -> u64 {
+        self.signal_receive_counts
+            .get(name)
+            .map_or(0, |entry| *entry)
+    }
+
+    /// Advance the completed-receive count for `name` by one.
+    pub fn mark_signal_receive_consumed(&self, name: &str) {
+        *self
+            .signal_receive_counts
+            .entry(name.to_owned())
+            .or_insert(0) += 1;
     }
 
     /// Returns the logical workflow identifier.

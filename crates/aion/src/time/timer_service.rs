@@ -44,13 +44,6 @@ pub enum TimerServiceError {
     /// Engine seam operation failed.
     #[error("timer engine operation failed: {0}")]
     Engine(#[from] EngineSeamError),
-
-    /// Anonymous sleep timers are cancelled by cancelling the owning workflow.
-    #[error("anonymous sleep timers cannot be cancelled separately: {timer_id}")]
-    AnonymousTimerNotCancellable {
-        /// Anonymous timer that was passed to the named-timer cancellation API.
-        timer_id: TimerId,
-    },
 }
 
 impl TimerService {
@@ -106,12 +99,17 @@ impl TimerService {
         Ok(())
     }
 
-    /// Cancels a durable named timer that has not already reached a terminal timer state.
+    /// Cancels a durable timer that has not already reached a terminal timer state.
     ///
     /// Already-fired and already-cancelled timers are treated as idempotent no-ops. For active
     /// resident timers the live wheel is disarmed through the engine seam before `TimerCancelled` is
     /// recorded through the workflow recorder seam. Non-resident timers still record the cancellation
     /// so recovery/replay can suppress a later fire.
+    ///
+    /// Anonymous timers are accepted: authors can never address one (the SDK's `cancel_timer`
+    /// takes a `TimerRef` minted by `start_timer`, which is always named), but the engine settles
+    /// `with_timeout` scope deadlines — anonymous by construction — through this first-recorded-wins
+    /// race against [`Self::fire_timer`].
     ///
     /// # Errors
     ///
@@ -122,10 +120,6 @@ impl TimerService {
         workflow_id: WorkflowId,
         timer_id: TimerId,
     ) -> Result<(), TimerServiceError> {
-        if timer_id.name().is_none() {
-            return Err(TimerServiceError::AnonymousTimerNotCancellable { timer_id });
-        }
-
         let key = (workflow_id.clone(), timer_id.clone());
         let terminal_update_slot = self.wait_for_terminal_update_slot(key).await;
 
@@ -139,7 +133,7 @@ impl TimerService {
         workflow_id: WorkflowId,
         timer_id: TimerId,
     ) -> Result<(), TimerServiceError> {
-        if self.timer_is_terminal(&workflow_id, &timer_id).await? {
+        if !self.timer_is_live(&workflow_id, &timer_id).await? {
             return Ok(());
         }
 
@@ -202,7 +196,7 @@ impl TimerService {
         timer_id: TimerId,
         fire_at: DateTime<Utc>,
     ) -> Result<(), TimerServiceError> {
-        if self.timer_is_terminal(&workflow_id, &timer_id).await? {
+        if !self.timer_is_live(&workflow_id, &timer_id).await? {
             return Ok(());
         }
 
@@ -222,13 +216,33 @@ impl TimerService {
         Ok(())
     }
 
-    async fn timer_is_terminal(
+    /// Whether the timer is started and not yet terminal in the workflow's
+    /// active run segment.
+    ///
+    /// A timer belongs to the run that recorded its `TimerStarted`, and
+    /// anonymous timer identities are run-scoped ordinals that replacement
+    /// runs (continue-as-new) re-allocate from zero. Scoping the check to
+    /// the latest run segment keeps a stale fire from a finished run from
+    /// recording into — or suppressing — the replacement run's identically
+    /// named timer.
+    async fn timer_is_live(
         &self,
         workflow_id: &WorkflowId,
         timer_id: &TimerId,
     ) -> Result<bool, StoreError> {
         let history = self.store.read_history(workflow_id).await?;
-        Ok(history.iter().any(|event| match event {
+        let segment_start = history
+            .iter()
+            .rposition(|event| matches!(event, Event::WorkflowStarted { .. }))
+            .unwrap_or(0);
+        let segment = &history[segment_start..];
+        let started = segment.iter().any(|event| {
+            matches!(
+                event,
+                Event::TimerStarted { timer_id: recorded, .. } if recorded == timer_id
+            )
+        });
+        let terminal = segment.iter().any(|event| match event {
             Event::TimerFired {
                 timer_id: recorded, ..
             }
@@ -236,7 +250,8 @@ impl TimerService {
                 timer_id: recorded, ..
             } => recorded == timer_id,
             _ => false,
-        }))
+        });
+        Ok(started && !terminal)
     }
 
     async fn next_envelope(&self, workflow_id: &WorkflowId) -> Result<EventEnvelope, StoreError> {
@@ -305,6 +320,32 @@ mod tests {
                 matches!(event, Event::TimerFired { timer_id: recorded, .. } if recorded == timer_id)
             })
             .count()
+    }
+
+    fn timer_started_event(workflow_id: &WorkflowId, timer_id: &TimerId, seq: u64) -> Event {
+        Event::TimerStarted {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            timer_id: timer_id.clone(),
+            fire_at: instant(5),
+        }
+    }
+
+    fn workflow_started_event(workflow_id: &WorkflowId, seq: u64) -> Event {
+        Event::WorkflowStarted {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            workflow_type: "fixture".to_owned(),
+            input: aion_core::Payload::new(aion_core::ContentType::Json, b"null".to_vec()),
+            run_id: aion_core::RunId::new_v4(),
+            parent_run_id: None,
+        }
     }
 
     #[tokio::test]
@@ -379,6 +420,10 @@ mod tests {
         let timer_id = timer_id();
         let fire_at = instant(40);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
 
         service
             .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
@@ -401,6 +446,10 @@ mod tests {
         assert!(matches!(
             engine.operations()?.as_slice(),
             [
+                FakeEngineOperation::EventRecorded {
+                    event: Event::TimerStarted { .. },
+                    ..
+                },
                 FakeEngineOperation::EventRecorded {
                     workflow_id: recorded_workflow_id,
                     event: Event::TimerFired { timer_id: recorded_timer_id, .. },
@@ -425,6 +474,10 @@ mod tests {
         let timer_id = timer_id();
         let fire_at = instant(50);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::NonResident)?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
 
         service
             .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
@@ -446,6 +499,10 @@ mod tests {
         let timer_id = timer_id();
         let fire_at = instant(60);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
 
         service
             .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
@@ -470,9 +527,13 @@ mod tests {
         let timer_id = timer_id();
         let fire_at = instant(70);
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
         let cancelled = Event::TimerCancelled {
             envelope: EventEnvelope {
-                seq: 1,
+                seq: 2,
                 recorded_at: instant(69),
                 workflow_id: workflow_id.clone(),
             },
@@ -500,6 +561,10 @@ mod tests {
 
         engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
         engine.set_residency(workflow_id.clone(), WorkflowResidency::NonResident)?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
         service
             .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
             .await?;
@@ -507,6 +572,50 @@ mod tests {
         assert_eq!(
             count_timer_fired(&history(&store, &workflow_id).await?, &timer_id),
             1
+        );
+        assert!(engine.delivered_messages()?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn firing_unstarted_timer_records_nothing() -> Result<(), TimerServiceError> {
+        let process = WorkflowProcessHandle::new(42);
+        let (store, engine, service) = service();
+        let workflow_id = workflow_id();
+        let timer_id = timer_id();
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+
+        service
+            .fire_timer(workflow_id.clone(), timer_id.clone(), instant(90))
+            .await?;
+
+        assert!(history(&store, &workflow_id).await?.is_empty());
+        assert!(engine.delivered_messages()?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn firing_prior_run_timer_after_continue_as_new_is_noop() -> Result<(), TimerServiceError>
+    {
+        let process = WorkflowProcessHandle::new(42);
+        let (store, engine, service) = service();
+        let workflow_id = workflow_id();
+        let timer_id = timer_id();
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        // Run 1 started the timer; run 2's WorkflowStarted closes that segment.
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
+        engine.record_workflow_event(&workflow_id, workflow_started_event(&workflow_id, 2))?;
+
+        service
+            .fire_timer(workflow_id.clone(), timer_id.clone(), instant(100))
+            .await?;
+
+        assert_eq!(
+            count_timer_fired(&history(&store, &workflow_id).await?, &timer_id),
+            0
         );
         assert!(engine.delivered_messages()?.is_empty());
         Ok(())

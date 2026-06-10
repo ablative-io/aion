@@ -42,6 +42,7 @@ pub async fn complete(
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
+        ensure_no_recorded_terminal(&context.store, id, run).await?;
         recorder
             .record_workflow_completed(Utc::now(), result.clone())
             .await?;
@@ -72,6 +73,7 @@ pub async fn fail(
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
+        ensure_no_recorded_terminal(&context.store, id, run).await?;
         recorder
             .record_workflow_failed(Utc::now(), error.clone())
             .await?;
@@ -98,15 +100,27 @@ pub async fn cancel(
     reason: impl Into<String>,
 ) -> Result<(), EngineError> {
     let handle = registered_handle(context.registry, id, run)?;
-    context.runtime.cancel_pid(handle.pid())?;
-
     let reason = reason.into();
+    // Record the durable cancellation BEFORE killing the process: the exit
+    // monitor records WorkflowFailed for any kill it observes without a
+    // terminal event already in history.
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
+        ensure_no_recorded_terminal(&context.store, id, run).await?;
         recorder
             .record_workflow_cancelled(Utc::now(), reason.clone())
             .await?;
+    }
+    if let Err(error) = context.runtime.cancel_pid(handle.pid()) {
+        // The process exited between the durable cancel record and the kill;
+        // its exit monitor reconciles against the recorded cancellation.
+        tracing::debug!(
+            workflow_id = %id,
+            run_id = %run,
+            error = %error,
+            "workflow process already exited during cancel"
+        );
     }
     upsert_workflow_visibility(context.store, context.visibility_store, id, run).await?;
 
@@ -114,6 +128,25 @@ pub async fn cancel(
         .completion()
         .notify(TerminalOutcome::Cancelled(reason));
     context.registry.remove(id, run)?;
+    Ok(())
+}
+
+/// Rejects a terminal transition when the run already recorded one.
+///
+/// Must be called while holding the handle's recorder lock: the exit monitor
+/// records terminal events through the same recorder, and only the lock makes
+/// this check-then-record atomic against it.
+async fn ensure_no_recorded_terminal(
+    store: &Arc<dyn EventStore>,
+    id: &WorkflowId,
+    run: &RunId,
+) -> Result<(), EngineError> {
+    let history = store.read_history(id).await?;
+    if super::completion::terminal_outcome_from_history(&history, run).is_some() {
+        return Err(EngineError::Runtime {
+            reason: format!("workflow {id} run {run} already recorded a terminal event"),
+        });
+    }
     Ok(())
 }
 

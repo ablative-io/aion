@@ -498,7 +498,10 @@ mod tests {
             )),
         );
 
-        let second_history = vec![completed_event(&workflow_id, 1, 1_700_000_999_456)?];
+        let second_history = vec![
+            started_event(&workflow_id, 1, 1_700_000_500_000)?,
+            completed_event(&workflow_id, 2, 1_700_000_999_456)?,
+        ];
         let second =
             context_fixture_with_history(&runtime, 52, workflow_id, run_id(), &second_history)?;
         let second_state = Arc::new(EngineNifState::default());

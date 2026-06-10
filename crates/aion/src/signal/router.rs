@@ -42,6 +42,19 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
         let recorder = target.recorder();
         {
             let mut recorder = recorder.lock().await;
+            // Terminal check and signal record are atomic under the recorder
+            // lock: the exit monitor records terminal events through the same
+            // recorder, and a terminal run must reject signals instead of
+            // appending after its terminal event or deferring to a resume
+            // queue that can never drain.
+            let history = recorder.read_history().await.map_err(EngineError::from)?;
+            if crate::engine::delegated::run_has_terminal_history(&history, target.run_id()) {
+                return Err(SignalRouterError::Terminal {
+                    workflow_id: target.workflow_id().clone(),
+                    run_id: target.run_id().clone(),
+                }
+                .into());
+            }
             recorder
                 .record_signal_received(Utc::now(), name.clone(), payload.clone())
                 .await?;
@@ -50,7 +63,7 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
         match target.residency() {
             HandleResidency::Resident => self
                 .runtime
-                .deliver_signal_received(target.pid(), name.clone(), payload)
+                .deliver_signal_received(target.pid())
                 .map_err(|error| {
                     let reason = error.to_string();
                     tracing::warn!(
@@ -78,5 +91,135 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
                     })
                 }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use aion_core::{Event, Payload, WorkflowStatus};
+    use aion_package::ContentHash;
+    use aion_store::{EventStore, InMemoryStore};
+    use serde_json::json;
+
+    use super::ConcreteSignalRouter;
+    use crate::durability::Recorder;
+    use crate::engine::delegated::SignalRouter;
+    use crate::registry::{
+        CompletionNotifier, HandleResidency, WorkflowHandle, WorkflowHandleParts,
+    };
+    use crate::runtime::{RuntimeConfig, RuntimeHandle};
+    use crate::signal::SignalResumeHandoff;
+    use crate::{EngineError, SignalRouterError};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn payload(label: &str) -> Result<Payload, aion_core::PayloadError> {
+        Payload::from_json(&json!({ "label": label }))
+    }
+
+    async fn started_workflow_handle(
+        store: &Arc<dyn EventStore>,
+        pid: u64,
+    ) -> Result<WorkflowHandle, Box<dyn std::error::Error>> {
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+        let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(store));
+        recorder
+            .record_workflow_started(
+                chrono::Utc::now(),
+                "checkout".to_owned(),
+                payload("input")?,
+                run_id.clone(),
+            )
+            .await?;
+        Ok(WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id,
+            run_id,
+            pid,
+            workflow_type: "checkout".to_owned(),
+            loaded_version: ContentHash::from_bytes([3; 32]),
+            cached_status: WorkflowStatus::Running,
+            residency: HandleResidency::Resident,
+            recorder,
+            completion: CompletionNotifier::new(),
+        }))
+    }
+
+    fn router() -> Result<ConcreteSignalRouter, Box<dyn std::error::Error>> {
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+        Ok(ConcreteSignalRouter::new(
+            runtime,
+            Arc::new(SignalResumeHandoff::new()),
+        ))
+    }
+
+    #[tokio::test]
+    async fn dead_resident_pid_records_signal_then_returns_delivery_failed() -> TestResult {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        // No process with this pid exists in the runtime: this is the
+        // transient window where a resident process died but the exit monitor
+        // has not recorded a terminal event yet.
+        let handle = started_workflow_handle(&store, 424_242).await?;
+        let sent = payload("recorded")?;
+
+        let error = router()?
+            .route(&handle, "wake".to_owned(), sent.clone())
+            .await
+            .err()
+            .ok_or("dead resident delivery unexpectedly succeeded")?;
+
+        assert!(matches!(
+            error,
+            EngineError::SignalRouter(SignalRouterError::DeliveryFailed { .. })
+        ));
+        let history = store.read_history(handle.workflow_id()).await?;
+        let recorded = history
+            .iter()
+            .find_map(|event| match event {
+                Event::SignalReceived { name, payload, .. } => Some((name, payload)),
+                _ => None,
+            })
+            .ok_or("SignalReceived was not recorded before the delivery failure")?;
+        assert_eq!(recorded.0, "wake");
+        assert_eq!(recorded.1, &sent);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_run_rejects_signal_without_appending() -> TestResult {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let handle = started_workflow_handle(&store, 424_243).await?;
+        {
+            let recorder = handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_workflow_failed(
+                    chrono::Utc::now(),
+                    aion_core::WorkflowError {
+                        message: "killed".to_owned(),
+                        details: None,
+                    },
+                )
+                .await?;
+        }
+        let terminal_len = store.read_history(handle.workflow_id()).await?.len();
+
+        let error = router()?
+            .route(&handle, "wake".to_owned(), payload("rejected")?)
+            .await
+            .err()
+            .ok_or("signal to terminal run unexpectedly succeeded")?;
+
+        assert!(matches!(
+            error,
+            EngineError::SignalRouter(SignalRouterError::Terminal { .. })
+        ));
+        assert_eq!(
+            store.read_history(handle.workflow_id()).await?.len(),
+            terminal_len
+        );
+        Ok(())
     }
 }

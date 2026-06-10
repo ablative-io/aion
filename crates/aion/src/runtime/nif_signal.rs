@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome, SignalDelivery};
 use crate::engine::delegated::SignalRouter;
 use crate::registry::Registry;
+use crate::runtime::nif_state::{EngineNifState, PendingAwait};
 use crate::runtime::{Pid, RuntimeHandle};
 use crate::{EngineError, WorkflowHandle};
 
@@ -123,18 +124,34 @@ fn signal_occurrence_index(history: &[Event], name: &str) -> usize {
         .count()
 }
 
-fn latest_received_payload(history: &[Event], name: &str, index: usize) -> Option<Payload> {
-    history
-        .iter()
-        .filter_map(|event| match event {
+/// Occurrence index (among sends and receives of `name`, history order) of
+/// the k-th recorded `SignalReceived` for `name`, if it exists.
+///
+/// `receive_signal` consumption is positional: the k-th completed receive
+/// for a name consumes the k-th recorded arrival. `SignalSent` events share
+/// the per-name occurrence keyspace, so an arrival's correlation index can
+/// exceed its receive rank when the workflow also sends the same name.
+fn nth_received_occurrence_index(history: &[Event], name: &str, k: u64) -> Option<usize> {
+    let mut occurrence = 0_usize;
+    let mut receives_seen = 0_u64;
+    for event in history {
+        match event {
             Event::SignalReceived {
-                name: event_name,
-                payload,
-                ..
-            } if event_name == name => Some(payload.clone()),
-            _ => None,
-        })
-        .nth(index)
+                name: event_name, ..
+            } if event_name == name => {
+                if receives_seen == k {
+                    return Some(occurrence);
+                }
+                receives_seen += 1;
+                occurrence += 1;
+            }
+            Event::SignalSent {
+                name: event_name, ..
+            } if event_name == name => occurrence += 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_workflow_id(value: &str) -> Result<WorkflowId, String> {
@@ -155,12 +172,28 @@ fn signal_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// Outcome of one `receive_signal` invocation.
+enum SignalReceiveOutcome {
+    /// The awaited signal's recorded payload, JSON-encoded.
+    Payload(String),
+    /// Park the calling process; a mailbox wake re-invokes the native.
+    Suspend,
+}
+
+/// Two-phase signal await: the native never blocks a scheduler thread.
+///
+/// The awaited occurrence index is pinned at first arrival (the suspended
+/// re-entries and crash-recovery replay must resolve the same logical
+/// occurrence). The signal router records `SignalReceived` durably before
+/// waking the process, so resolution always reads recorded history — this
+/// native never records arrivals itself.
 fn receive_signal_impl(
+    state: &EngineNifState,
     bridge: &Arc<SignalNifBridge>,
     name: &str,
     config: &str,
     pid: Pid,
-) -> Result<String, String> {
+) -> Result<SignalReceiveOutcome, String> {
     let _ = config;
     let mut context = super::nif_context::NifContext::new(
         pid,
@@ -168,7 +201,23 @@ fn receive_signal_impl(
         bridge.tokio_handle.clone(),
     )
     .map_err(signal_error)?;
-    let index = signal_occurrence_index(context.history(), name);
+    let pinned = match state.pending_awaits.get(&pid).map(|entry| entry.clone()) {
+        Some(PendingAwait::Signal { index }) => Some(index),
+        Some(PendingAwait::Sleep { .. }) => {
+            return Err("receive_signal: process is pinned to a pending sleep await".to_owned());
+        }
+        None => None,
+    };
+    let index = if let Some(index) = pinned {
+        index
+    } else {
+        // The k-th completed receive consumes the k-th recorded arrival
+        // (early arrivals are already in history); with none recorded yet,
+        // await the next occurrence slot for this name.
+        let consumed = context.signal_receives_consumed(name);
+        nth_received_occurrence_index(context.history(), name, consumed)
+            .unwrap_or_else(|| signal_occurrence_index(context.history(), name))
+    };
     let command = Command::AwaitSignal {
         key: CorrelationKey::Signal {
             name: name.to_owned(),
@@ -178,26 +227,25 @@ fn receive_signal_impl(
 
     match context.resolve_command(command).map_err(signal_error)? {
         ResolveOutcome::Recorded(Resolution::SignalDelivered(payload)) => {
-            payload_to_json_string(&payload)
+            state.pending_awaits.remove(&pid);
+            context.mark_signal_receive_consumed(name);
+            Ok(SignalReceiveOutcome::Payload(payload_to_json_string(
+                &payload,
+            )?))
         }
         ResolveOutcome::Recorded(other) => Err(format!("unexpected signal resolution: {other:?}")),
         ResolveOutcome::ResumeLive => {
-            let payload = bridge.runtime.wait_for_signal_message(pid, name);
-            let history = context.read_current_history().map_err(signal_error)?;
-            if latest_received_payload(&history, name, index).is_none() {
-                let record_name = name.to_owned();
-                let record_payload = payload.clone();
-                context
-                    .block_on_recorder(|recorder| {
-                        Box::pin(async move {
-                            recorder
-                                .record_signal_received(Utc::now(), record_name, record_payload)
-                                .await
-                        })
-                    })
-                    .map_err(signal_error)?;
+            // An expired enclosing with_timeout deadline aborts the await;
+            // a timed-out receive consumes nothing, so the count and the
+            // pinned slot are both released for the next receive.
+            if let Some(message) = super::nif_timeout::expired_scope_message(state, pid) {
+                state.pending_awaits.remove(&pid);
+                return Err(message);
             }
-            payload_to_json_string(&payload)
+            state
+                .pending_awaits
+                .insert(pid, PendingAwait::Signal { index });
+            Ok(SignalReceiveOutcome::Suspend)
         }
     }
 }
@@ -293,12 +341,25 @@ pub(super) fn receive_signal(args: &[Term], ctx: &mut ProcessContext) -> Result<
     let Some(pid) = ctx.pid() else {
         return Ok(error_result_term("receive_signal: missing caller pid").unwrap_or(Term::NIL));
     };
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
     let bridge = match signal_bridge(ctx) {
         Ok(bridge) => bridge,
         Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     };
-    match receive_signal_impl(&bridge, &name, &config, pid) {
-        Ok(result) => Ok(ok_result_term(&result).unwrap_or(Term::NIL)),
+    // One wake marker is consumed per invocation; leaving it queued would
+    // insta-rewake the suspend below into a busy spin.
+    super::nif_wake::consume_wake_marker(ctx, &bridge.runtime);
+    match receive_signal_impl(&state, &bridge, &name, &config, pid) {
+        Ok(SignalReceiveOutcome::Payload(result)) => {
+            Ok(ok_result_term(&result).unwrap_or(Term::NIL))
+        }
+        Ok(SignalReceiveOutcome::Suspend) => {
+            ctx.request_suspend(None);
+            Ok(Term::NIL)
+        }
         Err(error) => Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     }
 }

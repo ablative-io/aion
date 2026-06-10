@@ -91,8 +91,11 @@ pub fn with_timeout(
   timer.with_timeout(operation, deadline)
 }
 
-pub fn continue_as_new(input: a) -> Result(Nil, error.WorkflowError) {
-  continuation.continue_as_new(input)
+pub fn continue_as_new(
+  input: a,
+  input_codec: Codec(a),
+) -> Result(Nil, error.WorkflowError) {
+  continuation.continue_as_new(input, input_codec)
 }
 
 pub fn receive(

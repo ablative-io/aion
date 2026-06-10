@@ -221,9 +221,12 @@ fn await_activity_result_with_context(
     if let Some(recorded) = recorded_resolution_for(&mut context, &activity_id)? {
         return Ok(recorded_result_term(recorded));
     }
-    if let Some(term) =
-        live_completion_term(&context, runtime, activity_id.clone(), process_context)?
-    {
+    // One wake marker is consumed per invocation — markers are pure wakes
+    // and the completion state lives in the runtime's keyed maps, so any
+    // marker (even one destined for another await) is safe to take. Leaving
+    // it queued would insta-rewake the suspend below into a busy spin.
+    super::nif_wake::consume_wake_marker(process_context, runtime);
+    if let Some(term) = take_runtime_completion(&context, runtime, activity_id.clone())? {
         return Ok(term);
     }
     // An expired enclosing with_timeout deadline aborts the await instead of
@@ -269,51 +272,6 @@ fn recorded_result_term(resolution: Resolution) -> Term {
         ))
         .unwrap_or(Term::NIL),
     }
-}
-
-fn live_completion_term(
-    context: &NifContext,
-    runtime: &crate::RuntimeHandle,
-    activity_id: ActivityId,
-    process_context: &mut ProcessContext,
-) -> Result<Option<Term>, Term> {
-    let Some(select) = process_context.select_facility() else {
-        return take_runtime_completion(context, runtime, activity_id);
-    };
-    for index in 0..select.message_count() {
-        let Some(message) = select.peek_message(index) else {
-            continue;
-        };
-        if completion_marker(
-            message,
-            runtime,
-            context.pid(),
-            activity_id.sequence_position(),
-        ) {
-            select.remove_message(index);
-            return take_runtime_completion(context, runtime, activity_id);
-        }
-    }
-    Ok(None)
-}
-
-fn completion_marker(
-    message: Term,
-    runtime: &crate::RuntimeHandle,
-    workflow_pid: u64,
-    activity_sequence: u64,
-) -> bool {
-    let complete = runtime.activity_complete_atom();
-    let failed = runtime.activity_failed_atom();
-    if message == Term::atom(complete) {
-        return runtime
-            .activity_result(workflow_pid, activity_sequence)
-            .is_some();
-    }
-    message == Term::atom(failed)
-        && runtime
-            .activity_error(workflow_pid, activity_sequence)
-            .is_some()
 }
 
 fn take_runtime_completion(

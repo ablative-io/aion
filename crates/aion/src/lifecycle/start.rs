@@ -260,9 +260,9 @@ impl EngineHandle for StartResumeEngineHandle<'_> {
         message: WorkflowMailboxMessage,
     ) -> Result<(), EngineSeamError> {
         match message {
-            WorkflowMailboxMessage::SignalReceived { name, payload } => self
+            WorkflowMailboxMessage::SignalReceived { .. } => self
                 .runtime
-                .deliver_signal_received(process.pid(), name, payload)
+                .deliver_signal_received(process.pid())
                 .map_err(|error| EngineSeamError::Delivery {
                     reason: error.to_string(),
                 }),

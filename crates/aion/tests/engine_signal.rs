@@ -59,16 +59,16 @@ async fn signal_records_history_and_delivers_mailbox_marker()
     assert_eq!(signal.1, &sent_payload);
     assert_eq!(signal.2.workflow_id, *handle.workflow_id());
     assert_eq!(signal.2.seq, 2);
-
-    let delivered = engine.runtime().signal_messages(handle.pid());
-    assert_eq!(delivered, vec![("wake".to_owned(), sent_payload)]);
+    // The wake marker carries no payload: awaits resolve the durable
+    // SignalReceived above. signal() returning Ok proves the marker was
+    // enqueued to the resident process after the record succeeded.
 
     engine.shutdown()?;
     Ok(())
 }
 
 #[tokio::test]
-async fn resident_delivery_failure_returns_typed_error_after_recording_history()
+async fn signal_to_killed_run_returns_terminal_without_appending()
 -> Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
@@ -85,34 +85,34 @@ async fn resident_delivery_failure_returns_typed_error_after_recording_history()
         .start_workflow(FIXTURE_MODULE, input_payload()?)
         .await?;
     engine.runtime().cancel_pid(handle.pid())?;
-    let sent_payload = payload(&json!({ "wake": "recorded" }))?;
+    // Await the exit monitor's durable terminal record so the signal below
+    // deterministically targets a terminal run.
+    let outcome = engine.result(handle.workflow_id(), handle.run_id()).await?;
+    assert!(
+        outcome.is_err(),
+        "killed run should report a failed outcome"
+    );
+    let terminal_history_len = store.read_history(handle.workflow_id()).await?.len();
 
     let error = engine
         .signal(
             handle.workflow_id(),
             handle.run_id(),
             "wake",
-            sent_payload.clone(),
+            payload(&json!({ "wake": "rejected" }))?,
         )
         .await
         .err()
-        .ok_or("dead resident signal delivery unexpectedly succeeded")?;
+        .ok_or("signal to terminal run unexpectedly succeeded")?;
 
     assert!(matches!(
         error,
-        EngineError::SignalRouter(aion::SignalRouterError::DeliveryFailed { .. })
+        EngineError::SignalRouter(aion::SignalRouterError::Terminal { .. })
     ));
-    let history = store.read_history(handle.workflow_id()).await?;
-    let signal = history
-        .iter()
-        .find_map(|event| match event {
-            Event::SignalReceived { name, payload, .. } => Some((name, payload)),
-            _ => None,
-        })
-        .ok_or("SignalReceived event was not recorded before delivery failure")?;
-    assert_eq!(signal.0, "wake");
-    assert_eq!(signal.1, &sent_payload);
-    assert!(engine.runtime().signal_messages(handle.pid()).is_empty());
+    assert_eq!(
+        store.read_history(handle.workflow_id()).await?.len(),
+        terminal_history_len
+    );
 
     engine.shutdown()?;
     Ok(())
@@ -228,7 +228,6 @@ async fn non_resident_signal_records_defers_and_resume_delivers()
         .ok_or("SignalReceived event was not recorded for suspended workflow")?;
     assert_eq!(signal.0, "wake");
     assert_eq!(signal.1, &sent_payload);
-    assert!(engine.runtime().signal_messages(handle.pid()).is_empty());
     assert_eq!(
         engine
             .signal_handoff()
@@ -238,15 +237,13 @@ async fn non_resident_signal_records_defers_and_resume_delivers()
 
     let resumed = engine.resume_workflow(handle.workflow_id(), handle.run_id())?;
     assert_eq!(resumed.residency(), HandleResidency::Resident);
+    // The deferred queue drains by delivering wake markers to the resumed
+    // process; the payload itself stays in the durable history above.
     assert_eq!(
         engine
             .signal_handoff()
             .pending_count(handle.workflow_id())?,
         0
-    );
-    assert_eq!(
-        engine.runtime().signal_messages(handle.pid()),
-        vec![("wake".to_owned(), sent_payload)]
     );
 
     engine.shutdown()?;

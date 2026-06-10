@@ -10,7 +10,9 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
 
+use aion_core::TimerId;
 use beamr::native::ProcessContext;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
 use crate::activity::bridge::ActivityDispatcher;
@@ -53,6 +55,35 @@ pub(crate) struct EngineNifState {
     pub(super) timeout_scope_stacks: DashMap<u64, Vec<u64>>,
     /// Monotonic `with_timeout` scope id source.
     pub(super) next_timeout_scope_id: AtomicU64,
+    /// Identity of the blocking await each suspended workflow pid is parked
+    /// on, pinned at first live arrival so every re-entry of the suspended
+    /// native resolves the same logical operation. A process runs one
+    /// blocking await at a time; the entry is cleared on every terminal
+    /// resolution and when the workflow process ends.
+    pub(super) pending_awaits: DashMap<u64, PendingAwait>,
+}
+
+/// The await a suspended workflow process is parked on.
+///
+/// Stored in [`EngineNifState::pending_awaits`] keyed by pid. Pinning the
+/// identity (timer id / signal occurrence) at first arrival keeps re-entries
+/// deterministic: ordinal sequences advance on allocation, so a re-invoked
+/// native must reuse the identity it allocated the first time, not draw a
+/// fresh one.
+#[derive(Clone, Debug)]
+pub(crate) enum PendingAwait {
+    /// `sleep` parked on an anonymous durable timer.
+    Sleep {
+        /// Deterministic anonymous timer identity allocated at first arrival.
+        timer_id: TimerId,
+        /// Absolute fire deadline recorded with the timer start.
+        fire_at: DateTime<Utc>,
+    },
+    /// `receive_signal` parked on a named signal occurrence.
+    Signal {
+        /// Per-name zero-based occurrence index pinned at first arrival.
+        index: usize,
+    },
 }
 
 impl EngineNifState {
@@ -70,6 +101,18 @@ impl EngineNifState {
             Ok(slot) => slot.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
+    }
+
+    /// Drop every per-process entry an exited workflow pid left behind.
+    ///
+    /// Called from the runtime process monitor when a workflow process ends
+    /// (any outcome), so awaits and timeout scopes interrupted by the exit
+    /// never leak map entries. beamr pids are never reused within a
+    /// scheduler, so removal cannot race a new process under the same key.
+    pub(crate) fn cleanup_process(&self, pid: u64) {
+        self.pending_awaits.remove(&pid);
+        self.timeout_scope_stacks.remove(&pid);
+        self.timeout_scopes.retain(|_, scope| scope.pid != pid);
     }
 }
 

@@ -74,7 +74,6 @@ pub struct RuntimeHandle {
     nif_state: Arc<super::nif_state::EngineNifState>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
-    signal_messages: Arc<dashmap::DashMap<Pid, Vec<(String, Payload)>>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
     signal_delivery: SignalDeliveryConfig,
@@ -115,7 +114,6 @@ impl RuntimeHandle {
             nif_state,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
-            signal_messages: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
@@ -307,30 +305,21 @@ impl RuntimeHandle {
         }
     }
 
-    /// Deliver a recorded signal marker to the workflow mailbox surface.
+    /// Deliver a recorded signal wake marker to the workflow mailbox surface.
+    ///
+    /// The marker is a pure wake: the signal payload was already durably
+    /// recorded by the signal router before delivery, and the awaiting NIF
+    /// resolves it from recorded history. Nothing is retained here.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::Runtime`] when the workflow is not live or the
     /// mailbox marker cannot be queued.
-    pub fn deliver_signal_received(
-        &self,
-        workflow_pid: Pid,
-        name: String,
-        payload: Payload,
-    ) -> Result<(), EngineError> {
+    pub fn deliver_signal_received(&self, workflow_pid: Pid) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
         self.wait_for_process_ready(workflow_pid)?;
-        let mut messages = self.signal_messages.entry(workflow_pid).or_default();
-        messages.push((name, payload));
         let marker = self.atom_table.intern("aion_signal_received");
-        match self.enqueue_signal_marker_with_retry(workflow_pid, marker) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let _ = messages.pop();
-                Err(error)
-            }
-        }
+        self.enqueue_signal_marker_with_retry(workflow_pid, marker)
     }
 
     /// Deliver a two-phase activity completion marker to the workflow mailbox.
@@ -405,8 +394,9 @@ impl RuntimeHandle {
         }
     }
 
-    /// Wake a suspended workflow process so blocking awaits can observe an
-    /// expired `with_timeout` deadline.
+    /// Wake a suspended workflow process so blocking awaits re-run their
+    /// two-phase resolution (a fired timer, an expired `with_timeout`
+    /// deadline, or any other recorded arrival).
     ///
     /// # Errors
     ///
@@ -414,14 +404,11 @@ impl RuntimeHandle {
     /// live or the wake marker cannot be queued.
     pub(crate) fn wake_workflow(&self, workflow_pid: Pid) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
-        let marker = self.atom_table.intern("aion_timeout_expired");
-        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
-            Ok(())
-        } else {
-            Err(runtime_error(format!(
-                "failed to deliver timeout wake marker to {workflow_pid}"
-            )))
-        }
+        let marker = self.atom_table.intern("aion_timer_fired");
+        // Retry covers the transient just-spawned/executing windows where
+        // beamr's enqueue declines; a recovery-re-armed timer can fire
+        // before the recovered process slot is fully materialized.
+        self.enqueue_signal_marker_with_retry(workflow_pid, marker)
     }
 
     fn enqueue_activity_marker(
@@ -459,34 +446,6 @@ impl RuntimeHandle {
         self.activity_errors
             .insert((parent_pid, activity_pid), error);
         Ok(())
-    }
-
-    /// Read delivered signal messages retained for the workflow process.
-    #[must_use]
-    pub fn signal_messages(&self, workflow_pid: Pid) -> Vec<(String, Payload)> {
-        self.signal_messages
-            .get(&workflow_pid)
-            .map_or_else(Vec::new, |entry| entry.clone())
-    }
-
-    /// Remove and return the oldest retained signal with `name` for the workflow process.
-    #[must_use]
-    pub fn take_signal_message(&self, workflow_pid: Pid, name: &str) -> Option<Payload> {
-        let mut messages = self.signal_messages.get_mut(&workflow_pid)?;
-        let index = messages
-            .iter()
-            .position(|(message_name, _)| message_name == name)?;
-        Some(messages.remove(index).1)
-    }
-
-    /// Wait until a delivered signal with `name` is retained for the workflow process.
-    pub fn wait_for_signal_message(&self, workflow_pid: Pid, name: &str) -> Payload {
-        loop {
-            if let Some(payload) = self.take_signal_message(workflow_pid, name) {
-                return payload;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
     }
 
     /// Read a previously delivered activity result payload.
@@ -531,6 +490,18 @@ impl RuntimeHandle {
 
     pub(crate) fn activity_failed_atom(&self) -> Atom {
         self.atom_table.intern("activity_failed")
+    }
+
+    pub(crate) fn activity_result_atom(&self) -> Atom {
+        self.atom_table.intern("aion_activity_result")
+    }
+
+    pub(crate) fn signal_received_atom(&self) -> Atom {
+        self.atom_table.intern("aion_signal_received")
+    }
+
+    pub(crate) fn timer_fired_atom(&self) -> Atom {
+        self.atom_table.intern("aion_timer_fired")
     }
 
     /// Cancel a live process by PID.
@@ -1060,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn signal_delivery_failure_rolls_back_retained_message()
+    fn signal_delivery_to_dead_process_returns_typed_error()
     -> Result<(), Box<dyn std::error::Error>> {
         let signal_delivery =
             SignalDeliveryConfig::new(Duration::ZERO, 1, Duration::ZERO, Duration::ZERO);
@@ -1070,16 +1041,11 @@ mod tests {
         runtime.terminate_test_process_with_error(pid)?;
 
         let error = runtime
-            .deliver_signal_received(
-                pid,
-                "wake".to_owned(),
-                Payload::from_json(&serde_json::json!(true))?,
-            )
+            .deliver_signal_received(pid)
             .err()
             .ok_or("dead process delivery unexpectedly succeeded")?;
 
         assert!(matches!(error, EngineError::Runtime { .. }));
-        assert!(runtime.signal_messages(pid).is_empty());
         runtime.shutdown()?;
         Ok(())
     }
