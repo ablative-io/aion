@@ -34,9 +34,6 @@ expect_used = "warn"
 panic = "warn"
 todo = "warn"
 
-[patch.crates-io]
-beamr = { path = "vendor/beamr" }
-
 [workspace.dependencies]
 serde = "1.0"
 serde_json = "1.0"
@@ -63,6 +60,6 @@ tower = "0.5"
 futures = "0.3"
 dashmap = "6.2"
 saffron = { version = "0.1", features = ["std"] }
-beamr = { version = "0.4.1", features = ["json"] }
+beamr = { version = "0.4.2", features = ["json"] }
 
 

@@ -275,10 +275,10 @@ impl RuntimeHandle {
         activity_pid: Pid,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        let (reason, result) = self.scheduler.run_until_exit(activity_pid);
+        let (reason, owned_result) = self.scheduler.run_until_exit(activity_pid);
         self.release_spawn_heaps(activity_pid);
         if reason == ExitReason::Normal {
-            let payload = term_to_payload(result, &self.atom_table)?;
+            let payload = term_to_payload(owned_result.root(), &self.atom_table)?;
             self.deliver_activity_result(parent_pid, activity_pid, payload)
         } else {
             let error = self
@@ -815,9 +815,9 @@ impl RuntimeHandle {
 
     #[cfg(test)]
     pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
-        let result = self.scheduler.run_until_exit(pid);
+        let (reason, owned_result) = self.scheduler.run_until_exit(pid);
         self.release_spawn_heaps(pid);
-        result
+        (reason, owned_result.root())
     }
 
     #[cfg(test)]

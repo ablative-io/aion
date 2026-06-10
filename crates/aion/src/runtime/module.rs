@@ -175,7 +175,7 @@ fn rewrite_resolved_import_target(target: &mut ResolvedImportTarget, rename_map:
                 *module = new_atom;
             }
         }
-        ResolvedImportTarget::Native(_) => {}
+        ResolvedImportTarget::Native(_) | ResolvedImportTarget::Denied { .. } => {}
     }
 }
 
@@ -243,6 +243,16 @@ fn rewrite_literal_atom(literal: &mut Literal, rename_map: &ModuleRenameMap) {
         | Literal::Binary(_)
         | Literal::Nil
         | Literal::String(_) => {}
+        Literal::ExportFun {
+            module, function, ..
+        } => {
+            if let Some(&new_atom) = rename_map.get(module) {
+                *module = new_atom;
+            }
+            if let Some(&new_atom) = rename_map.get(function) {
+                *function = new_atom;
+            }
+        }
     }
 }
 

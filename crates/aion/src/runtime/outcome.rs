@@ -35,8 +35,8 @@ pub(super) fn workflow_process_outcome(
     atoms: &AtomTable,
     pid: Pid,
 ) -> Result<WorkflowProcessOutcome, EngineError> {
-    let (reason, result) = scheduler.run_until_exit(pid);
-    convert_process_outcome(atoms, pid, reason, result)
+    let (reason, owned_result) = scheduler.run_until_exit(pid);
+    convert_process_outcome(atoms, pid, reason, owned_result.root())
 }
 
 pub(super) fn convert_process_outcome(

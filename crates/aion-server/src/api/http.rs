@@ -1674,7 +1674,10 @@ mod tests {
         }
 
         fn publish(&self, event: Event) -> Result<(), String> {
-            self.events.send(event).map(|_receivers| ()).map_err(|e| e.to_string())
+            self.events
+                .send(event)
+                .map(|_receivers| ())
+                .map_err(|e| e.to_string())
         }
     }
 
