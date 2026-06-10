@@ -171,6 +171,17 @@ pub enum Event {
         /// Timer that was cancelled.
         timer_id: TimerId,
     },
+    /// A with_timeout operation reached a durable terminal outcome.
+    WithTimeoutCompleted {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Timer that bounded the operation.
+        timer_id: TimerId,
+        /// Recorded timeout outcome.
+        outcome: WithTimeoutOutcome,
+        /// JSON-encoded BEAM term payload for completed operation results.
+        result: Option<Payload>,
+    },
     /// A signal was delivered to the workflow.
     SignalReceived {
         /// Recording metadata for this event.
@@ -279,6 +290,15 @@ pub enum Event {
     },
 }
 
+/// Durable terminal outcome for a with_timeout operation.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum WithTimeoutOutcome {
+    /// The operation closure returned before the deadline.
+    OperationCompleted,
+    /// The deadline fired before the operation completed.
+    TimedOut,
+}
+
 impl Event {
     /// Returns the envelope recorded with this event.
     #[must_use]
@@ -299,6 +319,7 @@ impl Event {
             | Self::TimerStarted { envelope, .. }
             | Self::TimerFired { envelope, .. }
             | Self::TimerCancelled { envelope, .. }
+            | Self::WithTimeoutCompleted { envelope, .. }
             | Self::SignalReceived { envelope, .. }
             | Self::SignalSent { envelope, .. }
             | Self::ChildWorkflowStarted { envelope, .. }

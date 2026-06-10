@@ -1,0 +1,57 @@
+[package]
+name = "beamr"
+version = "0.4.1"
+edition = "2024"
+description = "A Rust runtime with the BEAM's execution model, targeting Gleam"
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+authors = [
+    "Tom Whiting <tom@ablative.com.au>",
+    "Josh Bearup <Joshuabearup1@gmail.com>",
+]
+
+[dependencies]
+base64 = { version = "0.22.1", optional = true }
+cranelift-codegen = "0.131.2"
+cranelift-frontend = "0.131.2"
+cranelift-jit = "0.131.2"
+cranelift-module = "0.131.2"
+cranelift-native = "0.131.2"
+crossbeam-channel = "0.5.15"
+crossbeam-deque = "0.8.6"
+crossbeam-queue = "0.3.12"
+dashmap = "6.1.0"
+flate2 = "1.1.9"
+gleam-types = { path = "../gleam-types", version = "0.4.1" }
+libc = "0.2.186"
+md5 = "0.8.0"
+num_cpus = "1.17.0"
+rand = "0.10.1"
+rustix = { version = "1.1.4", features = ["fs", "net"] }
+serde_json = { version = "1.0.150", optional = true }
+tokio = { version = "1.52.3", features = ["net", "io-util", "time", "rt", "rt-multi-thread", "macros", "sync"] }
+zstd = "0.13.3"
+
+[dev-dependencies]
+criterion = "0.8.2"
+proptest = "1.11.0"
+
+[[bench]]
+name = "jit_comparison"
+harness = false
+
+[[bench]]
+name = "jit_comparison_extended"
+harness = false
+
+[features]
+differential = []
+json = ["dep:base64", "dep:serde_json"]
+test-support = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
+[build-dependencies]
+zstd = "0.13.3"

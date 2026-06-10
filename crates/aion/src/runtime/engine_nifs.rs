@@ -119,7 +119,7 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "cancel_timer", 1),
             nif_timer::cancel_timer_impl,
         ),
-        NifEntry::dirty(
+        NifEntry::new(
             Mfa::new(FFI_MODULE, "with_timeout", 2),
             nif_timer::with_timeout_impl,
         ),
@@ -226,6 +226,7 @@ mod tests {
             "now",
             "random",
             "random_int",
+            "with_timeout",
             "register_query",
         ] {
             let found = entries
@@ -243,6 +244,7 @@ mod tests {
                         | "now"
                         | "random"
                         | "random_int"
+                        | "with_timeout"
                         | "register_query"
                 ))
                 .all(|entry| entry.is_dirty)

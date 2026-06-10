@@ -1,6 +1,6 @@
 //! `Command` and `Resolution` types at the AD seam.
 
-use aion_core::{ActivityError, Payload, WorkflowError, WorkflowId};
+use aion_core::{ActivityError, Payload, WithTimeoutOutcome, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{CorrelationKey, SignalDelivery};
@@ -93,6 +93,13 @@ pub enum Resolution {
     SignalDelivered(Payload),
     /// A recorded timer cancellation.
     TimerCancelled,
+    /// A recorded with_timeout terminal outcome with an optional result payload.
+    WithTimeout {
+        /// Recorded timeout outcome.
+        outcome: WithTimeoutOutcome,
+        /// JSON-encoded BEAM term payload for completed operation results.
+        result: Option<Payload>,
+    },
     /// A recorded successful signal send.
     SignalSent,
     /// A recorded child workflow start with its child identifier.

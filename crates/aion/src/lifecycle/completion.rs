@@ -159,6 +159,7 @@ fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
             | Event::TimerStarted { .. }
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
+            | Event::WithTimeoutCompleted { .. }
             | Event::SignalReceived { .. }
             | Event::SignalSent { .. }
             | Event::ChildWorkflowStarted { .. }

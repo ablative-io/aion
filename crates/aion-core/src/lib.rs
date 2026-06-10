@@ -36,7 +36,7 @@ pub mod search;
 pub mod status;
 
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
-pub use event::{Event, EventEnvelope};
+pub use event::{Event, EventEnvelope, WithTimeoutOutcome};
 pub use filter::{WorkflowFilter, WorkflowSummary};
 pub use ids::{ActivityId, IdError, RunId, TimerId, WorkflowId};
 pub use payload::{ContentType, Payload, PayloadError};

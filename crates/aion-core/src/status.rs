@@ -68,6 +68,7 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
             | Event::TimerStarted { .. }
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
+            | Event::WithTimeoutCompleted { .. }
             | Event::SignalReceived { .. }
             | Event::SignalSent { .. }
             | Event::ChildWorkflowStarted { .. }

@@ -905,6 +905,7 @@ pub(crate) fn terminal_outcome_from_history(events: &[Event]) -> Option<Terminal
             | Event::TimerStarted { .. }
             | Event::TimerFired { .. }
             | Event::TimerCancelled { .. }
+            | Event::WithTimeoutCompleted { .. }
             | Event::SignalReceived { .. }
             | Event::SignalSent { .. }
             | Event::ChildWorkflowStarted { .. }
