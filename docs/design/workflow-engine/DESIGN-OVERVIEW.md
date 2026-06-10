@@ -1,5 +1,11 @@
 # Aion — Durable Workflow Engine for Gleam, Rust, and BEAM
 
+> **Status note:** This is a design/vision document. Crash/restart recovery,
+> durable timers, and WebSocket event streaming are implemented in the current
+> build; broader ecosystem items such as dashboard UX, zero-downtime upgrades,
+> and some cross-language SDK transports remain in progress unless a current
+> user-facing guide marks them implemented.
+
 > **Aion** is the Greek conception of eternal, unbounded time — distinct
 > from Chronos, who is sequential, ticking, chronological time. A durable
 > workflow engine lives in Aion's time: workflows persist across crashes,

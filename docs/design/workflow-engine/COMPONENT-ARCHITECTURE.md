@@ -1,5 +1,10 @@
 # Aion — Component Architecture
 
+> **Status note:** This architecture document includes both implemented surfaces
+> and planned ecosystem shape. The engine recovery/timer seams and server
+> WebSocket route are implemented in the current build; dashboard UX and some
+> cross-language SDK transports are still hardening.
+
 Companion to **DESIGN-OVERVIEW.md**. This document enumerates the crates,
 packages, and their boundaries. It defines what we build and ship, who
 consumes each piece, and how the pieces depend on one another.

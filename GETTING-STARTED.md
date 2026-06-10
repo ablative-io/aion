@@ -8,7 +8,7 @@ Install these before starting:
 
 - Rust toolchain and Cargo (`rustup` is recommended)
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP on your `PATH`
-- Python 3.10 or newer, optional unless you run the Python worker used below
+- Python 3.10 or newer for the Python activity worker used below
 - `jq`, optional but useful for extracting fields from the CLI's JSON output
 
 ## 1. Clone and enter the repository
@@ -33,10 +33,11 @@ This writes `examples/hello-world/hello-world.aion`.
 
 ## 3. Start the Aion dev server
 
-The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, uses the in-memory store, and defaults to the `default` namespace. To preload the hello-world package you built above, make sure `workflow_packages` includes `examples/hello-world/hello-world.aion` before starting the server.
+The repo-root `dev-config.toml` listens on HTTP `127.0.0.1:8080`, gRPC `127.0.0.1:50051`, uses the in-memory store, and defaults to the `default` namespace. Pass the package path on the command line so a fresh checkout preloads the hello-world workflow without editing TOML.
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+cargo run -p aion-server -- --config dev-config.toml \
+  --workflow-package examples/hello-world/hello-world.aion
 ```
 
 Leave this process running in terminal 1. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use `aion-cli` over the gRPC endpoint (`127.0.0.1:50051`) to operate workflows for now.
@@ -63,16 +64,18 @@ The server starts from built-in defaults, then applies config-file values, then 
 Server logs are emitted as JSON on stdout. For interactive development, pipe them through `jq` for readability, for example:
 
 ```sh
-AION_LOG=debug cargo run -p aion-server -- --config dev-config.toml | jq .
+AION_LOG=debug cargo run -p aion-server -- --config dev-config.toml \
+  --workflow-package examples/hello-world/hello-world.aion | jq .
 ```
 
 ### Config auto-discovery
 
-When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults. To use auto-discovery from the repository root, copy the dev config and start the server with no flags:
+When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults. To use auto-discovery from the repository root, copy the dev config and start the server. Include the package flag unless you also edit `aion.toml` to add the package path:
 
 ```sh
 cp dev-config.toml aion.toml
-cargo run -p aion-server
+cargo run -p aion-server -- \
+  --workflow-package examples/hello-world/hello-world.aion
 ```
 
 ## 4. Start the Python activity worker
@@ -96,7 +99,7 @@ In terminal 3, from the repository root:
 ```sh
 START_RESPONSE=$(cargo run -q -p aion-cli -- \
   --subject hello-world-user \
-  start hello_world --input '{"name":"Ada"}')
+  start hello-world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 
