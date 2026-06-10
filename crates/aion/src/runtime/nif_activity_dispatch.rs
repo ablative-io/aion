@@ -212,8 +212,16 @@ fn await_activity_result_with_context(
     if let Some(recorded) = recorded_resolution_for(&mut context, &activity_id)? {
         return Ok(recorded_result_term(recorded));
     }
-    if let Some(term) = live_completion_term(&context, runtime, activity_id, process_context)? {
+    if let Some(term) =
+        live_completion_term(&context, runtime, activity_id.clone(), process_context)?
+    {
         return Ok(term);
+    }
+    // An expired enclosing with_timeout deadline aborts the await instead of
+    // re-suspending. The failure is recorded so replay returns it verbatim.
+    if let Some(message) = crate::runtime::nif_timeout::expired_scope_message(context.pid()) {
+        record_failed(&context, activity_id, activity_error(message.clone()))?;
+        return Ok(error_result_term(&message).unwrap_or(Term::NIL));
     }
     process_context.request_suspend(None);
     Ok(Term::NIL)

@@ -394,6 +394,25 @@ impl RuntimeHandle {
         }
     }
 
+    /// Wake a suspended workflow process so blocking awaits can observe an
+    /// expired `with_timeout` deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow process is not
+    /// live or the wake marker cannot be queued.
+    pub(crate) fn wake_workflow(&self, workflow_pid: Pid) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        let marker = self.atom_table.intern("aion_timeout_expired");
+        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+            Ok(())
+        } else {
+            Err(runtime_error(format!(
+                "failed to deliver timeout wake marker to {workflow_pid}"
+            )))
+        }
+    }
+
     fn enqueue_activity_marker(
         &self,
         workflow_pid: Pid,

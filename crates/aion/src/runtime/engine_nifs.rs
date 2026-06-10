@@ -17,6 +17,7 @@ use super::nif_child;
 use super::nif_continue_as_new;
 use super::nif_determinism::{now_impl, random_impl, random_int_impl};
 use super::nif_signal;
+use super::nif_timeout;
 use super::nif_timer;
 
 const FFI_MODULE: &str = "aion_flow_ffi";
@@ -122,7 +123,7 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
         ),
         NifEntry::new(
             Mfa::new(FFI_MODULE, "with_timeout", 2),
-            nif_timer::with_timeout_impl,
+            nif_timeout::with_timeout_impl,
         ),
         NifEntry::dirty(
             Mfa::new(FFI_MODULE, "continue_as_new", 1),
