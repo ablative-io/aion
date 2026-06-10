@@ -48,9 +48,10 @@ pub(super) fn convert_process_outcome(
     if reason == ExitReason::Normal {
         unwrap_gleam_result(result, atoms, pid)
     } else {
+        let formatted = beamr::term::format::format_term(result, atoms);
         let details = term_to_payload(result, atoms).ok();
         Ok(WorkflowProcessOutcome::Failed(WorkflowError {
-            message: format!("workflow process {pid} exited: {reason:?}"),
+            message: format!("workflow process {pid} exited: {reason:?}: {formatted}"),
             details,
         }))
     }
