@@ -121,9 +121,9 @@ def default_events_endpoint(endpoint: str, tls_enabled: bool) -> str:
     parsed = urlparse(endpoint)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         scheme = "wss" if parsed.scheme == "https" or tls_enabled else "ws"
-        return f"{scheme}://{parsed.netloc}/events/subscribe"
+        return f"{scheme}://{parsed.netloc}/events/stream"
     scheme = "wss" if tls_enabled else "ws"
-    return f"{scheme}://{grpc_target(endpoint)}/events/subscribe"
+    return f"{scheme}://{grpc_target(endpoint)}/events/stream"
 
 
 def read_optional(path: str | None) -> bytes | None:
