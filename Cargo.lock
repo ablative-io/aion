@@ -508,9 +508,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beamr"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d765fda5f9396f883af1f65a600ba8890201e6e31bfd8f11da247ff6fda7de0"
+checksum = "5db3fa1fd031425e1442b230e0bde553e631fb4d8a259a7ce85fb0423c2ac34b"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -1462,9 +1462,9 @@ dependencies = [
 
 [[package]]
 name = "gleam-types"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a7c19c6d2f8d153a56760a0c4850d9b31f4cbf9fb00d827743091cbbecba53"
+checksum = "c4263bb724325f1ee2de652bb6429507bbb92b7c34df1409485bca4170731f38"
 dependencies = [
  "camino",
  "ecow",
