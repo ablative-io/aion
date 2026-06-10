@@ -14,9 +14,10 @@ use crate::{
     RuntimeHandle, SignalDeliveryConfig, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
     activity::bridge::{ActivityDispatcher, install_activity_dispatcher},
     durability::{
-        ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
+        ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
         Recorder,
     },
+    lifecycle::completion::{ProcessExitContext, handle_process_exit},
     runtime::{
         ChildNifBridge, ChildNifBridgeParts, NifEntry, NifRegistration, install_child_nif_bridge,
         install_nif_runtime_context, install_query_bridge, install_signal_nif_bridge,
@@ -141,7 +142,7 @@ pub struct EngineBuilder {
     signal_delivery: SignalDeliveryConfig,
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
-    recovery: Arc<dyn ActiveWorkflowRecoverySeam>,
+    recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
     delegated: DelegatedSeams,
     signal_router_factory: Option<SignalRouterFactory>,
     activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
@@ -167,7 +168,7 @@ impl EngineBuilder {
             signal_delivery: SignalDeliveryConfig::default(),
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
-            recovery: Arc::new(DeferredActiveWorkflowRecovery),
+            recovery: None,
             delegated: DelegatedSeams::default(),
             signal_router_factory: None,
             activity_dispatcher: None,
@@ -275,7 +276,14 @@ impl EngineBuilder {
     /// Override the AD recovery seam used while repopulating active workflows.
     #[must_use]
     pub fn recovery_seam(mut self, recovery: Arc<dyn ActiveWorkflowRecoverySeam>) -> Self {
-        self.recovery = recovery;
+        self.recovery = Some(recovery);
+        self
+    }
+
+    /// Use the production AD recovery seam created after runtime/package loading.
+    #[must_use]
+    pub fn production_recovery_seam(mut self) -> Self {
+        self.recovery = None;
         self
     }
 
@@ -405,20 +413,15 @@ impl EngineBuilder {
             install_activity_dispatcher(dispatcher);
         }
         let supervision = Arc::new(SupervisionTree::new());
-        bootstrap_schedule_coordinator(Arc::clone(&store)).await?;
-        crate::lifecycle::visibility::reconcile_visibility(
-            Arc::clone(&store),
-            Arc::clone(&visibility_store),
-        )
-        .await?;
-        repopulate_active_workflows(
-            Arc::clone(&store),
-            Arc::clone(&visibility_store),
-            &loaded_workflows,
-            registry.as_ref(),
-            supervision.as_ref(),
-            self.recovery.as_ref(),
-        )
+        recover_active_workflows_on_startup(StartupRecoveryContext {
+            store: Arc::clone(&store),
+            visibility_store: Arc::clone(&visibility_store),
+            runtime: Arc::clone(&runtime),
+            loaded_workflows: &loaded_workflows,
+            registry: Arc::clone(&registry),
+            supervision: supervision.as_ref(),
+            recovery: self.recovery,
+        })
         .await?;
         recover_timers_on_startup(Arc::clone(&store)).await?;
 
@@ -477,6 +480,42 @@ impl EngineBuilder {
     }
 }
 
+struct StartupRecoveryContext<'a> {
+    store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
+    runtime: Arc<RuntimeHandle>,
+    loaded_workflows: &'a LoadedWorkflows,
+    registry: Arc<Registry>,
+    supervision: &'a SupervisionTree,
+    recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
+}
+
+async fn recover_active_workflows_on_startup(
+    context: StartupRecoveryContext<'_>,
+) -> Result<(), EngineError> {
+    bootstrap_schedule_coordinator(Arc::clone(&context.store)).await?;
+    crate::lifecycle::visibility::reconcile_visibility(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+    )
+    .await?;
+    let recovery = context.recovery.unwrap_or_else(|| {
+        Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
+            &context.runtime,
+        ))) as Arc<dyn ActiveWorkflowRecoverySeam>
+    });
+    repopulate_active_workflows(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+        Arc::clone(&context.runtime),
+        context.loaded_workflows,
+        Arc::clone(&context.registry),
+        context.supervision,
+        recovery.as_ref(),
+    )
+    .await
+}
+
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
     match source {
         WorkflowPackageSource::Path(path) => {
@@ -517,8 +556,9 @@ async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<()
 async fn repopulate_active_workflows(
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
+    runtime: Arc<RuntimeHandle>,
     loaded_workflows: &LoadedWorkflows,
-    registry: &Registry,
+    registry: Arc<Registry>,
     supervision: &SupervisionTree,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
@@ -526,6 +566,14 @@ async fn repopulate_active_workflows(
         let history = store.as_ref().read_history(&workflow_id).await?;
         let workflow_type = started_workflow_type(&workflow_id, &history)?;
         let projected_status = status_from_events(&history);
+        if projected_status.is_terminal() {
+            tracing::warn!(
+                workflow_id = %workflow_id,
+                status = ?projected_status,
+                "store listed terminal workflow as active during startup; skipping resident recovery"
+            );
+            continue;
+        }
         supervision.ensure_type_supervisor(workflow_type.clone())?;
 
         let recovered = recover_active_workflow(
@@ -535,7 +583,7 @@ async fn repopulate_active_workflows(
             &history,
             loaded_workflows,
         )?;
-        let history_len = u64::try_from(history.len()).unwrap_or(u64::MAX);
+        let history_head = history.last().map(Event::seq).unwrap_or_default();
         match recovered {
             ActiveWorkflowRecovery::Resident {
                 run_id,
@@ -543,7 +591,7 @@ async fn repopulate_active_workflows(
                 pid,
             } => {
                 let recorder =
-                    Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_len)
+                    Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_head)
                         .with_visibility(run_id.clone(), Arc::clone(&visibility_store));
                 let completion = CompletionNotifier::new();
                 let handle = WorkflowHandle::new(WorkflowHandleParts {
@@ -557,9 +605,34 @@ async fn repopulate_active_workflows(
                     recorder,
                     completion,
                 });
-                registry.insert((workflow_id.clone(), run_id.clone()), handle)?;
-                registry.reconcile(&workflow_id, &run_id, &history)?;
-                supervision.place_workflow(workflow_type, pid)?;
+                if let Err(error) = registry
+                    .insert((workflow_id.clone(), run_id.clone()), handle.clone())
+                    .and_then(|_| registry.reconcile(&workflow_id, &run_id, &history))
+                    .and_then(|_| {
+                        supervision
+                            .place_workflow(workflow_type.clone(), pid)
+                            .map(|_| ())
+                    })
+                    .and_then(|()| {
+                        install_recovered_completion_monitor(
+                            Arc::clone(&store),
+                            Arc::clone(&visibility_store),
+                            &runtime,
+                            Arc::clone(&registry),
+                            &handle,
+                        )
+                    })
+                {
+                    rollback_recovered_resident(
+                        &runtime,
+                        Arc::clone(&registry),
+                        &workflow_id,
+                        &run_id,
+                        pid,
+                        &error,
+                    );
+                    return Err(error);
+                }
             }
             ActiveWorkflowRecovery::ScheduleCoordinator { run_id } => {
                 registry.reconcile(&workflow_id, &run_id, &history)?;
@@ -568,6 +641,45 @@ async fn repopulate_active_workflows(
     }
 
     Ok(())
+}
+
+fn install_recovered_completion_monitor(
+    store: Arc<dyn EventStore>,
+    visibility_store: Arc<dyn VisibilityStore>,
+    runtime: &Arc<RuntimeHandle>,
+    registry: Arc<Registry>,
+    handle: &WorkflowHandle,
+) -> Result<(), EngineError> {
+    let pid = handle.pid();
+    let completion_context = ProcessExitContext {
+        store,
+        visibility_store,
+        registry,
+        tokio_handle: tokio::runtime::Handle::current(),
+    };
+    let completion_handle = handle.clone();
+    runtime.monitor_process(pid, move |outcome| {
+        if let Err(error) = handle_process_exit(completion_context, completion_handle, outcome) {
+            tracing::error!(workflow_pid = pid, error = %error, "recovered workflow process monitor completion failed");
+        }
+    })?;
+    Ok(())
+}
+
+fn rollback_recovered_resident(
+    runtime: &RuntimeHandle,
+    registry: Arc<Registry>,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
+    pid: crate::Pid,
+    cause: &EngineError,
+) {
+    if let Err(error) = registry.remove(workflow_id, run_id) {
+        tracing::warn!(workflow_id = %workflow_id, error = %error, "failed to roll back recovered workflow registry entry");
+    }
+    if let Err(error) = runtime.cancel_pid(pid) {
+        tracing::warn!(workflow_id = %workflow_id, pid, error = %error, cause = %cause, "failed to cancel recovered workflow process after startup registration failed");
+    }
 }
 
 fn recover_active_workflow(

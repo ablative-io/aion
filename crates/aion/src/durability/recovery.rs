@@ -11,7 +11,8 @@ use crate::durability::{
     Command, DurabilityError, LiveExecutor, Recorder, Replay, ReplayOutcome, ReplayTerminal,
     Resolution, fail_on_violation,
 };
-use crate::{EngineError, LoadedWorkflows, Pid};
+use crate::supervision::spawn_workflow_with_policy;
+use crate::{EngineError, LoadedWorkflows, Pid, RuntimeHandle, RuntimeInput};
 
 /// AE-provided replay inputs for one active workflow.
 #[derive(Clone, Debug)]
@@ -22,6 +23,43 @@ pub struct RecoveryPlan {
     pub commands: Vec<Command>,
     /// Timestamp to use if recovery records a deterministic non-determinism failure.
     pub failure_recorded_at: DateTime<Utc>,
+}
+
+struct StartedMetadata<'a> {
+    input: &'a aion_core::Payload,
+    run_id: &'a RunId,
+}
+
+fn started_metadata<'a>(
+    workflow_id: &WorkflowId,
+    expected_workflow_type: &str,
+    history: &'a [Event],
+) -> Result<StartedMetadata<'a>, EngineError> {
+    let Some((workflow_type, input, run_id)) = history.iter().rev().find_map(|event| match event {
+        Event::WorkflowStarted {
+            workflow_type,
+            input,
+            run_id,
+            ..
+        } => Some((workflow_type, input, run_id)),
+        _ => None,
+    }) else {
+        return Err(EngineError::Load {
+            reason: format!(
+                "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
+            ),
+        });
+    };
+
+    if workflow_type != expected_workflow_type {
+        return Err(EngineError::Load {
+            reason: format!(
+                "active workflow `{workflow_id}` started as `{workflow_type}` but recovery was requested for `{expected_workflow_type}`"
+            ),
+        });
+    }
+
+    Ok(StartedMetadata { input, run_id })
 }
 
 /// Small AE/test seam that supplies the execution-specific inputs AD cannot infer from history.
@@ -206,12 +244,60 @@ pub trait ActiveWorkflowRecoverySeam: Send + Sync {
     ) -> Result<ActiveWorkflowRecovery, EngineError>;
 }
 
-/// Placeholder AD seam for this cluster.
+/// Production AD seam that resumes an active workflow by spawning its loaded
+/// workflow entrypoint against the existing durable history.
 ///
-/// Later AD work replaces this object with replay that derives the run id,
-/// started package version, and recovered workflow process. Returning a typed
-/// load error is intentional: AE-011 must not invent a run id or pick the latest
-/// loaded package version for active durable workflows.
+/// Per-NIF context construction resolves commands from the recorded event
+/// history before any live side effect runs, so the restored process advances
+/// through replay using the same resolver path as normal execution. This seam
+/// only reconstructs immutable start metadata and a runtime PID; the builder
+/// remains responsible for constructing the single resumed [`Recorder`].
+pub struct ActiveWorkflowRecoverySeamImpl {
+    runtime: Arc<RuntimeHandle>,
+}
+
+impl ActiveWorkflowRecoverySeamImpl {
+    /// Build a production recovery seam bound to the runtime that has loaded the
+    /// workflow packages for this engine instance.
+    #[must_use]
+    pub fn new(runtime: Arc<RuntimeHandle>) -> Self {
+        Self { runtime }
+    }
+}
+
+impl ActiveWorkflowRecoverySeam for ActiveWorkflowRecoverySeamImpl {
+    fn recover_active_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+        workflow_type: &str,
+        history: &[Event],
+        loaded_workflows: &LoadedWorkflows,
+    ) -> Result<ActiveWorkflowRecovery, EngineError> {
+        let started = started_metadata(workflow_id, workflow_type, history)?;
+        let loaded = loaded_workflows
+            .single_loaded(workflow_type)
+            .map_err(|reason| EngineError::Load { reason })?;
+        let runtime_input = RuntimeInput::from_payload(started.input)?;
+        let pid = spawn_workflow_with_policy(
+            &self.runtime,
+            loaded.deployed_entry_module(),
+            loaded.entry_function(),
+            runtime_input,
+        )?;
+
+        Ok(ActiveWorkflowRecovery::Resident {
+            run_id: started.run_id.clone(),
+            loaded_version: loaded.version().clone(),
+            pid,
+        })
+    }
+}
+
+/// Test/manual seam that deliberately refuses normal workflow recovery.
+///
+/// Production builders install [`ActiveWorkflowRecoverySeamImpl`] once the
+/// runtime exists. Keeping this seam available lets tests assert explicit
+/// recovery wiring without inventing workflow metadata.
 #[derive(Debug, Default)]
 pub struct DeferredActiveWorkflowRecovery;
 

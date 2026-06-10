@@ -100,6 +100,7 @@ impl ServerState {
             .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
             .active_registry(active_registry)
+            .production_recovery_seam()
             .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
                 Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
             })
