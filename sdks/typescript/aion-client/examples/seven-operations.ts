@@ -11,42 +11,109 @@ type EchoState = {
   readonly lastSignal?: string;
 };
 
-class HttpSubscribeTransport implements SubscribeTransport {
+class WebSocketSubscribeTransport implements SubscribeTransport {
   constructor(
     private readonly endpoint: string,
     private readonly bearerToken: string | undefined,
   ) {}
 
   async *subscribe(request: SubscribeRequest): AsyncIterable<unknown> {
-    const response = await fetch(
-      new URL("/workflows/subscribe", `${this.endpoint}/`),
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(this.bearerToken === undefined
-            ? {}
-            : { authorization: `Bearer ${this.bearerToken}` }),
-        },
-        body: JSON.stringify({
-          namespace: request.namespace,
-          workflow_id: { uuid: request.workflowId },
-          run_id:
-            request.runId === undefined ? undefined : { uuid: request.runId },
-          resume_from: request.resumeFrom,
-        }),
-      },
-    );
-    if (!response.ok) {
+    if (request.resumeFrom !== undefined) {
       throw new UnavailableError(
-        `subscribe failed with HTTP ${response.status}`,
+        "resume_from is not yet supported by the server wire protocol",
       );
     }
-    const frames = (await response.json()) as readonly unknown[];
-    for (const frame of frames) {
-      yield frame;
+    if (this.bearerToken !== undefined) {
+      throw new UnavailableError(
+        "the example WebSocket transport cannot attach authorization headers",
+      );
+    }
+    const socket = new WebSocket(eventsEndpoint(this.endpoint));
+    try {
+      await socketOpen(socket);
+      socket.send(
+        JSON.stringify({
+          per_workflow: {
+            namespace: request.namespace,
+            workflow_id: { uuid: request.workflowId },
+          },
+        }),
+      );
+
+      while (true) {
+        const frame = await socketMessage(socket);
+        if (frame === undefined) {
+          return;
+        }
+        yield frame;
+      }
+    } finally {
+      socket.close();
     }
   }
+}
+
+function eventsEndpoint(endpoint: string): string {
+  const parsed = new URL(endpoint);
+  parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+  parsed.pathname = "/events/stream";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function socketOpen(socket: WebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+    };
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new UnavailableError("event stream connection failed"));
+    };
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onError);
+  });
+}
+
+function socketMessage(socket: WebSocket): Promise<unknown | undefined> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("close", onClose);
+      socket.removeEventListener("error", onError);
+    };
+    const onMessage = (event: MessageEvent) => {
+      cleanup();
+      resolve(normalizeSocketFrame(event.data));
+    };
+    const onClose = () => {
+      cleanup();
+      resolve(undefined);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new UnavailableError("event stream receive failed"));
+    };
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("close", onClose);
+    socket.addEventListener("error", onError);
+  });
+}
+
+async function normalizeSocketFrame(frame: unknown): Promise<unknown> {
+  if (frame instanceof Blob) {
+    return frame.text();
+  }
+  if (frame instanceof ArrayBuffer) {
+    return new TextDecoder().decode(frame);
+  }
+  return frame;
 }
 
 async function run(): Promise<void> {
@@ -63,7 +130,7 @@ async function run(): Promise<void> {
     tls: {
       enabled: process.env.AION_INSECURE !== "1" && endpoint.startsWith("https://"),
     },
-    streamTransport: new HttpSubscribeTransport(endpoint, bearerToken),
+    streamTransport: new WebSocketSubscribeTransport(endpoint, bearerToken),
   });
 
   const handle = await client.start({

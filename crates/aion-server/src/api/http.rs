@@ -4,15 +4,16 @@ use std::collections::HashMap;
 
 use aion_core::{SearchAttributeValue, WorkflowStatus};
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
-    ProtoCreateScheduleRequest, ProtoCreateScheduleResponse, ProtoDeleteScheduleResponse,
-    ProtoDescribeScheduleResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
-    ProtoListSchedulesRequest, ProtoListSchedulesResponse, ProtoListWorkflowsRequest,
-    ProtoListWorkflowsResponse, ProtoPauseScheduleResponse, ProtoQueryRequest, ProtoQueryResponse,
-    ProtoResumeScheduleResponse, ProtoScheduleId, ProtoScheduleIdRequest, ProtoSignalRequest,
-    ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
-    ProtoUpdateScheduleRequest, ProtoUpdateScheduleResponse, WireEnvelope, WireError,
-    WireErrorCode,
+    FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
+    ProtoCancelResponse, ProtoCountWorkflowsRequest, ProtoCreateScheduleRequest,
+    ProtoCreateScheduleResponse, ProtoDeleteScheduleResponse, ProtoDescribeScheduleResponse,
+    ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse, ProtoListSchedulesRequest,
+    ProtoListSchedulesResponse, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
+    ProtoPauseScheduleResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoResumeScheduleResponse,
+    ProtoScheduleId, ProtoScheduleIdRequest, ProtoSignalRequest, ProtoSignalResponse,
+    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, ProtoUpdateScheduleRequest,
+    ProtoUpdateScheduleResponse, ProtoWorkflowId, SubscriptionRequest, WireEnvelope, WireError,
+    WireErrorCode, subscription_request,
 };
 use aion_store::visibility::{ListWorkflowsFilter, SearchAttributePredicate, WorkflowSummary};
 #[cfg(feature = "auth")]
@@ -20,7 +21,10 @@ use axum::http::header;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{FromRequestParts, Path, Query, State},
+    extract::{
+        FromRequestParts, Path, Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -32,7 +36,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
-    observability,
+    observability, stream::handle_subscription_socket,
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -78,6 +82,7 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/workflows/cancel", post(cancel_workflow))
         .route("/workflows/list", post(post_list_workflows))
         .route("/workflows/describe", post(describe_workflow))
+        .route("/events/stream", get(subscribe_events_socket))
         .route("/schedules", post(create_schedule).get(list_schedules))
         .route(
             "/schedules/{id}",
@@ -109,6 +114,20 @@ impl FromRequestParts<ServerState> for HttpCaller {
             .map_err(axum::response::IntoResponse::into_response)?;
         Ok(Self(caller))
     }
+}
+
+async fn subscribe_events_socket(
+    websocket: WebSocketUpgrade,
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+) -> Response {
+    websocket
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = serve_subscription_socket(socket, state, caller).await {
+                tracing::warn!(error = %error, "websocket event subscription ended with an error");
+            }
+        })
+        .into_response()
 }
 
 async fn start_workflow(
@@ -761,6 +780,195 @@ impl IntoResponse for HttpStartError {
     }
 }
 
+async fn serve_subscription_socket(
+    mut socket: WebSocket,
+    state: ServerState,
+    caller: CallerIdentity,
+) -> Result<(), ServerError> {
+    let request = read_subscription_request(&mut socket).await?;
+    handle_subscription_socket(socket, &state, &caller, &request).await
+}
+
+async fn read_subscription_request(
+    socket: &mut WebSocket,
+) -> Result<SubscriptionRequest, ServerError> {
+    loop {
+        let Some(message) = socket.recv().await else {
+            return Err(
+                WireError::invalid_input("websocket subscription request is missing").into(),
+            );
+        };
+        let message = message.map_err(|source| {
+            WireError::invalid_input(format!(
+                "failed to read websocket subscription request: {source}"
+            ))
+        })?;
+
+        match message {
+            Message::Text(text) => return decode_subscription_request(text.as_bytes()),
+            Message::Binary(bytes) => return decode_subscription_request(&bytes),
+            Message::Ping(_) | Message::Pong(_) => {}
+            Message::Close(_) => {
+                return Err(WireError::invalid_input(
+                    "websocket closed before subscription request",
+                )
+                .into());
+            }
+        }
+    }
+}
+
+fn decode_subscription_request(bytes: &[u8]) -> Result<SubscriptionRequest, ServerError> {
+    let value = serde_json::from_slice::<Value>(bytes).map_err(|source| {
+        WireError::invalid_input(format!("invalid websocket subscription JSON: {source}"))
+    })?;
+    decode_subscription_value(&value)
+}
+
+fn decode_subscription_value(value: &Value) -> Result<SubscriptionRequest, ServerError> {
+    if let Ok(request) = serde_json::from_value::<SubscriptionRequest>(value.clone()) {
+        if request.subscription.is_some() {
+            return Ok(request);
+        }
+    }
+
+    let subscription = value.get("subscription").unwrap_or(value);
+    let Some(subscription) = subscription.as_object() else {
+        return Err(
+            WireError::invalid_input("websocket subscription must be a JSON object").into(),
+        );
+    };
+
+    if let Some(value) = subscription.get("per_workflow") {
+        return Ok(SubscriptionRequest {
+            subscription: Some(subscription_request::Subscription::PerWorkflow(
+                decode_per_workflow_subscription(value)?,
+            )),
+        });
+    }
+    if let Some(value) = subscription.get("filtered") {
+        return Ok(SubscriptionRequest {
+            subscription: Some(subscription_request::Subscription::Filtered(
+                decode_filtered_subscription(value)?,
+            )),
+        });
+    }
+    if let Some(value) = subscription.get("firehose") {
+        return Ok(SubscriptionRequest {
+            subscription: Some(subscription_request::Subscription::Firehose(
+                decode_firehose_subscription(value)?,
+            )),
+        });
+    }
+
+    Err(WireError::invalid_input(
+        "websocket subscription must contain per_workflow, filtered, or firehose",
+    )
+    .into())
+}
+
+fn decode_per_workflow_subscription(value: &Value) -> Result<PerWorkflowSubscription, ServerError> {
+    let object = subscription_object(value, "per-workflow")?;
+    Ok(PerWorkflowSubscription {
+        namespace: required_string(object, "namespace", "per-workflow subscription")?.to_owned(),
+        workflow_id: Some(decode_workflow_id_value(
+            object.get("workflow_id").ok_or_else(|| {
+                WireError::invalid_input("per-workflow subscription requires workflow_id")
+            })?,
+        )?),
+    })
+}
+
+fn decode_filtered_subscription(value: &Value) -> Result<FilteredSubscription, ServerError> {
+    let object = subscription_object(value, "filtered")?;
+    let status = match object.get("status") {
+        Some(Value::String(status)) => Some(decode_status_name(status)?),
+        Some(Value::Number(status)) => status.as_i64().and_then(|value| i32::try_from(value).ok()),
+        Some(Value::Null) | None => None,
+        Some(_other) => None,
+    };
+    Ok(FilteredSubscription {
+        namespace: required_string(object, "namespace", "filtered subscription")?.to_owned(),
+        workflow_type: object
+            .get("workflow_type")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        status,
+        namespace_selector: object
+            .get("namespace_selector")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn decode_firehose_subscription(value: &Value) -> Result<FirehoseSubscription, ServerError> {
+    let object = subscription_object(value, "firehose")?;
+    let namespace = object
+        .get("namespace")
+        .or_else(|| object.get("namespace_selector"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| WireError::invalid_input("firehose subscription requires namespace"))?;
+    Ok(FirehoseSubscription {
+        namespace: namespace.to_owned(),
+    })
+}
+
+fn subscription_object<'a>(
+    value: &'a Value,
+    subscription_name: &str,
+) -> Result<&'a Map<String, Value>, ServerError> {
+    value.as_object().ok_or_else(|| {
+        WireError::invalid_input(format!(
+            "{subscription_name} subscription must be a JSON object"
+        ))
+        .into()
+    })
+}
+
+fn required_string<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    context: &str,
+) -> Result<&'a str, ServerError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| WireError::invalid_input(format!("{context} requires {key}")).into())
+}
+
+fn decode_workflow_id_value(value: &Value) -> Result<ProtoWorkflowId, ServerError> {
+    if let Some(uuid) = value.as_str() {
+        return Ok(ProtoWorkflowId {
+            uuid: uuid.to_owned(),
+        });
+    }
+    serde_json::from_value::<ProtoWorkflowId>(value.clone()).map_err(|source| {
+        WireError::invalid_input(format!(
+            "invalid per-workflow subscription workflow_id: {source}"
+        ))
+        .into()
+    })
+}
+
+fn decode_status_name(status: &str) -> Result<i32, ServerError> {
+    match status {
+        "running" | "Running" => Ok(aion_proto::ProtoWorkflowStatus::Running as i32),
+        "completed" | "Completed" => Ok(aion_proto::ProtoWorkflowStatus::Completed as i32),
+        "failed" | "Failed" => Ok(aion_proto::ProtoWorkflowStatus::Failed as i32),
+        "cancelled" | "Cancelled" | "canceled" | "Canceled" => {
+            Ok(aion_proto::ProtoWorkflowStatus::Cancelled as i32)
+        }
+        "timed_out" | "TimedOut" => Ok(aion_proto::ProtoWorkflowStatus::TimedOut as i32),
+        "continued_as_new" | "ContinuedAsNew" => {
+            Ok(aion_proto::ProtoWorkflowStatus::ContinuedAsNew as i32)
+        }
+        other => Err(WireError::invalid_input(format!(
+            "invalid workflow status in websocket subscription: {other}"
+        ))
+        .into()),
+    }
+}
+
 struct HttpWireError(WireError);
 
 impl IntoResponse for HttpWireError {
@@ -786,13 +994,13 @@ fn http_status(code: WireErrorCode) -> StatusCode {
 mod tests {
     use std::{fs, net::SocketAddr, sync::Arc};
 
-    use aion::EngineBuilder;
+    use aion::{EngineBuilder, EventFilter, EventPublisher};
     use aion_core::{
         Event, EventEnvelope, Payload, SearchAttributeValue, WorkflowId, WorkflowStatus,
     };
     use aion_proto::{
         ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoStartWorkflowRequest,
-        WireError, WireErrorCode, convert::ProtoPayload,
+        StreamedEvent, WireError, WireErrorCode, convert::ProtoPayload,
     };
     use aion_store::{
         EventStore, InMemoryStore, WriteToken,
@@ -800,7 +1008,13 @@ mod tests {
     };
     use axum::{body, http::Request};
     use chrono::Utc;
+    use futures::{SinkExt, StreamExt, stream, stream::BoxStream};
     use serde_json::json;
+    use tokio::sync::{Semaphore, broadcast};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Message as ClientMessage, client::IntoClientRequest},
+    };
     use tower::ServiceExt;
 
     use super::*;
@@ -814,6 +1028,77 @@ mod tests {
 
     const NAMESPACE: &str = "tenant-a";
     const TOKEN: &str = "test-token";
+
+    #[tokio::test]
+    async fn websocket_events_route_upgrades_and_streams_client_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let publisher = Arc::new(TestEventPublisher::new());
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .event_publisher(publisher.clone())
+                .build()
+                .await?,
+        );
+        let ownership = WorkflowOwnership::default();
+        ownership.record(workflow_id(), NAMESPACE)?;
+        let resolver =
+            NamespaceResolver::from_parts(NamespaceMode::SharedEngine, Some(engine), ownership);
+        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router.into_make_service()).await {
+                tracing::warn!(%error, "test websocket server exited with error");
+            }
+        });
+
+        let mut request = format!("ws://{address}/events/stream").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {TOKEN}").parse()?);
+        request
+            .headers_mut()
+            .insert("x-aion-subject", "alice".parse()?);
+        request
+            .headers_mut()
+            .insert("x-aion-namespaces", NAMESPACE.parse()?);
+        let (mut socket, response) = connect_async(request).await?;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+        let subscription = json!({
+            "type": "subscribe",
+            "subscription_id": "dashboard-test",
+            "subscription": {
+                "per_workflow": {
+                    "namespace": NAMESPACE,
+                    "workflow_id": workflow_id().to_string()
+                }
+            }
+        });
+        socket
+            .send(ClientMessage::Text(subscription.to_string().into()))
+            .await?;
+        publisher.wait_for_subscription().await;
+        publisher.publish(started_event()?)?;
+
+        let Some(frame) = socket.next().await else {
+            return Err("websocket closed before streaming an event".into());
+        };
+        let frame = frame?;
+        let ClientMessage::Text(text) = frame else {
+            return Err("expected websocket text frame".into());
+        };
+        let streamed: StreamedEvent = serde_json::from_str(&text)?;
+        assert_eq!(streamed.namespace, NAMESPACE);
+        assert_eq!(streamed.decode_event()?.workflow_id(), &workflow_id());
+
+        server.abort();
+        Ok(())
+    }
 
     #[tokio::test]
     async fn http_start_and_list_match_handler_outcomes() -> Result<(), Box<dyn std::error::Error>>
@@ -1366,6 +1651,54 @@ mod tests {
             .header("authorization", format!("Bearer {TOKEN}"))
             .header("x-aion-subject", "alice")
             .header("x-aion-namespaces", NAMESPACE)
+    }
+
+    struct TestEventPublisher {
+        events: broadcast::Sender<Event>,
+        subscribed: Semaphore,
+    }
+
+    impl TestEventPublisher {
+        fn new() -> Self {
+            let (events, _receiver) = broadcast::channel(8);
+            Self {
+                events,
+                subscribed: Semaphore::new(0),
+            }
+        }
+
+        async fn wait_for_subscription(&self) {
+            if let Ok(permit) = self.subscribed.acquire().await {
+                permit.forget();
+            }
+        }
+
+        fn publish(&self, event: Event) -> Result<(), broadcast::error::SendError<Event>> {
+            self.events.send(event).map(|_receivers| ())
+        }
+    }
+
+    impl EventPublisher for TestEventPublisher {
+        fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event> {
+            let receiver = self.events.subscribe();
+            self.subscribed.add_permits(1);
+            Box::pin(stream::unfold(
+                (receiver, filter),
+                |(mut receiver, filter)| async move {
+                    loop {
+                        match receiver.recv().await {
+                            Ok(event) => {
+                                if filter.matches(&event) {
+                                    return Some((event, (receiver, filter)));
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(broadcast::error::RecvError::Closed) => return None,
+                        }
+                    }
+                },
+            ))
+        }
     }
 
     async fn read_json<T>(response: Response) -> Result<T, Box<dyn std::error::Error>>
