@@ -8,6 +8,7 @@ import aion/activity
 import aion/codec
 import aion/error
 import aion/workflow
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 
@@ -23,20 +24,14 @@ pub type WorkflowError {
   ActivityFailed(message: String)
 }
 
-pub fn definition() -> workflow.WorkflowDefinition(HelloInput, String, WorkflowError) {
-  workflow.define(
-    "hello-world",
-    hello_input_codec(),
-    string_codec(),
-    workflow_error_codec(),
-    run,
-  )
-}
-
-pub fn run(input: HelloInput) -> Result(String, WorkflowError) {
-  case workflow.run(greet_activity(input)) {
-    Ok(greeting) -> Ok(greeting.greeting)
-    Error(activity_error) -> Error(ActivityFailed(activity_error_message(activity_error)))
+pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
+  case decode.run(raw_input, hello_input_decoder()) {
+    Ok(input) ->
+      case workflow.run(greet_activity(input)) {
+        Ok(greeting) -> Ok(greeting.greeting)
+        Error(activity_error) -> Error(ActivityFailed(activity_error_message(activity_error)))
+      }
+    Error(_) -> Error(ActivityFailed("failed to decode workflow input"))
   }
 }
 
