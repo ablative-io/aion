@@ -1,0 +1,54 @@
+{
+  "id": "IG-007",
+  "cluster": "aion-integration",
+  "title": "Audit and correct README claims against reality",
+  "depends_on": ["IG-001", "IG-002", "IG-003", "IG-004", "IG-005"],
+  "blocked_by": ["IG-001", "IG-002", "IG-003", "IG-004", "IG-005"],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The external review found that README and documentation claims outrun the current implementation — WebSocket streaming documented as shipped (but not routed), 'durable' timers that aren't durable, crash-resume claims that don't work in production. After the IG-001 through IG-005 fixes land, the README needs to accurately reflect what works and what's in progress.",
+  "task": "Audit the root README.md and crate-level READMEs against the current implementation state. Remove or qualify any claims that aren't yet true. Add honest status indicators for in-progress features.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Root README accuracy",
+      "spec": "THE SYSTEM SHALL audit README.md and ensure every claimed feature is either working in the current build or marked with a clear status indicator (e.g., 'In Progress', 'Planned').",
+      "acceptance": [
+        "No feature is documented as shipped or implied-working that isn't actually functional.",
+        "In-progress features are clearly marked with a status indicator.",
+        "The feature list matches the current state of the codebase after IG-001 through IG-005."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Getting-started guide validity",
+      "spec": "THE SYSTEM SHALL verify that every command in the getting-started guide works end-to-end and update any that don't.",
+      "acceptance": [
+        "A new user following the guide step-by-step reaches a working workflow.",
+        "All commands produce the documented output or the documentation matches actual output.",
+        "Prerequisites and environment setup steps are accurate and complete."
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "API documentation accuracy",
+      "spec": "THE SYSTEM SHALL audit API.md and docs/ for claims about WebSocket streaming, crash recovery, and durable timers, updating them to match post-IG reality.",
+      "acceptance": [
+        "No API endpoint is documented that doesn't exist.",
+        "Feature status matches implementation for WebSocket streaming, crash recovery, and durable timers.",
+        "Documented endpoint paths, methods, and payloads match the actual server routes."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add new features.",
+    "SHALL NOT remove documentation for planned features — only add honest status markers.",
+    "SHALL NOT modify code — documentation only."
+  ],
+  "verification": [
+    "All commands in getting-started guide execute successfully.",
+    "No documentation claims a feature that doesn't work without a status qualifier.",
+    "Crate-level READMEs match their crate's current public API.",
+    "API.md endpoints match aion-server's actual route table."
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "id": "IG-006",
+  "cluster": "aion-integration",
+  "title": "Fix Gleam client dependency conflict",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "The Gleam client (gleam/aion_client/) cannot resolve its dependencies due to a gleam_http version conflict. This makes the Gleam client unusable — it won't even compile. Until this is fixed, no Gleam consumer can programmatically interact with an aion-server.",
+  "task": "Fix the dependency version conflict in the Gleam client's gleam.toml so that gleam build succeeds and the client can be used to interact with an aion-server.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Dependency resolution",
+      "spec": "THE SYSTEM SHALL update gleam.toml dependency versions so that gleam build succeeds without version conflicts.",
+      "acceptance": [
+        "gleam build succeeds in gleam/aion_client/.",
+        "No version conflict errors during dependency resolution.",
+        "All transitive dependencies resolve without manual overrides."
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Client functionality",
+      "spec": "THE SYSTEM SHALL verify that the client's public API (start_workflow, describe, list, signal) compiles and type-checks against the current aion-server wire contract.",
+      "acceptance": [
+        "All exported functions compile without errors.",
+        "Type signatures match the server's HTTP API contract.",
+        "gleam check passes with no warnings about the public API.",
+        "No functions reference removed or renamed server endpoints."
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the aion-server wire protocol.",
+    "SHALL NOT add new client features — only fix what's broken.",
+    "SHALL NOT modify server-side code."
+  ],
+  "verification": [
+    "gleam build succeeds in gleam/aion_client/.",
+    "gleam check passes with no errors.",
+    "No version conflicts in gleam.toml.",
+    "The client's public API type-checks against the current server contract."
+  ]
+}
