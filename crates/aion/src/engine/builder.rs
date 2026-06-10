@@ -42,6 +42,22 @@ pub enum WorkflowPackageSource {
     Package(Box<Package>),
 }
 
+async fn recover_timers_on_startup(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
+    let readable_store: Arc<dyn aion_store::ReadableEventStore> = store;
+    let timer_service = crate::runtime::nif_timer::installed_timer_service().map_err(|error| {
+        EngineError::Runtime {
+            reason: format!("timer recovery service unavailable: {error}"),
+        }
+    })?;
+    TimerRecovery::new(readable_store, timer_service, Duration::ZERO)
+        .recover_on_startup(Utc::now())
+        .await
+        .map(|_| ())
+        .map_err(|error| EngineError::Runtime {
+            reason: format!("timer recovery failed: {error}"),
+        })
+}
+
 fn load_workflow_sources(
     runtime: &RuntimeHandle,
     sources: Vec<WorkflowPackageSource>,
@@ -356,8 +372,6 @@ impl EngineBuilder {
             .visibility_store
             .ok_or(EngineError::MissingVisibilityStore)?;
 
-        let activity_dispatcher = self.activity_dispatcher;
-
         let runtime = Arc::new(RuntimeHandle::new(
             RuntimeConfig::new(self.scheduler_threads).with_signal_delivery(self.signal_delivery),
         )?);
@@ -387,7 +401,7 @@ impl EngineBuilder {
             Arc::clone(&store),
         )));
         install_query_bridge(Arc::clone(&registry), tokio::runtime::Handle::current());
-        if let Some(dispatcher) = activity_dispatcher {
+        if let Some(dispatcher) = self.activity_dispatcher {
             install_activity_dispatcher(dispatcher);
         }
         let supervision = Arc::new(SupervisionTree::new());
@@ -397,19 +411,7 @@ impl EngineBuilder {
             Arc::clone(&visibility_store),
         )
         .await?;
-        let readable_store: Arc<dyn aion_store::ReadableEventStore> = store.clone();
-        let timer_service =
-            crate::runtime::nif_timer::installed_timer_service().map_err(|error| {
-                EngineError::Runtime {
-                    reason: format!("timer recovery service unavailable: {error}"),
-                }
-            })?;
-        TimerRecovery::new(readable_store, timer_service, Duration::ZERO)
-            .recover_on_startup(Utc::now())
-            .await
-            .map_err(|error| EngineError::Runtime {
-                reason: format!("timer recovery failed: {error}"),
-            })?;
+        recover_timers_on_startup(Arc::clone(&store)).await?;
         repopulate_active_workflows(
             Arc::clone(&store),
             Arc::clone(&visibility_store),
