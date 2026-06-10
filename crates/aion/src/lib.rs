@@ -8,13 +8,15 @@
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! use aion::EngineBuilder;
-//! use aion_store::InMemoryStore;
+//! use std::sync::Arc;
 //!
-//! let store = InMemoryStore::default();
+//! use aion::EngineBuilder;
+//! use aion_store::{EventStore, InMemoryStore};
+//!
+//! let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 //! let engine = EngineBuilder::new()
-//!     .store(store.clone())
-//!     .visibility_store(store)
+//!     .store_arc(store)
+//!     .in_memory_visibility()
 //!     .build()
 //!     .await?;
 //! # let _ = engine;

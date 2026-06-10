@@ -6,17 +6,17 @@ use std::sync::Arc;
 
 use aion::EngineBuilder;
 use aion_core::{Event, WorkflowStatus, status_from_events};
-use aion_store::{EventStore, InMemoryStore};
 
 use common::{FIXTURE_MODULE, fixture_package, input_payload};
 
 #[tokio::test]
 async fn restart_recovers_active_workflow_without_duplicate_replay_events()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let package = fixture_package("wait")?;
 
-    let (first, _) = common::engine_with_fixture("wait").await?;
+    // The helper returns the store its engine writes to — the restarted
+    // engine must build over that same store to find the active history.
+    let (first, store) = common::engine_with_fixture("wait").await?;
     let handle = first
         .start_workflow(FIXTURE_MODULE, input_payload()?)
         .await?;

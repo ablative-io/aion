@@ -4,10 +4,8 @@ mod common;
 
 use std::sync::Arc;
 
-use aion::durability::{ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam};
-use aion::{EngineBuilder, EngineError, LoadedWorkflows, Pid};
-use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus, status_from_events};
-use aion_package::ContentHash;
+use aion::EngineBuilder;
+use aion_core::{Event, Payload, WorkflowStatus, status_from_events};
 use serde_json::json;
 
 use common::{FIXTURE_MODULE, input_payload, payload};
@@ -133,29 +131,13 @@ async fn recovery_active_listing_contains_only_current_continuation_run()
             .is_some()
     );
 
-    let replacement_version = replacement.loaded_version().clone();
-    let untouched_version = untouched.loaded_version().clone();
+    // The production AD seam re-spawns both active fixture workflows from
+    // their recorded start metadata — no synthetic process ids.
     let recovered = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
         .in_memory_visibility()
         .scheduler_threads(1)
         .load_workflows(common::fixture_package("wait")?)
-        .recovery_seam(Arc::new(TestRecovery {
-            replacements: vec![
-                RecoveryEntry {
-                    workflow_id: replacement.workflow_id().clone(),
-                    run_id: replacement.run_id().clone(),
-                    version: replacement_version,
-                    pid: 1,
-                },
-                RecoveryEntry {
-                    workflow_id: untouched.workflow_id().clone(),
-                    run_id: untouched.run_id().clone(),
-                    version: untouched_version,
-                    pid: 2,
-                },
-            ],
-        }))
         .build()
         .await?;
 
@@ -225,42 +207,4 @@ async fn read_run_chain_returns_parent_links_in_chronological_order()
 
 fn carried_payload(label: &str) -> Result<Payload, aion_core::PayloadError> {
     payload(&json!({ "carried": label }))
-}
-
-#[derive(Debug)]
-struct TestRecovery {
-    replacements: Vec<RecoveryEntry>,
-}
-
-#[derive(Debug)]
-struct RecoveryEntry {
-    workflow_id: WorkflowId,
-    run_id: RunId,
-    version: ContentHash,
-    pid: Pid,
-}
-
-impl ActiveWorkflowRecoverySeam for TestRecovery {
-    fn recover_active_workflow(
-        &self,
-        workflow_id: &WorkflowId,
-        workflow_type: &str,
-        history: &[Event],
-        loaded_workflows: &LoadedWorkflows,
-    ) -> Result<ActiveWorkflowRecovery, EngineError> {
-        let _ = (workflow_type, history, loaded_workflows);
-        let entry = self
-            .replacements
-            .iter()
-            .find(|entry| &entry.workflow_id == workflow_id)
-            .ok_or_else(|| EngineError::Load {
-                reason: format!("test recovery has no run metadata for workflow {workflow_id}"),
-            })?;
-
-        Ok(ActiveWorkflowRecovery::Resident {
-            run_id: entry.run_id.clone(),
-            loaded_version: entry.version.clone(),
-            pid: entry.pid,
-        })
-    }
 }

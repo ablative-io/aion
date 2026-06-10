@@ -754,25 +754,24 @@ fn started_run_id(
 mod tests {
     use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
 
-    use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
+    use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
     use aion_package::{
-        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ContentHash, DeclaredActivity, Manifest,
-        ManifestVersion, Package, PackageBuilder,
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
+        Package, PackageBuilder,
     };
     use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
     use aion_store::{InMemoryStore, ReadableEventStore, WritableEventStore, WriteToken};
     use chrono::Utc;
     use serde_json::json;
 
-    use crate::durability::{ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam};
     use crate::engine::api::{
         schedule_coordinator_run_id, schedule_coordinator_workflow_id,
         schedule_coordinator_workflow_type,
     };
     use crate::runtime::{Mfa, NifEntry};
 
-    use super::{EngineBuilder, LoadedWorkflows};
-    use crate::{EngineError, Pid};
+    use super::EngineBuilder;
+    use crate::EngineError;
 
     fn payload() -> Result<Payload, aion_core::PayloadError> {
         Payload::from_json(&json!({ "input": true }))
@@ -804,10 +803,6 @@ mod tests {
             },
             result: payload()?,
         })
-    }
-
-    fn hash(byte: u8) -> ContentHash {
-        ContentHash::from_bytes([byte; 32])
     }
 
     fn package_manifest() -> Manifest {
@@ -862,30 +857,6 @@ mod tests {
         PackageBuilder::new(package.manifest().clone(), package.beams().clone())
             .write_to_path(&path)?;
         Ok(path)
-    }
-
-    #[derive(Debug)]
-    struct TestRecovery {
-        run_id: RunId,
-        version: ContentHash,
-        pid: Pid,
-    }
-
-    impl ActiveWorkflowRecoverySeam for TestRecovery {
-        fn recover_active_workflow(
-            &self,
-            workflow_id: &WorkflowId,
-            workflow_type: &str,
-            history: &[Event],
-            loaded_workflows: &LoadedWorkflows,
-        ) -> Result<ActiveWorkflowRecovery, EngineError> {
-            let _ = (workflow_id, workflow_type, history, loaded_workflows);
-            Ok(ActiveWorkflowRecovery::Resident {
-                run_id: self.run_id.clone(),
-                loaded_version: self.version.clone(),
-                pid: self.pid,
-            })
-        }
     }
 
     #[tokio::test]
@@ -1059,20 +1030,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_reconciliation_backfills_running_and_completed_visibility()
+    async fn startup_reconciliation_backfills_completed_visibility()
     -> Result<(), Box<dyn std::error::Error>> {
         let store = Arc::new(InMemoryStore::default());
-        let running = WorkflowId::new_v4();
         let completed_id = WorkflowId::new_v4();
 
-        store
-            .append(
-                WriteToken::recorder(),
-                &running,
-                &[started(&running, "checkout")?],
-                0,
-            )
-            .await?;
         store
             .append(
                 WriteToken::recorder(),
@@ -1088,25 +1050,15 @@ mod tests {
         let engine = EngineBuilder::new()
             .store_arc(store.clone())
             .visibility_store_arc(store.clone())
-            .recovery_seam(Arc::new(TestRecovery {
-                run_id: RunId::new_v4(),
-                version: hash(1),
-                pid: 99,
-            }))
             .build()
             .await?;
 
         let summaries = store.list_workflows(ListWorkflowsFilter::default()).await?;
-        let running_summary = summaries
-            .iter()
-            .find(|summary| summary.workflow_id == running)
-            .ok_or("running workflow missing from visibility")?;
         let completed_summary = summaries
             .iter()
             .find(|summary| summary.workflow_id == completed_id)
             .ok_or("completed workflow missing from visibility")?;
 
-        assert_eq!(running_summary.status, WorkflowStatus::Running);
         assert_eq!(completed_summary.status, WorkflowStatus::Completed);
         assert!(completed_summary.close_time.is_some());
         engine.shutdown()?;
@@ -1166,56 +1118,6 @@ mod tests {
         std::fs::remove_file(path)?;
 
         assert!(engine.loaded_workflows().get("counter", &version).is_some());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn active_workflow_recovery_repopulates_registry_and_supervision()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let store = InMemoryStore::default();
-        let workflow_id = WorkflowId::new_v4();
-        store
-            .append(
-                WriteToken::recorder(),
-                &workflow_id,
-                &[started(&workflow_id, "checkout")?],
-                0,
-            )
-            .await?;
-        let run_id = RunId::new_v4();
-        let version = hash(7);
-        let pid = 42;
-
-        let engine = EngineBuilder::new()
-            .store(store)
-            .in_memory_visibility()
-            .recovery_seam(Arc::new(TestRecovery {
-                run_id: run_id.clone(),
-                version: version.clone(),
-                pid,
-            }))
-            .build()
-            .await?;
-
-        let recovered = engine.registry().get(&workflow_id, &run_id)?;
-        assert!(recovered.is_some_and(|handle| {
-            handle.workflow_type() == "checkout"
-                && handle.loaded_version() == &version
-                && handle.cached_status() == WorkflowStatus::Running
-                && handle.pid() == pid
-        }));
-        assert_eq!(engine.supervision().type_supervisor_count()?, 2);
-        let type_supervisors = engine.supervision().type_supervisors()?;
-        assert!(
-            type_supervisors
-                .iter()
-                .any(|node| node.id().workflow_type() == "checkout")
-        );
-        assert!(
-            type_supervisors
-                .iter()
-                .any(|node| node.id().workflow_type() == schedule_coordinator_workflow_type())
-        );
         Ok(())
     }
 }

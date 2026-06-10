@@ -293,48 +293,6 @@ impl ActiveWorkflowRecoverySeam for ActiveWorkflowRecoverySeamImpl {
     }
 }
 
-/// Test/manual seam that deliberately refuses normal workflow recovery.
-///
-/// Production builders install [`ActiveWorkflowRecoverySeamImpl`] once the
-/// runtime exists. Keeping this seam available lets tests assert explicit
-/// recovery wiring without inventing workflow metadata.
-#[derive(Debug, Default)]
-pub struct DeferredActiveWorkflowRecovery;
-
-impl ActiveWorkflowRecoverySeam for DeferredActiveWorkflowRecovery {
-    fn recover_active_workflow(
-        &self,
-        workflow_id: &WorkflowId,
-        workflow_type: &str,
-        history: &[Event],
-        loaded_workflows: &LoadedWorkflows,
-    ) -> Result<ActiveWorkflowRecovery, EngineError> {
-        let _ = (history, loaded_workflows);
-        if workflow_id == &crate::engine::api::schedule_coordinator_workflow_id()
-            && workflow_type == crate::engine::api::schedule_coordinator_workflow_type()
-        {
-            let run_id = coordinator_started_run_id(history);
-            return Ok(ActiveWorkflowRecovery::ScheduleCoordinator { run_id });
-        }
-
-        Err(EngineError::Load {
-            reason: format!(
-                "active workflow `{workflow_id}` of type `{workflow_type}` requires AD replay metadata before builder recovery can register it"
-            ),
-        })
-    }
-}
-
-fn coordinator_started_run_id(history: &[Event]) -> RunId {
-    history
-        .iter()
-        .find_map(|event| match event {
-            Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(crate::engine::api::schedule_coordinator_run_id)
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
