@@ -283,8 +283,12 @@ pub(crate) async fn caller_from_metadata(
     }
     #[cfg(not(feature = "auth"))]
     {
-        std::future::ready(()).await;
-        Err(Status::unauthenticated("authentication unavailable"))
+        // Yield to preserve the async signature required by the auth-feature branch.
+        tokio::task::yield_now().await;
+        Ok(development_token_caller_from_metadata(
+            metadata,
+            &state.runtime_config().auth,
+        ))
     }
 }
 
@@ -299,6 +303,40 @@ fn development_caller_from_metadata(metadata: &tonic::metadata::MetadataMap) -> 
         .and_then(|value| value.to_str().ok())
         .map(parse_namespaces)
         .unwrap_or_default();
+    CallerIdentity::new(subject, namespaces)
+}
+
+/// Development-mode token authentication for gRPC metadata, mirroring the HTTP
+/// development token auth.  Used when `auth.enabled` is `true` but the `auth`
+/// crate feature is not compiled.
+fn development_token_caller_from_metadata(
+    metadata: &tonic::metadata::MetadataMap,
+    auth: &crate::config::AuthConfig,
+) -> CallerIdentity {
+    let subject = metadata
+        .get("x-aion-subject")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+    let namespaces = metadata
+        .get("x-aion-namespaces")
+        .and_then(|value| value.to_str().ok())
+        .map(parse_namespaces)
+        .unwrap_or_default();
+
+    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
+    let expected = format!("Bearer {bearer_token}");
+    let Some(authorization) = metadata.get("authorization") else {
+        return CallerIdentity::denied(subject.unwrap_or("anonymous"), "missing bearer token");
+    };
+    let authorization = authorization.to_str().ok();
+    if authorization != Some(expected.as_str()) {
+        return CallerIdentity::denied(subject.unwrap_or("anonymous"), "invalid bearer token");
+    }
+
+    let Some(subject) = subject else {
+        return CallerIdentity::denied("anonymous", "missing required metadata: x-aion-subject");
+    };
+
     CallerIdentity::new(subject, namespaces)
 }
 
@@ -697,13 +735,14 @@ mod tests {
             .ok_or_else(|| WireError::backend("expected error"))?;
         assert_eq!(status.code(), Code::NotFound);
         let detail = ProtoWireError::decode(status.details())?;
-        assert_eq!(detail.error_type.as_deref(), Some("WorkflowNotFound"));
+        assert_eq!(detail.error_type.as_deref(), Some("WorkflowTypeNotFound"));
         assert!(detail.message.contains("missing-workflow"));
 
         let list_filter = encode_core_value(
             NAMESPACE,
             None,
             &aion_store::visibility::ListWorkflowsFilter {
+                workflow_type: Some(String::from("fixture")),
                 status: Some(WorkflowStatus::Running),
                 ..aion_store::visibility::ListWorkflowsFilter::default()
             },

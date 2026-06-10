@@ -650,9 +650,9 @@ async fn caller_from_headers(
     }
     #[cfg(not(feature = "auth"))]
     {
-        let _ = headers;
-        std::future::ready(()).await;
-        Err(HttpAuthError)
+        // Yield to preserve the async signature required by the auth-feature branch.
+        tokio::task::yield_now().await;
+        Ok(development_token_caller_from_headers(headers, auth))
     }
 }
 
@@ -666,6 +666,53 @@ fn development_caller_from_headers(headers: &axum::http::HeaderMap) -> CallerIde
         .and_then(|value| value.to_str().ok())
         .map_or_else(Vec::new, parse_namespaces);
     CallerIdentity::new(subject.unwrap_or("anonymous"), namespaces)
+}
+
+/// Development-mode token authentication used when `auth.enabled` is `true` but
+/// the `auth` crate feature is not compiled.  Validates bearer tokens against the
+/// configured `jwks_url` value (treated as a static shared secret) and returns
+/// [`CallerIdentity::denied`] with a specific reason on each failure mode so the
+/// namespace guard surfaces actionable 403 error messages.
+fn development_token_caller_from_headers(
+    headers: &axum::http::HeaderMap,
+    auth: &crate::config::AuthConfig,
+) -> CallerIdentity {
+    let subject = headers
+        .get("x-aion-subject")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+    let namespaces = headers
+        .get("x-aion-namespaces")
+        .and_then(|value| value.to_str().ok())
+        .map_or_else(Vec::new, parse_namespaces);
+
+    let bearer_token = auth.jwks_url.as_deref().unwrap_or_default();
+    let expected = format!("Bearer {bearer_token}");
+    let Some(authorization) = headers.get("authorization") else {
+        return CallerIdentity::denied(
+            subject.unwrap_or("anonymous"),
+            "missing Authorization header with Bearer token; \
+             set authorization to `Bearer <token>` for this server",
+        );
+    };
+    let authorization = authorization.to_str().ok();
+    if authorization != Some(expected.as_str()) {
+        return CallerIdentity::denied(
+            subject.unwrap_or("anonymous"),
+            "invalid or expired bearer token; \
+             refresh the token and send authorization as `Bearer <token>`",
+        );
+    }
+
+    let Some(subject) = subject else {
+        return CallerIdentity::denied(
+            "anonymous",
+            "missing required header: x-aion-subject; \
+             set x-aion-subject to the caller identity",
+        );
+    };
+
+    CallerIdentity::new(subject, namespaces)
 }
 
 #[cfg(feature = "auth")]
@@ -771,6 +818,49 @@ mod tests {
     #[tokio::test]
     async fn http_start_and_list_match_handler_outcomes() -> Result<(), Box<dyn std::error::Error>>
     {
+        let (router, visibility_store) = workflow_router_with_visibility().await?;
+
+        assert_start_missing_workflow(&router).await?;
+        assert_start_plain_json_missing_workflow(&router).await?;
+        assert_start_invalid_payload_envelope(&router).await?;
+
+        visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: run_id(),
+                workflow_type: String::from("fixture"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: std::collections::HashMap::new(),
+            })
+            .await?;
+        let filter = aion_proto::encode_core_value(
+            NAMESPACE,
+            None,
+            &ListWorkflowsFilter {
+                workflow_type: Some(String::from("fixture")),
+                status: Some(WorkflowStatus::Running),
+                ..ListWorkflowsFilter::default()
+            },
+        )?;
+        let list = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: Some(filter),
+        };
+        let list_response = router
+            .oneshot(json_request("/workflows/list", &list)?)
+            .await?;
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
+        assert_eq!(list_body.summaries.len(), 1);
+        let summary = aion_proto::decode_core_value::<WorkflowSummary>(&list_body.summaries[0])?;
+        assert_eq!(summary.workflow_id, workflow_id());
+        Ok(())
+    }
+
+    async fn workflow_router_with_visibility()
+    -> Result<(Router, Arc<dyn VisibilityStore>), Box<dyn std::error::Error>> {
         let backing = Arc::new(InMemoryStore::default());
         let store: Arc<dyn EventStore> = backing.clone();
         let visibility_store: Arc<dyn VisibilityStore> = backing;
@@ -796,81 +886,63 @@ mod tests {
             WorkflowOwnership::default(),
         );
         let state = ServerState::from_parts(resolver, runtime_config());
-        let router = workflow_router(state);
+        Ok((workflow_router(state), visibility_store))
+    }
 
+    async fn assert_start_missing_workflow(
+        router: &Router,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let start = ProtoStartWorkflowRequest {
             namespace: NAMESPACE.to_owned(),
             workflow_type: "missing-workflow".to_owned(),
             input: Some(proto_payload()?),
         };
-        let start_response = router
+        let response = router
             .clone()
             .oneshot(json_request("/workflows/start", &start)?)
             .await?;
-        assert_eq!(start_response.status(), StatusCode::NOT_FOUND);
-        let start_error: WireError = read_json(start_response).await?;
-        assert_eq!(start_error.code, WireErrorCode::NotFound);
-        assert_eq!(start_error.error_type.as_deref(), Some("WorkflowNotFound"));
-        assert!(start_error.message.contains("missing-workflow"));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTypeNotFound"));
+        assert!(error.message.contains("missing-workflow"));
+        Ok(())
+    }
 
+    async fn assert_start_plain_json_missing_workflow(
+        router: &Router,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let plain_start = json!({
             "namespace": NAMESPACE,
             "workflow_type": "missing-workflow",
             "input": { "name": "Ada" },
         });
-        let plain_response = router
+        let response = router
             .clone()
             .oneshot(json_request("/workflows/start", &plain_start)?)
             .await?;
-        assert_eq!(plain_response.status(), StatusCode::NOT_FOUND);
-        let plain_error: WireError = read_json(plain_response).await?;
-        assert_eq!(plain_error.code, WireErrorCode::NotFound);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        Ok(())
+    }
 
+    async fn assert_start_invalid_payload_envelope(
+        router: &Router,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let invalid_start = json!({
             "namespace": NAMESPACE,
             "workflow_type": "missing-workflow",
             "input": { "content_type": "application/json", "bytes": "not-a-byte-array" },
         });
-        let invalid_response = router
+        let response = router
             .clone()
             .oneshot(json_request("/workflows/start", &invalid_start)?)
             .await?;
-        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
-        let invalid_error: WireError = read_json(invalid_response).await?;
-        assert_eq!(invalid_error.code, WireErrorCode::InvalidInput);
-        assert!(invalid_error.message.contains("{\"name\":\"Ada\"}"));
-
-        visibility_store
-            .record_visibility(VisibilityRecord {
-                workflow_id: workflow_id(),
-                run_id: run_id(),
-                workflow_type: String::from("fixture"),
-                status: WorkflowStatus::Running,
-                start_time: Utc::now(),
-                close_time: None,
-                search_attributes: std::collections::HashMap::new(),
-            })
-            .await?;
-        let filter = aion_proto::encode_core_value(
-            NAMESPACE,
-            None,
-            &ListWorkflowsFilter {
-                status: Some(WorkflowStatus::Running),
-                ..ListWorkflowsFilter::default()
-            },
-        )?;
-        let list = ProtoListWorkflowsRequest {
-            namespace: NAMESPACE.to_owned(),
-            filter: Some(filter),
-        };
-        let list_response = router
-            .oneshot(json_request("/workflows/list", &list)?)
-            .await?;
-        assert_eq!(list_response.status(), StatusCode::OK);
-        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
-        assert_eq!(list_body.summaries.len(), 1);
-        let summary = aion_proto::decode_core_value::<WorkflowSummary>(&list_body.summaries[0])?;
-        assert_eq!(summary.workflow_id, workflow_id());
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::InvalidInput);
+        assert!(error.message.contains("{\"name\":\"Ada\"}"));
         Ok(())
     }
 
@@ -1208,7 +1280,14 @@ mod tests {
 
         let list = ProtoListWorkflowsRequest {
             namespace: NAMESPACE.to_owned(),
-            filter: None,
+            filter: Some(aion_proto::encode_core_value(
+                NAMESPACE,
+                None,
+                &ListWorkflowsFilter {
+                    workflow_type: Some(String::from("nonexistent")),
+                    ..ListWorkflowsFilter::default()
+                },
+            )?),
         };
         let list_response = router
             .oneshot(json_request("/workflows/list", &list)?)

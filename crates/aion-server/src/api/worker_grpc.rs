@@ -210,8 +210,9 @@ async fn token_expiration_from_metadata(
     #[cfg(not(feature = "auth"))]
     {
         let _ = metadata;
-        std::future::ready(()).await;
-        Err(Status::unauthenticated("authentication unavailable"))
+        // Yield to preserve the async signature required by the auth-feature branch.
+        tokio::task::yield_now().await;
+        Ok(None)
     }
 }
 

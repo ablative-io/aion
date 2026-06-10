@@ -85,105 +85,9 @@ impl Metrics {
     ///
     /// Returns [`MetricsError::Register`] if prometheus rejects a metric descriptor.
     pub fn new() -> Result<Self, MetricsError> {
-        let registry = Registry::new();
-
-        let workflows_started = IntCounterVec::new(
-            Opts::new(
-                "aion_workflows_started_total",
-                "Total workflow executions started by namespace and workflow type.",
-            ),
-            &["namespace", "workflow_type"],
-        )?;
-        let workflows_completed = IntCounterVec::new(
-            Opts::new(
-                "aion_workflows_completed_total",
-                "Total workflow executions that reached a terminal status by namespace and status.",
-            ),
-            &["namespace", "status"],
-        )?;
-        let activities_dispatched = IntCounterVec::new(
-            Opts::new(
-                "aion_activities_dispatched_total",
-                "Total activities dispatched to workers by namespace and activity type.",
-            ),
-            &["namespace", "activity_type"],
-        )?;
-        let activities_completed = IntCounterVec::new(
-            Opts::new(
-                "aion_activities_completed_total",
-                "Total activity results received by namespace and outcome.",
-            ),
-            &["namespace", "outcome"],
-        )?;
-        let activity_duration = HistogramVec::new(
-            HistogramOpts::new(
-                "aion_activity_duration_seconds",
-                "Wall-clock activity execution latency from dispatch to result by namespace and activity type.",
-            )
-            .buckets(vec![
-                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
-            ]),
-            &["namespace", "activity_type"],
-        )?;
-        let store_operation_duration = HistogramVec::new(
-            HistogramOpts::new(
-                "aion_store_operation_duration_seconds",
-                "Store operation latency by operation.",
-            )
-            .buckets(vec![
-                0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
-            ]),
-            &["operation"],
-        )?;
-        let connected_workers = IntGaugeVec::new(
-            Opts::new(
-                "aion_connected_workers",
-                "Current connected worker streams by namespace.",
-            ),
-            &["namespace"],
-        )?;
-        let inflight_activities = IntGaugeVec::new(
-            Opts::new(
-                "aion_inflight_activities",
-                "Current dispatched activities awaiting worker completion by namespace.",
-            ),
-            &["namespace"],
-        )?;
-        let signals_delivered = IntCounterVec::new(
-            Opts::new(
-                "aion_signals_delivered_total",
-                "Total signals delivered by namespace and residency classification.",
-            ),
-            &["namespace", "residency"],
-        )?;
-        let schedules_fired = IntCounterVec::new(
-            Opts::new(
-                "aion_schedules_fired_total",
-                "Total schedule timer evaluations that started a workflow by namespace.",
-            ),
-            &["namespace"],
-        )?;
-
-        let inner = MetricsInner {
-            registry,
-            workflows_started,
-            workflows_completed,
-            activities_dispatched,
-            activities_completed,
-            activity_duration,
-            store_operation_duration,
-            connected_workers,
-            inflight_activities,
-            signals_delivered,
-            schedules_fired,
-        };
+        let inner = build_metrics_inner()?;
         inner.register_collectors()?;
-        for operation in ["append", "read_history", "list_active"] {
-            inner
-                .store_operation_duration
-                .with_label_values(&[operation]);
-        }
-
+        initialize_default_label_sets(&inner);
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -301,6 +205,113 @@ impl Metrics {
             .with_label_values(&[namespace])
             .inc();
     }
+}
+
+fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
+    let registry = Registry::new();
+    let workflows_started = IntCounterVec::new(
+        Opts::new(
+            "aion_workflows_started_total",
+            "Total workflow executions started by namespace and workflow type.",
+        ),
+        &["namespace", "workflow_type"],
+    )?;
+    let workflows_completed = IntCounterVec::new(
+        Opts::new(
+            "aion_workflows_completed_total",
+            "Total workflow executions that reached a terminal status by namespace and status.",
+        ),
+        &["namespace", "status"],
+    )?;
+    let activities_dispatched = IntCounterVec::new(
+        Opts::new(
+            "aion_activities_dispatched_total",
+            "Total activities dispatched to workers by namespace and activity type.",
+        ),
+        &["namespace", "activity_type"],
+    )?;
+    let activities_completed = IntCounterVec::new(
+        Opts::new(
+            "aion_activities_completed_total",
+            "Total activity results received by namespace and outcome.",
+        ),
+        &["namespace", "outcome"],
+    )?;
+    let activity_duration = HistogramVec::new(
+        HistogramOpts::new(
+            "aion_activity_duration_seconds",
+            "Wall-clock activity execution latency from dispatch to result by namespace and activity type.",
+        )
+        .buckets(vec![
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+        ]),
+        &["namespace", "activity_type"],
+    )?;
+    let store_operation_duration = HistogramVec::new(
+        HistogramOpts::new(
+            "aion_store_operation_duration_seconds",
+            "Store operation latency by operation.",
+        )
+        .buckets(vec![
+            0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+        ]),
+        &["operation"],
+    )?;
+    let connected_workers = IntGaugeVec::new(
+        Opts::new(
+            "aion_connected_workers",
+            "Current connected worker streams by namespace.",
+        ),
+        &["namespace"],
+    )?;
+    let inflight_activities = IntGaugeVec::new(
+        Opts::new(
+            "aion_inflight_activities",
+            "Current dispatched activities awaiting worker completion by namespace.",
+        ),
+        &["namespace"],
+    )?;
+    let signals_delivered = IntCounterVec::new(
+        Opts::new(
+            "aion_signals_delivered_total",
+            "Total signals delivered by namespace and residency classification.",
+        ),
+        &["namespace", "residency"],
+    )?;
+    let schedules_fired = IntCounterVec::new(
+        Opts::new(
+            "aion_schedules_fired_total",
+            "Total schedule timer evaluations that started a workflow by namespace.",
+        ),
+        &["namespace"],
+    )?;
+
+    Ok(MetricsInner {
+        registry,
+        workflows_started,
+        workflows_completed,
+        activities_dispatched,
+        activities_completed,
+        activity_duration,
+        store_operation_duration,
+        connected_workers,
+        inflight_activities,
+        signals_delivered,
+        schedules_fired,
+    })
+}
+
+/// Pre-initialize known label sets so all metric families appear in the
+/// prometheus text output before any workflow or activity traffic occurs.
+fn initialize_default_label_sets(inner: &MetricsInner) {
+    for operation in ["append", "read_history", "list_active", "list_workflow_ids"] {
+        inner
+            .store_operation_duration
+            .with_label_values(&[operation]);
+    }
+    inner
+        .activity_duration
+        .with_label_values(&["default", "default"]);
 }
 
 /// Axum handler for `/metrics`.

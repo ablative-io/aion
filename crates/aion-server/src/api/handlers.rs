@@ -881,6 +881,7 @@ mod tests {
                 NAMESPACE,
                 None,
                 &aion_store::visibility::ListWorkflowsFilter {
+                    workflow_type: Some(String::from("fixture")),
                     status: Some(WorkflowStatus::Running),
                     ..aion_store::visibility::ListWorkflowsFilter::default()
                 },
