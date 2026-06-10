@@ -28,7 +28,7 @@ readonly PUBLISH_ORDER=(
   aion-store-libsql
   aion-package
   aion-nif
-  aion
+  aion-rs
   aion-proto
   aion-server
   aion-worker

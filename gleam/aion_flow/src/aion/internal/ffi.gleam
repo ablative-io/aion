@@ -47,7 +47,7 @@ pub fn with_timeout(
 ) -> Result(Result(value, inner_error), String)
 
 @external(erlang, "aion_flow_ffi", "continue_as_new")
-pub fn continue_as_new(input: String) -> Result(Never, String)
+pub fn continue_as_new(input: String) -> Result(Nil, String)
 
 @external(erlang, "aion_flow_ffi", "receive_signal")
 pub fn receive_signal(name: String, config: String) -> Result(String, String)

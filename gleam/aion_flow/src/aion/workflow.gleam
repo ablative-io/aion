@@ -91,7 +91,7 @@ pub fn with_timeout(
   timer.with_timeout(operation, deadline)
 }
 
-pub fn continue_as_new(input: a) -> Result(Never, error.WorkflowError) {
+pub fn continue_as_new(input: a) -> Result(Nil, error.WorkflowError) {
   continuation.continue_as_new(input)
 }
 

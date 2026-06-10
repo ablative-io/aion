@@ -11,10 +11,10 @@ fn encode(input: a) -> String
 /// The input is serialized before crossing the engine NIF boundary. On success
 /// the engine records `WorkflowContinuedAsNew` and terminates the current run, so
 /// an `Ok` value is intentionally uninhabited.
-pub fn continue_as_new(input: a) -> Result(Never, error.WorkflowError) {
+pub fn continue_as_new(input: a) -> Result(Nil, error.WorkflowError) {
   let encoded_input = encode(input)
   case ffi.continue_as_new(encoded_input) {
-    Ok(never) -> Ok(never)
+    Ok(value) -> Ok(value)
     Error(raw_error) -> Error(error.WorkflowEngineFailure(message: raw_error))
   }
 }
