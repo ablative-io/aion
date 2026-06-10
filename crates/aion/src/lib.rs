@@ -61,6 +61,7 @@ pub use activity::{
     ActivityDispatcher, dispatch_activity, install_activity_dispatcher, propagate_activity_outcome,
     surface_activity_error,
 };
+pub use durability::ActiveWorkflowRecoverySeamImpl;
 pub use engine::{
     DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams, Engine,
     EngineBuilder, EventFamily, EventFilter, EventPublisher, QueryService, SignalRouter,

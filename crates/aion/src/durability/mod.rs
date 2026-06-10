@@ -35,8 +35,9 @@ pub use executor::{
 };
 pub use recorder::Recorder;
 pub use recovery::{
-    ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, DeferredActiveWorkflowRecovery,
-    RecoveryDriver, RecoveryOutcome, RecoveryPlan, RecoveryReport, RecoveryResumePoint, recover,
+    ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
+    DeferredActiveWorkflowRecovery, RecoveryDriver, RecoveryOutcome, RecoveryPlan, RecoveryReport,
+    RecoveryResumePoint, recover,
 };
 pub use replay::{Replay, ReplayOutcome, ReplayStep, ReplayTerminal};
 pub use resolver::{
