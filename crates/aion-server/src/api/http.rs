@@ -822,20 +822,17 @@ fn decode_subscription_request(bytes: &[u8]) -> Result<SubscriptionRequest, Serv
     let value = serde_json::from_slice::<Value>(bytes).map_err(|source| {
         WireError::invalid_input(format!("invalid websocket subscription JSON: {source}"))
     })?;
-    decode_subscription_value(value)
+    decode_subscription_value(&value)
 }
 
-fn decode_subscription_value(value: Value) -> Result<SubscriptionRequest, ServerError> {
+fn decode_subscription_value(value: &Value) -> Result<SubscriptionRequest, ServerError> {
     if let Ok(request) = serde_json::from_value::<SubscriptionRequest>(value.clone()) {
         if request.subscription.is_some() {
             return Ok(request);
         }
     }
 
-    let subscription = value
-        .get("subscription")
-        .cloned()
-        .unwrap_or_else(|| value.clone());
+    let subscription = value.get("subscription").unwrap_or(value);
     let Some(subscription) = subscription.as_object() else {
         return Err(
             WireError::invalid_input("websocket subscription must be a JSON object").into(),
