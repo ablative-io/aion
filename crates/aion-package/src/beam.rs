@@ -2,6 +2,15 @@
 
 use crate::PackageError;
 
+/// Module names owned by the engine's native NIF layer.
+///
+/// The engine registers these namespaces as native functions at runtime; a
+/// package shipping bytecode under one of these names would silently serve a
+/// fake implementation for any function the engine does not register natively
+/// (the SDK's in-process test double is the canonical offender). `BeamSet::new`
+/// rejects them outright.
+pub const RESERVED_MODULE_NAMES: &[&str] = &["aion_flow_ffi"];
+
 /// A compiled BEAM module preserved exactly as supplied to the package layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BeamModule {
@@ -49,8 +58,17 @@ impl BeamSet {
     /// # Errors
     ///
     /// Returns [`PackageError::MalformedBeamEntry`] when two modules have the
-    /// same logical module name.
+    /// same logical module name, and [`PackageError::ReservedModuleName`] when
+    /// a module uses an engine-owned namespace from [`RESERVED_MODULE_NAMES`].
     pub fn new(mut modules: Vec<BeamModule>) -> Result<Self, PackageError> {
+        if let Some(reserved) = modules
+            .iter()
+            .find(|module| RESERVED_MODULE_NAMES.contains(&module.name.as_str()))
+        {
+            return Err(PackageError::ReservedModuleName {
+                module: reserved.name.clone(),
+            });
+        }
         modules.sort_by(|left, right| left.name.cmp(&right.name));
 
         if let Some(duplicate) = modules
@@ -147,6 +165,19 @@ mod tests {
         assert!(matches!(
             result,
             Err(PackageError::MalformedBeamEntry { entry }) if entry == "workflow/a"
+        ));
+    }
+
+    #[test]
+    fn beam_set_rejects_engine_reserved_namespaces() {
+        let result = BeamSet::new(vec![
+            BeamModule::new("workflow/a", vec![1]),
+            BeamModule::new("aion_flow_ffi", vec![2]),
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(PackageError::ReservedModuleName { module }) if module == "aion_flow_ffi"
         ));
     }
 

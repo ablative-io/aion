@@ -25,13 +25,22 @@ pub type WorkflowError {
 }
 
 pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
-  case decode.run(raw_input, hello_input_decoder()) {
-    Ok(input) ->
-      case workflow.run(greet_activity(input)) {
-        Ok(greeting) -> Ok(greeting.greeting)
-        Error(activity_error) -> Error(ActivityFailed(activity_error_message(activity_error)))
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) -> {
+      let input_codec = hello_input_codec()
+      case input_codec.decode(raw_json) {
+        Ok(input) ->
+          case workflow.run(greet_activity(input)) {
+            Ok(greeting) -> Ok(greeting.greeting)
+            Error(activity_error) ->
+              Error(ActivityFailed(activity_error_message(activity_error)))
+          }
+        Error(codec.DecodeError(reason: reason, path: _)) ->
+          Error(ActivityFailed("failed to decode workflow input: " <> reason))
       }
-    Error(_) -> Error(ActivityFailed("failed to decode workflow input"))
+    }
+    Error(_) ->
+      Error(ActivityFailed("workflow input payload was not a string"))
   }
 }
 
@@ -75,29 +84,6 @@ fn greeting_output_to_json(output: GreetingOutput) -> json.Json {
 fn greeting_output_decoder() -> decode.Decoder(GreetingOutput) {
   use greeting <- decode.field("greeting", decode.string)
   decode.success(GreetingOutput(greeting: greeting))
-}
-
-fn string_codec() -> codec.Codec(String) {
-  codec.json_codec(json.string, decode.string)
-}
-
-fn workflow_error_codec() -> codec.Codec(WorkflowError) {
-  codec.json_codec(workflow_error_to_json, workflow_error_decoder())
-}
-
-fn workflow_error_to_json(error: WorkflowError) -> json.Json {
-  case error {
-    ActivityFailed(message) ->
-      json.object([
-        #("type", json.string("activity_failed")),
-        #("message", json.string(message)),
-      ])
-  }
-}
-
-fn workflow_error_decoder() -> decode.Decoder(WorkflowError) {
-  use message <- decode.field("message", decode.string)
-  decode.success(ActivityFailed(message: message))
 }
 
 fn activity_error_message(activity_error: error.ActivityError) -> String {

@@ -11,6 +11,15 @@ pub enum PackageError {
     #[error("missing required manifest.json entry")]
     MissingManifest,
 
+    /// A module uses a namespace owned by the engine's native NIF layer.
+    #[error(
+        "module `{module}` uses an engine-reserved namespace and must not ship as package bytecode"
+    )]
+    ReservedModuleName {
+        /// The offending logical module name.
+        module: String,
+    },
+
     /// The archive could not be written as a ZIP container.
     #[error("failed to write .aion ZIP archive: {0}")]
     ArchiveWrite(zip::result::ZipError),

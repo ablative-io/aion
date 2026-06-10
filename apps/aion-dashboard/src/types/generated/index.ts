@@ -324,7 +324,23 @@ envelope: EventEnvelope,
 /**
  * Timer that was cancelled.
  */
-timer_id: TimerId, } } | { "type": "SignalReceived", "data": { 
+timer_id: TimerId, } } | { "type": "WithTimeoutCompleted", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Timer that bounded the operation.
+ */
+timer_id: TimerId, 
+/**
+ * Recorded timeout outcome.
+ */
+outcome: WithTimeoutOutcome, 
+/**
+ * JSON-encoded BEAM term payload for completed operation results.
+ */
+result: Payload | null, } } | { "type": "SignalReceived", "data": { 
 /**
  * Recording metadata for this event.
  */

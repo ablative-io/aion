@@ -152,6 +152,12 @@ fn rename_module_references(
     for literal in &mut module.literals {
         rewrite_literal_atom(literal, rename_map);
     }
+    // `prepare_module` materialises the constant pool before this rename pass
+    // runs, so the pool still holds terms (e.g. export funs) referencing the
+    // original module names. Rebuild it from the rewritten descriptors.
+    module.constant_pool =
+        beamr::constant_pool::materialise_literals(&module.literals, Some(atom_table))
+            .map_err(runtime_error_from_display)?;
     for lambda in &mut module.lambdas {
         lambda.unique_id = lambda_unique_id(
             atom_table,

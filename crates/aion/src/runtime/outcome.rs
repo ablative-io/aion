@@ -46,6 +46,15 @@ pub(super) fn workflow_process_outcome(
                 details,
             }));
         }
+        if let Some(error) = scheduler.take_exit_error(pid) {
+            let formatted = error.format_with_atoms(atoms);
+            return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
+                message: format!(
+                    "workflow process {pid} exited: {reason:?}: VM execution error: {formatted}"
+                ),
+                details: None,
+            }));
+        }
     }
     convert_process_outcome(atoms, pid, reason, owned_result.root())
 }

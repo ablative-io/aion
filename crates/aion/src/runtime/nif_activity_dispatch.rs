@@ -5,9 +5,9 @@ use std::sync::Arc;
 use crate::activity::bridge::{ActivityDispatcher, activity_dispatcher};
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::{
-    activity_error, activity_id_from_correlation, alloc_binary_term, context_error_term,
-    correlation_id, decode_string_arg, error_result_term, json_payload, ok_result_term,
-    record_completed, record_failed, record_started, runtime_context,
+    activity_error, activity_id_from_correlation, context_error_term, correlation_id,
+    decode_string_arg, error_result_term, json_payload, ok_result_term, record_completed,
+    record_failed, record_started, runtime_context,
 };
 use crate::runtime::nif_context::NifContext;
 use aion_core::ActivityId;
@@ -138,7 +138,7 @@ fn dispatch_activity_with_context(
         .map_err(|error| context_error_term(&error))?
     {
         ResolveOutcome::Recorded(_) => {
-            Ok(alloc_binary_term(correlation.as_bytes()).unwrap_or(Term::NIL))
+            Ok(ok_result_term(correlation.as_bytes()).unwrap_or(Term::NIL))
         }
         ResolveOutcome::ResumeLive => {
             let Some(dispatcher) = dispatcher else {
@@ -161,7 +161,7 @@ fn dispatch_activity_with_context(
                 correlation.clone(),
                 call,
             );
-            Ok(alloc_binary_term(correlation.as_bytes()).unwrap_or(Term::NIL))
+            Ok(ok_result_term(correlation.as_bytes()).unwrap_or(Term::NIL))
         }
     }
 }

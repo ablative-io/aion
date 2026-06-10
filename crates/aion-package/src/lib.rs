@@ -31,7 +31,7 @@ pub mod package;
 /// Workflow version identifiers derived from package content.
 pub mod version;
 
-pub use beam::{BeamModule, BeamSet};
+pub use beam::{BeamModule, BeamSet, RESERVED_MODULE_NAMES};
 pub use builder::PackageBuilder;
 pub use error::PackageError;
 pub use hash::{ContentHash, content_hash};
