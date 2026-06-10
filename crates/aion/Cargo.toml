@@ -1,15 +1,18 @@
 [package]
-name = "aion"
+name = "aion-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Transport-agnostic Aion workflow engine with durability, replay, timers, and supervision."
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/aion"
+documentation = "https://docs.rs/aion-rs"
 readme = "README.md"
 keywords = ["aion", "workflow", "durable-execution", "engine", "replay"]
 categories = ["asynchronous", "development-tools"]
+
+[lib]
+name = "aion"
 
 [lints]
 workspace = true

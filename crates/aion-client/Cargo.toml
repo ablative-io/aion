@@ -28,7 +28,7 @@ async-trait = { workspace = true }
 http = "1.4.1"
 chrono.workspace = true
 uuid.workspace = true
-aion = { version = "0.1.0", path = "../aion", optional = true }
+aion = { version = "0.1.0", path = "../aion", optional = true, package = "aion-rs" }
 aion-store = { version = "0.1.0", path = "../aion-store" }
 
 [features]

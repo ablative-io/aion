@@ -15,7 +15,7 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion = { version = "0.1.0", path = "../aion" }
+aion = { package = "aion-rs", version = "0.1.0", path = "../aion" }
 aion-proto = { version = "0.1.0", path = "../aion-proto", features = ["generated"] }
 aion-store-libsql = { version = "0.1.0", path = "../aion-store-libsql" }
 aion-store = { version = "0.1.0", path = "../aion-store" }

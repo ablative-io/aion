@@ -52,32 +52,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aion"
-version = "0.1.0"
-dependencies = [
- "aion-core",
- "aion-package",
- "aion-store",
- "async-trait",
- "beamr",
- "chrono",
- "dashmap",
- "futures",
- "rand_chacha 0.10.0",
- "rand_core 0.10.1",
- "saffron",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "aion-cli"
 version = "0.1.0"
 dependencies = [
@@ -95,9 +69,9 @@ dependencies = [
 name = "aion-client"
 version = "0.1.0"
 dependencies = [
- "aion",
  "aion-core",
  "aion-proto",
+ "aion-rs",
  "aion-store",
  "async-trait",
  "chrono",
@@ -166,12 +140,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-rs"
+version = "0.1.0"
+dependencies = [
+ "aion-core",
+ "aion-package",
+ "aion-store",
+ "async-trait",
+ "beamr",
+ "chrono",
+ "dashmap",
+ "futures",
+ "rand_chacha 0.10.0",
+ "rand_core 0.10.1",
+ "saffron",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "aion-server"
 version = "0.1.0"
 dependencies = [
- "aion",
  "aion-core",
  "aion-proto",
+ "aion-rs",
  "aion-store",
  "aion-store-libsql",
  "anyhow",
@@ -2386,7 +2386,7 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 name = "million-processes"
 version = "0.1.0"
 dependencies = [
- "aion",
+ "aion-rs",
 ]
 
 [[package]]
