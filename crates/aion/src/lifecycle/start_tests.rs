@@ -32,14 +32,14 @@ fn load_without_runtime_registration(workflow_type: &str) -> LoadedWorkflows {
     loaded
 }
 
-fn context<'a>(
+fn context(
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
-    loaded_workflows: &'a LoadedWorkflows,
+    loaded_workflows: &LoadedWorkflows,
     runtime: Arc<RuntimeHandle>,
-    supervision: &'a SupervisionTree,
+    supervision: Arc<SupervisionTree>,
     registry: Arc<Registry>,
-) -> StartWorkflowContext<'a> {
+) -> StartWorkflowContext<'_> {
     StartWorkflowContext {
         store,
         visibility_store,
@@ -57,7 +57,7 @@ async fn unknown_workflow_type_returns_not_found_and_appends_nothing()
     let store = Arc::new(InMemoryStore::default());
     let loaded = LoadedWorkflows::new();
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-    let supervision = SupervisionTree::new();
+    let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
     let input = payload("input")?;
 
@@ -67,7 +67,7 @@ async fn unknown_workflow_type_returns_not_found_and_appends_nothing()
             store.clone(),
             &loaded,
             Arc::clone(&runtime),
-            &supervision,
+            Arc::clone(&supervision),
             Arc::clone(&registry),
         ),
         "checkout",
@@ -90,7 +90,7 @@ async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn st
     let store = Arc::new(InMemoryStore::default());
     let loaded = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-    let supervision = SupervisionTree::new();
+    let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
     let input = payload("input")?;
 
@@ -100,7 +100,7 @@ async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn st
             store.clone(),
             &loaded,
             Arc::clone(&runtime),
-            &supervision,
+            Arc::clone(&supervision),
             Arc::clone(&registry),
         ),
         "checkout",
@@ -141,7 +141,7 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
     let loaded = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     runtime.register_waiting_test_module(deployed_module, "run");
-    let supervision = SupervisionTree::new();
+    let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
     let input = payload("input")?;
 
@@ -151,7 +151,7 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
             store.clone(),
             &loaded,
             Arc::clone(&runtime),
-            &supervision,
+            Arc::clone(&supervision),
             Arc::clone(&registry),
         ),
         "checkout",
@@ -207,7 +207,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
     let loaded = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     runtime.register_waiting_test_module(deployed_module, "run");
-    let supervision = SupervisionTree::new();
+    let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
     let workflow_id = aion_core::WorkflowId::new_v4();
     let parent_run_id = aion_core::RunId::new_v4();
@@ -236,7 +236,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
             store.clone(),
             &loaded,
             Arc::clone(&runtime),
-            &supervision,
+            Arc::clone(&supervision),
             Arc::clone(&registry),
         ),
         "checkout",
@@ -244,6 +244,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
         StartWorkflowOptions {
             workflow_id: Some(workflow_id.clone()),
             parent_run_id: Some(parent_run_id.clone()),
+            loaded_version: None,
         },
     )
     .await?;

@@ -91,6 +91,11 @@ pub type EngineError {
   EngineFailure(message: String)
 }
 
+/// A workflow lifecycle primitive failure.
+pub type WorkflowError {
+  WorkflowEngineFailure(message: String)
+}
+
 /// A boundary decode failure for workflow primitives.
 ///
 /// The wrapped `codec.DecodeError` preserves the typed decode reason and path

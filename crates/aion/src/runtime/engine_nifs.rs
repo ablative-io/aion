@@ -14,6 +14,7 @@ use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
 use super::nif_child;
+use super::nif_continue_as_new;
 use super::nif_determinism::{now_impl, random_impl, random_int_impl};
 use super::nif_signal;
 use super::nif_timer;
@@ -124,6 +125,10 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             nif_timer::with_timeout_impl,
         ),
         NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "continue_as_new", 1),
+            nif_continue_as_new::continue_as_new_impl,
+        ),
+        NifEntry::dirty(
             Mfa::new(FFI_MODULE, "receive_signal", 2),
             nif_signal::receive_signal,
         ),
@@ -218,7 +223,7 @@ mod tests {
             .map(|entry| entry.mfa.display())
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(entries.len(), 19);
+        assert_eq!(entries.len(), 20);
         assert_eq!(unique.len(), entries.len());
         for normal_nif in [
             "dispatch_activity",
@@ -256,6 +261,7 @@ mod tests {
             "dispatch_query",
             "spawn_child",
             "await_child",
+            "continue_as_new",
         ] {
             let entry = entries
                 .iter()

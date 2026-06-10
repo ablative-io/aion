@@ -26,7 +26,7 @@ pub struct ContinueAsNewContext<'a> {
     /// Runtime boundary used to spawn the replacement workflow process.
     pub runtime: &'a Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
-    pub supervision: &'a SupervisionTree,
+    pub supervision: Arc<SupervisionTree>,
     /// Active execution registry keyed by workflow/run identifiers.
     pub registry: &'a Arc<Registry>,
 }
@@ -92,6 +92,7 @@ pub async fn continue_as_new(
         StartWorkflowOptions {
             workflow_id: Some(id.clone()),
             parent_run_id: Some(run.clone()),
+            loaded_version: Some(handle.loaded_version().clone()),
         },
     )
     .await?;
@@ -223,7 +224,7 @@ mod tests {
         visibility_store: Arc<dyn VisibilityStore>,
         loaded: LoadedWorkflows,
         runtime: Arc<RuntimeHandle>,
-        supervision: SupervisionTree,
+        supervision: Arc<SupervisionTree>,
         registry: Arc<Registry>,
         handle: WorkflowHandle,
     }
@@ -257,7 +258,7 @@ mod tests {
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         runtime.register_waiting_test_module("checkout_deployed", "run");
         runtime.register_waiting_test_module("checkout_v2_deployed", "run");
-        let supervision = SupervisionTree::new();
+        let supervision = Arc::new(SupervisionTree::new());
         let registry = Arc::new(Registry::default());
         let workflow_id = aion_core::WorkflowId::new_v4();
         let run_id = aion_core::RunId::new_v4();
@@ -301,7 +302,7 @@ mod tests {
             visibility_store: Arc::clone(&active.visibility_store),
             loaded_workflows: &active.loaded,
             runtime: &active.runtime,
-            supervision: &active.supervision,
+            supervision: Arc::clone(&active.supervision),
             registry: &active.registry,
         }
     }

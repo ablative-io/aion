@@ -9,9 +9,12 @@ use chrono::Utc;
 use tokio::runtime::Handle;
 
 use crate::EngineError;
+use crate::loader::LoadedWorkflows;
 use crate::registry::{Registry, Residency, TerminalOutcome, WorkflowHandle};
-use crate::runtime::WorkflowProcessOutcome;
+use crate::runtime::{RuntimeHandle, WorkflowProcessOutcome};
+use crate::supervision::SupervisionTree;
 
+use super::start::{self, StartWorkflowContext, StartWorkflowOptions};
 use super::visibility::upsert_workflow_visibility;
 
 /// Owned state needed by the runtime monitor callback.
@@ -23,6 +26,12 @@ pub struct ProcessExitContext {
     pub visibility_store: Arc<dyn VisibilityStore>,
     /// Active execution registry to reconcile status and residency.
     pub registry: Arc<Registry>,
+    /// Loaded workflow records used to start continue-as-new replacements.
+    pub loaded_workflows: Arc<LoadedWorkflows>,
+    /// Runtime boundary used to spawn continue-as-new replacements.
+    pub runtime: Arc<RuntimeHandle>,
+    /// Structural supervision tree for replacement workflow placement.
+    pub supervision: Arc<SupervisionTree>,
     /// Tokio runtime handle used to run async recorder/store work from the monitor thread.
     pub tokio_handle: Handle,
 }
@@ -54,10 +63,24 @@ async fn handle_process_exit_async(
     handle: WorkflowHandle,
     outcome: Result<WorkflowProcessOutcome, EngineError>,
 ) -> Result<(), EngineError> {
-    if let Some(existing) =
-        terminal_outcome_from_history(&context.store.read_history(handle.workflow_id()).await?)
-    {
+    let history = context.store.read_history(handle.workflow_id()).await?;
+    if let Some(existing) = terminal_outcome_from_history(&history, handle.run_id()) {
         reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
+        if let TerminalOutcome::ContinuedAsNew {
+            input,
+            workflow_type,
+            parent_run_id,
+        } = &existing
+        {
+            start_continuation_replacement(
+                &context,
+                &handle,
+                input.clone(),
+                workflow_type.clone(),
+                parent_run_id.clone(),
+            )
+            .await?;
+        }
         handle.completion().notify(existing);
         return Ok(());
     }
@@ -122,10 +145,65 @@ async fn reconcile_terminal_registry(
     Ok(())
 }
 
-fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
+async fn start_continuation_replacement(
+    context: &ProcessExitContext,
+    handle: &WorkflowHandle,
+    input: Payload,
+    workflow_type: Option<String>,
+    parent_run_id: RunId,
+) -> Result<(), EngineError> {
+    let replacement_type = workflow_type.as_deref().unwrap_or(handle.workflow_type());
+    let already_started = context
+        .store
+        .read_history(handle.workflow_id())
+        .await?
+        .iter()
+        .any(|event| {
+            matches!(
+                event,
+                Event::WorkflowStarted {
+                    parent_run_id: Some(existing_parent),
+                    ..
+                } if existing_parent == &parent_run_id
+            )
+        });
+    if already_started {
+        return Ok(());
+    }
+
+    start::start_workflow_with_options(
+        StartWorkflowContext {
+            store: Arc::clone(&context.store),
+            visibility_store: Arc::clone(&context.visibility_store),
+            loaded_workflows: context.loaded_workflows.as_ref(),
+            runtime: Arc::clone(&context.runtime),
+            supervision: Arc::clone(&context.supervision),
+            registry: Arc::clone(&context.registry),
+            signal_handoff: None,
+        },
+        replacement_type,
+        input,
+        StartWorkflowOptions {
+            workflow_id: Some(handle.workflow_id().clone()),
+            parent_run_id: Some(parent_run_id),
+            loaded_version: Some(handle.loaded_version().clone()),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+fn terminal_outcome_from_history(events: &[Event], run_id: &RunId) -> Option<TerminalOutcome> {
     for event in events.iter().rev() {
         match event {
-            Event::WorkflowStarted { .. } => return None,
+            Event::WorkflowStarted {
+                run_id: event_run_id,
+                ..
+            } => {
+                if event_run_id == run_id {
+                    return None;
+                }
+            }
             Event::WorkflowCompleted { result, .. } => {
                 return Some(TerminalOutcome::Completed(result.clone()));
             }
@@ -144,11 +222,13 @@ fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
                 parent_run_id,
                 ..
             } => {
-                return Some(TerminalOutcome::ContinuedAsNew {
-                    input: input.clone(),
-                    workflow_type: workflow_type.clone(),
-                    parent_run_id: parent_run_id.clone(),
-                });
+                if parent_run_id == run_id {
+                    return Some(TerminalOutcome::ContinuedAsNew {
+                        input: input.clone(),
+                        workflow_type: workflow_type.clone(),
+                        parent_run_id: parent_run_id.clone(),
+                    });
+                }
             }
             Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
@@ -188,11 +268,13 @@ mod tests {
 
     use super::{ProcessExitContext, handle_process_exit_async};
     use crate::durability::Recorder;
+    use crate::loader::LoadedWorkflows;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
         WorkflowHandleParts,
     };
-    use crate::runtime::WorkflowProcessOutcome;
+    use crate::runtime::{RuntimeConfig, RuntimeHandle, WorkflowProcessOutcome};
+    use crate::supervision::SupervisionTree;
 
     struct ActiveWorkflow {
         context: ProcessExitContext,
@@ -243,6 +325,9 @@ mod tests {
                 store,
                 visibility_store,
                 registry,
+                loaded_workflows: Arc::new(LoadedWorkflows::new()),
+                runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
+                supervision: Arc::new(SupervisionTree::new()),
                 tokio_handle: tokio::runtime::Handle::current(),
             },
             handle,
