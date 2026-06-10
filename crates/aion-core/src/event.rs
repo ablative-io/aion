@@ -171,7 +171,7 @@ pub enum Event {
         /// Timer that was cancelled.
         timer_id: TimerId,
     },
-    /// A with_timeout operation reached a durable terminal outcome.
+    /// A `with_timeout` operation reached a durable terminal outcome.
     WithTimeoutCompleted {
         /// Recording metadata for this event.
         envelope: EventEnvelope,
@@ -290,8 +290,8 @@ pub enum Event {
     },
 }
 
-/// Durable terminal outcome for a with_timeout operation.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+/// Durable terminal outcome for a `with_timeout` operation.
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 pub enum WithTimeoutOutcome {
     /// The operation closure returned before the deadline.
     OperationCompleted,
