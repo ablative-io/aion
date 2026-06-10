@@ -24,12 +24,14 @@ __pycache__
 *.aion
 
 # Worktrees and workflow artifacts
-.yggdrasil-worktrees/
-.commit-msg.tmp
+/.yggdrasil-worktrees/
+/.meridian/
+/.claude/
+/server.log
+/.commit-msg.tmp
 
 # OS / editor
 .DS_Store
 *.swp
 .idea
 .vscode
-.meridian/worksites/

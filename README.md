@@ -142,8 +142,9 @@ What works today:
 Still maturing:
 
 - Documentation and developer-experience polish are ongoing; start with
-  [`GETTING-STARTED.md`](GETTING-STARTED.md), [`docs/API.md`](docs/API.md),
-  and [`gleam/aion_flow/README.md`](gleam/aion_flow/README.md).
+  [`GETTING-STARTED.md`](GETTING-STARTED.md), [`CONTRIBUTING.md`](CONTRIBUTING.md),
+  [`docs/API.md`](docs/API.md), and
+  [`gleam/aion_flow/README.md`](gleam/aion_flow/README.md).
 - SDK packages and conformance coverage continue to harden around the
   implemented server and engine surfaces.
 - The dashboard/static UI is included and served by the server but remains
