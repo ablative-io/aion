@@ -509,9 +509,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beamr"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fca84682a9a7a2a96751fe8e9c0b2b48573de2a7527b253862f666df8b8b996"
+checksum = "962b639b2dea6c2e46b8543c0b7623264935c6c4c2b3a325ec0eda9ad988532b"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -533,6 +533,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde_json",
  "tokio",
+ "unicode-segmentation",
  "zstd",
 ]
 
@@ -4391,6 +4392,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-xid"
