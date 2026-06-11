@@ -128,30 +128,6 @@ pub(super) fn record_started(
         .map_err(|error| context_error_term(ctx, &error))
 }
 
-pub(super) fn record_completed(
-    ctx: &mut ProcessContext,
-    context: &NifContext,
-    activity_id: ActivityId,
-    result: Payload,
-) -> Result<(), Term> {
-    let recorded_at = Utc::now();
-    context
-        .record_activity_completed(recorded_at, activity_id, result)
-        .map_err(|error| context_error_term(ctx, &error))
-}
-
-pub(super) fn record_failed(
-    ctx: &mut ProcessContext,
-    context: &NifContext,
-    activity_id: ActivityId,
-    error: ActivityError,
-) -> Result<(), Term> {
-    let recorded_at = Utc::now();
-    context
-        .record_activity_failed(recorded_at, activity_id, error, 1)
-        .map_err(|error| context_error_term(ctx, &error))
-}
-
 pub(super) fn correlation_id(ordinal: u64) -> String {
     ActivityId::from_sequence_position(ordinal).to_string()
 }

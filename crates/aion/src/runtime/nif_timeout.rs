@@ -81,38 +81,6 @@ impl TimeoutScope {
     }
 }
 
-/// Return the message for an expired enclosing `with_timeout` scope, if any.
-///
-/// Suspending awaits call this before parking and after every wake: an
-/// expired enclosing deadline means the await must abort instead of parking
-/// again. Live scopes expire when their deadline timer's `TimerFired` is
-/// recorded; replay scopes carry the recorded outcome directly, so a
-/// replayed timed-out await aborts identically instead of parking forever.
-pub(crate) fn expired_scope_message(state: &EngineNifState, pid: u64) -> Option<String> {
-    let mut live_deadlines: Vec<TimerId> = Vec::new();
-    {
-        let stack = state.timeout_scope_stacks.get(&pid)?;
-        for state_id in stack.iter() {
-            let Some(scope) = state.timeout_scopes.get(state_id) else {
-                continue;
-            };
-            match scope.replay_timed_out {
-                Some(true) => return Some(SCOPE_EXPIRED_MESSAGE.to_owned()),
-                Some(false) => {}
-                None => live_deadlines.push(scope.timer_id.clone()),
-            }
-        }
-    }
-    if live_deadlines.is_empty() {
-        return None;
-    }
-    let context = build_context_for_pid(state, pid).ok()?;
-    live_deadlines
-        .iter()
-        .any(|timer_id| timer_fired_recorded(&context, timer_id).unwrap_or(false))
-        .then(|| SCOPE_EXPIRED_MESSAGE.to_owned())
-}
-
 /// History position of an expired enclosing `with_timeout` deadline.
 ///
 /// Used by awaits that resolve recorded *arrivals* (a child terminal

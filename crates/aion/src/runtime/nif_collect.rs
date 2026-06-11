@@ -36,11 +36,7 @@ use crate::runtime::RuntimeHandle;
 use crate::runtime::nif_activity_dispatch::{ActivityCall, spawn_completion_task};
 use crate::runtime::nif_context::NifContext;
 use crate::runtime::nif_state::{CollectKind, EngineNifState, PendingAwait};
-
-/// Canonical scope-expiry error, byte-for-byte the string
-/// [`super::nif_timeout::expired_scope_message`] produces, so a replayed
-/// scope-aborted collect returns exactly what the live run returned.
-const SCOPE_EXPIRED_MESSAGE: &str = "timeout:deadline expired";
+use crate::runtime::nif_timeout::SCOPE_EXPIRED_MESSAGE;
 
 /// One fan-out member, decoded from the SDK's activity-spec JSON.
 #[derive(Deserialize)]
@@ -292,10 +288,21 @@ fn settle_all(
     }
     // An expired enclosing with_timeout deadline aborts the await: every
     // unresolved member is cancelled durably so replay derives the abort.
-    if let Some(message) = super::nif_timeout::expired_scope_message(state, pid) {
+    //
+    // The expiry decision is a pure function of the RESOLUTION snapshot
+    // (`context.history()`), never a fresh store read: deciding the abort
+    // from events newer than the snapshot this sweep settled on is the N-1
+    // defect family. A deadline whose `TimerFired` landed after the
+    // snapshot is settled by the wake it triggers, whose fresh snapshot
+    // re-enters this sweep. No deadline-vs-terminal seq ordering is needed
+    // on the recorded path (unlike await_child/receive_signal): member
+    // terminals are recorded synchronously by this collect itself, and the
+    // abort is recorded as the cancellation set, so replay reads the
+    // decision instead of re-deriving the race.
+    if super::nif_timeout::expired_scope_deadline(state, pid, context.history()).is_some() {
         cancel_pending(deps, context, pid, base_ordinal, &states)?;
         state.pending_awaits.remove(&pid);
-        return Ok(CollectStep::ScopeExpired(message));
+        return Ok(CollectStep::ScopeExpired(SCOPE_EXPIRED_MESSAGE.to_owned()));
     }
     // No failure, not all completed, nothing pending: a replayed batch whose
     // live run was aborted by scope expiry (cancelled-without-failure).
@@ -357,7 +364,14 @@ fn settle_race(
         state.pending_awaits.remove(&pid);
         return Ok(CollectStep::RaceWon(outcome));
     }
-    if let Some(message) = super::nif_timeout::expired_scope_message(state, pid) {
+    // Snapshot-pure expiry, exactly as in `settle_all`: the abort is decided
+    // from this resolution's history snapshot and recorded as the durable
+    // cancellation set, so live and replay read the same decision. A
+    // deadline firing after the snapshot re-enters via its wake. The
+    // winner-first check order above is itself deterministic: a winner is a
+    // recorded terminal, so replay settles it identically before consulting
+    // the scope.
+    if super::nif_timeout::expired_scope_deadline(state, pid, history).is_some() {
         for ordinal in base_ordinal..base_ordinal + count {
             drop_runtime_entries(deps, pid, ordinal);
             if recorded_terminal(history, ordinal)?.is_none() {
@@ -365,7 +379,7 @@ fn settle_race(
             }
         }
         state.pending_awaits.remove(&pid);
-        return Ok(CollectStep::ScopeExpired(message));
+        return Ok(CollectStep::ScopeExpired(SCOPE_EXPIRED_MESSAGE.to_owned()));
     }
     // Every member cancelled with no winner: a replayed batch whose live
     // run was aborted by scope expiry before anything settled.
@@ -569,23 +583,32 @@ mod tests {
         pid: u64,
     }
 
+    /// Seed `store` with `WorkflowStarted` + `events`, renumbered
+    /// contiguously from seq 1, and return the minted identifiers.
+    async fn seed_history(
+        store: &Arc<dyn EventStore>,
+        events: &[Event],
+    ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = RunId::new_v4();
+        let mut seeded = vec![started_event(&workflow_id, &run_id)?];
+        seeded.extend(events.iter().cloned());
+        let mut sequenced = Vec::with_capacity(seeded.len());
+        for (index, event) in seeded.into_iter().enumerate() {
+            let seq = u64::try_from(index)? + 1;
+            sequenced.push(reenvelope(event, &workflow_id, seq));
+        }
+        store
+            .append(WriteToken::recorder(), &workflow_id, &sequenced, 0)
+            .await?;
+        Ok((workflow_id, run_id))
+    }
+
     impl CollectHarness {
         /// Build over a fresh store seeded with `WorkflowStarted` + `events`.
         async fn over_events(events: &[Event]) -> Result<Self, Box<dyn std::error::Error>> {
             let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-            let workflow_id = WorkflowId::new_v4();
-            let run_id = RunId::new_v4();
-            let mut seeded = vec![started_event(&workflow_id, &run_id)?];
-            seeded.extend(events.iter().cloned());
-            // Renumber the whole history contiguously from seq 1.
-            let mut sequenced = Vec::with_capacity(seeded.len());
-            for (index, event) in seeded.into_iter().enumerate() {
-                let seq = u64::try_from(index)? + 1;
-                sequenced.push(reenvelope(event, &workflow_id, seq));
-            }
-            store
-                .append(WriteToken::recorder(), &workflow_id, &sequenced, 0)
-                .await?;
+            let (workflow_id, run_id) = seed_history(&store, events).await?;
             Self::over_store(store, workflow_id, run_id).await
         }
 
@@ -723,6 +746,7 @@ mod tests {
                 envelope,
                 activity_id,
             },
+            Event::TimerFired { timer_id, .. } => Event::TimerFired { envelope, timer_id },
             other => other,
         }
     }
@@ -798,6 +822,28 @@ mod tests {
 
     fn specs(names: &[&str]) -> Vec<ActivitySpec> {
         names.iter().map(|name| spec(name)).collect()
+    }
+
+    fn scope_deadline_fired(ordinal: u64) -> Event {
+        Event::TimerFired {
+            envelope: placeholder_envelope(),
+            timer_id: aion_core::TimerId::anonymous(ordinal),
+        }
+    }
+
+    /// Arm the per-test timer bridge that backed the OLD fresh-read expiry
+    /// path (`expired_scope_message` → `build_context_for_pid`); installing
+    /// it proves the stale-snapshot tests fail if a fresh read is
+    /// reintroduced, instead of accidentally passing because the fresh read
+    /// was unavailable.
+    fn install_fresh_read_bridge(harness: &CollectHarness) {
+        crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
+            &harness.state,
+            Arc::clone(&harness.deps.registry),
+            Arc::clone(&harness.store),
+            tokio::runtime::Handle::current(),
+            crate::runtime::SignalDeliveryConfig::default(),
+        );
     }
 
     fn pending_batch(names: &[&str]) -> Vec<Event> {
@@ -1007,6 +1053,183 @@ mod tests {
             "replay must append nothing"
         );
         assert_eq!(replay.pinned(), None);
+        replay.shutdown()
+    }
+
+    /// The live expiry decision must be a pure function of the RESOLUTION
+    /// snapshot. Race modeled: the sweep's snapshot (a stale read) lacks the
+    /// scope deadline's `TimerFired`, which is recorded by the time any
+    /// later read runs. Before the fix `expired_scope_message` re-read the
+    /// store, saw the fired deadline, and cancelled the pending member on
+    /// the spot — an abort decided from events the resolution never
+    /// observed. After the fix the stale-snapshot pass suspends; the
+    /// deadline's wake re-enters with a fresh snapshot, cancels durably,
+    /// and a fresh engine epoch derives the identical abort from the
+    /// recorded set while appending nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn all_stale_snapshot_expiry_suspends_then_converges_with_replay() -> TestResult {
+        let scope_timer = aion_core::TimerId::anonymous(7);
+        // Stale snapshot = WorkflowStarted + batch (4) + Completed(0): the
+        // deadline `TimerFired` (seq 7) is the one event past the window.
+        let backing = Arc::new(crate::runtime::nif_test_stores::StaleReadStore::new(6));
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let mut events = pending_batch(&["a", "b"]);
+        events.push(completed(0, r#""done-a""#));
+        events.push(scope_deadline_fired(7));
+        let (workflow_id, run_id) = seed_history(&store, &events).await?;
+        let harness =
+            CollectHarness::over_store(Arc::clone(&store), workflow_id.clone(), run_id.clone())
+                .await?;
+        install_fresh_read_bridge(&harness);
+        backing.set_stale_target(&workflow_id, 1);
+        // Live scope whose deadline is the recorded TimerFired(seq 7).
+        harness
+            .state
+            .timeout_scopes
+            .insert(21, TimeoutScope::live_for_test(harness.pid, scope_timer));
+        harness
+            .state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![21]);
+        let two = specs(&["a", "b"]);
+
+        // Pass 1 — stale resolution snapshot (no TimerFired): must suspend,
+        // never decide the abort from a fresh read; nothing is cancelled.
+        assert_eq!(
+            harness.step(CollectKind::All, &two),
+            Ok(CollectStep::Suspend),
+            "a snapshot lacking the deadline must park, not branch"
+        );
+        assert_eq!(harness.cancelled_ordinals().await?, Vec::<u64>::new());
+
+        // Pass 2 — fresh snapshot: the deadline is in the resolution read;
+        // the unresolved member is cancelled durably and the await aborts.
+        assert_eq!(
+            harness.step(CollectKind::All, &two),
+            Ok(CollectStep::ScopeExpired(
+                "timeout:deadline expired".to_owned()
+            ))
+        );
+        assert_eq!(harness.cancelled_ordinals().await?, vec![1]);
+        assert_eq!(harness.pinned(), None);
+        let history_len = store.read_history(&workflow_id).await?.len();
+        harness.shutdown()?;
+
+        // Fresh engine epoch over the final store (the restart analogue),
+        // scope replay-derived expired exactly as `arm_scope` derives it:
+        // the recorded cancellation set yields the same abort, appending
+        // nothing.
+        let replay = CollectHarness::over_store(store, workflow_id, run_id).await?;
+        replay.state.timeout_scopes.insert(
+            1,
+            TimeoutScope::replayed_expired_with_deadline_for_test(
+                replay.pid,
+                aion_core::TimerId::anonymous(7),
+            ),
+        );
+        replay
+            .state
+            .timeout_scope_stacks
+            .insert(replay.pid, vec![1]);
+        assert_eq!(
+            replay.step(CollectKind::All, &two),
+            Ok(CollectStep::ScopeExpired(
+                "timeout:deadline expired".to_owned()
+            )),
+            "replay must take the same branch as the converged live run"
+        );
+        assert_eq!(
+            replay.store.read_history(&replay.workflow_id).await?.len(),
+            history_len,
+            "replay must append nothing"
+        );
+        replay.shutdown()
+    }
+
+    /// `collect_race` twin of the stale-snapshot test: pre-fix, the fresh
+    /// read aborted the race on the spot — cancelling every member and
+    /// discarding the completion that was about to settle. Post-fix the
+    /// stale pass parks, and the wake re-entry settles the delivered
+    /// completion as the durably recorded winner — the branch a fresh
+    /// engine epoch reproduces from the recorded terminals alone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn race_stale_snapshot_expiry_suspends_then_settles_the_recorded_winner() -> TestResult {
+        let scope_timer = aion_core::TimerId::anonymous(7);
+        // Stale snapshot = WorkflowStarted + batch (4): the deadline
+        // `TimerFired` (seq 6) is the one event past the window.
+        let backing = Arc::new(crate::runtime::nif_test_stores::StaleReadStore::new(5));
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let mut events = pending_batch(&["a", "b"]);
+        events.push(scope_deadline_fired(7));
+        let (workflow_id, run_id) = seed_history(&store, &events).await?;
+        let harness =
+            CollectHarness::over_store(Arc::clone(&store), workflow_id.clone(), run_id.clone())
+                .await?;
+        install_fresh_read_bridge(&harness);
+        backing.set_stale_target(&workflow_id, 1);
+        harness
+            .state
+            .timeout_scopes
+            .insert(23, TimeoutScope::live_for_test(harness.pid, scope_timer));
+        harness
+            .state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![23]);
+        let two = specs(&["a", "b"]);
+
+        // Pass 1 — stale snapshot: park; pre-fix the fresh read cancelled
+        // both members here and returned ScopeExpired.
+        assert_eq!(
+            harness.step(CollectKind::Race, &two),
+            Ok(CollectStep::Suspend),
+            "a snapshot lacking the deadline must park, not branch"
+        );
+        assert_eq!(harness.cancelled_ordinals().await?, Vec::<u64>::new());
+
+        // The race window's other arrival: member 0's completion lands in
+        // the runtime maps before the wake re-entry.
+        harness.deps.runtime.deliver_activity_completion_message(
+            harness.pid,
+            "activity:0",
+            r#""r0""#.to_owned(),
+        )?;
+
+        // Pass 2 — fresh snapshot: the completion is taken and recorded as
+        // the winner (winner-first is deterministic — the recorded terminal
+        // IS the decision), the loser is cancelled durably.
+        assert_eq!(
+            harness.step(CollectKind::Race, &two),
+            Ok(CollectStep::RaceWon(Ok(r#""r0""#.to_owned())))
+        );
+        assert_eq!(harness.cancelled_ordinals().await?, vec![1]);
+        assert_eq!(harness.pinned(), None);
+        let history_len = store.read_history(&workflow_id).await?.len();
+        harness.shutdown()?;
+
+        // Fresh engine epoch, scope replay-derived expired: the recorded
+        // winner settles the race identically, appending nothing.
+        let replay = CollectHarness::over_store(store, workflow_id, run_id).await?;
+        replay.state.timeout_scopes.insert(
+            1,
+            TimeoutScope::replayed_expired_with_deadline_for_test(
+                replay.pid,
+                aion_core::TimerId::anonymous(7),
+            ),
+        );
+        replay
+            .state
+            .timeout_scope_stacks
+            .insert(replay.pid, vec![1]);
+        assert_eq!(
+            replay.step(CollectKind::Race, &two),
+            Ok(CollectStep::RaceWon(Ok(r#""r0""#.to_owned()))),
+            "replay must settle the recorded winner, not re-derive the race"
+        );
+        assert_eq!(
+            replay.store.read_history(&replay.workflow_id).await?.len(),
+            history_len,
+            "replay must append nothing"
+        );
         replay.shutdown()
     }
 }

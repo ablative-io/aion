@@ -6,11 +6,11 @@ use crate::activity::bridge::ActivityDispatcher;
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::{
     activity_error, activity_id_from_correlation, context_error_term, correlation_id,
-    decode_string_arg, error_result_term, json_payload, ok_result_term, record_completed,
-    record_failed, record_started, runtime_context,
+    decode_string_arg, error_result_term, json_payload, ok_result_term, record_started,
+    runtime_context,
 };
 use crate::runtime::nif_context::NifContext;
-use aion_core::ActivityId;
+use aion_core::{ActivityId, Payload};
 use beamr::native::ProcessContext;
 use beamr::term::Term;
 use futures::FutureExt;
@@ -258,96 +258,446 @@ fn await_activity_result_with_context(
         return Ok(error_result_term(process_context, &sentinel).unwrap_or(Term::NIL));
     }
     let activity_id = activity_id_from_correlation(process_context, correlation)?;
-    if let Some(recorded) = recorded_resolution_for(process_context, &mut context, &activity_id)? {
-        return Ok(recorded_result_term(process_context, recorded));
+    let step = await_activity_step(state, &mut context, runtime, &activity_id, || {
+        super::nif_wake::consume_wake_marker(process_context, runtime);
+    });
+    match step {
+        Ok(ActivityAwaitStep::Completed(bytes)) => {
+            Ok(ok_result_term(process_context, &bytes).unwrap_or(Term::NIL))
+        }
+        Ok(ActivityAwaitStep::Failed(message)) => {
+            Ok(error_result_term(process_context, &message).unwrap_or(Term::NIL))
+        }
+        Ok(ActivityAwaitStep::Suspend) => {
+            process_context.request_suspend(None);
+            Ok(Term::NIL)
+        }
+        Err(message) => Err(error_result_term(process_context, &message).unwrap_or(Term::NIL)),
     }
-    // One wake marker is consumed per invocation — markers are pure wakes
-    // and the completion state lives in the runtime's keyed maps, so any
-    // marker (even one destined for another await) is safe to take. Leaving
-    // it queued would insta-rewake the suspend below into a busy spin.
-    super::nif_wake::consume_wake_marker(process_context, runtime);
-    if let Some(term) =
-        take_runtime_completion(process_context, &context, runtime, activity_id.clone())?
-    {
-        return Ok(term);
+}
+
+/// Outcome of one ProcessContext-free `await_activity_result` resolution
+/// step, invoked fresh on every mailbox wake by the NIF shell above.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ActivityAwaitStep {
+    /// The recorded (or just-recorded) completion payload bytes.
+    Completed(Vec<u8>),
+    /// A workflow-visible `{error, _}`: the recorded (or just-recorded)
+    /// terminal failure message, or a recorded non-activity resolution.
+    Failed(String),
+    /// Park the calling process; a mailbox wake re-invokes the native.
+    Suspend,
+}
+
+/// One activity-await resolution pass.
+///
+/// Recorded terminal first — it IS the live run's decision (this await
+/// records completions, failures, and the durable timeout failure itself,
+/// synchronously, before workflow code observes the branch), so replay reads
+/// the decision and no deadline-vs-terminal seq ordering is needed on the
+/// recorded path (unlike `await_child`/`receive_signal`, whose arrivals are
+/// recorded by racing third parties). Then a takeable runtime-map completion
+/// (recorded now), then the enclosing-scope expiry, then suspend.
+///
+/// `consume_wake_marker` runs once per live pass, only when no recorded
+/// terminal resolves the await: markers are pure wakes and the completion
+/// state lives in the runtime's keyed maps, so any marker (even one destined
+/// for another await) is safe to take — leaving it queued would insta-rewake
+/// the suspend into a busy spin.
+pub(super) fn await_activity_step(
+    state: &crate::runtime::EngineNifState,
+    context: &mut NifContext,
+    runtime: &crate::RuntimeHandle,
+    activity_id: &ActivityId,
+    consume_wake_marker: impl FnOnce(),
+) -> Result<ActivityAwaitStep, String> {
+    if let Some(recorded) = recorded_resolution_for(context, activity_id)? {
+        return Ok(recorded_step(recorded));
+    }
+    consume_wake_marker();
+    if let Some(step) = take_runtime_completion(context, runtime, activity_id.clone())? {
+        return Ok(step);
     }
     // An expired enclosing with_timeout deadline aborts the await instead of
-    // re-suspending. The failure is recorded so replay returns it verbatim.
-    if let Some(message) = crate::runtime::nif_timeout::expired_scope_message(state, context.pid())
+    // re-suspending; the failure is recorded durably so replay returns it
+    // verbatim. The expiry decision is a pure function of the RESOLUTION
+    // snapshot (`context.history()`), never a fresh store read: this
+    // resolution observed neither the activity terminal nor the deadline's
+    // `TimerFired`, and deciding the branch from a newer snapshot than the
+    // one the resolution settled on is the N-1 defect family. A deadline
+    // firing after the snapshot is settled by the wake it triggers, whose
+    // fresh snapshot re-enters this step.
+    if crate::runtime::nif_timeout::expired_scope_deadline(state, context.pid(), context.history())
+        .is_some()
     {
-        record_failed(
-            process_context,
-            &context,
-            activity_id,
-            activity_error(message.clone()),
-        )?;
-        return Ok(error_result_term(process_context, &message).unwrap_or(Term::NIL));
+        let message = crate::runtime::nif_timeout::SCOPE_EXPIRED_MESSAGE.to_owned();
+        context
+            .record_activity_failed(
+                chrono::Utc::now(),
+                activity_id.clone(),
+                activity_error(message.clone()),
+                1,
+            )
+            .map_err(|error| error.error_reason())?;
+        return Ok(ActivityAwaitStep::Failed(message));
     }
-    process_context.request_suspend(None);
-    Ok(Term::NIL)
+    Ok(ActivityAwaitStep::Suspend)
 }
 
 fn recorded_resolution_for(
-    ctx: &mut ProcessContext,
     context: &mut NifContext,
     activity_id: &ActivityId,
-) -> Result<Option<Resolution>, Term> {
+) -> Result<Option<Resolution>, String> {
     let ordinal = activity_id.sequence_position();
-    let input = json_payload(ctx, "null", "await_activity_result", "replay input")?;
+    let input = Payload::from_json(&serde_json::Value::Null)
+        .map_err(|error| format!("await_activity_result replay input: {error}"))?;
     match context
         .resolve_command(Command::RunActivity {
             key: CorrelationKey::Activity(ordinal),
             activity_type: "await_activity_result".to_owned(),
             input,
         })
-        .map_err(|error| context_error_term(ctx, &error))?
+        .map_err(|error| error.error_reason())?
     {
         ResolveOutcome::Recorded(resolution) => Ok(Some(resolution)),
         ResolveOutcome::ResumeLive => Ok(None),
     }
 }
 
-fn recorded_result_term(ctx: &mut ProcessContext, resolution: Resolution) -> Term {
+fn recorded_step(resolution: Resolution) -> ActivityAwaitStep {
     match resolution {
         Resolution::ActivityCompleted(payload) => {
-            ok_result_term(ctx, payload.bytes()).unwrap_or(Term::NIL)
+            ActivityAwaitStep::Completed(payload.bytes().to_vec())
         }
-        Resolution::ActivityFailedTerminal(error) => {
-            error_result_term(ctx, &error.message).unwrap_or(Term::NIL)
-        }
-        other => error_result_term(
-            ctx,
-            &format!("await_activity_result: recorded non-activity resolution {other:?}"),
-        )
-        .unwrap_or(Term::NIL),
+        Resolution::ActivityFailedTerminal(error) => ActivityAwaitStep::Failed(error.message),
+        other => ActivityAwaitStep::Failed(format!(
+            "await_activity_result: recorded non-activity resolution {other:?}"
+        )),
     }
 }
 
 fn take_runtime_completion(
-    ctx: &mut ProcessContext,
     context: &NifContext,
     runtime: &crate::RuntimeHandle,
     activity_id: ActivityId,
-) -> Result<Option<Term>, Term> {
+) -> Result<Option<ActivityAwaitStep>, String> {
     if let Some(payload) =
         runtime.take_activity_result(context.pid(), activity_id.sequence_position())
     {
-        record_completed(ctx, context, activity_id, payload.clone())?;
-        return Ok(Some(
-            ok_result_term(ctx, payload.bytes()).unwrap_or(Term::NIL),
-        ));
+        context
+            .record_activity_completed(chrono::Utc::now(), activity_id, payload.clone())
+            .map_err(|error| error.error_reason())?;
+        return Ok(Some(ActivityAwaitStep::Completed(payload.bytes().to_vec())));
     }
     if let Some(error) = runtime.take_activity_error(context.pid(), activity_id.sequence_position())
     {
-        record_failed(
-            ctx,
-            context,
-            activity_id,
-            activity_error(error.message.clone()),
-        )?;
-        return Ok(Some(
-            error_result_term(ctx, &error.message).unwrap_or(Term::NIL),
-        ));
+        context
+            .record_activity_failed(
+                chrono::Utc::now(),
+                activity_id,
+                activity_error(error.message.clone()),
+                1,
+            )
+            .map_err(|record_error| record_error.error_reason())?;
+        return Ok(Some(ActivityAwaitStep::Failed(error.message)));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use aion_core::{
+        ActivityId, ContentType, Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus,
+    };
+    use aion_package::ContentHash;
+    use aion_store::{EventStore, WriteToken};
+    use serde_json::json;
+
+    use super::{ActivityAwaitStep, await_activity_step};
+    use crate::durability::Recorder;
+    use crate::registry::{
+        CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
+    };
+    use crate::runtime::nif_state::EngineNifState;
+    use crate::runtime::nif_test_stores::StaleReadStore;
+    use crate::runtime::nif_timeout::TimeoutScope;
+    use crate::runtime::{RuntimeConfig, RuntimeHandle, SignalDeliveryConfig};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Everything one `await_activity_step` determinism test needs over a
+    /// synthesized history.
+    struct AwaitHarness {
+        state: Arc<EngineNifState>,
+        registry: Arc<Registry>,
+        runtime: Arc<RuntimeHandle>,
+        store: Arc<dyn EventStore>,
+        workflow_id: WorkflowId,
+        pid: u64,
+    }
+
+    impl AwaitHarness {
+        /// Build a fresh engine epoch (registry, handle, runtime) over an
+        /// existing seeded store — the unit-level analogue of an engine
+        /// restart before replay.
+        async fn over_store(
+            store: Arc<dyn EventStore>,
+            workflow_id: WorkflowId,
+            run_id: RunId,
+        ) -> Result<Self, Box<dyn std::error::Error>> {
+            let head = u64::try_from(store.read_history(&workflow_id).await?.len())?;
+            let registry = Arc::new(Registry::default());
+            let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+            let pid = runtime.spawn_test_process()?;
+            let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), head);
+            let handle = WorkflowHandle::new(WorkflowHandleParts {
+                workflow_id: workflow_id.clone(),
+                run_id: run_id.clone(),
+                pid,
+                workflow_type: "awaiter".to_owned(),
+                loaded_version: ContentHash::from_bytes([7; 32]),
+                cached_status: WorkflowStatus::Running,
+                residency: HandleResidency::Resident,
+                recorder,
+                completion: CompletionNotifier::new(),
+            });
+            registry.insert((workflow_id.clone(), run_id), handle)?;
+            Ok(Self {
+                state: Arc::new(EngineNifState::default()),
+                registry,
+                runtime,
+                store,
+                workflow_id,
+                pid,
+            })
+        }
+
+        /// One production-shaped pass: a fresh `NifContext` (one history
+        /// read — the resolution snapshot) resolving the ordinal-0 await.
+        fn step(&self) -> Result<ActivityAwaitStep, String> {
+            // Production runs this on a beamr scheduler thread with no
+            // ambient Tokio context; block_in_place mirrors that so the
+            // step's history reads can block_on the harness runtime.
+            tokio::task::block_in_place(|| {
+                let mut context = crate::runtime::nif_context::NifContext::new(
+                    self.pid,
+                    self.registry.as_ref(),
+                    tokio::runtime::Handle::current(),
+                    SignalDeliveryConfig::default(),
+                )
+                .map_err(|error| error.error_reason())?;
+                await_activity_step(
+                    &self.state,
+                    &mut context,
+                    &self.runtime,
+                    &ActivityId::from_sequence_position(0),
+                    || {},
+                )
+            })
+        }
+
+        /// Arm the per-test timer bridge that backed the OLD fresh-read
+        /// expiry path (`expired_scope_message` → `build_context_for_pid`);
+        /// installing it proves the stale-snapshot test fails if a fresh
+        /// read is reintroduced, instead of accidentally passing because
+        /// the fresh read was unavailable.
+        fn install_fresh_read_bridge(&self) {
+            crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
+                &self.state,
+                Arc::clone(&self.registry),
+                Arc::clone(&self.store),
+                tokio::runtime::Handle::current(),
+                SignalDeliveryConfig::default(),
+            );
+        }
+
+        fn arm_live_scope(&self, deadline_ordinal: u64) {
+            self.state.timeout_scopes.insert(
+                31,
+                TimeoutScope::live_for_test(
+                    self.pid,
+                    aion_core::TimerId::anonymous(deadline_ordinal),
+                ),
+            );
+            self.state.timeout_scope_stacks.insert(self.pid, vec![31]);
+        }
+
+        fn arm_replayed_expired_scope(&self, deadline_ordinal: u64) {
+            self.state.timeout_scopes.insert(
+                1,
+                TimeoutScope::replayed_expired_with_deadline_for_test(
+                    self.pid,
+                    aion_core::TimerId::anonymous(deadline_ordinal),
+                ),
+            );
+            self.state.timeout_scope_stacks.insert(self.pid, vec![1]);
+        }
+
+        async fn history_len(&self) -> Result<usize, Box<dyn std::error::Error>> {
+            Ok(self.store.read_history(&self.workflow_id).await?.len())
+        }
+
+        fn shutdown(self) -> TestResult {
+            self.runtime.shutdown()?;
+            Ok(())
+        }
+    }
+
+    fn envelope(workflow_id: &WorkflowId, seq: u64) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            recorded_at: chrono::Utc::now(),
+            workflow_id: workflow_id.clone(),
+        }
+    }
+
+    /// Seed `WorkflowStarted` + a scheduled/started ordinal-0 activity +
+    /// the scope deadline's `TimerFired` (seq 4).
+    async fn seed_pending_activity_then_deadline(
+        store: &Arc<dyn EventStore>,
+        deadline_ordinal: u64,
+    ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = RunId::new_v4();
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(&workflow_id, 1),
+                workflow_type: "awaiter".to_owned(),
+                input: Payload::from_json(&json!({}))?,
+                run_id: run_id.clone(),
+                parent_run_id: None,
+            },
+            Event::ActivityScheduled {
+                envelope: envelope(&workflow_id, 2),
+                activity_id: ActivityId::from_sequence_position(0),
+                activity_type: "work".to_owned(),
+                input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
+            },
+            Event::ActivityStarted {
+                envelope: envelope(&workflow_id, 3),
+                activity_id: ActivityId::from_sequence_position(0),
+            },
+            Event::TimerFired {
+                envelope: envelope(&workflow_id, 4),
+                timer_id: aion_core::TimerId::anonymous(deadline_ordinal),
+            },
+        ];
+        store
+            .append(WriteToken::recorder(), &workflow_id, &events, 0)
+            .await?;
+        Ok((workflow_id, run_id))
+    }
+
+    /// The live expiry decision must be a pure function of the RESOLUTION
+    /// snapshot. Race modeled: the await's snapshot (a stale read) lacks
+    /// the scope deadline's `TimerFired`, which is recorded by the time any
+    /// later read runs. Before the fix `expired_scope_message` re-read the
+    /// store, saw the fired deadline, and recorded the durable timeout
+    /// failure on the spot — a branch decided from events the resolution
+    /// never observed. After the fix the stale-snapshot pass suspends; the
+    /// deadline's wake re-enters with a fresh snapshot, records the timeout
+    /// failure durably, and a fresh engine epoch returns it verbatim while
+    /// appending nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_snapshot_expiry_suspends_then_converges_with_replay() -> TestResult {
+        // Stale snapshot = WorkflowStarted + Scheduled + Started: the
+        // deadline `TimerFired` (seq 4) is the one event past the window.
+        let backing = Arc::new(StaleReadStore::new(3));
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let (workflow_id, run_id) = seed_pending_activity_then_deadline(&store, 7).await?;
+        let harness =
+            AwaitHarness::over_store(Arc::clone(&store), workflow_id.clone(), run_id.clone())
+                .await?;
+        harness.install_fresh_read_bridge();
+        backing.set_stale_target(&workflow_id, 1);
+        harness.arm_live_scope(7);
+
+        // Pass 1 — stale resolution snapshot (no terminal, no TimerFired):
+        // must suspend, never decide the branch from a fresh read; nothing
+        // is recorded.
+        assert_eq!(
+            harness.step(),
+            Ok(ActivityAwaitStep::Suspend),
+            "a snapshot lacking both events must park, not branch"
+        );
+        assert_eq!(harness.history_len().await?, 4);
+
+        // Pass 2 — fresh snapshot: the deadline is in the resolution read;
+        // the timeout failure is recorded durably and returned.
+        assert_eq!(
+            harness.step(),
+            Ok(ActivityAwaitStep::Failed(
+                "timeout:deadline expired".to_owned()
+            ))
+        );
+        let history = harness.store.read_history(&workflow_id).await?;
+        assert!(
+            matches!(history.last(), Some(Event::ActivityFailed { .. })),
+            "the timeout branch must be recorded durably: {history:#?}"
+        );
+        let history_len = history.len();
+        harness.shutdown()?;
+
+        // Fresh engine epoch over the final store (the restart analogue),
+        // scope replay-derived expired exactly as `arm_scope` derives it:
+        // the recorded failure resolves verbatim, appending nothing.
+        let replay = AwaitHarness::over_store(store, workflow_id, run_id).await?;
+        replay.arm_replayed_expired_scope(7);
+        assert_eq!(
+            replay.step(),
+            Ok(ActivityAwaitStep::Failed(
+                "timeout:deadline expired".to_owned()
+            )),
+            "replay must take the same branch as the converged live run"
+        );
+        assert_eq!(replay.history_len().await?, history_len);
+        replay.shutdown()
+    }
+
+    /// A completion sitting in the runtime maps settles the await — and is
+    /// recorded durably — ahead of the scope-expiry branch, even when the
+    /// resolution snapshot already contains the fired deadline. The
+    /// recorded terminal IS the decision, so a fresh engine epoch resolves
+    /// the completion identically (no deadline-vs-terminal seq ordering is
+    /// needed for activities: this await records its own terminals, no
+    /// third party races them into history).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delivered_completion_settles_durably_ahead_of_snapshot_expiry() -> TestResult {
+        let backing = Arc::new(StaleReadStore::new(0));
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let (workflow_id, run_id) = seed_pending_activity_then_deadline(&store, 7).await?;
+        let harness =
+            AwaitHarness::over_store(Arc::clone(&store), workflow_id.clone(), run_id.clone())
+                .await?;
+        harness.arm_live_scope(7);
+        harness.runtime.deliver_activity_completion_message(
+            harness.pid,
+            "activity:0",
+            r#""r0""#.to_owned(),
+        )?;
+
+        assert_eq!(
+            harness.step(),
+            Ok(ActivityAwaitStep::Completed(br#""r0""#.to_vec()))
+        );
+        let history = harness.store.read_history(&workflow_id).await?;
+        assert!(
+            matches!(history.last(), Some(Event::ActivityCompleted { .. })),
+            "the completion must be recorded durably: {history:#?}"
+        );
+        let history_len = history.len();
+        harness.shutdown()?;
+
+        let replay = AwaitHarness::over_store(store, workflow_id, run_id).await?;
+        replay.arm_replayed_expired_scope(7);
+        assert_eq!(
+            replay.step(),
+            Ok(ActivityAwaitStep::Completed(br#""r0""#.to_vec())),
+            "replay must resolve the recorded completion, not re-derive the race"
+        );
+        assert_eq!(replay.history_len().await?, history_len);
+        replay.shutdown()
+    }
 }

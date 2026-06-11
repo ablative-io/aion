@@ -29,6 +29,8 @@ mod nif_query_mailbox;
 mod nif_query_pump;
 mod nif_signal;
 pub(crate) mod nif_state;
+#[cfg(test)]
+mod nif_test_stores;
 pub(crate) mod nif_timeout;
 pub(crate) mod nif_timer;
 pub(crate) mod nif_timer_bridge;
