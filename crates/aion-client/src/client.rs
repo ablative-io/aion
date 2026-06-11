@@ -61,6 +61,7 @@ impl Client {
     pub fn embedded(engine: Arc<aion::Engine>) -> Self {
         let config = ClientConfig {
             endpoint: String::from("embedded://engine"),
+            stream_endpoint: None,
             auth: None,
             tls: None,
             namespace: String::from("default"),
@@ -113,6 +114,7 @@ impl Client {
 #[derive(Clone, Debug)]
 pub struct ClientBuilder {
     endpoint: String,
+    stream_endpoint: Option<String>,
     auth: Option<ClientAuth>,
     tls: Option<TlsOptions>,
     namespace: String,
@@ -126,12 +128,28 @@ impl ClientBuilder {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            stream_endpoint: None,
             auth: None,
             tls: None,
             namespace: String::from("default"),
             subject: None,
             authorized_namespaces: Vec::new(),
         }
+    }
+
+    /// Configures the WebSocket event-stream endpoint used by subscribe
+    /// operations: the full URL of the server's `/events/stream` route, e.g.
+    /// `ws://127.0.0.1:8080/events/stream` (`http`/`https` URLs are accepted
+    /// and protocol-mapped to `ws`/`wss`).
+    ///
+    /// There is no default and nothing is derived: the gRPC endpoint and the
+    /// HTTP/WebSocket listener are separate addresses. Subscribing without
+    /// this option returns [`ClientError::InvalidArgument`] with a precise
+    /// message.
+    #[must_use]
+    pub fn with_stream_endpoint(mut self, stream_endpoint: impl Into<String>) -> Self {
+        self.stream_endpoint = Some(stream_endpoint.into());
+        self
     }
 
     /// Configures the credential attached to every request.
@@ -249,6 +267,7 @@ impl TlsOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientConfig {
     pub(crate) endpoint: String,
+    pub(crate) stream_endpoint: Option<String>,
     pub(crate) auth: Option<ClientAuth>,
     pub(crate) tls: Option<TlsOptions>,
     pub(crate) namespace: String,
@@ -260,6 +279,7 @@ impl From<ClientBuilder> for ClientConfig {
     fn from(builder: ClientBuilder) -> Self {
         Self {
             endpoint: builder.endpoint,
+            stream_endpoint: builder.stream_endpoint,
             auth: builder.auth,
             tls: builder.tls,
             namespace: builder.namespace,
@@ -290,6 +310,7 @@ mod tests {
     fn builder_captures_connection_options() {
         let config = ClientConfig::from(
             ClientBuilder::new("https://aion.example.com")
+                .with_stream_endpoint("wss://aion-http.example.com/events/stream")
                 .with_auth(ClientAuth::bearer("secret-token"))
                 .with_tls(TlsOptions::new().with_domain_name("aion.example.com"))
                 .with_namespace("tenant-a")
@@ -298,6 +319,10 @@ mod tests {
         );
 
         assert_eq!(config.endpoint, "https://aion.example.com");
+        assert_eq!(
+            config.stream_endpoint,
+            Some(String::from("wss://aion-http.example.com/events/stream"))
+        );
         assert!(config.auth.is_some());
         assert!(config.tls.is_some());
         assert_eq!(config.namespace, "tenant-a");
@@ -306,5 +331,11 @@ mod tests {
             config.authorized_namespaces,
             vec![String::from("tenant-a"), String::from("tenant-b")]
         );
+    }
+
+    #[test]
+    fn stream_endpoint_has_no_default() {
+        let config = ClientConfig::from(ClientBuilder::new("https://aion.example.com"));
+        assert_eq!(config.stream_endpoint, None);
     }
 }

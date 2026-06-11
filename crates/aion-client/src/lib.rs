@@ -33,7 +33,7 @@ pub mod ops;
 pub mod payload;
 /// Event stream and subscription helpers.
 pub mod stream;
-/// gRPC transport adapters used by the client.
+/// Transport adapters (gRPC, WebSocket event streaming, embedded engine).
 pub mod transport;
 
 pub use client::{Client, ClientAuth, ClientBuilder, TlsOptions};

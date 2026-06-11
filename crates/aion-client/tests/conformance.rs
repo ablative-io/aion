@@ -3,8 +3,11 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::num::NonZeroU64;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use aion_client::transport::ws::EVENT_STREAM_PATH;
 use aion_client::{Client, ClientAuth, ClientError, ListPage, StartOptions, TlsOptions};
 use aion_core::{ContentType, Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowStatus};
 use chrono::{DateTime, Utc};
@@ -15,6 +18,14 @@ use uuid::Uuid;
 const SCENARIOS_PATH: &str = "conformance/aion-clients/scenarios.json";
 const SERVER_URL_ENV: &str = "AION_SERVER_URL";
 const AUTH_TOKEN_ENV: &str = "AION_AUTH_TOKEN";
+
+/// The harness attaches every stream from the workflow's beginning
+/// (`resume_from_seq = 1`, the wire's documented full-history replay): the
+/// scenarios assert on events recorded before the subscribe step ran
+/// (`WorkflowStarted`), which a live-tail attach can never deliver. This
+/// mirrors the TypeScript harness's initial-attach mapping. Reconnect
+/// cursors (`last delivered + 1`) are the SDK's own resume loop, untouched.
+const HARNESS_ATTACH_FROM: NonZeroU64 = NonZeroU64::MIN;
 
 #[tokio::test]
 async fn shared_client_contract_conformance() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,10 +78,30 @@ async fn run_scenario(
         .get("steps")
         .and_then(Value::as_array)
         .ok_or("scenario steps must be an array")?;
+    let mut context = ScenarioContext::default();
+    let result = run_scenario_steps(
+        scenario_id,
+        steps,
+        defaults,
+        fixtures,
+        server_url,
+        &mut context,
+    )
+    .await;
+    context.teardown();
+    result
+}
+
+async fn run_scenario_steps(
+    scenario_id: &str,
+    steps: &[Value],
+    defaults: &Map<String, Value>,
+    fixtures: &Map<String, Value>,
+    server_url: &str,
+    context: &mut ScenarioContext,
+) -> Result<(), Box<dyn std::error::Error>> {
     let started_at = Utc::now() - chrono::Duration::seconds(30);
     let now = Utc::now() + chrono::Duration::seconds(30);
-    let mut context = ScenarioContext::default();
-
     for step in steps {
         let step_id = require_str(step, "id")?;
         let operation = require_str(step, "operation")?;
@@ -79,7 +110,7 @@ async fn run_scenario(
             defaults,
             fixtures,
             scenario_id,
-            &context,
+            context,
             started_at,
             now,
         );
@@ -88,11 +119,11 @@ async fn run_scenario(
             defaults,
             fixtures,
             scenario_id,
-            &context,
+            context,
             started_at,
             now,
         );
-        let actual = execute_step(operation, &input, &mut context, server_url).await;
+        let actual = execute_step(operation, &input, context, server_url).await;
         let (normalized, error_identity) = match actual {
             Ok(value) => (json!({ "ok": value }), None),
             Err(error) => (
@@ -112,7 +143,7 @@ async fn run_scenario(
             step_id,
             &normalized,
             &expected,
-            &context,
+            context,
             error_identity.as_ref(),
         );
         context.record(scenario_id, step_id, normalized);
@@ -140,21 +171,16 @@ async fn execute_step(
         "describe" => execute_describe(input, context).await,
         "subscribe" => {
             if input.get("collect").is_some() {
-                Ok(json!({ "kind": "eventStreamStarted" }))
+                execute_subscribe_collect(input, context)
             } else {
                 let events = collect_stream(input, context).await?;
                 Ok(json!({ "kind": "eventStream", "events": events }))
             }
         }
-        "harness.forceDisconnect" => Ok(json!({ "kind": "disconnectInjected" })),
-        "harness.assertStream" => {
-            let events = collect_stream(input, context).await?;
-            Ok(
-                json!({ "kind": "eventStream", "events": events, "sequenceContiguousUnique": sequences_contiguous_unique(&events) }),
-            )
-        }
-        other => Err(ClientError::InvalidArgument).map_err(|error| ClientError::Server {
-            detail: format!("unsupported conformance operation {other}: {error}"),
+        "harness.forceDisconnect" => execute_force_disconnect(context).await,
+        "harness.assertStream" => execute_assert_stream(input, context).await,
+        other => Err(ClientError::Server {
+            detail: format!("unsupported conformance operation {other}"),
         }),
     }
 }
@@ -176,9 +202,133 @@ async fn execute_connect(
     {
         builder = builder.with_tls(TlsOptions::new());
     }
+    // Event subscriptions ride the server's WebSocket listener, derived from
+    // the shared AION_CONFORMANCE/AION_SERVER_URL by protocol mapping (the
+    // same harness convention as the Python and TypeScript relays). For
+    // plaintext http the stream is pointed through a local TCP relay so
+    // `harness.forceDisconnect` can sever live stream sockets — and only
+    // stream sockets — without touching the server; the relay is a raw byte
+    // pipe, so https/wss endpoints connect directly and forced disconnects
+    // are refused with a precise error.
+    context.close_relay();
+    if let Some(rest) = server_url.strip_prefix("http://") {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let (host, port) = match authority.split_once(':') {
+            Some((host, port)) => (
+                host.to_owned(),
+                port.parse::<u16>().map_err(|_| {
+                    ClientError::server(format!("{SERVER_URL_ENV} port {port} is not a u16"))
+                })?,
+            ),
+            None => (authority.to_owned(), 80),
+        };
+        let relay = TcpRelay::start(host, port).await?;
+        builder = builder
+            .with_stream_endpoint(format!("ws://127.0.0.1:{}{EVENT_STREAM_PATH}", relay.port));
+        context.relay = Some(relay);
+    } else if let Some(rest) = server_url.strip_prefix("https://") {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        builder = builder.with_stream_endpoint(format!("wss://{authority}{EVENT_STREAM_PATH}"));
+    }
     let client = builder.build().await?;
     context.client = Some(client);
     Ok(json!({ "kind": "client" }))
+}
+
+/// The disconnect-resume choreography's subscribe step: start the SINGLE
+/// background collector every later harness step (`forceDisconnect`,
+/// `assertStream`) observes — one stream object spanning the forced
+/// disconnect, never a fresh subscription.
+fn execute_subscribe_collect(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let client = context.client()?;
+    let selector = input.get("selector").unwrap_or(input);
+    let workflow = workflow_id(
+        input_str(selector, "workflowId")
+            .or_else(|| input_str(input, "workflowId"))
+            .unwrap_or_default(),
+    )?;
+    let stream = client.subscribe_workflow_from(&workflow, HARNESS_ATTACH_FROM);
+    context.collector = Some(StreamCollector::start(stream));
+    context.collect_plan = Some(CollectPlan::from_input(input)?);
+    Ok(json!({ "kind": "eventStreamStarted" }))
+}
+
+/// Severs the live piped stream sockets once the before-disconnect minimum
+/// has been observed; the relay listener stays up for the SDK's reconnect.
+async fn execute_force_disconnect(context: &mut ScenarioContext) -> Result<Value, ClientError> {
+    let plan = context.collect_plan.clone().ok_or_else(|| {
+        ClientError::server("harness.forceDisconnect requires a prior subscribe step with collect")
+    })?;
+    let collector = context.collector.as_mut().ok_or_else(|| {
+        ClientError::server("harness.forceDisconnect requires a running stream collector")
+    })?;
+    let reached = collector
+        .wait_for_total(plan.minimum_events_before_disconnect, plan.timeout)
+        .await?;
+    if !reached {
+        return Err(ClientError::server(format!(
+            "stream delivered {} event(s) within {:?}; needed {} before the forced disconnect",
+            collector.len(),
+            plan.timeout,
+            plan.minimum_events_before_disconnect
+        )));
+    }
+    collector.mark_disconnect();
+    let relay = context.relay.as_ref().ok_or_else(|| {
+        ClientError::server(
+            "harness.forceDisconnect requires the plaintext ws:// stream relay; \
+             wss stream endpoints cannot be byte-relayed",
+        )
+    })?;
+    let dropped = relay.force_disconnect();
+    if dropped == 0 {
+        return Err(ClientError::server(
+            "no live stream connection was piped through the relay to disconnect",
+        ));
+    }
+    Ok(json!({ "kind": "disconnectInjected", "droppedConnections": dropped }))
+}
+
+/// Awaits the subscribe step's collector and reports its single accumulated
+/// list (spanning the forced disconnect) for the step's assertions. A
+/// timeout returns the partial list so the expectations fail with evidence
+/// instead of the harness hanging.
+async fn execute_assert_stream(
+    input: &Value,
+    context: &mut ScenarioContext,
+) -> Result<Value, ClientError> {
+    let plan = context.collect_plan.clone().ok_or_else(|| {
+        ClientError::server("harness.assertStream requires a prior subscribe step with collect")
+    })?;
+    let collector = context.collector.as_mut().ok_or_else(|| {
+        ClientError::server("harness.assertStream requires a running stream collector")
+    })?;
+    let mut target = plan.minimum_events_before_disconnect + plan.minimum_events_after_reconnect;
+    if let Some(mark) = collector.disconnect_mark {
+        target = target.max(mark + plan.minimum_events_after_reconnect);
+    }
+    let timeout = input
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .map_or(plan.timeout, Duration::from_millis);
+    let reached_target = collector.wait_for_total(target, timeout).await?;
+    if !reached_target {
+        // Fall through to the partial list so the step's expectations fail
+        // with the accumulated evidence instead of the harness hanging.
+        println!(
+            "AION_CONFORMANCE sdk=rust note=assertStream timed out short of {target} event(s); \
+             asserting over the partial list"
+        );
+    }
+    let events = collector.events();
+    Ok(json!({
+        "kind": "eventStream",
+        "events": events,
+        "sequenceContiguousUnique": sequences_contiguous_unique(&events),
+    }))
 }
 
 async fn execute_start(input: &Value, context: &mut ScenarioContext) -> Result<Value, ClientError> {
@@ -327,7 +477,9 @@ async fn collect_stream(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut stream = client.subscribe_workflow(&workflow_id_value);
+    // Full-history attach: the expected events were recorded before this
+    // subscribe step ran (see HARNESS_ATTACH_FROM).
+    let mut stream = client.subscribe_workflow_from(&workflow_id_value, HARNESS_ATTACH_FROM);
     let mut events = Vec::new();
     let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
     tokio::pin!(deadline);
@@ -700,21 +852,254 @@ fn error_variant(error: &ClientError) -> &'static str {
         ClientError::Unavailable => "Unavailable",
         ClientError::Unauthenticated => "Unauthenticated",
         ClientError::NamespaceDenied { .. } => "NamespaceDenied",
-        ClientError::InvalidArgument => "InvalidArgument",
+        ClientError::InvalidArgument { .. } => "InvalidArgument",
         ClientError::Server { .. } => "Server",
+    }
+}
+
+/// Per-scenario harness plan parsed from the subscribe step's `collect` block.
+#[derive(Clone, Debug)]
+struct CollectPlan {
+    minimum_events_before_disconnect: usize,
+    minimum_events_after_reconnect: usize,
+    timeout: Duration,
+}
+
+impl CollectPlan {
+    fn from_input(input: &Value) -> Result<Self, ClientError> {
+        let collect = input
+            .get("collect")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ClientError::server("subscribe collect input must be a JSON object"))?;
+        let count = |key: &str| -> Result<usize, ClientError> {
+            match collect.get(key) {
+                None => Ok(0),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|count| usize::try_from(count).ok())
+                    .ok_or_else(|| {
+                        ClientError::server(format!(
+                            "subscribe collect input {key} must be a non-negative integer"
+                        ))
+                    }),
+            }
+        };
+        let timeout_ms = collect
+            .get("timeoutMs")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                ClientError::server(
+                    "subscribe collect input requires a positive timeoutMs bounding the \
+                     harness waits",
+                )
+            })?;
+        Ok(Self {
+            minimum_events_before_disconnect: count("minimumEventsBeforeDisconnect")?,
+            minimum_events_after_reconnect: count("minimumEventsAfterReconnect")?,
+            timeout: Duration::from_millis(timeout_ms),
+        })
+    }
+}
+
+/// Transparent local TCP relay in front of the server's WebSocket listener.
+/// The SDK's stream endpoint points at it, so aborting the currently piped
+/// link tasks injects a real transient disconnect while the listener keeps
+/// accepting the resume reconnect.
+struct TcpRelay {
+    port: u16,
+    links: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    accept_task: tokio::task::JoinHandle<()>,
+}
+
+impl TcpRelay {
+    async fn start(target_host: String, target_port: u16) -> Result<Self, ClientError> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|error| ClientError::server(format!("relay bind failed: {error}")))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| ClientError::server(format!("relay local_addr failed: {error}")))?
+            .port();
+        let links: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
+        let accept_links = Arc::clone(&links);
+        let accept_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut downstream, _)) = listener.accept().await else {
+                    return;
+                };
+                let target_host = target_host.clone();
+                let link = tokio::spawn(async move {
+                    let Ok(mut upstream) =
+                        tokio::net::TcpStream::connect((target_host.as_str(), target_port)).await
+                    else {
+                        // Dropping the downstream socket IS the report: the
+                        // SDK observes the failed stream and surfaces it.
+                        return;
+                    };
+                    let copied =
+                        tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
+                    // A reset peer ends the pipe; both sockets drop here,
+                    // which is exactly the forced-disconnect outcome.
+                    drop(copied);
+                });
+                match accept_links.lock() {
+                    Ok(mut links) => {
+                        links.retain(|handle| !handle.is_finished());
+                        links.push(link);
+                    }
+                    Err(_poisoned) => {
+                        // The harness thread that poisoned the lock already
+                        // failed the test; stop accepting.
+                        link.abort();
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            port,
+            links,
+            accept_task,
+        })
+    }
+
+    /// Aborts every live piped link (dropping both sockets); the listener
+    /// stays up so the reconnect succeeds through the same relay endpoint.
+    /// Returns how many live links were severed.
+    fn force_disconnect(&self) -> usize {
+        let Ok(mut links) = self.links.lock() else {
+            return 0;
+        };
+        let mut severed = 0;
+        for link in links.drain(..) {
+            if !link.is_finished() {
+                severed += 1;
+            }
+            link.abort();
+        }
+        severed
+    }
+
+    fn close(&self) {
+        self.accept_task.abort();
+        // Any count is fine at teardown; live links are severed either way.
+        self.force_disconnect();
+    }
+}
+
+/// The single background consumer of the disconnect-resume subscribe step's
+/// stream. `assertStream` asserts over THIS collector's accumulated list —
+/// one stream spanning the forced disconnect, never a new subscription.
+struct StreamCollector {
+    events: Arc<Mutex<Vec<Value>>>,
+    failure: Arc<Mutex<Option<ClientError>>>,
+    task: tokio::task::JoinHandle<()>,
+    disconnect_mark: Option<usize>,
+}
+
+impl StreamCollector {
+    fn start(mut stream: aion_client::stream::EventStream) -> Self {
+        let events: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let failure: Arc<Mutex<Option<ClientError>>> = Arc::default();
+        let sink = Arc::clone(&events);
+        let failure_sink = Arc::clone(&failure);
+        let task = tokio::spawn(async move {
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(event) => {
+                        if let Ok(mut events) = sink.lock() {
+                            events.push(normalize_event(&event));
+                        }
+                    }
+                    Err(error) => {
+                        if let Ok(mut failure) = failure_sink.lock() {
+                            *failure = Some(error);
+                        }
+                        return;
+                    }
+                }
+            }
+        });
+        Self {
+            events,
+            failure,
+            task,
+            disconnect_mark: None,
+        }
+    }
+
+    fn events(&self) -> Vec<Value> {
+        self.events
+            .lock()
+            .map(|events| events.clone())
+            .unwrap_or_default()
+    }
+
+    fn len(&self) -> usize {
+        self.events.lock().map(|events| events.len()).unwrap_or(0)
+    }
+
+    fn failure(&self) -> Option<ClientError> {
+        self.failure.lock().ok().and_then(|failure| failure.clone())
+    }
+
+    /// Snapshots how many events were delivered before the forced drop.
+    fn mark_disconnect(&mut self) {
+        self.disconnect_mark = Some(self.len());
+    }
+
+    /// Waits until `target` events have accumulated. Returns `Ok(false)` on
+    /// timeout or stream end short of the target; a terminal stream failure
+    /// is raised because the target can never be reached.
+    async fn wait_for_total(&self, target: usize, timeout: Duration) -> Result<bool, ClientError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(failure) = self.failure() {
+                return Err(failure);
+            }
+            if self.len() >= target {
+                return Ok(true);
+            }
+            if self.task.is_finished() || tokio::time::Instant::now() >= deadline {
+                return Ok(self.len() >= target);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn stop(&self) {
+        self.task.abort();
     }
 }
 
 #[derive(Default)]
 struct ScenarioContext {
     client: Option<Client>,
+    relay: Option<TcpRelay>,
+    collector: Option<StreamCollector>,
+    collect_plan: Option<CollectPlan>,
     results: HashMap<String, Value>,
     error_identities: HashMap<String, Value>,
 }
 
 impl ScenarioContext {
     fn client(&self) -> Result<&Client, ClientError> {
-        self.client.as_ref().ok_or(ClientError::InvalidArgument)
+        self.client
+            .as_ref()
+            .ok_or_else(|| ClientError::server("scenario has not connected yet"))
+    }
+
+    fn close_relay(&mut self) {
+        if let Some(relay) = self.relay.take() {
+            relay.close();
+        }
+    }
+
+    fn teardown(&mut self) {
+        if let Some(collector) = self.collector.take() {
+            collector.stop();
+        }
+        self.close_relay();
     }
 
     fn record(&mut self, scenario: &str, step: &str, result: Value) {
