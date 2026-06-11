@@ -119,6 +119,14 @@ impl ReadableEventStore for PublishingEventStore {
         self.inner.read_history(workflow_id).await
     }
 
+    async fn read_history_from(
+        &self,
+        workflow_id: &WorkflowId,
+        from_seq: u64,
+    ) -> Result<Vec<Event>, StoreError> {
+        self.inner.read_history_from(workflow_id, from_seq).await
+    }
+
     async fn read_run_chain(
         &self,
         workflow_id: &WorkflowId,

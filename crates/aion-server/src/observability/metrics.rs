@@ -429,6 +429,17 @@ impl ReadableEventStore for InstrumentedEventStore {
         result
     }
 
+    async fn read_history_from(
+        &self,
+        workflow_id: &WorkflowId,
+        from_seq: u64,
+    ) -> Result<Vec<Event>, StoreError> {
+        let started = Instant::now();
+        let result = self.inner.read_history_from(workflow_id, from_seq).await;
+        self.observe_since("read_history_from", started);
+        result
+    }
+
     async fn read_run_chain(
         &self,
         workflow_id: &WorkflowId,

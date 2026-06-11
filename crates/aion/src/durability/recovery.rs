@@ -375,6 +375,18 @@ mod tests {
                 .unwrap_or_default())
         }
 
+        async fn read_history_from(
+            &self,
+            workflow_id: &WorkflowId,
+            from_seq: u64,
+        ) -> Result<Vec<Event>, StoreError> {
+            let history = self.read_history(workflow_id).await?;
+            Ok(history
+                .into_iter()
+                .filter(|event| event.seq >= from_seq)
+                .collect())
+        }
+
         async fn read_run_chain(
             &self,
             workflow_id: &WorkflowId,
