@@ -269,7 +269,7 @@ where
         "received activity task"
     );
     let key = ActivityExecutionKey::new(task.workflow_id.clone(), task.activity_id.clone());
-    heartbeat_bookkeeper.register(task.activity_id.clone())?;
+    heartbeat_bookkeeper.register(key.clone())?;
     let (context, cancellation_handle) = ActivityContext::for_workflow(
         Some(task.workflow_id.clone()),
         task.activity_id.clone(),
@@ -428,10 +428,7 @@ async fn report_finished<S>(
 {
     if let Some(in_flight_activity) = in_flight.remove(&finished.key) {
         let _ = in_flight_activity.join_handle.await;
-        record_first_error(
-            pending_error,
-            heartbeat_bookkeeper.remove(&finished.key.activity_id),
-        );
+        record_first_error(pending_error, heartbeat_bookkeeper.remove(&finished.key));
     }
     match finished.outcome {
         Ok(outcome) => {

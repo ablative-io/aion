@@ -18,50 +18,55 @@ use crate::protocol::WorkerSession;
 /// with the engine.
 #[derive(Clone, Debug, Default)]
 pub struct HeartbeatBookkeeper {
-    inner: Arc<Mutex<HashMap<ActivityId, Option<Instant>>>>,
+    inner: Arc<Mutex<HashMap<ActivityExecutionKey, Option<Instant>>>>,
 }
 
 impl HeartbeatBookkeeper {
-    /// Marks an activity as in flight without recording a heartbeat yet.
+    /// Marks an activity execution as in flight without recording a heartbeat
+    /// yet.
     ///
     /// # Errors
     ///
     /// Returns [`WorkerError`] if the in-memory bookkeeping mutex is poisoned.
-    pub fn register(&self, activity_id: ActivityId) -> Result<(), WorkerError> {
+    pub fn register(&self, key: ActivityExecutionKey) -> Result<(), WorkerError> {
         let mut last_heartbeats = self.lock_last_heartbeats()?;
-        last_heartbeats.entry(activity_id).or_insert(None);
+        last_heartbeats.entry(key).or_insert(None);
         Ok(())
     }
 
-    /// Removes bookkeeping for a completed activity.
+    /// Removes bookkeeping for a completed activity execution.
     ///
     /// # Errors
     ///
     /// Returns [`WorkerError`] if the in-memory bookkeeping mutex is poisoned.
-    pub fn remove(&self, activity_id: &ActivityId) -> Result<(), WorkerError> {
+    pub fn remove(&self, key: &ActivityExecutionKey) -> Result<(), WorkerError> {
         let mut last_heartbeats = self.lock_last_heartbeats()?;
-        last_heartbeats.remove(activity_id);
+        last_heartbeats.remove(key);
         Ok(())
     }
 
-    /// Returns the last successful local heartbeat send instant for an activity.
+    /// Returns the last successful local heartbeat send instant for an
+    /// activity execution.
     #[must_use]
-    pub fn last_heartbeat(&self, activity_id: &ActivityId) -> Option<Instant> {
+    pub fn last_heartbeat(&self, key: &ActivityExecutionKey) -> Option<Instant> {
         match self.inner.lock() {
-            Ok(last_heartbeats) => last_heartbeats.get(activity_id).copied().flatten(),
-            Err(poisoned) => poisoned.into_inner().get(activity_id).copied().flatten(),
+            Ok(last_heartbeats) => last_heartbeats.get(key).copied().flatten(),
+            Err(poisoned) => poisoned.into_inner().get(key).copied().flatten(),
         }
     }
 
-    fn record_sent(&self, activity_id: ActivityId, sent_at: Instant) -> Result<(), WorkerError> {
+    fn record_sent(&self, key: ActivityExecutionKey, sent_at: Instant) -> Result<(), WorkerError> {
         let mut last_heartbeats = self.lock_last_heartbeats()?;
-        last_heartbeats.insert(activity_id, Some(sent_at));
+        last_heartbeats.insert(key, Some(sent_at));
         Ok(())
     }
 
     fn lock_last_heartbeats(
         &self,
-    ) -> Result<std::sync::MutexGuard<'_, HashMap<ActivityId, Option<Instant>>>, WorkerError> {
+    ) -> Result<
+        std::sync::MutexGuard<'_, HashMap<ActivityExecutionKey, Option<Instant>>>,
+        WorkerError,
+    > {
         self.inner
             .lock()
             .map_err(|_| WorkerError::registration(HeartbeatBookkeeperPoisoned))
@@ -83,11 +88,11 @@ pub async fn send_heartbeat<S>(
 where
     S: WorkerSession,
 {
-    let activity_id = request.activity_id.clone();
+    let key = ActivityExecutionKey::new(request.workflow_id.clone(), request.activity_id.clone());
     session
         .send_heartbeat(request.workflow_id, request.activity_id, request.detail)
         .await?;
-    bookkeeper.record_sent(activity_id, Instant::now())
+    bookkeeper.record_sent(key, Instant::now())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,7 +128,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream;
 
-    use super::{HeartbeatBookkeeper, send_heartbeat};
+    use super::{ActivityExecutionKey, HeartbeatBookkeeper, send_heartbeat};
     use crate::WorkerConfig;
     use crate::context::HeartbeatRequest;
     use crate::error::WorkerError;
@@ -251,6 +256,7 @@ mod tests {
     async fn last_heartbeat_timestamp_advances_on_each_send() -> Result<(), WorkerError> {
         let workflow_id = WorkflowId::new_v4();
         let activity_id = ActivityId::from_sequence_position(8);
+        let key = ActivityExecutionKey::new(workflow_id.clone(), activity_id.clone());
         let bookkeeper = HeartbeatBookkeeper::default();
         let mut session = FakeSession::default();
 
@@ -264,7 +270,7 @@ mod tests {
             },
         )
         .await?;
-        let first = bookkeeper.last_heartbeat(&activity_id);
+        let first = bookkeeper.last_heartbeat(&key);
         tokio::time::sleep(Duration::from_millis(1)).await;
         send_heartbeat(
             &mut session,
@@ -276,12 +282,64 @@ mod tests {
             },
         )
         .await?;
-        let second = bookkeeper.last_heartbeat(&activity_id);
+        let second = bookkeeper.last_heartbeat(&key);
 
         let (Some(first), Some(second)) = (first, second) else {
             return Err(WorkerError::decode(MissingHeartbeatTimestamp));
         };
         assert!(second > first);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn colliding_sequence_positions_track_per_workflow() -> Result<(), WorkerError> {
+        let activity_id = ActivityId::from_sequence_position(3);
+        let workflow_a = WorkflowId::new_v4();
+        let workflow_b = WorkflowId::new_v4();
+        let key_a = ActivityExecutionKey::new(workflow_a.clone(), activity_id.clone());
+        let key_b = ActivityExecutionKey::new(workflow_b.clone(), activity_id.clone());
+        let bookkeeper = HeartbeatBookkeeper::default();
+        let mut session = FakeSession::default();
+
+        bookkeeper.register(key_a.clone())?;
+        bookkeeper.register(key_b.clone())?;
+
+        // record_sent for workflow A never touches workflow B's timestamp.
+        send_heartbeat(
+            &mut session,
+            &bookkeeper,
+            HeartbeatRequest {
+                workflow_id: workflow_a,
+                activity_id: activity_id.clone(),
+                detail: None,
+            },
+        )
+        .await?;
+        assert!(bookkeeper.last_heartbeat(&key_a).is_some());
+        assert!(bookkeeper.last_heartbeat(&key_b).is_none());
+
+        send_heartbeat(
+            &mut session,
+            &bookkeeper,
+            HeartbeatRequest {
+                workflow_id: workflow_b,
+                activity_id,
+                detail: None,
+            },
+        )
+        .await?;
+        let b_before_a_completes = bookkeeper.last_heartbeat(&key_b);
+        let Some(b_before_a_completes) = b_before_a_completes else {
+            return Err(WorkerError::decode(MissingHeartbeatTimestamp));
+        };
+
+        // Completing workflow A's activity leaves workflow B's entry intact.
+        bookkeeper.remove(&key_a)?;
+        assert!(bookkeeper.last_heartbeat(&key_a).is_none());
+        assert_eq!(
+            bookkeeper.last_heartbeat(&key_b),
+            Some(b_before_a_completes)
+        );
         Ok(())
     }
 }
