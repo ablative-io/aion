@@ -180,15 +180,38 @@ export class UnackedResultTracker {
 	}
 }
 
+/**
+ * A started backoff sleep whose underlying timer can be torn down. The
+ * production {@link defaultSleep} returns one so that when shutdown wins the
+ * race in {@link sleepUnlessAborted} the armed `setTimeout` is cleared —
+ * otherwise a worker that exits by event-loop drain lingers up to one max
+ * backoff after SIGTERM (a SIGKILL window at process level) even though the
+ * run loop returned promptly. `cancel` must tolerate being called after the
+ * sleep completed (clearing a fired timer is a no-op).
+ */
+export interface SleepHandle {
+	readonly done: Promise<void>;
+	cancel(): void;
+}
+
+/**
+ * Injectable backoff-sleep seam. A plain promise-returning sleep (the shape
+ * every test sleep uses) is accepted unchanged — it simply has no timer to
+ * tear down — while a {@link SleepHandle}-returning sleep additionally
+ * exposes cancellation so an abort can disarm the timer it started.
+ */
+export type BackoffSleep = (delayMs: number) => Promise<void> | SleepHandle;
+
 export interface ReconnectDependencies {
 	readonly createSession: WorkerSessionFactory;
-	readonly sleep?: (delayMs: number) => Promise<void>;
+	readonly sleep?: BackoffSleep;
 	readonly logger?: WorkerLogger;
 	/**
 	 * Graceful-shutdown signal raced against every establishment-backoff
-	 * sleep. Required (pass `undefined` explicitly when no shutdown signal
-	 * exists) so no caller can silently keep the stall where a worker told
-	 * to stop waits out the remaining backoff schedule.
+	 * sleep AND every in-flight establishment attempt (dial, handshake,
+	 * register). Required (pass `undefined` explicitly when no shutdown
+	 * signal exists) so no caller can silently keep the stall where a worker
+	 * told to stop waits out the remaining backoff schedule or a hung dial.
 	 */
 	readonly signal: AbortSignal | undefined;
 }
@@ -236,12 +259,16 @@ export class ServerClosedStreamError extends Error {
  * immediately instead of consuming further attempts; exhausting the budget
  * throws {@link ReconnectExhaustedError} with the last failure as `cause`.
  *
- * Shutdown wins promptly during the establishment backoff exactly as it does
- * during the worker loop's drop backoff: every backoff sleep is raced
- * against `dependencies.signal` and no further dial is attempted once it
- * aborts. Resolves `undefined` when shutdown ended the establishment cycle
- * so the caller returns cleanly; a failed attempt's partially-established
- * session is always closed before the backoff begins.
+ * Shutdown wins promptly throughout the establishment cycle exactly as it
+ * does during the worker loop's drop backoff: every backoff sleep AND every
+ * in-flight establishment attempt (dial, handshake, register) is raced
+ * against `dependencies.signal`, and no further dial is attempted once it
+ * aborts — parity with the Rust worker, which selects shutdown around the
+ * entire establishment in `run_with_connector_until`. Resolves `undefined`
+ * when shutdown ended the establishment cycle so the caller returns cleanly;
+ * a failed attempt's partially-established session is always closed before
+ * the backoff begins, and an attempt abandoned to shutdown closes its
+ * session in the background when the attempt eventually settles.
  */
 export async function reconnectWithBackoff(
 	config: WorkerConfig,
@@ -260,47 +287,156 @@ export async function reconnectWithBackoff(
 			);
 			return undefined;
 		}
-		let session: WorkerSession | undefined;
-		try {
-			dependencies.logger?.info("worker reconnect attempt", { attempt });
-			session = await dependencies.createSession(config);
-			await session.handshake(config);
-			await session.register(activityTypes);
-			dependencies.logger?.info("worker reconnect succeeded", { attempt });
-			return session;
-		} catch (error) {
-			lastError = error;
-			await closeFailedSession(session, dependencies.logger);
-			if (!isRetryableSessionError(error)) {
-				dependencies.logger?.error(
-					"worker reconnect denied by server; not retrying",
-					{
-						attempt,
-						code: grpcStatusCode(error),
-						message: error instanceof Error ? error.message : String(error),
-					},
-				);
-				throw error;
-			}
-			dependencies.logger?.warn("worker reconnect attempt failed", {
-				attempt,
-				message: error instanceof Error ? error.message : String(error),
-			});
-			if (attempt === reconnect.maxAttempts) {
-				break;
-			}
-			await sleepUnlessAborted(
-				dependencies.sleep ?? defaultSleep,
-				delayForAttempt(reconnect, attempt),
-				dependencies.signal,
+		dependencies.logger?.info("worker reconnect attempt", { attempt });
+		const establishment = establishSession(config, activityTypes, dependencies);
+		const outcome = await raceEstablishmentAgainstAbort(
+			establishment,
+			dependencies.signal,
+		);
+		if (outcome.kind === "aborted") {
+			dependencies.logger?.info(
+				"worker shutdown requested during an in-flight dial; abandoning the attempt",
+				{ attempt },
 			);
-			attempt += 1;
+			closeAbandonedEstablishment(establishment, dependencies.logger);
+			return undefined;
 		}
+		if (outcome.kind === "established") {
+			dependencies.logger?.info("worker reconnect succeeded", { attempt });
+			return outcome.session;
+		}
+		const error = outcome.error;
+		lastError = error;
+		if (!isRetryableSessionError(error)) {
+			dependencies.logger?.error(
+				"worker reconnect denied by server; not retrying",
+				{
+					attempt,
+					code: grpcStatusCode(error),
+					message: error instanceof Error ? error.message : String(error),
+				},
+			);
+			throw error;
+		}
+		dependencies.logger?.warn("worker reconnect attempt failed", {
+			attempt,
+			message: error instanceof Error ? error.message : String(error),
+		});
+		if (attempt === reconnect.maxAttempts) {
+			break;
+		}
+		await sleepUnlessAborted(
+			dependencies.sleep ?? defaultSleep,
+			delayForAttempt(reconnect, attempt),
+			dependencies.signal,
+		);
+		attempt += 1;
 	}
 
 	throw new ReconnectExhaustedError("worker reconnect attempts exhausted", {
 		cause: lastError,
 	});
+}
+
+/**
+ * One full establishment attempt: dial, handshake, register. The
+ * partially-established session is closed on the attempt's OWN failure path
+ * — not by the caller — so the close still happens when the attempt loses
+ * the shutdown race and finishes in the background.
+ */
+async function establishSession(
+	config: WorkerConfig,
+	activityTypes: readonly string[],
+	dependencies: ReconnectDependencies,
+): Promise<WorkerSession> {
+	let session: WorkerSession | undefined;
+	try {
+		session = await dependencies.createSession(config);
+		await session.handshake(config);
+		await session.register(activityTypes);
+		return session;
+	} catch (error) {
+		await closeFailedSession(session, dependencies.logger);
+		throw error;
+	}
+}
+
+export type EstablishmentOutcome =
+	| { readonly kind: "established"; readonly session: WorkerSession }
+	| { readonly kind: "failed"; readonly error: unknown }
+	| { readonly kind: "aborted" };
+
+/**
+ * Races a session-establishment promise — a full dial/handshake/register
+ * attempt inside {@link reconnectWithBackoff}, or the worker's initial dial
+ * — against the shutdown signal so a SIGTERM during a hung connect returns
+ * promptly instead of waiting out the transport's own connect behaviour.
+ * The attempt promise is converted to a settled outcome before the race, so
+ * a rejection that loses to the abort is always consumed — never an
+ * unhandled rejection. The abort listener is removed on every exit so
+ * repeated attempts never accumulate listeners.
+ */
+export async function raceEstablishmentAgainstAbort(
+	establishment: Promise<WorkerSession>,
+	signal: AbortSignal | undefined,
+): Promise<EstablishmentOutcome> {
+	const settled: Promise<EstablishmentOutcome> = establishment.then(
+		(session): EstablishmentOutcome => ({ kind: "established", session }),
+		(error: unknown): EstablishmentOutcome => ({ kind: "failed", error }),
+	);
+	if (signal === undefined) {
+		return settled;
+	}
+	let unsubscribe = (): void => undefined;
+	const aborted = new Promise<EstablishmentOutcome>((resolve) => {
+		const onAbort = (): void => {
+			resolve({ kind: "aborted" });
+		};
+		if (signal.aborted) {
+			onAbort();
+			return;
+		}
+		signal.addEventListener("abort", onAbort, { once: true });
+		unsubscribe = (): void => {
+			signal.removeEventListener("abort", onAbort);
+		};
+	});
+	try {
+		return await Promise.race([settled, aborted]);
+	} finally {
+		unsubscribe();
+	}
+}
+
+/**
+ * Attaches the close continuation to an establishment attempt abandoned to
+ * shutdown: the losing attempt keeps running in the background, and the
+ * session it eventually resolves must not leak its transport. A late
+ * failure needs no close here (a reconnect attempt closed its partial
+ * session inside {@link establishSession}; a bare initial dial never
+ * exposed one) and is logged — acceptable only because the worker is
+ * exiting — never an unhandled rejection.
+ */
+export function closeAbandonedEstablishment(
+	establishment: Promise<WorkerSession>,
+	logger: WorkerLogger | undefined,
+): void {
+	void establishment.then(
+		async (session) => {
+			logger?.info(
+				"worker session established after shutdown; closing the abandoned session",
+			);
+			await closeFailedSession(session, logger);
+		},
+		(error: unknown) => {
+			logger?.warn(
+				"worker session establishment abandoned at shutdown failed",
+				{
+					message: error instanceof Error ? error.message : String(error),
+				},
+			);
+		},
+	);
 }
 
 /**
@@ -310,20 +446,24 @@ export async function reconnectWithBackoff(
  * remainder of the delay (a SIGTERM-to-SIGKILL window in orchestrated
  * deployments). The caller re-checks the signal after this resolves; the
  * abort listener is always removed so repeated backoffs never accumulate
- * listeners.
+ * listeners, and a cancellable sleep ({@link SleepHandle}) is always
+ * cancelled on the way out so an abort that wins the race disarms the timer
+ * the sleep started — a lost race must never leave a timer holding the
+ * event loop open for the remainder of the backoff.
  */
 export async function sleepUnlessAborted(
-	sleep: (delayMs: number) => Promise<void>,
+	sleep: BackoffSleep,
 	delayMs: number,
 	signal: AbortSignal | undefined,
 ): Promise<void> {
 	if (signal === undefined) {
-		await sleep(delayMs);
+		await toSleepHandle(sleep(delayMs)).done;
 		return;
 	}
 	if (signal.aborted) {
 		return;
 	}
+	const handle = toSleepHandle(sleep(delayMs));
 	let unsubscribe = (): void => undefined;
 	const aborted = new Promise<void>((resolve) => {
 		const onAbort = (): void => {
@@ -335,10 +475,33 @@ export async function sleepUnlessAborted(
 		};
 	});
 	try {
-		await Promise.race([sleep(delayMs), aborted]);
+		await Promise.race([handle.done, aborted]);
 	} finally {
 		unsubscribe();
+		// Disarm the timer regardless of who won: cancelling a completed
+		// sleep is a documented no-op, and cancelling after an abort win is
+		// the whole point.
+		handle.cancel();
 	}
+}
+
+/**
+ * Normalises the two shapes the {@link BackoffSleep} seam accepts. A
+ * promise-shaped result (anything `then`-able — every injected test sleep)
+ * carries no cancellation, so its handle's `cancel` is a no-op; a
+ * {@link SleepHandle} passes through unchanged.
+ */
+function toSleepHandle(started: Promise<void> | SleepHandle): SleepHandle {
+	if (isPromiseShaped(started)) {
+		return { done: started, cancel: () => undefined };
+	}
+	return started;
+}
+
+function isPromiseShaped(
+	started: Promise<void> | SleepHandle,
+): started is Promise<void> {
+	return typeof (started as { readonly then?: unknown }).then === "function";
 }
 
 /**
@@ -442,8 +605,31 @@ export function delayForAttempt(
 	);
 }
 
-export async function defaultSleep(delayMs: number): Promise<void> {
-	await new Promise<void>((resolve) => {
-		setTimeout(resolve, delayMs);
+/**
+ * Production backoff sleep: a real `setTimeout` exposed as a cancellable
+ * {@link SleepHandle}. {@link sleepUnlessAborted} cancels the handle when
+ * the shutdown abort wins the race, clearing the armed timer so a worker
+ * that exits by event-loop drain is never held open for up to one max
+ * backoff after SIGTERM (the establishment-backoff regime is exactly where
+ * the longest sleeps live). Cancelling after completion is a no-op; the
+ * timer is deliberately NOT `unref`ed, so an uncancelled legitimate sleep
+ * keeps its normal drain semantics.
+ */
+export function defaultSleep(delayMs: number): SleepHandle {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const done = new Promise<void>((resolve) => {
+		timer = setTimeout(() => {
+			timer = undefined;
+			resolve();
+		}, delayMs);
 	});
+	return {
+		done,
+		cancel(): void {
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+		},
+	};
 }

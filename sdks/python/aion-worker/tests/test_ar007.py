@@ -20,6 +20,7 @@ from ar007_fakes import (
 
 import aion_worker
 from aion_worker import (
+    ReconnectBackoff,
     ReconnectConfig,
     ReconnectError,
     TransportCredentials,
@@ -27,6 +28,7 @@ from aion_worker import (
     UnackedResultTracker,
     WorkerConfig,
     connect_register_replay_and_serve,
+    reconnect_with_backoff,
     serve,
 )
 from aion_worker.proto import common_pb2
@@ -289,6 +291,132 @@ async def test_shutdown_during_establishment_backoff_returns_promptly() -> None:
 
     # Exactly the one pre-shutdown dial: shutdown never grows the session count.
     assert attempts == 1
+
+
+async def test_already_set_shutdown_never_dials() -> None:
+    """Direct reconnect_with_backoff contract: a pre-set shutdown event short-circuits.
+
+    Parity with the TypeScript worker's "resolves undefined without dialling
+    when the signal is already aborted": the function returns ``None`` before
+    any dial attempt, so a shutdown request that predates establishment never
+    opens a session it would immediately have to close.
+    """
+
+    shutdown = asyncio.Event()
+    shutdown.set()
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        return FakeSession()
+
+    session = await reconnect_with_backoff(
+        connect=connect,
+        config=config(),
+        activity_types=["greet"],
+        available_handlers=["greet"],
+        backoff=ReconnectBackoff.from_config(config()),
+        shutdown=shutdown,
+    )
+
+    assert session is None
+    assert attempts == 0
+
+
+async def test_shutdown_during_hung_dial_cancels_the_attempt_and_returns_promptly() -> None:
+    """Shutdown is raced against the WHOLE establishment attempt, not just the sleeps.
+
+    Parity with the Rust worker, which selects shutdown around the entire
+    establishment in ``run_with_connector_until``: a SIGTERM during a hung
+    connect must return promptly (and cancel the in-flight dial) instead of
+    waiting out the transport's own connect behaviour.
+    """
+
+    shutdown = asyncio.Event()
+    dial_entered = asyncio.Event()
+    dial_cancelled = asyncio.Event()
+    attempts = 0
+
+    async def hung_connect() -> NoReturn:
+        nonlocal attempts
+        attempts += 1
+        dial_entered.set()
+        try:
+            # Stands in for a hung connect: it never completes, so only the
+            # shutdown race (via cancellation) can end the attempt.
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            dial_cancelled.set()
+            raise
+        raise AssertionError("the hung dial can only end by cancellation")
+
+    run = asyncio.create_task(
+        reconnect_with_backoff(
+            connect=hung_connect,
+            config=config(),
+            activity_types=["greet"],
+            available_handlers=["greet"],
+            backoff=ReconnectBackoff.from_config(config()),
+            shutdown=shutdown,
+        )
+    )
+    await asyncio.wait_for(dial_entered.wait(), timeout=5)
+    shutdown.set()
+    # Returns None well before any transport timeout could elapse — the
+    # wait_for only fires if shutdown failed to win against the hung dial.
+    session = await asyncio.wait_for(run, timeout=5)
+
+    assert session is None
+    assert attempts == 1
+    assert dial_cancelled.is_set()
+
+
+class HangingRegisterSession(FakeSession):
+    """Session whose registration hangs until the attempt is cancelled."""
+
+    def __init__(self, entered: asyncio.Event) -> None:
+        super().__init__()
+        self.register_entered = entered
+
+    async def register(self, activity_types: Iterable[str], available_handlers: Iterable[str]) -> None:
+        del activity_types, available_handlers
+        self.register_entered.set()
+        await asyncio.Event().wait()
+
+
+async def test_shutdown_during_hung_register_closes_the_partial_session() -> None:
+    """Cancellation mid-register never leaks the channel.
+
+    When shutdown cancels an attempt that already dialled, the attempt closes
+    its partially-established session while unwinding — the close runs inside
+    the cancelled task before the cancellation propagates.
+    """
+
+    shutdown = asyncio.Event()
+    register_entered = asyncio.Event()
+    session = HangingRegisterSession(register_entered)
+
+    async def connect() -> FakeSession:
+        return session
+
+    run = asyncio.create_task(
+        reconnect_with_backoff(
+            connect=connect,
+            config=config(),
+            activity_types=["greet"],
+            available_handlers=["greet"],
+            backoff=ReconnectBackoff.from_config(config()),
+            shutdown=shutdown,
+        )
+    )
+    await asyncio.wait_for(register_entered.wait(), timeout=5)
+    shutdown.set()
+    result = await asyncio.wait_for(run, timeout=5)
+
+    assert result is None
+    assert session.closed is True
+    assert session.log == ["handshake", "close"]
 
 
 async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_completion(

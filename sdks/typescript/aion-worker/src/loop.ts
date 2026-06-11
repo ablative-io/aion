@@ -1,4 +1,5 @@
 import {
+	type BackoffSleep,
 	closeFailedSession,
 	defaultSleep,
 	delayForAttempt,
@@ -39,7 +40,7 @@ export interface RunWorkerLoopOptions {
 	readonly dispatcher: ActivityDispatcher;
 	readonly tracker?: UnackedResultTracker;
 	readonly sessionFactory?: WorkerSessionFactory;
-	readonly sleep?: (delayMs: number) => Promise<void>;
+	readonly sleep?: BackoffSleep;
 	readonly logger?: WorkerLogger;
 	/**
 	 * Graceful-shutdown signal. Once aborted, the loop stops reconnecting:
@@ -47,10 +48,12 @@ export interface RunWorkerLoopOptions {
 	 * abort returns instead of dialling a replacement session the caller no
 	 * longer wants, and a reconnect already in flight closes its fresh
 	 * session and returns. The signal wins promptly during BOTH backoff
-	 * phases: the drop backoff and the establishment-retry backoffs inside
-	 * `reconnectWithBackoff` each race their sleep against the abort, so a
-	 * stopping worker never waits out a backoff schedule. A signal aborted
-	 * before (or during) the initial
+	 * phases — the drop backoff and the establishment-retry backoffs inside
+	 * `reconnectWithBackoff` each race their sleep against the abort — AND
+	 * during an in-flight establishment attempt: `reconnectWithBackoff`
+	 * races the whole dial/handshake/register chain against the abort, so a
+	 * stopping worker never waits out a backoff schedule or a hung dial. A
+	 * signal aborted before (or during) the initial
 	 * handshake/register returns cleanly without serving — the abort handler
 	 * closes the session, so the registration write failing is shutdown, not
 	 * an error. Without a `sessionFactory` the loop never reconnects, so the
@@ -258,11 +261,12 @@ export async function runWorkerLoop(
 				},
 			);
 			if (replacement === undefined) {
-				// Shutdown fired during the establishment cycle (most often
-				// inside an establishment-backoff sleep): return cleanly,
-				// mirroring the drop-backoff shutdown path. No session is open
-				// at this point — failed attempts are closed inside
-				// reconnectWithBackoff.
+				// Shutdown fired during the establishment cycle (an
+				// establishment-backoff sleep or an in-flight dial): return
+				// cleanly, mirroring the drop-backoff shutdown path. No session
+				// is open at this point — failed attempts close themselves and
+				// an abandoned in-flight attempt closes its session in the
+				// background inside reconnectWithBackoff.
 				options.logger?.info(
 					"worker shutdown requested during reconnect backoff; not reconnecting",
 				);

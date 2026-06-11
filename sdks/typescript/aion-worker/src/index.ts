@@ -21,8 +21,10 @@ export type {
 } from "./loop.js";
 export { runWorkerLoop } from "./loop.js";
 export type {
+	BackoffSleep,
 	PendingActivityReport,
 	ReconnectDependencies,
+	SleepHandle,
 	WorkerLogger,
 } from "./reconnect.js";
 export {

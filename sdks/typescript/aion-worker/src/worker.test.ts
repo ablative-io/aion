@@ -440,6 +440,41 @@ describe("Worker", () => {
 		expect(session.completed).toEqual([]);
 	});
 
+	it("returns promptly when an abort lands during a hung initial dial and closes the late session", async () => {
+		// The initial dial never resolves on its own — it stands in for a hung
+		// connect — so only the abort race can end run(). When the abandoned
+		// dial later resolves a session, the background continuation must
+		// close it so the transport never leaks.
+		const controller = new AbortController();
+		const session = new FakeWorkerSession();
+		let resolveDial: ((session: WorkerSession) => void) | undefined;
+		const worker = new Worker(
+			config(),
+			[defineActivity("increment", async () => ({}))],
+			{
+				sessionFactory: () =>
+					new Promise<WorkerSession>((resolve) => {
+						resolveDial = resolve;
+						setImmediate(() => {
+							controller.abort();
+						});
+					}),
+			},
+		);
+
+		await worker.run({ signal: controller.signal });
+
+		expect(session.closed).toBe(false);
+		if (resolveDial === undefined) {
+			throw new Error("expected the initial dial to have started");
+		}
+		resolveDial(session);
+		await waitFor(() => session.closed);
+		// The abandoned dial never served: nothing was registered or reported.
+		expect(session.registrations).toEqual([]);
+		expect(session.completed).toEqual([]);
+	});
+
 	it("returns gracefully when an abort closes the session before the register write", async () => {
 		const controller = new AbortController();
 		// The abort lands during the handshake, after run()'s pre-abort check:

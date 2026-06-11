@@ -177,10 +177,13 @@ async def connect_register_replay_and_serve(
     measured on the injected monotonic ``clock`` from successful registration
     to the moment the stream ended (post-drop draining of in-flight handlers
     never extends it); see :class:`aion_worker.ReconnectConfig`. Shutdown
-    wins promptly during BOTH backoff phases: a shutdown requested during a
-    mid-run drop backoff or during an establishment-retry backoff inside
-    :func:`aion_worker.reconnect_with_backoff` wakes the sleep immediately
-    and returns cleanly without dialling again.
+    wins promptly during BOTH backoff phases AND during an in-flight dial: a
+    shutdown requested during a mid-run drop backoff or during an
+    establishment-retry backoff inside
+    :func:`aion_worker.reconnect_with_backoff` wakes the sleep immediately,
+    a shutdown requested during a hung dial/handshake/register cancels the
+    in-flight attempt (closing its partially-established session), and the
+    run returns cleanly without dialling again.
     """
 
     unacked = tracker if tracker is not None else UnackedResultTracker()
@@ -198,10 +201,12 @@ async def connect_register_replay_and_serve(
             sleep=sleep,
         )
         if session is None:
-            # Shutdown fired during the establishment cycle (most often inside
-            # an establishment-backoff sleep): return cleanly, mirroring the
-            # drop-backoff shutdown path. No session exists at this point —
-            # failed attempts are closed inside reconnect_with_backoff.
+            # Shutdown fired during the establishment cycle (an
+            # establishment-backoff sleep or an in-flight dial): return
+            # cleanly, mirroring the drop-backoff shutdown path. No session
+            # exists at this point — failed attempts close themselves and a
+            # cancelled in-flight attempt closes its partial session inside
+            # reconnect_with_backoff.
             return
         established_at = clock()
         health = SessionHealth()

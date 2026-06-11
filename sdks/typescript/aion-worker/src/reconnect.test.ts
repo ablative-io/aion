@@ -1,6 +1,7 @@
 import { status } from "@grpc/grpc-js";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	defaultSleep,
 	delayForAttempt,
 	grpcStatusCode,
 	isRetryableSessionError,
@@ -8,7 +9,9 @@ import {
 	reconnectWithBackoff,
 	requireReconnectConfig,
 	reReportUnacked,
+	sleepUnlessAborted,
 	UnackedResultTracker,
+	type WorkerLogger,
 } from "./reconnect.js";
 import type {
 	ActivityFailure,
@@ -68,6 +71,10 @@ class RecordingSession implements WorkerSession {
 }
 
 describe("reconnect", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("keeps reports from distinct workflows that share a sequence position", () => {
 		const tracker = new UnackedResultTracker();
 		const failure: ActivityFailure = {
@@ -270,6 +277,146 @@ describe("reconnect", () => {
 		// Exactly the one pre-abort dial: shutdown never grows the session count.
 		expect(attempts).toBe(1);
 		expect(sleeps).toEqual([1]);
+	});
+
+	it("disarms the default backoff timer when the abort wins the sleep race", async () => {
+		// B-1: the production defaultSleep must not leave its setTimeout armed
+		// after the abort wins — a worker exiting by event-loop drain would
+		// otherwise linger up to one max backoff after SIGTERM (a SIGKILL
+		// window) even though the run loop returned promptly.
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const sleeping = sleepUnlessAborted(defaultSleep, 60_000, controller.signal);
+		expect(vi.getTimerCount()).toBe(1);
+		controller.abort();
+		await sleeping;
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("completes an unaborted default sleep and leaves no timer behind", async () => {
+		// The clear-on-abort mechanism must not change legitimate sleeps: a
+		// sleep that runs to completion resolves on schedule and the fired
+		// timer is gone (cancel after completion is a no-op).
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		let slept = false;
+		const sleeping = sleepUnlessAborted(
+			defaultSleep,
+			25,
+			controller.signal,
+		).then(() => {
+			slept = true;
+		});
+		expect(vi.getTimerCount()).toBe(1);
+		await vi.advanceTimersByTimeAsync(25);
+		await sleeping;
+		expect(slept).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("resolves undefined promptly when shutdown aborts during a hung in-flight dial", async () => {
+		// B-2 parity with the Rust worker's select around the ENTIRE
+		// establishment: the dial never resolves — it stands in for a hung
+		// connect — so only the abort race can end the wait. The result must
+		// be undefined (the caller's clean-return contract) without waiting
+		// for the transport's own connect behaviour.
+		const controller = new AbortController();
+		let attempts = 0;
+
+		const session = await reconnectWithBackoff(config(), ["charge"], {
+			createSession: () => {
+				attempts += 1;
+				setImmediate(() => {
+					controller.abort();
+				});
+				return new Promise<WorkerSession>(() => undefined);
+			},
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+		});
+
+		expect(session).toBeUndefined();
+		expect(attempts).toBe(1);
+	});
+
+	it("closes the session an abandoned dial resolves after shutdown won the race", async () => {
+		// B-2: the losing establishment attempt keeps running in the
+		// background; when it eventually resolves a session, the attached
+		// continuation must close it so the transport never leaks.
+		const controller = new AbortController();
+		const events: string[] = [];
+		let resolveDial: ((session: WorkerSession) => void) | undefined;
+
+		const session = await reconnectWithBackoff(config(), ["charge"], {
+			createSession: () =>
+				new Promise<WorkerSession>((resolve) => {
+					resolveDial = resolve;
+					setImmediate(() => {
+						controller.abort();
+					});
+				}),
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+		});
+
+		expect(session).toBeUndefined();
+		if (resolveDial === undefined) {
+			throw new Error("expected the dial to have started");
+		}
+		resolveDial(new RecordingSession(events));
+		// The abandoned attempt finishes its chain in the background and the
+		// continuation closes the late session.
+		await new Promise<void>((resolve) => {
+			setImmediate(resolve);
+		});
+		await new Promise<void>((resolve) => {
+			setImmediate(resolve);
+		});
+		expect(events).toEqual([
+			"handshake:payments:worker-a",
+			"register:charge",
+			"close",
+		]);
+	});
+
+	it("logs an abandoned dial that fails after shutdown instead of rejecting unhandled", async () => {
+		const controller = new AbortController();
+		const warnings: string[] = [];
+		const logger: WorkerLogger = {
+			info: () => undefined,
+			warn: (message) => {
+				warnings.push(message);
+			},
+			error: () => undefined,
+		};
+		let rejectDial: ((error: Error) => void) | undefined;
+
+		const session = await reconnectWithBackoff(config(), ["charge"], {
+			createSession: () =>
+				new Promise<WorkerSession>((_resolve, reject) => {
+					rejectDial = reject;
+					setImmediate(() => {
+						controller.abort();
+					});
+				}),
+			sleep: () => Promise.resolve(),
+			logger,
+			signal: controller.signal,
+		});
+
+		expect(session).toBeUndefined();
+		if (rejectDial === undefined) {
+			throw new Error("expected the dial to have started");
+		}
+		rejectDial(new Error("dial torn down at shutdown"));
+		await new Promise<void>((resolve) => {
+			setImmediate(resolve);
+		});
+		// Swallow-with-log is acceptable ONLY because the worker is exiting;
+		// an unhandled rejection here would fail the vitest run outright.
+		expect(warnings).toContain(
+			"worker session establishment abandoned at shutdown failed",
+		);
 	});
 
 	it("resolves undefined without dialling when the signal is already aborted", async () => {

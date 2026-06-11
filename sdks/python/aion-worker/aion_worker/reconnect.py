@@ -193,12 +193,18 @@ async def reconnect_with_backoff(
     initial_backoff_seconds. Deterministic PERMISSION_DENIED / UNAUTHENTICATED
     denials are re-raised immediately instead of consuming further attempts.
 
-    Shutdown wins promptly during the establishment backoff exactly as it
-    does during the run loop's drop backoff: every backoff sleep is raced
-    against ``shutdown`` and no further dial is attempted once it fires.
-    Returns ``None`` when shutdown ended the establishment cycle so the
-    caller returns cleanly; a failed attempt's partially-established session
-    is always closed before the backoff begins.
+    Shutdown wins promptly throughout the establishment cycle exactly as it
+    does during the run loop's drop backoff: every backoff sleep AND every
+    in-flight establishment attempt (dial, handshake, register) is raced
+    against ``shutdown``, and no further dial is attempted once it fires —
+    parity with the Rust worker, which selects shutdown around the entire
+    establishment in ``run_with_connector_until``, so a SIGTERM during a
+    hung dial returns promptly instead of waiting out the transport's own
+    connect behaviour. Returns ``None`` when shutdown ended the
+    establishment cycle so the caller returns cleanly; a failed attempt's
+    partially-established session is always closed before the backoff
+    begins, and an attempt cancelled by shutdown closes its
+    partially-established session on the way out.
     """
 
     last_error: BaseException | None = None
@@ -206,15 +212,13 @@ async def reconnect_with_backoff(
         if shutdown is not None and shutdown.is_set():
             logger.info("Shutdown requested during connection establishment; not dialling")
             return None
-        session: WorkerSession | None = None
         try:
-            session = await connect()
-            await session.handshake(config)
-            await session.register(activity_types, available_handlers)
+            session = await _establish_or_shutdown(connect, config, activity_types, available_handlers, shutdown)
+            if session is None:
+                return None
             return session
         except Exception as exc:
             logger.error("Connection failed to %s: %s", config.endpoint, exc)
-            await close_failed_session(session)
             if not is_retryable_session_error(exc):
                 logger.error(
                     "Worker was denied by the server (%s); not retrying",
@@ -233,6 +237,77 @@ async def reconnect_with_backoff(
             )
             await sleep_or_shutdown(sleep, delay, shutdown)
     raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {last_error}") from last_error
+
+
+async def _establish_session(
+    connect: ConnectFactory,
+    config: WorkerConfig,
+    activity_types: Iterable[str],
+    available_handlers: Iterable[str],
+) -> WorkerSession:
+    """Run one full establishment attempt: dial, handshake, register.
+
+    The partially-established session is closed on the attempt's OWN exit
+    path for EVERY non-success — an ordinary failure or a cancellation when
+    shutdown wins the race mid-handshake or mid-register — so an abandoned
+    attempt never leaks its channel (``BaseException`` deliberately includes
+    ``asyncio.CancelledError``; the close runs inside the cancelled task's
+    unwinding before the cancellation is re-raised).
+    """
+
+    session: WorkerSession | None = None
+    try:
+        session = await connect()
+        await session.handshake(config)
+        await session.register(activity_types, available_handlers)
+    except BaseException:
+        await close_failed_session(session)
+        raise
+    return session
+
+
+async def _establish_or_shutdown(
+    connect: ConnectFactory,
+    config: WorkerConfig,
+    activity_types: Iterable[str],
+    available_handlers: Iterable[str],
+    shutdown: asyncio.Event | None,
+) -> WorkerSession | None:
+    """Race one full establishment attempt against the shutdown event.
+
+    When shutdown wins, the in-flight attempt task is cancelled and awaited
+    to completion: :func:`_establish_session` closes its partially-created
+    session while unwinding, so the channel never leaks. An attempt that
+    fails on its own just as shutdown wins is logged — acceptable only
+    because the worker is exiting — never re-raised and never left as an
+    unretrieved task exception. Returns ``None`` when shutdown ended the
+    attempt; a completed attempt's success or failure propagates unchanged.
+    """
+
+    if shutdown is None:
+        return await _establish_session(connect, config, activity_types, available_handlers)
+    attempt_task = asyncio.ensure_future(_establish_session(connect, config, activity_types, available_handlers))
+    shutdown_task: asyncio.Task[bool] = asyncio.create_task(shutdown.wait())
+    try:
+        wait_tasks = cast(set[asyncio.Future[object]], {attempt_task, shutdown_task})
+        done, _pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+        if attempt_task in done:
+            return attempt_task.result()
+        logger.info("Shutdown requested during connection establishment; abandoning the in-flight dial")
+        attempt_task.cancel()
+        try:
+            await attempt_task
+        except asyncio.CancelledError:
+            if not attempt_task.cancelled():
+                # The CancelledError is the enclosing coroutine's own
+                # cancellation, not the attempt acknowledging ours.
+                raise
+        except Exception as exc:
+            logger.warning("worker reconnect attempt abandoned at shutdown failed: %s", exc)
+        return None
+    finally:
+        shutdown_task.cancel()
+        attempt_task.cancel()
 
 
 async def sleep_or_shutdown(sleep: SleepFactory, delay: float, shutdown: asyncio.Event | None) -> None:

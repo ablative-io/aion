@@ -1,7 +1,9 @@
 import { ActivityRegistry, type ActivityDefinition } from "./activity.js";
 import { runWorkerLoop } from "./loop.js";
 import {
+	closeAbandonedEstablishment,
 	closeFailedSession,
+	raceEstablishmentAgainstAbort,
 	requireReconnectConfig,
 	type WorkerLogger,
 } from "./reconnect.js";
@@ -125,7 +127,25 @@ export class Worker {
 			);
 			return;
 		}
-		const session = await sessionFactory(this.config);
+		// The initial dial is raced against the shutdown signal — parity with
+		// the reconnect path and the Rust worker's select around the entire
+		// establishment — so a SIGTERM during a hung connect returns promptly
+		// instead of waiting out the transport's own connect behaviour. The
+		// abandoned dial's session is closed in the background when it
+		// eventually settles, so the transport never leaks.
+		const dial = sessionFactory(this.config);
+		const outcome = await raceEstablishmentAgainstAbort(dial, signal);
+		if (outcome.kind === "aborted") {
+			this.options.logger?.info(
+				"worker run aborted during the initial dial; not serving",
+			);
+			closeAbandonedEstablishment(dial, this.options.logger);
+			return;
+		}
+		if (outcome.kind === "failed") {
+			throw outcome.error;
+		}
+		const session = outcome.session;
 		const liveSession = new LiveSessionRouter(session, this.options.logger);
 		const dispatcher = this.dispatcher(liveSession);
 		let removeAbortListener: (() => void) | undefined;
