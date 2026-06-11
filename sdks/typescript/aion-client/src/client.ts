@@ -1,3 +1,4 @@
+import { type AuthOptions, authHeaders } from "./auth.js";
 import {
   InvalidArgumentError,
   mapHttpResponseError,
@@ -12,12 +13,7 @@ import {
   toPayload,
 } from "./payload.js";
 import type { SubscribeTransport } from "./stream.js";
-
-export interface AuthOptions {
-  readonly bearerToken?: string;
-  readonly subject?: string;
-  readonly namespaces?: readonly string[];
-}
+import { WebSocketSubscribeTransport } from "./ws.js";
 
 export interface TlsOptions {
   readonly enabled?: boolean;
@@ -192,7 +188,7 @@ export class Client {
   private readonly endpoint: string;
   private readonly namespace: string;
   private readonly transport: WorkflowTransport;
-  readonly streamTransport?: SubscribeTransport;
+  readonly streamTransport: SubscribeTransport;
 
   constructor(options: ClientOptions) {
     this.endpoint = normalizeEndpoint(options.endpoint, options.tls);
@@ -204,7 +200,14 @@ export class Client {
         options.auth,
         options.fetch ?? fetch,
       );
-    this.streamTransport = options.streamTransport;
+    // An injected transport wins; otherwise subscriptions ride the built-in
+    // WebSocket transport against the same listener as the HTTP endpoint.
+    this.streamTransport =
+      options.streamTransport ??
+      new WebSocketSubscribeTransport({
+        endpoint: this.endpoint,
+        auth: options.auth,
+      });
   }
 
   async start<I>(options: StartOptions<I>): Promise<WorkflowHandle> {
@@ -413,20 +416,11 @@ class HttpWorkflowTransport implements WorkflowTransport {
     }
   }
 
-  private headers(): HeadersInit {
-    const headers: Record<string, string> = {
+  private headers(): Record<string, string> {
+    return {
       "content-type": "application/json",
+      ...authHeaders(this.auth),
     };
-    if (this.auth?.bearerToken !== undefined) {
-      headers.authorization = `Bearer ${this.auth.bearerToken}`;
-    }
-    if (this.auth?.subject !== undefined) {
-      headers["x-aion-subject"] = this.auth.subject;
-    }
-    if (this.auth?.namespaces !== undefined) {
-      headers["x-aion-namespaces"] = this.auth.namespaces.join(",");
-    }
-    return headers;
   }
 }
 

@@ -237,6 +237,42 @@ test("resuming event stream yields every event once after a transient drop", asy
   assert.deepEqual(transport.resumeRequests, [undefined, 3]);
 });
 
+test("resumed stream drops server replay overlap: every event is delivered exactly once", async () => {
+  let subscribes = 0;
+  const resumeRequests: Array<number | undefined> = [];
+  const transport = {
+    subscribe(request: SubscribeRequest): AsyncIterable<unknown> {
+      subscribes += 1;
+      resumeRequests.push(request.resumeFrom);
+      return subscribes === 1 ? initialFrames() : overlappingReplay();
+    },
+  };
+  async function* initialFrames(): AsyncIterable<unknown> {
+    yield frame(1);
+    yield frame(2);
+    throw new TypeError("socket closed");
+  }
+  // A server replay may overlap the cursor (subscribe-then-snapshot); the
+  // stream machinery must drop seqs <= lastDelivered, never re-yield them.
+  async function* overlappingReplay(): AsyncIterable<unknown> {
+    yield frame(2);
+    yield frame(3);
+    yield frame(4);
+  }
+
+  const yielded: number[] = [];
+  for await (const event of eventStream({
+    transport,
+    request: { namespace: "default", workflowId: "workflow" },
+    maxReconnects: 1,
+  })) {
+    yielded.push(event.seq);
+  }
+
+  assert.deepEqual(yielded, [1, 2, 3, 4]);
+  assert.deepEqual(resumeRequests, [undefined, 3]);
+});
+
 test("terminal stream failures throw out of the async iterator", async () => {
   const transport = {
     async *subscribe(): AsyncIterable<unknown> {

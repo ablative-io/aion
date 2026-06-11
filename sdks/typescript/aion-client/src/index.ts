@@ -1,7 +1,7 @@
+export { authHeaders, type AuthOptions } from "./auth.js";
 export {
   Client,
   connect,
-  type AuthOptions,
   type CancelOptions,
   type ClientOptions,
   type DescribeOptions,
@@ -69,3 +69,11 @@ export {
   type SubscribeTransport,
   type WorkflowEvent,
 } from "./stream.js";
+export {
+  EVENT_STREAM_PATH,
+  WebSocketSubscribeTransport,
+  decodeStreamFrame,
+  eventStreamUrl,
+  subscriptionRequestFrame,
+  type WebSocketTransportOptions,
+} from "./ws.js";

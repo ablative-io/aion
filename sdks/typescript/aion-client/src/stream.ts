@@ -4,7 +4,7 @@ import {
   mapTransportError,
   mapWireError,
 } from "./errors.js";
-import type { WireEnvelope } from "./payload.js";
+import { JSON_CONTENT_TYPE, type WireEnvelope } from "./payload.js";
 
 export interface WorkflowEvent {
   readonly namespace?: string;
@@ -96,7 +96,12 @@ export function decodeWorkflowEvent(frame: unknown): WorkflowEvent {
   const eventField = streamed?.event;
   const envelope = asWireEnvelope(eventField);
   const payloadValue = asRecord(envelope?.payload);
-  const seq = extractSequence(eventField, payloadValue, streamed);
+  const seq = extractSequence(
+    eventField,
+    payloadValue,
+    streamed,
+    decodedCoreEventData(payloadValue),
+  );
 
   if (envelope === undefined || seq === undefined) {
     throw new ServerError(
@@ -159,6 +164,38 @@ function asWireEnvelope(value: unknown): WireEnvelope | undefined {
           }
         : undefined,
   };
+}
+
+/**
+ * Decodes the serde-encoded aion-core event carried inside a StreamedEvent
+ * wire envelope payload and returns its variant data, whose recording
+ * envelope holds the authoritative per-workflow `seq`. Returns undefined
+ * when the payload is not a JSON-encoded core event; the caller's terminal
+ * missing-sequence error covers that case, so nothing fails silently here.
+ */
+function decodedCoreEventData(
+  payload: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (
+    payload === undefined ||
+    payload.content_type !== JSON_CONTENT_TYPE ||
+    !Array.isArray(payload.bytes)
+  ) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      new TextDecoder().decode(
+        Uint8Array.from(payload.bytes as readonly number[]),
+      ),
+    );
+  } catch {
+    // The bytes were tagged JSON but do not parse; decodeWorkflowEvent
+    // raises its terminal ServerError for the whole frame.
+    return undefined;
+  }
+  return asRecord(asRecord(parsed)?.data);
 }
 
 function extractSequence(

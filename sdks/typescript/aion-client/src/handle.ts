@@ -6,7 +6,6 @@ import type {
   SignalRawOptions,
   WorkflowDescription,
 } from "./client.js";
-import { UnavailableError } from "./errors.js";
 import type { Payload } from "./payload.js";
 import { eventStream, type WorkflowEvent } from "./stream.js";
 
@@ -138,11 +137,6 @@ export class WorkflowHandle {
   subscribe(
     options: HandleSubscribeOptions = {},
   ): AsyncIterable<WorkflowEvent> {
-    if (this.client.streamTransport === undefined) {
-      throw new UnavailableError(
-        "No subscribe transport configured for this client",
-      );
-    }
     return eventStream({
       transport: this.client.streamTransport,
       request: {

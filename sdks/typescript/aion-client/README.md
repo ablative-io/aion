@@ -1,6 +1,6 @@
 # @aion/client
 
-TypeScript caller SDK for connecting to an `aion-server` deployment and operating workflows from Node.js or browser runtimes. Status: in progress/hardening; install from this checkout until a release is published for your target environment. It exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
+TypeScript caller SDK for connecting to an `aion-server` deployment and operating workflows from Node.js (>= 22.4, required by the built-in WebSocket subscription transport's upgrade-header support). Status: in progress/hardening; install from this checkout until a release is published for your target environment. It exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
 
 ## Install
 
@@ -18,7 +18,7 @@ export AION_AUTH_TOKEN=dev-token # optional
 npx tsx examples/seven-operations.ts
 ```
 
-See [`examples/seven-operations.ts`](examples/seven-operations.ts) for a complete program covering all seven operations. Subscribe requires a server stream transport adapter; pass it as `streamTransport` when constructing the client.
+See [`examples/seven-operations.ts`](examples/seven-operations.ts) for a complete program covering all seven operations. Subscribe uses the built-in WebSocket transport against the server's `/events/stream` endpoint (the websocket URL is derived from the configured HTTP endpoint, auth headers are forwarded on the upgrade request, and reconnects resume from the last delivered sequence number); an injected `streamTransport` overrides it.
 
 ## Connect
 

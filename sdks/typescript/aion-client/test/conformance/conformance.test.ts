@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import net from "node:net";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
 	AionClientError,
+	CancelledError,
 	type Client,
 	connect,
 	fromPayload,
 	InvalidArgumentError,
 	type Payload,
+	type SubscribeRequest,
+	type SubscribeTransport,
+	WebSocketSubscribeTransport,
 	type WireEnvelope,
 	type WorkflowEvent,
 } from "../../src/index.js";
@@ -50,16 +56,20 @@ test("shared client contract conformance", async () => {
 });
 
 function scenariosPath(): string {
-	return join(
-		dirname(fileURLToPath(import.meta.url)),
-		"..",
-		"..",
-		"..",
-		"..",
-		"conformance",
-		"aion-clients",
-		"scenarios.json",
-	);
+	// Walk upward from this file (which runs compiled out of dist/) to the
+	// repository root that holds the shared scenarios document.
+	const relative = join("conformance", "aion-clients", "scenarios.json");
+	let directory = dirname(fileURLToPath(import.meta.url));
+	while (true) {
+		const candidate = join(directory, relative);
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(directory);
+		if (parent === directory)
+			throw new Error(
+				`could not locate ${relative} in any ancestor of ${dirname(fileURLToPath(import.meta.url))}`,
+			);
+		directory = parent;
+	}
 }
 
 async function runScenario(
@@ -72,6 +82,32 @@ async function runScenario(
 	const context = new ScenarioContext();
 	const startedAt = new Date(Date.now() - 30_000).toISOString();
 	const now = new Date(Date.now() + 30_000).toISOString();
+	try {
+		await runScenarioSteps(
+			scenario,
+			defaults,
+			fixtures,
+			serverUrl,
+			scenarioId,
+			context,
+			startedAt,
+			now,
+		);
+	} finally {
+		await context.teardown();
+	}
+}
+
+async function runScenarioSteps(
+	scenario: JsonRecord,
+	defaults: JsonRecord,
+	fixtures: JsonRecord,
+	serverUrl: string,
+	scenarioId: string,
+	context: ScenarioContext,
+	startedAt: string,
+	now: string,
+): Promise<void> {
 	for (const step of asArray(scenario.steps).map(asRecord)) {
 		const stepId = String(step.id);
 		const operation = String(step.operation);
@@ -100,7 +136,9 @@ async function runScenario(
 		let actual: JsonRecord;
 		let errorIdentity: JsonRecord | null = null;
 		try {
-			actual = { ok: await execute(operation, input, context, serverUrl) };
+			actual = {
+				ok: await execute(operation, input, context, serverUrl, expected),
+			};
 		} catch (error) {
 			if (error instanceof AionClientError) {
 				actual = { error: error.kind };
@@ -130,17 +168,40 @@ async function execute(
 	input: JsonRecord,
 	context: ScenarioContext,
 	serverUrl: string,
+	expected: JsonRecord,
 ): Promise<JsonRecord> {
 	switch (operation) {
 		case "connect": {
+			const auth =
+				process.env[authTokenEnv] === undefined
+					? undefined
+					: { bearerToken: process.env[authTokenEnv] };
+			// Workflow subscriptions ride the built-in WebSocket transport
+			// through a local TCP relay so harness.forceDisconnect can sever
+			// live stream sockets (and only stream sockets) without touching
+			// the server. The relay is transparent TCP, so it only fronts
+			// plaintext http endpoints; against https the stream connects
+			// directly and forced disconnects are unsupported.
+			const target = new URL(serverUrl);
+			let streamEndpoint = serverUrl;
+			if (target.protocol === "http:") {
+				const relay = await TcpRelay.start(
+					target.hostname,
+					target.port.length > 0 ? Number(target.port) : 80,
+				);
+				context.relay = relay;
+				streamEndpoint = `http://127.0.0.1:${relay.port}`;
+			}
+			const streamTransport = new StoppableSubscribeTransport(
+				new WebSocketSubscribeTransport({ endpoint: streamEndpoint, auth }),
+			);
+			context.streamTransport = streamTransport;
 			context.client = await connect({
 				endpoint: serverUrl,
-				auth:
-					process.env[authTokenEnv] === undefined
-						? undefined
-						: { bearerToken: process.env[authTokenEnv] },
+				auth,
 				tls: { enabled: serverUrl.startsWith("https://") },
 				namespace: String(input.namespace ?? "conformance"),
+				streamTransport,
 			});
 			return { kind: "client" };
 		}
@@ -206,18 +267,65 @@ async function execute(
 				history: description.history.map(normalizeEnvelopeEvent),
 			};
 		}
-		case "subscribe":
-			if ("collect" in input) {
-				return { kind: "eventStreamStarted" };
+		case "subscribe": {
+			if (!("collect" in input)) {
+				return {
+					kind: "eventStream",
+					events: await collectStream(input, context),
+				};
 			}
-			return {
-				kind: "eventStream",
-				events: await collectStream(input, context),
-			};
-		case "harness.forceDisconnect":
+			// `collect` marks the disconnect-resume choreography: start the
+			// SINGLE background collector that every later harness step
+			// (forceDisconnect, assertStream) observes. The forced disconnect
+			// needs the relay in front of the stream socket.
+			context.requireRelay();
+			const selector = asRecord(input.selector ?? input);
+			const workflowId = String(
+				selector.workflowId ?? input.workflowId ?? "",
+			);
+			const transport = context.requireStreamTransport();
+			const stream = context.requireClient().handle(workflowId).subscribe();
+			context.collector = new StreamCollector(
+				stream,
+				asRecord(input.collect),
+				() => transport.attempts,
+			);
+			return { kind: "eventStreamStarted" };
+		}
+		case "harness.forceDisconnect": {
+			const collector = context.requireCollector();
+			const relay = context.requireRelay();
+			await collector.waitFor(
+				() => collector.events.length >= collector.minimumEventsBeforeDisconnect,
+				`${collector.minimumEventsBeforeDisconnect} event(s) before the forced disconnect`,
+			);
+			collector.markDisconnected();
+			relay.destroyConnections();
 			return { kind: "disconnectInjected" };
+		}
 		case "harness.assertStream": {
-			const events = await collectStream(input, context);
+			// Await the one collector started by the subscribe step: the
+			// assertion runs over the single accumulated list spanning the
+			// forced disconnect, never over a fresh subscription. Completion
+			// requires events that PROVE the reconnect (delivered by a
+			// transport attempt opened after the forced disconnect) plus the
+			// step's own eventsInclude expectations, bounded by timeoutMs.
+			const collector = context.requireCollector();
+			const requiredEvents = asArray(
+				asRecord(expected.ok).eventsInclude,
+			).map(asRecord);
+			await collector.waitFor(
+				() =>
+					collector.deliveredAfterDisconnect() >=
+						collector.minimumEventsAfterReconnect &&
+					requiredEvents.every((required) =>
+						eventIncluded(collector.events, required),
+					),
+				`${collector.minimumEventsAfterReconnect} event(s) after the reconnect and all expected events`,
+				typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+			);
+			await context.stopCollector();
+			const events = [...collector.events];
 			return {
 				kind: "eventStream",
 				events,
@@ -435,11 +543,21 @@ function normalizeSummary(summary: WireEnvelope | undefined): JsonRecord {
 
 function normalizeStreamEvent(event: WorkflowEvent): JsonRecord {
 	const raw = asRecord(event.raw);
+	const core = decodeCoreEvent(raw);
+	if (core !== null) {
+		const data = asRecord(core.data);
+		return {
+			type: renameEventType(String(core.type)),
+			workflowId:
+				optionalString(asRecord(data.envelope).workflow_id) ?? null,
+			seq: event.seq,
+			payload: coreUserPayload(data),
+		};
+	}
 	const payload = asRecord(asRecord(raw.event).payload);
 	return {
-		type: String(raw.type ?? asRecord(raw.event).type ?? "Event").replace(
-			"SignalReceived",
-			"WorkflowSignalled",
+		type: renameEventType(
+			String(raw.type ?? asRecord(raw.event).type ?? "Event"),
 		),
 		workflowId:
 			optionalString(asRecord(event.envelope).workflowId) ??
@@ -448,6 +566,62 @@ function normalizeStreamEvent(event: WorkflowEvent): JsonRecord {
 		seq: event.seq,
 		payload: decodePayload(payload),
 	};
+}
+
+function renameEventType(type: string): string {
+	return type.replace("SignalReceived", "WorkflowSignalled");
+}
+
+/**
+ * Decodes the serde-encoded aion-core event nested inside a StreamedEvent
+ * wire envelope (`{"type": ..., "data": {"envelope": {"seq", "workflow_id"},
+ * ...}}`), which is where the real server carries event type, workflow id,
+ * and user payloads.
+ */
+function decodeCoreEvent(raw: JsonRecord): JsonRecord | null {
+	const payload = asRecord(asRecord(raw.event).payload);
+	if (
+		payload.content_type !== "application/json" ||
+		!Array.isArray(payload.bytes)
+	) {
+		return null;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(
+			new TextDecoder().decode(Uint8Array.from(payload.bytes as number[])),
+		);
+	} catch {
+		return null;
+	}
+	const record = asRecord(parsed);
+	return typeof record.type === "string" && "data" in record ? record : null;
+}
+
+/**
+ * Extracts the user-visible payload from a core event's variant data: the
+ * opaque `Payload` field (`payload` for signals, `input` for starts,
+ * `result` for completions), decoded from its JSON bytes.
+ */
+function coreUserPayload(data: JsonRecord): Json {
+	for (const key of ["payload", "input", "result"]) {
+		const candidate = asRecord(data[key]);
+		if (
+			typeof candidate.content_type === "string" &&
+			Array.isArray(candidate.bytes)
+		) {
+			try {
+				return JSON.parse(
+					new TextDecoder().decode(
+						Uint8Array.from(candidate.bytes as number[]),
+					),
+				) as Json;
+			} catch {
+				return null;
+			}
+		}
+	}
+	return null;
 }
 
 function normalizeEnvelopeEvent(envelope: WireEnvelope): JsonRecord {
@@ -556,6 +730,9 @@ function assertNonEmpty(value: Json, scenario: string, step: string): void {
 
 class ScenarioContext {
 	client?: Client;
+	relay?: TcpRelay;
+	streamTransport?: StoppableSubscribeTransport;
+	collector?: StreamCollector;
 	readonly results = new Map<string, JsonRecord>();
 	readonly errorIdentities = new Map<string, JsonRecord>();
 
@@ -563,6 +740,49 @@ class ScenarioContext {
 		if (this.client === undefined)
 			throw new Error("scenario has not connected yet");
 		return this.client;
+	}
+
+	requireRelay(): TcpRelay {
+		if (this.relay === undefined)
+			throw new Error(
+				"forced stream disconnects require the harness TCP relay, which " +
+					"only fronts plaintext http endpoints; AION_SERVER_URL is not http",
+			);
+		return this.relay;
+	}
+
+	requireCollector(): StreamCollector {
+		if (this.collector === undefined)
+			throw new Error(
+				"no stream collector is running; the subscribe step with a " +
+					"`collect` input must run before harness stream operations",
+			);
+		return this.collector;
+	}
+
+	requireStreamTransport(): StoppableSubscribeTransport {
+		if (this.streamTransport === undefined)
+			throw new Error("scenario has not connected yet");
+		return this.streamTransport;
+	}
+
+	/**
+	 * Stops the background collector deterministically: severing the relayed
+	 * stream sockets forces the transport into its reconnect path, where the
+	 * stopped wrapper raises the terminal harness-stop error the collector
+	 * treats as a clean end.
+	 */
+	async stopCollector(): Promise<void> {
+		if (this.collector === undefined) return;
+		this.streamTransport?.stop();
+		this.relay?.destroyConnections();
+		await this.collector.finished;
+	}
+
+	async teardown(): Promise<void> {
+		await this.stopCollector();
+		this.streamTransport?.stop();
+		if (this.relay !== undefined) await this.relay.close();
 	}
 
 	record(scenario: string, step: string, value: JsonRecord): void {
@@ -589,4 +809,233 @@ class ScenarioContext {
 		for (const part of parts) value = asRecord(value)[part] ?? null;
 		return value;
 	}
+}
+
+const HARNESS_STOP_MESSAGE = "conformance harness stopped the stream collector";
+
+function isHarnessStop(error: unknown): boolean {
+	return error instanceof CancelledError && error.message === HARNESS_STOP_MESSAGE;
+}
+
+/**
+ * Transparent local TCP relay in front of the aion server. The SDK's
+ * built-in WebSocket transport connects through it, so destroying the
+ * currently piped sockets injects a real transient disconnect while the
+ * listener keeps accepting the reconnect.
+ */
+class TcpRelay {
+	private constructor(
+		private readonly server: net.Server,
+		readonly port: number,
+		private readonly sockets: Set<net.Socket>,
+	) {}
+
+	static async start(targetHost: string, targetPort: number): Promise<TcpRelay> {
+		const sockets = new Set<net.Socket>();
+		const server = net.createServer((downstream) => {
+			const upstream = net.connect(targetPort, targetHost);
+			sockets.add(downstream);
+			sockets.add(upstream);
+			const sever = () => {
+				sockets.delete(downstream);
+				sockets.delete(upstream);
+				downstream.destroy();
+				upstream.destroy();
+			};
+			downstream.on("error", sever);
+			upstream.on("error", sever);
+			downstream.on("close", sever);
+			upstream.on("close", sever);
+			downstream.pipe(upstream);
+			upstream.pipe(downstream);
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		const address = server.address();
+		if (address === null || typeof address === "string")
+			throw new Error("harness TCP relay did not bind a TCP port");
+		return new TcpRelay(server, address.port, sockets);
+	}
+
+	/** Destroys every piped socket; the listener stays up for reconnects. */
+	destroyConnections(): void {
+		for (const socket of [...this.sockets]) socket.destroy();
+		this.sockets.clear();
+	}
+
+	async close(): Promise<void> {
+		this.destroyConnections();
+		await new Promise<void>((resolve, reject) => {
+			this.server.close((error) =>
+				error === undefined ? resolve() : reject(error),
+			);
+		});
+	}
+}
+
+/**
+ * Wraps the built-in transport for the harness. All real work (upgrade
+ * headers, subscription frame, resume cursor) flows through the wrapped
+ * built-in transport, with two harness behaviours on top:
+ *
+ * - The scenarios assert on events from the workflow's beginning
+ *   (`eventsInclude` lists `WorkflowStarted`), so the initial attach maps to
+ *   the wire's documented full-history replay, `resume_from_seq = 1`. An
+ *   absent cursor would be a live tail that can never deliver events emitted
+ *   before the subscription attached. Reconnect cursors (lastDelivered + 1)
+ *   pass through untouched.
+ * - Once stopped, the next (re)subscribe raises a terminal error so the
+ *   resume loop ends deterministically instead of reconnecting forever.
+ */
+class StoppableSubscribeTransport implements SubscribeTransport {
+	/** Count of transport attempts opened; serial, by the resume loop. */
+	attempts = 0;
+	private stopped = false;
+
+	constructor(private readonly inner: SubscribeTransport) {}
+
+	stop(): void {
+		this.stopped = true;
+	}
+
+	async *subscribe(request: SubscribeRequest): AsyncIterable<unknown> {
+		if (this.stopped) throw new CancelledError(HARNESS_STOP_MESSAGE);
+		this.attempts += 1;
+		const fromStart: SubscribeRequest = {
+			...request,
+			resumeFrom: request.resumeFrom ?? 1,
+		};
+		for await (const frame of this.inner.subscribe(fromStart)) {
+			if (this.stopped) throw new CancelledError(HARNESS_STOP_MESSAGE);
+			yield frame;
+		}
+	}
+}
+
+interface CollectConfig {
+	readonly minimumEventsBeforeDisconnect: number;
+	readonly minimumEventsAfterReconnect: number;
+	readonly timeoutMs: number;
+}
+
+/**
+ * The single background collector for the disconnect-resume choreography.
+ * It consumes the one stream opened by the subscribe step and accumulates
+ * every delivered event across the forced disconnect, so assertions run
+ * over one contiguous list rather than a fresh subscription.
+ */
+class StreamCollector {
+	readonly events: JsonRecord[] = [];
+	readonly minimumEventsBeforeDisconnect: number;
+	readonly minimumEventsAfterReconnect: number;
+	readonly timeoutMs: number;
+	readonly finished: Promise<void>;
+	eventsAtDisconnect: number | null = null;
+	private readonly currentAttempt: () => number;
+	private readonly attempts: number[] = [];
+	private attemptAtDisconnect: number | null = null;
+	private failure: unknown = null;
+	private ended = false;
+	private waiters: Array<() => void> = [];
+
+	constructor(
+		stream: AsyncIterable<WorkflowEvent>,
+		collect: JsonRecord,
+		currentAttempt: () => number,
+	) {
+		this.minimumEventsBeforeDisconnect = collectCount(
+			collect,
+			"minimumEventsBeforeDisconnect",
+		);
+		this.minimumEventsAfterReconnect = collectCount(
+			collect,
+			"minimumEventsAfterReconnect",
+		);
+		const timeoutMs = collect.timeoutMs;
+		if (typeof timeoutMs !== "number" || timeoutMs <= 0)
+			throw new Error(
+				"subscribe collect input requires a positive timeoutMs bounding the harness waits",
+			);
+		this.timeoutMs = timeoutMs;
+		this.currentAttempt = currentAttempt;
+		this.finished = this.collect(stream);
+	}
+
+	markDisconnected(): void {
+		this.eventsAtDisconnect = this.events.length;
+		this.attemptAtDisconnect = this.currentAttempt();
+	}
+
+	/**
+	 * Events that PROVE the reconnect: delivered by a transport attempt
+	 * opened after the forced disconnect. In-flight events buffered from the
+	 * severed attempt never count, so a premature pass is impossible.
+	 */
+	deliveredAfterDisconnect(): number {
+		const boundary = this.attemptAtDisconnect;
+		if (boundary === null) return 0;
+		return this.attempts.filter((attempt) => attempt > boundary).length;
+	}
+
+	async waitFor(
+		condition: () => boolean,
+		what: string,
+		timeoutMs?: number,
+	): Promise<void> {
+		const deadline = Date.now() + (timeoutMs ?? this.timeoutMs);
+		while (!condition()) {
+			if (this.failure !== null) throw this.failure;
+			if (this.ended)
+				throw new Error(
+					`stream ended after ${this.events.length} event(s), before ${what}`,
+				);
+			const remaining = deadline - Date.now();
+			if (remaining <= 0)
+				throw new Error(
+					`timed out waiting for ${what}; ${this.events.length} event(s) ` +
+						`delivered, ${String(this.eventsAtDisconnect)} at disconnect`,
+				);
+			await this.nextChange(remaining);
+		}
+	}
+
+	private async collect(stream: AsyncIterable<WorkflowEvent>): Promise<void> {
+		try {
+			for await (const event of stream) {
+				this.events.push(normalizeStreamEvent(event));
+				this.attempts.push(this.currentAttempt());
+				this.wake();
+			}
+		} catch (error) {
+			if (!isHarnessStop(error)) this.failure = error;
+		} finally {
+			this.ended = true;
+			this.wake();
+		}
+	}
+
+	private wake(): void {
+		const waiters = this.waiters;
+		this.waiters = [];
+		for (const waiter of waiters) waiter();
+	}
+
+	private nextChange(maxWaitMs: number): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, maxWaitMs);
+			this.waiters.push(() => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+	}
+}
+
+function collectCount(collect: JsonRecord, key: string): number {
+	const value = collect[key] ?? 0;
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0)
+		throw new Error(`subscribe collect input ${key} must be a non-negative integer`);
+	return value;
 }
