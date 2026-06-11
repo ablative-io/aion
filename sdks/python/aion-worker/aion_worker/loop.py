@@ -16,6 +16,7 @@ from .reconnect import (
     PendingFailedReport,
     ReconnectBackoff,
     ReconnectError,
+    ServerClosedStreamError,
     UnackedResultTracker,
     grpc_status_code,
     is_retryable_session_error,
@@ -45,7 +46,18 @@ class ShutdownRequested:
 
 
 class StreamFinished:
-    """Sentinel returned when the receive stream ends normally."""
+    """Sentinel returned when the server ends the receive stream cleanly.
+
+    The reconnect-aware run loop treats this as a retryable session drop —
+    never as a run end — so workers ride through graceful server closes.
+    """
+
+
+@dataclass
+class SessionHealth:
+    """Per-session liveness counters used for drop-budget reset accounting."""
+
+    tasks_served: int = 0
 
 
 @dataclass(frozen=True)
@@ -81,8 +93,18 @@ async def serve(
     dispatcher: ActivityDispatcher,
     tracker: UnackedResultTracker | None = None,
     shutdown: asyncio.Event | None = None,
-) -> None:
-    """Serve tasks from an already connected and registered session."""
+    health: SessionHealth | None = None,
+) -> ShutdownRequested | StreamFinished:
+    """Serve tasks from an already connected and registered session.
+
+    Returns :class:`ShutdownRequested` when the caller's shutdown event ended
+    the loop, or :class:`StreamFinished` when the server ended the task
+    stream cleanly; the reconnect-aware caller treats the latter as a
+    retryable session drop. When ``health`` is supplied, every task whose
+    outcome report was sent on this session increments
+    ``health.tasks_served`` — the end-to-end proof used for drop-budget
+    resets, surviving even when a later failure ends the session.
+    """
 
     if config.max_concurrency <= 0:
         raise ValueError("max_concurrency must be greater than zero")
@@ -93,16 +115,16 @@ async def serve(
     stream = session.receive_tasks().__aiter__()
 
     try:
-        while shutdown is None or not shutdown.is_set():
+        while True:
+            if shutdown is not None and shutdown.is_set():
+                return ShutdownRequested()
             event = await _receive_next_or_shutdown(stream, shutdown)
-            if isinstance(event, ShutdownRequested):
-                break
-            if isinstance(event, StreamFinished):
-                break
+            if isinstance(event, ShutdownRequested | StreamFinished):
+                return event
             if isinstance(event, TaskReceived):
                 await semaphore.acquire()
                 task = asyncio.create_task(
-                    _run_and_report(session, dispatcher, event.task, unacked, semaphore, in_flight)
+                    _run_and_report(session, dispatcher, event.task, unacked, semaphore, in_flight, health)
                 )
                 running.add(task)
                 task.add_done_callback(running.discard)
@@ -123,8 +145,20 @@ async def connect_register_replay_and_serve(
     tracker: UnackedResultTracker | None = None,
     sleep: SleepFactory = asyncio.sleep,
     shutdown: asyncio.Event | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Connect, register, replay unacked reports, then enter the serve loop."""
+    """Connect, register, replay unacked reports, then serve with drop recovery.
+
+    The run ends only on graceful shutdown, a non-retryable server denial, or
+    exhaustion of the cumulative session-drop budget
+    (``reconnect.max_attempts``). A clean/graceful server stream close is a
+    retryable drop: the worker redials through the same budgeted, backed-off
+    cycle, so routine server deploys are ridden through. The budget resets to
+    zero once an established session proves healthy — it served at least one
+    task, or it survived longer than ``reconnect.max_backoff_seconds``
+    measured on the injected monotonic ``clock`` from successful registration
+    to the drop; see :class:`aion_worker.ReconnectConfig`.
+    """
 
     from .reconnect import reconnect_register_and_replay
 
@@ -132,7 +166,6 @@ async def connect_register_replay_and_serve(
     activity_types = list(dispatcher.activity_types())
     backoff = ReconnectBackoff.from_config(config)
     dropped_attempt = 0
-    last_drop: BaseException | None = None
     while shutdown is None or not shutdown.is_set():
         session = await reconnect_register_and_replay(
             connect=connect,
@@ -142,12 +175,21 @@ async def connect_register_replay_and_serve(
             tracker=unacked,
             sleep=sleep,
         )
+        established_at = clock()
+        health = SessionHealth()
+        drop: BaseException
         try:
             logger.info("Connected")
             logger.info("Registered activities: %s", ", ".join(activity_types))
             logger.info("Waiting for tasks")
-            await serve(config, session, dispatcher, unacked, shutdown)
-            return
+            end = await serve(config, session, dispatcher, unacked, shutdown, health)
+            if isinstance(end, ShutdownRequested):
+                return
+            if shutdown is not None and shutdown.is_set():
+                return
+            logger.warning("Server closed the worker stream cleanly; treating it as a session drop")
+            await _close_session(session)
+            drop = ServerClosedStreamError(f"server closed the worker stream cleanly for {config.endpoint}")
         except Exception as exc:
             if not is_retryable_session_error(exc):
                 logger.error(
@@ -158,20 +200,25 @@ async def connect_register_replay_and_serve(
                 raise
             logger.exception("worker session dropped; reconnecting before receiving more tasks")
             await _close_session(session)
-            dropped_attempt += 1
-            last_drop = exc
-            if dropped_attempt >= backoff.max_attempts:
-                raise ReconnectError(
-                    f"worker reconnect attempts exhausted for {config.endpoint}: {last_drop}"
-                ) from last_drop
-            delay = backoff.delay_for_attempt(dropped_attempt)
-            logger.warning(
-                "Reconnecting in %ss (attempt %s/%s)",
-                delay,
-                dropped_attempt,
-                backoff.max_attempts,
-            )
-            await sleep(delay)
+            drop = exc
+        if health.tasks_served > 0 or clock() - established_at > backoff.max_backoff_seconds:
+            if dropped_attempt > 0:
+                logger.info(
+                    "Worker session proved healthy (%s tasks served); drop budget reset",
+                    health.tasks_served,
+                )
+            dropped_attempt = 0
+        dropped_attempt += 1
+        if dropped_attempt >= backoff.max_attempts:
+            raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {drop}") from drop
+        delay = backoff.delay_for_attempt(dropped_attempt)
+        logger.warning(
+            "Reconnecting in %ss (attempt %s/%s)",
+            delay,
+            dropped_attempt,
+            backoff.max_attempts,
+        )
+        await sleep(delay)
 
 
 async def _receive_next_or_shutdown(
@@ -220,6 +267,7 @@ async def _run_and_report(
     tracker: UnackedResultTracker,
     semaphore: asyncio.Semaphore,
     in_flight: dict[_InFlightKey, ActivityCancellationHandle],
+    health: SessionHealth | None,
 ) -> None:
     key = _in_flight_key(task.workflow_id, task.activity_id)
     try:
@@ -240,6 +288,10 @@ async def _run_and_report(
         in_flight[key] = ActivityCancellationHandle(context)
         outcome = await dispatcher.dispatch(task, context)
         await _report_outcome(session, task, outcome, tracker)
+        if health is not None:
+            # A received task whose outcome report went out is the
+            # end-to-end health proof used for drop-budget resets.
+            health.tasks_served += 1
         elapsed_ms = round((time.perf_counter() - started_at) * 1000)
         if isinstance(outcome, Completed):
             logger.info(

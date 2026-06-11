@@ -8,15 +8,17 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::future;
 use tokio::sync::{Semaphore, mpsc};
-use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
 use crate::config::WorkerConfig;
-use crate::context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
+use crate::context::{ActivityContext, HeartbeatRequest};
 use crate::error::WorkerError;
-use crate::protocol::reconnect::{PendingActivityReport, UnackedResultTracker};
+use crate::protocol::reconnect::UnackedResultTracker;
 use crate::protocol::{
     ActivityExecutionKey, ActivityTask, HeartbeatBookkeeper, WorkerSession, WorkerSessionEvent,
+};
+use crate::runtime::report::{
+    DispatchFinished, InFlightActivity, RuntimeChannels, drain_remaining, drain_runtime_events,
 };
 
 /// Dispatch seam used by the receive loop to execute decoded activity tasks.
@@ -51,6 +53,18 @@ pub enum DispatchOutcome {
 /// Future that never resolves, used by the default serve entrypoint.
 pub type NoShutdown = future::Pending<()>;
 
+/// Why the serve loop ended without an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServeEnd {
+    /// The caller's shutdown future fired; in-flight work was drained.
+    Shutdown,
+    /// The server ended the task stream cleanly (end-of-stream or a drain
+    /// frame). The reconnect-aware run loop treats this as a retryable
+    /// session drop — never as a run end — so workers ride through graceful
+    /// server closes such as deploys.
+    StreamClosed,
+}
+
 /// Runs the worker receive loop until the session's task stream completes.
 ///
 /// The loop only forwards explicit handler heartbeats and cancellation flags. It
@@ -70,12 +84,21 @@ pub async fn serve_activity_tasks<S, D>(
     session: &mut S,
     dispatcher: Arc<D>,
     tracker: &mut UnackedResultTracker,
-) -> Result<(), WorkerError>
+) -> Result<ServeEnd, WorkerError>
 where
     S: WorkerSession,
     D: ActivityDispatcher,
 {
-    serve_activity_tasks_until(config, session, dispatcher, tracker, future::pending()).await
+    let mut tasks_reported = 0;
+    serve_activity_tasks_until(
+        config,
+        session,
+        dispatcher,
+        tracker,
+        &mut tasks_reported,
+        future::pending(),
+    )
+    .await
 }
 
 /// Runs the worker receive loop until the session's task stream completes.
@@ -90,6 +113,16 @@ where
 /// an explicit engine acknowledgement clears tracker entries, so successful
 /// sends leave their entries in place.
 ///
+/// `tasks_reported` counts the activity tasks whose outcome report was sent
+/// on this session. It is an out-parameter (rather than part of the return
+/// value) so the count survives an error return: the reconnect-aware caller
+/// uses it for session-health accounting — a session that served at least
+/// one task resets the cumulative drop budget even when it later drops.
+///
+/// On a clean end this returns [`ServeEnd`] distinguishing a caller-driven
+/// shutdown from a server-side stream close, so the caller can treat the
+/// latter as a retryable drop.
+///
 /// # Errors
 ///
 /// Returns [`WorkerError`] when task decode, dispatch, heartbeat send, or result
@@ -99,8 +132,9 @@ pub async fn serve_activity_tasks_until<S, D, Shutdown>(
     session: &mut S,
     dispatcher: Arc<D>,
     tracker: &mut UnackedResultTracker,
+    tasks_reported: &mut usize,
     shutdown: Shutdown,
-) -> Result<(), WorkerError>
+) -> Result<ServeEnd, WorkerError>
 where
     S: WorkerSession,
     D: ActivityDispatcher,
@@ -111,22 +145,29 @@ where
     }
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
-    let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
-    let (heartbeat_sender, mut heartbeat_receiver) = mpsc::unbounded_channel();
+    let (result_sender, result_receiver) = mpsc::unbounded_channel();
+    let (heartbeat_sender, heartbeat_receiver) = mpsc::unbounded_channel();
+    let mut channels = RuntimeChannels {
+        heartbeats: heartbeat_receiver,
+        results: result_receiver,
+    };
     let heartbeat_bookkeeper = HeartbeatBookkeeper::default();
     let mut stream = session.receive_tasks();
     let mut in_flight = HashMap::<ActivityExecutionKey, InFlightActivity>::new();
     let mut pending_error = None;
+    // Overridden at the shutdown break sites; every other clean exit is the
+    // server ending the stream.
+    let mut end = ServeEnd::StreamClosed;
     tokio::pin!(shutdown);
 
     while pending_error.is_none() {
         drain_runtime_events(
             session,
             &heartbeat_bookkeeper,
-            &mut heartbeat_receiver,
-            &mut result_receiver,
+            &mut channels,
             &mut in_flight,
             tracker,
+            tasks_reported,
             &mut pending_error,
         )
         .await;
@@ -138,6 +179,7 @@ where
             biased;
             () = &mut shutdown => {
                 cancel_all_in_flight(&in_flight);
+                end = ServeEnd::Shutdown;
                 break;
             }
             event = stream.next() => {
@@ -154,6 +196,7 @@ where
                             biased;
                             () = &mut shutdown => {
                                 cancel_all_in_flight(&in_flight);
+                                end = ServeEnd::Shutdown;
                                 break;
                             }
                             permit = semaphore.clone().acquire_owned() => {
@@ -185,10 +228,10 @@ where
     drain_remaining(
         session,
         &heartbeat_bookkeeper,
-        &mut heartbeat_receiver,
-        &mut result_receiver,
+        &mut channels,
         &mut in_flight,
         tracker,
+        tasks_reported,
         &mut pending_error,
     )
     .await;
@@ -196,7 +239,7 @@ where
     if let Some(error) = pending_error {
         return Err(error);
     }
-    Ok(())
+    Ok(end)
 }
 
 struct SessionEventContext<'a, D> {
@@ -323,202 +366,6 @@ fn cancel_all_in_flight(in_flight: &HashMap<ActivityExecutionKey, InFlightActivi
             workflow_id = %key.workflow_id,
             "delivered cooperative activity cancellation during worker shutdown"
         );
-    }
-}
-
-async fn drain_remaining<S>(
-    session: &mut S,
-    heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
-    result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
-    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
-    tracker: &mut UnackedResultTracker,
-    pending_error: &mut Option<WorkerError>,
-) where
-    S: WorkerSession,
-{
-    while !in_flight.is_empty() {
-        match result_receiver.recv().await {
-            Some(finished) => {
-                report_finished(
-                    session,
-                    heartbeat_bookkeeper,
-                    finished,
-                    in_flight,
-                    tracker,
-                    pending_error,
-                )
-                .await;
-                drain_heartbeats(
-                    session,
-                    heartbeat_bookkeeper,
-                    heartbeat_receiver,
-                    pending_error,
-                )
-                .await;
-            }
-            None => break,
-        }
-    }
-    drain_heartbeats(
-        session,
-        heartbeat_bookkeeper,
-        heartbeat_receiver,
-        pending_error,
-    )
-    .await;
-}
-
-async fn drain_runtime_events<S>(
-    session: &mut S,
-    heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
-    result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
-    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
-    tracker: &mut UnackedResultTracker,
-    pending_error: &mut Option<WorkerError>,
-) where
-    S: WorkerSession,
-{
-    drain_heartbeats(
-        session,
-        heartbeat_bookkeeper,
-        heartbeat_receiver,
-        pending_error,
-    )
-    .await;
-    while let Ok(finished) = result_receiver.try_recv() {
-        report_finished(
-            session,
-            heartbeat_bookkeeper,
-            finished,
-            in_flight,
-            tracker,
-            pending_error,
-        )
-        .await;
-    }
-}
-
-async fn drain_heartbeats<S>(
-    session: &mut S,
-    heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
-    pending_error: &mut Option<WorkerError>,
-) where
-    S: WorkerSession,
-{
-    while let Ok(request) = heartbeat_receiver.try_recv() {
-        record_first_error(
-            pending_error,
-            crate::protocol::send_heartbeat(session, heartbeat_bookkeeper, request).await,
-        );
-    }
-}
-
-async fn report_finished<S>(
-    session: &mut S,
-    heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    finished: DispatchFinished,
-    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
-    tracker: &mut UnackedResultTracker,
-    pending_error: &mut Option<WorkerError>,
-) where
-    S: WorkerSession,
-{
-    if let Some(in_flight_activity) = in_flight.remove(&finished.key) {
-        let _ = in_flight_activity.join_handle.await;
-        record_first_error(pending_error, heartbeat_bookkeeper.remove(&finished.key));
-    }
-    match finished.outcome {
-        Ok(outcome) => {
-            tracker.record(pending_report(&finished.key, &outcome));
-            record_first_error(
-                pending_error,
-                report_outcome(
-                    session,
-                    finished.key.workflow_id,
-                    finished.key.activity_id,
-                    outcome,
-                )
-                .await,
-            );
-        }
-        Err(error) => {
-            if pending_error.is_none() {
-                *pending_error = Some(error);
-            }
-        }
-    }
-}
-
-/// Builds the unacked-tracker entry for a computed outcome before it is sent.
-fn pending_report(key: &ActivityExecutionKey, outcome: &DispatchOutcome) -> PendingActivityReport {
-    match outcome {
-        DispatchOutcome::Completed { output } => PendingActivityReport::Completed {
-            workflow_id: key.workflow_id.clone(),
-            activity_id: key.activity_id.clone(),
-            output: output.clone(),
-        },
-        DispatchOutcome::Failed { failure } => PendingActivityReport::Failed {
-            workflow_id: key.workflow_id.clone(),
-            activity_id: key.activity_id.clone(),
-            failure: failure.clone(),
-        },
-    }
-}
-
-async fn report_outcome<S>(
-    session: &mut S,
-    workflow_id: WorkflowId,
-    activity_id: ActivityId,
-    outcome: DispatchOutcome,
-) -> Result<(), WorkerError>
-where
-    S: WorkerSession,
-{
-    debug!(
-        activity_id = activity_id.sequence_position(),
-        "reporting activity outcome"
-    );
-    match outcome {
-        DispatchOutcome::Completed { output } => {
-            session
-                .report_result(workflow_id, activity_id.clone(), output)
-                .await?;
-            info!(
-                activity_id = activity_id.sequence_position(),
-                "reported activity result"
-            );
-        }
-        DispatchOutcome::Failed { failure } => {
-            session
-                .report_failure(workflow_id, activity_id.clone(), failure)
-                .await?;
-            info!(
-                activity_id = activity_id.sequence_position(),
-                "reported activity failure"
-            );
-        }
-    }
-    Ok(())
-}
-
-struct DispatchFinished {
-    key: ActivityExecutionKey,
-    outcome: Result<DispatchOutcome, WorkerError>,
-}
-
-struct InFlightActivity {
-    cancellation_handle: ActivityCancellationHandle,
-    join_handle: JoinHandle<()>,
-}
-
-fn record_first_error(pending_error: &mut Option<WorkerError>, result: Result<(), WorkerError>) {
-    if pending_error.is_none() {
-        if let Err(error) = result {
-            *pending_error = Some(error);
-        }
     }
 }
 

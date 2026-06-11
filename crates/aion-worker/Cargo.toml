@@ -30,4 +30,5 @@ tokio-stream = "0.1.18"
 uuid = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }

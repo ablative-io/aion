@@ -24,9 +24,7 @@ logger = logging.getLogger(__name__)
 
 SleepFactory: TypeAlias = Callable[[float], Awaitable[None]]
 
-NON_RETRYABLE_STATUS_CODES = frozenset(
-    {grpc.StatusCode.PERMISSION_DENIED, grpc.StatusCode.UNAUTHENTICATED}
-)
+NON_RETRYABLE_STATUS_CODES = frozenset({grpc.StatusCode.PERMISSION_DENIED, grpc.StatusCode.UNAUTHENTICATED})
 """Deterministic server denials that no reconnect attempt can ever fix."""
 
 
@@ -78,6 +76,19 @@ class ClosableSession(Protocol):
 
 class ReconnectError(Exception):
     """Raised when reconnect policy is invalid or exhausted."""
+
+
+class ServerClosedStreamError(Exception):
+    """The server closed the worker stream cleanly while the run was active.
+
+    A clean/graceful close is a retryable session drop: the worker redials
+    through the bounded, backed-off reconnect cycle so routine server deploys
+    are ridden through. This error is the classified drop cause chained as
+    the ``__cause__`` of :class:`ReconnectError` when a persistent clean-close
+    loop exhausts the drop budget. An explicit protocol drain signal
+    ("closing, do not reconnect") is planned for the worker-protocol ack wave
+    and will refine the clean-close case.
+    """
 
 
 @dataclass(frozen=True)
@@ -210,9 +221,7 @@ async def reconnect_with_backoff(
                 backoff.max_attempts,
             )
             await sleep(delay)
-    raise ReconnectError(
-        f"worker reconnect attempts exhausted for {config.endpoint}: {last_error}"
-    ) from last_error
+    raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {last_error}") from last_error
 
 
 async def close_failed_session(session: WorkerSession | None) -> None:
@@ -240,7 +249,12 @@ async def reconnect_register_and_replay(
 
     backoff = ReconnectBackoff.from_config(config)
     session = await reconnect_with_backoff(
-        connect, config, activity_types, available_handlers, backoff, sleep,
+        connect,
+        config,
+        activity_types,
+        available_handlers,
+        backoff,
+        sleep,
     )
     await re_report_unacked(session, tracker)
     return session

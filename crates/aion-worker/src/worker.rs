@@ -8,7 +8,7 @@ use std::task::Poll;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::activity::{ActivityRegistry, HandlerFuture};
 use crate::config::WorkerConfig;
@@ -19,7 +19,7 @@ use crate::protocol::reconnect::{
     register_connected_session,
 };
 use crate::protocol::{GrpcWorkerSession, WorkerSession};
-use crate::runtime::{NoShutdown, serve_activity_tasks, serve_activity_tasks_until};
+use crate::runtime::{NoShutdown, ServeEnd, serve_activity_tasks, serve_activity_tasks_until};
 
 /// Builder for a configured worker and its registered typed activities.
 #[must_use]
@@ -106,16 +106,18 @@ impl Worker {
         &self.available_handlers
     }
 
-    /// Connects to the configured endpoint, registers activities, and serves until the stream ends.
+    /// Connects to the configured endpoint, registers activities, and serves indefinitely.
     ///
     /// Session establishment goes through the bounded-backoff reconnect
     /// machinery configured in [`WorkerConfig::reconnect`], and retryable
-    /// mid-run transport drops re-establish through the same machinery: the
-    /// worker re-registers its activity types, re-reports every
-    /// unacknowledged activity result (the engine ingests reports
-    /// idempotently by `ActivityId`), and resumes serving. Deterministic
-    /// `PermissionDenied` / `Unauthenticated` denials surface after exactly
-    /// one attempt.
+    /// mid-run transport drops — including clean server-side stream closes —
+    /// re-establish through the same machinery: the worker re-registers its
+    /// activity types, re-reports every unacknowledged activity result (the
+    /// engine ingests reports idempotently by `ActivityId`), and resumes
+    /// serving. Deterministic `PermissionDenied` / `Unauthenticated` denials
+    /// surface after exactly one attempt. Without a shutdown signal the run
+    /// ends only on a non-retryable error or drop-budget exhaustion; see
+    /// [`crate::config::ReconnectConfig`] for the budget-reset semantics.
     ///
     /// # Errors
     ///
@@ -151,20 +153,30 @@ impl Worker {
     /// transient failures retry up to the configured `reconnect.max_attempts`
     /// with bounded exponential backoff, while `PermissionDenied` /
     /// `Unauthenticated` denials surface after exactly one attempt. When an
-    /// established session drops retryably mid-run, the worker drains
-    /// in-flight activities into the unacked tracker, backs off, reconnects
-    /// through the same machinery (re-registering its activity types),
-    /// re-reports every unacknowledged result, and resumes serving. Mid-run
-    /// drops share one cumulative budget of `reconnect.max_attempts` per run,
-    /// matching the Python worker. At most one session is alive at a time,
-    /// and a shutdown signalled during a reconnect or backoff wins promptly.
+    /// established session drops retryably mid-run — a retryable transport
+    /// failure or a clean server-side stream close, both count — the worker
+    /// drains in-flight activities into the unacked tracker, backs off,
+    /// reconnects through the same machinery (re-registering its activity
+    /// types), re-reports every unacknowledged result, and resumes serving.
+    ///
+    /// Mid-run drops share one cumulative budget of `reconnect.max_attempts`,
+    /// matching the Python and TypeScript workers, and the budget resets to
+    /// zero once a session proves healthy: it served at least one task, or it
+    /// survived longer than `reconnect.max_backoff` (measured monotonically
+    /// from successful registration to the drop). See
+    /// [`crate::config::ReconnectConfig`]. The run therefore ends only on
+    /// shutdown, a non-retryable error, or budget exhaustion — never merely
+    /// because the server closed the stream. At most one session is alive at
+    /// a time, and a shutdown signalled during a reconnect or backoff wins
+    /// promptly (returning `Ok` when the pending drop was a clean close).
     ///
     /// # Errors
     ///
     /// Returns [`WorkerError`] when establishment attempts are exhausted or
     /// denied, when a non-retryable error occurs mid-run, when the mid-run
-    /// drop budget is exhausted, or when shutdown interrupts an unrecovered
-    /// session drop.
+    /// drop budget is exhausted ([`WorkerError::CleanCloseExhausted`] when
+    /// the exhausting drops were clean closes), or when shutdown interrupts
+    /// an unrecovered error drop.
     pub async fn run_with_connector_until<S, F, Fut, Shutdown>(
         self,
         mut connect: F,
@@ -197,6 +209,8 @@ impl Worker {
                 ) => result,
             };
             let mut session = connected?;
+            let session_started = tokio::time::Instant::now();
+            let mut tasks_reported = 0_usize;
             let served = match re_report_unacked(&tracker, &mut session).await {
                 Ok(()) => {
                     serve_activity_tasks_until(
@@ -204,6 +218,7 @@ impl Worker {
                         &mut session,
                         Arc::clone(&self.activities),
                         &mut tracker,
+                        &mut tasks_reported,
                         shutdown.wait(),
                     )
                     .await
@@ -211,8 +226,14 @@ impl Worker {
                 Err(report_error) => Err(report_error),
             };
             drop(session);
-            match served {
-                Ok(()) => return Ok(()),
+            let cause = match served {
+                Ok(ServeEnd::Shutdown) => return Ok(()),
+                Ok(ServeEnd::StreamClosed) => {
+                    if shutdown.fired() {
+                        return Ok(());
+                    }
+                    DropCause::CleanClose
+                }
                 Err(error) if !error.is_retryable() => {
                     error!(error = %error, "worker session denied by server; not reconnecting");
                     return Err(error);
@@ -221,33 +242,44 @@ impl Worker {
                     if shutdown.fired() {
                         return Err(error);
                     }
-                    drop_failures += 1;
-                    if drop_failures >= backoff.attempts() {
-                        error!(
-                            drop_failures,
-                            error = %error,
-                            "worker session drop budget exhausted; not reconnecting"
-                        );
-                        return Err(error);
-                    }
-                    let delay = backoff.delay_for_attempt(drop_failures);
-                    warn!(
-                        drop_failures,
-                        delay_ms = delay.as_millis(),
-                        error = %error,
-                        "worker session dropped; reconnecting after backoff"
-                    );
-                    let shutdown_won = tokio::select! {
-                        biased;
-                        () = shutdown.wait() => true,
-                        () = tokio::time::sleep(delay) => false,
-                    };
-                    if shutdown_won {
-                        return Err(error);
-                    }
-                    recovery_error = Some(error);
+                    DropCause::Failure(error)
                 }
+            };
+            let proved_healthy =
+                tasks_reported > 0 || session_started.elapsed() > backoff.max_delay();
+            if proved_healthy && drop_failures > 0 {
+                info!(
+                    drop_failures,
+                    tasks_reported, "worker session proved healthy; drop budget reset"
+                );
+                drop_failures = 0;
             }
+            drop_failures += 1;
+            if drop_failures >= backoff.attempts() {
+                let error = cause.into_exhaustion_error();
+                error!(
+                    drop_failures,
+                    error = %error,
+                    "worker session drop budget exhausted; not reconnecting"
+                );
+                return Err(error);
+            }
+            let delay = backoff.delay_for_attempt(drop_failures);
+            warn!(
+                drop_failures,
+                delay_ms = delay.as_millis(),
+                cause = %cause,
+                "worker session dropped; reconnecting after backoff"
+            );
+            let shutdown_won = tokio::select! {
+                biased;
+                () = shutdown.wait() => true,
+                () = tokio::time::sleep(delay) => false,
+            };
+            if shutdown_won {
+                return cause.into_shutdown_result();
+            }
+            recovery_error = cause.into_recovery_error();
         }
     }
 
@@ -286,15 +318,61 @@ impl Worker {
         )
         .await?;
         let mut tracker = UnackedResultTracker::new();
+        let mut tasks_reported = 0_usize;
         serve_activity_tasks_until(
             &self.config,
             &mut session,
             self.activities,
             &mut tracker,
+            &mut tasks_reported,
             shutdown,
         )
         .await?;
         Ok(session)
+    }
+}
+
+/// Cause of a retryable mid-run session drop carried across one recovery cycle.
+enum DropCause {
+    /// The session ended with a retryable error.
+    Failure(WorkerError),
+    /// The server closed the stream cleanly while the run was still active.
+    CleanClose,
+}
+
+impl DropCause {
+    /// The classified error surfaced when this drop exhausts the budget.
+    fn into_exhaustion_error(self) -> WorkerError {
+        match self {
+            Self::Failure(error) => error,
+            Self::CleanClose => WorkerError::CleanCloseExhausted,
+        }
+    }
+
+    /// Run outcome when shutdown wins the post-drop backoff: an error drop
+    /// surfaces its error, a clean close is a graceful end.
+    fn into_shutdown_result(self) -> Result<(), WorkerError> {
+        match self {
+            Self::Failure(error) => Err(error),
+            Self::CleanClose => Ok(()),
+        }
+    }
+
+    /// Error to surface if shutdown wins the recovery establishment select.
+    fn into_recovery_error(self) -> Option<WorkerError> {
+        match self {
+            Self::Failure(error) => Some(error),
+            Self::CleanClose => None,
+        }
+    }
+}
+
+impl std::fmt::Display for DropCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failure(error) => write!(formatter, "{error}"),
+            Self::CleanClose => write!(formatter, "server closed the worker stream cleanly"),
+        }
     }
 }
 
@@ -377,6 +455,7 @@ mod tests {
     use aion_core::{ActivityError, ActivityId, ContentType, Payload, WorkflowId};
     use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
     use async_trait::async_trait;
+    use futures::StreamExt as _;
     use futures::stream;
     use serde::{Deserialize, Serialize};
     use tokio::sync::{Notify, mpsc};
@@ -677,6 +756,9 @@ mod tests {
         events: Vec<Result<WorkerSessionEvent, WorkerError>>,
         fail_reports: bool,
         register_denial: Option<tonic::Status>,
+        /// Delays the receive stream's first event so paused-clock tests can
+        /// script a session that outlives the configured max backoff.
+        delay_stream: Option<Duration>,
     }
 
     #[async_trait]
@@ -703,7 +785,17 @@ mod tests {
         }
 
         fn receive_tasks(&mut self) -> WorkerTaskStream {
-            Box::pin(stream::iter(std::mem::take(&mut self.events)))
+            let events = std::mem::take(&mut self.events);
+            match self.delay_stream.take() {
+                Some(delay) => Box::pin(
+                    stream::once(async move {
+                        tokio::time::sleep(delay).await;
+                        stream::iter(events)
+                    })
+                    .flatten(),
+                ),
+                None => Box::pin(stream::iter(events)),
+            }
         }
 
         async fn report_result(
@@ -807,6 +899,7 @@ mod tests {
                         register_denial: Some(tonic::Status::permission_denied(
                             "namespace `payments` is not granted to subject `worker-a`",
                         )),
+                        delay_stream: None,
                     })
                 }
             }
@@ -858,23 +951,38 @@ mod tests {
                             events: vec![Ok(WorkerSessionEvent::Task(task))],
                             fail_reports: true,
                             register_denial: None,
+                            delay_stream: None,
                         })
-                    } else {
+                    } else if attempt == 2 {
                         Ok(ScriptedSession {
                             index: attempt,
                             log,
                             events: Vec::new(),
                             fail_reports: false,
                             register_denial: None,
+                            delay_stream: None,
+                        })
+                    } else {
+                        // A clean close no longer ends the run, so the third
+                        // establishment is denied deterministically to end it.
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: Some(tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            )),
+                            delay_stream: None,
                         })
                     }
                 }
             }
         };
 
-        worker
+        let result = worker
             .run_with_connector_until(connect, std::future::pending::<()>())
-            .await?;
+            .await;
 
         drop(log_sender);
         let mut registrations = Vec::new();
@@ -885,7 +993,11 @@ mod tests {
                 SessionLog::Reported(index, report) => reports.push((index, report)),
             }
         }
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(!error.is_retryable());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
         let expected_types = vec![String::from("double"), String::from("increment")];
         assert_eq!(
             registrations,
@@ -938,23 +1050,38 @@ mod tests {
                             ],
                             fail_reports: true,
                             register_denial: None,
+                            delay_stream: None,
                         })
-                    } else {
+                    } else if attempt == 2 {
                         Ok(ScriptedSession {
                             index: attempt,
                             log,
                             events: Vec::new(),
                             fail_reports: false,
                             register_denial: None,
+                            delay_stream: None,
+                        })
+                    } else {
+                        // A clean close no longer ends the run, so the third
+                        // establishment is denied deterministically to end it.
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: Some(tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            )),
+                            delay_stream: None,
                         })
                     }
                 }
             }
         };
 
-        worker
+        let result = worker
             .run_with_connector_until(connect, std::future::pending::<()>())
-            .await?;
+            .await;
 
         drop(log_sender);
         let mut reports = Vec::new();
@@ -963,7 +1090,11 @@ mod tests {
                 reports.push((index, report));
             }
         }
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(!error.is_retryable());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert_eq!(
             reports.len(),
             2,
@@ -1007,6 +1138,7 @@ mod tests {
                             })],
                             fail_reports: false,
                             register_denial: None,
+                            delay_stream: None,
                         })
                     } else {
                         // Fire shutdown while recovery is still inside the
@@ -1050,7 +1182,10 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    /// The paused clock keeps every session's lifetime at exactly zero, so
+    /// no time-based budget reset can fire: flapping sessions that never
+    /// serve a task must exhaust at exactly `max_attempts` drops.
+    #[tokio::test(start_paused = true)]
     async fn mid_run_drop_budget_exhaustion_surfaces_last_drop_error() -> Result<(), WorkerError> {
         let worker = two_activity_worker()?;
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1069,6 +1204,7 @@ mod tests {
                         })],
                         fail_reports: false,
                         register_denial: None,
+                        delay_stream: None,
                     })
                 }
             }
@@ -1119,6 +1255,7 @@ mod tests {
                         })],
                         fail_reports: false,
                         register_denial: None,
+                        delay_stream: None,
                     })
                 }
             }
@@ -1198,6 +1335,7 @@ mod tests {
                         })],
                         fail_reports: false,
                         register_denial: None,
+                        delay_stream: None,
                     })
                 }
             }
@@ -1220,6 +1358,328 @@ mod tests {
             error.grpc_status().map(tonic::Status::code),
             Some(tonic::Code::Unavailable)
         ));
+        drop(log_receiver);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn served_tasks_reset_drop_budget_across_cycles() -> Result<(), WorkerError> {
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(7);
+        // max_backoff is enormous so only the served-task rule can reset the
+        // budget; max_attempts = 2 so any two unhealthy drops would end the run.
+        let worker = two_activity_worker_with(test_config_with(ReconnectConfig::new(
+            Duration::from_millis(1),
+            Duration::from_secs(3600),
+            2,
+        )))?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let log_sender = log_sender.clone();
+            let workflow_id = workflow_id.clone();
+            let activity_id = activity_id.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                let task = proto_task(workflow_id.clone(), activity_id.clone(), "double", 21);
+                async move {
+                    if attempt <= 4 {
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: vec![
+                                Ok(WorkerSessionEvent::Task(task)),
+                                Err(WorkerError::Transport {
+                                    source: tonic::Status::unavailable("stream reset by peer"),
+                                }),
+                            ],
+                            fail_reports: false,
+                            register_denial: None,
+                            delay_stream: None,
+                        })
+                    } else {
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: Some(tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            )),
+                            delay_stream: None,
+                        })
+                    }
+                }
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, std::future::pending::<()>());
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        drop(log_sender);
+        let mut registrations = 0_usize;
+        while let Some(entry) = log_receiver.recv().await {
+            if let SessionLog::Registered(..) = entry {
+                registrations += 1;
+            }
+        }
+        // Four sessions each served a task before dropping; every served task
+        // reset the cumulative budget (max_attempts = 2), so the worker kept
+        // recovering well past the budget until the deterministic denial on
+        // the fifth establishment ended the run fail-fast.
+        assert_eq!(attempts.load(Ordering::SeqCst), 5);
+        assert_eq!(registrations, 4);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn session_outliving_max_backoff_resets_drop_budget() -> Result<(), WorkerError> {
+        let worker = two_activity_worker_with(test_config_with(ReconnectConfig::new(
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            2,
+        )))?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: attempt,
+                        log,
+                        events: vec![Err(WorkerError::Transport {
+                            source: tonic::Status::unavailable("stream reset by peer"),
+                        })],
+                        fail_reports: false,
+                        register_denial: None,
+                        // Only the second session outlives the 20ms max
+                        // backoff before dropping; the others drop instantly
+                        // (the paused clock keeps their lifetimes at zero).
+                        delay_stream: (attempt == 2).then_some(Duration::from_millis(30)),
+                    })
+                }
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, std::future::pending::<()>());
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        // Drop one consumed the first budget unit. The second session served
+        // no tasks but survived past max_backoff, so its drop restarted the
+        // count at one. The third session's instant drop was the second
+        // post-reset unit and exhausted max_attempts = 2 — proving exactly
+        // one unit was consumed before the reset. Without the reset the run
+        // would have ended after two sessions.
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+        drop(log_receiver);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clean_close_reconnects_re_registers_and_keeps_serving() -> Result<(), WorkerError> {
+        let workflow_id = WorkflowId::new_v4();
+        let first_activity = ActivityId::from_sequence_position(1);
+        let second_activity = ActivityId::from_sequence_position(2);
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let log_sender = log_sender.clone();
+            let workflow_id = workflow_id.clone();
+            let first_activity = first_activity.clone();
+            let second_activity = second_activity.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                let first_task =
+                    proto_task(workflow_id.clone(), first_activity.clone(), "double", 10);
+                let second_task =
+                    proto_task(workflow_id.clone(), second_activity.clone(), "double", 20);
+                async move {
+                    match attempt {
+                        // Both sessions end with a clean server-side stream
+                        // close after serving one task each.
+                        1 => Ok(ScriptedSession {
+                            index: 1,
+                            log,
+                            events: vec![Ok(WorkerSessionEvent::Task(first_task))],
+                            fail_reports: false,
+                            register_denial: None,
+                            delay_stream: None,
+                        }),
+                        2 => Ok(ScriptedSession {
+                            index: 2,
+                            log,
+                            events: vec![Ok(WorkerSessionEvent::Task(second_task))],
+                            fail_reports: false,
+                            register_denial: None,
+                            delay_stream: None,
+                        }),
+                        _ => Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: Some(tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            )),
+                            delay_stream: None,
+                        }),
+                    }
+                }
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, std::future::pending::<()>());
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        drop(log_sender);
+        let mut registrations = Vec::new();
+        let mut reports = Vec::new();
+        while let Some(entry) = log_receiver.recv().await {
+            match entry {
+                SessionLog::Registered(index, types) => registrations.push((index, types)),
+                SessionLog::Reported(index, report) => reports.push((index, report)),
+            }
+        }
+        // Each clean close redialled through the budgeted cycle: the worker
+        // re-registered, re-reported the unacknowledged backlog, and kept
+        // serving until the deterministic denial ended the run.
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let expected_types = vec![String::from("double"), String::from("increment")];
+        assert_eq!(
+            registrations,
+            vec![(1, expected_types.clone()), (2, expected_types)]
+        );
+        assert_eq!(reports.len(), 3);
+        assert!(matches!(
+            &reports[0],
+            (1, RecordedReport::Completed(_, id, _)) if id == &first_activity
+        ));
+        assert!(matches!(
+            &reports[1],
+            (2, RecordedReport::Completed(_, id, _)) if id == &first_activity
+        ));
+        assert!(matches!(
+            &reports[2],
+            (2, RecordedReport::Completed(_, id, _)) if id == &second_activity
+        ));
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn clean_close_loop_exhausts_drop_budget_with_classified_error() -> Result<(), WorkerError>
+    {
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: attempt,
+                        log,
+                        events: Vec::new(),
+                        fail_reports: false,
+                        register_denial: None,
+                        delay_stream: None,
+                    })
+                }
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, std::future::pending::<()>());
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        // test_config allows 3 attempts: with the paused clock no session
+        // outlives max_backoff and none serves a task, so the third clean
+        // close exhausts the budget with the classified clean-close error —
+        // exactly the same accounting as error drops.
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(matches!(error, WorkerError::CleanCloseExhausted));
+        assert!(error.to_string().contains("closed the stream cleanly"));
+        drop(log_receiver);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_clean_close_backoff_returns_ok_promptly() -> Result<(), WorkerError> {
+        let worker = two_activity_worker_with(slow_reconnect_config())?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: 1,
+                        log,
+                        events: Vec::new(),
+                        fail_reports: false,
+                        register_denial: None,
+                        delay_stream: None,
+                    })
+                }
+            }
+        };
+        let shutdown = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+
+        // The clean close enters the 5s drop backoff; shutdown must win it
+        // promptly and a clean close pending recovery is not an error.
+        let run = worker.run_with_connector_until(connect, shutdown);
+        tokio::time::timeout(Duration::from_millis(500), run)
+            .await
+            .map_err(WorkerError::decode)??;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
         drop(log_receiver);
         Ok(())
     }

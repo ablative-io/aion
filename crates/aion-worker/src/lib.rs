@@ -71,7 +71,7 @@ pub use protocol::{
     validate_activity_handlers,
 };
 pub use runtime::{
-    ActivityDispatcher, DispatchOutcome, NoShutdown, TypedActivityDispatcher, decode_payload,
-    encode_payload, serve_activity_tasks, serve_activity_tasks_until,
+    ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, TypedActivityDispatcher,
+    decode_payload, encode_payload, serve_activity_tasks, serve_activity_tasks_until,
 };
 pub use worker::{EmptyActivitySet, Worker, WorkerBuilder, run_worker_with_session};

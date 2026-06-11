@@ -36,7 +36,29 @@ class TransportError(WorkerSessionError):
 
 @dataclass(frozen=True)
 class ReconnectConfig:
-    """Operator-supplied reconnect policy with no SDK defaults."""
+    """Operator-supplied reconnect policy with no SDK defaults.
+
+    The policy governs both session establishment and the run loop's
+    cumulative mid-run session-drop budget of ``max_attempts``.
+
+    Budget reset: the cumulative drop budget resets to zero once an
+    established session proves healthy — it served at least one task, or it
+    survived longer than ``max_backoff_seconds`` (measured monotonically from
+    successful registration to the drop). The cap is the policy's own
+    definition of the longest pause, so a session outliving it is
+    demonstrably past the flapping regime, and a served task proves
+    end-to-end health. A genuinely flapping server — no session ever serves a
+    task or outlives ``max_backoff_seconds`` — exhausts the budget after
+    exactly ``max_attempts`` drops.
+
+    Clean closes: a clean/graceful server-side stream close is a retryable
+    drop, not a run end. The worker redials through the same budgeted,
+    backed-off cycle, so routine server deploys cost at most transient budget
+    that heals; only a persistent clean-close loop exhausts the budget
+    (raising ``ReconnectError`` from ``ServerClosedStreamError``). An
+    explicit protocol drain signal ("closing, do not reconnect") is planned
+    for the worker-protocol ack wave and will refine the clean-close case.
+    """
 
     initial_backoff_seconds: float
     max_backoff_seconds: float
@@ -78,9 +100,7 @@ class WorkerConfig:
             return auth_metadata
         reserved_headers = {key for key, _value in auth_metadata}
         transport_metadata = tuple(
-            (key, value)
-            for key, value in self.transport_credentials.metadata
-            if key.lower() not in reserved_headers
+            (key, value) for key, value in self.transport_credentials.metadata if key.lower() not in reserved_headers
         )
         return (*transport_metadata, *auth_metadata)
 

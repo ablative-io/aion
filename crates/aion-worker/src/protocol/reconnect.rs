@@ -178,6 +178,18 @@ impl ReconnectBackoff {
     pub const fn attempts(&self) -> usize {
         self.attempts
     }
+
+    /// Returns the configured maximum backoff delay cap.
+    ///
+    /// The run loop also uses this as its session-health threshold: the cap
+    /// is the policy's own definition of the longest pause, so an
+    /// established session that survives longer than it is demonstrably past
+    /// the flapping regime and resets the cumulative drop budget when it
+    /// eventually drops.
+    #[must_use]
+    pub const fn max_delay(&self) -> Duration {
+        self.max
+    }
 }
 
 /// Connects, handshakes, and registers a fresh gRPC worker session.

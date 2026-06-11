@@ -47,7 +47,12 @@ class Worker:
         return self.activity_types()
 
     async def run(self, *, shutdown: asyncio.Event | None = None) -> None:
-        """Connect to the engine and serve until stream end or graceful shutdown."""
+        """Connect to the engine and serve until shutdown, denial, or budget exhaustion.
+
+        Clean server-side stream closes reconnect through the bounded drop
+        budget (which resets once a session proves healthy) rather than
+        ending the run; see :class:`aion_worker.ReconnectConfig`.
+        """
 
         await connect_register_replay_and_serve(
             self.config,

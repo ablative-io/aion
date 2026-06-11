@@ -10,8 +10,33 @@ import type {
 
 export type WorkerIdentity = string;
 
+/**
+ * Operator-supplied reconnect/backoff policy governing both session
+ * establishment and the run loop's cumulative mid-run session-drop budget
+ * of `maxAttempts`.
+ *
+ * Budget reset: the cumulative drop budget resets to zero once an
+ * established session proves healthy — it served at least one task, or it
+ * survived longer than `maxDelayMs` (measured monotonically from successful
+ * registration to the drop). The cap is the policy's own definition of the
+ * longest pause, so a session outliving it is demonstrably past the
+ * flapping regime, and a served task proves end-to-end health. A genuinely
+ * flapping server — no session ever serves a task or outlives `maxDelayMs`
+ * — exhausts the budget after exactly `maxAttempts` drops.
+ *
+ * Clean closes: a clean/graceful server-side stream close is a retryable
+ * drop, not a run end. The worker redials through the same budgeted,
+ * backed-off cycle, so routine server deploys cost at most transient budget
+ * that heals; only a persistent clean-close loop exhausts the budget. An
+ * explicit protocol drain signal ("closing, do not reconnect") is planned
+ * for the worker-protocol ack wave and will refine the clean-close case.
+ */
 export interface ReconnectConfig {
 	readonly initialDelayMs: number;
+	/**
+	 * Backoff delay cap. Doubles as the session-health threshold for the
+	 * drop-budget reset described on this type.
+	 */
 	readonly maxDelayMs: number;
 	readonly maxAttempts: number;
 }

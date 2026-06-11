@@ -39,11 +39,35 @@ impl fmt::Debug for TransportCredentials {
 }
 
 /// Operator-supplied reconnect backoff settings.
+///
+/// The settings govern both session establishment and the run loop's
+/// cumulative mid-run session-drop budget.
+///
+/// **Budget reset:** the cumulative drop budget resets to zero once an
+/// established session proves healthy — it served at least one task, or it
+/// survived longer than `max_backoff` (measured monotonically from
+/// successful registration to the drop). The cap is the policy's own
+/// definition of the longest pause, so a session outliving it is
+/// demonstrably past the flapping regime, and a served task proves
+/// end-to-end health. A genuinely flapping server — no session ever serves
+/// a task or outlives `max_backoff` — exhausts the budget after exactly
+/// `max_attempts` drops.
+///
+/// **Clean closes:** a clean/graceful server-side stream close is a
+/// retryable drop, not a run end: the worker redials through the same
+/// budgeted, backed-off cycle, so routine server deploys cost at most
+/// transient budget that heals. Only a persistent clean-close loop exhausts
+/// the budget (surfacing [`crate::error::WorkerError::CleanCloseExhausted`]).
+/// An explicit protocol drain signal ("closing, do not reconnect") is
+/// planned for the worker-protocol ack wave and will refine the clean-close
+/// case.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconnectConfig {
     /// Initial reconnect backoff delay. Must be non-zero before reconnecting.
     pub initial_backoff: Duration,
-    /// Maximum reconnect backoff delay cap. Must be non-zero before reconnecting.
+    /// Maximum reconnect backoff delay cap. Must be non-zero before
+    /// reconnecting. Doubles as the session-health threshold for the
+    /// drop-budget reset described on this type.
     pub max_backoff: Duration,
     /// Maximum reconnect attempts before surfacing the last connection error.
     pub max_attempts: usize,

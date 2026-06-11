@@ -79,7 +79,6 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
         )
     )
     await second.push(task(8))
-    await second.finish()
     attempts = 0
 
     async def fail_then_connect() -> FakeSession:
@@ -89,7 +88,17 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
             raise OSError("dropped")
         return second
 
-    await connect_register_replay_and_serve(config(), fail_then_connect, dispatcher, tracker)
+    # A clean close no longer ends the run, so the loop is driven to a
+    # graceful shutdown once the new task has been dispatched.
+    shutdown = asyncio.Event()
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(config(), fail_then_connect, dispatcher, tracker, shutdown=shutdown)
+    )
+    while dispatcher.dispatched != [8]:
+        await asyncio.sleep(0)
+    shutdown.set()
+    await run
+
     assert second.log[:4] == ["handshake", "register", "result:7", "receive"]
     assert dispatcher.dispatched == [8]
 
@@ -153,7 +162,6 @@ async def test_reconnect_re_reports_unacked_for_all_workflows_with_colliding_pos
     await first.push(_workflow_task("workflow-a", 3))
     await first.push(_workflow_task("workflow-b", 3))
     await first.finish()
-    await second.finish()
     sessions = [first, second]
 
     async def connect() -> FakeSession:
@@ -162,7 +170,16 @@ async def test_reconnect_re_reports_unacked_for_all_workflows_with_colliding_pos
     async def no_sleep(delay: float) -> None:
         del delay
 
-    await connect_register_replay_and_serve(config(), connect, dispatcher, sleep=no_sleep)
+    # The second session stays open (no clean close), and the run is ended by
+    # a graceful shutdown once both replays have been observed.
+    shutdown = asyncio.Event()
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(config(), connect, dispatcher, sleep=no_sleep, shutdown=shutdown)
+    )
+    while len([entry for entry in second.log if entry.startswith("result:")]) < 2:
+        await asyncio.sleep(0)
+    shutdown.set()
+    await run
 
     replayed = [entry for entry in second.log if entry.startswith("result:")]
     assert sorted(replayed) == ["result:workflow-a:3", "result:workflow-b:3"], (
@@ -179,7 +196,6 @@ async def test_reconnect_after_stream_drop_uses_backoff_and_replays_unacked(
     await first.push(task(7))
     await first.finish()
     await second.push(task(8))
-    await second.finish()
     sessions = [first, second]
     sleeps: list[float] = []
 
@@ -189,8 +205,17 @@ async def test_reconnect_after_stream_drop_uses_backoff_and_replays_unacked(
     async def record_sleep(delay: float) -> None:
         sleeps.append(delay)
 
+    # The second session stays open (no clean close); the run ends by
+    # graceful shutdown after both tasks have been dispatched.
+    shutdown = asyncio.Event()
     with caplog.at_level("WARNING"):
-        await connect_register_replay_and_serve(config(), connect, dispatcher, sleep=record_sleep)
+        run = asyncio.create_task(
+            connect_register_replay_and_serve(config(), connect, dispatcher, sleep=record_sleep, shutdown=shutdown)
+        )
+        while dispatcher.dispatched != [7, 8]:
+            await asyncio.sleep(0)
+        shutdown.set()
+        await run
 
     assert first.closed is True
     assert sleeps == [0.01]
@@ -245,10 +270,18 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
         return session
 
     await session.push(task(1, "greet"))
-    await session.finish()
 
+    # The session stays open (no clean close); the run ends by graceful
+    # shutdown after the completion log line has been observed.
+    shutdown = asyncio.Event()
     with caplog.at_level("INFO"):
-        await connect_register_replay_and_serve(worker_config, connect, dispatcher)
+        run = asyncio.create_task(
+            connect_register_replay_and_serve(worker_config, connect, dispatcher, shutdown=shutdown)
+        )
+        while "Completed greet in 5ms" not in [record.getMessage() for record in caplog.records]:
+            await asyncio.sleep(0)
+        shutdown.set()
+        await run
 
     messages = [record.getMessage() for record in caplog.records]
     assert "Connected successfully" not in messages

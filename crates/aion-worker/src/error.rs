@@ -44,6 +44,17 @@ pub enum WorkerError {
         /// Transport failure reported by tonic.
         source: tonic::Status,
     },
+
+    /// The server kept closing the worker stream cleanly until the cumulative
+    /// session-drop budget ran out without any session proving healthy.
+    ///
+    /// A single clean close is a retryable drop (the worker redials through
+    /// the budgeted backoff cycle); this error surfaces only when a
+    /// persistent clean-close loop exhausts `reconnect.max_attempts`.
+    #[error(
+        "worker session drop budget exhausted: the server repeatedly closed the stream cleanly"
+    )]
+    CleanCloseExhausted,
 }
 
 impl WorkerError {
@@ -64,7 +75,10 @@ impl WorkerError {
         match self {
             Self::Handshake { source } | Self::Transport { source } => Some(source),
             Self::Registration { source } => source.downcast_ref::<tonic::Status>(),
-            Self::Connect { .. } | Self::Decode { .. } | Self::Encode { .. } => None,
+            Self::Connect { .. }
+            | Self::Decode { .. }
+            | Self::Encode { .. }
+            | Self::CleanCloseExhausted => None,
         }
     }
 

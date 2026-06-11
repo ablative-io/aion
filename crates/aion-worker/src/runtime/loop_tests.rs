@@ -12,7 +12,7 @@ use futures::stream;
 use serde_json::json;
 use tokio::sync::{Mutex, mpsc};
 
-use super::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
+use super::{ActivityDispatcher, DispatchOutcome, ServeEnd, serve_activity_tasks};
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::{
@@ -212,8 +212,10 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
     let config = test_config(2);
     let mut tracker = UnackedResultTracker::new();
 
-    serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher), &mut tracker).await?;
+    let end =
+        serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher), &mut tracker).await?;
 
+    assert_eq!(end, ServeEnd::StreamClosed);
     assert_eq!(
         *dispatcher.dispatched.lock().await,
         vec![first_activity.clone(), second_activity.clone()]
@@ -280,7 +282,7 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
 
     dispatcher.release.store(true, Ordering::SeqCst);
     let (result, session, tracker) = worker.await.map_err(WorkerError::decode)?;
-    result?;
+    assert_eq!(result?, ServeEnd::StreamClosed);
 
     assert_eq!(session.reports.len(), 5);
     assert_eq!(tracker.len(), 5);
@@ -330,7 +332,7 @@ async fn cancellation_event_flips_context_without_suppressing_result() -> Result
         .map_err(WorkerError::decode)?;
     drop(event_sender);
     let (result, session) = worker.await.map_err(WorkerError::decode)?;
-    result?;
+    assert_eq!(result?, ServeEnd::StreamClosed);
 
     assert!(dispatcher.observed_cancelled.load(Ordering::SeqCst));
     assert_eq!(session.reports.len(), 1);

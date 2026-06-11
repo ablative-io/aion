@@ -58,6 +58,18 @@ export interface RunWorkerLoopOptions {
 	 * particular — at the current transport instead of the dead one.
 	 */
 	readonly onSessionChange?: (session: WorkerSession) => void;
+	/**
+	 * Monotonic millisecond clock used for session-health accounting (how
+	 * long an established session survived versus `reconnect.maxDelayMs`
+	 * when deciding drop-budget resets). Defaults to `performance.now`;
+	 * injectable so tests can script time.
+	 */
+	readonly now?: () => number;
+}
+
+/** Per-session liveness counter used for drop-budget reset accounting. */
+interface SessionHealth {
+	tasksServed: number;
 }
 
 export async function runWorkerLoop(
@@ -110,20 +122,30 @@ export async function runWorkerLoop(
 	const tracker = options.tracker ?? new UnackedResultTracker();
 	const loopOptions = { ...options, tracker };
 	const sleep = options.sleep ?? defaultSleep;
+	const now = options.now ?? defaultNow;
 	// Cumulative cross-cycle drop budget: every dropped session in this run —
 	// a retryable stream failure, a clean close re-entering the cycle, or a
-	// failed result replay — consumes one unit of `reconnect.maxAttempts`,
-	// and the budget never resets. This is parity with the Python worker
+	// failed result replay — consumes one unit of `reconnect.maxAttempts`.
+	// The budget resets to zero once an established session proves healthy:
+	// it served at least one task, or it survived longer than
+	// `reconnect.maxDelayMs` (the policy's own longest pause, so a session
+	// outliving it is demonstrably past the flapping regime; a served task
+	// proves end-to-end health). This is parity with the Python worker
 	// (`connect_register_replay_and_serve`) and the Rust worker
-	// (`run_with_connector_until`): without it, a server that accepts the
-	// stream and immediately drops (or cleanly closes) it would spin the
-	// loop forever at full CPU with no delay and no surfaced error.
+	// (`run_with_connector_until`): a genuinely flapping server — no session
+	// ever serves a task or outlives the cap — still exhausts the budget
+	// after exactly `maxAttempts` drops, so it can never spin the loop
+	// forever at full CPU, while routine server deploys cost only transient
+	// budget that heals.
 	let droppedAttempts = 0;
+	// Session-health accounting starts at the just-registered initial session.
+	let sessionStartedAt = now();
+	let sessionHealth: SessionHealth = { tasksServed: 0 };
 
 	for (;;) {
 		let streamFailure: StreamFailure | undefined;
 		try {
-			await receiveUntilClosed(session, running, loopOptions);
+			await receiveUntilClosed(session, running, loopOptions, sessionHealth);
 		} catch (error) {
 			streamFailure = { error };
 		}
@@ -163,6 +185,21 @@ export async function runWorkerLoop(
 		// replay failure consumes another drop and re-enters; a non-retryable
 		// one propagates; a shutdown observed anywhere returns cleanly.
 		for (;;) {
+			// The dropped session (the served one on the first iteration, the
+			// replay-failed replacement on re-entries) resets the budget when
+			// it proved healthy before dropping.
+			if (
+				sessionHealth.tasksServed > 0 ||
+				now() - sessionStartedAt > reconnect.maxDelayMs
+			) {
+				if (droppedAttempts > 0) {
+					options.logger?.info(
+						"worker session proved healthy; drop budget reset",
+						{ droppedAttempts, tasksServed: sessionHealth.tasksServed },
+					);
+				}
+				droppedAttempts = 0;
+			}
 			droppedAttempts += 1;
 			if (droppedAttempts >= reconnect.maxAttempts) {
 				options.logger?.error(
@@ -191,6 +228,11 @@ export async function runWorkerLoop(
 				sleep: options.sleep,
 				logger: options.logger,
 			});
+			// Health accounting restarts at the replacement session's
+			// registration: its survival and served tasks are what may reset
+			// the budget at its own eventual drop.
+			sessionStartedAt = now();
+			sessionHealth = { tasksServed: 0 };
 			// Publish the replacement session before the post-reconnect abort
 			// check: from here on an abort closes the new session through the
 			// caller's live-session holder, so no shutdown window leaves it
@@ -305,6 +347,7 @@ async function receiveUntilClosed(
 	session: WorkerSession,
 	running: Set<Promise<void>>,
 	options: RunWorkerLoopOptions,
+	health: SessionHealth,
 ): Promise<void> {
 	const iterator = session.receiveTasks()[Symbol.asyncIterator]();
 	for (;;) {
@@ -327,11 +370,14 @@ async function receiveUntilClosed(
 			activityType: event.task.activityType,
 			attempt: event.task.attempt,
 		});
-		const taskPromise = dispatchAndReport(event.task, session, options).finally(
-			() => {
-				running.delete(taskPromise);
-			},
-		);
+		const taskPromise = dispatchAndReport(
+			event.task,
+			session,
+			options,
+			health,
+		).finally(() => {
+			running.delete(taskPromise);
+		});
 		running.add(taskPromise);
 	}
 }
@@ -340,8 +386,10 @@ async function dispatchAndReport(
 	task: ActivityTask,
 	session: WorkerSession,
 	options: RunWorkerLoopOptions,
+	health: SessionHealth,
 ): Promise<void> {
 	const outcome = await dispatchWithClassification(task, options);
+	let reported: boolean;
 	if (outcome.kind === "completed") {
 		const report: PendingActivityReport = {
 			kind: "completed",
@@ -353,7 +401,7 @@ async function dispatchAndReport(
 		options.logger?.info("worker reporting completed activity", {
 			activityId: task.activityId,
 		});
-		await reportSafely(
+		reported = await reportSafely(
 			() =>
 				session.reportResult(task.workflowId, task.activityId, outcome.output),
 			task,
@@ -371,7 +419,7 @@ async function dispatchAndReport(
 			activityId: task.activityId,
 			retryable: outcome.failure.retryable,
 		});
-		await reportSafely(
+		reported = await reportSafely(
 			() =>
 				session.reportFailure(
 					task.workflowId,
@@ -381,6 +429,11 @@ async function dispatchAndReport(
 			task,
 			options,
 		);
+	}
+	if (reported) {
+		// A received task whose outcome report went out is the end-to-end
+		// health proof used for drop-budget resets.
+		health.tasksServed += 1;
 	}
 }
 
@@ -408,13 +461,20 @@ async function dispatchWithClassification(
 	}
 }
 
+/**
+ * Sends a report, swallowing (but logging) failures so an unacknowledged
+ * result never kills the serve loop — the tracker re-reports it after the
+ * next reconnect. Returns whether the send succeeded, which feeds the
+ * session-health accounting used for drop-budget resets.
+ */
 async function reportSafely(
 	report: () => Promise<void>,
 	task: ActivityTask,
 	options: RunWorkerLoopOptions,
-): Promise<void> {
+): Promise<boolean> {
 	try {
 		await report();
+		return true;
 	} catch (error) {
 		options.logger?.warn(
 			"worker report failed; result remains unacknowledged",
@@ -424,7 +484,13 @@ async function reportSafely(
 				message: error instanceof Error ? error.message : String(error),
 			},
 		);
+		return false;
 	}
+}
+
+/** Default monotonic clock for session-health accounting. */
+function defaultNow(): number {
+	return performance.now();
 }
 
 async function waitForSlot(

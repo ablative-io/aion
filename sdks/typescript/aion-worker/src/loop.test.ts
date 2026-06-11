@@ -248,6 +248,7 @@ describe("runWorkerLoop", () => {
 				sleep: async (delayMs) => {
 					sleeps.push(delayMs);
 				},
+				now: () => 0,
 			}),
 		).rejects.toBe(finalDenial);
 
@@ -266,8 +267,10 @@ describe("runWorkerLoop", () => {
 	it("reconnects on clean closes but bounds them with the cumulative drop budget", async () => {
 		const first = new ScriptedSession([{ kind: "closed" }]);
 		// The second session's iterator completes without yielding `closed`,
-		// covering the `done: true` clean-completion path as well.
-		const second = new ScriptedSession([{ kind: "task", task: task("1") }]);
+		// covering the `done: true` clean-completion path as well. No session
+		// serves a task and the frozen clock keeps lifetimes at zero, so no
+		// budget reset can fire: this is the flapping clean-close regime.
+		const second = new ScriptedSession([]);
 		const third = new ScriptedSession([{ kind: "closed" }]);
 		const replacements = [second, third];
 		const sleeps: number[] = [];
@@ -288,6 +291,7 @@ describe("runWorkerLoop", () => {
 			sleep: async (delayMs) => {
 				sleeps.push(delayMs);
 			},
+			now: () => 0,
 		}).then(
 			() => {
 				throw new Error("expected runWorkerLoop to reject");
@@ -295,10 +299,10 @@ describe("runWorkerLoop", () => {
 			(error: unknown) => error,
 		);
 
-		// Each clean close re-entered the reconnect cycle (the task on the
-		// second session was still served), consumed one unit of the shared
-		// drop budget, and backed off on the config's own schedule; the third
-		// clean close exhausted the budget and surfaced a classified error.
+		// Each clean close re-entered the reconnect cycle, consumed one unit
+		// of the shared drop budget, and backed off on the config's own
+		// schedule; the third clean close exhausted the budget at exactly
+		// maxAttempts and surfaced a classified error.
 		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
 		expect((failure as Error).message).toContain(
 			"worker session drop budget exhausted after 3 dropped sessions",
@@ -308,11 +312,114 @@ describe("runWorkerLoop", () => {
 		);
 		expect(factoryCalls).toBe(2);
 		expect(sleeps).toEqual([1, 2]);
-		expect(second.reports).toEqual(["1"]);
+		expect(second.reports).toEqual([]);
 		// Replaced sessions are closed before their replacements are dialled.
 		expect(first.closed).toBe(true);
 		expect(second.closed).toBe(true);
 		expect(third.closed).toBe(true);
+	});
+
+	it("resets the drop budget each time a session serves a task", async () => {
+		const drop = () =>
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset");
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'queue' was revoked",
+		);
+		const servingSession = (activityId: string) =>
+			new ScriptedSession([
+				{ kind: "task", task: task(activityId) },
+				{ kind: "throw", error: drop() },
+			]);
+		const initial = servingSession("1");
+		const replacements = [
+			servingSession("2"),
+			servingSession("3"),
+			servingSession("4"),
+			servingSession("5"),
+			new ScriptedSession([{ kind: "throw", error: denial }]),
+		];
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+
+		await expect(
+			runWorkerLoop({
+				config: reconnectingConfig(2),
+				session: initial,
+				dispatcher: new SlowDispatcher(),
+				sessionFactory: async () => {
+					const session = replacements[factoryCalls];
+					factoryCalls += 1;
+					if (session === undefined) {
+						throw new Error("session factory exhausted");
+					}
+					return session;
+				},
+				sleep: async (delayMs) => {
+					sleeps.push(delayMs);
+				},
+				// Frozen clock: only the served-task rule can reset the budget.
+				now: () => 0,
+			}),
+		).rejects.toBe(denial);
+
+		// Five sessions each served a task before dropping. With
+		// maxAttempts=2 the second drop would have exhausted the budget
+		// without the reset rule; instead every served task reset it, the
+		// worker kept recovering (every backoff restarted at the first-step
+		// delay), and only the deterministic denial ended the run fail-fast.
+		expect(factoryCalls).toBe(5);
+		expect(sleeps).toEqual([1, 1, 1, 1, 1]);
+	});
+
+	it("resets the drop budget when a session outlives the max backoff delay", async () => {
+		const drop = () =>
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset");
+		// now() is read once at each session's registration and once at its
+		// drop. Session two "survives" 10ms against maxDelayMs=2ms; the
+		// others drop instantly.
+		const clockReads = [0, 0, 0, 10, 10, 10];
+		let reads = 0;
+		const initial = new ScriptedSession([{ kind: "throw", error: drop() }]);
+		const replacements = [
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+		];
+		let factoryCalls = 0;
+
+		const failure = await runWorkerLoop({
+			config: reconnectingConfig(2),
+			session: initial,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				const session = replacements[factoryCalls];
+				factoryCalls += 1;
+				if (session === undefined) {
+					throw new Error("session factory exhausted");
+				}
+				return session;
+			},
+			sleep: () => Promise.resolve(),
+			now: () => {
+				const value = clockReads[reads];
+				reads += 1;
+				return value ?? 10;
+			},
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		// Drop one consumed the first budget unit. The second session served
+		// no tasks but outlived maxDelayMs, so its drop restarted the count
+		// at one. The third session's instant drop was the second post-reset
+		// unit and exhausted maxAttempts=2 — proving exactly one unit was
+		// consumed before the reset. Without the reset the run would have
+		// ended after a single reconnect.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect(factoryCalls).toBe(2);
 	});
 
 	it("exhausts the cumulative drop budget across cycles and surfaces the last underlying error", async () => {
@@ -343,6 +450,9 @@ describe("runWorkerLoop", () => {
 			sleep: async (delayMs) => {
 				sleeps.push(delayMs);
 			},
+			// Frozen clock: no time-based reset, so exhaustion happens at
+			// exactly maxAttempts drops.
+			now: () => 0,
 		}).then(
 			() => {
 				throw new Error("expected runWorkerLoop to reject");
@@ -397,6 +507,7 @@ describe("runWorkerLoop", () => {
 			sleep: async (delayMs) => {
 				sleeps.push(delayMs);
 			},
+			now: () => 0,
 		}).then(
 			() => {
 				throw new Error("expected runWorkerLoop to reject");
@@ -447,6 +558,7 @@ describe("runWorkerLoop", () => {
 				return session;
 			},
 			sleep: () => Promise.resolve(),
+			now: () => 0,
 		}).then(
 			() => {
 				throw new Error("expected runWorkerLoop to reject");
@@ -501,6 +613,7 @@ describe("runWorkerLoop", () => {
 			tracker,
 			sessionFactory: async () => second,
 			sleep: () => Promise.resolve(),
+			now: () => 0,
 		}).then(
 			() => {
 				throw new Error("expected runWorkerLoop to reject");
