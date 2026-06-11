@@ -20,6 +20,8 @@ from .reconnect import (
     UnackedResultTracker,
     grpc_status_code,
     is_retryable_session_error,
+    re_report_unacked,
+    reconnect_with_backoff,
 )
 from .session import (
     ActivityCancelled,
@@ -58,6 +60,10 @@ class SessionHealth:
     """Per-session liveness counters used for drop-budget reset accounting."""
 
     tasks_served: int = 0
+    stream_ended_at: float | None = None
+    """Clock reading taken the moment the session's receive stream ended,
+    captured before in-flight handlers are drained — so post-drop draining
+    never extends the session's measured connected lifetime."""
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,7 @@ async def serve(
     tracker: UnackedResultTracker | None = None,
     shutdown: asyncio.Event | None = None,
     health: SessionHealth | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> ShutdownRequested | StreamFinished:
     """Serve tasks from an already connected and registered session.
 
@@ -103,7 +110,9 @@ async def serve(
     retryable session drop. When ``health`` is supplied, every task whose
     outcome report was sent on this session increments
     ``health.tasks_served`` — the end-to-end proof used for drop-budget
-    resets, surviving even when a later failure ends the session.
+    resets, surviving even when a later failure ends the session — and
+    ``health.stream_ended_at`` records the ``clock`` reading taken the moment
+    the receive stream ended, before in-flight handlers are drained.
     """
 
     if config.max_concurrency <= 0:
@@ -131,6 +140,12 @@ async def serve(
             else:
                 _handle_control_event(event, in_flight)
     finally:
+        if health is not None and health.stream_ended_at is None:
+            # The stream just ended — cleanly, by error, or by shutdown.
+            # Capture the moment before draining in-flight handlers so the
+            # caller's drop-budget reset decision measures connected time,
+            # never drain time. No awaits may precede this capture.
+            health.stream_ended_at = clock()
         if shutdown is not None and shutdown.is_set():
             for handle in in_flight.values():
                 handle.cancel()
@@ -153,39 +168,42 @@ async def connect_register_replay_and_serve(
     exhaustion of the cumulative session-drop budget
     (``reconnect.max_attempts``). A clean/graceful server stream close is a
     retryable drop: the worker redials through the same budgeted, backed-off
-    cycle, so routine server deploys are ridden through. The budget resets to
-    zero once an established session proves healthy — it served at least one
-    task, or it survived longer than ``reconnect.max_backoff_seconds``
+    cycle, so routine server deploys are ridden through. A retryable failure
+    while replaying unacknowledged results consumes the same budget, while a
+    server denial during replay still fails fast. The budget resets to zero
+    once an established session proves healthy — it served at least one task,
+    or it stayed connected longer than ``reconnect.max_backoff_seconds``
     measured on the injected monotonic ``clock`` from successful registration
-    to the drop; see :class:`aion_worker.ReconnectConfig`.
+    to the moment the stream ended (post-drop draining of in-flight handlers
+    never extends it); see :class:`aion_worker.ReconnectConfig`. Shutdown
+    requested during a drop backoff wakes the sleep immediately and returns
+    cleanly.
     """
-
-    from .reconnect import reconnect_register_and_replay
 
     unacked = tracker if tracker is not None else UnackedResultTracker()
     activity_types = list(dispatcher.activity_types())
     backoff = ReconnectBackoff.from_config(config)
     dropped_attempt = 0
     while shutdown is None or not shutdown.is_set():
-        session = await reconnect_register_and_replay(
+        session = await reconnect_with_backoff(
             connect=connect,
             config=config,
             activity_types=activity_types,
             available_handlers=activity_types,
-            tracker=unacked,
+            backoff=backoff,
             sleep=sleep,
         )
         established_at = clock()
         health = SessionHealth()
         drop: BaseException
         try:
+            await re_report_unacked(session, unacked)
             logger.info("Connected")
             logger.info("Registered activities: %s", ", ".join(activity_types))
             logger.info("Waiting for tasks")
-            end = await serve(config, session, dispatcher, unacked, shutdown, health)
-            if isinstance(end, ShutdownRequested):
-                return
-            if shutdown is not None and shutdown.is_set():
+            end = await serve(config, session, dispatcher, unacked, shutdown, health, clock)
+            if isinstance(end, ShutdownRequested) or (shutdown is not None and shutdown.is_set()):
+                await _close_session(session)
                 return
             logger.warning("Server closed the worker stream cleanly; treating it as a session drop")
             await _close_session(session)
@@ -201,7 +219,13 @@ async def connect_register_replay_and_serve(
             logger.exception("worker session dropped; reconnecting before receiving more tasks")
             await _close_session(session)
             drop = exc
-        if health.tasks_served > 0 or clock() - established_at > backoff.max_backoff_seconds:
+        # Connected lifetime is measured to the moment the stream ended —
+        # never to the end of the post-drop drain, which would let a
+        # long-running in-flight handler masquerade as a healthy session. A
+        # replay failure never enters the serve loop, so its drop moment is
+        # now.
+        stream_ended_at = health.stream_ended_at if health.stream_ended_at is not None else clock()
+        if health.tasks_served > 0 or stream_ended_at - established_at > backoff.max_backoff_seconds:
             if dropped_attempt > 0:
                 logger.info(
                     "Worker session proved healthy (%s tasks served); drop budget reset",
@@ -218,7 +242,7 @@ async def connect_register_replay_and_serve(
             dropped_attempt,
             backoff.max_attempts,
         )
-        await sleep(delay)
+        await _sleep_or_shutdown(sleep, delay, shutdown)
 
 
 async def _receive_next_or_shutdown(
@@ -246,6 +270,35 @@ async def _receive_next_or_shutdown(
             return StreamFinished()
     finally:
         shutdown_task.cancel()
+
+
+async def _sleep_or_shutdown(sleep: SleepFactory, delay: float, shutdown: asyncio.Event | None) -> None:
+    """Run the injected backoff sleep, waking immediately when shutdown fires.
+
+    A worker told to stop during a long drop backoff must never stall for the
+    remainder of the delay (a SIGTERM-to-SIGKILL window in orchestrated
+    deployments). The caller's loop condition re-checks the shutdown event
+    after this returns. A sleep that completes first propagates its own
+    failure, matching a directly awaited sleep.
+    """
+
+    if shutdown is None:
+        await sleep(delay)
+        return
+    if shutdown.is_set():
+        return
+    sleep_task = asyncio.ensure_future(sleep(delay))
+    shutdown_task: asyncio.Task[bool] = asyncio.create_task(shutdown.wait())
+    try:
+        wait_tasks = cast(set[asyncio.Future[object]], {sleep_task, shutdown_task})
+        done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+        for pending_task in pending:
+            pending_task.cancel()
+        if sleep_task in done:
+            sleep_task.result()
+    finally:
+        shutdown_task.cancel()
+        sleep_task.cancel()
 
 
 async def _close_session(session: WorkerSession) -> None:

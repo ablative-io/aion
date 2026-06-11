@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
 from aion_worker import (
@@ -148,6 +148,29 @@ class RecordingDispatcher:
             return Completed(payload())
         finally:
             self.active -= 1
+
+
+async def wait_for_condition(
+    run: asyncio.Task[None],
+    condition: Callable[[], bool],
+    timeout_seconds: float = 5.0,
+) -> None:
+    """Spin (cooperatively) until ``condition`` holds, with guarded failure.
+
+    Fails clearly — instead of hanging the suite forever — when the worker
+    run task ends before the condition is met (surfacing the run's own
+    exception when it failed) or when the wall-clock deadline passes.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while not condition():
+        if run.done():
+            run.result()
+            raise AssertionError("worker run ended before the awaited test condition was met")
+        if loop.time() >= deadline:
+            raise AssertionError("timed out waiting for the test condition")
+        await asyncio.sleep(0)
 
 
 def task(sequence_position: int, activity_type: str = "slow") -> TaskReceived:

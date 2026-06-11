@@ -205,6 +205,24 @@ export class ReconnectExhaustedError extends Error {
 	}
 }
 
+/**
+ * Drop cause recorded when the server closes the worker stream cleanly
+ * while a session factory is configured. A clean close is a retryable,
+ * budgeted drop (it re-enters the reconnect cycle), so when a persistent
+ * clean-close loop exhausts the drop budget the surfaced
+ * {@link ReconnectExhaustedError} carries this error as its `cause` —
+ * letting callers distinguish clean-close exhaustion from transport-failure
+ * exhaustion with `instanceof`. Parity with the Rust worker's
+ * `WorkerError::CleanCloseExhausted` and the Python worker's
+ * `ServerClosedStreamError`.
+ */
+export class ServerClosedStreamError extends Error {
+	public constructor(message: string) {
+		super(message);
+		this.name = "ServerClosedStreamError";
+	}
+}
+
 export async function reconnectWithBackoff(
 	config: WorkerConfig,
 	activityTypes: readonly string[],

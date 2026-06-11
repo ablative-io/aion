@@ -45,10 +45,11 @@ impl fmt::Debug for TransportCredentials {
 ///
 /// **Budget reset:** the cumulative drop budget resets to zero once an
 /// established session proves healthy — it served at least one task, or it
-/// survived longer than `max_backoff` (measured monotonically from
-/// successful registration to the drop). The cap is the policy's own
-/// definition of the longest pause, so a session outliving it is
-/// demonstrably past the flapping regime, and a served task proves
+/// stayed connected longer than `max_backoff` (measured monotonically from
+/// successful registration to the moment the stream ended or dropped;
+/// post-drop draining of in-flight activities never extends it). The cap is
+/// the policy's own definition of the longest pause, so a session outliving
+/// it is demonstrably past the flapping regime, and a served task proves
 /// end-to-end health. A genuinely flapping server — no session ever serves
 /// a task or outlives `max_backoff` — exhausts the budget after exactly
 /// `max_attempts` drops.
@@ -61,6 +62,13 @@ impl fmt::Debug for TransportCredentials {
 /// An explicit protocol drain signal ("closing, do not reconnect") is
 /// planned for the worker-protocol ack wave and will refine the clean-close
 /// case.
+///
+/// **Shutdown during a drop backoff:** every SDK races the backoff sleep
+/// against the shutdown signal and returns promptly, but the run outcome
+/// currently diverges: this SDK surfaces the pending drop error (a clean
+/// close pending recovery still ends `Ok`), while the Python and TypeScript
+/// workers return cleanly. Aligning the outcome cross-SDK is deferred to
+/// the protocol drain-signal wave.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconnectConfig {
     /// Initial reconnect backoff delay. Must be non-zero before reconnecting.

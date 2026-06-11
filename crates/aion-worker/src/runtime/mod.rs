@@ -9,6 +9,6 @@ pub(crate) mod report;
 
 pub use dispatch::{TypedActivityDispatcher, decode_payload, encode_payload};
 pub use loop_::{
-    ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, serve_activity_tasks,
+    ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, SessionHealth, serve_activity_tasks,
     serve_activity_tasks_until,
 };

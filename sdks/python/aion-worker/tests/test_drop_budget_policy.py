@@ -3,17 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Iterable
 
+import grpc
 import pytest
-from ar007_fakes import FakeSession, RecordingDispatcher, task
+from ar007_fakes import (
+    FakeSession,
+    RecordingDispatcher,
+    activity_id,
+    payload,
+    task,
+    wait_for_condition,
+    workflow_id,
+)
 
 from aion_worker import (
+    ActivityExecutionContext,
+    ActivityTask,
+    Completed,
+    DispatchOutcome,
+    PendingCompletedReport,
     ReconnectConfig,
     ReconnectError,
     ServerClosedStreamError,
+    UnackedResultTracker,
     WorkerConfig,
+    WorkerSessionEvent,
     connect_register_replay_and_serve,
 )
+from aion_worker.proto import common_pb2, worker_pb2
 
 
 def _config(max_attempts: int) -> WorkerConfig:
@@ -173,19 +191,19 @@ async def test_clean_server_close_reconnects_re_registers_and_keeps_serving() ->
             shutdown=shutdown,
         )
     )
-    while dispatcher.dispatched != [1, 2]:
-        await asyncio.sleep(0)
+    await wait_for_condition(run, lambda: dispatcher.dispatched == [1, 2])
     shutdown.set()
     await run
 
     # The first session's clean close was a retryable drop: the worker
     # redialled, re-registered, kept serving, and shutdown still returned
-    # cleanly and promptly.
+    # cleanly and promptly — closing the live session on the way out.
     assert attempts == 2
     assert first.closed is True
     assert second.handshakes == [("queue-a", "worker-a")]
     assert second.registrations == [["slow"]]
     assert dispatcher.dispatched == [1, 2]
+    assert second.closed is True
 
 
 async def test_persistent_clean_close_loop_exhausts_budget_with_classified_error() -> None:
@@ -211,6 +229,273 @@ async def test_persistent_clean_close_loop_exhausts_budget_with_classified_error
     # classified clean-close cause.
     assert attempts == 2
     assert isinstance(exhausted.value.__cause__, ServerClosedStreamError)
+
+
+class _ReplayFailingSession(FakeSession):
+    """Session whose report writes fail the way a dead transport's do."""
+
+    async def report_result(
+        self,
+        workflow: common_pb2.WorkflowId,
+        activity: common_pb2.ActivityId,
+        result: common_pb2.Payload,
+    ) -> None:
+        raise OSError("replay write lost the race with a second reset")
+
+    async def report_failure(
+        self,
+        workflow: common_pb2.WorkflowId,
+        activity: common_pb2.ActivityId,
+        failure: worker_pb2.ActivityError,
+    ) -> None:
+        raise OSError("replay write lost the race with a second reset")
+
+
+class _DeniedReplaySession(FakeSession):
+    """Session whose report writes are denied deterministically by the server."""
+
+    def __init__(self, denial: grpc.aio.AioRpcError) -> None:
+        super().__init__()
+        self.denial = denial
+
+    async def report_result(
+        self,
+        workflow: common_pb2.WorkflowId,
+        activity: common_pb2.ActivityId,
+        result: common_pb2.Payload,
+    ) -> None:
+        raise self.denial
+
+    async def report_failure(
+        self,
+        workflow: common_pb2.WorkflowId,
+        activity: common_pb2.ActivityId,
+        failure: worker_pb2.ActivityError,
+    ) -> None:
+        raise self.denial
+
+
+def _unacked_tracker_with_one_report() -> UnackedResultTracker:
+    tracker = UnackedResultTracker()
+    tracker.record(
+        PendingCompletedReport(
+            workflow_id=workflow_id(),
+            activity_id=activity_id(7),
+            output=payload(),
+        )
+    )
+    return tracker
+
+
+async def test_retryable_replay_failure_counts_against_drop_budget() -> None:
+    tracker = _unacked_tracker_with_one_report()
+    replay_failing = _ReplayFailingSession()
+    third = FakeSession()
+    await third.finish()
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return await _dropping_session()
+        if attempts == 2:
+            return replay_failing
+        return third
+
+    with pytest.raises(ReconnectError) as exhausted:
+        await connect_register_replay_and_serve(
+            _config(max_attempts=3),
+            connect,
+            RecordingDispatcher(),
+            tracker,
+            sleep=_no_sleep,
+            clock=_frozen_clock,
+        )
+
+    # Drop one: the stream reset. Drop two: the failed unacked-result replay
+    # on the second session (closed before re-entering the cycle) — a
+    # budgeted, retryable drop rather than an instant run failure. The third
+    # session then received the replayed result before its own clean close
+    # exhausted the budget, proving replay re-entry shares the one
+    # cumulative budget.
+    assert attempts == 3
+    assert replay_failing.closed is True
+    assert "result:7" in third.log
+    assert isinstance(exhausted.value.__cause__, ServerClosedStreamError)
+
+
+async def test_denial_during_replay_fails_fast_with_precedence() -> None:
+    tracker = _unacked_tracker_with_one_report()
+    denial = grpc.aio.AioRpcError(
+        grpc.StatusCode.PERMISSION_DENIED,
+        grpc.aio.Metadata(),
+        grpc.aio.Metadata(),
+        details="namespace 'queue-a' was revoked",
+    )
+    denied = _DeniedReplaySession(denial)
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return await _dropping_session()
+        return denied
+
+    with pytest.raises(grpc.aio.AioRpcError) as raised:
+        await connect_register_replay_and_serve(
+            _config(max_attempts=5),
+            connect,
+            RecordingDispatcher(),
+            tracker,
+            sleep=_no_sleep,
+            clock=_frozen_clock,
+        )
+
+    # The deterministic denial during replay outranks the remaining budget:
+    # no further reconnects, session closed, denial surfaced raw.
+    assert attempts == 2
+    assert raised.value.code() is grpc.StatusCode.PERMISSION_DENIED
+    assert denied.closed is True
+
+
+class _DrainBlockedDispatcher:
+    """Dispatcher whose single handler blocks until the test releases it."""
+
+    def __init__(self, release: asyncio.Event) -> None:
+        self.release = release
+        self.finished = False
+
+    def activity_types(self) -> Iterable[str]:
+        return ["slow"]
+
+    async def dispatch(self, task: ActivityTask, context: ActivityExecutionContext) -> DispatchOutcome:
+        del task, context
+        await self.release.wait()
+        self.finished = True
+        return Completed(payload())
+
+
+class _ReleaseOnDropSession(FakeSession):
+    """Drops its stream, releasing the blocked handler only at the drop.
+
+    The release is deferred by one event-loop turn behind the raise, so the
+    serve loop's continuation (which captures the stream-end timestamp in its
+    ``finally`` before awaiting in-flight tasks) is scheduled ahead of the
+    handler's wakeup: the handler can only resume during the post-drop drain.
+    Reports fail so the drained task never counts as served.
+    """
+
+    def __init__(self, release: asyncio.Event) -> None:
+        super().__init__()
+        self._release = release
+
+    async def _receive(self) -> AsyncIterator[WorkerSessionEvent]:
+        while True:
+            event = await self.events.get()
+            if event is None:
+                asyncio.get_running_loop().call_soon(self._release.set)
+                raise OSError("stream dropped")
+            self.log.append("receive")
+            yield event
+
+    async def report_result(
+        self,
+        workflow: common_pb2.WorkflowId,
+        activity: common_pb2.ActivityId,
+        result: common_pb2.Payload,
+    ) -> None:
+        raise OSError("report send failed after the drop")
+
+
+async def test_drain_outliving_max_backoff_does_not_reset_drop_budget() -> None:
+    """Connected time is measured to the stream end, never to the drain end.
+
+    Degenerate scenario: the server dispatches a long task and kills the
+    stream almost immediately; the report fails so no task counts as served.
+    If the elapsed-connected measurement included the post-drop drain, every
+    such cycle would outlive ``max_backoff_seconds``, reset the budget, and
+    flap forever instead of exhausting.
+    """
+
+    release = asyncio.Event()
+    dispatcher = _DrainBlockedDispatcher(release)
+
+    def drain_aware_clock() -> float:
+        # Virtual time advances (far past max_backoff_seconds=0.02) only once
+        # the draining handler finishes: a decision measured at the stream
+        # end sees 0.0, one measured after the drain sees 100.0.
+        return 100.0 if dispatcher.finished else 0.0
+
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            session = _ReleaseOnDropSession(release)
+            await session.push(task(1))
+            await session.finish()
+            return session
+        return await _dropping_session()
+
+    with pytest.raises(ReconnectError) as exhausted:
+        await connect_register_replay_and_serve(
+            _config(max_attempts=2),
+            connect,
+            dispatcher,
+            sleep=_no_sleep,
+            clock=drain_aware_clock,
+        )
+
+    # Cycle one consumed the first budget unit. Cycle two dispatched a task,
+    # dropped its stream at a connected lifetime of 0.0, then spent "100s"
+    # draining the in-flight handler whose report failed. Measured to the
+    # stream end the session never proved healthy, so the second drop
+    # exhausted max_attempts=2; measured to the drain end it would have reset
+    # the budget and dialled a third session.
+    assert attempts == 2
+    assert dispatcher.finished is True
+    assert isinstance(exhausted.value.__cause__, OSError)
+
+
+async def test_shutdown_during_error_backoff_wakes_immediately() -> None:
+    """Shutdown is raced against the drop-backoff sleep, not observed after it."""
+
+    shutdown = asyncio.Event()
+    backoff_entered = asyncio.Event()
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        return await _dropping_session()
+
+    async def hanging_sleep(delay: float) -> None:
+        del delay
+        backoff_entered.set()
+        # Stands in for an arbitrarily long backoff: it never completes, so
+        # only the shutdown race can end the wait.
+        await asyncio.Event().wait()
+
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(
+            _config(max_attempts=5),
+            connect,
+            RecordingDispatcher(),
+            sleep=hanging_sleep,
+            shutdown=shutdown,
+            clock=_frozen_clock,
+        )
+    )
+    await asyncio.wait_for(backoff_entered.wait(), timeout=5)
+    shutdown.set()
+    # Returns cleanly well before any backoff could elapse — the timeout only
+    # fires if the worker stalls waiting out the sleep.
+    await asyncio.wait_for(run, timeout=5)
+
+    assert attempts == 1
 
 
 async def test_shutdown_during_clean_close_backoff_returns_cleanly() -> None:

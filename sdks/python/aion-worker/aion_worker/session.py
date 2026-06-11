@@ -43,13 +43,14 @@ class ReconnectConfig:
 
     Budget reset: the cumulative drop budget resets to zero once an
     established session proves healthy — it served at least one task, or it
-    survived longer than ``max_backoff_seconds`` (measured monotonically from
-    successful registration to the drop). The cap is the policy's own
-    definition of the longest pause, so a session outliving it is
-    demonstrably past the flapping regime, and a served task proves
-    end-to-end health. A genuinely flapping server — no session ever serves a
-    task or outlives ``max_backoff_seconds`` — exhausts the budget after
-    exactly ``max_attempts`` drops.
+    stayed connected longer than ``max_backoff_seconds`` (measured
+    monotonically from successful registration to the moment the stream ended
+    or dropped; post-drop draining of in-flight handlers never extends it).
+    The cap is the policy's own definition of the longest pause, so a session
+    outliving it is demonstrably past the flapping regime, and a served task
+    proves end-to-end health. A genuinely flapping server — no session ever
+    serves a task or outlives ``max_backoff_seconds`` — exhausts the budget
+    after exactly ``max_attempts`` drops.
 
     Clean closes: a clean/graceful server-side stream close is a retryable
     drop, not a run end. The worker redials through the same budgeted,
@@ -58,6 +59,12 @@ class ReconnectConfig:
     (raising ``ReconnectError`` from ``ServerClosedStreamError``). An
     explicit protocol drain signal ("closing, do not reconnect") is planned
     for the worker-protocol ack wave and will refine the clean-close case.
+
+    Shutdown during a drop backoff: every SDK races the backoff sleep against
+    the shutdown signal and returns promptly, but the run outcome currently
+    diverges — this SDK and the TypeScript worker return cleanly, while the
+    Rust worker surfaces the pending drop error. Aligning the outcome
+    cross-SDK is deferred to the protocol drain-signal wave.
     """
 
     initial_backoff_seconds: float
@@ -321,4 +328,9 @@ def decode_server_message(message: Message) -> WorkerSessionEvent:
     which = message.WhichOneof("message")
     if which == "task":
         return TaskReceived(ActivityTask.from_proto(message.task))
-    raise TransportError("server-to-worker message was empty")
+    if which is None:
+        raise TransportError("server-to-worker message had no payload set")
+    # Frames this SDK does not classify yet (the drain-frame taxonomy lands
+    # with the worker-protocol ack wave) surface what was actually received
+    # instead of a misleading "empty message" report.
+    raise TransportError(f"unsupported server-to-worker message {which!r}")

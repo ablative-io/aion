@@ -65,6 +65,18 @@ pub enum ServeEnd {
     StreamClosed,
 }
 
+/// Per-session health accounting written by the serve loop for the
+/// reconnect-aware caller's drop-budget reset decision.
+#[derive(Debug, Default)]
+pub struct SessionHealth {
+    /// Activity tasks whose outcome report was sent on this session.
+    pub tasks_reported: usize,
+    /// When the receive stream ended or dropped, captured before in-flight
+    /// handlers are drained — so post-drop draining never extends the
+    /// session's measured connected lifetime.
+    pub stream_ended_at: Option<tokio::time::Instant>,
+}
+
 /// Runs the worker receive loop until the session's task stream completes.
 ///
 /// The loop only forwards explicit handler heartbeats and cancellation flags. It
@@ -89,13 +101,13 @@ where
     S: WorkerSession,
     D: ActivityDispatcher,
 {
-    let mut tasks_reported = 0;
+    let mut health = SessionHealth::default();
     serve_activity_tasks_until(
         config,
         session,
         dispatcher,
         tracker,
-        &mut tasks_reported,
+        &mut health,
         future::pending(),
     )
     .await
@@ -113,11 +125,15 @@ where
 /// an explicit engine acknowledgement clears tracker entries, so successful
 /// sends leave their entries in place.
 ///
-/// `tasks_reported` counts the activity tasks whose outcome report was sent
-/// on this session. It is an out-parameter (rather than part of the return
-/// value) so the count survives an error return: the reconnect-aware caller
-/// uses it for session-health accounting — a session that served at least
-/// one task resets the cumulative drop budget even when it later drops.
+/// `health` accumulates session-health accounting: the activity tasks whose
+/// outcome report was sent on this session, and the instant the receive
+/// stream ended (captured before in-flight handlers are drained). It is an
+/// out-parameter (rather than part of the return value) so the accounting
+/// survives an error return: the reconnect-aware caller uses it for the
+/// drop-budget reset decision — a session that served at least one task, or
+/// that stayed connected longer than the maximum backoff delay measured to
+/// the recorded stream end (never to the end of the post-drop drain), resets
+/// the cumulative drop budget even when it later drops.
 ///
 /// On a clean end this returns [`ServeEnd`] distinguishing a caller-driven
 /// shutdown from a server-side stream close, so the caller can treat the
@@ -132,7 +148,7 @@ pub async fn serve_activity_tasks_until<S, D, Shutdown>(
     session: &mut S,
     dispatcher: Arc<D>,
     tracker: &mut UnackedResultTracker,
-    tasks_reported: &mut usize,
+    health: &mut SessionHealth,
     shutdown: Shutdown,
 ) -> Result<ServeEnd, WorkerError>
 where
@@ -167,7 +183,7 @@ where
             &mut channels,
             &mut in_flight,
             tracker,
-            tasks_reported,
+            &mut health.tasks_reported,
             &mut pending_error,
         )
         .await;
@@ -223,6 +239,11 @@ where
         }
     }
 
+    // The stream just ended — cleanly, by error, or by shutdown. Capture the
+    // moment before draining in-flight handlers so the caller's drop-budget
+    // reset decision measures connected time, never drain time.
+    health.stream_ended_at = Some(tokio::time::Instant::now());
+
     drop(result_sender);
     drop(heartbeat_sender);
     drain_remaining(
@@ -231,7 +252,7 @@ where
         &mut channels,
         &mut in_flight,
         tracker,
-        tasks_reported,
+        &mut health.tasks_reported,
         &mut pending_error,
     )
     .await;

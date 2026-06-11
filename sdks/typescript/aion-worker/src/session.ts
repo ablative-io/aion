@@ -17,19 +17,29 @@ export type WorkerIdentity = string;
  *
  * Budget reset: the cumulative drop budget resets to zero once an
  * established session proves healthy — it served at least one task, or it
- * survived longer than `maxDelayMs` (measured monotonically from successful
- * registration to the drop). The cap is the policy's own definition of the
- * longest pause, so a session outliving it is demonstrably past the
- * flapping regime, and a served task proves end-to-end health. A genuinely
- * flapping server — no session ever serves a task or outlives `maxDelayMs`
- * — exhausts the budget after exactly `maxAttempts` drops.
+ * stayed connected longer than `maxDelayMs` (measured monotonically from
+ * successful registration to the moment the stream ended or dropped;
+ * post-drop draining of in-flight handlers never extends it). The cap is
+ * the policy's own definition of the longest pause, so a session outliving
+ * it is demonstrably past the flapping regime, and a served task proves
+ * end-to-end health. A genuinely flapping server — no session ever serves a
+ * task or outlives `maxDelayMs` — exhausts the budget after exactly
+ * `maxAttempts` drops.
  *
  * Clean closes: a clean/graceful server-side stream close is a retryable
  * drop, not a run end. The worker redials through the same budgeted,
  * backed-off cycle, so routine server deploys cost at most transient budget
- * that heals; only a persistent clean-close loop exhausts the budget. An
- * explicit protocol drain signal ("closing, do not reconnect") is planned
- * for the worker-protocol ack wave and will refine the clean-close case.
+ * that heals; only a persistent clean-close loop exhausts the budget
+ * (surfacing `ReconnectExhaustedError` with a `ServerClosedStreamError`
+ * cause). An explicit protocol drain signal ("closing, do not reconnect")
+ * is planned for the worker-protocol ack wave and will refine the
+ * clean-close case.
+ *
+ * Shutdown during a drop backoff: every SDK races the backoff sleep against
+ * the shutdown signal and returns promptly, but the run outcome currently
+ * diverges — this SDK and the Python worker return cleanly, while the Rust
+ * worker surfaces the pending drop error. Aligning the outcome cross-SDK is
+ * deferred to the protocol drain-signal wave.
  */
 export interface ReconnectConfig {
 	readonly initialDelayMs: number;

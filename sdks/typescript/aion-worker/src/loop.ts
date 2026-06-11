@@ -9,6 +9,7 @@ import {
 	reconnectWithBackoff,
 	requireReconnectConfig,
 	reReportUnacked,
+	ServerClosedStreamError,
 	UnackedResultTracker,
 	type WorkerLogger,
 } from "./reconnect.js";
@@ -60,8 +61,10 @@ export interface RunWorkerLoopOptions {
 	readonly onSessionChange?: (session: WorkerSession) => void;
 	/**
 	 * Monotonic millisecond clock used for session-health accounting (how
-	 * long an established session survived versus `reconnect.maxDelayMs`
-	 * when deciding drop-budget resets). Defaults to `performance.now`;
+	 * long an established session stayed connected — measured from
+	 * successful registration to the moment its receive stream ended, never
+	 * to the end of the post-drop drain — versus `reconnect.maxDelayMs` when
+	 * deciding drop-budget resets). Defaults to `performance.now`;
 	 * injectable so tests can script time.
 	 */
 	readonly now?: () => number;
@@ -140,6 +143,11 @@ export async function runWorkerLoop(
 	let droppedAttempts = 0;
 	// Session-health accounting starts at the just-registered initial session.
 	let sessionStartedAt = now();
+	// Captured the moment the receive stream ends or drops — before in-flight
+	// handlers are drained — so the drop-budget reset decision measures
+	// connected time, never drain time (a long-running handler must not let a
+	// short-lived session masquerade as one that outlived the max backoff).
+	let sessionEndedAt = sessionStartedAt;
 	let sessionHealth: SessionHealth = { tasksServed: 0 };
 
 	for (;;) {
@@ -149,17 +157,26 @@ export async function runWorkerLoop(
 		} catch (error) {
 			streamFailure = { error };
 		}
+		sessionEndedAt = now();
 		await Promise.all(running);
 		if (streamFailure !== undefined) {
 			await handleStreamFailure(streamFailure.error, session, options);
 		}
 		if (options.sessionFactory === undefined) {
 			// Clean close with nothing to reconnect with: stream failures have
-			// already propagated inside handleStreamFailure.
+			// already propagated inside handleStreamFailure. The session is
+			// closed before returning so no exit path leaks its transport.
+			await closeFailedSession(session, options.logger);
 			return;
 		}
 		if (shutdownRequested(options.signal)) {
 			options.logger?.info("worker shutdown requested; not reconnecting");
+			if (streamFailure === undefined) {
+				// Failure paths already closed the session inside
+				// handleStreamFailure; a clean close observed at shutdown must
+				// close it here so no exit path leaks the transport.
+				await closeFailedSession(session, options.logger);
+			}
 			return;
 		}
 		let dropError: unknown;
@@ -171,7 +188,7 @@ export async function runWorkerLoop(
 			// as a flapping stream: it must consume the same drop budget. The
 			// replaced session is closed (idempotently) so its write side is
 			// released before the replacement is dialled.
-			dropError = new Error(
+			dropError = new ServerClosedStreamError(
 				"worker receive stream closed cleanly while a session factory was configured",
 			);
 			options.logger?.warn(
@@ -187,10 +204,12 @@ export async function runWorkerLoop(
 		for (;;) {
 			// The dropped session (the served one on the first iteration, the
 			// replay-failed replacement on re-entries) resets the budget when
-			// it proved healthy before dropping.
+			// it proved healthy before dropping. Connected time runs from
+			// registration to the recorded stream end (or replay failure) —
+			// post-drop draining never extends it.
 			if (
 				sessionHealth.tasksServed > 0 ||
-				now() - sessionStartedAt > reconnect.maxDelayMs
+				sessionEndedAt - sessionStartedAt > reconnect.maxDelayMs
 			) {
 				if (droppedAttempts > 0) {
 					options.logger?.info(
@@ -216,7 +235,7 @@ export async function runWorkerLoop(
 				"worker session dropped; reconnecting after backoff",
 				{ droppedAttempts, delayMs, message: describeError(dropError) },
 			);
-			await sleep(delayMs);
+			await sleepUnlessAborted(sleep, delayMs, options.signal);
 			if (shutdownRequested(options.signal)) {
 				options.logger?.info(
 					"worker shutdown requested during drop backoff; not reconnecting",
@@ -232,6 +251,7 @@ export async function runWorkerLoop(
 			// registration: its survival and served tasks are what may reset
 			// the budget at its own eventual drop.
 			sessionStartedAt = now();
+			sessionEndedAt = sessionStartedAt;
 			sessionHealth = { tasksServed: 0 };
 			// Publish the replacement session before the post-reconnect abort
 			// check: from here on an abort closes the new session through the
@@ -249,6 +269,9 @@ export async function runWorkerLoop(
 				await reReportUnacked(session, tracker, options.logger);
 				break;
 			} catch (error) {
+				// The replacement never entered the serve loop, so its drop
+				// moment for health accounting is the replay failure itself.
+				sessionEndedAt = now();
 				await closeFailedSession(session, options.logger);
 				if (!isRetryableSessionError(error)) {
 					// A deterministic server denial outranks a racing abort —
@@ -294,6 +317,43 @@ function describeError(error: unknown): string {
  */
 function shutdownRequested(signal: AbortSignal | undefined): boolean {
 	return signal?.aborted === true;
+}
+
+/**
+ * Runs the injectable backoff sleep but resolves immediately when the
+ * shutdown signal aborts, so a worker told to stop during a long drop
+ * backoff never stalls for the remainder of the delay (a SIGTERM-to-SIGKILL
+ * window in orchestrated deployments). The caller re-checks the signal
+ * after this resolves; the abort listener is always removed so repeated
+ * backoffs never accumulate listeners.
+ */
+async function sleepUnlessAborted(
+	sleep: (delayMs: number) => Promise<void>,
+	delayMs: number,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	if (signal === undefined) {
+		await sleep(delayMs);
+		return;
+	}
+	if (signal.aborted) {
+		return;
+	}
+	let unsubscribe = (): void => undefined;
+	const aborted = new Promise<void>((resolve) => {
+		const onAbort = (): void => {
+			resolve();
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		unsubscribe = (): void => {
+			signal.removeEventListener("abort", onAbort);
+		};
+	});
+	try {
+		await Promise.race([sleep(delayMs), aborted]);
+	} finally {
+		unsubscribe();
+	}
 }
 
 /**

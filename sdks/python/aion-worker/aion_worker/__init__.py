@@ -34,7 +34,6 @@ from .reconnect import (
     grpc_status_code,
     is_retryable_session_error,
     re_report_unacked,
-    reconnect_register_and_replay,
     reconnect_with_backoff,
 )
 from .session import (
@@ -98,7 +97,6 @@ __all__ = [
     "grpc_status_code",
     "is_retryable_session_error",
     "re_report_unacked",
-    "reconnect_register_and_replay",
     "reconnect_with_backoff",
     "serve",
     "validate_activity_handlers",

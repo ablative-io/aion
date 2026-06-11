@@ -19,7 +19,9 @@ use crate::protocol::reconnect::{
     register_connected_session,
 };
 use crate::protocol::{GrpcWorkerSession, WorkerSession};
-use crate::runtime::{NoShutdown, ServeEnd, serve_activity_tasks, serve_activity_tasks_until};
+use crate::runtime::{
+    NoShutdown, ServeEnd, SessionHealth, serve_activity_tasks, serve_activity_tasks_until,
+};
 
 /// Builder for a configured worker and its registered typed activities.
 #[must_use]
@@ -162,8 +164,10 @@ impl Worker {
     /// Mid-run drops share one cumulative budget of `reconnect.max_attempts`,
     /// matching the Python and TypeScript workers, and the budget resets to
     /// zero once a session proves healthy: it served at least one task, or it
-    /// survived longer than `reconnect.max_backoff` (measured monotonically
-    /// from successful registration to the drop). See
+    /// stayed connected longer than `reconnect.max_backoff` (measured
+    /// monotonically from successful registration to the moment the stream
+    /// ended or dropped — post-drop draining of in-flight activities never
+    /// extends it). See
     /// [`crate::config::ReconnectConfig`]. The run therefore ends only on
     /// shutdown, a non-retryable error, or budget exhaustion — never merely
     /// because the server closed the stream. At most one session is alive at
@@ -210,7 +214,7 @@ impl Worker {
             };
             let mut session = connected?;
             let session_started = tokio::time::Instant::now();
-            let mut tasks_reported = 0_usize;
+            let mut health = SessionHealth::default();
             let served = match re_report_unacked(&tracker, &mut session).await {
                 Ok(()) => {
                     serve_activity_tasks_until(
@@ -218,7 +222,7 @@ impl Worker {
                         &mut session,
                         Arc::clone(&self.activities),
                         &mut tracker,
-                        &mut tasks_reported,
+                        &mut health,
                         shutdown.wait(),
                     )
                     .await
@@ -245,12 +249,22 @@ impl Worker {
                     DropCause::Failure(error)
                 }
             };
-            let proved_healthy =
-                tasks_reported > 0 || session_started.elapsed() > backoff.max_delay();
+            // Connected lifetime is measured from successful registration to
+            // the moment the stream ended — never to the end of the post-drop
+            // drain, which would let a long-running in-flight handler
+            // masquerade as a healthy session and reset the budget forever.
+            // A replay failure never enters the serve loop, so its drop
+            // moment is now.
+            let connected_for = health
+                .stream_ended_at
+                .unwrap_or_else(tokio::time::Instant::now)
+                .saturating_duration_since(session_started);
+            let proved_healthy = health.tasks_reported > 0 || connected_for > backoff.max_delay();
             if proved_healthy && drop_failures > 0 {
                 info!(
                     drop_failures,
-                    tasks_reported, "worker session proved healthy; drop budget reset"
+                    tasks_reported = health.tasks_reported,
+                    "worker session proved healthy; drop budget reset"
                 );
                 drop_failures = 0;
             }
@@ -318,13 +332,13 @@ impl Worker {
         )
         .await?;
         let mut tracker = UnackedResultTracker::new();
-        let mut tasks_reported = 0_usize;
+        let mut health = SessionHealth::default();
         serve_activity_tasks_until(
             &self.config,
             &mut session,
             self.activities,
             &mut tracker,
-            &mut tasks_reported,
+            &mut health,
             shutdown,
         )
         .await?;
@@ -1488,6 +1502,109 @@ mod tests {
         // one unit was consumed before the reset. Without the reset the run
         // would have ended after two sessions.
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+        drop(log_receiver);
+        Ok(())
+    }
+
+    /// Connected lifetime is measured to the stream end, not to the end of
+    /// the post-drop drain: a 60ms in-flight handler draining past the 20ms
+    /// max backoff after the stream already dropped (with its report failing,
+    /// so no task counts as served) must not reset the budget. Measured to
+    /// the end of the drain, every cycle would reset the budget and the
+    /// worker would flap forever instead of exhausting.
+    #[tokio::test(start_paused = true)]
+    async fn post_drop_drain_time_does_not_reset_drop_budget() -> Result<(), WorkerError> {
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(9);
+        // max_concurrency = 2 so the stream error is read while the slow
+        // handler still holds the first dispatch permit.
+        let config = WorkerConfig::new(
+            "http://127.0.0.1:50051",
+            "payments",
+            "worker-a",
+            2,
+            ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 2),
+            None,
+        );
+        let worker = Worker::builder(config)
+            .register_activity("slow", |input: TestInput, context: &ActivityContext| {
+                let _ = (input, context);
+                Box::pin(async move {
+                    // Outlives the 20ms max backoff on the paused clock while
+                    // the post-drop drain awaits this handler.
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    Ok(TestOutput { value: 1 })
+                })
+            })?
+            .build()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let workflow_id = workflow_id.clone();
+            let activity_id = activity_id.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                let task = proto_task(workflow_id.clone(), activity_id.clone(), "slow", 1);
+                async move {
+                    if attempt == 1 {
+                        // Instant drop with no task: consumes the first
+                        // budget unit and leaves the unacked tracker empty,
+                        // so the second cycle reaches its serve loop.
+                        Ok(ScriptedSession {
+                            index: 1,
+                            log,
+                            events: vec![Err(WorkerError::Transport {
+                                source: tonic::Status::unavailable("stream reset by peer"),
+                            })],
+                            fail_reports: false,
+                            register_denial: None,
+                            delay_stream: None,
+                        })
+                    } else {
+                        // The server dispatches the 60ms task and kills the
+                        // stream immediately. Failed reports keep
+                        // tasks_reported at zero, so only a (mis)measured
+                        // connected lifetime could reset the budget.
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: vec![
+                                Ok(WorkerSessionEvent::Task(task)),
+                                Err(WorkerError::Transport {
+                                    source: tonic::Status::unavailable("stream reset by peer"),
+                                }),
+                            ],
+                            fail_reports: true,
+                            register_denial: None,
+                            delay_stream: None,
+                        })
+                    }
+                }
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, std::future::pending::<()>());
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        // The second session's stream dropped at a connected lifetime of ~0
+        // on the paused clock while its 60ms handler drained past the 20ms
+        // max backoff; it never proved healthy, so its drop exhausted
+        // max_attempts = 2. Measured to the end of the drain instead, the
+        // second cycle would have reset the budget and dialled a third
+        // session.
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
         let Err(error) = result else {
             return Err(WorkerError::decode(UnexpectedSuccess));
         };

@@ -237,29 +237,6 @@ async def close_failed_session(session: WorkerSession | None) -> None:
         logger.warning("failed to close unsuccessful worker session: %s", exc)
 
 
-async def reconnect_register_and_replay(
-    connect: ConnectFactory,
-    config: WorkerConfig,
-    activity_types: Iterable[str],
-    available_handlers: Iterable[str],
-    tracker: UnackedResultTracker,
-    sleep: SleepFactory = asyncio.sleep,
-) -> WorkerSession:
-    """Reconnect, re-register, then re-report backlog before serving tasks."""
-
-    backoff = ReconnectBackoff.from_config(config)
-    session = await reconnect_with_backoff(
-        connect,
-        config,
-        activity_types,
-        available_handlers,
-        backoff,
-        sleep,
-    )
-    await re_report_unacked(session, tracker)
-    return session
-
-
 async def re_report_unacked(session: WorkerSession, tracker: UnackedResultTracker) -> None:
     """Re-send every unacknowledged report in deterministic sequence order."""
 

@@ -14,6 +14,7 @@ from ar007_fakes import (
     config,
     payload,
     task,
+    wait_for_condition,
     workflow_id,
 )
 
@@ -94,8 +95,7 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
     run = asyncio.create_task(
         connect_register_replay_and_serve(config(), fail_then_connect, dispatcher, tracker, shutdown=shutdown)
     )
-    while dispatcher.dispatched != [8]:
-        await asyncio.sleep(0)
+    await wait_for_condition(run, lambda: dispatcher.dispatched == [8])
     shutdown.set()
     await run
 
@@ -176,8 +176,10 @@ async def test_reconnect_re_reports_unacked_for_all_workflows_with_colliding_pos
     run = asyncio.create_task(
         connect_register_replay_and_serve(config(), connect, dispatcher, sleep=no_sleep, shutdown=shutdown)
     )
-    while len([entry for entry in second.log if entry.startswith("result:")]) < 2:
-        await asyncio.sleep(0)
+    await wait_for_condition(
+        run,
+        lambda: len([entry for entry in second.log if entry.startswith("result:")]) >= 2,
+    )
     shutdown.set()
     await run
 
@@ -212,8 +214,7 @@ async def test_reconnect_after_stream_drop_uses_backoff_and_replays_unacked(
         run = asyncio.create_task(
             connect_register_replay_and_serve(config(), connect, dispatcher, sleep=record_sleep, shutdown=shutdown)
         )
-        while dispatcher.dispatched != [7, 8]:
-            await asyncio.sleep(0)
+        await wait_for_condition(run, lambda: dispatcher.dispatched == [7, 8])
         shutdown.set()
         await run
 
@@ -278,8 +279,10 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
         run = asyncio.create_task(
             connect_register_replay_and_serve(worker_config, connect, dispatcher, shutdown=shutdown)
         )
-        while "Completed greet in 5ms" not in [record.getMessage() for record in caplog.records]:
-            await asyncio.sleep(0)
+        await wait_for_condition(
+            run,
+            lambda: "Completed greet in 5ms" in [record.getMessage() for record in caplog.records],
+        )
         shutdown.set()
         await run
 

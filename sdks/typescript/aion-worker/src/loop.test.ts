@@ -5,7 +5,11 @@ import {
 	type DispatchOutcome,
 	runWorkerLoop,
 } from "./loop.js";
-import { ReconnectExhaustedError, UnackedResultTracker } from "./reconnect.js";
+import {
+	ReconnectExhaustedError,
+	ServerClosedStreamError,
+	UnackedResultTracker,
+} from "./reconnect.js";
 import type {
 	ActivityFailure,
 	ActivityTask,
@@ -302,11 +306,14 @@ describe("runWorkerLoop", () => {
 		// Each clean close re-entered the reconnect cycle, consumed one unit
 		// of the shared drop budget, and backed off on the config's own
 		// schedule; the third clean close exhausted the budget at exactly
-		// maxAttempts and surfaced a classified error.
+		// maxAttempts and surfaced a classified error whose cause is the
+		// typed clean-close drop (instanceof-checkable, like Rust's
+		// CleanCloseExhausted and Python's ServerClosedStreamError).
 		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
 		expect((failure as Error).message).toContain(
 			"worker session drop budget exhausted after 3 dropped sessions",
 		);
+		expect((failure as Error).cause).toBeInstanceOf(ServerClosedStreamError);
 		expect(((failure as Error).cause as Error).message).toBe(
 			"worker receive stream closed cleanly while a session factory was configured",
 		);
@@ -317,6 +324,54 @@ describe("runWorkerLoop", () => {
 		expect(first.closed).toBe(true);
 		expect(second.closed).toBe(true);
 		expect(third.closed).toBe(true);
+	});
+
+	it("reconnects after a clean close, re-registers, replays unacked results, and keeps serving", async () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'queue' was revoked",
+		);
+		const tracker = new UnackedResultTracker();
+		// The first session serves one task (reported but never acknowledged)
+		// and then closes cleanly; the second session must see the replayed
+		// unacked result before serving its own task. The deterministic
+		// denial then ends the run fail-fast.
+		const first = new ScriptedSession([
+			{ kind: "task", task: task("1") },
+			{ kind: "closed" },
+		]);
+		const second = new ScriptedSession([
+			{ kind: "task", task: task("2") },
+			{ kind: "throw", error: denial },
+		]);
+		let factoryCalls = 0;
+
+		await expect(
+			runWorkerLoop({
+				config: reconnectingConfig(),
+				session: first,
+				dispatcher: new SlowDispatcher(),
+				tracker,
+				sessionFactory: async () => {
+					factoryCalls += 1;
+					return second;
+				},
+				sleep: () => Promise.resolve(),
+				now: () => 0,
+			}),
+		).rejects.toBe(denial);
+
+		// The clean close redialled through the budgeted cycle: the worker
+		// re-registered its activity types on the replacement session,
+		// re-reported the unacknowledged backlog ("1") before serving the new
+		// task ("2"), and both sessions were closed.
+		expect(factoryCalls).toBe(1);
+		expect(first.reports).toEqual(["1"]);
+		expect(first.closed).toBe(true);
+		expect(second.handshakes).toBe(1);
+		expect(second.registrations).toEqual([["slow"]]);
+		expect(second.reports).toEqual(["1", "2"]);
+		expect(second.closed).toBe(true);
 	});
 
 	it("resets the drop budget each time a session serves a task", async () => {
@@ -420,6 +475,84 @@ describe("runWorkerLoop", () => {
 		// ended after a single reconnect.
 		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
 		expect(factoryCalls).toBe(2);
+	});
+
+	it("does not reset the drop budget when only the post-drop drain outlives the max backoff", async () => {
+		const drop = () =>
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset");
+		// Virtual clock: the dispatched handler "runs" for 100ms — far past
+		// maxDelayMs=2 — but only during the post-drop drain. The gate is
+		// released via a macrotask scheduled just before the stream throws,
+		// so it opens strictly after the loop captures the stream-end
+		// timestamp (a microtask continuation) and strictly before the drain
+		// settles.
+		let t = 0;
+		let releaseDispatch = (): void => undefined;
+		const dispatchGate = new Promise<void>((resolve) => {
+			releaseDispatch = resolve;
+		});
+		const second = new (class extends ScriptedSession {
+			public override async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
+				yield { kind: "task", task: task("drained") };
+				setImmediate(() => {
+					t = 100;
+					releaseDispatch();
+				});
+				throw drop();
+			}
+
+			public override async reportResult(): Promise<void> {
+				// The report fails, so the drained task never counts as served
+				// and only the (mis)measured lifetime could reset the budget.
+				throw drop();
+			}
+		})([]);
+		const gatedDispatcher: ActivityDispatcher = {
+			activityTypes: () => ["slow"],
+			dispatch: async () => {
+				await dispatchGate;
+				return { kind: "completed", output: payload };
+			},
+		};
+		const initial = new ScriptedSession([{ kind: "throw", error: drop() }]);
+		const replacements = [
+			second,
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+		];
+		let factoryCalls = 0;
+
+		const failure = await runWorkerLoop({
+			// maxConcurrency 2 keeps the receive loop reading (and observing
+			// the drop) while the gated handler holds the first slot.
+			config: config(2),
+			session: initial,
+			dispatcher: gatedDispatcher,
+			sessionFactory: async () => {
+				const session = replacements[factoryCalls];
+				factoryCalls += 1;
+				if (session === undefined) {
+					throw new Error("session factory exhausted");
+				}
+				return session;
+			},
+			sleep: () => Promise.resolve(),
+			now: () => t,
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		// Drop one consumed the first budget unit. The second session dropped
+		// at t=0 with its handler still in flight; the drain finished at
+		// t=100 (past maxDelayMs=2) but connected time is measured to the
+		// stream end, so no reset fired and the second drop exhausted
+		// maxAttempts=2. Measured to the end of the drain, the budget would
+		// have reset and a third session would have been dialled.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect(factoryCalls).toBe(1);
+		expect(second.closed).toBe(true);
 	});
 
 	it("exhausts the cumulative drop budget across cycles and surfaces the last underlying error", async () => {
@@ -713,6 +846,44 @@ describe("runWorkerLoop", () => {
 		expect(tracker.len()).toBe(1);
 	});
 
+	it("returns promptly when shutdown aborts during a drop backoff", async () => {
+		const controller = new AbortController();
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		const session = new ScriptedSession([{ kind: "throw", error: drop }]);
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+
+		// The backoff sleep never resolves — it stands in for an arbitrarily
+		// long delay — so only the abort race can end the wait. The loop must
+		// return cleanly (the TS shutdown contract) without dialling a
+		// replacement, well before the backoff could elapse.
+		await runWorkerLoop({
+			config: reconnectingConfig(3),
+			session,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				factoryCalls += 1;
+				return new ScriptedSession([{ kind: "closed" }]);
+			},
+			sleep: (delayMs) => {
+				sleeps.push(delayMs);
+				setImmediate(() => {
+					controller.abort();
+				});
+				return new Promise<void>(() => undefined);
+			},
+			signal: controller.signal,
+			now: () => 0,
+		});
+
+		expect(sleeps).toEqual([1]);
+		expect(factoryCalls).toBe(0);
+		expect(session.closed).toBe(true);
+	});
+
 	it("rejects with the denial when a server denial races an abort during registration", async () => {
 		const denial = serviceError(
 			status.PERMISSION_DENIED,
@@ -864,9 +1035,10 @@ describe("runWorkerLoop", () => {
 
 		// The clean close returned instead of dialling a replacement: the
 		// factory was never invoked, no drop budget was consumed, and the
-		// session was never force-closed.
+		// session was closed on the way out so the shutdown path never leaks
+		// its transport.
 		expect(factoryCalls).toBe(0);
-		expect(session.closed).toBe(false);
+		expect(session.closed).toBe(true);
 	});
 
 	it("publishes the replacement session via onSessionChange and closes it on a shutdown raced with the reconnect", async () => {
@@ -929,6 +1101,7 @@ type ScriptedStep =
 
 class ScriptedSession implements WorkerSession {
 	public readonly reports: string[] = [];
+	public readonly registrations: string[][] = [];
 	public closed = false;
 	public handshakes = 0;
 
@@ -939,7 +1112,8 @@ class ScriptedSession implements WorkerSession {
 		return Promise.resolve();
 	}
 
-	public register(): Promise<void> {
+	public register(activityTypes: readonly string[] = []): Promise<void> {
+		this.registrations.push([...activityTypes]);
 		return Promise.resolve();
 	}
 
