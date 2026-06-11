@@ -671,7 +671,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        NamespaceResolver, WorkflowOwnership,
+        NamespaceResolver,
         config::{
             AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
             NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
@@ -711,16 +711,19 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: Utc::now(),
                 close_time: None,
-                search_attributes: std::collections::HashMap::new(),
+                search_attributes: std::collections::HashMap::from([(
+                    crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+                    aion_core::SearchAttributeValue::String(NAMESPACE.to_owned()),
+                )]),
             })
             .await?;
-        let ownership = WorkflowOwnership::default();
-        let resolver = NamespaceResolver::from_parts(
-            NamespaceMode::SharedEngine,
-            Some(engine),
-            ownership.clone(),
+        let resolver = NamespaceResolver::from_config(
+            crate::config::NamespaceConfig {
+                mode: NamespaceMode::SharedEngine,
+            },
+            engine,
         );
-        let state = ServerState::from_parts(resolver, runtime_config());
+        let state = ServerState::from_parts(resolver.clone(), runtime_config());
         let service = WorkflowGrpcService::new(state);
 
         let mut start = Request::new(generated::StartWorkflowRequest {
@@ -764,9 +767,12 @@ mod tests {
             .transpose()?
             .ok_or_else(|| WireError::backend("summary missing"))?;
         assert_eq!(summary.workflow_id, workflow_id());
+        // The seeded history records no namespace attribute, so durable
+        // ownership verification must deny targeted access.
         assert_eq!(
-            ownership
-                .verify(NAMESPACE, &workflow_id())
+            resolver
+                .verify_workflow_ownership(NAMESPACE, &workflow_id())
+                .await
                 .err()
                 .map(|error| error.to_wire_error().code),
             Some(WireErrorCode::NamespaceDenied)

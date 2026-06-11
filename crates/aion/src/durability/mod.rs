@@ -36,7 +36,7 @@ pub use error::{DurabilityError, NonDeterminismError};
 pub use executor::{
     HandoffOutcome, LiveActivityOutcome, LiveChildOutcome, LiveExecutor, resolve_or_execute_live,
 };
-pub use recorder::Recorder;
+pub use recorder::{Recorder, WorkflowStartRecord};
 pub use recovery::{
     ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
     RecoveryDriver, RecoveryOutcome, RecoveryPlan, RecoveryReport, RecoveryResumePoint, recover,

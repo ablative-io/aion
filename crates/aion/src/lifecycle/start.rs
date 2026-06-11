@@ -1,8 +1,11 @@
 //! Start path: spawn, `WorkflowStarted`, and register.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus};
+use aion_core::{
+    Event, Payload, RunId, SearchAttributeSchema, SearchAttributeValue, WorkflowId, WorkflowStatus,
+};
 use aion_package::ContentHash;
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
@@ -42,6 +45,8 @@ pub struct StartWorkflowContext<'a> {
     pub registry: Arc<Registry>,
     /// Shared non-resident signal handoff to flush after resident registration.
     pub signal_handoff: Option<Arc<SignalResumeHandoff>>,
+    /// Schema validating any initial search attributes before they are recorded.
+    pub search_attribute_schema: Arc<SearchAttributeSchema>,
 }
 
 /// Optional identifiers used by internal start callers such as continue-as-new.
@@ -53,6 +58,8 @@ pub struct StartWorkflowOptions {
     pub parent_run_id: Option<RunId>,
     /// Exact loaded package version to spawn; omitted to use the latest version.
     pub loaded_version: Option<ContentHash>,
+    /// Initial search attributes recorded atomically with `WorkflowStarted`.
+    pub search_attributes: HashMap<String, SearchAttributeValue>,
 }
 
 /// Starts a loaded workflow execution and returns its active handle.
@@ -119,12 +126,16 @@ pub async fn start_workflow_with_options(
     )
     .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
     recorder
-        .record_workflow_started_with_parent(
+        .record_workflow_started_with_attributes(
             Utc::now(),
-            workflow_type.to_owned(),
-            input.clone(),
-            run_id.clone(),
-            options.parent_run_id,
+            crate::durability::WorkflowStartRecord {
+                workflow_type: workflow_type.to_owned(),
+                input: input.clone(),
+                run_id: run_id.clone(),
+                parent_run_id: options.parent_run_id,
+            },
+            options.search_attributes,
+            &context.search_attribute_schema,
         )
         .await?;
     upsert_workflow_visibility(
@@ -200,6 +211,7 @@ fn install_completion_monitor(
         runtime: Arc::clone(&context.runtime),
         supervision: Arc::clone(&context.supervision),
         tokio_handle: tokio::runtime::Handle::current(),
+        search_attribute_schema: Arc::clone(&context.search_attribute_schema),
     };
     let completion_handle = handle.clone();
     context.runtime.monitor_process(pid, move |outcome| {

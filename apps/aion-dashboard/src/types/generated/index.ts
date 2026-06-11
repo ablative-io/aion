@@ -51,7 +51,11 @@ workflow_type: string,
 /**
  * Opaque workflow input supplied to triggered executions.
  */
-input: Payload, };
+input: Payload, 
+/**
+ * Typed search attributes recorded on every triggered execution.
+ */
+search_attributes: { [key in string]: SearchAttributeValue }, };
 
 export type WorkflowError = { 
 /**

@@ -94,9 +94,19 @@ impl ServerState {
         .with_tokio_handle(tokio::runtime::Handle::current());
         let dispatcher = Arc::new(dispatcher);
 
+        let mut search_attribute_schema = aion_core::SearchAttributeSchema::new();
+        search_attribute_schema
+            .register(
+                crate::namespace::NAMESPACE_ATTRIBUTE,
+                aion_core::SearchAttributeType::String,
+            )
+            .map_err(|error| ServerError::Config {
+                message: format!("failed to register namespace search attribute: {error}"),
+            })?;
         let engine = EngineBuilder::new()
             .store_arc(instrumented_store.clone())
             .in_memory_visibility()
+            .search_attribute_schema(search_attribute_schema)
             .scheduler_threads(runtime.scheduler_threads)
             .activity_dispatcher(dispatcher)
             .active_registry(active_registry)

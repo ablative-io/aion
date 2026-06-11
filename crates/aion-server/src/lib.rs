@@ -40,8 +40,9 @@ pub mod worker;
 pub use config::ServerConfig;
 pub use error::{ServerError, StreamFailure};
 pub use namespace::{
-    CallerIdentity, NamespaceGuard, NamespaceOperation, NamespaceResolver, ScopedEngine,
-    SubscriptionScope, WorkflowOwnership, WorkflowTarget,
+    CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceOperation, NamespaceResolver,
+    ScopedEngine, StaticWorkflowNamespaces, SubscriptionScope, WorkflowNamespaceSource,
+    WorkflowTarget,
 };
 pub use state::ServerState;
 pub use worker::{

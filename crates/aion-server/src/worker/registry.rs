@@ -104,14 +104,16 @@ impl ConnectedWorkerRegistry {
     /// # Errors
     ///
     /// Returns [`ServerError`] if namespace authorization fails or the registry lock is poisoned.
-    pub fn accept_registration(
+    pub async fn accept_registration(
         &self,
         guard: &NamespaceGuard,
         caller: &CallerIdentity,
         registration: &ProtoRegisterWorker,
         sender: WorkerTaskSender,
     ) -> Result<WorkerRegistration, ServerError> {
-        let scoped = guard.scope(caller, &NamespaceOperation::register_worker(registration))?;
+        let scoped = guard
+            .scope(caller, &NamespaceOperation::register_worker(registration))
+            .await?;
         self.register(
             scoped.namespace(),
             registration.activity_types.iter(),
@@ -344,14 +346,14 @@ impl Drop for WorkerRegistration {
 #[cfg(test)]
 mod tests {
     use crate::config::NamespaceMode;
-    use crate::namespace::{NamespaceResolver, WorkflowOwnership};
+    use crate::namespace::{NamespaceResolver, StaticWorkflowNamespaces};
 
     use super::*;
 
     fn guard() -> NamespaceGuard {
         NamespaceGuard::new(NamespaceResolver::authorization_only(
             NamespaceMode::SharedEngine,
-            WorkflowOwnership::default(),
+            StaticWorkflowNamespaces::default(),
         ))
     }
 
@@ -369,24 +371,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_and_deregister_are_namespace_isolated() -> Result<(), ServerError> {
+    #[tokio::test]
+    async fn register_and_deregister_are_namespace_isolated() -> Result<(), ServerError> {
         let registry = ConnectedWorkerRegistry::default();
         let (tenant_a_tx, _tenant_a_rx) = mpsc::channel(1);
         let (tenant_b_tx, _tenant_b_rx) = mpsc::channel(1);
 
-        let tenant_a = registry.accept_registration(
-            &guard(),
-            &caller("tenant-a"),
-            &registration("tenant-a", &["charge", "charge"]),
-            tenant_a_tx,
-        )?;
-        let tenant_b = registry.accept_registration(
-            &guard(),
-            &caller("tenant-b"),
-            &registration("tenant-b", &["charge"]),
-            tenant_b_tx,
-        )?;
+        let tenant_a = registry
+            .accept_registration(
+                &guard(),
+                &caller("tenant-a"),
+                &registration("tenant-a", &["charge", "charge"]),
+                tenant_a_tx,
+            )
+            .await?;
+        let tenant_b = registry
+            .accept_registration(
+                &guard(),
+                &caller("tenant-b"),
+                &registration("tenant-b", &["charge"]),
+                tenant_b_tx,
+            )
+            .await?;
 
         assert_eq!(registry.workers_for("tenant-a", "charge")?.len(), 1);
         assert_eq!(registry.workers_for("tenant-b", "charge")?.len(), 1);
@@ -404,16 +410,18 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn denied_namespace_is_not_registered() -> Result<(), ServerError> {
+    #[tokio::test]
+    async fn denied_namespace_is_not_registered() -> Result<(), ServerError> {
         let registry = ConnectedWorkerRegistry::default();
         let (tx, _rx) = mpsc::channel(1);
-        let denied = registry.accept_registration(
-            &guard(),
-            &caller("tenant-a"),
-            &registration("tenant-b", &["charge"]),
-            tx,
-        );
+        let denied = registry
+            .accept_registration(
+                &guard(),
+                &caller("tenant-a"),
+                &registration("tenant-b", &["charge"]),
+                tx,
+            )
+            .await;
 
         assert!(denied.is_err());
         assert!(registry.workers_for("tenant-b", "charge")?.is_empty());

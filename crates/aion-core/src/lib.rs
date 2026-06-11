@@ -43,5 +43,6 @@ pub use payload::{ContentType, Payload, PayloadError};
 pub use schedule::{CatchUpPolicy, OverlapPolicy, ScheduleConfig, ScheduleId, TriggerSpec};
 pub use search::{
     SearchAttributeError, SearchAttributeSchema, SearchAttributeType, SearchAttributeValue,
+    search_attributes_from_events,
 };
 pub use status::{WorkflowStatus, status_from_events};

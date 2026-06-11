@@ -127,6 +127,28 @@ impl SearchAttributeSchema {
     }
 }
 
+/// Projects the current search attributes of a workflow from its event history.
+///
+/// Later [`crate::Event::SearchAttributesUpdated`] events override earlier
+/// values key by key, matching how visibility projections fold attribute
+/// updates. Histories without attribute events project to an empty map.
+#[must_use]
+pub fn search_attributes_from_events(
+    events: &[crate::Event],
+) -> HashMap<String, SearchAttributeValue> {
+    let mut attributes = HashMap::new();
+    for event in events {
+        if let crate::Event::SearchAttributesUpdated {
+            attributes: updated,
+            ..
+        } = event
+        {
+            attributes.extend(updated.clone());
+        }
+    }
+    attributes
+}
+
 /// Errors produced when registering and validating typed search attributes.
 #[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
 pub enum SearchAttributeError {

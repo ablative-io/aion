@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use aion_core::{ActivityId, Event, Payload, RunId, WorkflowId};
+use aion_core::{ActivityId, Event, Payload, RunId, SearchAttributeSchema, WorkflowId};
 use aion_package::ContentHash;
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
@@ -30,6 +30,8 @@ pub struct ContinueAsNewContext<'a> {
     pub supervision: Arc<SupervisionTree>,
     /// Active execution registry keyed by workflow/run identifiers.
     pub registry: &'a Arc<Registry>,
+    /// Schema validating initial search attributes on the replacement run.
+    pub search_attribute_schema: Arc<SearchAttributeSchema>,
 }
 
 /// Request payload carried into the replacement run.
@@ -111,6 +113,7 @@ pub async fn continue_as_new(
             supervision: context.supervision,
             registry: Arc::clone(context.registry),
             signal_handoff: None,
+            search_attribute_schema: context.search_attribute_schema,
         },
         workflow_type,
         request.input.clone(),
@@ -118,6 +121,9 @@ pub async fn continue_as_new(
             workflow_id: Some(id.clone()),
             parent_run_id: Some(run.clone()),
             loaded_version: Some(handle.loaded_version().clone()),
+            // Attributes already recorded in this workflow's history carry into
+            // the replacement run's projection; nothing new is recorded here.
+            search_attributes: std::collections::HashMap::new(),
         },
     )
     .await?;
@@ -338,6 +344,7 @@ mod tests {
             runtime: &active.runtime,
             supervision: Arc::clone(&active.supervision),
             registry: &active.registry,
+            search_attribute_schema: Arc::new(aion_core::SearchAttributeSchema::new()),
         }
     }
 

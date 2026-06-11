@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use chrono::Utc;
 
-use aion_core::{Event, Payload, RunId, status_from_events};
+use aion_core::{Event, Payload, RunId, SearchAttributeSchema, status_from_events};
 use aion_package::Package;
 use aion_store::visibility::VisibilityStore;
 use aion_store::{EventStore, InMemoryStore};
@@ -190,6 +190,7 @@ pub struct EngineBuilder {
     activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
     active_registry: Option<Arc<Registry>>,
     visibility_reconciliation_interval: Option<Duration>,
+    search_attribute_schema: SearchAttributeSchema,
 }
 
 impl Default for EngineBuilder {
@@ -216,7 +217,19 @@ impl EngineBuilder {
             activity_dispatcher: None,
             active_registry: None,
             visibility_reconciliation_interval: None,
+            search_attribute_schema: SearchAttributeSchema::new(),
         }
+    }
+
+    /// Supply the search attribute schema validating every recorded attribute.
+    ///
+    /// The default schema is empty, which rejects all search attributes: a
+    /// deployment must declare each attribute name and type before workflows
+    /// can record values for it.
+    #[must_use]
+    pub fn search_attribute_schema(mut self, schema: SearchAttributeSchema) -> Self {
+        self.search_attribute_schema = schema;
+        self
     }
 
     /// Supply the event store used by the engine.
@@ -444,6 +457,7 @@ impl EngineBuilder {
             self.activity_dispatcher,
         );
         let supervision = Arc::new(SupervisionTree::new());
+        let search_attribute_schema = Arc::new(self.search_attribute_schema);
         recover_active_workflows_on_startup(StartupRecoveryContext {
             store: Arc::clone(&store),
             visibility_store: Arc::clone(&visibility_store),
@@ -452,6 +466,7 @@ impl EngineBuilder {
             registry: Arc::clone(&registry),
             supervision: Arc::clone(&supervision),
             recovery: self.recovery,
+            search_attribute_schema: Arc::clone(&search_attribute_schema),
         })
         .await?;
         recover_timers_on_startup(&nif_state, Arc::clone(&store)).await?;
@@ -487,6 +502,7 @@ impl EngineBuilder {
                 registry: Arc::clone(&registry),
                 supervision: Arc::clone(&supervision),
                 signal_handoff: Arc::clone(&signal_handoff),
+                search_attribute_schema: Arc::clone(&search_attribute_schema),
                 tokio_handle: tokio::runtime::Handle::current(),
             })),
         );
@@ -509,6 +525,7 @@ impl EngineBuilder {
             supervision,
             delegated,
             signal_handoff,
+            search_attribute_schema,
             visibility_reconciliation_task,
         });
         engine.catchup_schedule_coordinator().await?;
@@ -525,6 +542,7 @@ struct StartupRecoveryContext<'a> {
     registry: Arc<Registry>,
     supervision: Arc<SupervisionTree>,
     recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
+    search_attribute_schema: Arc<SearchAttributeSchema>,
 }
 
 async fn recover_active_workflows_on_startup(
@@ -536,21 +554,12 @@ async fn recover_active_workflows_on_startup(
         Arc::clone(&context.visibility_store),
     )
     .await?;
-    let recovery = context.recovery.unwrap_or_else(|| {
+    let recovery = context.recovery.clone().unwrap_or_else(|| {
         Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
             &context.runtime,
         ))) as Arc<dyn ActiveWorkflowRecoverySeam>
     });
-    repopulate_active_workflows(
-        Arc::clone(&context.store),
-        Arc::clone(&context.visibility_store),
-        Arc::clone(&context.runtime),
-        context.loaded_workflows,
-        Arc::clone(&context.registry),
-        Arc::clone(&context.supervision),
-        recovery.as_ref(),
-    )
-    .await
+    repopulate_active_workflows(&context, recovery.as_ref()).await
 }
 
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
@@ -591,14 +600,15 @@ async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<()
 }
 
 async fn repopulate_active_workflows(
-    store: Arc<dyn EventStore>,
-    visibility_store: Arc<dyn VisibilityStore>,
-    runtime: Arc<RuntimeHandle>,
-    loaded_workflows: &LoadedWorkflows,
-    registry: Arc<Registry>,
-    supervision: Arc<SupervisionTree>,
+    context: &StartupRecoveryContext<'_>,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
+    let store = &context.store;
+    let visibility_store = &context.visibility_store;
+    let runtime = &context.runtime;
+    let loaded_workflows = context.loaded_workflows;
+    let registry = &context.registry;
+    let supervision = &context.supervision;
     for workflow_id in store.as_ref().list_active().await? {
         let history = store.as_ref().read_history(&workflow_id).await?;
         let workflow_type = started_workflow_type(&workflow_id, &history)?;
@@ -628,8 +638,8 @@ async fn repopulate_active_workflows(
                 pid,
             } => {
                 let recorder =
-                    Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), history_head)
-                        .with_visibility(run_id.clone(), Arc::clone(&visibility_store));
+                    Recorder::resume_at(workflow_id.clone(), Arc::clone(store), history_head)
+                        .with_visibility(run_id.clone(), Arc::clone(visibility_store));
                 let completion = CompletionNotifier::new();
                 let handle = WorkflowHandle::new(WorkflowHandleParts {
                     workflow_id: workflow_id.clone(),
@@ -652,19 +662,24 @@ async fn repopulate_active_workflows(
                     })
                     .and_then(|()| {
                         install_recovered_completion_monitor(
-                            Arc::clone(&store),
-                            Arc::clone(&visibility_store),
-                            &runtime,
-                            Arc::clone(&registry),
-                            Arc::new(loaded_workflows.clone()),
-                            Arc::clone(&supervision),
+                            RecoveredMonitorParts {
+                                store: Arc::clone(store),
+                                visibility_store: Arc::clone(visibility_store),
+                                runtime: Arc::clone(runtime),
+                                registry: Arc::clone(registry),
+                                loaded_workflows: Arc::new(loaded_workflows.clone()),
+                                supervision: Arc::clone(supervision),
+                                search_attribute_schema: Arc::clone(
+                                    &context.search_attribute_schema,
+                                ),
+                            },
                             &handle,
                         )
                     })
                 {
                     rollback_recovered_resident(
-                        &runtime,
-                        &registry,
+                        runtime,
+                        registry,
                         &workflow_id,
                         &run_id,
                         pid,
@@ -682,24 +697,31 @@ async fn repopulate_active_workflows(
     Ok(())
 }
 
-fn install_recovered_completion_monitor(
+struct RecoveredMonitorParts {
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
-    runtime: &Arc<RuntimeHandle>,
+    runtime: Arc<RuntimeHandle>,
     registry: Arc<Registry>,
     loaded_workflows: Arc<LoadedWorkflows>,
     supervision: Arc<SupervisionTree>,
+    search_attribute_schema: Arc<SearchAttributeSchema>,
+}
+
+fn install_recovered_completion_monitor(
+    parts: RecoveredMonitorParts,
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
     let pid = handle.pid();
+    let runtime = Arc::clone(&parts.runtime);
     let completion_context = ProcessExitContext {
-        store,
-        visibility_store,
-        registry,
-        loaded_workflows,
-        runtime: Arc::clone(runtime),
-        supervision,
+        store: parts.store,
+        visibility_store: parts.visibility_store,
+        registry: parts.registry,
+        loaded_workflows: parts.loaded_workflows,
+        runtime: parts.runtime,
+        supervision: parts.supervision,
         tokio_handle: tokio::runtime::Handle::current(),
+        search_attribute_schema: parts.search_attribute_schema,
     };
     let completion_handle = handle.clone();
     runtime.monitor_process(pid, move |outcome| {

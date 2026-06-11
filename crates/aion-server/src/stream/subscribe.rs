@@ -29,7 +29,7 @@ pub struct EventSubscription {
 /// Returns [`ServerError`] when the request omits its variant, carries invalid
 /// wire identifiers/selectors, is not authorized for the requested namespace, or
 /// the scoped engine handle is unavailable.
-pub fn subscribe_events(
+pub async fn subscribe_events(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
     request: &SubscriptionRequest,
@@ -41,7 +41,7 @@ pub fn subscribe_events(
         .map(WorkflowTarget::workflow);
     let scope = SubscriptionScope::from_request(request, target)?;
     let operation = NamespaceOperation::subscribe(scope, &mapped.filter);
-    let scoped = guard.scope(caller, &operation)?;
+    let scoped = guard.scope(caller, &operation).await?;
     let events = scoped.engine()?.subscribe(mapped.filter.clone());
 
     Ok(EventSubscription {
@@ -137,7 +137,9 @@ mod tests {
 
     use super::map_subscription_request;
     use crate::config::NamespaceMode;
-    use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceResolver, WorkflowOwnership};
+    use crate::namespace::{
+        CallerIdentity, NamespaceGuard, NamespaceResolver, StaticWorkflowNamespaces,
+    };
 
     fn workflow_id() -> WorkflowId {
         WorkflowId::new_v4()
@@ -180,7 +182,7 @@ mod tests {
     fn guard() -> NamespaceGuard {
         NamespaceGuard::new(NamespaceResolver::authorization_only(
             NamespaceMode::SharedEngine,
-            WorkflowOwnership::default(),
+            StaticWorkflowNamespaces::default(),
         ))
     }
 
@@ -223,29 +225,29 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cross_namespace_subscription_selector_is_denied_before_engine_access()
+    #[tokio::test]
+    async fn cross_namespace_subscription_selector_is_denied_before_engine_access()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = filtered_request("tenant-a", Some("tenant-b"));
         let mapped = map_subscription_request(&request)?;
         let scope = crate::namespace::SubscriptionScope::from_request(&request, None)?;
         let operation = crate::namespace::NamespaceOperation::subscribe(scope, &mapped.filter);
 
-        let error = guard().scope(&caller(), &operation).err();
+        let error = guard().scope(&caller(), &operation).await.err();
 
         assert!(matches!(error, Some(crate::ServerError::Namespace { .. })));
         Ok(())
     }
 
-    #[test]
-    fn cross_namespace_firehose_is_denied_before_engine_access()
+    #[tokio::test]
+    async fn cross_namespace_firehose_is_denied_before_engine_access()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = firehose_request("tenant-b");
         let mapped = map_subscription_request(&request)?;
         let scope = crate::namespace::SubscriptionScope::from_request(&request, None)?;
         let operation = crate::namespace::NamespaceOperation::subscribe(scope, &mapped.filter);
 
-        let error = guard().scope(&caller(), &operation).err();
+        let error = guard().scope(&caller(), &operation).await.err();
 
         assert!(matches!(error, Some(crate::ServerError::Namespace { .. })));
         Ok(())

@@ -31,7 +31,9 @@ async fn signal_records_history_and_delivers_mailbox_marker()
         .build()
         .await?;
     let input = input_payload()?;
-    let handle = engine.start_workflow(FIXTURE_MODULE, input).await?;
+    let handle = engine
+        .start_workflow(FIXTURE_MODULE, input, std::collections::HashMap::new())
+        .await?;
     let sent_payload = payload(&json!({ "wake": true }))?;
 
     engine
@@ -82,7 +84,11 @@ async fn signal_to_killed_run_returns_terminal_without_appending()
         .build()
         .await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     engine.runtime().cancel_pid(handle.pid())?;
     // Await the exit monitor's durable terminal record so the signal below
@@ -133,7 +139,11 @@ async fn terminal_and_unknown_signals_return_errors_without_appending_events()
         .build()
         .await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let mut recorder = Recorder::resume_at(handle.workflow_id().clone(), Arc::clone(&store), 1);
     recorder
@@ -200,7 +210,11 @@ async fn non_resident_signal_records_defers_and_resume_delivers()
         .build()
         .await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     engine.registry().replace_residency(
         handle.workflow_id(),
@@ -254,7 +268,11 @@ async fn non_resident_signal_records_defers_and_resume_delivers()
 async fn deferred_signal_router_returns_runtime_error() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _store) = engine_with_fixture("wait").await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let sent_payload = payload(&json!({ "ignored": true }))?;
 

@@ -13,7 +13,9 @@ use crate::engine_seam::{
     ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
     TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
 };
-use crate::lifecycle::start::{StartWorkflowContext, start_workflow};
+use crate::lifecycle::start::{
+    StartWorkflowContext, StartWorkflowOptions, start_workflow_with_options,
+};
 use crate::loader::LoadedWorkflows;
 use crate::registry::{HandleResidency, Registry, TerminalOutcome, WorkflowHandle};
 use crate::runtime::RuntimeHandle;
@@ -29,6 +31,7 @@ pub(crate) struct ChildNifBridge {
     registry: Arc<Registry>,
     supervision: Arc<SupervisionTree>,
     signal_handoff: Arc<SignalResumeHandoff>,
+    search_attribute_schema: Arc<aion_core::SearchAttributeSchema>,
     tokio_handle: Handle,
 }
 
@@ -41,6 +44,7 @@ pub(crate) struct ChildNifBridgeParts {
     pub(crate) registry: Arc<Registry>,
     pub(crate) supervision: Arc<SupervisionTree>,
     pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
+    pub(crate) search_attribute_schema: Arc<aion_core::SearchAttributeSchema>,
     pub(crate) tokio_handle: Handle,
 }
 
@@ -56,6 +60,7 @@ impl ChildNifBridge {
             registry,
             supervision,
             signal_handoff,
+            search_attribute_schema,
             tokio_handle,
         } = parts;
         Self {
@@ -66,6 +71,7 @@ impl ChildNifBridge {
             registry,
             supervision,
             signal_handoff,
+            search_attribute_schema,
             tokio_handle,
         }
     }
@@ -227,19 +233,38 @@ impl EngineHandle for NifChildEngine {
         let child = self
             .bridge
             .tokio_handle
-            .block_on(start_workflow(
-                StartWorkflowContext {
-                    store: Arc::clone(&self.bridge.store),
-                    visibility_store: Arc::clone(&self.bridge.visibility_store),
-                    loaded_workflows: &self.bridge.loaded_workflows,
-                    runtime: Arc::clone(&self.bridge.runtime),
-                    supervision: Arc::clone(&self.bridge.supervision),
-                    registry: Arc::clone(&self.bridge.registry),
-                    signal_handoff: Some(Arc::clone(&self.bridge.signal_handoff)),
-                },
-                &request.workflow_type,
-                request.input,
-            ))
+            .block_on(async {
+                // Children inherit the parent's current search attributes so
+                // visibility metadata (such as a server-assigned tenancy
+                // attribute) follows the execution tree. The snapshot is taken
+                // from the parent's recorded history at spawn time.
+                let parent_history = self
+                    .bridge
+                    .store
+                    .read_history(self.parent.workflow_id())
+                    .await
+                    .map_err(crate::EngineError::from)?;
+                let inherited = aion_core::search_attributes_from_events(&parent_history);
+                start_workflow_with_options(
+                    StartWorkflowContext {
+                        store: Arc::clone(&self.bridge.store),
+                        visibility_store: Arc::clone(&self.bridge.visibility_store),
+                        loaded_workflows: &self.bridge.loaded_workflows,
+                        runtime: Arc::clone(&self.bridge.runtime),
+                        supervision: Arc::clone(&self.bridge.supervision),
+                        registry: Arc::clone(&self.bridge.registry),
+                        signal_handoff: Some(Arc::clone(&self.bridge.signal_handoff)),
+                        search_attribute_schema: Arc::clone(&self.bridge.search_attribute_schema),
+                    },
+                    &request.workflow_type,
+                    request.input,
+                    StartWorkflowOptions {
+                        search_attributes: inherited,
+                        ..StartWorkflowOptions::default()
+                    },
+                )
+                .await
+            })
             .map_err(|error| EngineSeamError::ChildSpawn {
                 reason: error.to_string(),
             })?;

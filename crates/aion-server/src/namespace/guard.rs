@@ -35,19 +35,23 @@ impl NamespaceGuard {
 
     /// Authorize and scope an operation before any engine method can be called.
     ///
+    /// Workflow-targeted operations verify durable ownership, which reads the
+    /// target workflow's recorded history through the resolver's ownership
+    /// source.
+    ///
     /// # Errors
     ///
     /// Returns [`ServerError::Namespace`] when the caller cannot access the
     /// requested namespace, when a subscription selects another namespace, or
     /// when a targeted workflow is not owned by the authorized namespace.
-    pub fn scope(
+    pub async fn scope(
         &self,
         caller: &CallerIdentity,
         operation: &NamespaceOperation<'_>,
     ) -> Result<ScopedEngine, ServerError> {
         let requested_namespace = operation.requested_namespace();
         let scoped = self.resolver.resolve(caller, requested_namespace)?;
-        operation.verify(&self.resolver, scoped.namespace())?;
+        operation.verify(&self.resolver, scoped.namespace()).await?;
         Ok(scoped)
     }
 }
@@ -209,7 +213,7 @@ impl<'a> NamespaceOperation<'a> {
         }
     }
 
-    fn verify(
+    async fn verify(
         &self,
         resolver: &NamespaceResolver,
         authorized_namespace: &str,
@@ -218,8 +222,10 @@ impl<'a> NamespaceOperation<'a> {
             Self::Signal(_, target)
             | Self::Query(_, target)
             | Self::Cancel(_, target)
-            | Self::Describe(_, target) => target.verify(resolver, authorized_namespace),
-            Self::Subscribe(scope, filter) => scope.verify(resolver, authorized_namespace, filter),
+            | Self::Describe(_, target) => target.verify(resolver, authorized_namespace).await,
+            Self::Subscribe(scope, filter) => {
+                scope.verify(resolver, authorized_namespace, filter).await
+            }
             Self::StartWorkflow(_)
             | Self::ListWorkflows(_, _)
             | Self::CountWorkflows(_)
@@ -273,8 +279,14 @@ impl<'a> WorkflowTarget<'a> {
         self.run_id
     }
 
-    fn verify(&self, resolver: &NamespaceResolver, namespace: &str) -> Result<(), ServerError> {
-        resolver.verify_workflow_ownership(namespace, self.workflow_id)
+    async fn verify(
+        &self,
+        resolver: &NamespaceResolver,
+        namespace: &str,
+    ) -> Result<(), ServerError> {
+        resolver
+            .verify_workflow_ownership(namespace, self.workflow_id)
+            .await
     }
 }
 
@@ -329,7 +341,7 @@ impl<'a> SubscriptionScope<'a> {
         }
     }
 
-    fn verify(
+    async fn verify(
         &self,
         resolver: &NamespaceResolver,
         namespace: &str,
@@ -337,14 +349,14 @@ impl<'a> SubscriptionScope<'a> {
     ) -> Result<(), ServerError> {
         match self {
             Self::PerWorkflow(_subscription, target) => {
-                verify_subscription_filter_target(filter, Some(*target), resolver, namespace)
+                verify_subscription_filter_target(filter, Some(*target), resolver, namespace).await
             }
             Self::Filtered(subscription) => {
                 verify_namespace_selector(subscription.namespace_selector.as_deref(), namespace)?;
-                verify_subscription_filter_target(filter, None, resolver, namespace)
+                verify_subscription_filter_target(filter, None, resolver, namespace).await
             }
             Self::Firehose(_) => {
-                verify_subscription_filter_target(filter, None, resolver, namespace)
+                verify_subscription_filter_target(filter, None, resolver, namespace).await
             }
         }
     }
@@ -359,7 +371,7 @@ fn verify_namespace_selector(selector: Option<&str>, namespace: &str) -> Result<
     }
 }
 
-fn verify_subscription_filter_target(
+async fn verify_subscription_filter_target(
     filter: &EventFilter,
     explicit_target: Option<WorkflowTarget<'_>>,
     resolver: &NamespaceResolver,
@@ -375,9 +387,11 @@ fn verify_subscription_filter_target(
                 "subscription filter workflow does not match decoded target",
             ));
         }
-        target.verify(resolver, namespace)
+        target.verify(resolver, namespace).await
     } else if let Some(workflow_id) = &filter.workflow_id {
-        resolver.verify_workflow_ownership(namespace, workflow_id)
+        resolver
+            .verify_workflow_ownership(namespace, workflow_id)
+            .await
     } else {
         Ok(())
     }
@@ -396,7 +410,7 @@ mod tests {
 
     use super::{NamespaceGuard, NamespaceOperation, SubscriptionScope, WorkflowTarget};
     use crate::config::NamespaceMode;
-    use crate::namespace::{CallerIdentity, NamespaceResolver, WorkflowOwnership};
+    use crate::namespace::{CallerIdentity, NamespaceResolver, StaticWorkflowNamespaces};
 
     struct RecordingFakeEngine {
         calls: Mutex<Vec<&'static str>>,
@@ -418,7 +432,7 @@ mod tests {
         }
     }
 
-    fn guard_with_ownership(ownership: WorkflowOwnership) -> NamespaceGuard {
+    fn guard_with_ownership(ownership: StaticWorkflowNamespaces) -> NamespaceGuard {
         let resolver =
             NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
         NamespaceGuard::new(resolver)
@@ -435,10 +449,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn denied_targeted_operations_do_not_call_engine() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn denied_targeted_operations_do_not_call_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (workflow_id, run_id) = workflow_ids();
-        let ownership = WorkflowOwnership::default();
+        let ownership = StaticWorkflowNamespaces::default();
         ownership.record(workflow_id.clone(), "tenant-b")?;
         let guard = guard_with_ownership(ownership);
         let fake = RecordingFakeEngine::new();
@@ -478,28 +493,57 @@ mod tests {
         ];
 
         for operation in operations {
-            let result = guard.scope(&caller(), &operation);
+            let result = guard.scope(&caller(), &operation).await;
             assert!(result.is_err());
         }
         assert!(fake.calls()?.is_empty());
         Ok(())
     }
 
-    #[test]
-    fn denied_list_subscribe_and_worker_scope_do_not_call_engine()
+    #[tokio::test]
+    async fn denied_list_and_worker_scope_do_not_call_engine()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (workflow_id, run_id) = workflow_ids();
-        let ownership = WorkflowOwnership::default();
-        ownership.record(workflow_id.clone(), "tenant-b")?;
+        let (workflow_id, _run_id) = workflow_ids();
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(workflow_id, "tenant-b")?;
         let guard = guard_with_ownership(ownership);
         let fake = RecordingFakeEngine::new();
         let filter = WorkflowFilter::default();
-        let event_filter = aion::EventFilter::default();
 
         let list = ProtoListWorkflowsRequest {
             namespace: String::from("tenant-b"),
             filter: None,
         };
+        let worker = ProtoRegisterWorker {
+            namespace: String::from("tenant-b"),
+            activity_types: vec![String::from("ship")],
+        };
+
+        assert!(
+            guard
+                .scope(&caller(), &NamespaceOperation::list(&list, &filter))
+                .await
+                .is_err()
+        );
+        assert!(
+            guard
+                .scope(&caller(), &NamespaceOperation::register_worker(&worker),)
+                .await
+                .is_err()
+        );
+        assert!(fake.calls()?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_subscriptions_do_not_call_engine() -> Result<(), Box<dyn std::error::Error>> {
+        let (workflow_id, run_id) = workflow_ids();
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(workflow_id.clone(), "tenant-b")?;
+        let guard = guard_with_ownership(ownership);
+        let fake = RecordingFakeEngine::new();
+        let event_filter = aion::EventFilter::default();
+
         let filtered = FilteredSubscription {
             namespace: String::from("tenant-a"),
             workflow_type: None,
@@ -524,94 +568,53 @@ mod tests {
         let firehose = FirehoseSubscription {
             namespace: String::from("tenant-b"),
         };
-        let worker = ProtoRegisterWorker {
-            namespace: String::from("tenant-b"),
-            activity_types: vec![String::from("ship")],
-        };
 
         let target = WorkflowTarget::with_run(&workflow_id, &run_id);
+        let denied_subscriptions = [
+            NamespaceOperation::subscribe(SubscriptionScope::Filtered(&filtered), &event_filter),
+            NamespaceOperation::subscribe(
+                SubscriptionScope::Filtered(&filtered_by_workflow),
+                &cross_namespace_filter,
+            ),
+            NamespaceOperation::subscribe(
+                SubscriptionScope::PerWorkflow(&per_workflow, target),
+                &cross_namespace_filter,
+            ),
+            NamespaceOperation::subscribe(SubscriptionScope::Firehose(&firehose), &event_filter),
+        ];
 
-        assert!(
-            guard
-                .scope(&caller(), &NamespaceOperation::list(&list, &filter))
-                .is_err()
-        );
-        assert!(
-            guard
-                .scope(
-                    &caller(),
-                    &NamespaceOperation::subscribe(
-                        SubscriptionScope::Filtered(&filtered),
-                        &event_filter,
-                    ),
-                )
-                .is_err()
-        );
-        assert!(
-            guard
-                .scope(
-                    &caller(),
-                    &NamespaceOperation::subscribe(
-                        SubscriptionScope::Filtered(&filtered_by_workflow),
-                        &cross_namespace_filter,
-                    ),
-                )
-                .is_err()
-        );
-        assert!(
-            guard
-                .scope(
-                    &caller(),
-                    &NamespaceOperation::subscribe(
-                        SubscriptionScope::PerWorkflow(&per_workflow, target),
-                        &cross_namespace_filter,
-                    ),
-                )
-                .is_err()
-        );
-        assert!(
-            guard
-                .scope(
-                    &caller(),
-                    &NamespaceOperation::subscribe(
-                        SubscriptionScope::Firehose(&firehose),
-                        &event_filter
-                    ),
-                )
-                .is_err()
-        );
-        assert!(
-            guard
-                .scope(&caller(), &NamespaceOperation::register_worker(&worker),)
-                .is_err()
-        );
+        for operation in &denied_subscriptions {
+            assert!(guard.scope(&caller(), operation).await.is_err());
+        }
         assert!(fake.calls()?.is_empty());
         Ok(())
     }
 
-    #[test]
-    fn authorized_start_returns_scoped_engine() -> Result<(), Box<dyn std::error::Error>> {
-        let guard = guard_with_ownership(WorkflowOwnership::default());
+    #[tokio::test]
+    async fn authorized_start_returns_scoped_engine() -> Result<(), Box<dyn std::error::Error>> {
+        let guard = guard_with_ownership(StaticWorkflowNamespaces::default());
         let request = ProtoStartWorkflowRequest {
             namespace: String::from("tenant-a"),
             workflow_type: String::from("checkout"),
             input: None,
         };
 
-        let scoped = guard.scope(&caller(), &NamespaceOperation::start(&request))?;
+        let scoped = guard
+            .scope(&caller(), &NamespaceOperation::start(&request))
+            .await?;
 
         assert_eq!(scoped.namespace(), "tenant-a");
         Ok(())
     }
 
-    #[test]
-    fn single_tenant_mode_authorizes_configured_namespace() -> Result<(), Box<dyn std::error::Error>>
-    {
+    #[tokio::test]
+    async fn single_tenant_mode_authorizes_configured_namespace()
+    -> Result<(), Box<dyn std::error::Error>> {
         let resolver = NamespaceResolver::authorization_only(
             NamespaceMode::SingleTenant {
                 namespace: String::from("tenant-a"),
             },
-            WorkflowOwnership::default(),
+            StaticWorkflowNamespaces::default(),
         );
         let guard = NamespaceGuard::new(resolver);
         let request = ProtoRegisterWorker {
@@ -619,10 +622,12 @@ mod tests {
             activity_types: Vec::new(),
         };
 
-        let scoped = guard.scope(
-            &CallerIdentity::new("single-tenant", Vec::<String>::new()),
-            &NamespaceOperation::register_worker(&request),
-        )?;
+        let scoped = guard
+            .scope(
+                &CallerIdentity::new("single-tenant", Vec::<String>::new()),
+                &NamespaceOperation::register_worker(&request),
+            )
+            .await?;
 
         assert_eq!(scoped.namespace(), "tenant-a");
         Ok(())

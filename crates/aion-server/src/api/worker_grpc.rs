@@ -72,6 +72,7 @@ impl WorkerProtocol for WorkerGrpcService {
             .state
             .worker_registry()
             .accept_registration(self.state.namespace_guard(), &caller, &register, worker_tx)
+            .await
             .map_err(|error| status_from_server_error(&error))?;
 
         let pending = self.state.pending_activities().clone();

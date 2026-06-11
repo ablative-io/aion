@@ -1,13 +1,24 @@
 //! Namespace resolver type wired into shared state.
+//!
+//! Workflow→namespace ownership is a projection of durable history: the server
+//! records the owning namespace as the `aion.namespace` search attribute when a
+//! workflow starts, and verification folds that attribute back out of the
+//! workflow's recorded events. Nothing about ownership lives only in memory, so
+//! a server restart can never orphan a workflow from its namespace.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
 use aion::Engine;
-use aion_core::WorkflowId;
+use aion_core::{SearchAttributeValue, WorkflowId, search_attributes_from_events};
+use async_trait::async_trait;
 
 use crate::config::{NamespaceConfig, NamespaceMode};
 use crate::error::ServerError;
+
+/// Search attribute name that records the owning namespace of every workflow
+/// started through this server.
+pub const NAMESPACE_ATTRIBUTE: &str = "aion.namespace";
 
 /// Authenticated caller metadata supplied by an adapter boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,7 +69,6 @@ impl CallerIdentity {
 pub struct ScopedEngine {
     namespace: String,
     engine: Option<Arc<Engine>>,
-    ownership: WorkflowOwnership,
 }
 
 impl ScopedEngine {
@@ -66,20 +76,6 @@ impl ScopedEngine {
     #[must_use]
     pub fn namespace(&self) -> &str {
         &self.namespace
-    }
-
-    /// Record ownership for a workflow started in this namespace.
-    ///
-    /// This is server-side namespace metadata, not workflow execution logic. It is
-    /// used by later adapter handlers to reject target operations before they can
-    /// reach the engine.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ServerError::LockPoisoned`] if the ownership registry lock was
-    /// poisoned.
-    pub fn record_workflow(&self, workflow_id: WorkflowId) -> Result<(), ServerError> {
-        self.ownership.record(workflow_id, &self.namespace)
     }
 
     /// Borrow the authorized engine handle for adapter code after guard approval.
@@ -95,12 +91,98 @@ impl ScopedEngine {
     }
 }
 
+/// Durable source of workflow→namespace ownership facts.
+///
+/// The production implementation projects ownership from recorded workflow
+/// history; tests substitute a static fixture to prove adapter-boundary
+/// denials without an engine.
+#[async_trait]
+pub trait WorkflowNamespaceSource: Send + Sync {
+    /// Returns the namespace recorded for a workflow, or [`None`] when the
+    /// workflow is unknown or recorded no namespace attribute.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the underlying ownership data cannot be read.
+    async fn workflow_namespace(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Option<String>, ServerError>;
+}
+
+/// Production ownership source: folds the `aion.namespace` search attribute
+/// out of the workflow's durable event history.
+struct HistoryNamespaceSource {
+    engine: Arc<Engine>,
+}
+
+#[async_trait]
+impl WorkflowNamespaceSource for HistoryNamespaceSource {
+    async fn workflow_namespace(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Option<String>, ServerError> {
+        let history = self
+            .engine
+            .store()
+            .read_history(workflow_id)
+            .await
+            .map_err(ServerError::from)?;
+        match search_attributes_from_events(&history).remove(NAMESPACE_ATTRIBUTE) {
+            Some(SearchAttributeValue::String(namespace)) => Ok(Some(namespace)),
+            Some(other) => Err(ServerError::Config {
+                message: format!(
+                    "workflow {workflow_id} recorded a non-string {NAMESPACE_ATTRIBUTE} search attribute: {other:?}"
+                ),
+            }),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Static workflow→namespace fixture for adapter-boundary tests and alternate
+/// wiring that must authorize without an engine handle.
+#[derive(Clone, Default)]
+pub struct StaticWorkflowNamespaces {
+    inner: Arc<RwLock<HashMap<WorkflowId, String>>>,
+}
+
+impl StaticWorkflowNamespaces {
+    /// Record that a workflow is owned by a namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the fixture lock was poisoned.
+    pub fn record(&self, workflow_id: WorkflowId, namespace: &str) -> Result<(), ServerError> {
+        let mut ownership = self
+            .inner
+            .write()
+            .map_err(|_| ServerError::lock_poisoned("namespace workflow ownership"))?;
+        ownership.insert(workflow_id, namespace.to_owned());
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl WorkflowNamespaceSource for StaticWorkflowNamespaces {
+    async fn workflow_namespace(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Option<String>, ServerError> {
+        let ownership = self
+            .inner
+            .read()
+            .map_err(|_| ServerError::lock_poisoned("namespace workflow ownership"))?;
+        Ok(ownership.get(workflow_id).cloned())
+    }
+}
+
 /// Resolver that authorizes callers and yields namespace-scoped engine access.
 #[derive(Clone)]
 pub struct NamespaceResolver {
     mode: NamespaceMode,
     engine: Option<Arc<Engine>>,
-    ownership: WorkflowOwnership,
+    ownership: Arc<dyn WorkflowNamespaceSource>,
 }
 
 impl NamespaceResolver {
@@ -110,8 +192,10 @@ impl NamespaceResolver {
     pub fn from_config(config: NamespaceConfig, engine: Arc<Engine>) -> Self {
         Self {
             mode: config.mode,
+            ownership: Arc::new(HistoryNamespaceSource {
+                engine: Arc::clone(&engine),
+            }),
             engine: Some(engine),
-            ownership: WorkflowOwnership::default(),
         }
     }
 
@@ -120,7 +204,7 @@ impl NamespaceResolver {
     pub fn from_parts(
         mode: NamespaceMode,
         engine: Option<Arc<Engine>>,
-        ownership: WorkflowOwnership,
+        ownership: Arc<dyn WorkflowNamespaceSource>,
     ) -> Self {
         Self {
             mode,
@@ -134,8 +218,11 @@ impl NamespaceResolver {
     /// This constructor is intended for adapter-boundary unit tests that must
     /// prove denied operations do not reach any engine handle.
     #[must_use]
-    pub fn authorization_only(mode: NamespaceMode, ownership: WorkflowOwnership) -> Self {
-        Self::from_parts(mode, None, ownership)
+    pub fn authorization_only(
+        mode: NamespaceMode,
+        ownership: impl WorkflowNamespaceSource + 'static,
+    ) -> Self {
+        Self::from_parts(mode, None, Arc::new(ownership))
     }
 
     /// Inspect the configured namespace mode.
@@ -195,26 +282,30 @@ impl NamespaceResolver {
         }
     }
 
-    /// Verify server-side workflow ownership without calling the engine.
+    /// Verify durable workflow ownership against the requested namespace.
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::Namespace`] when the workflow is not known to be in
-    /// the authorized namespace, and [`ServerError::LockPoisoned`] if the
-    /// ownership registry lock was poisoned.
-    pub fn verify_workflow_ownership(
+    /// Returns [`ServerError::Namespace`] when the workflow is unknown, recorded
+    /// no namespace, or belongs to a different namespace; ownership-source read
+    /// failures surface as their own typed errors.
+    pub async fn verify_workflow_ownership(
         &self,
         namespace: &str,
         workflow_id: &WorkflowId,
     ) -> Result<(), ServerError> {
-        self.ownership.verify(namespace, workflow_id)
+        match self.ownership.workflow_namespace(workflow_id).await? {
+            Some(owner) if owner == namespace => Ok(()),
+            Some(_) | None => Err(ServerError::namespace_denied(
+                "workflow is not visible in requested namespace",
+            )),
+        }
     }
 
     fn scoped(&self, namespace: &str) -> ScopedEngine {
         ScopedEngine {
             namespace: namespace.to_owned(),
             engine: self.engine.clone(),
-            ownership: self.ownership.clone(),
         }
     }
 }
@@ -226,56 +317,16 @@ fn namespace_denied(caller: &CallerIdentity, requested_namespace: &str) -> Serve
     ))
 }
 
-/// Server-side workflow namespace ownership metadata.
-#[derive(Clone, Default)]
-pub struct WorkflowOwnership {
-    inner: Arc<RwLock<HashMap<WorkflowId, String>>>,
-}
-
-impl WorkflowOwnership {
-    /// Record that a workflow is owned by a namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ServerError::LockPoisoned`] if the ownership registry lock was
-    /// poisoned.
-    pub fn record(&self, workflow_id: WorkflowId, namespace: &str) -> Result<(), ServerError> {
-        let mut ownership = self
-            .inner
-            .write()
-            .map_err(|_| ServerError::lock_poisoned("namespace workflow ownership"))?;
-        ownership.insert(workflow_id, namespace.to_owned());
-        Ok(())
-    }
-
-    /// Verify that a workflow belongs to the requested namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ServerError::Namespace`] when the workflow is unknown or belongs
-    /// to a different namespace, and [`ServerError::LockPoisoned`] if the
-    /// ownership registry lock was poisoned.
-    pub fn verify(&self, namespace: &str, workflow_id: &WorkflowId) -> Result<(), ServerError> {
-        let ownership = self
-            .inner
-            .read()
-            .map_err(|_| ServerError::lock_poisoned("namespace workflow ownership"))?;
-        match ownership.get(workflow_id) {
-            Some(owner) if owner == namespace => Ok(()),
-            Some(_) | None => Err(ServerError::namespace_denied(
-                "workflow is not visible in requested namespace",
-            )),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{CallerIdentity, NamespaceResolver, WorkflowOwnership};
+    use super::{
+        CallerIdentity, NamespaceResolver, StaticWorkflowNamespaces, WorkflowNamespaceSource,
+    };
     use crate::config::NamespaceMode;
+    use aion_core::WorkflowId;
 
     fn resolver(mode: NamespaceMode) -> NamespaceResolver {
-        NamespaceResolver::authorization_only(mode, WorkflowOwnership::default())
+        NamespaceResolver::authorization_only(mode, StaticWorkflowNamespaces::default())
     }
 
     #[test]
@@ -323,5 +374,46 @@ mod tests {
         let denied = resolver.resolve(&caller, "");
 
         assert!(denied.is_err());
+    }
+
+    #[tokio::test]
+    async fn ownership_verifies_matching_namespace_and_denies_others()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ownership = StaticWorkflowNamespaces::default();
+        let owned = WorkflowId::new(uuid::Uuid::from_u128(1));
+        let unknown = WorkflowId::new(uuid::Uuid::from_u128(2));
+        ownership.record(owned.clone(), "tenant-a")?;
+        let resolver =
+            NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
+
+        resolver
+            .verify_workflow_ownership("tenant-a", &owned)
+            .await?;
+        assert!(
+            resolver
+                .verify_workflow_ownership("tenant-b", &owned)
+                .await
+                .is_err()
+        );
+        assert!(
+            resolver
+                .verify_workflow_ownership("tenant-a", &unknown)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_source_reports_recorded_namespace() -> Result<(), Box<dyn std::error::Error>> {
+        let ownership = StaticWorkflowNamespaces::default();
+        let workflow_id = WorkflowId::new(uuid::Uuid::from_u128(3));
+        ownership.record(workflow_id.clone(), "tenant-a")?;
+
+        assert_eq!(
+            ownership.workflow_namespace(&workflow_id).await?,
+            Some(String::from("tenant-a"))
+        );
+        Ok(())
     }
 }

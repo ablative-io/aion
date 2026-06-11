@@ -25,6 +25,7 @@ async fn schedule_lifecycle_fires_skips_overlap_and_recovers()
         catch_up_policy: CatchUpPolicy::Skip,
         workflow_type: common::FIXTURE_MODULE.to_owned(),
         input: input.clone(),
+        search_attributes: std::collections::HashMap::new(),
     };
 
     let schedule_id = engine.create_schedule(config.clone()).await?;
@@ -107,6 +108,7 @@ async fn schedule_uses_common_helpers_for_engine_and_payload()
         catch_up_policy: CatchUpPolicy::Skip,
         workflow_type: common::FIXTURE_MODULE.to_owned(),
         input,
+        search_attributes: std::collections::HashMap::new(),
     };
     let schedule_id = engine.create_schedule(config).await?;
     let state = engine.describe_schedule(&schedule_id).await?;

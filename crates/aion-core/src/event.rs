@@ -393,6 +393,10 @@ mod tests {
             catch_up_policy: CatchUpPolicy::One,
             workflow_type: String::from("checkout"),
             input: payload(label)?,
+            search_attributes: HashMap::from([(
+                String::from("aion.namespace"),
+                crate::SearchAttributeValue::String(String::from("tenant-a")),
+            )]),
         })
     }
 

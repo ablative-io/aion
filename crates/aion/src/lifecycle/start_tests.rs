@@ -48,6 +48,7 @@ fn context(
         supervision,
         registry,
         signal_handoff: None,
+        search_attribute_schema: Arc::new(aion_core::SearchAttributeSchema::new()),
     }
 }
 
@@ -128,6 +129,104 @@ async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn st
         }
         other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
     }
+    assert_eq!(registry.list()?.len(), 0);
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_with_attributes_records_started_then_attributes_before_spawn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(InMemoryStore::default());
+    let deployed_module = "checkout__deployed";
+    let loaded = load_without_runtime_registration("checkout");
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    runtime.register_waiting_test_module(deployed_module, "run");
+    let supervision = Arc::new(SupervisionTree::new());
+    let registry = Arc::new(Registry::default());
+    let mut schema = aion_core::SearchAttributeSchema::new();
+    schema.register("aion.namespace", aion_core::SearchAttributeType::String)?;
+    let attributes = std::collections::HashMap::from([(
+        String::from("aion.namespace"),
+        aion_core::SearchAttributeValue::String(String::from("tenant-a")),
+    )]);
+
+    let handle = start_workflow_with_options(
+        StartWorkflowContext {
+            store: store.clone(),
+            visibility_store: store.clone(),
+            loaded_workflows: &loaded,
+            runtime: Arc::clone(&runtime),
+            supervision: Arc::clone(&supervision),
+            registry: Arc::clone(&registry),
+            signal_handoff: None,
+            search_attribute_schema: Arc::new(schema),
+        },
+        "checkout",
+        payload("input")?,
+        StartWorkflowOptions {
+            search_attributes: attributes.clone(),
+            ..StartWorkflowOptions::default()
+        },
+    )
+    .await?;
+
+    let history = store.read_history(handle.workflow_id()).await?;
+    match history.as_slice() {
+        [
+            Event::WorkflowStarted { .. },
+            Event::SearchAttributesUpdated {
+                attributes: recorded,
+                ..
+            },
+        ] => assert_eq!(recorded, &attributes),
+        other => {
+            return Err(format!("expected started then attributes, found {other:?}").into());
+        }
+    }
+    let summaries = store
+        .list_workflows(aion_store::visibility::ListWorkflowsFilter::default())
+        .await?;
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].search_attributes, attributes);
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_with_unregistered_attribute_fails_without_append_or_spawn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(InMemoryStore::default());
+    let deployed_module = "checkout__deployed";
+    let loaded = load_without_runtime_registration("checkout");
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    runtime.register_waiting_test_module(deployed_module, "run");
+    let supervision = Arc::new(SupervisionTree::new());
+    let registry = Arc::new(Registry::default());
+
+    let result = start_workflow_with_options(
+        context(
+            store.clone(),
+            store.clone(),
+            &loaded,
+            Arc::clone(&runtime),
+            Arc::clone(&supervision),
+            Arc::clone(&registry),
+        ),
+        "checkout",
+        payload("input")?,
+        StartWorkflowOptions {
+            search_attributes: std::collections::HashMap::from([(
+                String::from("aion.namespace"),
+                aion_core::SearchAttributeValue::String(String::from("tenant-a")),
+            )]),
+            ..StartWorkflowOptions::default()
+        },
+    )
+    .await;
+
+    assert!(matches!(result, Err(EngineError::Durability(_))));
+    assert_eq!(store.list_active().await?, Vec::new());
     assert_eq!(registry.list()?.len(), 0);
     runtime.shutdown()?;
     Ok(())
@@ -245,6 +344,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
             workflow_id: Some(workflow_id.clone()),
             parent_run_id: Some(parent_run_id.clone()),
             loaded_version: None,
+            search_attributes: std::collections::HashMap::new(),
         },
     )
     .await?;

@@ -12,7 +12,11 @@ async fn completing_workflow_records_and_returns_result() -> Result<(), Box<dyn 
 {
     let (engine, store) = common::engine_with_fixture("complete").await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let expected = payload(&json!(42))?;
 

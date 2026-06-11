@@ -26,7 +26,7 @@ impl ScheduleExecution {
 }
 
 /// Per-schedule projection derived from schedule events.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScheduleState {
     /// Schedule resource identifier.
     pub schedule_id: ScheduleId,
@@ -196,6 +196,7 @@ mod tests {
             catch_up_policy: CatchUpPolicy::One,
             workflow_type: String::from("checkout"),
             input: Payload::from_json(&json!({ "label": label }))?,
+            search_attributes: std::collections::HashMap::new(),
         })
     }
 

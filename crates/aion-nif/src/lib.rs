@@ -13,10 +13,10 @@
 //!     value * 2
 //! }
 //!
-//! let nifs = NifSet::builder()
-//!     .register(deterministic_nif!("math", "double", double, (value: i64) -> i64))?
-//!     .build();
-//! assert_eq!(nifs.len(), 1);
+//! let nifs = NifSet::builder("math")
+//!     .with_nif(deterministic_nif!("math", "double", double, (value: i64) -> i64))
+//!     .build()?;
+//! assert_eq!(nifs.nifs().len(), 1);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 

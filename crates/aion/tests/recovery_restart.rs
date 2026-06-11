@@ -18,7 +18,11 @@ async fn restart_recovers_active_workflow_without_duplicate_replay_events()
     // engine must build over that same store to find the active history.
     let (first, store) = common::engine_with_fixture("wait").await?;
     let handle = first
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let workflow_id = handle.workflow_id().clone();
     let run_id = handle.run_id().clone();

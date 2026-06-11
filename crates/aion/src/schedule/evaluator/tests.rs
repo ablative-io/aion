@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,9 +39,15 @@ impl ScheduleTimer for RecordingTimer {
     }
 }
 
+type RecordedStart = (
+    String,
+    Payload,
+    HashMap<String, aion_core::SearchAttributeValue>,
+);
+
 #[derive(Default)]
 struct RecordingStarter {
-    started: Mutex<Vec<(String, Payload)>>,
+    started: Mutex<Vec<RecordedStart>>,
 }
 
 #[async_trait]
@@ -49,13 +56,14 @@ impl ScheduleWorkflowStarter for RecordingStarter {
         &self,
         workflow_type: &str,
         input: Payload,
+        search_attributes: HashMap<String, aion_core::SearchAttributeValue>,
     ) -> Result<ScheduleExecution, ScheduleEvaluatorError> {
         self.started
             .lock()
             .map_err(|error| {
                 ScheduleEvaluatorError::side_effect(format!("starter lock poisoned: {error}"))
             })?
-            .push((workflow_type.to_owned(), input));
+            .push((workflow_type.to_owned(), input, search_attributes));
         Ok(ScheduleExecution::new(
             WorkflowId::new_v4(),
             aion_core::RunId::new_v4(),
@@ -164,6 +172,10 @@ fn config(
         catch_up_policy,
         workflow_type: String::from("checkout"),
         input: Payload::from_json(&json!({ "source": "schedule" }))?,
+        search_attributes: HashMap::from([(
+            String::from("aion.namespace"),
+            aion_core::SearchAttributeValue::String(String::from("schedule-tenant")),
+        )]),
     })
 }
 
@@ -215,7 +227,21 @@ async fn timer_fire_starts_records_and_rearms_next_fire() -> Result<(), Box<dyn 
         .await?;
 
     assert!(matches!(outcome, TimerEvaluationOutcome::Started(_)));
-    assert_eq!(lock_len(&fixture.starter.started)?, 1);
+    {
+        let started = fixture
+            .starter
+            .started
+            .lock()
+            .map_err(|error| format!("starter lock poisoned: {error}"))?;
+        assert_eq!(started.len(), 1);
+        assert_eq!(
+            started[0].2.get("aion.namespace"),
+            Some(&aion_core::SearchAttributeValue::String(String::from(
+                "schedule-tenant"
+            ))),
+            "triggered execution must carry the schedule config's search attributes"
+        );
+    }
     assert_eq!(lock_len(&fixture.events.triggered)?, 1);
     let armed = fixture
         .timer

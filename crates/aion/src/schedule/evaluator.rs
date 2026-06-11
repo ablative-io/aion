@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use aion_core::{Event, Payload, ScheduleId, TimerId, WorkflowId};
+use aion_core::{Event, Payload, ScheduleId, SearchAttributeValue, TimerId, WorkflowId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -69,10 +69,15 @@ pub trait ScheduleTimer: Send + Sync {
 #[async_trait]
 pub trait ScheduleWorkflowStarter: Send + Sync {
     /// Starts a workflow for a schedule tick and returns the concrete execution identifiers.
+    ///
+    /// `search_attributes` come from the schedule's persisted configuration and
+    /// are recorded on every triggered execution so visibility metadata (such as
+    /// a server-assigned tenancy attribute) survives engine restarts.
     async fn start_scheduled_workflow(
         &self,
         workflow_type: &str,
         input: Payload,
+        search_attributes: HashMap<String, SearchAttributeValue>,
     ) -> Result<ScheduleExecution, ScheduleEvaluatorError>;
 }
 
@@ -309,7 +314,7 @@ impl ScheduleEvaluator {
         schedule_id: &ScheduleId,
         recorded_at: DateTime<Utc>,
     ) -> Result<TimerEvaluationOutcome, ScheduleEvaluatorError> {
-        let (workflow_type, input) = {
+        let (workflow_type, input, search_attributes) = {
             let state = self.states.get(schedule_id).ok_or_else(|| {
                 ScheduleEvaluatorError::ScheduleNotFound {
                     schedule_id: schedule_id.clone(),
@@ -318,12 +323,13 @@ impl ScheduleEvaluator {
             (
                 state.config.workflow_type.clone(),
                 state.config.input.clone(),
+                state.config.search_attributes.clone(),
             )
         };
 
         let execution = self
             .starter
-            .start_scheduled_workflow(&workflow_type, input)
+            .start_scheduled_workflow(&workflow_type, input, search_attributes)
             .await?;
         self.events
             .record_schedule_triggered(schedule_id, &execution, recorded_at)

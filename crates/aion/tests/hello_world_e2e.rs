@@ -56,7 +56,9 @@ async fn hello_world_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>>
         .await?;
 
     let input = Payload::from_json(&json!({ "name": "Ada" }))?;
-    let handle = engine.start_workflow("hello_world", input).await?;
+    let handle = engine
+        .start_workflow("hello_world", input, std::collections::HashMap::new())
+        .await?;
     let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
 
     let payload = result.map_err(|error| format!("workflow failed: {error:?}"))?;

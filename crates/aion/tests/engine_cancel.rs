@@ -27,7 +27,11 @@ async fn cancel_records_event_deregisters_and_kills_workflow()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, store) = common::engine_with_fixture("wait").await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
 
     let reason = "caller requested cancellation";
@@ -62,7 +66,11 @@ async fn cancel_records_event_deregisters_and_kills_workflow()
 async fn cancel_propagates_kill_to_linked_activity() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _store) = common::engine_with_fixture("wait").await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let deployed_module = engine
         .loaded_workflows()

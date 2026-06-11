@@ -22,10 +22,14 @@ use tracing::{Instrument, info_span};
 
 /// Handles a decoded start-workflow request.
 ///
+/// The authorized namespace is recorded durably as the `aion.namespace` search
+/// attribute in the same atomic append as the workflow's start event, so
+/// ownership survives server restarts and is never tracked only in memory.
+///
 /// # Errors
 ///
 /// Returns a stable [`WireError`] when the payload is missing or malformed, namespace scoping fails,
-/// the engine start call fails, or namespace ownership metadata cannot be recorded.
+/// or the engine start call fails.
 pub async fn start(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
@@ -33,6 +37,7 @@ pub async fn start(
 ) -> Result<ProtoStartWorkflowResponse, WireError> {
     let scoped = guard
         .scope(caller, &NamespaceOperation::start(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
     let input = required_payload(request.input.clone())?;
@@ -43,11 +48,12 @@ pub async fn start(
         workflow_id = tracing::field::Empty,
         workflow_type = %request.workflow_type,
     );
+    let search_attributes = namespace_search_attributes(&namespace);
     let handle = async {
         scoped
             .engine()
             .map_err(|error| log_server_error("start", Some(&namespace), None, &error))?
-            .start_workflow(&request.workflow_type, input)
+            .start_workflow(&request.workflow_type, input, search_attributes)
             .await
             .map_err(|error| map_start_error(error, &request.workflow_type))
     }
@@ -55,21 +61,51 @@ pub async fn start(
     .await?;
     span.record("workflow_id", tracing::field::display(handle.workflow_id()));
 
-    scoped
-        .record_workflow(handle.workflow_id().clone())
-        .map_err(|error| {
-            log_server_error(
-                "start",
-                Some(&namespace),
-                Some(handle.workflow_id()),
-                &error,
-            )
-        })?;
-
     Ok(ProtoStartWorkflowResponse {
         workflow_id: Some(handle.workflow_id().clone().into()),
         run_id: Some(handle.run_id().clone().into()),
     })
+}
+
+/// Search attribute map stamping the authorized namespace onto an execution.
+fn namespace_search_attributes(
+    namespace: &str,
+) -> std::collections::HashMap<String, aion_core::SearchAttributeValue> {
+    std::collections::HashMap::from([(
+        crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+        aion_core::SearchAttributeValue::String(namespace.to_owned()),
+    )])
+}
+
+/// Narrow a caller-supplied visibility filter to the authorized namespace.
+///
+/// The predicate is appended (predicates AND together), so a caller-supplied
+/// `aion.namespace` predicate for another tenant simply matches nothing.
+fn scope_visibility_filter(
+    mut filter: aion_store::visibility::ListWorkflowsFilter,
+    namespace: &str,
+) -> aion_store::visibility::ListWorkflowsFilter {
+    filter
+        .search_attributes
+        .push(aion_store::visibility::SearchAttributePredicate::Equals {
+            name: crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+            value: aion_core::SearchAttributeValue::String(namespace.to_owned()),
+        });
+    filter
+}
+
+/// Force the authorized namespace onto a schedule config so every triggered
+/// execution is stamped with it; any caller-supplied value is overwritten to
+/// prevent cross-tenant spoofing through the schedule wire envelope.
+fn stamp_schedule_namespace(
+    mut config: aion_core::ScheduleConfig,
+    namespace: &str,
+) -> aion_core::ScheduleConfig {
+    config.search_attributes.insert(
+        crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+        aion_core::SearchAttributeValue::String(namespace.to_owned()),
+    );
+    config
 }
 
 /// Handles a decoded signal request.
@@ -87,6 +123,7 @@ pub async fn signal(
     let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::signal(&request, target))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
@@ -132,6 +169,7 @@ pub async fn query(
     let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::query(&request, target))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
@@ -174,6 +212,7 @@ pub async fn cancel(
     let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::cancel(&request, target))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
@@ -203,6 +242,10 @@ pub async fn cancel(
 
 /// Handles a decoded list-workflows request.
 ///
+/// The decoded filter is always narrowed to the authorized namespace via an
+/// `aion.namespace` equality predicate, so a shared engine never leaks another
+/// tenant's workflow summaries.
+///
 /// # Errors
 ///
 /// Returns a stable [`WireError`] when the filter envelope is malformed, namespace scoping fails, the
@@ -215,8 +258,12 @@ pub async fn list(
     let scope_filter = WorkflowFilter::default();
     let scoped = guard
         .scope(caller, &NamespaceOperation::list(&request, &scope_filter))
+        .await
         .map_err(|error| error.to_wire_error())?;
-    let filter = decode_visibility_filter(request.filter.as_ref())?;
+    let filter = scope_visibility_filter(
+        decode_visibility_filter(request.filter.as_ref())?,
+        scoped.namespace(),
+    );
 
     let summaries = scoped
         .engine()
@@ -248,8 +295,12 @@ pub async fn count(
 ) -> Result<ProtoCountWorkflowsResponse, WireError> {
     let scoped = guard
         .scope(caller, &NamespaceOperation::count(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
-    let filter = decode_visibility_filter(request.filter.as_ref())?;
+    let filter = scope_visibility_filter(
+        decode_visibility_filter(request.filter.as_ref())?,
+        scoped.namespace(),
+    );
 
     let count = scoped
         .engine()
@@ -277,6 +328,7 @@ pub async fn describe(
     let target = WorkflowTarget::workflow(&workflow_id);
     let scoped = guard
         .scope(caller, &NamespaceOperation::describe(&request, target))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
     resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
@@ -311,8 +363,12 @@ pub async fn create_schedule(
 ) -> Result<ProtoCreateScheduleResponse, WireError> {
     let scoped = guard
         .scope(caller, &NamespaceOperation::create_schedule(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
-    let config = required_schedule_config(request.config.as_ref())?;
+    let config = stamp_schedule_namespace(
+        required_schedule_config(request.config.as_ref())?,
+        scoped.namespace(),
+    );
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
     let schedule_id = engine
         .create_schedule(config)
@@ -347,8 +403,12 @@ pub async fn update_schedule(
     let schedule_id = required_schedule_id(request.schedule_id.clone())?;
     let scoped = guard
         .scope(caller, &NamespaceOperation::update_schedule(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
-    let config = required_schedule_config(request.config.as_ref())?;
+    let config = stamp_schedule_namespace(
+        required_schedule_config(request.config.as_ref())?,
+        scoped.namespace(),
+    );
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
     engine
         .update_schedule(&schedule_id, config)
@@ -382,6 +442,7 @@ pub async fn pause_schedule(
     let schedule_id = required_schedule_id(request.schedule_id.clone())?;
     let scoped = guard
         .scope(caller, &NamespaceOperation::pause_schedule(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
     engine
@@ -416,6 +477,7 @@ pub async fn resume_schedule(
     let schedule_id = required_schedule_id(request.schedule_id.clone())?;
     let scoped = guard
         .scope(caller, &NamespaceOperation::resume_schedule(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
     engine
@@ -450,6 +512,7 @@ pub async fn delete_schedule(
     let schedule_id = required_schedule_id(request.schedule_id.clone())?;
     let scoped = guard
         .scope(caller, &NamespaceOperation::delete_schedule(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
     scoped
         .engine()
@@ -473,6 +536,7 @@ pub async fn list_schedules(
 ) -> Result<ProtoListSchedulesResponse, WireError> {
     let scoped = guard
         .scope(caller, &NamespaceOperation::list_schedules(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
     let schedules = scoped
@@ -502,6 +566,7 @@ pub async fn describe_schedule(
     let schedule_id = required_schedule_id(request.schedule_id.clone())?;
     let scoped = guard
         .scope(caller, &NamespaceOperation::describe_schedule(&request))
+        .await
         .map_err(|error| error.to_wire_error())?;
     let state = scoped
         .engine()
@@ -676,7 +741,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{NamespaceResolver, WorkflowOwnership, config::NamespaceMode};
+    use crate::{NamespaceResolver, StaticWorkflowNamespaces, config::NamespaceMode};
 
     const NAMESPACE: &str = "tenant-a";
 
@@ -872,7 +937,10 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: Utc::now(),
                 close_time: None,
-                search_attributes: std::collections::HashMap::new(),
+                search_attributes: std::collections::HashMap::from([(
+                    crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+                    aion_core::SearchAttributeValue::String(NAMESPACE.to_owned()),
+                )]),
             })
             .await?;
         let request = ProtoListWorkflowsRequest {
@@ -935,13 +1003,16 @@ mod tests {
         context.ownership.record(workflow_id(), NAMESPACE)?;
         append_continued_chain(context.store.as_ref(), &first, &latest).await?;
 
-        let engine = context.guard.scope(
-            &context.caller,
-            &NamespaceOperation::describe(
-                &describe_request(false, None),
-                WorkflowTarget::workflow(&workflow_id()),
-            ),
-        )?;
+        let engine = context
+            .guard
+            .scope(
+                &context.caller,
+                &NamespaceOperation::describe(
+                    &describe_request(false, None),
+                    WorkflowTarget::workflow(&workflow_id()),
+                ),
+            )
+            .await?;
         let resolved = resolve_run_id(engine.engine()?.as_ref(), &workflow_id(), None).await?;
 
         assert_eq!(resolved, latest);
@@ -957,13 +1028,16 @@ mod tests {
         context.ownership.record(workflow_id(), NAMESPACE)?;
         append_continued_chain(context.store.as_ref(), &requested, &latest).await?;
 
-        let engine = context.guard.scope(
-            &context.caller,
-            &NamespaceOperation::describe(
-                &describe_request(false, Some(requested.clone())),
-                WorkflowTarget::workflow(&workflow_id()),
-            ),
-        )?;
+        let engine = context
+            .guard
+            .scope(
+                &context.caller,
+                &NamespaceOperation::describe(
+                    &describe_request(false, Some(requested.clone())),
+                    WorkflowTarget::workflow(&workflow_id()),
+                ),
+            )
+            .await?;
         let resolved = resolve_run_id(
             engine.engine()?.as_ref(),
             &workflow_id(),
@@ -1067,7 +1141,7 @@ mod tests {
     #[tokio::test]
     async fn denied_handler_returns_namespace_denied_before_engine_access()
     -> Result<(), Box<dyn std::error::Error>> {
-        let ownership = WorkflowOwnership::default();
+        let ownership = StaticWorkflowNamespaces::default();
         let resolver =
             NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
         let guard = NamespaceGuard::new(resolver);
@@ -1154,7 +1228,7 @@ mod tests {
     struct TestContext {
         guard: NamespaceGuard,
         caller: CallerIdentity,
-        ownership: WorkflowOwnership,
+        ownership: StaticWorkflowNamespaces,
         store: Arc<dyn EventStore>,
         visibility_store: Arc<dyn VisibilityStore>,
     }
@@ -1179,11 +1253,11 @@ mod tests {
         store: Arc<dyn EventStore>,
         visibility_store: Arc<dyn VisibilityStore>,
     ) -> TestContext {
-        let ownership = WorkflowOwnership::default();
+        let ownership = StaticWorkflowNamespaces::default();
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
-            ownership.clone(),
+            Arc::new(ownership.clone()),
         );
         TestContext {
             guard: NamespaceGuard::new(resolver),
@@ -1195,7 +1269,7 @@ mod tests {
     }
 
     fn denied_guard() -> (NamespaceGuard, CallerIdentity) {
-        let ownership = WorkflowOwnership::default();
+        let ownership = StaticWorkflowNamespaces::default();
         let resolver =
             NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
         let guard = NamespaceGuard::new(resolver);

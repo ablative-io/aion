@@ -34,7 +34,13 @@ async fn start_appends_registers_and_lists_workflow() -> Result<(), Box<dyn std:
     let (engine, store) = common::engine_with_fixture("wait").await?;
     let input = input_payload()?;
 
-    let handle = engine.start_workflow(FIXTURE_MODULE, input.clone()).await?;
+    let handle = engine
+        .start_workflow(
+            FIXTURE_MODULE,
+            input.clone(),
+            std::collections::HashMap::new(),
+        )
+        .await?;
 
     let history = store.read_history(handle.workflow_id()).await?;
     match history.first() {

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 
 use aion_core::{
-    Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId, WorkflowError,
-    WorkflowFilter, WorkflowId, WorkflowSummary,
+    Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeSchema,
+    SearchAttributeValue, WorkflowError, WorkflowFilter, WorkflowId, WorkflowSummary,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -50,6 +50,7 @@ pub struct Engine {
     supervision: Arc<SupervisionTree>,
     delegated: DelegatedSeams,
     signal_handoff: Arc<SignalResumeHandoff>,
+    search_attribute_schema: Arc<SearchAttributeSchema>,
     shutdown_gate: ShutdownGate,
     visibility_reconciliation_task: Option<JoinHandle<()>>,
 }
@@ -64,6 +65,7 @@ pub(crate) struct EngineComponents {
     pub(crate) supervision: Arc<SupervisionTree>,
     pub(crate) delegated: DelegatedSeams,
     pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
+    pub(crate) search_attribute_schema: Arc<SearchAttributeSchema>,
     pub(crate) visibility_reconciliation_task: Option<JoinHandle<()>>,
 }
 
@@ -80,6 +82,7 @@ impl Engine {
             supervision,
             delegated,
             signal_handoff,
+            search_attribute_schema,
             visibility_reconciliation_task,
         } = components;
         let schedule_coordinator_workflow_id = schedule_coordinator_workflow_id();
@@ -100,6 +103,7 @@ impl Engine {
                 loaded_workflows: loaded_workflows.clone(),
                 registry: Arc::clone(&registry_arc),
                 supervision: Arc::clone(&supervision_arc),
+                search_attribute_schema: Arc::clone(&search_attribute_schema),
             },
         )));
         Self {
@@ -114,6 +118,7 @@ impl Engine {
             supervision: supervision_arc,
             delegated,
             signal_handoff,
+            search_attribute_schema,
             shutdown_gate: ShutdownGate::default(),
             visibility_reconciliation_task,
         }
@@ -476,17 +481,25 @@ impl Engine {
 
     /// Start a loaded workflow type as a new BEAM process.
     ///
+    /// `search_attributes` are validated against the engine's configured
+    /// [`SearchAttributeSchema`] and recorded atomically with the
+    /// `WorkflowStarted` event, so visibility metadata can never be lost to a
+    /// crash between start and a later attribute update.
+    ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ShuttingDown`] after shutdown begins. Otherwise
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins, and
+    /// [`EngineError::Durability`] when a search attribute is unregistered or
+    /// mistyped (nothing is appended and no process is spawned). Otherwise
     /// delegates to the start lifecycle transition and returns its typed errors.
     pub async fn start_workflow(
         &self,
         workflow_type: &str,
         input: Payload,
+        search_attributes: HashMap<String, SearchAttributeValue>,
     ) -> Result<WorkflowHandle, EngineError> {
         let operation = self.shutdown_gate.begin_start()?;
-        let result = start::start_workflow(
+        let result = start::start_workflow_with_options(
             StartWorkflowContext {
                 store: self.store(),
                 visibility_store: self.visibility_store(),
@@ -495,9 +508,14 @@ impl Engine {
                 supervision: Arc::clone(&self.supervision),
                 registry: Arc::clone(&self.registry),
                 signal_handoff: Some(self.signal_handoff()),
+                search_attribute_schema: Arc::clone(&self.search_attribute_schema),
             },
             workflow_type,
             input,
+            start::StartWorkflowOptions {
+                search_attributes,
+                ..start::StartWorkflowOptions::default()
+            },
         )
         .await;
         drop(operation);
@@ -579,6 +597,7 @@ impl Engine {
                 runtime: &self.runtime,
                 supervision: Arc::clone(&self.supervision),
                 registry: &self.registry,
+                search_attribute_schema: Arc::clone(&self.search_attribute_schema),
             },
             id,
             run,
@@ -995,6 +1014,7 @@ struct ScheduleRuntimeDeps {
     loaded_workflows: LoadedWorkflows,
     registry: Arc<Registry>,
     supervision: Arc<SupervisionTree>,
+    search_attribute_schema: Arc<SearchAttributeSchema>,
 }
 
 struct EngineScheduleStarter {
@@ -1007,8 +1027,9 @@ impl ScheduleWorkflowStarter for EngineScheduleStarter {
         &self,
         workflow_type: &str,
         input: Payload,
+        search_attributes: HashMap<String, SearchAttributeValue>,
     ) -> Result<ScheduleExecution, ScheduleEvaluatorError> {
-        let handle = start::start_workflow(
+        let handle = start::start_workflow_with_options(
             StartWorkflowContext {
                 store: Arc::clone(&self.deps.store),
                 visibility_store: Arc::clone(&self.deps.visibility_store),
@@ -1017,9 +1038,14 @@ impl ScheduleWorkflowStarter for EngineScheduleStarter {
                 supervision: Arc::clone(&self.deps.supervision),
                 registry: Arc::clone(&self.deps.registry),
                 signal_handoff: None,
+                search_attribute_schema: Arc::clone(&self.deps.search_attribute_schema),
             },
             workflow_type,
             input,
+            start::StartWorkflowOptions {
+                search_attributes,
+                ..start::StartWorkflowOptions::default()
+            },
         )
         .await
         .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))?;
@@ -1068,9 +1094,10 @@ impl ScheduleEventSink for AsyncMutex<Recorder> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use aion_core::{Event, Payload, WorkflowFilter, WorkflowStatus};
+    use aion_core::{Event, Payload, SearchAttributeSchema, WorkflowFilter, WorkflowStatus};
     use aion_package::ContentHash;
     use aion_store::visibility::VisibilityStore;
     use aion_store::{EventStore, InMemoryStore};
@@ -1124,6 +1151,7 @@ mod tests {
             supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::default(),
             signal_handoff: Arc::new(crate::signal::SignalResumeHandoff::new()),
+            search_attribute_schema: Arc::new(SearchAttributeSchema::new()),
             visibility_reconciliation_task: None,
         }))
     }
@@ -1177,7 +1205,9 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
-        let handle = engine.start_workflow("checkout", payload("input")?).await?;
+        let handle = engine
+            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .await?;
 
         engine
             .cancel(
@@ -1206,7 +1236,9 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
-        let handle = engine.start_workflow("checkout", payload("input")?).await?;
+        let handle = engine
+            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .await?;
         let result_payload = payload("result")?;
 
         terminate::complete(
@@ -1230,7 +1262,9 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
-        let handle = engine.start_workflow("checkout", payload("input")?).await?;
+        let handle = engine
+            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .await?;
         let error = workflow_error("workflow failed");
 
         terminate::fail(
@@ -1287,7 +1321,9 @@ mod tests {
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
         let running = insert_active_handle(&engine, Arc::clone(&store), "checkout").await?;
-        let completed = engine.start_workflow("checkout", payload("input")?).await?;
+        let completed = engine
+            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .await?;
         terminate::complete(
             termination_context(&engine),
             completed.workflow_id(),
@@ -1324,7 +1360,9 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
-        let handle = engine.start_workflow("checkout", payload("input")?).await?;
+        let handle = engine
+            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .await?;
         terminate::complete(
             termination_context(&engine),
             handle.workflow_id(),
@@ -1335,7 +1373,7 @@ mod tests {
 
         engine.shutdown()?;
         let result = engine
-            .start_workflow("checkout", payload("after-shutdown")?)
+            .start_workflow("checkout", payload("after-shutdown")?, HashMap::new())
             .await;
 
         assert!(matches!(result, Err(EngineError::ShuttingDown)));

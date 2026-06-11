@@ -14,6 +14,19 @@ use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
 
+/// Identity fields recorded on a `WorkflowStarted` event.
+#[derive(Clone, Debug)]
+pub struct WorkflowStartRecord {
+    /// Logical workflow type started by the caller.
+    pub workflow_type: String,
+    /// Opaque workflow input payload.
+    pub input: Payload,
+    /// Concrete run identifier for this execution.
+    pub run_id: RunId,
+    /// Parent run that continued into this run, when applicable.
+    pub parent_run_id: Option<RunId>,
+}
+
 /// Single append authority for one workflow history.
 ///
 /// A recorder owns the workflow's tracked sequence head and computes every `expected_seq` from that
@@ -125,6 +138,72 @@ impl Recorder {
             parent_run_id,
         })
         .await
+    }
+
+    /// Records workflow start together with its validated initial search
+    /// attributes in one atomic store append.
+    ///
+    /// Both events land in a single batch so a crash can never leave a durable
+    /// `WorkflowStarted` without its initial attributes: recovery would
+    /// otherwise resurrect a workflow that is invisible to every visibility
+    /// query keyed on those attributes. Empty attribute maps record only the
+    /// start event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] when any attribute is unregistered or has a
+    /// type that does not match `schema`, when the event store rejects the
+    /// append, or when the sequence tracker cannot advance.
+    pub async fn record_workflow_started_with_attributes(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        start: WorkflowStartRecord,
+        attributes: HashMap<String, SearchAttributeValue>,
+        schema: &SearchAttributeSchema,
+    ) -> Result<(), DurabilityError> {
+        let WorkflowStartRecord {
+            workflow_type,
+            input,
+            run_id,
+            parent_run_id,
+        } = start;
+        if attributes.is_empty() {
+            return self
+                .record_workflow_started_with_parent(
+                    recorded_at,
+                    workflow_type,
+                    input,
+                    run_id,
+                    parent_run_id,
+                )
+                .await;
+        }
+        for (name, value) in &attributes {
+            schema.validate(name, value)?;
+        }
+
+        let started_envelope = self.next_envelope(recorded_at)?;
+        let attributes_envelope = self.envelope_after(&started_envelope, recorded_at)?;
+        let workflow_id = self.workflow_id.clone();
+        let batch = [
+            Event::WorkflowStarted {
+                envelope: started_envelope,
+                workflow_type,
+                input,
+                run_id,
+                parent_run_id,
+            },
+            Event::SearchAttributesUpdated {
+                envelope: attributes_envelope,
+                workflow_id,
+                attributes,
+            },
+        ];
+        let expected_seq = self.sequence.current();
+        self.store
+            .append(self.write_token, &self.workflow_id, &batch, expected_seq)
+            .await?;
+        self.sequence.mark_append_success(batch.len())
     }
 
     /// Records schedule creation in the schedule coordinator history.
@@ -646,6 +725,24 @@ impl Recorder {
         })
     }
 
+    fn envelope_after(
+        &self,
+        previous: &EventEnvelope,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<EventEnvelope, DurabilityError> {
+        let seq = previous
+            .seq
+            .checked_add(1)
+            .ok_or_else(|| DurabilityError::HistoryShape {
+                reason: format!("sequence head overflow advancing {} by 1", previous.seq),
+            })?;
+        Ok(EventEnvelope {
+            seq,
+            recorded_at,
+            workflow_id: self.workflow_id.clone(),
+        })
+    }
+
     async fn append_with(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -725,7 +822,7 @@ fn visibility_record_from_history(
         status: aion_core::status_from_events(history),
         start_time,
         close_time: terminal_recorded_at(history),
-        search_attributes: search_attributes_from_history(history),
+        search_attributes: aion_core::search_attributes_from_events(history),
     })
 }
 
@@ -738,20 +835,6 @@ fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
         | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
         _ => None,
     })
-}
-
-fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAttributeValue> {
-    let mut attributes = HashMap::new();
-    for event in history {
-        if let Event::SearchAttributesUpdated {
-            attributes: updated,
-            ..
-        } = event
-        {
-            attributes.extend(updated.clone());
-        }
-    }
-    attributes
 }
 
 #[cfg(test)]
@@ -999,6 +1082,140 @@ mod tests {
             }
         }
         assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn started_with_attributes_appends_both_events_in_one_atomic_batch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(11);
+        let run_id = aion_core::RunId::new(uuid::Uuid::from_u128(1));
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let mut schema = SearchAttributeSchema::new();
+        schema.register("aion.namespace", SearchAttributeType::String)?;
+        let attributes = HashMap::from([(
+            String::from("aion.namespace"),
+            SearchAttributeValue::String(String::from("tenant-a")),
+        )]);
+
+        recorder
+            .record_workflow_started_with_attributes(
+                recorded_at(1),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                },
+                attributes.clone(),
+                &schema,
+            )
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        match history.as_slice() {
+            [
+                Event::WorkflowStarted {
+                    envelope: started_envelope,
+                    run_id: started_run_id,
+                    ..
+                },
+                Event::SearchAttributesUpdated {
+                    envelope: attributes_envelope,
+                    workflow_id: recorded_workflow_id,
+                    attributes: stored_attributes,
+                },
+            ] => {
+                assert_eq!(started_envelope.seq, 1);
+                assert_eq!(started_run_id, &run_id);
+                assert_eq!(attributes_envelope.seq, 2);
+                assert_eq!(recorded_workflow_id, &workflow_id);
+                assert_eq!(stored_attributes, &attributes);
+            }
+            other => {
+                return Err(
+                    format!("expected started then search attributes, found {other:?}").into(),
+                );
+            }
+        }
+        assert_eq!(recorder.current_head(), 2);
+
+        // The recorder must keep appending correctly after the two-event batch.
+        recorder
+            .record_workflow_completed(recorded_at(3), payload("result")?)
+            .await?;
+        let history = store.read_history(&workflow_id).await?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[2].seq(), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn started_with_invalid_attributes_appends_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(12);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let schema = SearchAttributeSchema::new();
+        let attributes = HashMap::from([(
+            String::from("aion.namespace"),
+            SearchAttributeValue::String(String::from("tenant-a")),
+        )]);
+
+        let result = recorder
+            .record_workflow_started_with_attributes(
+                recorded_at(1),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                },
+                attributes,
+                &schema,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(DurabilityError::SearchAttribute(
+                SearchAttributeError::UnregisteredAttribute { name }
+            )) if name == "aion.namespace"
+        ));
+        assert!(store.read_history(&workflow_id).await?.is_empty());
+        assert_eq!(recorder.current_head(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn started_with_empty_attributes_appends_only_the_start_event()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(13);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+        let schema = SearchAttributeSchema::new();
+
+        recorder
+            .record_workflow_started_with_attributes(
+                recorded_at(1),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                },
+                HashMap::new(),
+                &schema,
+            )
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        assert!(matches!(
+            history.as_slice(),
+            [Event::WorkflowStarted { .. }]
+        ));
+        assert_eq!(recorder.current_head(), 1);
         Ok(())
     }
 

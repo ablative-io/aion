@@ -30,7 +30,7 @@ pub async fn handle_subscription_socket(
     caller: &CallerIdentity,
     request: &SubscriptionRequest,
 ) -> Result<(), ServerError> {
-    let subscription = subscribe_events(state.namespace_guard(), caller, request)?;
+    let subscription = subscribe_events(state.namespace_guard(), caller, request).await?;
     let outbound_buffer_bound = state.runtime_config().websocket.outbound_buffer_bound;
     forward_subscription(
         socket,

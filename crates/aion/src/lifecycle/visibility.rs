@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aion_core::{Event, RunId, SearchAttributeValue, WorkflowId, status_from_events};
+use aion_core::{Event, RunId, WorkflowId, status_from_events};
 use aion_store::EventStore;
 use aion_store::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
 use chrono::{DateTime, Utc};
@@ -77,7 +77,7 @@ fn visibility_record_from_history(
         status: status_from_events(history),
         start_time,
         close_time: terminal_recorded_at(history),
-        search_attributes: search_attributes_from_history(history),
+        search_attributes: aion_core::search_attributes_from_events(history),
     })
 }
 
@@ -150,14 +150,4 @@ fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
         | Event::ScheduleDeleted { .. }
         | Event::ScheduleTriggered { .. } => None,
     })
-}
-
-fn search_attributes_from_history(history: &[Event]) -> HashMap<String, SearchAttributeValue> {
-    let mut search_attributes = HashMap::new();
-    for event in history {
-        if let Event::SearchAttributesUpdated { attributes, .. } = event {
-            search_attributes.extend(attributes.clone());
-        }
-    }
-    search_attributes
 }

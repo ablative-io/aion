@@ -204,8 +204,12 @@ async fn get_workflows(
             &caller,
             &NamespaceOperation::list(&request, &aion_core::WorkflowFilter::default()),
         )
+        .await
         .map_err(|error| HttpWireError(error.to_wire_error()))?;
-    let filter = query.into_filter().map_err(HttpWireError)?;
+    let filter = scope_visibility_filter(
+        query.into_filter().map_err(HttpWireError)?,
+        scoped.namespace(),
+    );
     scoped
         .engine()
         .map_err(|error| HttpWireError(error.to_wire_error()))?
@@ -214,6 +218,20 @@ async fn get_workflows(
         .await
         .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))
         .map(Json)
+}
+
+/// Narrow a caller-supplied visibility filter to the authorized namespace.
+fn scope_visibility_filter(
+    mut filter: ListWorkflowsFilter,
+    namespace: &str,
+) -> ListWorkflowsFilter {
+    filter
+        .search_attributes
+        .push(SearchAttributePredicate::Equals {
+            name: crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+            value: SearchAttributeValue::String(namespace.to_owned()),
+        });
+    filter
 }
 
 async fn count_workflows(
@@ -228,8 +246,12 @@ async fn count_workflows(
     let scoped = state
         .namespace_guard()
         .scope(&caller, &NamespaceOperation::count(&request))
+        .await
         .map_err(|error| HttpWireError(error.to_wire_error()))?;
-    let filter = query.into_filter().map_err(HttpWireError)?;
+    let filter = scope_visibility_filter(
+        query.into_filter().map_err(HttpWireError)?,
+        scoped.namespace(),
+    );
     let count = scoped
         .engine()
         .map_err(|error| HttpWireError(error.to_wire_error()))?
@@ -1019,7 +1041,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        NamespaceResolver, WorkflowOwnership,
+        NamespaceResolver, StaticWorkflowNamespaces,
         config::{
             AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
             NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
@@ -1043,10 +1065,13 @@ mod tests {
                 .build()
                 .await?,
         );
-        let ownership = WorkflowOwnership::default();
+        let ownership = StaticWorkflowNamespaces::default();
         ownership.record(workflow_id(), NAMESPACE)?;
-        let resolver =
-            NamespaceResolver::from_parts(NamespaceMode::SharedEngine, Some(engine), ownership);
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+        );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -1117,7 +1142,10 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: Utc::now(),
                 close_time: None,
-                search_attributes: std::collections::HashMap::new(),
+                search_attributes: std::collections::HashMap::from([(
+                    crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+                    aion_core::SearchAttributeValue::String(NAMESPACE.to_owned()),
+                )]),
             })
             .await?;
         let filter = aion_proto::encode_core_value(
@@ -1168,7 +1196,7 @@ mod tests {
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
-            WorkflowOwnership::default(),
+            Arc::new(StaticWorkflowNamespaces::default()),
         );
         let state = ServerState::from_parts(resolver, runtime_config());
         Ok((workflow_router(state), visibility_store))
@@ -1281,10 +1309,13 @@ mod tests {
                 0,
             )
             .await?;
-        let ownership = WorkflowOwnership::default();
+        let ownership = StaticWorkflowNamespaces::default();
         ownership.record(workflow_id(), NAMESPACE)?;
-        let resolver =
-            NamespaceResolver::from_parts(NamespaceMode::SharedEngine, Some(engine), ownership);
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+        );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
 
         let describe = ProtoDescribeWorkflowRequest {
@@ -1345,7 +1376,7 @@ mod tests {
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
-            WorkflowOwnership::default(),
+            Arc::new(StaticWorkflowNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
         let request = ProtoListWorkflowsRequest {
@@ -1442,7 +1473,7 @@ mod tests {
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
-            WorkflowOwnership::default(),
+            Arc::new(StaticWorkflowNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
 
@@ -1454,10 +1485,16 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: recorded_at(1),
                 close_time: None,
-                search_attributes: std::collections::HashMap::from([(
-                    String::from("customer_id"),
-                    SearchAttributeValue::String(String::from("12345")),
-                )]),
+                search_attributes: std::collections::HashMap::from([
+                    (
+                        String::from("customer_id"),
+                        SearchAttributeValue::String(String::from("12345")),
+                    ),
+                    (
+                        crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+                        SearchAttributeValue::String(String::from("tenant-a")),
+                    ),
+                ]),
             })
             .await?;
         visibility
@@ -1468,10 +1505,16 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: recorded_at(2),
                 close_time: None,
-                search_attributes: std::collections::HashMap::from([(
-                    String::from("customer_id"),
-                    SearchAttributeValue::String(String::from("12345")),
-                )]),
+                search_attributes: std::collections::HashMap::from([
+                    (
+                        String::from("customer_id"),
+                        SearchAttributeValue::String(String::from("12345")),
+                    ),
+                    (
+                        crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+                        SearchAttributeValue::String(String::from("tenant-a")),
+                    ),
+                ]),
             })
             .await?;
 
@@ -1524,7 +1567,7 @@ mod tests {
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
-            WorkflowOwnership::default(),
+            Arc::new(StaticWorkflowNamespaces::default()),
         );
         let mut config = runtime_config();
         config.dashboard = DashboardConfig {

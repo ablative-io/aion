@@ -34,6 +34,8 @@ pub struct ProcessExitContext {
     pub supervision: Arc<SupervisionTree>,
     /// Tokio runtime handle used to run async recorder/store work from the monitor thread.
     pub tokio_handle: Handle,
+    /// Schema validating initial search attributes on continue-as-new replacements.
+    pub search_attribute_schema: Arc<aion_core::SearchAttributeSchema>,
 }
 
 /// Handle one observed workflow process exit.
@@ -185,6 +187,7 @@ async fn start_continuation_replacement(
             supervision: Arc::clone(&context.supervision),
             registry: Arc::clone(&context.registry),
             signal_handoff: None,
+            search_attribute_schema: Arc::clone(&context.search_attribute_schema),
         },
         replacement_type,
         input,
@@ -192,6 +195,8 @@ async fn start_continuation_replacement(
             workflow_id: Some(handle.workflow_id().clone()),
             parent_run_id: Some(parent_run_id),
             loaded_version: Some(handle.loaded_version().clone()),
+            // Recorded attributes carry into the replacement run's projection.
+            search_attributes: std::collections::HashMap::new(),
         },
     )
     .await?;
@@ -340,6 +345,7 @@ mod tests {
                 runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
                 supervision: Arc::new(SupervisionTree::new()),
                 tokio_handle: tokio::runtime::Handle::current(),
+                search_attribute_schema: Arc::new(aion_core::SearchAttributeSchema::new()),
             },
             handle,
         })

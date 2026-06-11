@@ -15,7 +15,11 @@ async fn continue_as_new_records_terminal_old_run_and_running_replacement()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, store) = common::engine_with_fixture("wait").await?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let old_workflow_id = handle.workflow_id().clone();
     let old_run_id = handle.run_id().clone();
@@ -75,10 +79,18 @@ async fn recovery_active_listing_contains_only_current_continuation_run()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, store) = common::engine_with_fixture("wait").await?;
     let continued = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let untouched = engine
-        .start_workflow(FIXTURE_MODULE, carried_payload("untouched")?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            carried_payload("untouched")?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let old_run_id = continued.run_id().clone();
 
@@ -170,7 +182,11 @@ async fn read_run_chain_returns_parent_links_in_chronological_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, store) = common::engine_with_fixture("wait").await?;
     let first = engine
-        .start_workflow(FIXTURE_MODULE, input_payload()?)
+        .start_workflow(
+            FIXTURE_MODULE,
+            input_payload()?,
+            std::collections::HashMap::new(),
+        )
         .await?;
     let second = engine
         .continue_as_new(

@@ -6,4 +6,7 @@ pub mod guard;
 pub mod resolver;
 
 pub use guard::{NamespaceGuard, NamespaceOperation, SubscriptionScope, WorkflowTarget};
-pub use resolver::{CallerIdentity, NamespaceResolver, ScopedEngine, WorkflowOwnership};
+pub use resolver::{
+    CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceResolver, ScopedEngine, StaticWorkflowNamespaces,
+    WorkflowNamespaceSource,
+};

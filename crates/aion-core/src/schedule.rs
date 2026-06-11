@@ -90,7 +90,7 @@ pub enum CatchUpPolicy {
 }
 
 /// Persisted configuration for a schedule resource.
-#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq)]
 pub struct ScheduleConfig {
     /// Trigger used to compute eligible fire times.
     pub trigger: TriggerSpec,
@@ -104,6 +104,9 @@ pub struct ScheduleConfig {
     pub workflow_type: String,
     /// Opaque workflow input supplied to triggered executions.
     pub input: Payload,
+    /// Typed search attributes recorded on every triggered execution.
+    #[serde(default)]
+    pub search_attributes: std::collections::HashMap<String, crate::SearchAttributeValue>,
 }
 
 #[cfg(test)]
@@ -141,6 +144,10 @@ mod tests {
             catch_up_policy: CatchUpPolicy::One,
             workflow_type: String::from("checkout"),
             input: payload("schedule-input")?,
+            search_attributes: HashMap::from([(
+                String::from("aion.namespace"),
+                crate::SearchAttributeValue::String(String::from("tenant-a")),
+            )]),
         })
     }
 
