@@ -189,9 +189,68 @@ fn run_shape(history: &[Event]) -> Vec<String> {
                 envelope.seq,
                 String::from_utf8_lossy(result.bytes())
             ),
+            Event::ActivityScheduled {
+                envelope,
+                activity_id,
+                activity_type,
+                input,
+            } => format!(
+                "{}|sched|{}|{activity_type}|{}",
+                envelope.seq,
+                activity_id.sequence_position(),
+                String::from_utf8_lossy(input.bytes())
+            ),
+            Event::ActivityStarted {
+                envelope,
+                activity_id,
+            } => format!(
+                "{}|astart|{}",
+                envelope.seq,
+                activity_id.sequence_position()
+            ),
+            Event::ActivityCompleted {
+                envelope,
+                activity_id,
+                result,
+            } => format!(
+                "{}|acomp|{}|{}",
+                envelope.seq,
+                activity_id.sequence_position(),
+                String::from_utf8_lossy(result.bytes())
+            ),
+            Event::TimerStarted {
+                envelope, timer_id, ..
+            } => format!("{}|tstart|{timer_id:?}", envelope.seq),
+            Event::TimerFired {
+                envelope, timer_id, ..
+            } => format!("{}|tfired|{timer_id:?}", envelope.seq),
             other => format!("{}|unexpected|{other:?}", other.seq()),
         })
         .collect()
+}
+
+/// Poll durable history until `predicate` holds, failing after the poll
+/// deadline with the description and the last observed history.
+async fn wait_for_history<F>(
+    store: &Arc<dyn EventStore>,
+    workflow_id: &WorkflowId,
+    description: &str,
+    predicate: F,
+) -> Result<Vec<Event>, Box<dyn std::error::Error>>
+where
+    F: Fn(&[Event]) -> bool,
+{
+    let deadline = std::time::Instant::now() + REGISTRATION_DEADLINE;
+    loop {
+        let history = store.read_history(workflow_id).await?;
+        if predicate(&history) {
+            return Ok(history);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("timed out waiting for {description}: {history:#?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 async fn release_and_await_42(
@@ -648,5 +707,283 @@ async fn handler_calling_recording_nif_is_handler_failed_with_zero_events() -> T
     );
 
     engine.shutdown()?;
+    Ok(())
+}
+
+// --- query at the activity-await yield point + crash/replay determinism ------
+
+/// Gate the fixture's `gated_ok:a` activity until the test releases it, and
+/// count finished dispatches so replay tests can prove a recovered run never
+/// re-dispatches a recorded activity.
+struct ActivityGate {
+    released: std::sync::Mutex<bool>,
+    condvar: std::sync::Condvar,
+    finished: std::sync::atomic::AtomicUsize,
+}
+
+impl ActivityGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            released: std::sync::Mutex::new(false),
+            condvar: std::sync::Condvar::new(),
+            finished: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn release(&self) {
+        if let Ok(mut released) = self.released.lock() {
+            *released = true;
+            self.condvar.notify_all();
+        }
+    }
+
+    fn wait(&self) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + REGISTRATION_DEADLINE;
+        let mut released = self
+            .released
+            .lock()
+            .map_err(|_| "activity gate lock poisoned".to_owned())?;
+        while !*released {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .ok_or_else(|| "activity gate was never released".to_owned())?;
+            let (guard, _) = self
+                .condvar
+                .wait_timeout(released, remaining)
+                .map_err(|_| "activity gate lock poisoned".to_owned())?;
+            released = guard;
+        }
+        Ok(())
+    }
+
+    fn finished_dispatches(&self) -> usize {
+        self.finished.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+struct GatedDispatcher {
+    gate: Arc<ActivityGate>,
+}
+
+impl aion::activity::bridge::ActivityDispatcher for GatedDispatcher {
+    fn dispatch(&self, name: &str, _input: &str, _config: &str) -> Result<String, String> {
+        let result = if name == "gated_ok:a" {
+            self.gate.wait().map(|()| "\"done-a\"".to_owned())
+        } else {
+            Err(format!("terminal:unknown fixture activity {name}"))
+        };
+        self.gate
+            .finished
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        result
+    }
+}
+
+/// Engine over `store` with the fixture loaded at `entry_function` and the
+/// gated dispatcher wired to `gate` (the activity-await tests block a
+/// dispatcher thread, so they run on a multi-thread Tokio runtime).
+async fn engine_with_dispatcher(
+    store: &Arc<dyn EventStore>,
+    entry_function: &str,
+    gate: &Arc<ActivityGate>,
+) -> Result<Engine, Box<dyn std::error::Error>> {
+    Ok(EngineBuilder::new()
+        .store_arc(Arc::clone(store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .query_timeout(QUERY_TIMEOUT)
+        .activity_dispatcher(Arc::new(GatedDispatcher {
+            gate: Arc::clone(gate),
+        }))
+        .load_workflows(query_package(entry_function)?)
+        .build()
+        .await?)
+}
+
+fn activity_terminal_count(history: &[Event]) -> usize {
+    history
+        .iter()
+        .filter(|event| matches!(event, Event::ActivityCompleted { .. }))
+        .count()
+}
+
+fn activity_in_flight(history: &[Event]) -> bool {
+    history
+        .iter()
+        .any(|event| matches!(event, Event::ActivityStarted { .. }))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn query_at_activity_await_then_crash_replay_matches_unqueried_control() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let gate = ActivityGate::new();
+    let engine = engine_with_dispatcher(&store, "activity_gated", &gate).await?;
+    let (workflow_id, run_id) = start(&engine).await?;
+
+    // The workflow is parked in await_activity_result: the activity is
+    // scheduled and started, and its dispatcher is gated.
+    let parked = wait_for_history(&store, &workflow_id, "activity in flight", |events| {
+        activity_in_flight(events)
+    })
+    .await?;
+    assert_eq!(activity_terminal_count(&parked), 0);
+
+    // Queries are answered at the activity-await yield point and append
+    // nothing — byte-identical history before and after.
+    let (answer, query_id) =
+        state_reply(&query_when_registered(&engine, &workflow_id, &run_id, "state").await?)?;
+    assert_eq!(answer, 1);
+    assert!(!query_id.is_empty());
+    let (answer, _) = state_reply(&engine.query(&workflow_id, &run_id, "state").await?)?;
+    assert_eq!(answer, 1);
+    assert_eq!(
+        store.read_history(&workflow_id).await?,
+        parked,
+        "queries at the activity yield point must never append events"
+    );
+
+    // Settle the activity, then crash with the run parked at the release
+    // gate: the recorded terminal is the replay source of truth.
+    gate.release();
+    let settled = wait_for_history(
+        &store,
+        &workflow_id,
+        "activity terminal recorded",
+        |events| activity_terminal_count(events) == 1,
+    )
+    .await?;
+    engine.shutdown()?;
+
+    // Recovery replays the activity purely from history (zero re-dispatch),
+    // answers queries again (re-registration is organic replay), and the
+    // settled prefix stays byte-identical.
+    let recovery_gate = ActivityGate::new();
+    let recovered = engine_with_dispatcher(&store, "activity_gated", &recovery_gate).await?;
+    let (answer, _) =
+        state_reply(&query_when_registered(&recovered, &workflow_id, &run_id, "state").await?)?;
+    assert_eq!(answer, 1);
+    assert_eq!(
+        store.read_history(&workflow_id).await?,
+        settled,
+        "neither recovery replay nor queries may append or rewrite events"
+    );
+    release_and_await_42(&recovered, &store, &workflow_id, &run_id).await?;
+    let queried_crashed = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        &queried_crashed[..settled.len()],
+        &settled[..],
+        "replay must leave the settled prefix byte-identical"
+    );
+    assert_eq!(
+        recovery_gate.finished_dispatches(),
+        0,
+        "replay must never re-dispatch a recorded activity"
+    );
+    recovered.shutdown()?;
+
+    // Control: identical run, never queried, never crashed.
+    let control_store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let control_gate = ActivityGate::new();
+    let control = engine_with_dispatcher(&control_store, "activity_gated", &control_gate).await?;
+    let (control_id, control_run) = start(&control).await?;
+    wait_for_history(
+        &control_store,
+        &control_id,
+        "activity in flight",
+        activity_in_flight,
+    )
+    .await?;
+    control_gate.release();
+    wait_for_history(
+        &control_store,
+        &control_id,
+        "activity terminal recorded",
+        |events| activity_terminal_count(events) == 1,
+    )
+    .await?;
+    release_and_await_42(&control, &control_store, &control_id, &control_run).await?;
+    let control_history = control_store.read_history(&control_id).await?;
+    control.shutdown()?;
+
+    assert_eq!(
+        run_shape(&queried_crashed),
+        run_shape(&control_history),
+        "queried/crashed and unqueried/uncrashed histories must agree in shape"
+    );
+    Ok(())
+}
+
+// --- query at sleep yield points + crash/replay determinism -------------------
+
+fn timer_fired_count(history: &[Event]) -> usize {
+    history
+        .iter()
+        .filter(|event| matches!(event, Event::TimerFired { .. }))
+        .count()
+}
+
+#[tokio::test]
+async fn queried_sleep_loop_crash_recovery_matches_unqueried_control() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = engine_over(&store, "busy", QUERY_TIMEOUT).await?;
+    let (workflow_id, run_id) = start(&engine).await?;
+
+    // Query while the fixture cycles its forty pumped sleeps: answered at a
+    // sleep yield point.
+    let (answer, _) =
+        state_reply(&query_when_registered(&engine, &workflow_id, &run_id, "state").await?)?;
+    assert_eq!(answer, 1);
+
+    // Crash once every sleep is durably resolved and the run is parked at
+    // the release gate.
+    let settled = wait_for_history(&store, &workflow_id, "all forty sleeps fired", |events| {
+        timer_fired_count(events) == 40
+    })
+    .await?;
+    engine.shutdown()?;
+
+    // Recovery replays forty recorded timers, appends nothing, and still
+    // answers queries; release then completes the run.
+    let recovered = engine_over(&store, "busy", QUERY_TIMEOUT).await?;
+    let (answer, _) =
+        state_reply(&query_when_registered(&recovered, &workflow_id, &run_id, "state").await?)?;
+    assert_eq!(answer, 1);
+    assert_eq!(
+        store.read_history(&workflow_id).await?,
+        settled,
+        "neither recovery replay nor queries may append or rewrite events"
+    );
+    release_and_await_42(&recovered, &store, &workflow_id, &run_id).await?;
+    let queried_crashed = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        &queried_crashed[..settled.len()],
+        &settled[..],
+        "replay must leave the settled prefix byte-identical"
+    );
+    recovered.shutdown()?;
+
+    // Control: identical run, never queried, never crashed.
+    let control_store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let control = engine_over(&control_store, "busy", QUERY_TIMEOUT).await?;
+    let (control_id, control_run) = start(&control).await?;
+    wait_for_history(
+        &control_store,
+        &control_id,
+        "all forty sleeps fired",
+        |events| timer_fired_count(events) == 40,
+    )
+    .await?;
+    release_and_await_42(&control, &control_store, &control_id, &control_run).await?;
+    let control_history = control_store.read_history(&control_id).await?;
+    control.shutdown()?;
+
+    assert_eq!(
+        run_shape(&queried_crashed),
+        run_shape(&control_history),
+        "queried/crashed and unqueried/uncrashed histories must agree in shape"
+    );
     Ok(())
 }

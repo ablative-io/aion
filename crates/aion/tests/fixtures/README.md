@@ -106,3 +106,8 @@ the `aion_flow` SDK, proving the raw protocol:
   the stale query and completes.
 - `busy/1` cycles forty pumped 20 ms sleeps before gating on `release`, so
   queries arrive during active execution and are answered at a sleep entry.
+- `activity_gated/1` registers a `state` handler, dispatches one `gated_ok:a`
+  activity (the test dispatcher blocks until the test releases the gate), and
+  parks in the pumped `await_activity_result` yield point, then gates on
+  `release` — used to query a workflow parked on an in-flight activity and to
+  prove crash/replay byte-identity over the recorded activity terminal.

@@ -5,7 +5,6 @@ import aion/error
 import aion/internal/ffi
 import gleam/int
 import gleam/json
-import gleam/string
 
 /// Register a typed read-only query handler with AT's query service.
 ///
@@ -18,8 +17,9 @@ import gleam/string
 /// Registration stores the encoding handler in the workflow process
 /// dictionary (the engine-contract location the yield-point query pump reads
 /// from) and then registers the name with the engine. Register before the
-/// first yield point — `workflow.sleep`, `workflow.receive`, `workflow.run`
-/// — that should answer the query; awaits reached earlier cannot service it.
+/// first yield point — `workflow.sleep`, `workflow.receive`, `workflow.run`,
+/// `child.await`, `workflow.all`/`workflow.race` — that should answer the
+/// query; awaits reached earlier cannot service it.
 /// Because workflow code re-executes from the top on replay, re-registration
 /// after recovery is automatic: a recovered workflow answers queries without
 /// any extra author code.
@@ -96,21 +96,21 @@ fn dispatch_config() -> String {
   json.object([]) |> json.to_string
 }
 
+/// Map the engine's raw query error strings to the typed taxonomy.
+///
+/// The engine emits exactly: `unknown:<name>` (unregistered query name),
+/// `timeout` (reply deadline expired), `not_running:<workflow_id>` (terminal
+/// or non-resident target), `handler_failed:<message>` (the handler ran and
+/// reported failure — the `query_failed` wire code), and engine-fault strings
+/// (`unknown_workflow:`, `reply_dropped`, `engine:`) which surface as
+/// `QueryEngineFailure`.
 fn query_error(raw: String) -> error.QueryError {
-  case string.starts_with(raw, "unknown:") {
-    True -> error.UnknownQuery(name: string.drop_start(raw, 8))
-    False ->
-      case string.starts_with(raw, "cancelled:") {
-        True ->
-          error.QueryCancelled(error.Cancelled(string.drop_start(raw, 10)))
-        False ->
-          case string.starts_with(raw, "non_determinism:") {
-            True ->
-              error.QueryNonDeterministic(
-                error.NonDeterminismViolation(string.drop_start(raw, 16)),
-              )
-            False -> error.QueryEngineFailure(raw)
-          }
-      }
+  case raw {
+    "unknown:" <> name -> error.UnknownQuery(name: name)
+    "timeout" -> error.QueryTimedOut(error.TimedOut(message: raw))
+    "not_running:" <> workflow_id ->
+      error.QueryNotRunning(workflow_id: workflow_id)
+    "handler_failed:" <> message -> error.QueryHandlerFailed(message: message)
+    _ -> error.QueryEngineFailure(raw)
   }
 }

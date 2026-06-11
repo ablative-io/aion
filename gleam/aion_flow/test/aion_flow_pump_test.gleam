@@ -9,12 +9,15 @@
 //// used without touching recorded observations (queries never write
 //// history).
 
+import aion/activity
 import aion/child
 import aion/codec
+import aion/error
 import aion/internal/ffi
 import aion/internal/pump
 import aion/query
 import aion/testing
+import aion/workflow/concurrency
 import gleam/dynamic/decode
 import gleam/json
 import gleam/string
@@ -36,6 +39,9 @@ fn scripted_await() -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "testing_query_replies")
 fn testing_query_replies() -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "testing_enqueue_collect_result")
+fn enqueue_collect(result: Result(String, String)) -> Result(String, String)
 
 fn fresh_env() -> Nil {
   let assert Ok(_) = testing.new()
@@ -238,6 +244,72 @@ pub fn child_await_services_pending_query_before_resolving_test() {
 
   query_replies()
   |> should.equal("[\"ok:q-child:{\\\"pending\\\":1}\"]")
+}
+
+/// A typed echo activity over the harness mock registry: the raw mock
+/// passes the encoded input payload straight through as the output.
+fn echo_activity(input: String) -> activity.Activity(String, String) {
+  let string_codec = codec.json_codec(json.string, decode.string)
+  activity.new("echo", input, string_codec, string_codec, fn(value) {
+    Ok(value)
+  })
+}
+
+fn register_echo_mock() -> Nil {
+  let assert Ok(_) =
+    ffi.testing_register_activity_mock("echo", fn(raw_input) { Ok(raw_input) })
+  Nil
+}
+
+pub fn collect_all_services_pending_query_before_resolving_test() {
+  // `concurrency.all` is a yield point like the other awaits: a query
+  // sentinel surfaced while the fan-out is parked must be serviced and the
+  // same collect re-entered, not surfaced as a bogus activity failure.
+  fresh_env()
+  register_echo_mock()
+  ffi.register_query_handler("collect-state", reply_with("{\"pending\":2}"))
+  let assert Ok(_) =
+    enqueue_collect(Error(
+      "aion_query:{\"query_id\":\"q-all\",\"name\":\"collect-state\"}",
+    ))
+
+  concurrency.all([echo_activity("alpha"), echo_activity("beta")])
+  |> should.equal(Ok(["alpha", "beta"]))
+
+  query_replies()
+  |> should.equal("[\"ok:q-all:{\\\"pending\\\":2}\"]")
+}
+
+pub fn collect_race_services_pending_query_before_resolving_test() {
+  fresh_env()
+  register_echo_mock()
+  ffi.register_query_handler("race-state", reply_with("{\"pending\":1}"))
+  let assert Ok(_) =
+    enqueue_collect(Error(
+      "aion_query:{\"query_id\":\"q-race\",\"name\":\"race-state\"}",
+    ))
+
+  concurrency.race([echo_activity("alpha"), echo_activity("beta")])
+  |> should.equal(Ok("alpha"))
+
+  query_replies()
+  |> should.equal("[\"ok:q-race:{\\\"pending\\\":1}\"]")
+}
+
+pub fn collect_non_sentinel_error_passes_through_the_pump_test() {
+  // A real collect failure must pass through `pump.run` untouched and map
+  // through the activity error taxonomy, never loop the pump.
+  fresh_env()
+  register_echo_mock()
+  let assert Ok(_) = enqueue_collect(Error("timeout:deadline expired"))
+
+  concurrency.all([echo_activity("alpha")])
+  |> should.equal(
+    Error(error.ActivityTimedOut(error.TimedOut("deadline expired"))),
+  )
+
+  query_replies()
+  |> should.equal("[]")
 }
 
 pub fn query_handler_registration_answers_through_pump_test() {

@@ -33,7 +33,8 @@
     testing_register_activity_mock/2,
     testing_clear_observations/0,
     testing_observations/0,
-    testing_query_replies/0
+    testing_query_replies/0,
+    testing_enqueue_collect_result/1
 ]).
 
 -define(DEFAULT_NOW, 1700000000000).
@@ -196,16 +197,29 @@ await_child(ChildId) ->
         Result -> Result
     end.
 
+%% Scripted collect results mirror the engine's collect yield point: a test
+%% enqueues `{error, <<"aion_query:", Json/binary>>}` sentinels (and may
+%% finish with a scripted resolution) which surface, one per invocation,
+%% before the collect's own settlement. The SDK pump must service each
+%% sentinel and re-enter the same collect.
 collect_all(_CollectionId, Items) ->
-    collect_all_loop(Items, []).
+    case take_collect_result() of
+        {scripted, Result} -> Result;
+        none -> collect_all_loop(Items, [])
+    end.
 
 collect_race(_CollectionId, Items) ->
-    case Items of
-        [] -> {error, <<"empty race">>};
-        _ ->
-            Winner = earliest_activity(Items),
-            erlang:put({aion_race_cancelled, self()}, length(Items) - 1),
-            activity_result(Winner)
+    case take_collect_result() of
+        {scripted, Result} ->
+            Result;
+        none ->
+            case Items of
+                [] -> {error, <<"empty race">>};
+                _ ->
+                    Winner = earliest_activity(Items),
+                    erlang:put({aion_race_cancelled, self()}, length(Items) - 1),
+                    activity_result(Winner)
+            end
     end.
 
 collect_map(CollectionId, Items) ->
@@ -233,6 +247,25 @@ testing_register_activity_mock(Name, Handler) ->
     Key = {aion_activity_mock, self(), Name},
     erlang:put(Key, Handler),
     {ok, <<"registered">>}.
+
+testing_enqueue_collect_result(Result) ->
+    Key = {aion_collect_script, self()},
+    Queue = case erlang:get(Key) of
+        undefined -> [];
+        Existing -> Existing
+    end,
+    erlang:put(Key, Queue ++ [Result]),
+    {ok, <<"enqueued">>}.
+
+take_collect_result() ->
+    Key = {aion_collect_script, self()},
+    case erlang:get(Key) of
+        undefined -> none;
+        [] -> none;
+        [Result | Rest] ->
+            erlang:put(Key, Rest),
+            {scripted, Result}
+    end.
 
 testing_clear_observations() ->
     erlang:put({aion_observations, self()}, []),
@@ -430,6 +463,7 @@ is_aion_key({aion_observations, Pid}) -> Pid =:= self();
 is_aion_key({aion_child_result, Pid, _ChildId}) -> Pid =:= self();
 is_aion_key({aion_child_counter, Pid}) -> Pid =:= self();
 is_aion_key({aion_race_cancelled, Pid}) -> Pid =:= self();
+is_aion_key({aion_collect_script, Pid}) -> Pid =:= self();
 is_aion_key({aion_all_cancelled, Pid}) -> Pid =:= self();
 is_aion_key({aion_clock, Pid}) -> Pid =:= self();
 is_aion_key({aion_timers, Pid}) -> Pid =:= self();

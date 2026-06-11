@@ -382,9 +382,6 @@ fn child_error_message(child_error: error.ChildError(item.ItemError)) -> String 
     error.ChildWorkflowFailed(item.ItemFailed(message)) -> message
     error.ChildOutputDecodeFailed(_) -> "child output could not be decoded"
     error.ChildErrorDecodeFailed(_) -> "child error could not be decoded"
-    error.ChildCancelled(error.Cancelled(reason: reason)) -> reason
-    error.ChildNonDeterministic(error.NonDeterminismViolation(message: message)) ->
-      message
     error.ChildEngineFailure(message: message) -> message
   }
 }
@@ -393,9 +390,10 @@ fn query_error_message(query_error: error.QueryError) -> String {
   case query_error {
     error.QueryDecodeFailed(_) -> "query payload could not be decoded"
     error.UnknownQuery(name: name) -> "unknown query: " <> name
-    error.QueryCancelled(error.Cancelled(reason: reason)) -> reason
-    error.QueryNonDeterministic(error.NonDeterminismViolation(message: message)) ->
-      message
+    error.QueryTimedOut(error.TimedOut(message: message)) -> message
+    error.QueryNotRunning(workflow_id: workflow_id) ->
+      "workflow not running: " <> workflow_id
+    error.QueryHandlerFailed(message: message) -> message
     error.QueryEngineFailure(message: message) -> message
   }
 }

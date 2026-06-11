@@ -34,6 +34,8 @@ cd ../..
 
 The source consumes only the public `aion_flow` modules: `aion/workflow`, `aion/child`, `aion/query`, `aion/activity`, `aion/codec`, and `aion/error`.
 
+> Archives are local build artifacts. Rebuild them after updating the repository: an archive built against an older `aion_flow` fails at query registration on the current engine (`VM execution error: undefined function aion_flow_ffi:register_query/3` — the registration NIF is `register_query/2` now).
+
 ## 2. Package and load both workflows
 
 ```sh
@@ -123,7 +125,7 @@ Use `--run-id "$RUN_ID"` when you need to target a specific run rather than the 
 
 Queries are read-only. A query handler should return already-known workflow state; it must not schedule activities, await children, send signals, or mutate counters.
 
-> **Known issue (beamr VM):** the query is answered correctly, but on the current beamr VM the parent process can subsequently die with `VM execution error: invalid operand for instruction pointer` when the serviced await is re-entered. The engine contract (sentinel at the yield point, service, re-enter the same await) is implemented and unit-tested on the Rust side; the crash is in the VM's re-suspension path and reproduces with batches as small as four items. Until it is fixed upstream, treat live `batch_progress` queries against this example as demonstration-only. Runs that are never queried complete reliably (verified up to 60 items).
+> **Known issue (beamr VM, refined 2026-06-12):** the query path itself is fully functional — live `batch_progress` queries are answered while the parent is parked in `child.await`, repeated queries re-enter the same await cleanly, and the query path appends no history. The previously documented `invalid operand for instruction pointer` crash on await re-entry after a serviced query no longer reproduces on the current engine (the raw-protocol engine e2e suites exercise live query + re-entry at the signal, sleep, activity, child-await, and collect yield points ungated). What remains broken is independent of queries: when the parent decodes a child terminal payload, the `gleam_json`/`gleam_stdlib` code in the rebuilt archive hits beamr 0.4.9 VM gaps (`VM execution error: bad argument` on the success-decode path; `undefined function erlang:integer_to_list/2` raising `{invalid_byte, 0}` from `gleam_json_ffi:decode/1` on the error-decode path) — a never-queried run crashes identically. Those VM defects are being fixed on the separate beamr track. End-to-end tests for this example live in `crates/aion/tests/example_query_reentry.rs` behind the `beamr_query_reentry_fixed` cargo feature (off by default); enable it once the upstream fixes land.
 
 ## 6. Inspect the final summary
 

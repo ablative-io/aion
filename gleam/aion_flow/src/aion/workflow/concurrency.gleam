@@ -5,6 +5,7 @@ import aion/codec
 import aion/duration
 import aion/error
 import aion/internal/ffi
+import aion/internal/pump
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -19,6 +20,10 @@ import gleam/string
 /// payloads are decoded one-by-one with the homogeneous output `Codec`. AT owns
 /// selective receive, fail-fast behaviour, correlation, and cancellation of
 /// remaining activities when any activity fails.
+///
+/// The collect is a yield point: pending workflow queries are serviced by the
+/// query pump before the fan-out settles, exactly as activity awaits, signal
+/// receives, timers, and child awaits do.
 pub fn all(
   activities: List(Activity(i, o)),
 ) -> Result(List(o), error.ActivityError) {
@@ -27,8 +32,9 @@ pub fn all(
     [first, ..] -> {
       let output_codec = activity.output_codec(first)
       let specs = activity_specs(activities)
+      let id = collection_id("all", specs)
 
-      case ffi.collect_all(collection_id("all", specs), specs) {
+      case pump.run(fn() { ffi.collect_all(id, specs) }) {
         Ok(payloads) -> decode_many(payloads, output_codec)
         Error(raw_error) -> Error(activity_error(raw_error))
       }
@@ -41,6 +47,9 @@ pub fn all(
 /// This is FIRST SETTLE semantics, not first-success-wins: the first activity to
 /// finish wins whether it completes successfully or returns an `ActivityError`.
 /// AT records that winner and cancels the losers.
+///
+/// Like `all`, the race is a query-pump yield point: pending workflow queries
+/// are serviced while the race is parked.
 pub fn race(
   activities: List(Activity(i, o)),
 ) -> Result(o, error.ActivityError) {
@@ -52,8 +61,9 @@ pub fn race(
     [first, ..] -> {
       let output_codec = activity.output_codec(first)
       let specs = activity_specs(activities)
+      let id = collection_id("race", specs)
 
-      case ffi.collect_race(collection_id("race", specs), specs) {
+      case pump.run(fn() { ffi.collect_race(id, specs) }) {
         Ok(payload) -> decode_one(payload, output_codec)
         Error(raw_error) -> Error(activity_error(raw_error))
       }

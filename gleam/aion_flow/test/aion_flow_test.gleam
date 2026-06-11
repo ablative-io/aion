@@ -5,6 +5,7 @@ import aion/child
 import aion/codec
 import aion/duration
 import aion/error
+import aion/internal/ffi
 import aion/query
 import aion/signal
 import aion/testing
@@ -523,6 +524,20 @@ pub fn query_handler_returns_typed_decoded_value_test() {
 pub fn query_unknown_name_returns_typed_error_test() {
   query.dispatch("missing-query", charge_receipt_codec())
   |> should.equal(Error(error.UnknownQuery("missing-query")))
+}
+
+pub fn query_handler_failure_returns_typed_error_test() {
+  // Register the name with the engine double but no process-dictionary
+  // handler: dispatch reaches handler execution and fails typed with the
+  // engine's `handler_failed:` taxonomy (the `query_failed` wire code).
+  let assert Ok(_) = ffi.register_query("orphan-query", "{}")
+
+  query.dispatch("orphan-query", charge_receipt_codec())
+  |> should.equal(
+    Error(error.QueryHandlerFailed(
+      message: "no handler registered for query orphan-query",
+    )),
+  )
 }
 
 pub fn query_decode_failure_is_typed_data_test() {

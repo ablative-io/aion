@@ -63,9 +63,14 @@ pub fn spawn(
 pub fn await(
   handle: ChildHandle(output, workflow_error),
 ) -> Result(output, error.ChildError(workflow_error)) {
+  // The engine reserves `{error, _}` from `await_child` for engine faults
+  // (`await_child:`-prefixed messages) and the `with_timeout` scope-expiry
+  // sentinel that the enclosing scope consumes. Child failure — including
+  // engine-side cancellation/timeout terminals — arrives as `{ok, "error:"}`
+  // data and is decoded by `decode_child_result` below.
   case pump.run(fn() { ffi.await_child(child_id(handle)) }) {
     Ok(raw_result) -> decode_child_result(raw_result, handle)
-    Error(raw_error) -> Error(child_engine_error(raw_error))
+    Error(raw_error) -> Error(error.ChildEngineFailure(message: raw_error))
   }
 }
 
@@ -140,20 +145,6 @@ fn decode_error_payload(
   case codec.decode(payload) {
     Ok(workflow_error) -> Error(error.ChildWorkflowFailed(workflow_error))
     Error(decode_error) -> Error(error.ChildErrorDecodeFailed(decode_error))
-  }
-}
-
-fn child_engine_error(raw: String) -> error.ChildError(workflow_error) {
-  case string.starts_with(raw, "cancelled:") {
-    True -> error.ChildCancelled(error.Cancelled(string.drop_start(raw, 10)))
-    False ->
-      case string.starts_with(raw, "non_determinism:") {
-        True ->
-          error.ChildNonDeterministic(
-            error.NonDeterminismViolation(string.drop_start(raw, 16)),
-          )
-        False -> error.ChildEngineFailure(message: raw)
-      }
   }
 }
 

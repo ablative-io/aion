@@ -125,14 +125,19 @@ pub type ReceiveError {
 
 /// A query failure.
 ///
-/// Future query primitives use this type to distinguish malformed query
-/// payloads, unknown query names, cancellation, and deterministic replay
-/// violations. Queries do not record workflow events.
+/// The variants mirror the engine's query error taxonomy (AT-007 + the
+/// query-execution brief): `UnknownQuery` for an unregistered name,
+/// `QueryTimedOut` for an expired reply deadline, `QueryNotRunning` when the
+/// target workflow is terminal or non-resident (queries never resume a
+/// workflow solely to answer), and `QueryHandlerFailed` when the registered
+/// handler ran and reported an application-level failure (the `query_failed`
+/// wire code). Queries do not record workflow events.
 pub type QueryError {
   QueryDecodeFailed(codec.DecodeError)
   UnknownQuery(name: String)
-  QueryCancelled(CancellationError)
-  QueryNonDeterministic(NonDeterminismError)
+  QueryTimedOut(TimeoutError)
+  QueryNotRunning(workflow_id: String)
+  QueryHandlerFailed(message: String)
   QueryEngineFailure(message: String)
 }
 
@@ -140,14 +145,15 @@ pub type QueryError {
 ///
 /// A completed child returns `Ok(output)`. A child workflow failure returns
 /// `ChildWorkflowFailed(workflow_error)`, preserving the child workflow's typed
-/// error. Decode, cancellation, non-determinism, and engine failures are separate
-/// typed variants so boundary failures are never swallowed or raised as panics.
+/// error — engine-side child cancellation/timeout terminals arrive on this
+/// same path as failure data (the engine maps them to `ChildWorkflowFailed`
+/// history events with `cancelled:`/`timed_out:` message prefixes). Decode and
+/// engine failures are separate typed variants so boundary failures are never
+/// swallowed or raised as panics.
 pub type ChildError(workflow_error) {
   ChildWorkflowFailed(workflow_error)
   ChildOutputDecodeFailed(codec.DecodeError)
   ChildErrorDecodeFailed(codec.DecodeError)
-  ChildCancelled(CancellationError)
-  ChildNonDeterministic(NonDeterminismError)
   ChildEngineFailure(message: String)
 }
 

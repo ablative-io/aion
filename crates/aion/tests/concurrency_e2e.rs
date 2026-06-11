@@ -533,6 +533,123 @@ async fn query_answers_while_parent_is_parked_in_collect_all() -> TestResult {
     Ok(())
 }
 
+// --- queried collect + crash/replay determinism --------------------------------
+
+/// Settle a parked two-member fan-out deterministically: release gate "a",
+/// wait for its recorded completion, release "b", and return the settled
+/// history (the run is then parked at the release-signal gate).
+async fn settle_two_member_fanout(
+    store: &Arc<dyn EventStore>,
+    gates: &Arc<GateBoard>,
+    workflow_id: &WorkflowId,
+) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    gates.release("a");
+    wait_for_history(store, workflow_id, "first completion recorded", |events| {
+        count_completed(events) == 1
+    })
+    .await?;
+    gates.release("b");
+    wait_for_history(store, workflow_id, "both completions recorded", |events| {
+        count_completed(events) == 2
+    })
+    .await
+}
+
+/// Run one never-queried, never-crashed `queryable_all` control to
+/// completion with the deterministic release order and return its history.
+async fn unqueried_uncrashed_control_history() -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let gates = GateBoard::new();
+    let control = engine_over(&store, "queryable_all", &gates).await?;
+    let (workflow_id, run_id) = start_parent(&control).await?;
+    wait_for_history(&store, &workflow_id, "fan-out scheduled", |events| {
+        activity_event_count(events) == 4
+    })
+    .await?;
+    settle_two_member_fanout(&store, &gates, &workflow_id).await?;
+    release_and_finish(
+        &control,
+        &workflow_id,
+        &run_id,
+        &json!(["\"done-a\"", "\"done-b\""]),
+    )
+    .await?;
+    let history = store.read_history(&workflow_id).await?;
+    control.shutdown()?;
+    Ok(history)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queried_collect_crash_recovery_matches_unqueried_uncrashed_control() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let gates = GateBoard::new();
+    let engine = engine_over(&store, "queryable_all", &gates).await?;
+    let (workflow_id, run_id) = start_parent(&engine).await?;
+
+    // Query while the parent is parked inside collect_all (both members
+    // gated, nothing settled): answered at the collect yield point with
+    // byte-identical history before and after.
+    let parked = wait_for_history(&store, &workflow_id, "fan-out scheduled", |events| {
+        activity_event_count(events) == 4
+    })
+    .await?;
+    let reply = query_when_registered(&engine, &workflow_id, &run_id, "state").await?;
+    let value: serde_json::Value = serde_json::from_slice(reply.bytes())?;
+    assert_eq!(value["answer"], 1);
+    assert_eq!(
+        store.read_history(&workflow_id).await?,
+        parked,
+        "queries at the collect yield point must never append events"
+    );
+
+    // Settle the fan-out deterministically, then crash with the run parked
+    // at the release gate: the recorded terminals are replay's only truth.
+    let settled = settle_two_member_fanout(&store, &gates, &workflow_id).await?;
+    engine.shutdown()?;
+
+    // Recovery resolves the settled collect purely from history, appends
+    // nothing, answers queries again (organic replay re-registration), and
+    // never re-dispatches a recorded activity.
+    let recovery_gates = GateBoard::new();
+    let recovered = engine_over(&store, "queryable_all", &recovery_gates).await?;
+    let reply = query_when_registered(&recovered, &workflow_id, &run_id, "state").await?;
+    let value: serde_json::Value = serde_json::from_slice(reply.bytes())?;
+    assert_eq!(value["answer"], 1);
+    assert_eq!(
+        store.read_history(&workflow_id).await?,
+        settled,
+        "neither recovery replay nor queries may append or rewrite events"
+    );
+    release_and_finish(
+        &recovered,
+        &workflow_id,
+        &run_id,
+        &json!(["\"done-a\"", "\"done-b\""]),
+    )
+    .await?;
+    let queried_crashed = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        &queried_crashed[..settled.len()],
+        &settled[..],
+        "replay must leave the settled prefix byte-identical"
+    );
+    assert_eq!(
+        recovery_gates.finished_dispatches(),
+        0,
+        "replay must never re-dispatch a recorded activity"
+    );
+    recovered.shutdown()?;
+
+    // Control: identical run and release order, never queried, never crashed.
+    let control_history = unqueried_uncrashed_control_history().await?;
+    assert_eq!(
+        run_shape(&queried_crashed),
+        run_shape(&control_history),
+        "queried/crashed and unqueried/uncrashed histories must agree in shape"
+    );
+    Ok(())
+}
+
 // --- brief §4 item 9: all-success ordering + restart replay -------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

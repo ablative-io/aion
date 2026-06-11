@@ -1,5 +1,5 @@
 -module(aion_fixture_query).
--export([queryable/1, staged/1, unpumped/1, busy/1]).
+-export([queryable/1, staged/1, unpumped/1, busy/1, activity_gated/1]).
 
 %% Query end-to-end fixture for tests/engine_query.rs.
 %%
@@ -66,6 +66,22 @@ busy_loop(0) ->
 busy_loop(N) ->
     {ok, _Fired} = pumped(fun() -> aion_flow_ffi:sleep(<<"20">>) end),
     busy_loop(N - 1).
+
+%% Activity-await fixture: registers a state handler, dispatches one gated
+%% activity (the test dispatcher blocks until gate "a" is released), and
+%% parks in the pumped await_activity_result yield point so queries are
+%% answered while the activity is in flight. The recorded activity terminal
+%% plus the "release" gate make crash/replay determinism tests possible:
+%% replay resolves the await purely from history. The args are precomputed
+%% so the await fun body is re-execution-safe on every wake.
+activity_gated(_Input) ->
+    ok = register_handler(<<"state">>, state_handler()),
+    {ok, Correlation} = aion_flow_ffi:dispatch_activity(
+        <<"gated_ok:a">>, <<"{\"item\":1}">>, <<"{}">>),
+    {ok, _Result} =
+        pumped(fun() -> aion_flow_ffi:await_activity_result(Correlation) end),
+    {ok, _Release} = receive_released(<<"release">>),
+    42.
 
 %% --- handlers ------------------------------------------------------------
 

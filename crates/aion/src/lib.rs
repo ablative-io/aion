@@ -23,6 +23,16 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Cargo features
+//!
+//! - `beamr_query_reentry_fixed` (off by default): compiles the
+//!   batch-orchestrator example e2e tests (`tests/example_query_reentry.rs`)
+//!   that drive live queries through the Gleam SDK's query pump while a
+//!   parent is parked in `child.await`. The engine-side query protocol is
+//!   fully functional, but the example's child-result decode path hits
+//!   beamr 0.4.9 VM gaps in `gleam_json`/`gleam_stdlib`; enable the feature
+//!   once the upstream beamr fixes land and the pin is bumped.
 
 #![deny(unsafe_code)]
 
