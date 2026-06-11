@@ -57,9 +57,11 @@ output         = "my-workflow.aion"      # OPTIONAL, derived otherwise
 | `input_schema` | string (path) | **yes** | Path to a JSON file, resolved against the project root, containing the JSON Schema for the workflow's input payload. The parsed document is embedded in the manifest verbatim; the file must exist and parse as JSON. |
 | `output_schema` | string (path) | **yes** | Same as `input_schema`, for the workflow's result payload. |
 | `activities` | array of strings | **yes** | The activity types the workflow schedules (the names workers register). Strings must be non-empty and unique. An explicitly empty list (`activities = []`) is legal for workflows that schedule no activities; *omitting* the field is an error — say "none" rather than forget it. |
-| `output` | string (path) | no | Archive output path, resolved against the project root. When absent, derived as `<entry_module>.aion` in the project root. All `output` values (explicit or derived) must be pairwise distinct. |
+| `output` | string (path) | no | Archive output path, resolved against the project root. When absent, derived as `<entry_module>.aion` in the project root. All `output` values (explicit or derived) must be pairwise distinct — checked on the normalized paths, so two spellings of the same file conflict. |
 
 Unknown keys anywhere in the file are hard errors naming the key — typos fail loudly instead of being ignored.
+
+**Root confinement (enforced).** Every path `workflow.toml` declares — `output`, `input_schema`, `output_schema` — must resolve inside the project root. Paths are normalized lexically (`.` and `..` folded, no filesystem access), then rejected with a typed error if they are absolute or escape the root; `sub/../out.aion` is fine, `../out.aion` is not. The one exception is the CLI's `--out` (the library's `output_override`): that path belongs to the *caller*, not the descriptor, and may point anywhere — including outside the project root.
 
 ### Multi-workflow projects
 
@@ -95,7 +97,7 @@ aion-cli package [PATH] [--out <FILE>] [--build] [--pretty]
 ```
 
 - `PATH` — workflow project root (the directory containing `workflow.toml`). Defaults to the current directory.
-- `--out <FILE>` — write the archive to this path instead of the configured/derived output. Resolved against your current directory. Only valid when the project declares exactly one workflow.
+- `--out <FILE>` — write the archive to this path instead of the configured/derived output. Resolved against your current directory. Only valid when the project declares exactly one workflow. As the caller's own path it is exempt from the descriptor's root confinement and may point anywhere.
 - `--build` — run `gleam build` in the project first (compiler output appears on stderr). Without it, packaging an unbuilt project fails with an error telling you to build.
 - `--pretty` — pretty-print the JSON result document (global flag).
 
@@ -137,8 +139,10 @@ Errors name the offending file, field, or module. Common ones:
 | `dependency <package> is in gleam.toml but missing from manifest.toml; rebuild` | The lockfile is stale relative to `gleam.toml`; rebuild so Gleam regenerates it. |
 | `module <m> is provided by both <a> and <b>` | Two packages compile a module with the same logical name; rename one. |
 | `entry module <m> not found in compiled output under <path>` | The `entry_module` in `workflow.toml` does not match a compiled module — check spelling and remember nested modules use `@` (`a/b.gleam` → `a@b`). |
-| `workflows <a> and <b> both write to <path>` | Two `[[workflow]]` entries resolve to the same output file; set distinct `output` values. |
+| `invalid workflow.toml: <field>: path <path> is absolute or escapes the project root` | A declared `output`, `input_schema`, or `output_schema` path is absolute or `..`-traverses above the project root. Descriptor paths are confined to the root; use a relative in-root path (or `--out` for caller-chosen output locations). |
+| `workflows <a> and <b> both write to <path>` | Two `[[workflow]]` entries resolve to the same output file (after normalization, so differently-spelled paths to one file count); set distinct `output` values. |
 | `--out is only valid for single-workflow projects` | Drop `--out` or use per-workflow `output` fields. |
+| `failed to write archive <path>: ...` | The named output path could not be written — most often its parent directory does not exist; create it first. |
 | `module <m> uses an engine-reserved namespace and must not ship as package bytecode` | Your project defines a module in the engine-owned namespace (e.g. `aion_flow_ffi`); rename it. |
 
 ## Library usage (embedders)
@@ -155,4 +159,4 @@ for packaged in &report.packages {
 }
 ```
 
-`package_project` is pure with respect to the environment: it reads only under the project root, writes only the declared outputs, never spawns processes, reads no environment variables, and never prints — everything observable is in the returned `ProjectReport` or the structured `PackagingError`. It performs blocking filesystem I/O; async callers should wrap it in a blocking task (e.g. `tokio::task::spawn_blocking`).
+`package_project` is pure with respect to the environment: it reads only under the project root, writes only the declared outputs, never spawns processes, reads no environment variables, and never prints — everything observable is in the returned `ProjectReport` or the structured `PackagingError`. The read/write confinement is enforced, not assumed: `workflow.toml`-declared paths that are absolute or escape the root fail with `PackagingError::PathEscapesRoot` before any file is touched, with `PackageOptions::output_override` as the sole, caller-owned exception. It performs blocking filesystem I/O; async callers should wrap it in a blocking task (e.g. `tokio::task::spawn_blocking`).

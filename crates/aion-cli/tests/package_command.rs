@@ -104,6 +104,43 @@ fn package_hello_world_succeeds_offline_with_result_document() -> TestResult {
     Ok(())
 }
 
+/// `--out` is the caller's path and is exempt from the root confinement that
+/// applies to `workflow.toml`-declared paths: a `..` traversal (here landing
+/// outside any project root) must still be honoured.
+#[test]
+fn package_out_override_with_dotdot_is_exempt_from_confinement() -> TestResult {
+    let Some(project) = built_hello_world() else {
+        println!("skipping: examples/hello-world is not built; run `gleam build` there first");
+        return Ok(());
+    };
+    let out_dir = temp_dir("hello-dotdot")?;
+    fs::create_dir_all(out_dir.join("nested"))?;
+    let out_arg = out_dir.join("nested/../hello-dotdot.aion");
+
+    let output = run_cli(
+        &[
+            "package",
+            project.to_str().ok_or("non-UTF-8 repo path")?,
+            "--out",
+            out_arg.to_str().ok_or("non-UTF-8 temp path")?,
+        ],
+        false,
+    )?;
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        output.status.success(),
+        "package with dotdot --out failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        out_dir.join("hello-dotdot.aion").is_file(),
+        "archive was not written through the dotdot --out path"
+    );
+    fs::remove_dir_all(&out_dir)?;
+    Ok(())
+}
+
 #[test]
 fn package_without_descriptor_fails_with_error_chain_and_no_dial() -> TestResult {
     let dir = temp_dir("missing-descriptor")?;

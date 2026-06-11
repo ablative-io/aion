@@ -10,6 +10,7 @@
 
 mod assemble;
 mod config;
+mod confine;
 mod discover;
 mod error;
 

@@ -9,7 +9,7 @@ use std::{
 
 use serde::Deserialize;
 
-use super::error::PackagingError;
+use super::{confine::resolve_confined, error::PackagingError};
 use crate::builder::is_safe_logical_name;
 
 /// File name of the workflow packaging descriptor inside the project root.
@@ -72,8 +72,13 @@ pub(crate) struct WorkflowConfig {
     pub(crate) output_path: PathBuf,
 }
 
-/// Loads and validates `<root>/workflow.toml`, resolving all relative paths
+/// Loads and validates `<root>/workflow.toml`, resolving all declared paths
 /// against `root` and parsing the declared schema files.
+///
+/// Declared paths (`output`, `input_schema`, `output_schema`) are lexically
+/// normalized and must resolve inside `root`; absolute paths and `..`
+/// traversal that escapes the root are rejected with
+/// [`PackagingError::PathEscapesRoot`].
 pub(crate) fn load_config(root: &Path) -> Result<ProjectConfig, PackagingError> {
     let path = root.join(CONFIG_FILE_NAME);
     let text = match fs::read_to_string(&path) {
@@ -188,6 +193,12 @@ fn validate_unique_entry_modules(workflows: &[RawWorkflow]) -> Result<(), Packag
     Ok(())
 }
 
+/// Resolves output and schema paths against `root` — confining every
+/// descriptor-declared path to the root — and rejects output conflicts.
+///
+/// Conflict detection runs on the normalized resolved paths, so textually
+/// different spellings of the same file (`out.aion` vs `sub/../out.aion`)
+/// are caught as the conflict they are on disk.
 fn resolve_workflows(
     root: &Path,
     workflows: Vec<RawWorkflow>,
@@ -195,9 +206,9 @@ fn resolve_workflows(
     let mut claimed_outputs: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut resolved = Vec::with_capacity(workflows.len());
 
-    for entry in &workflows {
+    for (index, entry) in workflows.iter().enumerate() {
         let output_path = match &entry.output {
-            Some(output) => root.join(output),
+            Some(output) => resolve_confined(root, format!("workflow[{index}].output"), output)?,
             None => root.join(format!("{}.{ARCHIVE_EXTENSION}", entry.entry_module)),
         };
         if let Some(first) = claimed_outputs.insert(output_path.clone(), entry.entry_module.clone())
@@ -214,10 +225,21 @@ fn resolve_workflows(
     workflows
         .into_iter()
         .zip(resolved)
-        .map(|(entry, output_path)| {
+        .enumerate()
+        .map(|(index, (entry, output_path))| {
+            let input_schema_path = resolve_confined(
+                root,
+                format!("workflow[{index}].input_schema"),
+                &entry.input_schema,
+            )?;
+            let output_schema_path = resolve_confined(
+                root,
+                format!("workflow[{index}].output_schema"),
+                &entry.output_schema,
+            )?;
             Ok(WorkflowConfig {
-                input_schema: load_schema(&root.join(&entry.input_schema))?,
-                output_schema: load_schema(&root.join(&entry.output_schema))?,
+                input_schema: load_schema(&input_schema_path)?,
+                output_schema: load_schema(&output_schema_path)?,
                 entry_module: entry.entry_module,
                 entry_function: entry.entry_function,
                 timeout: Duration::from_secs(entry.timeout_seconds),
@@ -442,6 +464,96 @@ mod tests {
             Err(PackagingError::ConfigInvalid { field, reason })
                 if field == "workflow[1].entry_module" && reason.contains("workflow[0]")
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn absolute_schema_path_outside_root_is_rejected_unread() -> TestResult {
+        let outside = std::env::temp_dir().join("aion-config-outside-secret.json");
+        fs::write(&outside, br#"{ "type": "object" }"#)?;
+        let outside_str = outside.to_str().ok_or("non-UTF-8 temp path")?.to_owned();
+        let descriptor =
+            workflow_block(Some("input_schema")) + &format!("input_schema = \"{outside_str}\"\n");
+        let (_, result) = load_and_clean("config-abs-schema", &descriptor)?;
+        fs::remove_file(&outside)?;
+
+        assert!(
+            matches!(
+                result,
+                Err(PackagingError::PathEscapesRoot { ref field, ref path })
+                    if field == "workflow[0].input_schema" && *path == outside
+            ),
+            "absolute schema path was not rejected: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dotdot_output_escaping_root_is_rejected() -> TestResult {
+        let descriptor = workflow_block(None) + "output = \"../../escape.aion\"\n";
+        let (_, result) = load_and_clean("config-escape-output", &descriptor)?;
+
+        assert!(
+            matches!(
+                result,
+                Err(PackagingError::PathEscapesRoot { ref field, ref path })
+                    if field == "workflow[0].output"
+                        && path == &PathBuf::from("../../escape.aion")
+            ),
+            "escaping output was not rejected: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dotdot_output_schema_escaping_root_is_rejected() -> TestResult {
+        let descriptor = workflow_block(Some("output_schema"))
+            + "output_schema = \"schemas/../../outside.json\"\n";
+        let (_, result) = load_and_clean("config-escape-output-schema", &descriptor)?;
+
+        assert!(
+            matches!(
+                result,
+                Err(PackagingError::PathEscapesRoot { ref field, ref path })
+                    if field == "workflow[0].output_schema"
+                        && path == &PathBuf::from("schemas/../../outside.json")
+            ),
+            "escaping output_schema was not rejected: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dotdot_paths_staying_inside_root_are_accepted_and_normalized() -> TestResult {
+        let descriptor = workflow_block(Some("input_schema"))
+            + "input_schema = \"sub/../schemas/input.json\"\noutput = \"sub/../demo.aion\"\n";
+        let (root, result) = load_and_clean("config-inside-dotdot", &descriptor)?;
+        let config = result?;
+
+        assert_eq!(config.workflows[0].output_path, root.join("demo.aion"));
+        assert_eq!(
+            config.workflows[0].input_schema,
+            json!({ "type": "object" })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn textually_distinct_outputs_naming_the_same_file_conflict() -> TestResult {
+        let second = workflow_block(Some("entry_module"))
+            + "entry_module = \"demo@nested\"\noutput = \"sub/../demo.aion\"\n";
+        let descriptor = format!("{}output = \"demo.aion\"\n\n{second}", workflow_block(None));
+        let (root, result) = load_and_clean("config-normalized-conflict", &descriptor)?;
+
+        assert!(
+            matches!(
+                result,
+                Err(PackagingError::OutputConflict { ref first, ref second, ref path })
+                    if first == "demo" && second == "demo@nested"
+                        && *path == root.join("demo.aion")
+            ),
+            "normalized-equal outputs did not conflict: {result:?}"
+        );
         Ok(())
     }
 

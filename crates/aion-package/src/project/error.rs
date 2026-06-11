@@ -155,6 +155,21 @@ pub enum PackagingError {
         source: std::io::Error,
     },
 
+    /// A `workflow.toml`-declared path is absolute or escapes the project
+    /// root after lexically folding `.` and `..` components.
+    ///
+    /// Only descriptor-sourced paths (`output`, `input_schema`,
+    /// `output_schema`) are confined to the root; the programmatic
+    /// [`PackageOptions::output_override`](crate::PackageOptions) is the
+    /// caller's own path and is intentionally exempt.
+    #[error("invalid workflow.toml: {field}: path {path} is absolute or escapes the project root")]
+    PathEscapesRoot {
+        /// Descriptor field that declared the path, e.g. `workflow[0].output`.
+        field: String,
+        /// The offending path exactly as declared in the descriptor.
+        path: PathBuf,
+    },
+
     /// Two workflows resolve to the same output archive path.
     #[error("workflows `{first}` and `{second}` both write to {path}")]
     OutputConflict {
@@ -171,6 +186,20 @@ pub enum PackagingError {
     OutputOverrideAmbiguous {
         /// Number of workflows the project declares.
         count: usize,
+    },
+
+    /// A workflow's `.aion` archive could not be built or written to its
+    /// resolved output path.
+    ///
+    /// Unlike the transparent [`PackagingError::Package`] variant, this one
+    /// names the output path, so "No such file or directory"-style I/O
+    /// failures identify the file that could not be written.
+    #[error("failed to write archive {path}: {source}")]
+    OutputWrite {
+        /// Resolved output path the archive could not be written to.
+        path: PathBuf,
+        /// Package-format failure reported while building or writing.
+        source: PackageError,
     },
 
     /// A package-format failure surfaced while building, writing, or re-loading
@@ -254,6 +283,27 @@ mod tests {
             PackagingError::OutputOverrideAmbiguous { count: 3 }.to_string(),
             "--out is only valid for single-workflow projects (3 declared)"
         );
+        assert_eq!(
+            PackagingError::PathEscapesRoot {
+                field: "workflow[0].output".to_owned(),
+                path: PathBuf::from("../escape.aion"),
+            }
+            .to_string(),
+            "invalid workflow.toml: workflow[0].output: path ../escape.aion \
+             is absolute or escapes the project root"
+        );
+        let output_write = PackagingError::OutputWrite {
+            path: PathBuf::from("/project/missing/demo.aion"),
+            source: crate::PackageError::ArchiveWriteIo {
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            },
+        };
+        assert!(
+            output_write
+                .to_string()
+                .starts_with("failed to write archive /project/missing/demo.aion: ")
+        );
+        assert!(std::error::Error::source(&output_write).is_some());
     }
 
     #[test]
