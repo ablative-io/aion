@@ -123,10 +123,10 @@ class WorkflowHandle:
     def subscribe(self, *, decoder: type[T] | None = None, raw: bool = False) -> EventStream[T]:
         """Return an async iterator of workflow events.
 
-        The server wire protocol does not yet expose a resume cursor, so a
-        disconnect before any event was delivered reconnects transparently,
-        while a disconnect after delivered events raises Unavailable (the
-        stream cannot be resumed gap-free; restart the subscription).
+        Transient disconnects reconnect transparently and resume from the
+        last delivered per-workflow sequence number via the wire cursor
+        (``resume_from_seq`` = last delivered + 1), so delivery stays
+        gap-free and duplicate-free across reconnects.
 
         Raises from iteration:
             NotFound, Unauthenticated, NamespaceDenied, Unavailable,

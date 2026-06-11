@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import AsyncIterator
+from types import ModuleType, TracebackType
+from typing import Any
 
 import pytest
 
-from aion_client import NamespaceDenied, Unavailable
+from aion_client import InvalidArgument, NamespaceDenied, Unavailable
 from aion_client.stream import (
     EventStream,
     TerminalStreamFailure,
@@ -233,16 +236,32 @@ async def test_stream_disconnect_after_delivery_without_resume_support_raises_un
     assert connect_attempts == [None]
 
 
-def test_subscription_request_with_resume_cursor_raises_unavailable() -> None:
-    """The wire-request guard stays honest: a resume cursor on the websocket
-    protocol means an unresumable reopen was attempted upstream."""
+def test_subscription_request_with_resume_cursor_emits_wire_field() -> None:
+    """A resume cursor rides inside per_workflow as resume_from_seq, the
+    first sequence number wanted."""
 
-    with pytest.raises(Unavailable) as excinfo:
-        _subscription_request("default", "wf", 3)
-    assert "resumption" in str(excinfo.value)
+    assert _subscription_request("default", "wf", 3) == {
+        "per_workflow": {
+            "namespace": "default",
+            "workflow_id": {"uuid": "wf"},
+            "resume_from_seq": 3,
+        }
+    }
 
 
-def test_subscription_request_without_cursor_builds_per_workflow_filter() -> None:
+def test_subscription_request_rejects_cursor_below_one() -> None:
+    """resume_from_seq = 0 is invalid_input on the wire; the request builder
+    refuses to ever send it (the resume loop sends last_delivered + 1 >= 1)."""
+
+    with pytest.raises(InvalidArgument) as excinfo:
+        _subscription_request("default", "wf", 0)
+    assert "resume_from_seq" in str(excinfo.value)
+
+
+def test_subscription_request_without_cursor_omits_resume_field() -> None:
+    """The first connect carries no cursor: the resume_from_seq key is absent
+    entirely (never present as 0 or null)."""
+
     assert _subscription_request("default", "wf", None) == {
         "per_workflow": {
             "namespace": "default",
@@ -498,6 +517,203 @@ async def test_stream_first_event_with_seq_zero_is_delivered() -> None:
     assert await stream.__anext__() == {"seq": 1}
     assert resume_requests == [None, 1]
     assert stream.last_sequence == 1
+
+
+class _FakeWebSocket:
+    """Scripted server side of one websocket connection.
+
+    Yields the scripted frames in order; an optional ``tail_error`` is raised
+    after the last frame (standing in for an abnormal closure mid-stream).
+    """
+
+    def __init__(self, frames: list[str], *, tail_error: BaseException | None = None) -> None:
+        self._frames = iter(frames)
+        self._tail_error = tail_error
+        self.sent: list[dict[str, Any]] = []
+
+    async def send(self, message: str) -> None:
+        decoded = json.loads(message)
+        assert isinstance(decoded, dict)
+        self.sent.append(decoded)
+
+    def __aiter__(self) -> _FakeWebSocket:
+        return self
+
+    async def __anext__(self) -> str:
+        try:
+            return next(self._frames)
+        except StopIteration:
+            if self._tail_error is not None:
+                raise self._tail_error from None
+            raise StopAsyncIteration from None
+
+
+class _FakeConnection:
+    """Async context manager mirroring ``websockets.connect(...)``."""
+
+    def __init__(self, socket: _FakeWebSocket) -> None:
+        self._socket = socket
+
+    async def __aenter__(self) -> _FakeWebSocket:
+        return self._socket
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        return False
+
+
+def _install_fake_websockets(
+    monkeypatch: pytest.MonkeyPatch,
+    sockets: list[_FakeWebSocket],
+    connect_headers: list[dict[str, str]],
+) -> type[Exception]:
+    """Install a scripted ``websockets`` module pair into ``sys.modules``.
+
+    Returns the fake ``ConnectionClosedError`` class so tests can script
+    abnormal closures with the exact type the transport catches.
+    """
+
+    class _FakeConnectionClosedError(Exception):
+        """Stands in for websockets.exceptions.ConnectionClosedError."""
+
+    pending = iter(sockets)
+
+    def _connect(endpoint: str, additional_headers: dict[str, str] | None = None) -> _FakeConnection:
+        assert endpoint == "ws://example/events"
+        connect_headers.append(dict(additional_headers or {}))
+        try:
+            return _FakeConnection(next(pending))
+        except StopIteration:
+            raise AssertionError("more websocket connections opened than scripted") from None
+
+    module = ModuleType("websockets")
+    exceptions_module = ModuleType("websockets.exceptions")
+    module.__dict__["connect"] = _connect
+    exceptions_module.__dict__["ConnectionClosedError"] = _FakeConnectionClosedError
+    monkeypatch.setitem(sys.modules, "websockets", module)
+    monkeypatch.setitem(sys.modules, "websockets.exceptions", exceptions_module)
+    return _FakeConnectionClosedError
+
+
+def _wire_frame(seq: int) -> str:
+    return json.dumps({"seq": seq}, separators=(",", ":"))
+
+
+@pytest.mark.asyncio
+async def test_builtin_transport_resumes_with_cursor_after_abnormal_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The built-in websocket transport is resume-capable: the first connect
+    carries no cursor, an abnormal closure reconnects with resume_from_seq =
+    last delivered + 1, the auth header is re-sent, and the replayed overlap
+    is deduped so delivery is gap-free and duplicate-free."""
+
+    connect_headers: list[dict[str, str]] = []
+    sockets: list[_FakeWebSocket] = []
+    closed_error = _install_fake_websockets(monkeypatch, sockets, connect_headers)
+    first = _FakeWebSocket(
+        [_wire_frame(1), _wire_frame(2)],
+        tail_error=closed_error("no close frame received or sent"),
+    )
+    # A cursor-honoring server would replay exactly from seq 3; replaying 2 as
+    # well exercises the dedupe defence-in-depth on top of the cursor.
+    second = _FakeWebSocket([_wire_frame(2), _wire_frame(3), _wire_frame(4)])
+    sockets.extend([first, second])
+
+    stream: EventStream[dict[str, int]] = EventStream(
+        endpoint="ws://example/events",
+        namespace="default",
+        workflow_id="wf",
+        run_id=None,
+        auth="token",
+    )
+
+    delivered = [await stream.__anext__() for _ in range(4)]
+    assert delivered == [{"seq": 1}, {"seq": 2}, {"seq": 3}, {"seq": 4}]
+    assert first.sent == [
+        {"per_workflow": {"namespace": "default", "workflow_id": {"uuid": "wf"}}}
+    ]
+    assert second.sent == [
+        {"per_workflow": {"namespace": "default", "workflow_id": {"uuid": "wf"}, "resume_from_seq": 3}}
+    ]
+    assert connect_headers == [{"authorization": "Bearer token"}, {"authorization": "Bearer token"}]
+
+
+@pytest.mark.asyncio
+async def test_builtin_transport_lagged_frame_reconnects_with_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal lagged error frame on the built-in transport triggers a
+    reconnect that carries the resume cursor instead of raising."""
+
+    lagged_frame = json.dumps(
+        {"error": {"code": "lagged", "message": "subscriber lagged behind the broadcast buffer"}},
+        separators=(",", ":"),
+    )
+    connect_headers: list[dict[str, str]] = []
+    sockets: list[_FakeWebSocket] = []
+    _install_fake_websockets(monkeypatch, sockets, connect_headers)
+    first = _FakeWebSocket([_wire_frame(1), lagged_frame])
+    second = _FakeWebSocket([_wire_frame(2)])
+    sockets.extend([first, second])
+
+    stream: EventStream[dict[str, int]] = EventStream(
+        endpoint="ws://example/events",
+        namespace="default",
+        workflow_id="wf",
+        run_id=None,
+        auth=None,
+    )
+
+    assert await stream.__anext__() == {"seq": 1}
+    assert await stream.__anext__() == {"seq": 2}
+    assert second.sent == [
+        {"per_workflow": {"namespace": "default", "workflow_id": {"uuid": "wf"}, "resume_from_seq": 2}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_round_trip_against_cursor_honoring_transport() -> None:
+    """Full resume round-trip: deliver 1..3, drop, the fake honours the
+    cursor by replaying exactly from 4 — delivery is exactly 1..6, once each,
+    and the reconnect asked for resume_from = last_seq + 1 = 4."""
+
+    all_events = [{"seq": seq} for seq in range(1, 7)]
+    resume_requests: list[int | None] = []
+
+    async def _deliver_then_drop(events: list[dict[str, int]]) -> AsyncIterator[dict[str, int]]:
+        for event in events:
+            yield event
+        raise TransientStreamDisconnect("dropped")
+
+    async def factory(resume_from: int | None) -> AsyncIterator[dict[str, int]]:
+        resume_requests.append(resume_from)
+        if resume_from is None:
+            return _deliver_then_drop(all_events[:3])
+        # Cursor-honoring: replay exactly the suffix starting at the cursor.
+        return _iter_events(all_events[resume_from - 1 :])
+
+    stream: EventStream[dict[str, int]] = EventStream(
+        endpoint="ws://example/events",
+        namespace="default",
+        workflow_id="wf",
+        run_id=None,
+        auth=None,
+        transport_factory=factory,
+    )
+
+    delivered = [await stream.__anext__() for _ in range(6)]
+    assert delivered == all_events
+    assert resume_requests == [None, 4]
+    seqs = [event["seq"] for event in delivered if isinstance(event, dict)]
+    assert len(seqs) == 6
+    assert len(seqs) == len(set(seqs)), "duplicate delivery"
+    assert seqs == sorted(seqs) and seqs == list(range(seqs[0], seqs[0] + len(seqs))), "gapped delivery"
+    assert stream.last_sequence == 6
 
 
 @pytest.mark.asyncio

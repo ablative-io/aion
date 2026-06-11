@@ -17,8 +17,8 @@ T = TypeVar("T")
 TransportFactory: TypeAlias = Callable[[int | None], AsyncIterator[Any] | Awaitable[AsyncIterator[Any]]]
 
 _RESUME_UNSUPPORTED_MESSAGE = (
-    "stream disconnected after delivering events and the server does not yet "
-    "support resumption; restart the subscription"
+    "stream disconnected after delivering events and the configured transport "
+    "does not support resumption; restart the subscription"
 )
 
 
@@ -42,10 +42,14 @@ class TerminalStreamFailure(Exception):
 class EventStream(Generic[T]):
     """Async iterator that reconnects and resumes from the last delivered seq.
 
-    Resumption requires a transport that can honour a resume cursor. When the
-    transport cannot (the server wire protocol does not yet expose one), a
-    disconnect after at least one delivered event raises :class:`Unavailable`
-    rather than silently reopening a gapped stream.
+    On reconnect the cursor ``resume_from_seq`` (the first sequence number
+    wanted, ``last_delivered + 1``) rides inside the per-workflow subscription
+    request; the server replays the missed suffix and splices into the live
+    stream, so delivery is gap-free and duplicate-free. Resumption requires a
+    transport that can honour the cursor. When an injected transport disclaims
+    that capability (``transport_supports_resume=False``), a disconnect after
+    at least one delivered event raises :class:`Unavailable` rather than
+    silently reopening a gapped stream.
     """
 
     def __init__(
@@ -70,14 +74,16 @@ class EventStream(Generic[T]):
         self.raw = raw
         self._transport_factory = transport_factory or self._websocket_transport
         # Whether the transport can honour a non-None resume_from cursor on
-        # reconnect. The built-in websocket transport cannot: the server wire
-        # protocol exposes no resume cursor yet, and per-workflow
-        # subscriptions do not replay history, so reopening without a cursor
-        # after events were delivered would silently gap the stream. Injected
-        # factories receive resume_from per the TransportFactory contract and
-        # are presumed to honour it unless explicitly declared otherwise.
+        # reconnect. The built-in websocket transport can: the per-workflow
+        # subscription request carries resume_from_seq (the first sequence
+        # number wanted), so a reconnect after delivered events replays the
+        # missed suffix gap-free. Injected factories receive resume_from per
+        # the TransportFactory contract and are presumed to honour it unless
+        # explicitly declared otherwise; a factory that disclaims resume gets
+        # an honest Unavailable after delivered events instead of a silently
+        # gapped reopen.
         if transport_supports_resume is None:
-            transport_supports_resume = transport_factory is not None
+            transport_supports_resume = True
         self._transport_supports_resume = transport_supports_resume
         self._last_seq: int | None = None
         self._current: AsyncIterator[Any] | None = None
@@ -174,11 +180,10 @@ class EventStream(Generic[T]):
 
         When events have already been delivered the reconnect must resume from
         the last sequence number, otherwise the reopened stream would silently
-        gap (per-workflow subscriptions do not replay history). If the
-        transport cannot honour a resume cursor, raise an honest
-        :class:`Unavailable` instead of reconnecting; when the close also
-        failed, this resume-needed error wins, with the close error as its
-        ``__cause__``.
+        gap (a cursor-less reopen does not replay history). If the transport
+        cannot honour a resume cursor, raise an honest :class:`Unavailable`
+        instead of reconnecting; when the close also failed, this
+        resume-needed error wins, with the close error as its ``__cause__``.
         """
 
         current, self._current = self._current, None
@@ -211,8 +216,14 @@ class EventStream(Generic[T]):
     async def _websocket_transport(self, resume_from: int | None) -> AsyncIterator[Any]:
         try:
             websockets: ModuleType = importlib.import_module("websockets")
+            ws_exceptions: ModuleType = importlib.import_module("websockets.exceptions")
         except ImportError as exc:
             raise InvalidArgument("websockets is required for subscribe") from exc
+        # An abnormal closure (no close frame, e.g. a dropped TCP connection)
+        # raises ConnectionClosedError from iteration; it is a transient
+        # disconnect, so the resume loop reconnects with the cursor. A clean
+        # close simply ends iteration.
+        connection_closed_error = cast("type[BaseException]", ws_exceptions.ConnectionClosedError)
 
         headers: dict[str, str] = {}
         if self.auth is not None:
@@ -225,6 +236,8 @@ class EventStream(Generic[T]):
                     yield message
         except OSError as exc:
             raise TransientStreamDisconnect(str(exc)) from exc
+        except connection_closed_error as exc:
+            raise TransientStreamDisconnect(str(exc)) from exc
 
     def _decode_frame(self, frame: Any) -> StreamEvent[T]:
         event = _frame_event(frame)
@@ -235,17 +248,18 @@ class EventStream(Generic[T]):
 
 
 def _subscription_request(namespace: str, workflow_id: str, resume_from: int | None) -> dict[str, object]:
-    if resume_from is not None:
-        # Defence in depth: the reconnect logic in EventStream never reopens
-        # the websocket transport with a resume cursor (it raises Unavailable
-        # first), so reaching here means an unresumable reopen was attempted.
-        raise Unavailable(_RESUME_UNSUPPORTED_MESSAGE)
-    return {
-        "per_workflow": {
-            "namespace": namespace,
-            "workflow_id": {"uuid": workflow_id},
-        }
+    per_workflow: dict[str, object] = {
+        "namespace": namespace,
+        "workflow_id": {"uuid": workflow_id},
     }
+    if resume_from is not None:
+        if resume_from < 1:
+            # The cursor is the FIRST sequence number wanted; the server
+            # rejects 0 as invalid_input, so it must never reach the wire.
+            # EventStream sends last_delivered + 1, which is always >= 1.
+            raise InvalidArgument("resume_from_seq must be >= 1 (the first sequence number wanted)")
+        per_workflow["resume_from_seq"] = resume_from
+    return {"per_workflow": per_workflow}
 
 
 def _frame_event(frame: Any) -> Any:
