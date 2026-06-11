@@ -81,7 +81,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::test_support::{
-        NAMESPACE, json_request, read_json, read_text, runtime_config,
+        NAMESPACE, json_request, read_json, read_text, runtime_config, server_state,
     };
     use super::*;
     use crate::{
@@ -120,7 +120,7 @@ mod tests {
                 asset_path: bundle.path().to_path_buf(),
             },
         };
-        let router = http_router(ServerState::from_parts(resolver, config))?;
+        let router = http_router(server_state(resolver, config).await?)?;
 
         let root = router
             .clone()
@@ -174,9 +174,19 @@ mod tests {
     #[tokio::test]
     async fn observability_routes_are_public_and_expose_expected_payloads()
     -> Result<(), Box<dyn std::error::Error>> {
+        // This test rides the production `build_with_store` startup path, so
+        // under `feature = "auth"` the configured jwks_url must be a live
+        // endpoint for the initial JWKS fetch.
+        #[cfg(feature = "auth")]
+        let config = {
+            let mut config = runtime_config();
+            config.auth.jwks_url = Some(crate::auth::test_support::serve_jwks()?);
+            config
+        };
+        #[cfg(not(feature = "auth"))]
+        let config = runtime_config();
         let router = http_router(
-            crate::ServerState::build_with_store(InMemoryStore::default(), runtime_config())
-                .await?,
+            crate::ServerState::build_with_store(InMemoryStore::default(), config).await?,
         )?;
 
         let metrics_response = router

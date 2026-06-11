@@ -60,11 +60,13 @@ mod tests {
     };
 
     use super::super::router::workflow_router;
+    #[cfg(not(feature = "auth"))]
+    use super::super::test_support::TOKEN;
     use super::super::test_support::{
-        NAMESPACE, TOKEN, runtime_config, started_event, workflow_id,
+        NAMESPACE, runtime_config, server_state, started_event, workflow_id,
     };
     use crate::{
-        NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
+        NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
         config::NamespaceMode,
     };
 
@@ -90,7 +92,7 @@ mod tests {
             Arc::new(ownership),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let server = tokio::spawn(async move {
@@ -100,9 +102,13 @@ mod tests {
         });
 
         let mut request = format!("ws://{address}/events/stream").into_client_request()?;
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = TOKEN.to_owned();
         request
             .headers_mut()
-            .insert("authorization", format!("Bearer {TOKEN}").parse()?);
+            .insert("authorization", format!("Bearer {bearer}").parse()?);
         request
             .headers_mut()
             .insert("x-aion-subject", "alice".parse()?);
@@ -163,7 +169,7 @@ mod tests {
             Arc::new(ownership),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let server = tokio::spawn(async move {
@@ -200,9 +206,13 @@ mod tests {
         expected_code: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut request = format!("ws://{address}/events/stream").into_client_request()?;
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = TOKEN.to_owned();
         request
             .headers_mut()
-            .insert("authorization", format!("Bearer {TOKEN}").parse()?);
+            .insert("authorization", format!("Bearer {bearer}").parse()?);
         request
             .headers_mut()
             .insert("x-aion-subject", "alice".parse()?);

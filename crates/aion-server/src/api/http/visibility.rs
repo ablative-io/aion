@@ -134,9 +134,11 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::router::workflow_router;
-    use super::super::test_support::{get_request, read_json, run_id, runtime_config, workflow_id};
+    use super::super::test_support::{
+        get_request, read_json, run_id, runtime_config, server_state, workflow_id,
+    };
     use crate::{
-        NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
+        NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
         config::NamespaceMode,
     };
 
@@ -164,7 +166,7 @@ mod tests {
             Arc::new(StaticWorkflowNamespaces::default()),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
 
         visibility
             .record_visibility(VisibilityRecord {
