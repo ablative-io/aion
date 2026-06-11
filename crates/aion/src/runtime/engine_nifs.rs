@@ -171,9 +171,13 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "await_child", 1),
             nif_child::await_child_impl,
         ),
-        NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_all", 2), collect_all),
-        NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_race", 2), collect_race),
-        NifEntry::dirty(Mfa::new(FFI_MODULE, "collect_map", 2), collect_map),
+        // collect_* are two-phase suspending natives over parallel activity
+        // dispatch: they park via request_suspend and completion markers wake
+        // them, so dirty threads would only be wasted (and N parents parked
+        // on slow fan-outs would wedge the default dirty IO pool).
+        NifEntry::new(Mfa::new(FFI_MODULE, "collect_all", 2), collect_all),
+        NifEntry::new(Mfa::new(FFI_MODULE, "collect_race", 2), collect_race),
+        NifEntry::new(Mfa::new(FFI_MODULE, "collect_map", 2), collect_map),
     ]
 }
 
@@ -251,6 +255,9 @@ mod tests {
             "with_timeout",
             "register_query",
             "await_child",
+            "collect_all",
+            "collect_race",
+            "collect_map",
         ] {
             let found = entries
                 .iter()
@@ -272,6 +279,9 @@ mod tests {
                         | "with_timeout"
                         | "register_query"
                         | "await_child"
+                        | "collect_all"
+                        | "collect_race"
+                        | "collect_map"
                 ))
                 .all(|entry| entry.is_dirty)
         );

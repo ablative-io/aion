@@ -30,8 +30,6 @@
 pub mod activity;
 /// Child-workflow spawn support.
 pub mod child;
-/// Deterministic concurrency combinators for workflow code.
-pub mod concurrency;
 /// Durable command recording, replay, and recovery support.
 pub mod durability;
 /// Engine builder, runtime APIs, and delegated seams.

@@ -365,12 +365,9 @@ pub(crate) mod test_support {
         residency: HashMap<WorkflowId, WorkflowResidency>,
         delivered: Vec<(WorkflowProcessHandle, DeliveredWorkflowMessage)>,
         delivery_responses: VecDeque<Result<(), EngineSeamError>>,
-        child_spawn_requests: Vec<ChildWorkflowSpawnRequest>,
         child_spawn_responses: VecDeque<Result<ChildWorkflowSpawnResult, EngineSeamError>>,
         armed_timers: Vec<TimerWheelEntry>,
         disarmed_timers: Vec<(WorkflowProcessHandle, TimerId)>,
-        terminated_child_workflows: Vec<(WorkflowId, WorkflowProcessHandle, u64)>,
-        terminated_activities: Vec<(WorkflowId, Pid, u64)>,
         recorded_events: Vec<(WorkflowId, Event)>,
         operations: Vec<FakeEngineOperation>,
         recorder_store: Option<Arc<dyn WritableEventStore>>,
@@ -550,17 +547,6 @@ pub(crate) mod test_support {
             Ok(())
         }
 
-        /// Returns captured child-spawn requests in observed order.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
-        pub fn child_spawn_requests(
-            &self,
-        ) -> Result<Vec<ChildWorkflowSpawnRequest>, EngineSeamError> {
-            Ok(self.state()?.child_spawn_requests.clone())
-        }
-
         /// Returns events recorded through the fake recorder seam.
         ///
         /// # Errors
@@ -568,28 +554,6 @@ pub(crate) mod test_support {
         /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
         pub fn recorded_events(&self) -> Result<Vec<(WorkflowId, Event)>, EngineSeamError> {
             Ok(self.state()?.recorded_events.clone())
-        }
-
-        /// Returns linked child workflow termination calls observed by the fake.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
-        pub fn terminated_child_workflows(
-            &self,
-        ) -> Result<Vec<(WorkflowId, WorkflowProcessHandle, u64)>, EngineSeamError> {
-            Ok(self.state()?.terminated_child_workflows.clone())
-        }
-
-        /// Returns linked activity termination calls observed by the fake.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
-        pub fn terminated_activities(
-            &self,
-        ) -> Result<Vec<(WorkflowId, Pid, u64)>, EngineSeamError> {
-            Ok(self.state()?.terminated_activities.clone())
         }
 
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
@@ -635,7 +599,6 @@ pub(crate) mod test_support {
             request: ChildWorkflowSpawnRequest,
         ) -> Result<ChildWorkflowSpawnResult, EngineSeamError> {
             let mut state = self.state()?;
-            state.child_spawn_requests.push(request.clone());
             state
                 .operations
                 .push(FakeEngineOperation::ChildSpawnRequested(request.clone()));
@@ -655,11 +618,6 @@ pub(crate) mod test_support {
             correlation: u64,
         ) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
-            state.terminated_child_workflows.push((
-                parent_workflow_id.clone(),
-                child_process,
-                correlation,
-            ));
             state
                 .operations
                 .push(FakeEngineOperation::LinkedChildWorkflowTerminated {
@@ -677,11 +635,6 @@ pub(crate) mod test_support {
             correlation: u64,
         ) -> Result<(), EngineSeamError> {
             let mut state = self.state()?;
-            state.terminated_activities.push((
-                parent_workflow_id.clone(),
-                activity_process,
-                correlation,
-            ));
             state
                 .operations
                 .push(FakeEngineOperation::LinkedActivityTerminated {

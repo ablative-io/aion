@@ -231,6 +231,9 @@ fn await_child_step(
         Some(PendingAwait::Signal { .. }) => {
             return Err("process is pinned to a pending signal await".to_owned());
         }
+        Some(PendingAwait::Collect { .. }) => {
+            return Err("process is pinned to a pending collect await".to_owned());
+        }
         None => {}
     }
 

@@ -150,6 +150,16 @@ fn arm_scope(state: &EngineNifState, args: &[Term], pid: u64) -> Result<(Term, u
     {
         ResolveOutcome::Recorded(Resolution::TimerFired) => Some(true),
         ResolveOutcome::Recorded(Resolution::TimerCancelled) => Some(false),
+        ResolveOutcome::Recorded(Resolution::TimerStarted) => {
+            // The scope's start is recorded but its terminal is not the
+            // immediately following event — the wrapped operation's recorded
+            // events (a collect fan-out, an activity, a signal arrival)
+            // interleave between them. Read the terminal from the run
+            // segment, exactly as `sleep` does. `None` (started, no terminal:
+            // crash mid-scope, durable timer re-armed by recovery) replays as
+            // a live scope so the race settles durably on resume.
+            timer_terminal_recorded(&context, &timer_id)
+        }
         ResolveOutcome::Recorded(_) => return Err("with_timeout history mismatch".to_owned()),
         ResolveOutcome::ResumeLive => {
             record_started(&context, now, timer_id.clone(), fire_at)

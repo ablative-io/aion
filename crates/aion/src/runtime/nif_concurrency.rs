@@ -1,37 +1,27 @@
-//! Durable concurrency NIF implementations over activity dispatch.
+//! Two-phase suspending `collect_*` NIFs over parallel activity dispatch.
+//!
+//! `collect_all`/`collect_race`/`collect_map` fan out N activities and park
+//! the workflow process instead of blocking a dirty thread. This module is
+//! the BEAM-facing shell — argument decoding, result-term encoding, the
+//! servicing guard, and wake-marker consumption; one full resolution pass
+//! per invocation (pin, batch record/dispatch, per-ordinal sweep,
+//! settlement) lives in [`super::nif_collect`].
 
 use std::cell::RefCell;
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload};
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
 use beamr::term::binary;
 use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed::{self, Cons};
-use chrono::Utc;
-use serde::Deserialize;
 
-use crate::activity::bridge::ActivityDispatcher;
-use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::runtime_context;
-use crate::runtime::nif_context::{NifContext, NifContextError};
-use crate::runtime::nif_state::{EngineNifState, engine_nif_state};
+use crate::runtime::nif_collect::{ActivitySpec, CollectDeps, CollectStep, collect_step};
+use crate::runtime::nif_state::{CollectKind, engine_nif_state};
 
 thread_local! {
     static CONCURRENCY_NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
-}
-
-#[derive(Deserialize)]
-struct ActivitySpec {
-    name: String,
-    input: String,
-    config: String,
-}
-
-enum ActivityRunResult {
-    Completed(String),
-    Failed(String),
 }
 
 fn park_heap(heap: Box<[u64]>) {
@@ -67,13 +57,6 @@ fn error_result_term(message: &str) -> Option<Term> {
     tagged_result_term(Atom::ERROR, message.as_bytes())
 }
 
-fn context_error_term(error: &NifContextError) -> Term {
-    match error.to_error_term() {
-        Ok(term) => term,
-        Err(_) => Term::NIL,
-    }
-}
-
 fn decode_string_arg(term: Term) -> Result<String, String> {
     let bin = BinaryRef::new(term).ok_or_else(|| "argument is not a binary".to_owned())?;
     String::from_utf8(bin.as_bytes().to_vec()).map_err(|_| "argument is not valid UTF-8".to_owned())
@@ -102,287 +85,7 @@ fn decode_spec_list(term: Term, label: &str) -> Result<Vec<ActivitySpec>, Term> 
     Ok(specs)
 }
 
-fn json_payload(text: &str, label: &str) -> Result<Payload, Term> {
-    let value = serde_json::from_str(text).map_err(|error| {
-        error_result_term(&format!("{label}: invalid JSON payload: {error}")).unwrap_or(Term::NIL)
-    })?;
-    Payload::from_json(&value)
-        .map_err(|error| error_result_term(&format!("{label}: {error}")).unwrap_or(Term::NIL))
-}
-
-fn result_payload(result: &str) -> Payload {
-    Payload::new(ContentType::Json, result.as_bytes().to_vec())
-}
-
-fn activity_error(reason: String) -> ActivityError {
-    ActivityError {
-        kind: ActivityErrorKind::Terminal,
-        message: reason,
-        details: None,
-    }
-}
-
-fn record_started(
-    context: &NifContext,
-    activity_id: ActivityId,
-    activity_type: String,
-    input: Payload,
-) -> Result<(), Term> {
-    context
-        .record_activity_scheduled_started(Utc::now(), activity_id, activity_type, input)
-        .map_err(|error| context_error_term(&error))
-}
-
-fn record_completed(
-    context: &NifContext,
-    activity_id: ActivityId,
-    result: Payload,
-) -> Result<(), Term> {
-    context
-        .record_activity_completed(Utc::now(), activity_id, result)
-        .map_err(|error| context_error_term(&error))
-}
-
-fn record_failed(
-    context: &NifContext,
-    activity_id: ActivityId,
-    error: ActivityError,
-) -> Result<(), Term> {
-    context
-        .record_activity_failed(Utc::now(), activity_id, error, 1)
-        .map_err(|error| context_error_term(&error))
-}
-
-fn record_cancelled(context: &NifContext, activity_id: ActivityId) -> Result<(), Term> {
-    context
-        .record_activity_cancelled(Utc::now(), activity_id)
-        .map_err(|error| context_error_term(&error))
-}
-
-fn decode_recorded(resolution: Resolution, label: &str) -> Result<ActivityRunResult, Term> {
-    match resolution {
-        Resolution::ActivityCompleted(payload) => String::from_utf8(payload.bytes().to_vec())
-            .map(ActivityRunResult::Completed)
-            .map_err(|_| {
-                error_result_term(&format!("{label}: recorded activity result is not UTF-8"))
-                    .unwrap_or(Term::NIL)
-            }),
-        Resolution::ActivityFailedTerminal(error) => Ok(ActivityRunResult::Failed(error.message)),
-        other => Err(error_result_term(&format!(
-            "{label}: recorded non-activity resolution {other:?}"
-        ))
-        .unwrap_or(Term::NIL)),
-    }
-}
-
-fn resolve_spec(
-    context: &mut NifContext,
-    spec: &ActivitySpec,
-    ordinal: u64,
-    label: &str,
-) -> Result<(ActivityId, ResolveOutcome, Payload), Term> {
-    let input_payload = json_payload(&spec.input, label)?;
-    let activity_id = ActivityId::from_sequence_position(ordinal);
-    let outcome = context
-        .resolve_command(Command::RunActivity {
-            key: CorrelationKey::Activity(ordinal),
-            activity_type: spec.name.clone(),
-            input: input_payload.clone(),
-        })
-        .map_err(|error| context_error_term(&error))?;
-    Ok((activity_id, outcome, input_payload))
-}
-
-fn run_live_activity(
-    context: &NifContext,
-    dispatcher: &dyn ActivityDispatcher,
-    spec: &ActivitySpec,
-    activity_id: ActivityId,
-    input_payload: Payload,
-) -> Result<ActivityRunResult, Term> {
-    record_started(
-        context,
-        activity_id.clone(),
-        spec.name.clone(),
-        input_payload,
-    )?;
-    match dispatcher.dispatch_from_process(
-        &spec.name,
-        &spec.input,
-        &spec.config,
-        Some(context.pid()),
-    ) {
-        Ok(result) => {
-            record_completed(context, activity_id, result_payload(&result))?;
-            Ok(ActivityRunResult::Completed(result))
-        }
-        Err(reason) => {
-            record_failed(context, activity_id, activity_error(reason.clone()))?;
-            Ok(ActivityRunResult::Failed(reason))
-        }
-    }
-}
-
-fn encoded_results(results: &[String]) -> Result<Term, Term> {
-    let payload = serde_json::to_vec(results).map_err(|error| {
-        error_result_term(&format!("collect: failed to encode result list: {error}"))
-            .unwrap_or(Term::NIL)
-    })?;
-    Ok(ok_result_term(&payload).unwrap_or(Term::NIL))
-}
-
-fn missing_dispatcher_term() -> Term {
-    error_result_term(
-        "no activity dispatcher configured — set one via EngineBuilder::activity_dispatcher",
-    )
-    .unwrap_or(Term::NIL)
-}
-
-fn collect_all_with_context(
-    mut context: NifContext,
-    dispatcher: Option<&dyn ActivityDispatcher>,
-    specs: &[ActivitySpec],
-    label: &str,
-) -> Result<Term, Term> {
-    std::hint::black_box(std::any::type_name::<crate::concurrency::AllRecordingContext>());
-    let mut results = Vec::with_capacity(specs.len());
-    let base_ordinal =
-        context.allocate_activity_ordinals(u64::try_from(specs.len()).map_err(|_| Term::NIL)?);
-    for (offset, spec) in specs.iter().enumerate() {
-        let ordinal = base_ordinal + u64::try_from(offset).map_err(|_| Term::NIL)?;
-        let (activity_id, outcome, input_payload) =
-            resolve_spec(&mut context, spec, ordinal, label)?;
-        let run_result = match outcome {
-            ResolveOutcome::Recorded(resolution) => decode_recorded(resolution, label)?,
-            ResolveOutcome::ResumeLive => {
-                let Some(dispatcher) = dispatcher else {
-                    return Ok(missing_dispatcher_term());
-                };
-                run_live_activity(&context, dispatcher, spec, activity_id, input_payload)?
-            }
-        };
-        match run_result {
-            ActivityRunResult::Completed(result) => results.push(result),
-            ActivityRunResult::Failed(reason) => {
-                return Ok(error_result_term(&reason).unwrap_or(Term::NIL));
-            }
-        }
-    }
-    encoded_results(&results)
-}
-
-fn collect_race_with_context(
-    mut context: NifContext,
-    dispatcher: Option<&dyn ActivityDispatcher>,
-    specs: &[ActivitySpec],
-) -> Result<Term, Term> {
-    std::hint::black_box(std::any::type_name::<
-        crate::concurrency::RaceRecordingContext,
-    >());
-    if specs.is_empty() {
-        return Ok(
-            error_result_term("collect_race: expected at least one activity").unwrap_or(Term::NIL),
-        );
-    }
-    let mut winner = None;
-    let base_ordinal =
-        context.allocate_activity_ordinals(u64::try_from(specs.len()).map_err(|_| Term::NIL)?);
-    for (offset, spec) in specs.iter().enumerate() {
-        let ordinal = base_ordinal + u64::try_from(offset).map_err(|_| Term::NIL)?;
-        let (activity_id, outcome, input_payload) =
-            resolve_spec(&mut context, spec, ordinal, "collect_race")?;
-        match outcome {
-            ResolveOutcome::Recorded(resolution) => {
-                let recorded = decode_recorded(resolution, "collect_race")?;
-                return match recorded {
-                    ActivityRunResult::Completed(result) => {
-                        Ok(ok_result_term(result.as_bytes()).unwrap_or(Term::NIL))
-                    }
-                    ActivityRunResult::Failed(reason) => {
-                        Ok(error_result_term(&reason).unwrap_or(Term::NIL))
-                    }
-                };
-            }
-            ResolveOutcome::ResumeLive => {
-                let Some(dispatcher) = dispatcher else {
-                    return Ok(missing_dispatcher_term());
-                };
-                record_started(
-                    &context,
-                    activity_id.clone(),
-                    spec.name.clone(),
-                    input_payload,
-                )?;
-                if winner.is_none() {
-                    let result = match dispatcher.dispatch_from_process(
-                        &spec.name,
-                        &spec.input,
-                        &spec.config,
-                        Some(context.pid()),
-                    ) {
-                        Ok(result) => {
-                            record_completed(
-                                &context,
-                                activity_id.clone(),
-                                result_payload(&result),
-                            )?;
-                            ActivityRunResult::Completed(result)
-                        }
-                        Err(reason) => {
-                            record_failed(
-                                &context,
-                                activity_id.clone(),
-                                activity_error(reason.clone()),
-                            )?;
-                            ActivityRunResult::Failed(reason)
-                        }
-                    };
-                    winner = Some(result);
-                } else {
-                    record_cancelled(&context, activity_id)?;
-                }
-            }
-        }
-    }
-    match winner {
-        Some(ActivityRunResult::Completed(result)) => {
-            Ok(ok_result_term(result.as_bytes()).unwrap_or(Term::NIL))
-        }
-        Some(ActivityRunResult::Failed(reason)) => {
-            Ok(error_result_term(&reason).unwrap_or(Term::NIL))
-        }
-        None => Ok(error_result_term("collect_race: no winner recorded").unwrap_or(Term::NIL)),
-    }
-}
-
-fn state_from_process(ctx: &ProcessContext) -> Result<std::sync::Arc<EngineNifState>, Term> {
-    engine_nif_state(ctx).map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))
-}
-
-fn context_from_process(
-    state: &EngineNifState,
-    ctx: &ProcessContext,
-    label: &str,
-) -> Result<NifContext, Term> {
-    let Some(pid) = ctx.pid() else {
-        return Err(
-            error_result_term(&format!("{label}: missing calling process pid"))
-                .unwrap_or(Term::NIL),
-        );
-    };
-    // Every collect_* NIF records activity events; a query handler must stay
-    // read-only.
-    crate::runtime::nif_query_pump::ensure_not_servicing_query(state, pid, label)
-        .map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))?;
-    let runtime = runtime_context(state).map_err(|error| context_error_term(&error))?;
-    NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle)
-        .map_err(|error| context_error_term(&error))
-}
-
 fn decode_concurrency_args(args: &[Term], label: &str) -> Result<Vec<ActivitySpec>, Term> {
-    if args.len() > 255 {
-        return Err(Term::NIL);
-    }
     if args.len() != 2 {
         return Err(error_result_term(&format!(
             "{label}: expected 2 arguments, got {}",
@@ -396,57 +99,91 @@ fn decode_concurrency_args(args: &[Term], label: &str) -> Result<Vec<ActivitySpe
     decode_spec_list(args[1], label)
 }
 
-/// NIF backing `aion_flow_ffi:collect_all/2`.
-pub(super) fn collect_all_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    let specs = match decode_concurrency_args(args, "collect_all") {
+fn encoded_results(results: &[String]) -> Term {
+    match serde_json::to_vec(results) {
+        Ok(payload) => ok_result_term(&payload).unwrap_or(Term::NIL),
+        Err(error) => error_result_term(&format!("collect: failed to encode result list: {error}"))
+            .unwrap_or(Term::NIL),
+    }
+}
+
+fn run_collect(
+    args: &[Term],
+    ctx: &mut ProcessContext,
+    kind: CollectKind,
+    label: &str,
+) -> Result<Term, Term> {
+    if args.len() > 255 {
+        return Err(Term::NIL);
+    }
+    let specs = match decode_concurrency_args(args, label) {
         Ok(specs) => specs,
         Err(term) => return Ok(term),
     };
-    let state = match state_from_process(ctx) {
+    let Some(pid) = ctx.pid() else {
+        return Ok(
+            error_result_term(&format!("{label}: missing calling process pid"))
+                .unwrap_or(Term::NIL),
+        );
+    };
+    let state = match engine_nif_state(ctx) {
         Ok(state) => state,
-        Err(term) => return Ok(term),
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     };
-    let context = match context_from_process(&state, ctx, "collect_all") {
-        Ok(context) => context,
-        Err(term) => return Ok(term),
+    // Every collect_* NIF records activity events; a query handler must stay
+    // read-only. The refusal precedes the marker consumption so a refused
+    // handler call never eats a wake.
+    if let Err(error) = super::nif_query_pump::ensure_not_servicing_query(&state, pid, label) {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
+    let runtime = match runtime_context(&state) {
+        Ok(runtime) => runtime,
+        Err(error) => return Ok(error_result_term(&error.to_string()).unwrap_or(Term::NIL)),
     };
-    let dispatcher = state.activity_dispatcher();
-    collect_all_with_context(context, dispatcher.as_deref(), &specs, "collect_all")
+    // One wake marker is consumed per invocation; leaving it queued would
+    // insta-rewake the suspend below into a busy spin.
+    super::nif_wake::consume_wake_marker(ctx, &runtime.runtime);
+    let deps = CollectDeps {
+        registry: runtime.registry,
+        runtime: runtime.runtime,
+        tokio_handle: runtime.tokio_handle,
+        dispatcher: state.activity_dispatcher(),
+    };
+    match collect_step(&state, &deps, pid, kind, &specs, label) {
+        Ok(CollectStep::QuerySentinel(sentinel)) => {
+            Ok(error_result_term(&sentinel).unwrap_or(Term::NIL))
+        }
+        Ok(CollectStep::AllCompleted(results)) => Ok(encoded_results(&results)),
+        Ok(CollectStep::RaceWon(Ok(payload))) => {
+            Ok(ok_result_term(payload.as_bytes()).unwrap_or(Term::NIL))
+        }
+        Ok(
+            CollectStep::RaceWon(Err(message))
+            | CollectStep::FailFast(message)
+            | CollectStep::ScopeExpired(message),
+        ) => Ok(error_result_term(&message).unwrap_or(Term::NIL)),
+        Ok(CollectStep::Suspend) => {
+            // Park the process; the next mailbox wake re-invokes this native
+            // from the top with the ordinal base pinned. The NIL return is
+            // never observed by workflow code.
+            ctx.request_suspend(None);
+            Ok(Term::NIL)
+        }
+        Err(message) => Ok(error_result_term(&format!("{label}:{message}")).unwrap_or(Term::NIL)),
+    }
+}
+
+/// NIF backing `aion_flow_ffi:collect_all/2`.
+pub(super) fn collect_all_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    run_collect(args, ctx, CollectKind::All, "collect_all")
 }
 
 /// NIF backing `aion_flow_ffi:collect_race/2`.
 pub(super) fn collect_race_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    let specs = match decode_concurrency_args(args, "collect_race") {
-        Ok(specs) => specs,
-        Err(term) => return Ok(term),
-    };
-    let state = match state_from_process(ctx) {
-        Ok(state) => state,
-        Err(term) => return Ok(term),
-    };
-    let context = match context_from_process(&state, ctx, "collect_race") {
-        Ok(context) => context,
-        Err(term) => return Ok(term),
-    };
-    let dispatcher = state.activity_dispatcher();
-    collect_race_with_context(context, dispatcher.as_deref(), &specs)
+    run_collect(args, ctx, CollectKind::Race, "collect_race")
 }
 
 /// NIF backing `aion_flow_ffi:collect_map/2`.
 pub(super) fn collect_map_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    let specs = match decode_concurrency_args(args, "collect_map") {
-        Ok(specs) => specs,
-        Err(term) => return Ok(term),
-    };
-    let state = match state_from_process(ctx) {
-        Ok(state) => state,
-        Err(term) => return Ok(term),
-    };
-    let context = match context_from_process(&state, ctx, "collect_map") {
-        Ok(context) => context,
-        Err(term) => return Ok(term),
-    };
-    let dispatcher = state.activity_dispatcher();
-    std::hint::black_box(std::any::type_name::<crate::concurrency::AllRecordingContext>());
-    collect_all_with_context(context, dispatcher.as_deref(), &specs, "collect_map")
+    run_collect(args, ctx, CollectKind::All, "collect_map")
 }

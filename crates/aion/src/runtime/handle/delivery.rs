@@ -268,6 +268,30 @@ impl RuntimeHandle {
             .map(|(_, error)| error)
     }
 
+    /// Drop every retained activity completion and failure for a workflow pid.
+    ///
+    /// Called from the workflow process monitor when the process exits: a
+    /// completion delivered after the workflow stopped awaiting it — a race
+    /// loser's late settle, or any delivery after exit — is never `take`n by
+    /// an await and would otherwise be retained forever (D5).
+    pub(crate) fn drain_activity_completions(&self, workflow_pid: Pid) {
+        self.activity_results
+            .retain(|(parent, _), _| *parent != workflow_pid);
+        self.activity_errors
+            .retain(|(parent, _), _| *parent != workflow_pid);
+    }
+
+    /// Number of retained two-phase activity completion entries (results
+    /// plus failures) across every workflow process.
+    ///
+    /// Diagnostic surface: after a workflow exits, the monitor drain must
+    /// leave nothing behind for its pid, so an engine with no live awaits
+    /// should report zero.
+    #[must_use]
+    pub fn retained_activity_completions(&self) -> usize {
+        self.activity_results.len() + self.activity_errors.len()
+    }
+
     pub(crate) fn activity_complete_atom(&self) -> Atom {
         self.atom_table.intern("activity_complete")
     }

@@ -209,6 +209,9 @@ fn receive_signal_impl(
         Some(PendingAwait::Child { .. }) => {
             return Err("receive_signal: process is pinned to a pending child await".to_owned());
         }
+        Some(PendingAwait::Collect { .. }) => {
+            return Err("receive_signal: process is pinned to a pending collect await".to_owned());
+        }
         None => None,
     };
     let index = if let Some(index) = pinned {

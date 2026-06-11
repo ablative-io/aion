@@ -8,6 +8,7 @@ in:
 - `aion_parent_fixture.erl` / `.beam`
 - `aion_parent_query_fixture.erl` / `.beam`
 - `aion_child_fixture.erl` / `.beam`
+- `aion_collect_fixture.erl` / `.beam`
 - `aion_fixture_query.erl` / `.beam`
 
 The test suite loads the committed `.beam` bytes through `RuntimeHandle` and
@@ -63,6 +64,26 @@ queries:
 - `can_once/1` continues-as-new once (input `"second"` marks the
   replacement run) and the replacement completes with `42` — used to prove
   `await_child` follows the continue-as-new run chain transparently.
+
+`aion_collect_fixture` exercises the two-phase suspending
+`collect_all`/`collect_race` natives for `tests/concurrency_e2e.rs`,
+hand-rolling the same query pump loop as `aion_fixture_query`. Activity names
+follow the test dispatcher's gate protocol (`gated_ok:K`/`gated_fail:K`
+block until the test releases gate `K`, then succeed/fail), and every entry
+gates completion on a `release` signal so tests can restart the engine with
+the collect's terminals recorded but the run still live:
+
+- `all_two/1` collects two gated activities and returns the result list.
+- `all_fail_fast/1` collects one succeeding and one failing activity and
+  returns the fail-fast error message as a JSON string.
+- `race_two/1` races two gated activities and returns the winner's payload.
+- `race_fail/1` races a failing first-settler against a gated success and
+  returns the failure message (first-settle semantics) as a JSON string.
+- `all_timeout/1` runs a collect of two never-released activities under a
+  300 ms `with_timeout` and pins the canonical
+  `timeout:deadline expired` scope error.
+- `queryable_all/1` registers a `state` query handler first, then runs
+  `all_two/1`.
 
 `aion_fixture_query` exercises the workflow-query yield-point pump protocol
 (`aion_flow_ffi:register_query/2`, `reply_query/2`, `reply_query_error/2`,

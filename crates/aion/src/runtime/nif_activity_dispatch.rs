@@ -124,10 +124,13 @@ fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
 }
 
 /// Grouped parameters for the activity being dispatched.
-struct ActivityCall {
-    name: String,
-    input: String,
-    config: String,
+///
+/// Shared with the `collect_*` fan-out natives, which dispatch N of these
+/// through the same completion-task machinery.
+pub(super) struct ActivityCall {
+    pub(super) name: String,
+    pub(super) input: String,
+    pub(super) config: String,
 }
 
 fn dispatch_activity_with_context(
@@ -181,7 +184,7 @@ fn dispatch_activity_with_context(
     }
 }
 
-fn spawn_completion_task(
+pub(super) fn spawn_completion_task(
     tokio_handle: &tokio::runtime::Handle,
     runtime: Arc<crate::RuntimeHandle>,
     dispatcher: Arc<dyn ActivityDispatcher>,

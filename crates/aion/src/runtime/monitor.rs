@@ -59,6 +59,10 @@ impl RuntimeHandle {
                     outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
                 runtime.release_spawn_heaps(pid);
                 runtime.nif_state().cleanup_process(pid);
+                // D5: completions delivered after the workflow stopped
+                // awaiting them (race losers, post-exit deliveries) are
+                // never taken; drop them with the process.
+                runtime.drain_activity_completions(pid);
                 callback(outcome);
             })
             .map_err(|error| EngineError::Runtime {

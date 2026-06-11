@@ -90,7 +90,7 @@ pub(crate) struct PendingQuery {
 /// deterministic: ordinal sequences advance on allocation, so a re-invoked
 /// native must reuse the identity it allocated the first time, not draw a
 /// fresh one.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PendingAwait {
     /// `sleep` parked on an anonymous durable timer.
     Sleep {
@@ -109,6 +109,30 @@ pub(crate) enum PendingAwait {
         /// Awaited child workflow identity pinned at first live arrival.
         child_workflow_id: aion_core::WorkflowId,
     },
+    /// `collect_all`/`collect_race`/`collect_map` parked on an activity
+    /// fan-out. The base ordinal is allocated once at first live arrival;
+    /// re-entries reuse it because the ordinal counter advances on
+    /// allocation and an unpinned re-allocation would corrupt the
+    /// ordinal↔recorded-event correlation for every member of the batch.
+    Collect {
+        /// First activity key ordinal of the contiguous fan-out range.
+        base_ordinal: u64,
+        /// Number of activities in the fan-out.
+        count: u64,
+        /// Settlement rule the await resolves under.
+        kind: CollectKind,
+    },
+}
+
+/// Settlement rule for a pinned `collect_*` fan-out await.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CollectKind {
+    /// `collect_all`/`collect_map`: every activity must complete; any
+    /// recorded failure fails the batch fast (lowest-ordinal failure wins).
+    All,
+    /// `collect_race`: the first recorded terminal settles the batch
+    /// (success or failure), and every other member is cancelled.
+    Race,
 }
 
 impl EngineNifState {
