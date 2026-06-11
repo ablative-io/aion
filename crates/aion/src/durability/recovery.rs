@@ -383,7 +383,7 @@ mod tests {
             let history = self.read_history(workflow_id).await?;
             Ok(history
                 .into_iter()
-                .filter(|event| event.seq >= from_seq)
+                .filter(|event| event.seq() >= from_seq)
                 .collect())
         }
 

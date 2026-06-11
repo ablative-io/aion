@@ -309,6 +309,7 @@ fn development_caller_from_metadata(metadata: &tonic::metadata::MetadataMap) -> 
 /// Development-mode token authentication for gRPC metadata, mirroring the HTTP
 /// development token auth.  Used when `auth.enabled` is `true` but the `auth`
 /// crate feature is not compiled.
+#[cfg(not(feature = "auth"))]
 fn development_token_caller_from_metadata(
     metadata: &tonic::metadata::MetadataMap,
     auth: &crate::config::AuthConfig,

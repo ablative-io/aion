@@ -75,6 +75,7 @@ fn development_caller_from_headers(headers: &axum::http::HeaderMap) -> CallerIde
 /// configured `jwks_url` value (treated as a static shared secret) and returns
 /// [`CallerIdentity::denied`] with a specific reason on each failure mode so the
 /// namespace guard surfaces actionable 403 error messages.
+#[cfg(not(feature = "auth"))]
 fn development_token_caller_from_headers(
     headers: &axum::http::HeaderMap,
     auth: &crate::config::AuthConfig,

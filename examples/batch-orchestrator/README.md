@@ -123,6 +123,8 @@ Use `--run-id "$RUN_ID"` when you need to target a specific run rather than the 
 
 Queries are read-only. A query handler should return already-known workflow state; it must not schedule activities, await children, send signals, or mutate counters.
 
+> **Known issue (beamr VM):** the query is answered correctly, but on the current beamr VM the parent process can subsequently die with `VM execution error: invalid operand for instruction pointer` when the serviced await is re-entered. The engine contract (sentinel at the yield point, service, re-enter the same await) is implemented and unit-tested on the Rust side; the crash is in the VM's re-suspension path and reproduces with batches as small as four items. Until it is fixed upstream, treat live `batch_progress` queries against this example as demonstration-only. Runs that are never queried complete reliably (verified up to 60 items).
+
 ## 6. Inspect the final summary
 
 After all children complete or fail, describe the workflow:
