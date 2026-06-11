@@ -221,7 +221,16 @@ pub struct WorkerConfig {
 pub struct WebSocketConfig {
     /// Per-connection outbound buffer bound.
     pub outbound_buffer_bound: usize,
+    /// Capacity of the engine-global event broadcast channel that backs
+    /// `/events/stream`. REQUIRED — the server always mounts the streaming
+    /// endpoint, so streaming capacity must be an explicit operator decision;
+    /// there is no default. Lag is filter-blind, so size this for global event
+    /// volume across all namespaces, not per-subscription volume.
+    pub event_broadcast_capacity: Option<usize>,
 }
+
+/// Operator-facing message for an absent or zero `event_broadcast_capacity`.
+pub(crate) const EVENT_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.event_broadcast_capacity is required and has no default: the server always mounts /events/stream, so live event streaming capacity must be configured explicitly; set websocket.event_broadcast_capacity (or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY) to a positive integer sized for global event volume across all namespaces";
 
 /// Runtime settings retained in shared server state for transport adapters.
 #[derive(Clone, Debug)]
@@ -393,6 +402,10 @@ impl ServerConfig {
         if self.websocket.outbound_buffer_bound == 0 {
             return config_error("websocket.outbound_buffer_bound must be greater than zero");
         }
+        match self.websocket.event_broadcast_capacity {
+            None | Some(0) => return config_error(EVENT_BROADCAST_CAPACITY_REQUIRED),
+            Some(_) => {}
+        }
         Ok(())
     }
 }
@@ -492,6 +505,9 @@ impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
             outbound_buffer_bound: 32,
+            // Deliberately absent: validation fails loudly until the operator
+            // sizes the engine-global broadcast channel for the deployment.
+            event_broadcast_capacity: None,
         }
     }
 }
@@ -603,6 +619,10 @@ mod tests {
 
                 [namespaces]
                 default = "production"
+
+                [websocket]
+                outbound_buffer_bound = 16
+                event_broadcast_capacity = 1024
             "#,
         )?;
 
@@ -610,7 +630,47 @@ mod tests {
         assert_eq!(config.store.url.as_deref(), Some("aion.db"));
         assert_eq!(config.runtime.scheduler_threads, 2);
         assert_eq!(config.namespaces.default, "production");
+        assert_eq!(config.websocket.outbound_buffer_bound, 16);
+        assert_eq!(config.websocket.event_broadcast_capacity, Some(1024));
         Ok(())
+    }
+
+    #[test]
+    fn missing_event_broadcast_capacity_fails_startup_validation_naming_the_key() {
+        // The server unconditionally mounts /events/stream; a configuration
+        // without explicit broadcast capacity must fail loudly at startup
+        // instead of leaving streaming dark.
+        let result = ServerConfig::default().validate();
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("websocket.event_broadcast_capacity"),
+            "validation message must name the missing key: {message}"
+        );
+        assert!(
+            message.contains("AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY"),
+            "validation message must name the environment override: {message}"
+        );
+    }
+
+    #[test]
+    fn zero_event_broadcast_capacity_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [websocket]
+                event_broadcast_capacity = 0
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("websocket.event_broadcast_capacity"),
+            "validation message must name the zero-valued key: {message}"
+        );
     }
 
     #[test]
@@ -635,6 +695,9 @@ mod tests {
                 [store]
                 backend = "libsql"
                 url = "file.db"
+
+                [websocket]
+                event_broadcast_capacity = 64
             "#,
         )?;
         let cli = CliOverrides {
@@ -653,7 +716,7 @@ mod tests {
 
     #[test]
     fn default_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
-        let config = ServerConfig::default();
+        let mut config = ServerConfig::default();
 
         assert_eq!(config.store.backend, StoreBackend::Memory);
         assert_eq!(config.store.url, None);
@@ -662,6 +725,10 @@ mod tests {
         assert_eq!(config.namespaces.default, "default");
         assert!(!config.auth.enabled);
         assert!(config.metrics.enabled);
+        // event_broadcast_capacity is the one deliberately defaultless value:
+        // defaults validate only once the operator supplies it.
+        assert_eq!(config.websocket.event_broadcast_capacity, None);
+        config.websocket.event_broadcast_capacity = Some(64);
         config.validate()?;
         Ok(())
     }
@@ -733,6 +800,9 @@ mod tests {
             ..CliOverrides::default()
         };
         let mut config = ServerConfig::default();
+        // Even zero-config development runs must size event streaming
+        // explicitly (config key or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY).
+        config.websocket.event_broadcast_capacity = Some(64);
         config.load_discovered_workflow_packages(&cli, temp_dir.path())?;
 
         config.validate()?;
@@ -751,6 +821,9 @@ mod tests {
         let mut config = ServerConfig::from_slice(
             br#"
                 workflow_packages = ["config.aion"]
+
+                [websocket]
+                event_broadcast_capacity = 64
             "#,
         )?;
         let cli = CliOverrides {

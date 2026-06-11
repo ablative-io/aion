@@ -7,7 +7,10 @@
 #   workflow_packages = ["examples/hello-world/hello-world.aion"]
 #
 # You can also load a package without editing this file. `--config` is optional
-# for local development; no-config mode uses in-memory local defaults:
+# for local development; no-config mode uses in-memory local defaults, but
+# `websocket.event_broadcast_capacity` has no default and must then come from
+# the environment:
+#   AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024 \
 #   cargo run -p aion-server -- \
 #     --workflow-package examples/hello-world/hello-world.aion
 
@@ -22,3 +25,9 @@ backend = "memory"
 
 [namespaces]
 default = "default"
+
+[websocket]
+# REQUIRED, no default: capacity of the engine-global live-event broadcast
+# channel behind /events/stream. Lag is filter-blind, so size for the global
+# event volume across all namespaces, not per-subscription volume.
+event_broadcast_capacity = 1024

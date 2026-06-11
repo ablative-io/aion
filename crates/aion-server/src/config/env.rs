@@ -55,6 +55,13 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
             "AION_METRICS_ENABLED" => {
                 config.metrics.enabled = parse_bool(&name, &value)?;
             }
+            "AION_WEBSOCKET_OUTBOUND_BUFFER_BOUND" => {
+                config.websocket.outbound_buffer_bound = parse_positive_usize(&name, &value)?;
+            }
+            "AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY" => {
+                config.websocket.event_broadcast_capacity =
+                    Some(parse_positive_usize(&name, &value)?);
+            }
             "AION_NAMESPACES_DEFAULT" => {
                 if value.is_empty() {
                     return config_error("AION_NAMESPACES_DEFAULT must not be empty");

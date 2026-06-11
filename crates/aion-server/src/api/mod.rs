@@ -10,3 +10,5 @@ pub mod http;
 pub mod schedule_handlers;
 /// Remote-worker gRPC endpoint implementation.
 pub mod worker_grpc;
+/// WebSocket subscription request reading and JSON decoding.
+pub mod ws_subscription;

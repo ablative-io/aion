@@ -70,7 +70,7 @@ AION_LOG=debug cargo run -p aion-server -- --config dev-config.toml \
 
 ### Config auto-discovery
 
-When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults. To use auto-discovery from the repository root, copy the dev config and start the server. Include the package flag unless you also edit `aion.toml` to add the package path:
+When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults for everything except `websocket.event_broadcast_capacity`, which has no default — supply it via `AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY` when running without a config file. To use auto-discovery from the repository root, copy the dev config and start the server. Include the package flag unless you also edit `aion.toml` to add the package path:
 
 ```sh
 cp dev-config.toml aion.toml

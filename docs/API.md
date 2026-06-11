@@ -129,6 +129,31 @@ Supported subscription messages:
 
 The same shapes may also be wrapped as `{ "subscription": { ... } }`. `filtered` accepts optional `workflow_type`, optional `status` (status name or numeric value), and optional `namespace_selector`. `firehose` accepts `namespace` or `namespace_selector`.
 
+The server requires `websocket.event_broadcast_capacity` in its configuration (env: `AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY`) — startup fails without it. It sizes the engine-global live-event broadcast channel; lag is filter-blind, so size it for global event volume across all namespaces.
+
+### Subscription resumption (`resume_from_seq`)
+
+Per-workflow subscriptions accept an optional `resume_from_seq` cursor — the **first** per-workflow sequence number the caller wants (SDKs send `last delivered seq + 1`):
+
+```json
+{"per_workflow":{"namespace":"default","workflow_id":{"uuid":"<workflow-id>"},"resume_from_seq":7}}
+```
+
+The server replays recorded history events with `seq >= resume_from_seq` in order, then splices into the live stream with no gaps and no duplicates. Sequence numbers start at 1; `resume_from_seq: 1` replays the full history; `head + 1` (one past the recorded head) replays nothing and tails live events only. Absent cursor = live tail from now (previous behaviour). A replayed terminal or `ContinuedAsNew` event closes the stream at that run boundary, exactly like a live one; callers walk continue-as-new chains by resubscribing with the next cursor.
+
+Filtered and firehose subscriptions are **live-only** and accept no cursor: `seq` is per-workflow, so a cross-workflow cursor is structurally unrepresentable. SDKs must surface a non-resumable disconnect on those streams instead of silently reattaching with a gap.
+
+Cursor error semantics (the namespace guard verdict always comes first — an unauthorized or foreign workflow probe yields the same `not_found` regardless of cursor, never a cursor error):
+
+| Condition | Error frame |
+|---|---|
+| Workflow unknown or foreign-owned | `not_found` (identical for both; cursor never inspected) |
+| `resume_from_seq: 0` | `invalid_input` (`resume_from_seq must be >= 1`) |
+| `resume_from_seq > head + 1` | `invalid_input`, `error_type: "ResumeCursorAheadOfHistory"` |
+| Cursor older than earliest retained event (compaction; cannot occur yet) | reserved: `not_found`, `error_type: "HistoryCompacted"` — restart without a cursor |
+
+All stream errors are one terminal `{"error": {"code": ..., "message": ..., "error_type": ...}}` text frame followed by a close frame. A consumer that falls behind the live stream receives a terminal `lagged` error frame; reconnect with `resume_from_seq = last delivered seq + 1` to continue gap-free.
+
 ## Recovery and durable timers
 
 Crash/restart recovery and durable timers are implemented in the current build. On server startup the engine replays durable histories for active workflows, reconciles visibility, and recovers timer state. Timer operations record durability events and are re-armed from stored history after restart, so workflow-visible time continues to come from recorded event timestamps rather than wall-clock reads inside workflow code.

@@ -71,6 +71,16 @@ impl ServerState {
         store: Arc<dyn EventStore>,
         runtime: RuntimeConfig,
     ) -> Result<Self, ServerError> {
+        // The server unconditionally mounts /events/stream, so the engine's
+        // broadcast channel must be installed and explicitly sized here —
+        // a mounted-but-unconfigured streaming endpoint is never acceptable.
+        let event_broadcast_capacity = runtime
+            .websocket
+            .event_broadcast_capacity
+            .and_then(std::num::NonZeroUsize::new)
+            .ok_or_else(|| ServerError::Config {
+                message: crate::config::EVENT_BROADCAST_CAPACITY_REQUIRED.to_owned(),
+            })?;
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
         let instrumented_store = Arc::new(InstrumentedEventStore::new(
             store.clone(),
@@ -105,6 +115,7 @@ impl ServerState {
             })?;
         let engine = EngineBuilder::new()
             .store_arc(instrumented_store.clone())
+            .event_streaming(event_broadcast_capacity)
             .in_memory_visibility()
             .search_attribute_schema(search_attribute_schema)
             .scheduler_threads(runtime.scheduler_threads)
@@ -333,6 +344,7 @@ mod tests {
             },
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
+                event_broadcast_capacity: Some(64),
             },
             workflow_packages: Vec::new(),
             scheduler_threads: 1,
@@ -350,6 +362,27 @@ mod tests {
         std::hint::black_box(state.namespace_guard());
         std::hint::black_box(state.worker_registry());
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_build_fails_without_event_broadcast_capacity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut runtime = runtime_config();
+        runtime.websocket.event_broadcast_capacity = None;
+
+        let error = ServerState::build_with_store(InMemoryStore::default(), runtime)
+            .await
+            .err()
+            .ok_or("state build must fail when event streaming is unsized")?;
+
+        assert!(error.is_config(), "expected a config error, got {error}");
+        assert!(
+            error
+                .to_string()
+                .contains("websocket.event_broadcast_capacity"),
+            "error must name the missing key: {error}"
+        );
         Ok(())
     }
 }
