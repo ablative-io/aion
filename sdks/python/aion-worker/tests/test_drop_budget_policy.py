@@ -459,8 +459,14 @@ async def test_drain_outliving_max_backoff_does_not_reset_drop_budget() -> None:
     assert isinstance(exhausted.value.__cause__, OSError)
 
 
-async def test_shutdown_during_error_backoff_wakes_immediately() -> None:
-    """Shutdown is raced against the drop-backoff sleep, not observed after it."""
+async def test_shutdown_during_error_backoff_wakes_immediately_and_raises_pending_drop() -> None:
+    """Shutdown is raced against the drop-backoff sleep, not observed after it.
+
+    Cross-SDK shutdown-outcome rule: the pending drop is error-class
+    (an ``OSError`` transport fault), so interrupting its recovery surfaces
+    that error — a supervisor sees "this worker was mid-fault" distinctly
+    from "this worker drained cleanly".
+    """
 
     shutdown = asyncio.Event()
     backoff_entered = asyncio.Event()
@@ -490,9 +496,10 @@ async def test_shutdown_during_error_backoff_wakes_immediately() -> None:
     )
     await asyncio.wait_for(backoff_entered.wait(), timeout=5)
     shutdown.set()
-    # Returns cleanly well before any backoff could elapse — the timeout only
-    # fires if the worker stalls waiting out the sleep.
-    await asyncio.wait_for(run, timeout=5)
+    # Surfaces the pending error-class drop well before any backoff could
+    # elapse — the timeout only fires if the worker stalls out the sleep.
+    with pytest.raises(OSError, match="stream dropped"):
+        await asyncio.wait_for(run, timeout=5)
 
     assert attempts == 1
 
@@ -581,3 +588,258 @@ async def test_shutdown_during_clean_close_backoff_returns_cleanly() -> None:
     )
 
     assert attempts == 1
+
+
+# --- Worker-protocol ack wave: drain classification + result acks ----------
+
+
+async def _drain_session(sequence_position: int | None = None) -> FakeSession:
+    """Session that serves its optional task then announces a drain."""
+
+    from aion_worker import DrainReceived
+
+    session = FakeSession()
+    if sequence_position is not None:
+        await session.push(task(sequence_position))
+    await session.push(DrainReceived())
+    return session
+
+
+async def test_drain_cycles_reconnect_without_consuming_drop_budget() -> None:
+    """Brief test 18 (Python mirror): drains are unbudgeted drops.
+
+    With a budget of two, three drain cycles still leave the worker running;
+    a deterministic denial then ends the run.
+    """
+
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            return await _drain_session()
+        raise _denial_error()
+
+    with pytest.raises(grpc.aio.AioRpcError):
+        await connect_register_replay_and_serve(
+            _config(max_attempts=2),
+            connect,
+            RecordingDispatcher(),
+            sleep=_no_sleep,
+            clock=_frozen_clock,
+        )
+
+    # Three drain cycles with max_attempts = 2: if drains consumed budget the
+    # run would have ended with ReconnectError after the second; instead it
+    # survives to the scripted denial.
+    assert attempts == 4
+
+
+def _denial_error() -> grpc.aio.AioRpcError:
+    return grpc.aio.AioRpcError(
+        code=grpc.StatusCode.PERMISSION_DENIED,
+        initial_metadata=grpc.aio.Metadata(),
+        trailing_metadata=grpc.aio.Metadata(),
+        details="namespace revoked",
+    )
+
+
+async def test_drain_latch_keeps_abrupt_post_drain_failure_unbudgeted() -> None:
+    """Brief test 19 (Python mirror): the drain classification latches.
+
+    A session whose stream errors after the drain frame was observed is
+    still drain-class and unbudgeted. The error is injected via a stream
+    that raises immediately after yielding the drain event — the serve loop
+    returns Drained before reading the error, so the latch is exercised via
+    a post-drain in-flight report failure instead: the report send fails
+    after the drain frame was seen.
+    """
+
+    from aion_worker import DrainReceived
+
+    class FailingReportSession(FakeSession):
+        """Fails exactly the report for ``fail_position`` — the session's own
+        task, reported after the drain frame — while re-reports of earlier
+        sessions' entries succeed (a replay failure is an *unannounced* drop
+        and stays budgeted, per the reconnect record)."""
+
+        fail_position: int = 0
+
+        async def report_result(
+            self,
+            workflow: common_pb2.WorkflowId,
+            activity: common_pb2.ActivityId,
+            result: common_pb2.Payload,
+        ) -> None:
+            if activity.sequence_position == self.fail_position:
+                raise OSError("stream broke abruptly after the drain frame")
+            await super().report_result(workflow, activity, result)
+
+    attempts = 0
+    release = asyncio.Event()
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            session = FailingReportSession()
+            session.fail_position = attempts
+            await session.push(task(attempts))
+            await session.push(DrainReceived())
+            return session
+        raise _denial_error()
+
+    release.set()
+    dispatcher = RecordingDispatcher(release=release)
+    with pytest.raises(grpc.aio.AioRpcError):
+        await connect_register_replay_and_serve(
+            _config(max_attempts=2),
+            connect,
+            dispatcher,
+            sleep=_no_sleep,
+            clock=_frozen_clock,
+        )
+
+    # Three latched drain-class failures with max_attempts = 2: only the
+    # latch keeps the run alive to the scripted denial.
+    assert attempts == 4
+
+
+async def test_shutdown_during_post_drain_backoff_returns_cleanly() -> None:
+    """Brief test 21 (Python mirror): a pending drain at shutdown ends Ok."""
+
+    shutdown = asyncio.Event()
+    backoff_entered = asyncio.Event()
+    attempts = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        return await _drain_session()
+
+    async def hanging_sleep(delay: float) -> None:
+        del delay
+        backoff_entered.set()
+        await asyncio.Event().wait()
+
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(
+            _config(max_attempts=5),
+            connect,
+            RecordingDispatcher(),
+            sleep=hanging_sleep,
+            shutdown=shutdown,
+            clock=_frozen_clock,
+        )
+    )
+    await asyncio.wait_for(backoff_entered.wait(), timeout=5)
+    shutdown.set()
+    await asyncio.wait_for(run, timeout=5)
+
+    assert attempts == 1
+
+
+async def test_result_ack_clears_exactly_its_tracker_entry() -> None:
+    """Brief test 13 (Python mirror): acks clear exactly their entry.
+
+    Two workflows colliding on the bare sequence position exercise both key
+    components; an unknown ack is a no-op.
+    """
+
+    from aion_worker import ResultAcknowledged, serve
+
+    workflow_a = common_pb2.WorkflowId(uuid="workflow-a")
+    workflow_b = common_pb2.WorkflowId(uuid="workflow-b")
+    position = activity_id(5)
+    tracker = UnackedResultTracker()
+    for workflow in (workflow_a, workflow_b):
+        tracker.record(PendingCompletedReport(workflow, position, payload()))
+
+    session = FakeSession()
+    await session.push(ResultAcknowledged(workflow_id=workflow_a, activity_id=position))
+    # Unknown ack: never recorded; must be a no-op, not an error.
+    await session.push(
+        ResultAcknowledged(workflow_id=common_pb2.WorkflowId(uuid="unknown"), activity_id=activity_id(99))
+    )
+    await session.finish()
+
+    await serve(_config(max_attempts=3), session, RecordingDispatcher(), tracker)
+
+    assert len(tracker) == 1
+    assert tracker.get(workflow_a, position) is None
+    assert tracker.get(workflow_b, position) is not None
+
+
+async def test_acked_results_decay_out_of_the_reconnect_replay() -> None:
+    """Brief tests 14 + 15 (Python mirror): replay decays to the unacked residue."""
+
+    from aion_worker import ResultAcknowledged, re_report_unacked, serve
+
+    workflow = workflow_id()
+    acked_id = activity_id(1)
+    unacked_id = activity_id(2)
+    tracker = UnackedResultTracker()
+    for position in (acked_id, unacked_id):
+        tracker.record(PendingCompletedReport(workflow, position, payload()))
+
+    # Session 1 acks one of the two reported results; the other ack is lost.
+    session = FakeSession()
+    await session.push(ResultAcknowledged(workflow_id=workflow, activity_id=acked_id))
+    await session.finish()
+    await serve(_config(max_attempts=3), session, RecordingDispatcher(), tracker)
+
+    # Session 2 replay: exactly the un-acked entry is re-reported.
+    replay_session = FakeSession()
+    await re_report_unacked(replay_session, tracker)
+    assert replay_session.log == [f"result:{unacked_id.sequence_position}"]
+
+    # Session 2 acks the re-report; a third session's replay sends nothing.
+    await replay_session.push(ResultAcknowledged(workflow_id=workflow, activity_id=unacked_id))
+    await replay_session.finish()
+    await serve(_config(max_attempts=3), replay_session, RecordingDispatcher(), tracker)
+    assert tracker.is_empty()
+
+    decayed_session = FakeSession()
+    await re_report_unacked(decayed_session, tracker)
+    assert decayed_session.log == []
+
+
+async def test_shutdown_interrupts_hung_unacked_replay_promptly() -> None:
+    """Brief test 17 (Python mirror): a hung replay never wedges shutdown."""
+
+    class HungReportSession(FakeSession):
+        async def report_result(
+            self,
+            workflow: common_pb2.WorkflowId,
+            activity: common_pb2.ActivityId,
+            result: common_pb2.Payload,
+        ) -> None:
+            await asyncio.Event().wait()
+
+    shutdown = asyncio.Event()
+    tracker = UnackedResultTracker()
+    tracker.record(PendingCompletedReport(workflow_id(), activity_id(1), payload()))
+    session = HungReportSession()
+
+    async def connect() -> FakeSession:
+        return session
+
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(
+            _config(max_attempts=3),
+            connect,
+            RecordingDispatcher(),
+            tracker=tracker,
+            shutdown=shutdown,
+            clock=_frozen_clock,
+        )
+    )
+    await wait_for_condition(run, lambda: "register" in session.log)
+    # Give the replay a chance to enter its hung send before shutting down.
+    await asyncio.sleep(0)
+    shutdown.set()
+    await asyncio.wait_for(run, timeout=5)
+
+    # The hung replay was abandoned, not completed; the entry stays tracked.
+    assert len(tracker) == 1

@@ -94,7 +94,13 @@ struct GatedItemDispatcher {
 }
 
 impl ActivityDispatcher for GatedItemDispatcher {
-    fn dispatch(&self, name: &str, input: &str, _config: &str) -> Result<String, String> {
+    fn dispatch(
+        &self,
+        name: &str,
+        input: &str,
+        _config: &str,
+        _attempt: u32,
+    ) -> Result<String, String> {
         if name != "process-batch-item" {
             return Err(format!("terminal:unknown activity {name}"));
         }

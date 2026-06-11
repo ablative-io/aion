@@ -846,7 +846,7 @@ describe("runWorkerLoop", () => {
 		expect(tracker.len()).toBe(1);
 	});
 
-	it("returns promptly when shutdown aborts during a drop backoff", async () => {
+	it("surfaces the pending error-class drop when shutdown aborts during its backoff", async () => {
 		const controller = new AbortController();
 		const drop = serviceError(
 			status.UNAVAILABLE,
@@ -858,8 +858,44 @@ describe("runWorkerLoop", () => {
 
 		// The backoff sleep never resolves — it stands in for an arbitrarily
 		// long delay — so only the abort race can end the wait. The loop must
-		// return cleanly (the TS shutdown contract) without dialling a
-		// replacement, well before the backoff could elapse.
+		// settle promptly without dialling a replacement, and per the
+		// cross-SDK shutdown-outcome rule the pending ERROR-class drop is
+		// surfaced: a supervisor sees "this worker was mid-fault" distinctly
+		// from "this worker drained cleanly".
+		await expect(
+			runWorkerLoop({
+				config: reconnectingConfig(3),
+				session,
+				dispatcher: new SlowDispatcher(),
+				sessionFactory: async () => {
+					factoryCalls += 1;
+					return new ScriptedSession([{ kind: "closed" }]);
+				},
+				sleep: (delayMs) => {
+					sleeps.push(delayMs);
+					setImmediate(() => {
+						controller.abort();
+					});
+					return new Promise<void>(() => undefined);
+				},
+				signal: controller.signal,
+				now: () => 0,
+			}),
+		).rejects.toBe(drop);
+
+		expect(sleeps).toEqual([1]);
+		expect(factoryCalls).toBe(0);
+		expect(session.closed).toBe(true);
+	});
+
+	it("returns cleanly when shutdown aborts during a clean-close drop backoff", async () => {
+		const controller = new AbortController();
+		const session = new ScriptedSession([{ kind: "closed" }]);
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+
+		// The pending drop is a CLEAN close (no drain, no error): the
+		// cross-SDK shutdown-outcome rule ends the run cleanly.
 		await runWorkerLoop({
 			config: reconnectingConfig(3),
 			session,
@@ -1146,6 +1182,12 @@ describe("runWorkerLoop", () => {
 
 type ScriptedStep =
 	| { readonly kind: "task"; readonly task: ActivityTask }
+	| {
+			readonly kind: "resultAck";
+			readonly workflowId: string;
+			readonly activityId: string;
+	  }
+	| { readonly kind: "drained" }
 	| { readonly kind: "closed" }
 	| { readonly kind: "throw"; readonly error: Error };
 
@@ -1290,3 +1332,199 @@ function config(maxConcurrency: number): WorkerConfig {
 		},
 	};
 }
+
+describe("runWorkerLoop worker-protocol acks and drain", () => {
+	it("result acks clear exactly their tracker entry; unknown acks are no-ops", async () => {
+		// Brief test 13 (TS mirror): two workflows colliding on the bare
+		// sequence position exercise both key components.
+		const tracker = new UnackedResultTracker();
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow-a",
+			activityId: "5",
+			result: payload,
+		});
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow-b",
+			activityId: "5",
+			result: payload,
+		});
+		const session = new ScriptedSession([
+			{ kind: "resultAck", workflowId: "workflow-a", activityId: "5" },
+			{ kind: "resultAck", workflowId: "unknown", activityId: "99" },
+			{ kind: "closed" },
+		]);
+
+		await runWorkerLoop({
+			config: config(1),
+			session,
+			dispatcher: new SlowDispatcher(),
+			tracker,
+		});
+
+		expect(tracker.len()).toBe(1);
+		expect(tracker.get("workflow-a", "5")).toBeUndefined();
+		expect(tracker.get("workflow-b", "5")).toBeDefined();
+	});
+
+	it("acked results decay out of the reconnect replay; a lost ack costs one re-report", async () => {
+		// Brief tests 14 + 15 (TS mirror).
+		const tracker = new UnackedResultTracker();
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow",
+			activityId: "1",
+			result: payload,
+		});
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow",
+			activityId: "2",
+			result: payload,
+		});
+		// Session 1 acks entry 1; the ack for entry 2 is "lost". Session 2's
+		// replay must re-report exactly entry 2, whose ack then clears it.
+		const first = new ScriptedSession([
+			{ kind: "resultAck", workflowId: "workflow", activityId: "1" },
+			{ kind: "closed" },
+		]);
+		const second = new ScriptedSession([
+			{ kind: "resultAck", workflowId: "workflow", activityId: "2" },
+			{ kind: "closed" },
+		]);
+		const third = new ScriptedSession([{ kind: "closed" }]);
+		const replacements = [second, third];
+		const controller = new AbortController();
+
+		await runWorkerLoop({
+			config: reconnectingConfig(5),
+			session: first,
+			dispatcher: new SlowDispatcher(),
+			tracker,
+			sessionFactory: async () => {
+				const replacement = replacements.shift();
+				if (replacement === undefined) {
+					controller.abort();
+					return new ScriptedSession([{ kind: "closed" }]);
+				}
+				if (replacement === third) {
+					// End the run after the third session's replay.
+					setImmediate(() => {
+						controller.abort();
+					});
+				}
+				return replacement;
+			},
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+			now: () => 0,
+		});
+
+		// Session 2's replay re-reported exactly the unacked entry...
+		expect(second.reports).toEqual(["2"]);
+		// ...whose session-2 ack cleared it, so session 3 replayed nothing.
+		expect(third.reports).toEqual([]);
+		expect(tracker.isEmpty()).toBe(true);
+	});
+
+	it("drain cycles reconnect after the initial backoff without consuming drop budget", async () => {
+		// Brief test 18 (TS mirror): with a budget of two, three drain cycles
+		// still leave the worker running; a denial then ends the run.
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace revoked",
+		);
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+		const session = new ScriptedSession([{ kind: "drained" }]);
+
+		await expect(
+			runWorkerLoop({
+				config: reconnectingConfig(2),
+				session,
+				dispatcher: new SlowDispatcher(),
+				sessionFactory: async () => {
+					factoryCalls += 1;
+					if (factoryCalls <= 2) {
+						return new ScriptedSession([{ kind: "drained" }]);
+					}
+					return new ScriptedSession([{ kind: "throw", error: denial }]);
+				},
+				sleep: (delayMs) => {
+					sleeps.push(delayMs);
+					return Promise.resolve();
+				},
+				now: () => 0,
+			}),
+		).rejects.toBe(denial);
+
+		// Three drain cycles with maxAttempts = 2: if drains consumed budget
+		// the run would have exhausted after the second; instead it survives
+		// to the scripted denial. Every drain redial waited exactly the
+		// schedule's initial backoff.
+		expect(factoryCalls).toBe(3);
+		expect(sleeps).toEqual([1, 1, 1]);
+	});
+
+	it("returns cleanly when shutdown aborts during a post-drain backoff", async () => {
+		// Brief test 21 (TS mirror): a pending drain is a graceful end.
+		const controller = new AbortController();
+		const session = new ScriptedSession([{ kind: "drained" }]);
+		let factoryCalls = 0;
+
+		await runWorkerLoop({
+			config: reconnectingConfig(5),
+			session,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				factoryCalls += 1;
+				return new ScriptedSession([{ kind: "closed" }]);
+			},
+			sleep: () => {
+				setImmediate(() => {
+					controller.abort();
+				});
+				return new Promise<void>(() => undefined);
+			},
+			signal: controller.signal,
+			now: () => 0,
+		});
+
+		expect(factoryCalls).toBe(0);
+		expect(session.closed).toBe(true);
+	});
+
+	it("finishes and reports in-flight work before reconnecting on a drain", async () => {
+		// D9: drain means finish in-flight work and report it, then redial.
+		const tracker = new UnackedResultTracker();
+		const controller = new AbortController();
+		const session = new ScriptedSession([
+			{ kind: "task", task: task("11") },
+			{ kind: "drained" },
+		]);
+		let factoryCalls = 0;
+
+		await runWorkerLoop({
+			config: reconnectingConfig(5),
+			session,
+			dispatcher: new SlowDispatcher(),
+			tracker,
+			sessionFactory: async () => {
+				factoryCalls += 1;
+				// Abort before the replacement serves: the post-reconnect
+				// shutdown check closes it and ends the run.
+				controller.abort();
+				return new ScriptedSession([{ kind: "closed" }]);
+			},
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+			now: () => 0,
+		});
+
+		// The in-flight task's outcome was reported on the drained session
+		// before the redial.
+		expect(session.reports).toEqual(["11"]);
+		expect(factoryCalls).toBe(1);
+	});
+});

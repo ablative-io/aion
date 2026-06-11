@@ -5,13 +5,7 @@ use aion_proto::ProtoActivityTask;
 
 use crate::error::WorkerError;
 
-const WIRE_DEFAULT_ATTEMPT: u32 = 1;
-
 /// SDK-level activity task envelope decoded from the AW-owned worker proto.
-///
-/// The current worker wire shape does not carry an attempt field. The SDK keeps
-/// an attempt property for the worker-side API and reports the first-attempt
-/// value until AW adds an owned wire field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivityTask {
     /// Owning workflow id, required later when reporting this task's outcome.
@@ -20,7 +14,8 @@ pub struct ActivityTask {
     pub activity_id: ActivityId,
     /// Registered activity type name requested by the engine.
     pub activity_type: String,
-    /// Attempt number surfaced to execution machinery.
+    /// One-based delivery attempt stamped by the dispatching engine seam and
+    /// read from the wire. Zero is malformed and rejected at decode.
     pub attempt: u32,
     /// Opaque activity input payload, preserving its content-type tag.
     pub input: Payload,
@@ -57,11 +52,16 @@ impl TryFrom<ProtoActivityTask> for ActivityTask {
             })
             .map_err(WorkerError::decode)?;
 
+        if value.attempt == 0 {
+            // proto3 zero default = the producer failed to stamp the attempt.
+            return Err(WorkerError::decode(MalformedActivityTask::MissingAttempt));
+        }
+
         Ok(Self {
             workflow_id,
             activity_id,
             activity_type: value.activity_type,
-            attempt: WIRE_DEFAULT_ATTEMPT,
+            attempt: value.attempt,
             input,
         })
     }
@@ -79,6 +79,8 @@ enum MalformedActivityTask {
     MissingActivityType,
     #[error("activity task input payload is missing")]
     MissingInput,
+    #[error("activity task attempt is missing or zero (producer failed to stamp it)")]
+    MissingAttempt,
     #[error("activity task input payload is invalid: {source}")]
     InvalidInput { source: aion_proto::WireError },
 }
@@ -104,6 +106,7 @@ mod tests {
             activity_id: Some(ProtoActivityId::from(activity_id.clone())),
             activity_type: String::from("charge-card"),
             input: Some(ProtoPayload::from(input.clone())),
+            attempt: 3,
         };
 
         let task = ActivityTask::try_from(proto)?;
@@ -111,7 +114,7 @@ mod tests {
         assert_eq!(task.workflow_id, workflow_id);
         assert_eq!(task.activity_id, activity_id);
         assert_eq!(task.activity_type, "charge-card");
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt, 3, "attempt must be read from the wire");
         assert_eq!(task.input.content_type(), &ContentType::Json);
         assert_eq!(task.input.bytes(), input.bytes());
         assert_eq!(task.input.to_json()?, input_value);
@@ -128,8 +131,32 @@ mod tests {
                 ContentType::Json,
                 b"{}".to_vec(),
             ))),
+            attempt: 1,
         });
 
         assert!(matches!(result, Err(WorkerError::Decode { .. })));
+    }
+
+    #[test]
+    fn zero_attempt_is_a_malformed_task() {
+        let result = ActivityTask::try_from(ProtoActivityTask {
+            workflow_id: Some(ProtoWorkflowId::from(WorkflowId::new_v4())),
+            activity_id: Some(ProtoActivityId::from(ActivityId::from_sequence_position(1))),
+            activity_type: String::from("charge-card"),
+            input: Some(ProtoPayload::from(Payload::new(
+                ContentType::Json,
+                b"{}".to_vec(),
+            ))),
+            attempt: 0,
+        });
+
+        let Err(error) = result else {
+            unreachable!("attempt 0 must be rejected as malformed");
+        };
+        assert!(matches!(error, WorkerError::Decode { .. }));
+        assert!(
+            error.to_string().contains("attempt"),
+            "error must name the attempt field: {error}"
+        );
     }
 }

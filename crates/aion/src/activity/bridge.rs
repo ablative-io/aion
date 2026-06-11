@@ -13,11 +13,17 @@ use futures::future::BoxFuture;
 ///
 /// Implementations receive the activity name, JSON-encoded input, and
 /// JSON-encoded config as strings — the same wire format that the Gleam SDK
-/// sends through the `aion_flow_ffi:dispatch_activity/3` binding. The return
-/// value is the JSON-encoded activity result or a prefixed error string
-/// matching the SDK's error-decoding convention.
+/// sends through the `aion_flow_ffi:dispatch_activity/3` binding — plus the
+/// one-based delivery attempt stamped by the engine. The return value is the
+/// JSON-encoded activity result or a prefixed error string matching the
+/// SDK's error-decoding convention.
 pub trait ActivityDispatcher: Send + Sync + 'static {
     /// Dispatch the named activity and block until completion.
+    ///
+    /// `attempt` is the one-based delivery attempt for this dispatch; the
+    /// dispatcher stamps it onto whatever transport carries the task (the
+    /// worker wire's `ActivityTask.attempt`), so consumers can distinguish
+    /// retries without guessing.
     ///
     /// Returns `Ok(encoded_output)` on success or `Err(error_string)` on
     /// failure. Both sides are strings matching the Gleam SDK's
@@ -27,7 +33,13 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     ///
     /// Returns the error string surfaced by the activity execution path —
     /// worker rejection, decode failure, timeout, or activity body error.
-    fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String>;
+    fn dispatch(
+        &self,
+        name: &str,
+        input: &str,
+        config: &str,
+        attempt: u32,
+    ) -> Result<String, String>;
 
     /// Dispatch the named activity with the calling workflow process id when
     /// the runtime can provide it.
@@ -44,10 +56,11 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
         name: &str,
         input: &str,
         config: &str,
+        attempt: u32,
         caller_pid: Option<u64>,
     ) -> Result<String, String> {
         let _ = caller_pid;
-        self.dispatch(name, input, config)
+        self.dispatch(name, input, config, attempt)
     }
 
     /// Dispatch the named activity from a Tokio task.
@@ -72,11 +85,12 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
         name: String,
         input: String,
         config: String,
+        attempt: u32,
         caller_pid: Option<u64>,
     ) -> BoxFuture<'static, Result<String, String>> {
         Box::pin(async move {
             let blocking = tokio::task::spawn_blocking(move || {
-                self.dispatch_from_process(&name, &input, &config, caller_pid)
+                self.dispatch_from_process(&name, &input, &config, attempt, caller_pid)
             });
             match blocking.await {
                 Ok(result) => result,
@@ -96,7 +110,13 @@ mod tests {
     struct Echo;
 
     impl ActivityDispatcher for Echo {
-        fn dispatch(&self, _name: &str, input: &str, _config: &str) -> Result<String, String> {
+        fn dispatch(
+            &self,
+            _name: &str,
+            input: &str,
+            _config: &str,
+            _attempt: u32,
+        ) -> Result<String, String> {
             Ok(input.to_owned())
         }
     }
@@ -110,7 +130,7 @@ mod tests {
         assert_eq!(
             dispatcher
                 .as_ref()
-                .and_then(|d| d.dispatch("test", "hello", "{}").ok()),
+                .and_then(|d| d.dispatch("test", "hello", "{}", 1).ok()),
             Some("hello".to_owned())
         );
     }

@@ -41,20 +41,50 @@ def config(max_concurrency: int = 2) -> WorkerConfig:
 
 
 class FakeGrpcStream:
-    def __init__(self, failure: Exception | None = None) -> None:
-        self.failure = failure
-        self.waited = False
+    """Models the grpc.aio call's ``read()`` contract for register/receive.
 
-    async def wait_for_connection(self) -> None:
-        self.waited = True
+    ``frames`` are served in order; once exhausted, ``read()`` returns
+    ``grpc.aio.EOF`` (or hangs forever when ``hang_after_frames`` is set, for
+    ack-timeout coverage). A configured ``failure`` raises on the first read,
+    modelling a denied RPC surfacing its status on the response stream.
+    """
+
+    def __init__(
+        self,
+        frames: list[worker_pb2.ServerToWorker] | None = None,
+        failure: Exception | None = None,
+        hang_after_frames: bool = False,
+    ) -> None:
+        self.frames = list(frames or [])
+        self.failure = failure
+        self.hang_after_frames = hang_after_frames
+        self.reads = 0
+
+    async def read(self) -> object:
+        self.reads += 1
         if self.failure is not None:
             raise self.failure
+        if self.frames:
+            return self.frames.pop(0)
+        if self.hang_after_frames:
+            await asyncio.Event().wait()
+        from aion_worker.session import _GRPC_EOF
 
-    def __aiter__(self) -> FakeGrpcStream:
-        return self
+        return _GRPC_EOF
 
-    async def __anext__(self) -> worker_pb2.ServerToWorker:
-        raise StopAsyncIteration
+
+def register_ack_frame(
+    worker_id: int = 7,
+    namespace: str = "queue-a",
+    heartbeat_window_ms: int = 30_000,
+) -> worker_pb2.ServerToWorker:
+    return worker_pb2.ServerToWorker(
+        register_ack=worker_pb2.RegisterAck(
+            worker_id=worker_id,
+            namespace=namespace,
+            heartbeat_window_ms=heartbeat_window_ms,
+        )
+    )
 
 
 @dataclass
@@ -184,5 +214,6 @@ def task(sequence_position: int, activity_type: str = "slow") -> TaskReceived:
             activity_id=activity_id(sequence_position),
             activity_type=activity_type,
             input=payload(),
+            attempt=1,
         )
     )

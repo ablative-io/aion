@@ -15,7 +15,7 @@ pub use reconnect::{
     re_report_unacked, reconnect_with_backoff, reconnect_with_sleep, register_connected_session,
 };
 pub use session::{
-    GrpcWorkerSession, WorkerSession, WorkerSessionEvent, WorkerTaskStream,
+    GrpcWorkerSession, RegisteredSessionInfo, WorkerSession, WorkerSessionEvent, WorkerTaskStream,
     validate_activity_handlers,
 };
 pub use task::ActivityTask;

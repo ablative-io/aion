@@ -81,6 +81,12 @@ export interface RunWorkerLoopOptions {
 /** Per-session liveness counter used for drop-budget reset accounting. */
 interface SessionHealth {
 	tasksServed: number;
+	/**
+	 * Latched when a drain frame is observed on this session: the eventual
+	 * stream end — clean OR abrupt — is then drain-class (the server
+	 * announced it was going away), so the drop consumes no budget.
+	 */
+	drainReceived: boolean;
 }
 
 export async function runWorkerLoop(
@@ -156,7 +162,7 @@ export async function runWorkerLoop(
 	// connected time, never drain time (a long-running handler must not let a
 	// short-lived session masquerade as one that outlived the max backoff).
 	let sessionEndedAt = sessionStartedAt;
-	let sessionHealth: SessionHealth = { tasksServed: 0 };
+	let sessionHealth: SessionHealth = { tasksServed: 0, drainReceived: false };
 
 	for (;;) {
 		let streamFailure: StreamFailure | undefined;
@@ -167,35 +173,63 @@ export async function runWorkerLoop(
 		}
 		sessionEndedAt = now();
 		await Promise.all(running);
-		if (streamFailure !== undefined) {
+		if (streamFailure !== undefined && !sessionHealth.drainReceived) {
 			await handleStreamFailure(streamFailure.error, session, options);
 		}
 		if (options.sessionFactory === undefined) {
 			// Clean close with nothing to reconnect with: stream failures have
-			// already propagated inside handleStreamFailure. The session is
-			// closed before returning so no exit path leaks its transport.
+			// already propagated inside handleStreamFailure (a drain-latched
+			// failure with no factory still has nothing to reconnect with, so
+			// it is surfaced too). The session is closed before returning so
+			// no exit path leaks its transport.
+			if (streamFailure !== undefined && sessionHealth.drainReceived) {
+				await handleStreamFailure(streamFailure.error, session, options);
+			}
 			await closeFailedSession(session, options.logger);
 			return;
 		}
 		if (shutdownRequested(options.signal)) {
 			options.logger?.info("worker shutdown requested; not reconnecting");
-			if (streamFailure === undefined) {
+			if (streamFailure === undefined || sessionHealth.drainReceived) {
 				// Failure paths already closed the session inside
-				// handleStreamFailure; a clean close observed at shutdown must
-				// close it here so no exit path leaks the transport.
+				// handleStreamFailure; every other end must close it here so
+				// no exit path leaks the transport.
 				await closeFailedSession(session, options.logger);
 			}
 			return;
 		}
+		// Drain latch: once the drain frame was observed, this session's end —
+		// clean or abrupt — is drain-class and consumes no drop budget.
+		let drainClass = sessionHealth.drainReceived;
 		let dropError: unknown;
 		if (streamFailure !== undefined) {
 			dropError = streamFailure.error;
+			if (drainClass) {
+				// A denial would have propagated above only when non-drained;
+				// after a drain the announced classification wins for
+				// retryable transport ends, but a deterministic denial still
+				// outranks it.
+				if (!isRetryableSessionError(streamFailure.error)) {
+					await handleStreamFailure(streamFailure.error, session, options);
+				}
+				options.logger?.warn(
+					"worker session error after server drain; classified as drain drop",
+					{ message: describeError(streamFailure.error) },
+				);
+				await closeFailedSession(session, options.logger);
+			}
+		} else if (drainClass) {
+			options.logger?.info(
+				"worker session drained by server; reconnecting after initial backoff",
+			);
+			await closeFailedSession(session, options.logger);
+			dropError = undefined;
 		} else {
-			// A clean close with a factory present re-enters the reconnect
-			// cycle, so an endlessly clean-closing server is the same hazard
-			// as a flapping stream: it must consume the same drop budget. The
-			// replaced session is closed (idempotently) so its write side is
-			// released before the replacement is dialled.
+			// An unannounced clean close with a factory present re-enters the
+			// reconnect cycle, so an endlessly clean-closing server is the
+			// same hazard as a flapping stream: it must consume the same drop
+			// budget. The replaced session is closed (idempotently) so its
+			// write side is released before the replacement is dialled.
 			dropError = new ServerClosedStreamError(
 				"worker receive stream closed cleanly while a session factory was configured",
 			);
@@ -205,10 +239,13 @@ export async function runWorkerLoop(
 			await closeFailedSession(session, options.logger);
 		}
 
-		// Recovery: consume the drop budget, back off on the configured
-		// schedule, reconnect, and replay unacknowledged results. A retryable
-		// replay failure consumes another drop and re-enters; a non-retryable
-		// one propagates; a shutdown observed anywhere returns cleanly.
+		// Recovery: consume the drop budget (drain-class drops are exempt),
+		// back off on the configured schedule, reconnect, and replay
+		// unacknowledged results. A retryable replay failure consumes another
+		// drop and re-enters; a non-retryable one propagates; a shutdown
+		// observed anywhere applies the cross-SDK outcome rule (pending
+		// drain/clean-close drop returns cleanly, pending error-class drop
+		// surfaces its error).
 		for (;;) {
 			// The dropped session (the served one on the first iteration, the
 			// replay-failed replacement on re-entries) resets the budget when
@@ -227,24 +264,42 @@ export async function runWorkerLoop(
 				}
 				droppedAttempts = 0;
 			}
-			droppedAttempts += 1;
-			if (droppedAttempts >= reconnect.maxAttempts) {
-				options.logger?.error(
-					"worker session drop budget exhausted; not reconnecting",
-					{ droppedAttempts, message: describeError(dropError) },
-				);
-				throw new ReconnectExhaustedError(
-					`worker session drop budget exhausted after ${String(droppedAttempts)} dropped sessions: ${describeError(dropError)}`,
-					{ cause: dropError },
-				);
+			let delayMs: number;
+			if (drainClass) {
+				// An announced drain consumes no drop budget: the server told
+				// the worker it was going away, so the drop is expected
+				// operator behaviour, not flapping.
+				delayMs = reconnect.initialDelayMs;
+			} else {
+				droppedAttempts += 1;
+				if (droppedAttempts >= reconnect.maxAttempts) {
+					options.logger?.error(
+						"worker session drop budget exhausted; not reconnecting",
+						{ droppedAttempts, message: describeError(dropError) },
+					);
+					throw new ReconnectExhaustedError(
+						`worker session drop budget exhausted after ${String(droppedAttempts)} dropped sessions: ${describeError(dropError)}`,
+						{ cause: dropError },
+					);
+				}
+				delayMs = delayForAttempt(reconnect, droppedAttempts);
 			}
-			const delayMs = delayForAttempt(reconnect, droppedAttempts);
 			options.logger?.warn(
 				"worker session dropped; reconnecting after backoff",
 				{ droppedAttempts, delayMs, message: describeError(dropError) },
 			);
 			await sleepUnlessAborted(sleep, delayMs, options.signal);
 			if (shutdownRequested(options.signal)) {
+				// Cross-SDK shutdown-outcome rule: a pending drain-class or
+				// clean-close drop ends the run cleanly; a pending error-class
+				// drop surfaces its error.
+				if (!drainClass && !(dropError instanceof ServerClosedStreamError)) {
+					options.logger?.info(
+						"worker shutdown requested during error-drop backoff; surfacing pending drop",
+						{ message: describeError(dropError) },
+					);
+					throw dropError;
+				}
 				options.logger?.info(
 					"worker shutdown requested during drop backoff; not reconnecting",
 				);
@@ -278,7 +333,7 @@ export async function runWorkerLoop(
 			// the budget at its own eventual drop.
 			sessionStartedAt = now();
 			sessionEndedAt = sessionStartedAt;
-			sessionHealth = { tasksServed: 0 };
+			sessionHealth = { tasksServed: 0, drainReceived: false };
 			// Publish the replacement session before the post-reconnect abort
 			// check: from here on an abort closes the new session through the
 			// caller's live-session holder, so no shutdown window leaves it
@@ -326,6 +381,9 @@ export async function runWorkerLoop(
 					"worker result replay failed; counting against drop budget",
 					{ message: describeError(error) },
 				);
+				// A replay failure is an unannounced drop: the latch belongs
+				// to the drained session, never to its replacement.
+				drainClass = false;
 				dropError = error;
 			}
 		}
@@ -400,7 +458,6 @@ async function receiveUntilClosed(
 ): Promise<void> {
 	const iterator = session.receiveTasks()[Symbol.asyncIterator]();
 	for (;;) {
-		await waitForSlot(running, options.config.maxConcurrency);
 		// A clean close is the iterator completing (`done: true`) or the
 		// session yielding its `closed` event. A rejection from `next()` is a
 		// stream error and must propagate to the caller for retryable /
@@ -413,6 +470,24 @@ async function receiveUntilClosed(
 		if (event.kind === "closed") {
 			return;
 		}
+		if (event.kind === "drained") {
+			// Latch the drain classification and stop pulling: in-flight work
+			// finishes and reports via the caller's `running` drain.
+			options.logger?.info(
+				"worker received server drain; finishing in-flight work before reconnect",
+			);
+			health.drainReceived = true;
+			return;
+		}
+		if (event.kind === "resultAck") {
+			// Acks are bookkeeping, not work: consumed without a concurrency
+			// slot. An unknown ack is a logged no-op.
+			acknowledgeResult(event.workflowId, event.activityId, options);
+			continue;
+		}
+		// Only tasks occupy a concurrency slot; acks and drains were handled
+		// above without one.
+		await waitForSlot(running, options.config.maxConcurrency);
 		options.logger?.info("worker received activity task", {
 			workflowId: event.task.workflowId,
 			activityId: event.task.activityId,
@@ -428,6 +503,29 @@ async function receiveUntilClosed(
 			running.delete(taskPromise);
 		});
 		running.add(taskPromise);
+	}
+}
+
+/**
+ * Clears the acknowledged tracker entry; an unknown ack (already acked on a
+ * previous session, or replaced by a re-record) is a logged no-op.
+ */
+function acknowledgeResult(
+	workflowId: string,
+	activityId: string,
+	options: RunWorkerLoopOptions,
+): void {
+	if (options.tracker?.get(workflowId, activityId) !== undefined) {
+		options.tracker.acknowledge(workflowId, activityId);
+		options.logger?.info(
+			"server acknowledged activity result; tracker entry cleared",
+			{ workflowId, activityId },
+		);
+	} else {
+		options.logger?.info("result ack for unknown tracker entry ignored", {
+			workflowId,
+			activityId,
+		});
 	}
 }
 

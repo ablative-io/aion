@@ -81,6 +81,22 @@ impl WorkerProtocol for WorkerGrpcService {
         let worker_id = registration
             .worker_id()
             .ok_or_else(|| Status::internal("worker registration missing id"))?;
+        let authorized_namespace = registration
+            .namespace()
+            .ok_or_else(|| Status::internal("worker registration missing namespace"))?
+            .to_owned();
+
+        // RegisterAck ordering guarantee: the ack is enqueued on `task_tx`
+        // BEFORE the write forwarder that copies dispatched tasks onto the
+        // same channel is spawned, so no task frame can precede it on the
+        // wire. This is a structural ordering proof, not a timing hope.
+        task_tx
+            .try_send(Ok(register_ack_frame(
+                worker_id,
+                &authorized_namespace,
+                heartbeat_grace,
+            )))
+            .map_err(|_| Status::internal("worker response channel closed before RegisterAck"))?;
 
         tokio::spawn(async move {
             let write_handle = tokio::spawn({
@@ -137,14 +153,52 @@ async fn process_inbound(
         match inner {
             generated::worker_to_server::Message::Result(result) => {
                 let proto_result = decode_activity_result(result);
-                if let Ok(completion) = ActivityCompletion::try_from(proto_result) {
-                    let _ = session.heartbeat.complete_task(
-                        session.worker_id,
-                        &completion.workflow_id,
-                        &completion.activity_id,
-                    );
-                    session.drain.notify_activity_drained();
-                    let _ = session.pending.complete_activity(completion);
+                match ActivityCompletion::try_from(proto_result) {
+                    Ok(completion) => {
+                        let workflow_id = completion.workflow_id.clone();
+                        let activity_id = completion.activity_id.clone();
+                        let _ = session.heartbeat.complete_task(
+                            session.worker_id,
+                            &workflow_id,
+                            &activity_id,
+                        );
+                        session.drain.notify_activity_drained();
+                        if let Err(error) = session.pending.complete_activity(completion) {
+                            tracing::error!(
+                                worker_id = ?session.worker_id,
+                                workflow_id = %workflow_id,
+                                activity_id = %activity_id,
+                                %error,
+                                "activity completion handoff failed"
+                            );
+                        }
+                        // Ack every well-formed result frame — including
+                        // duplicates with no pending waiter; their re-report
+                        // obligation is equally discharged. `try_send`: a
+                        // worker that stopped draining its receive side must
+                        // not wedge the inbound loop; a dropped ack is
+                        // recovered by the next-session re-report.
+                        let ack = result_ack_frame(&workflow_id, &activity_id);
+                        if let Err(error) = session.task_tx.try_send(Ok(ack)) {
+                            tracing::warn!(
+                                worker_id = ?session.worker_id,
+                                workflow_id = %workflow_id,
+                                activity_id = %activity_id,
+                                %error,
+                                "result ack dropped: worker stream channel unavailable"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        // Malformed result: no ids to ack with. Loud, never
+                        // silent — the worker's entry will re-report and
+                        // re-fail visibly each session.
+                        tracing::error!(
+                            worker_id = ?session.worker_id,
+                            %error,
+                            "malformed activity result frame; no ack sent"
+                        );
+                    }
                 }
             }
             generated::worker_to_server::Message::Register(_) => {
@@ -249,6 +303,44 @@ fn status_from_server_error(error: &crate::ServerError) -> Status {
     }
 }
 
+/// Build the positive registration acknowledgement frame — the guaranteed
+/// first frame on every successful worker response stream.
+fn register_ack_frame(
+    worker_id: WorkerId,
+    namespace: &str,
+    heartbeat_window: std::time::Duration,
+) -> generated::ServerToWorker {
+    generated::ServerToWorker {
+        message: Some(generated::server_to_worker::Message::RegisterAck(
+            generated::RegisterAck {
+                worker_id: worker_id.value(),
+                namespace: namespace.to_owned(),
+                heartbeat_window_ms: u64::try_from(heartbeat_window.as_millis())
+                    .unwrap_or(u64::MAX),
+            },
+        )),
+    }
+}
+
+/// Build the per-result acknowledgement frame for a consumed `ActivityResult`.
+fn result_ack_frame(
+    workflow_id: &aion_core::WorkflowId,
+    activity_id: &aion_core::ActivityId,
+) -> generated::ServerToWorker {
+    generated::ServerToWorker {
+        message: Some(generated::server_to_worker::Message::ResultAck(
+            generated::ResultAck {
+                workflow_id: Some(generated::WorkflowId {
+                    uuid: workflow_id.to_string(),
+                }),
+                activity_id: Some(generated::ActivityId {
+                    sequence_position: activity_id.sequence_position(),
+                }),
+            },
+        )),
+    }
+}
+
 fn decode_register(r: generated::RegisterWorker) -> ProtoRegisterWorker {
     ProtoRegisterWorker {
         namespace: r.namespace,
@@ -283,6 +375,7 @@ fn encode_task(task: aion_proto::ProtoActivityTask) -> generated::ActivityTask {
             content_type: p.content_type,
             bytes: p.bytes,
         }),
+        attempt: task.attempt,
     }
 }
 

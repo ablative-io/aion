@@ -418,6 +418,7 @@ fn proto_task(
             ContentType::Json,
             b"{}".to_vec(),
         ))),
+        attempt: 1,
     }
 }
 
@@ -451,3 +452,123 @@ fn test_config(max_concurrency: usize) -> WorkerConfig {
 #[derive(Debug, thiserror::Error)]
 #[error("fake dispatcher has no canned outcome")]
 struct NoOutcome;
+
+/// Dispatcher that records the attempt each context exposes.
+struct AttemptRecordingDispatcher {
+    attempts: Mutex<Vec<u32>>,
+}
+
+#[async_trait]
+impl ActivityDispatcher for AttemptRecordingDispatcher {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
+        drop(task);
+        self.attempts.lock().await.push(context.attempt());
+        Ok(DispatchOutcome::Completed {
+            output: Payload::new(ContentType::Json, b"{}".to_vec()),
+        })
+    }
+
+    fn activity_types(&self) -> BTreeSet<String> {
+        [String::from("charge-card")].into_iter().collect()
+    }
+}
+
+/// Brief test 22 (first half): the wire attempt is surfaced verbatim on the
+/// handler's `ActivityContext`.
+#[tokio::test]
+async fn wire_attempt_is_exposed_on_the_activity_context() -> Result<(), WorkerError> {
+    let workflow_id = WorkflowId::new_v4();
+    let mut task = proto_task(
+        workflow_id,
+        ActivityId::from_sequence_position(1),
+        "charge-card",
+    );
+    task.attempt = 3;
+    let mut session = FakeSession {
+        tasks: vec![Ok(WorkerSessionEvent::Task(task))],
+        reports: Vec::new(),
+    };
+    let dispatcher = Arc::new(AttemptRecordingDispatcher {
+        attempts: Mutex::new(Vec::new()),
+    });
+    let mut tracker = UnackedResultTracker::new();
+
+    let end = serve_activity_tasks(
+        &test_config(1),
+        &mut session,
+        Arc::clone(&dispatcher),
+        &mut tracker,
+    )
+    .await?;
+
+    assert_eq!(end, ServeEnd::StreamClosed);
+    assert_eq!(*dispatcher.attempts.lock().await, vec![3]);
+    Ok(())
+}
+
+/// Brief test 22 (second half): a wire task whose attempt is zero is a
+/// malformed task — the serve loop surfaces a decode error (a budgeted
+/// retryable drop for the run loop), never a defaulted attempt.
+#[tokio::test]
+async fn zero_attempt_task_fails_serve_with_decode_error() -> Result<(), WorkerError> {
+    let workflow_id = WorkflowId::new_v4();
+    let mut task = proto_task(
+        workflow_id,
+        ActivityId::from_sequence_position(1),
+        "charge-card",
+    );
+    task.attempt = 0;
+    let mut session = FakeSession {
+        tasks: vec![Ok(WorkerSessionEvent::Task(task))],
+        reports: Vec::new(),
+    };
+    let dispatcher = Arc::new(AttemptRecordingDispatcher {
+        attempts: Mutex::new(Vec::new()),
+    });
+    let mut tracker = UnackedResultTracker::new();
+
+    let result = serve_activity_tasks(
+        &test_config(1),
+        &mut session,
+        Arc::clone(&dispatcher),
+        &mut tracker,
+    )
+    .await;
+
+    assert!(matches!(result, Err(WorkerError::Decode { .. })));
+    assert!(dispatcher.attempts.lock().await.is_empty());
+    Ok(())
+}
+
+/// A drain frame ends the serve loop with the dedicated `Drained` end and
+/// latches `SessionHealth::drain_received` for the run loop's classifier.
+#[tokio::test]
+async fn drain_frame_ends_serve_as_drained_and_latches_health() -> Result<(), WorkerError> {
+    let mut session = FakeSession {
+        tasks: vec![Ok(WorkerSessionEvent::Drain)],
+        reports: Vec::new(),
+    };
+    let dispatcher = Arc::new(AttemptRecordingDispatcher {
+        attempts: Mutex::new(Vec::new()),
+    });
+    let mut tracker = UnackedResultTracker::new();
+    let mut health = super::SessionHealth::default();
+
+    let end = super::serve_activity_tasks_until(
+        &test_config(1),
+        &mut session,
+        Arc::clone(&dispatcher),
+        &mut tracker,
+        &mut health,
+        futures::future::pending(),
+    )
+    .await?;
+
+    assert_eq!(end, ServeEnd::Drained);
+    assert!(health.drain_received, "the drain latch must be set");
+    Ok(())
+}

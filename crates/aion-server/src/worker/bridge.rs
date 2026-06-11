@@ -55,11 +55,13 @@ type SyncReceiver = std::sync::mpsc::Receiver<Result<String, String>>;
 /// pair is collision-safe across restarts — a v4 uuid from the old server
 /// life can never equal a fresh one.
 ///
-/// Residual ambiguity for the proto train (#39/#47/#59): the wire carries no
-/// attempt discriminator, so once the engine passes *real* workflow ids
-/// (instead of per-dispatch fabricated ones) two attempts of the same
-/// `(workflow_id, activity_id)` will be indistinguishable on the wire. That
-/// gap must be closed by an attempt-scoped key when the protocol gains one.
+/// The wire now carries an attempt discriminator (`ActivityTask.attempt`,
+/// stamped from the engine-seam dispatch parameter), but the pending key
+/// stays attempt-free: the dispatcher fabricates fresh ids per dispatch, so
+/// two attempts of one logical activity are distinct `(workflow_id,
+/// activity_id)` pairs here. When the engine passes *real* workflow ids,
+/// redelivery bookkeeping can widen this key with the attempt it already has
+/// on the wire — no further protocol change needed.
 type PendingActivityKey = (WorkflowId, ActivityId);
 
 /// Tracks in-flight activity dispatches waiting for worker results.
@@ -423,7 +425,13 @@ impl WorkerActivityDispatcher {
 }
 
 impl ActivityDispatcher for WorkerActivityDispatcher {
-    fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
+    fn dispatch(
+        &self,
+        name: &str,
+        input: &str,
+        config: &str,
+        attempt: u32,
+    ) -> Result<String, String> {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => match handle.runtime_flavor() {
                 tokio::runtime::RuntimeFlavor::MultiThread => {
@@ -433,7 +441,9 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
                     // stream forwarder woken by our `try_send` can actually
                     // run — otherwise it is trapped in this worker's
                     // non-stealable LIFO slot until the timeout fires.
-                    tokio::task::block_in_place(|| self.dispatch_blocking(name, input, config))
+                    tokio::task::block_in_place(|| {
+                        self.dispatch_blocking(name, input, config, attempt)
+                    })
                 }
                 flavor => Err(format!(
                     "activity dispatch blocks the calling thread until the worker responds; \
@@ -445,7 +455,7 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
             // No tokio context: a beamr scheduler thread or other plain OS
             // thread. Blocking here is the designed contract and cannot starve
             // the server runtime.
-            Err(_) => self.dispatch_blocking(name, input, config),
+            Err(_) => self.dispatch_blocking(name, input, config, attempt),
         }
     }
 }
@@ -460,7 +470,13 @@ impl WorkerActivityDispatcher {
     /// worker, so the thread blocking here must not be the one responsible
     /// for polling that forwarder. [`ActivityDispatcher::dispatch`] enforces
     /// this with `tokio::task::block_in_place`.
-    fn dispatch_blocking(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
+    fn dispatch_blocking(
+        &self,
+        name: &str,
+        input: &str,
+        config: &str,
+        attempt: u32,
+    ) -> Result<String, String> {
         let _ = config;
         let started_at = Instant::now();
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -481,7 +497,7 @@ impl WorkerActivityDispatcher {
         let _span_guard = span.enter();
         self.ensure_accepting(name, &workflow_id, &activity_id, Some(worker_id))?;
 
-        let task = activity_task(name, input, &workflow_id, &activity_id);
+        let task = activity_task(name, input, &workflow_id, &activity_id, attempt);
         let rx = self
             .pending
             .insert(workflow_id.clone(), activity_id.clone());
@@ -513,6 +529,7 @@ fn activity_task(
     input: &str,
     workflow_id: &WorkflowId,
     activity_id: &ActivityId,
+    attempt: u32,
 ) -> ProtoActivityTask {
     ProtoActivityTask {
         workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
@@ -522,6 +539,7 @@ fn activity_task(
             content_type: String::from("application/json"),
             bytes: input.as_bytes().to_vec(),
         }),
+        attempt,
     }
 }
 
@@ -697,7 +715,7 @@ mod tests {
         let registry = ConnectedWorkerRegistry::default();
         let dispatcher = WorkerActivityDispatcher::new(registry, "default");
 
-        let result = dispatcher.dispatch("greet", "{}", "{}");
+        let result = dispatcher.dispatch("greet", "{}", "{}", 1);
 
         assert!(result.is_err());
         let err = result.err().unwrap_or_default();
@@ -760,7 +778,7 @@ mod tests {
         // Invoke the sync dispatch inside the first poll of a spawned task:
         // the worst-case calling context for the `block_in_place` guard.
         let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-            dispatcher.dispatch("greet", "{}", "{}")
+            dispatcher.dispatch("greet", "{}", "{}", 1)
         }));
         let result = dispatch_task.await.map_err(|error| error.to_string())?;
         let elapsed = started.elapsed();
@@ -789,7 +807,7 @@ mod tests {
         let dispatcher = WorkerActivityDispatcher::new(registry, "default");
 
         let started = Instant::now();
-        let result = dispatcher.dispatch("greet", "{}", "{}");
+        let result = dispatcher.dispatch("greet", "{}", "{}", 1);
         let elapsed = started.elapsed();
 
         let err = result.err().ok_or("expected dispatch to fail")?;

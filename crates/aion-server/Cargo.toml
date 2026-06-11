@@ -50,6 +50,7 @@ clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 aion-package = { version = "0.1.0", path = "../aion-package" }
+aion-worker = { version = "0.1.0", path = "../aion-worker" }
 tempfile = "3.27.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-tungstenite = "0.29.0"

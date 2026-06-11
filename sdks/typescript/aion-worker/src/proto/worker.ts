@@ -19,7 +19,39 @@ export interface ActivityTask {
 	readonly activityId?: ActivityId;
 	readonly activityType: string;
 	readonly input?: Payload;
+	/**
+	 * One-based delivery attempt stamped by the dispatching engine seam.
+	 * Zero/absent is malformed: the producer failed to stamp it.
+	 */
+	readonly attempt?: number;
 }
+
+/**
+ * Positive registration acknowledgement — always the first frame on the
+ * response stream. Denials flow exclusively as gRPC error statuses; there is
+ * no negative counterpart frame.
+ */
+export interface RegisterAck {
+	readonly workerId?: number | string;
+	readonly namespace?: string;
+	readonly heartbeatWindowMs?: number | string;
+}
+
+/**
+ * Per-result acknowledgement: the server has consumed the identified
+ * ActivityResult frame and the worker may stop re-reporting it.
+ */
+export interface ResultAck {
+	readonly workflowId?: WorkflowId;
+	readonly activityId?: ActivityId;
+}
+
+/**
+ * Server-initiated drain: the server is going away. The worker finishes
+ * in-flight work, stops expecting new tasks, and reconnects after the
+ * schedule's initial backoff without consuming drop budget.
+ */
+export interface DrainRequest {}
 
 export interface ActivityError {
 	readonly kind: ActivityErrorKind;
@@ -48,6 +80,9 @@ export interface WorkerToServer {
 
 export interface ServerToWorker {
 	readonly task?: ActivityTask;
+	readonly drain?: DrainRequest;
+	readonly registerAck?: RegisterAck;
+	readonly resultAck?: ResultAck;
 }
 
 export interface WorkerProtocolClient {

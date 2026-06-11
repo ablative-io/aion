@@ -184,6 +184,7 @@ dependencies = [
  "aion-rs",
  "aion-store",
  "aion-store-libsql",
+ "aion-worker",
  "anyhow",
  "async-trait",
  "axum 0.8.9",

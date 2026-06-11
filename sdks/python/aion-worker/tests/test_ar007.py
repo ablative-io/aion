@@ -13,6 +13,7 @@ from ar007_fakes import (
     activity_id,
     config,
     payload,
+    register_ack_frame,
     task,
     wait_for_condition,
     workflow_id,
@@ -31,7 +32,7 @@ from aion_worker import (
     reconnect_with_backoff,
     serve,
 )
-from aion_worker.proto import common_pb2
+from aion_worker.proto import common_pb2, worker_pb2
 
 
 def test_import_smoke_public_names() -> None:
@@ -152,6 +153,7 @@ def _workflow_task(workflow_uuid: str, sequence_position: int) -> aion_worker.Ta
             activity_id=activity_id(sequence_position),
             activity_type="slow",
             input=payload(),
+            attempt=1,
         )
     )
 
@@ -460,7 +462,7 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
     assert session.log[:2] == ["handshake", "register"]
     assert "Registered activities: greet" in messages
     assert "Waiting for tasks" in messages
-    assert "Received task greet for workflow workflow-1" in messages
+    assert "Received task greet for workflow workflow-1 (attempt 1)" in messages
     assert "Completed greet in 5ms" in messages
 
 
@@ -622,16 +624,23 @@ async def test_grpc_open_stream_sends_authorization_metadata() -> None:
     )
 
 
-async def test_grpc_register_waits_for_transport_connection_before_success() -> None:
+async def test_grpc_register_succeeds_only_on_register_ack_and_captures_payload() -> None:
+    """Brief test 23: success requires the RegisterAck frame, not readiness."""
+
     worker_config = config()
     session = aion_worker.GrpcWorkerSession(worker_config)
-    stream = FakeGrpcStream()
+    stream = FakeGrpcStream(frames=[register_ack_frame(worker_id=9, heartbeat_window_ms=12_000)])
     session._outbound = asyncio.Queue(maxsize=16)
     session._stream = stream
 
     await session.register(["slow"], ["slow"])
 
-    assert stream.waited is True
+    assert stream.reads == 1
+    info = session.registered_info
+    assert info is not None
+    assert info.worker_id == 9
+    assert info.namespace == "queue-a"
+    assert info.heartbeat_window_ms == 12_000
     outbound = session._outbound
     assert outbound is not None
     message = await outbound.get()
@@ -639,14 +648,44 @@ async def test_grpc_register_waits_for_transport_connection_before_success() -> 
     assert message.register.activity_types == ["slow"]
 
 
-async def test_grpc_register_surfaces_transport_connection_failure() -> None:
+async def test_grpc_register_times_out_retryably_when_server_never_acks() -> None:
+    """Brief test 23: the ack wait is bounded by max_backoff_seconds."""
+
     worker_config = config()
     session = aion_worker.GrpcWorkerSession(worker_config)
     session._outbound = asyncio.Queue(maxsize=16)
-    session._stream = FakeGrpcStream(OSError("dial refused"))
+    session._stream = FakeGrpcStream(hang_after_frames=True)
 
-    with pytest.raises(aion_worker.TransportError, match="dial refused"):
+    with pytest.raises(aion_worker.TransportError, match="did not acknowledge registration") as failure:
         await session.register(["slow"], ["slow"])
+    assert aion_worker.is_retryable_session_error(failure.value)
+
+
+async def test_grpc_register_rejects_non_ack_first_frame_as_protocol_violation() -> None:
+    worker_config = config()
+    session = aion_worker.GrpcWorkerSession(worker_config)
+    session._outbound = asyncio.Queue(maxsize=16)
+    session._stream = FakeGrpcStream(
+        frames=[
+            worker_pb2.ServerToWorker(
+                task=worker_pb2.ActivityTask(activity_type="slow", attempt=1),
+            )
+        ]
+    )
+
+    with pytest.raises(aion_worker.TransportError, match="protocol violation"):
+        await session.register(["slow"], ["slow"])
+
+
+async def test_grpc_register_surfaces_stream_end_before_ack_as_retryable() -> None:
+    worker_config = config()
+    session = aion_worker.GrpcWorkerSession(worker_config)
+    session._outbound = asyncio.Queue(maxsize=16)
+    session._stream = FakeGrpcStream()
+
+    with pytest.raises(aion_worker.TransportError, match="ended the stream before acknowledging") as failure:
+        await session.register(["slow"], ["slow"])
+    assert aion_worker.is_retryable_session_error(failure.value)
 
 
 async def test_grpc_connect_logs_configured_endpoint(caplog: pytest.LogCaptureFixture) -> None:
@@ -677,3 +716,118 @@ async def test_reconnect_logs_connection_failure_reason(caplog: pytest.LogCaptur
     failure_records = [record for record in caplog.records if record.getMessage() == expected_message]
     assert failure_records
     assert all(record.levelname == "ERROR" for record in failure_records)
+
+
+# --- Worker-protocol ack wave: decode taxonomy + attempt validation --------
+
+
+def test_decode_server_message_maps_drain_to_drain_received() -> None:
+    """Brief test 24: the drain frame is a first-class event — the old
+    TransportError("unsupported ... 'drain'") path is the bug being killed."""
+
+    from aion_worker import DrainReceived
+    from aion_worker.session import decode_server_message
+
+    event = decode_server_message(worker_pb2.ServerToWorker(drain=worker_pb2.DrainRequest()))
+    assert isinstance(event, DrainReceived)
+
+
+def test_decode_server_message_maps_result_ack() -> None:
+    from aion_worker import ResultAcknowledged
+    from aion_worker.session import decode_server_message
+
+    event = decode_server_message(
+        worker_pb2.ServerToWorker(
+            result_ack=worker_pb2.ResultAck(
+                workflow_id=common_pb2.WorkflowId(uuid="workflow-1"),
+                activity_id=common_pb2.ActivityId(sequence_position=4),
+            )
+        )
+    )
+    assert isinstance(event, ResultAcknowledged)
+    assert event.workflow_id.uuid == "workflow-1"
+    assert event.activity_id.sequence_position == 4
+
+
+def test_decode_server_message_rejects_mid_stream_register_ack() -> None:
+    from aion_worker.session import decode_server_message
+
+    with pytest.raises(TransportError, match="protocol violation"):
+        decode_server_message(worker_pb2.ServerToWorker(register_ack=worker_pb2.RegisterAck(worker_id=1)))
+
+
+def test_decode_server_message_still_rejects_empty_payload() -> None:
+    from aion_worker.session import decode_server_message
+
+    with pytest.raises(TransportError, match="no payload set"):
+        decode_server_message(worker_pb2.ServerToWorker())
+
+
+def test_activity_task_reads_wire_attempt_and_rejects_zero() -> None:
+    """Brief test 26: the context attempt comes from the wire; zero is malformed."""
+
+    stamped = aion_worker.ActivityTask.from_proto(
+        worker_pb2.ActivityTask(
+            workflow_id=common_pb2.WorkflowId(uuid="workflow-1"),
+            activity_id=common_pb2.ActivityId(sequence_position=1),
+            activity_type="slow",
+            input=common_pb2.Payload(content_type="application/json", bytes=b"{}"),
+            attempt=3,
+        )
+    )
+    assert stamped.attempt == 3
+
+    with pytest.raises(TransportError, match="attempt is missing or zero"):
+        aion_worker.ActivityTask.from_proto(
+            worker_pb2.ActivityTask(
+                workflow_id=common_pb2.WorkflowId(uuid="workflow-1"),
+                activity_id=common_pb2.ActivityId(sequence_position=1),
+                activity_type="slow",
+                input=common_pb2.Payload(content_type="application/json", bytes=b"{}"),
+            )
+        )
+
+
+def test_wire_default_attempt_constant_is_gone() -> None:
+    """Brief test 26: the consumer-side parity hack is deleted outright."""
+
+    import aion_worker.context as context_module
+
+    assert not hasattr(context_module, "WIRE_DEFAULT_ATTEMPT")
+    assert "WIRE_DEFAULT_ATTEMPT" not in aion_worker.__all__
+
+
+async def test_wire_attempt_is_exposed_on_the_activity_context() -> None:
+    """Brief test 26 (loop half): the handler context exposes the wire attempt."""
+
+    from aion_worker import ActivityExecutionContext, Completed, DispatchOutcome, TaskReceived, serve
+
+    seen: list[int] = []
+
+    class AttemptRecordingDispatcher:
+        def activity_types(self) -> Iterable[str]:
+            return ["slow"]
+
+        async def dispatch(
+            self, dispatched: aion_worker.ActivityTask, context: ActivityExecutionContext
+        ) -> DispatchOutcome:
+            seen.append(context.attempt)
+            return Completed(payload())
+
+    session = FakeSession()
+    await session.push(
+        TaskReceived(
+            aion_worker.ActivityTask(
+                workflow_id=workflow_id(),
+                activity_id=activity_id(1),
+                activity_type="slow",
+                input=payload(),
+                attempt=5,
+            )
+        )
+    )
+    await session.finish()
+
+    await serve(config(), session, AttemptRecordingDispatcher())
+
+    assert seen == [5]

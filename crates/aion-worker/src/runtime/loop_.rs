@@ -18,7 +18,8 @@ use crate::protocol::{
     ActivityExecutionKey, ActivityTask, HeartbeatBookkeeper, WorkerSession, WorkerSessionEvent,
 };
 use crate::runtime::report::{
-    DispatchFinished, InFlightActivity, RuntimeChannels, drain_remaining, drain_runtime_events,
+    DispatchFinished, InFlightActivity, RuntimeChannels, drain_remaining, record_first_error,
+    report_finished,
 };
 
 /// Dispatch seam used by the receive loop to execute decoded activity tasks.
@@ -58,11 +59,14 @@ pub type NoShutdown = future::Pending<()>;
 pub enum ServeEnd {
     /// The caller's shutdown future fired; in-flight work was drained.
     Shutdown,
-    /// The server ended the task stream cleanly (end-of-stream or a drain
-    /// frame). The reconnect-aware run loop treats this as a retryable
-    /// session drop — never as a run end — so workers ride through graceful
-    /// server closes such as deploys.
+    /// The server ended the task stream cleanly without announcing a drain.
+    /// The reconnect-aware run loop treats this unannounced close as a
+    /// budgeted retryable session drop — never as a run end.
     StreamClosed,
+    /// The server announced a drain: in-flight work was finished and
+    /// reported, and the run loop reconnects after the schedule's initial
+    /// backoff without consuming any drop budget.
+    Drained,
 }
 
 /// Per-session health accounting written by the serve loop for the
@@ -75,6 +79,12 @@ pub struct SessionHealth {
     /// handlers are drained — so post-drop draining never extends the
     /// session's measured connected lifetime.
     pub stream_ended_at: Option<tokio::time::Instant>,
+    /// Latched when a drain frame is observed on this session: the eventual
+    /// stream end — clean OR abrupt — is then drain-class (the server
+    /// announced it was going away), so the drop consumes no budget even if
+    /// the post-drain reporting fails. Survives an error return because this
+    /// is an out-parameter.
+    pub drain_received: bool,
 }
 
 /// Runs the worker receive loop until the session's task stream completes.
@@ -85,7 +95,8 @@ pub struct SessionHealth {
 ///
 /// Every computed dispatch outcome is recorded in `tracker` before its report
 /// is sent, so a caller that reconnects after a transport drop can re-report
-/// the backlog; the engine ingests reports idempotently by `ActivityId`.
+/// the backlog; the server acks each consumed report (`ResultAck`), and only
+/// that explicit acknowledgement clears a tracker entry.
 ///
 /// # Errors
 ///
@@ -121,9 +132,9 @@ where
 ///
 /// Every computed dispatch outcome is recorded in `tracker` before its report
 /// is sent, so a caller that reconnects after a transport drop can re-report
-/// the backlog; the engine ingests reports idempotently by `ActivityId`. Only
-/// an explicit engine acknowledgement clears tracker entries, so successful
-/// sends leave their entries in place.
+/// the backlog; the server ingests reports idempotently and acks each one
+/// with a `ResultAck` frame. Only that explicit acknowledgement clears a
+/// tracker entry — a successful send proves nothing on its own.
 ///
 /// `health` accumulates session-health accounting: the activity tasks whose
 /// outcome report was sent on this session, and the instant the receive
@@ -156,17 +167,9 @@ where
     D: ActivityDispatcher,
     Shutdown: Future<Output = ()> + Send,
 {
-    if config.max_concurrency == 0 {
-        return Err(WorkerError::registration(InvalidMaxConcurrency));
-    }
-
+    ensure_max_concurrency(config)?;
     let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
-    let (result_sender, result_receiver) = mpsc::unbounded_channel();
-    let (heartbeat_sender, heartbeat_receiver) = mpsc::unbounded_channel();
-    let mut channels = RuntimeChannels {
-        heartbeats: heartbeat_receiver,
-        results: result_receiver,
-    };
+    let (result_sender, heartbeat_sender, mut channels) = runtime_channels();
     let heartbeat_bookkeeper = HeartbeatBookkeeper::default();
     let mut stream = session.receive_tasks();
     let mut in_flight = HashMap::<ActivityExecutionKey, InFlightActivity>::new();
@@ -176,21 +179,9 @@ where
     let mut end = ServeEnd::StreamClosed;
     tokio::pin!(shutdown);
 
+    // No batching preamble: the select arms below consume queued dispatch
+    // outcomes and heartbeats directly, so nothing waits for a stream event.
     while pending_error.is_none() {
-        drain_runtime_events(
-            session,
-            &heartbeat_bookkeeper,
-            &mut channels,
-            &mut in_flight,
-            tracker,
-            &mut health.tasks_reported,
-            &mut pending_error,
-        )
-        .await;
-        if pending_error.is_some() {
-            break;
-        }
-
         tokio::select! {
             biased;
             () = &mut shutdown => {
@@ -198,29 +189,65 @@ where
                 end = ServeEnd::Shutdown;
                 break;
             }
+            // Dispatch outcomes are reported the moment they complete — the
+            // loop must not sit in `stream.next()` while a finished result
+            // waits, or a single dispatched task on an otherwise idle stream
+            // is only reported when the stream ends (the server-side dispatch
+            // would time out against a healthy worker).
+            finished = channels.results.recv() => {
+                if let Some(finished) = finished {
+                    report_finished(
+                        session,
+                        &heartbeat_bookkeeper,
+                        finished,
+                        &mut in_flight,
+                        tracker,
+                        &mut health.tasks_reported,
+                        &mut pending_error,
+                    )
+                    .await;
+                }
+            }
+            // Handler heartbeats are forwarded as they arrive for the same
+            // reason: the server's liveness window must be beatable while the
+            // stream is idle.
+            request = channels.heartbeats.recv() => {
+                if let Some(request) = request {
+                    forward_heartbeat(session, &heartbeat_bookkeeper, request, &mut pending_error)
+                        .await;
+                }
+            }
             event = stream.next() => {
                 let Some(event) = event else { break; };
                 match event {
                     Ok(WorkerSessionEvent::Cancel { workflow_id, activity_id }) => {
                         deliver_cancellation(workflow_id, &activity_id, &in_flight);
                     }
+                    // Acks are bookkeeping, not work: consumed without a
+                    // concurrency permit, like cancellation delivery.
+                    Ok(WorkerSessionEvent::ResultAck { workflow_id, activity_id }) => {
+                        acknowledge_result(&workflow_id, &activity_id, tracker);
+                    }
                     Ok(WorkerSessionEvent::Drain) => {
+                        info!("server drain received; finishing in-flight work before reconnect");
+                        health.drain_received = true;
+                        end = ServeEnd::Drained;
                         break;
                     }
-                    other => {
-                        let permit = tokio::select! {
-                            biased;
-                            () = &mut shutdown => {
-                                cancel_all_in_flight(&in_flight);
-                                end = ServeEnd::Shutdown;
-                                break;
-                            }
-                            permit = semaphore.clone().acquire_owned() => {
-                                permit.map_err(WorkerError::registration)?
-                            }
+                    Err(error) => {
+                        pending_error = Some(error);
+                        break;
+                    }
+                    Ok(WorkerSessionEvent::Task(proto_task)) => {
+                        let Some(permit) =
+                            acquire_permit_or_shutdown(shutdown.as_mut(), &semaphore).await?
+                        else {
+                            cancel_all_in_flight(&in_flight);
+                            end = ServeEnd::Shutdown;
+                            break;
                         };
-                        if !handle_session_event(
-                            other,
+                        if !handle_task(
+                            proto_task,
                             SessionEventContext {
                                 permit,
                                 dispatcher: Arc::clone(&dispatcher),
@@ -244,8 +271,7 @@ where
     // reset decision measures connected time, never drain time.
     health.stream_ended_at = Some(tokio::time::Instant::now());
 
-    drop(result_sender);
-    drop(heartbeat_sender);
+    drop((result_sender, heartbeat_sender));
     drain_remaining(
         session,
         &heartbeat_bookkeeper,
@@ -257,10 +283,22 @@ where
     )
     .await;
 
-    if let Some(error) = pending_error {
-        return Err(error);
-    }
-    Ok(end)
+    pending_error.map_or(Ok(end), Err)
+}
+
+/// Builds the runtime's dispatch-outcome and heartbeat channels.
+fn runtime_channels() -> (
+    mpsc::UnboundedSender<DispatchFinished>,
+    mpsc::UnboundedSender<HeartbeatRequest>,
+    RuntimeChannels,
+) {
+    let (result_sender, result_receiver) = mpsc::unbounded_channel();
+    let (heartbeat_sender, heartbeat_receiver) = mpsc::unbounded_channel();
+    let channels = RuntimeChannels {
+        heartbeats: heartbeat_receiver,
+        results: result_receiver,
+    };
+    (result_sender, heartbeat_sender, channels)
 }
 
 struct SessionEventContext<'a, D> {
@@ -273,43 +311,93 @@ struct SessionEventContext<'a, D> {
     pending_error: &'a mut Option<WorkerError>,
 }
 
-fn handle_session_event<D>(
-    event: Result<WorkerSessionEvent, WorkerError>,
+fn handle_task<D>(
+    proto_task: aion_proto::ProtoActivityTask,
     ctx: SessionEventContext<'_, D>,
 ) -> Result<bool, WorkerError>
 where
     D: ActivityDispatcher,
 {
-    match event {
-        Ok(WorkerSessionEvent::Task(proto_task)) => {
-            let task = match ActivityTask::try_from(proto_task) {
-                Ok(task) => task,
-                Err(error) => {
-                    drop(ctx.permit);
-                    *ctx.pending_error = Some(error);
-                    return Ok(false);
-                }
-            };
-            spawn_activity(
-                task,
-                ctx.permit,
-                ctx.dispatcher,
-                ctx.result_sender.clone(),
-                ctx.heartbeat_sender.clone(),
-                ctx.heartbeat_bookkeeper,
-                ctx.in_flight,
-            )?;
-            Ok(true)
-        }
-        Ok(WorkerSessionEvent::Cancel { .. } | WorkerSessionEvent::Drain) => {
-            drop(ctx.permit);
-            Ok(true)
-        }
+    let task = match ActivityTask::try_from(proto_task) {
+        Ok(task) => task,
         Err(error) => {
             drop(ctx.permit);
             *ctx.pending_error = Some(error);
-            Ok(false)
+            return Ok(false);
         }
+    };
+    spawn_activity(
+        task,
+        ctx.permit,
+        ctx.dispatcher,
+        ctx.result_sender.clone(),
+        ctx.heartbeat_sender.clone(),
+        ctx.heartbeat_bookkeeper,
+        ctx.in_flight,
+    )?;
+    Ok(true)
+}
+
+/// Rejects a zero `max_concurrency` before the serve loop starts.
+fn ensure_max_concurrency(config: &WorkerConfig) -> Result<(), WorkerError> {
+    if config.max_concurrency == 0 {
+        return Err(WorkerError::registration(InvalidMaxConcurrency));
+    }
+    Ok(())
+}
+
+/// Waits for a dispatch permit, racing the caller's shutdown future; returns
+/// `None` when shutdown won.
+async fn acquire_permit_or_shutdown<F>(
+    shutdown: std::pin::Pin<&mut F>,
+    semaphore: &Arc<Semaphore>,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, WorkerError>
+where
+    F: Future<Output = ()> + Send,
+{
+    tokio::select! {
+        biased;
+        () = shutdown => Ok(None),
+        permit = Arc::clone(semaphore).acquire_owned() => {
+            permit.map(Some).map_err(WorkerError::registration)
+        }
+    }
+}
+
+/// Forwards one handler heartbeat to the session, recording the first error.
+async fn forward_heartbeat<S>(
+    session: &mut S,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    request: HeartbeatRequest,
+    pending_error: &mut Option<WorkerError>,
+) where
+    S: WorkerSession,
+{
+    record_first_error(
+        pending_error,
+        crate::protocol::send_heartbeat(session, heartbeat_bookkeeper, request).await,
+    );
+}
+
+/// Clears the acknowledged tracker entry; an unknown ack (already cleared on
+/// a previous session, or replaced by a re-record) is a logged no-op.
+fn acknowledge_result(
+    workflow_id: &WorkflowId,
+    activity_id: &ActivityId,
+    tracker: &mut UnackedResultTracker,
+) {
+    if tracker.acknowledge(workflow_id, activity_id).is_some() {
+        debug!(
+            workflow_id = %workflow_id,
+            activity_id = activity_id.sequence_position(),
+            "server acknowledged activity result; tracker entry cleared"
+        );
+    } else {
+        debug!(
+            workflow_id = %workflow_id,
+            activity_id = activity_id.sequence_position(),
+            "result ack for unknown tracker entry ignored"
+        );
     }
 }
 

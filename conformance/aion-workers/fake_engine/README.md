@@ -8,13 +8,14 @@ The fake endpoint implements only the worker protocol needed by `../scenarios.js
 
 - Accept a `StreamWorker` connection.
 - Require the first worker message to be `WorkerToServer.register` containing `RegisterWorker.namespace` and `RegisterWorker.activity_types`.
-- Send `ServerToWorker.task` messages containing `ActivityTask.workflow_id`, `activity_id`, `activity_type`, and `input`.
-- Record `WorkerToServer.result` messages containing either `ActivityResult.result` or `ActivityResult.error`.
+- Answer the registration with `ServerToWorker.register_ack` as the guaranteed first response frame (carrying a harness-assigned `worker_id`, the registered namespace, and a `heartbeat_window_ms`). Workers do not serve before the ack; a harness that withholds it must observe the SDK timing the wait out retryably at its reconnect `max_backoff`.
+- Send `ServerToWorker.task` messages containing `ActivityTask.workflow_id`, `activity_id`, `activity_type`, `input`, and a one-based `attempt` (zero is malformed and every SDK rejects it at decode).
+- Record `WorkerToServer.result` messages containing either `ActivityResult.result` or `ActivityResult.error`, and answer each well-formed one with `ServerToWorker.result_ack` echoing its ids — unless a scenario withholds the ack (e.g. `reconnect-and-re-report`) to keep the result in the worker's unacked tracker.
 - Record `WorkerToServer.heartbeat` messages and preserve heartbeat progress payload content type and bytes.
-- Send `ServerToWorker.drain` when a scenario needs graceful shutdown after all expected observations are collected.
+- Send `ServerToWorker.drain` when a scenario needs the worker to finish in-flight work and reconnect; under the drain contract the worker classifies the session end as an unbudgeted drain drop and redials after its initial backoff.
 - Close the stream intentionally to simulate disconnects.
 
-The fake endpoint does not define new wire behaviour. Scenario controls that are not present in `worker.proto`, such as cooperative cancellation and result acknowledgement, are harness actions outside the gRPC message stream. They are used to coordinate conformance runner fixtures and to test SDK state-machine behaviour without changing AW.
+The fake endpoint does not define new wire behaviour. Scenario controls that are not present in `worker.proto`, such as cooperative cancellation, are harness actions outside the gRPC message stream. They are used to coordinate conformance runner fixtures and to test SDK state-machine behaviour without changing AW.
 
 ## Scenario execution model
 

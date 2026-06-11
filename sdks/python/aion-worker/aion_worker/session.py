@@ -16,6 +16,13 @@ from .proto import common_pb2, worker_pb2, worker_pb2_grpc
 Payload: TypeAlias = common_pb2.Payload
 logger = logging.getLogger(__name__)
 
+_GRPC_EOF: Any = cast(Any, grpc.aio).EOF
+"""grpc.aio's end-of-stream sentinel returned by ``read()``.
+
+Accessed through ``cast`` because grpcio's type stubs do not declare it; the
+runtime attribute is stable public API.
+"""
+
 WorkflowId: TypeAlias = common_pb2.WorkflowId
 ActivityId: TypeAlias = common_pb2.ActivityId
 ActivityError: TypeAlias = worker_pb2.ActivityError
@@ -52,13 +59,15 @@ class ReconnectConfig:
     serves a task or outlives ``max_backoff_seconds`` — exhausts the budget
     after exactly ``max_attempts`` drops.
 
-    Clean closes: a clean/graceful server-side stream close is a retryable
-    drop, not a run end. The worker redials through the same budgeted,
-    backed-off cycle, so routine server deploys cost at most transient budget
-    that heals; only a persistent clean-close loop exhausts the budget
-    (raising ``ReconnectError`` from ``ServerClosedStreamError``). An
-    explicit protocol drain signal ("closing, do not reconnect") is planned
-    for the worker-protocol ack wave and will refine the clean-close case.
+    Drains and clean closes: a server-announced drain (the wire
+    ``DrainRequest`` frame) is an unbudgeted drop — the worker finishes
+    in-flight work and redials after ``initial_backoff_seconds``; the drain
+    classification latches for the session, so even an abrupt end after the
+    frame stays drain-class. An *unannounced* clean stream close remains a
+    budgeted retryable drop: the worker redials through the same budgeted,
+    backed-off cycle, and only a persistent unannounced clean-close loop
+    exhausts the budget (raising ``ReconnectError`` from
+    ``ServerClosedStreamError``).
 
     Shutdown during establishment or a backoff: shutdown wins promptly
     during BOTH backoff phases — the session-establishment retries and the
@@ -67,10 +76,11 @@ class ReconnectConfig:
     chain against the shutdown signal and never dials again once it fires
     (the Rust worker selects shutdown around the entire establishment; this
     SDK cancels the in-flight attempt task, which closes its
-    partially-established session while unwinding). The run outcome
-    currently diverges — this SDK and the TypeScript worker return cleanly,
-    while the Rust worker surfaces the pending drop error. Aligning the
-    outcome cross-SDK is deferred to the protocol drain-signal wave.
+    partially-established session while unwinding). The run outcome is
+    aligned across the Rust, Python, and TypeScript workers: a pending
+    drain-class or clean-close drop ends the run cleanly, while a pending
+    error-class drop re-raises its error — a supervisor sees "this worker
+    was mid-fault" distinctly from "this worker drained cleanly".
     """
 
     initial_backoff_seconds: float
@@ -126,14 +136,19 @@ class ActivityTask:
     activity_id: ActivityId
     activity_type: str
     input: Payload
+    attempt: int
 
     @classmethod
     def from_proto(cls, task: ActivityTaskMessage) -> ActivityTask:
+        if task.attempt == 0:
+            # proto3 zero default = the producer failed to stamp the attempt.
+            raise TransportError("activity task attempt is missing or zero (producer failed to stamp it)")
         return cls(
             workflow_id=task.workflow_id,
             activity_id=task.activity_id,
             activity_type=task.activity_type,
             input=task.input,
+            attempt=task.attempt,
         )
 
 
@@ -152,14 +167,39 @@ class ActivityCancelled:
     activity_id: ActivityId
 
 
-WorkerSessionEvent: TypeAlias = TaskReceived | ActivityCancelled
+@dataclass(frozen=True)
+class ResultAcknowledged:
+    """The server consumed the identified ``ActivityResult`` frame.
+
+    The worker may stop re-reporting it: the serve loop clears the matching
+    unacked-tracker entry. An ack with no matching entry is a logged no-op.
+    """
+
+    workflow_id: WorkflowId
+    activity_id: ActivityId
 
 
-class ConnectableStream(Protocol):
-    """Subset of gRPC stream call methods used to force connection readiness."""
+@dataclass(frozen=True)
+class DrainReceived:
+    """Server-initiated drain: the server is going away.
 
-    async def wait_for_connection(self) -> None:
-        """Wait until the underlying RPC is connected or fails."""
+    The worker finishes in-flight work, reports what it can, stops expecting
+    new tasks, and reconnects after the schedule's initial backoff. The
+    classification latches for the session: the eventual stream end — clean
+    or abrupt — is drain-class and consumes no drop budget.
+    """
+
+
+WorkerSessionEvent: TypeAlias = TaskReceived | ActivityCancelled | ResultAcknowledged | DrainReceived
+
+
+@dataclass(frozen=True)
+class RegisteredSessionInfo:
+    """Server-assigned registration facts carried by the ``RegisterAck``."""
+
+    worker_id: int
+    namespace: str
+    heartbeat_window_ms: int
 
 
 class WorkerSession(Protocol):
@@ -197,8 +237,15 @@ class GrpcWorkerSession:
         self._channel = channel
         self._stub: worker_pb2_grpc.WorkerProtocolStub | None = None
         self._outbound: asyncio.Queue[worker_pb2.WorkerToServer | None] | None = None
-        self._stream: AsyncIterator[worker_pb2.ServerToWorker] | None = None
+        self._stream: Any | None = None
         self._activity_types: list[str] = []
+        self._registered_info: RegisteredSessionInfo | None = None
+
+    @property
+    def registered_info(self) -> RegisteredSessionInfo | None:
+        """Server-assigned registration facts, available once registered."""
+
+        return self._registered_info
 
     @classmethod
     async def connect(cls, config: WorkerConfig) -> GrpcWorkerSession:
@@ -217,11 +264,22 @@ class GrpcWorkerSession:
         await self._open_stream()
 
     async def register(self, activity_types: Iterable[str], available_handlers: Iterable[str]) -> None:
+        """Send ``RegisterWorker`` and await the server's ``RegisterAck``.
+
+        Registration succeeds only when the ack — the guaranteed first frame
+        on the response stream — arrives. The ack wait is bounded by the
+        reconnect policy's ``max_backoff_seconds`` (the operator's own
+        definition of the longest tolerable pause); a timeout, a non-ack
+        first frame, or a stream that ends before the ack is a retryable
+        registration failure. Denials fail the RPC with a gRPC error status
+        (``PERMISSION_DENIED`` / ``UNAUTHENTICATED``) exactly as before.
+        """
+
         requested = list(activity_types)
         validate_activity_handlers(requested, available_handlers)
         self._activity_types = requested
         await self._send_register(requested)
-        await self._wait_for_connection()
+        await self._await_register_ack()
 
     def receive_tasks(self) -> AsyncIterator[WorkerSessionEvent]:
         stream = self._stream
@@ -291,14 +349,35 @@ class GrpcWorkerSession:
         )
         await self._send_to_server(worker_pb2.WorkerToServer(register=register))
 
-    async def _wait_for_connection(self) -> None:
+    async def _await_register_ack(self) -> None:
+        """Read the response stream's first frame and demand ``RegisterAck``."""
+
         stream = self._stream
         if stream is None:
             raise TransportError("worker receive stream has not been opened")
+        deadline = self._config.reconnect.max_backoff_seconds
         try:
-            await cast(ConnectableStream, stream).wait_for_connection()
-        except Exception as exc:
-            raise TransportError(f"worker stream connection failed: {exc}") from exc
+            first = await asyncio.wait_for(cast(Any, stream).read(), timeout=deadline)
+        except asyncio.TimeoutError as exc:
+            raise TransportError(f"server did not acknowledge registration within {deadline}s") from exc
+        except grpc.RpcError as exc:
+            # Denials (PERMISSION_DENIED / UNAUTHENTICATED) surface here as
+            # the RPC's error status; the cause chain preserves the code for
+            # the reconnect machinery's retryability classification.
+            raise TransportError(f"worker registration failed: {exc}") from exc
+        if first is _GRPC_EOF:
+            raise TransportError("server ended the stream before acknowledging registration")
+        message = cast(worker_pb2.ServerToWorker, first)
+        if message.WhichOneof("message") != "register_ack":
+            raise TransportError(
+                "protocol violation: server sent a non-RegisterAck frame before acknowledging registration"
+            )
+        ack = message.register_ack
+        self._registered_info = RegisteredSessionInfo(
+            worker_id=ack.worker_id,
+            namespace=ack.namespace,
+            heartbeat_window_ms=ack.heartbeat_window_ms,
+        )
 
     async def _send_to_server(self, message: worker_pb2.WorkerToServer) -> None:
         outbound = self._outbound
@@ -311,11 +390,17 @@ class GrpcWorkerSession:
 
     async def _receive_from_stream(
         self,
-        stream: AsyncIterator[worker_pb2.ServerToWorker],
+        stream: Any,
     ) -> AsyncIterator[WorkerSessionEvent]:
+        # A read() loop, not `async for`: grpc.aio forbids mixing read() with
+        # the async iterator on one call, and register() consumed frame 1
+        # (the RegisterAck) via read().
         try:
-            async for message in stream:
-                yield decode_server_message(message)
+            while True:
+                message = await cast(Any, stream).read()
+                if message is _GRPC_EOF:
+                    return
+                yield decode_server_message(cast(worker_pb2.ServerToWorker, message))
         except grpc.RpcError as exc:
             raise TransportError(f"worker stream receive failed: {exc}") from exc
 
@@ -334,9 +419,17 @@ def decode_server_message(message: Message) -> WorkerSessionEvent:
     which = message.WhichOneof("message")
     if which == "task":
         return TaskReceived(ActivityTask.from_proto(message.task))
+    if which == "drain":
+        return DrainReceived()
+    if which == "result_ack":
+        ack = message.result_ack
+        return ResultAcknowledged(workflow_id=ack.workflow_id, activity_id=ack.activity_id)
+    if which == "register_ack":
+        # The ack is consumed inside register(); a second one mid-stream is a
+        # server ordering bug that must surface.
+        raise TransportError("protocol violation: RegisterAck received after registration completed")
     if which is None:
         raise TransportError("server-to-worker message had no payload set")
-    # Frames this SDK does not classify yet (the drain-frame taxonomy lands
-    # with the worker-protocol ack wave) surface what was actually received
-    # instead of a misleading "empty message" report.
+    # Genuinely unknown oneofs surface what was actually received instead of
+    # a misleading "empty message" report.
     raise TransportError(f"unsupported server-to-worker message {which!r}")

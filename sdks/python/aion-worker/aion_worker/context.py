@@ -9,18 +9,21 @@ from .proto import common_pb2
 from .session import ActivityId, Payload, WorkerSession, WorkflowId
 
 JSON_CONTENT_TYPE = "application/json"
-WIRE_DEFAULT_ATTEMPT = 1
 
 
 class ActivityContext:
-    """Context passed to each activity handler."""
+    """Context passed to each activity handler.
+
+    ``attempt`` is the one-based delivery attempt read from the wire task —
+    always supplied by the receive loop, never defaulted.
+    """
 
     def __init__(
         self,
         *,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
-        attempt: int = WIRE_DEFAULT_ATTEMPT,
+        attempt: int,
         session: WorkerSession,
         content_type: str = JSON_CONTENT_TYPE,
     ) -> None:

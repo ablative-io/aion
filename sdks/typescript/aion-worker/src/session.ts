@@ -4,6 +4,9 @@ import type {
 	ActivityId,
 	ActivityTask as WireActivityTask,
 	Payload as WirePayload,
+	RegisterAck as WireRegisterAck,
+	ResultAck as WireResultAck,
+	ServerToWorker,
 	WorkerProtocolClient,
 	WorkerToServer,
 } from "./proto/index.js";
@@ -26,14 +29,15 @@ export type WorkerIdentity = string;
  * task or outlives `maxDelayMs` — exhausts the budget after exactly
  * `maxAttempts` drops.
  *
- * Clean closes: a clean/graceful server-side stream close is a retryable
- * drop, not a run end. The worker redials through the same budgeted,
- * backed-off cycle, so routine server deploys cost at most transient budget
- * that heals; only a persistent clean-close loop exhausts the budget
- * (surfacing `ReconnectExhaustedError` with a `ServerClosedStreamError`
- * cause). An explicit protocol drain signal ("closing, do not reconnect")
- * is planned for the worker-protocol ack wave and will refine the
- * clean-close case.
+ * Drains and clean closes: a server-announced drain (the wire
+ * `DrainRequest` frame) is an unbudgeted drop — the worker finishes
+ * in-flight work and redials after `initialDelayMs`; the drain
+ * classification latches for the session, so even an abrupt end after the
+ * frame stays drain-class. An *unannounced* clean stream close remains a
+ * budgeted retryable drop: the worker redials through the same budgeted,
+ * backed-off cycle, and only a persistent unannounced clean-close loop
+ * exhausts the budget (surfacing `ReconnectExhaustedError` with a
+ * `ServerClosedStreamError` cause).
  *
  * Shutdown during establishment or a backoff: shutdown wins promptly during
  * BOTH backoff phases — the session-establishment retries and the mid-run
@@ -42,10 +46,11 @@ export type WorkerIdentity = string;
  * against the shutdown signal and never dials again once it fires (the Rust
  * worker selects shutdown around the entire establishment; this SDK and the
  * Python worker race the attempt and close an attempt abandoned to shutdown
- * when it eventually settles). The run outcome currently diverges — this
- * SDK and the Python worker return cleanly, while the Rust worker surfaces
- * the pending drop error. Aligning the outcome cross-SDK is deferred to the
- * protocol drain-signal wave.
+ * when it eventually settles). The run outcome is aligned across the Rust,
+ * Python, and TypeScript workers: a pending drain-class or clean-close drop
+ * ends the run cleanly, while a pending error-class drop surfaces its error
+ * — a supervisor sees "this worker was mid-fault" distinctly from "this
+ * worker drained cleanly".
  */
 export interface ReconnectConfig {
 	readonly initialDelayMs: number;
@@ -103,7 +108,29 @@ export interface WorkerRegistration {
 
 export type WorkerSessionEvent =
 	| { readonly kind: "task"; readonly task: ActivityTask }
+	/**
+	 * The server consumed the identified `ActivityResult` frame; the worker
+	 * may stop re-reporting it. Clears the matching unacked-tracker entry.
+	 */
+	| {
+			readonly kind: "resultAck";
+			readonly workflowId: WorkflowId;
+			readonly activityId: ActivityIdKey;
+	  }
+	/**
+	 * Server-initiated drain: the server is going away. The worker finishes
+	 * in-flight work, stops expecting new tasks, and reconnects after the
+	 * schedule's initial backoff without consuming drop budget.
+	 */
+	| { readonly kind: "drained" }
 	| { readonly kind: "closed" };
+
+/** Server-assigned registration facts carried by the `RegisterAck` frame. */
+export interface RegisteredSessionInfo {
+	readonly workerId: number;
+	readonly namespace: string;
+	readonly heartbeatWindowMs: number;
+}
 
 export interface WorkerSession {
 	handshake(config: WorkerConfig): Promise<void>;
@@ -141,15 +168,30 @@ export interface GrpcClientFactory {
 
 export class GrpcWorkerSession implements WorkerSession {
 	private readonly stream: ReturnType<WorkerProtocolClient["streamWorker"]>;
+	/**
+	 * The ONE iterator over the response stream: `register` consumes frame 1
+	 * (the `RegisterAck`) from it and `receiveTasks` continues it, so no
+	 * frame can be lost between the two phases.
+	 */
+	private readonly frames: AsyncIterator<ServerToWorker>;
 	private registration?: WorkerRegistration;
+	private config?: WorkerConfig;
+	private registeredInfoValue?: RegisteredSessionInfo;
 	private streamEnded = false;
 
 	public constructor(client: WorkerProtocolClient) {
 		this.stream = client.streamWorker();
+		this.frames = this.stream[Symbol.asyncIterator]();
+	}
+
+	/** Server-assigned registration facts, available once registered. */
+	public get registeredInfo(): RegisteredSessionInfo | undefined {
+		return this.registeredInfoValue;
 	}
 
 	public async handshake(config: WorkerConfig): Promise<void> {
 		validateWorkerConfig(config);
+		this.config = config;
 		this.registration = {
 			taskQueue: config.taskQueue,
 			identity: config.identity,
@@ -157,10 +199,20 @@ export class GrpcWorkerSession implements WorkerSession {
 		};
 	}
 
+	/**
+	 * Sends `RegisterWorker` and awaits the server's `RegisterAck` — the
+	 * guaranteed first frame on the response stream. Registration succeeds
+	 * only when the ack arrives; the wait is bounded by the reconnect
+	 * policy's `maxDelayMs` (the operator's own definition of the longest
+	 * tolerable pause). A timeout, a non-ack first frame, or a stream that
+	 * ends before the ack is a retryable registration failure; denials fail
+	 * the call with a gRPC error status exactly as before.
+	 */
 	public async register(activityTypes: readonly string[]): Promise<void> {
 		const registeredTypes = validateActivityTypes(activityTypes);
 		const registration = this.registration;
-		if (registration === undefined) {
+		const config = this.config;
+		if (registration === undefined || config === undefined) {
 			throw new Error("worker session must handshake before register");
 		}
 		this.registration = { ...registration, activityTypes: registeredTypes };
@@ -170,12 +222,44 @@ export class GrpcWorkerSession implements WorkerSession {
 				activityTypes: registeredTypes,
 			},
 		});
+		const first = await withDeadline(
+			this.frames.next(),
+			config.reconnect.maxDelayMs,
+			`server did not acknowledge registration within ${String(config.reconnect.maxDelayMs)}ms`,
+		);
+		if (first.done === true) {
+			throw new Error(
+				"server ended the stream before acknowledging registration",
+			);
+		}
+		const ack = first.value.registerAck;
+		if (ack === undefined) {
+			throw new Error(
+				"protocol violation: server sent a non-RegisterAck frame before acknowledging registration",
+			);
+		}
+		this.registeredInfoValue = decodeRegisterAck(ack);
 	}
 
 	public async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
-		for await (const message of this.stream) {
+		for (;;) {
+			const next = await this.frames.next();
+			if (next.done === true) {
+				break;
+			}
+			const message = next.value;
 			if (message.task !== undefined) {
 				yield { kind: "task", task: decodeTask(message.task) };
+			} else if (message.resultAck !== undefined) {
+				yield decodeResultAck(message.resultAck);
+			} else if (message.drain !== undefined) {
+				yield { kind: "drained" };
+			} else if (message.registerAck !== undefined) {
+				// The ack is consumed inside register(); a second one
+				// mid-stream is a server ordering bug that must surface.
+				throw new Error(
+					"protocol violation: RegisterAck received after registration completed",
+				);
 			}
 		}
 		yield { kind: "closed" };
@@ -238,8 +322,18 @@ export class GrpcWorkerSession implements WorkerSession {
 		this.stream.end();
 	}
 
+	/**
+	 * Writes one frame with a per-send deadline of the reconnect policy's
+	 * `maxDelayMs`: a flush that outlives the operator's longest tolerable
+	 * pause is, by that same definition, a dead session and surfaces as a
+	 * retryable transport-shaped error instead of hanging the worker forever.
+	 */
 	private async write(message: WorkerToServer): Promise<void> {
-		await new Promise<void>((resolve, reject) => {
+		const config = this.config;
+		if (config === undefined) {
+			throw new Error("worker session must handshake before writing");
+		}
+		const flushed = new Promise<void>((resolve, reject) => {
 			this.stream.write(message, (error?: Error | null) => {
 				if (error === undefined || error === null) {
 					resolve();
@@ -248,6 +342,37 @@ export class GrpcWorkerSession implements WorkerSession {
 				}
 			});
 		});
+		await withDeadline(
+			flushed,
+			config.reconnect.maxDelayMs,
+			`worker stream send did not complete within ${String(config.reconnect.maxDelayMs)}ms`,
+		);
+	}
+}
+
+/**
+ * Races a promise against a deadline timer; elapse rejects with a
+ * transport-shaped `Error` (no gRPC denial code, so it stays retryable by
+ * `isRetryableSessionError`). The timer is always cleared so a resolved
+ * promise never leaves a dangling timeout keeping the process alive.
+ */
+async function withDeadline<T>(
+	pending: Promise<T>,
+	deadlineMs: number,
+	message: string,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const elapsed = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => {
+			reject(new Error(message));
+		}, deadlineMs);
+	});
+	try {
+		return await Promise.race([pending, elapsed]);
+	} finally {
+		if (timer !== undefined) {
+			clearTimeout(timer);
+		}
 	}
 }
 
@@ -297,16 +422,6 @@ function validateActivityTypes(
 	return normalizedTypes;
 }
 
-/**
- * Attempt number reported on decoded tasks. The worker wire shape
- * (`aion-proto` `ActivityTask`) carries no attempt field, so the SDK keeps an
- * attempt property on its worker-side API and reports the first-attempt value
- * until the protocol grows an owned wire field — mirroring the Rust worker
- * (`protocol/task.rs` `WIRE_DEFAULT_ATTEMPT`) and the Python worker
- * (`aion_worker.context.WIRE_DEFAULT_ATTEMPT`).
- */
-export const WIRE_DEFAULT_ATTEMPT = 1;
-
 export function decodeTask(task: WireActivityTask): ActivityTask {
 	if (task.workflowId === undefined || task.workflowId.uuid.length === 0) {
 		throw new Error("activity task is missing workflow_id");
@@ -320,12 +435,41 @@ export function decodeTask(task: WireActivityTask): ActivityTask {
 	if (task.input === undefined) {
 		throw new Error("activity task is missing input payload");
 	}
+	const attempt = Number(task.attempt ?? 0);
+	if (!Number.isInteger(attempt) || attempt <= 0) {
+		// proto3 zero default = the producer failed to stamp the attempt.
+		throw new Error(
+			"activity task attempt is missing or zero (producer failed to stamp it)",
+		);
+	}
 	return {
 		workflowId: task.workflowId.uuid,
 		activityId: activityIdToKey(task.activityId),
 		activityType: task.activityType,
 		input: decodePayload(task.input),
-		attempt: WIRE_DEFAULT_ATTEMPT,
+		attempt,
+	};
+}
+
+function decodeResultAck(ack: WireResultAck): WorkerSessionEvent {
+	if (ack.workflowId === undefined || ack.workflowId.uuid.length === 0) {
+		throw new Error("result ack is missing workflow_id");
+	}
+	if (ack.activityId === undefined) {
+		throw new Error("result ack is missing activity_id");
+	}
+	return {
+		kind: "resultAck",
+		workflowId: ack.workflowId.uuid,
+		activityId: activityIdToKey(ack.activityId),
+	};
+}
+
+function decodeRegisterAck(ack: WireRegisterAck): RegisteredSessionInfo {
+	return {
+		workerId: Number(ack.workerId ?? 0),
+		namespace: ack.namespace ?? "",
+		heartbeatWindowMs: Number(ack.heartbeatWindowMs ?? 0),
 	};
 }
 

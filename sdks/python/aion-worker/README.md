@@ -43,3 +43,19 @@ asyncio.run(main())
 ```
 
 See the main Aion repository at <https://github.com/ablative-io/aion>.
+
+## Regenerating the protobuf stubs
+
+The gRPC stubs under `aion_worker/proto/` are generated from the shared wire
+contract at `crates/aion-proto/proto/` (the hatch build hook in
+`build_proto.py` runs the same generation at package build time). After a
+wire-contract change, regenerate and commit the refreshed stubs:
+
+```bash
+cd sdks/python/aion-worker
+uv run --extra dev --isolated -- python -c "
+from pathlib import Path
+from build_proto import generate_proto_stubs
+generate_proto_stubs(Path('.').resolve())
+"
+```

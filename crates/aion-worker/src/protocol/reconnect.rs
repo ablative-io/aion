@@ -331,10 +331,14 @@ where
 
 /// Re-reports every unacknowledged result/failure before serving new work.
 ///
+/// Server `ResultAck` frames clear entries mid-session, so the steady-state
+/// backlog is empty and this replay decays to the still-unacked residue.
+/// Each send carries the session's per-send deadline.
+///
 /// # Errors
 ///
-/// Returns [`WorkerError`] if any re-report send fails. Entries are not removed;
-/// only explicit acknowledgement may clear the tracker.
+/// Returns [`WorkerError`] if any re-report send fails. Entries are not removed
+/// by sending; only the explicit `ResultAck` acknowledgement clears the tracker.
 pub async fn re_report_unacked<S>(
     tracker: &UnackedResultTracker,
     session: &mut S,

@@ -30,6 +30,15 @@ type RegistryMap = HashMap<ActivityKey, WorkerMap>;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WorkerId(u64);
 
+impl WorkerId {
+    /// Raw numeric value, as carried by the wire `RegisterAck.worker_id` so
+    /// workers can correlate their logs with the server's.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 /// Cloneable handle for a registered worker stream.
 #[derive(Clone, Debug)]
 pub struct WorkerHandle {

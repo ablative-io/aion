@@ -5,18 +5,28 @@ package aion;
 import "common.proto";
 
 // WorkerProtocol is one long-lived gRPC bidirectional stream. A worker sends
-// RegisterWorker first, then ActivityResult and Heartbeat messages. The server
-// pushes ActivityTask messages down the same stream; there is no polling RPC.
+// RegisterWorker first; the server answers with RegisterAck as the guaranteed
+// first frame on the response stream before any other server-to-worker
+// message. The worker then sends ActivityResult and Heartbeat messages while
+// the server pushes ActivityTask, ResultAck, and DrainRequest messages down
+// the same stream; there is no polling RPC.
 service WorkerProtocol {
   rpc StreamWorker(stream WorkerToServer) returns (stream ServerToWorker);
 }
 
-// Graceful-shutdown notification. Workers that receive this message should
-// finish already-assigned work and stop expecting new ActivityTask messages on
-// this stream.
+// Server-initiated drain: this server is going away (restart, deploy,
+// rebalance). The worker finishes already-assigned work, reports what it
+// can, stops expecting new tasks, and reconnects — to this address after the
+// schedule's initial backoff. Receiving DrainRequest re-classifies this
+// session's eventual stream end (clean or abrupt) as a DRAIN drop: the
+// reconnect consumes NO drop budget. Distinct from denial (gRPC error
+// status, terminal) and from an unannounced close (budgeted retryable drop).
 message DrainRequest {}
 
 // Messages sent by a worker to the server over the bidirectional stream.
+// RegisterWorker MUST be the first frame; the server answers it with
+// RegisterAck as the first frame on the response stream before any other
+// server-to-worker message.
 message WorkerToServer {
   oneof message {
     RegisterWorker register = 1;
@@ -30,7 +40,40 @@ message ServerToWorker {
   oneof message {
     ActivityTask task = 1;
     DrainRequest drain = 2;
+    RegisterAck register_ack = 3;
+    ResultAck result_ack = 4;
   }
+}
+
+// Positive registration acknowledgement. Always the first frame on the
+// response stream. There is no negative counterpart: a denied or invalid
+// registration fails the RPC with a gRPC error status exactly as before
+// (PermissionDenied = ungranted namespace, Unauthenticated = rejected
+// credentials, InvalidArgument = malformed first frame).
+message RegisterAck {
+  // Server-assigned stream identifier for this registration. Stable for the
+  // life of the stream; used in server logs ("worker_id=3 lost") so workers
+  // can correlate their own logs with the server's.
+  uint64 worker_id = 1;
+  // The namespace the registration was authorized against (echo of the
+  // resolved scope, which authorization may have derived rather than copied).
+  string namespace = 2;
+  // The operator-configured liveness window on THIS server: a worker whose
+  // in-flight activity goes longer than this without a heartbeat will be
+  // declared lost. Lets SDKs surface "heartbeat at least this often" to
+  // activity authors instead of guessing.
+  uint64 heartbeat_window_ms = 3;
+}
+
+// Per-result acknowledgement: the server has consumed the identified
+// ActivityResult frame and the worker may stop re-reporting it. Sent for
+// every well-formed result frame, including duplicates the engine could no
+// longer apply (their obligation is equally discharged). NOT a durability
+// receipt — the durable truth is the workflow's event history; an ack lost
+// in transit merely costs one redundant re-report on the next session.
+message ResultAck {
+  WorkflowId workflow_id = 1;
+  ActivityId activity_id = 2;
 }
 
 // Initial worker advertisement. A registration scopes this stream and worker to
@@ -47,6 +90,10 @@ message ActivityTask {
   ActivityId activity_id = 2;
   string activity_type = 3;
   Payload input = 4;
+  // One-based delivery attempt stamped by the dispatching engine seam.
+  // Zero is malformed: consumers MUST reject a task whose attempt is 0
+  // (proto3 default = the producer failed to stamp it).
+  uint32 attempt = 5;
 }
 
 // Activity completion or failure reported by a worker.

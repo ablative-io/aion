@@ -85,6 +85,7 @@ def typed_task(sequence_position: int, activity_type: str, value: object) -> aio
             activity_id=activity_id(sequence_position),
             activity_type=activity_type,
             input=json_payload(value),
+            attempt=1,
         )
     )
 
@@ -98,7 +99,7 @@ async def test_activity_registry_typed_json_round_trip_preserves_content_type() 
         return value * 2
 
     session = RecordingSession()
-    context = ActivityContext(workflow_id=workflow_id(), activity_id=activity_id(1), session=session)
+    context = ActivityContext(workflow_id=workflow_id(), activity_id=activity_id(1), attempt=1, session=session)
     outcome = await registry.dispatch(typed_task(1, "double", 21).task, context)
 
     assert isinstance(outcome, aion_worker.Completed)
@@ -130,12 +131,13 @@ async def test_non_json_input_is_terminal_decode_failure() -> None:
         return value
 
     session = RecordingSession()
-    context = ActivityContext(workflow_id=workflow_id(), activity_id=activity_id(1), session=session)
+    context = ActivityContext(workflow_id=workflow_id(), activity_id=activity_id(1), attempt=1, session=session)
     bad_task = aion_worker.ActivityTask(
         workflow_id=workflow_id(),
         activity_id=activity_id(1),
         activity_type="echo",
         input=common_pb2.Payload(content_type="application/x-custom", bytes=b"1"),
+        attempt=1,
     )
 
     outcome = await registry.dispatch(bad_task, context)
@@ -166,7 +168,7 @@ async def test_retryable_terminal_and_unclassified_failures_are_classified(
         raise ValueError("boom")
 
     session = RecordingSession()
-    context = ActivityContext(workflow_id=workflow_id(), activity_id=activity_id(1), session=session)
+    context = ActivityContext(workflow_id=workflow_id(), activity_id=activity_id(1), attempt=1, session=session)
 
     retry_outcome = await registry.dispatch(typed_task(1, "retry", 0).task, context)
     terminal_outcome = await registry.dispatch(typed_task(1, "terminal", 0).task, context)

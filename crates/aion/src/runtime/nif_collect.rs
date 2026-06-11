@@ -33,7 +33,9 @@ use serde::Deserialize;
 use crate::activity::bridge::ActivityDispatcher;
 use crate::registry::Registry;
 use crate::runtime::RuntimeHandle;
-use crate::runtime::nif_activity_dispatch::{ActivityCall, spawn_completion_task};
+use crate::runtime::nif_activity_dispatch::{
+    ActivityCall, FIRST_DELIVERY_ATTEMPT, spawn_completion_task,
+};
 use crate::runtime::nif_context::NifContext;
 use crate::runtime::nif_state::{CollectKind, EngineNifState, PendingAwait};
 use crate::runtime::nif_timeout::SCOPE_EXPIRED_MESSAGE;
@@ -238,6 +240,7 @@ fn dispatch_unscheduled(
                 name: spec.name.clone(),
                 input: spec.input.clone(),
                 config: spec.config.clone(),
+                attempt: FIRST_DELIVERY_ATTEMPT,
             },
         );
     }

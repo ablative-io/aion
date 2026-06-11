@@ -4,10 +4,12 @@
 //! The real server (`crates/aion-server/src/api/worker_grpc.rs`) reads the
 //! `RegisterWorker` frame from the inbound stream *before* it returns its
 //! response stream, so tonic withholds response headers until registration is
-//! processed, and the wire protocol carries no registration-ack frame. A
-//! client that awaits response headers before sending `RegisterWorker`
-//! deadlocks forever; these tests prove the SDK queues the registration as
-//! the first frame and completes `register` promptly.
+//! processed, and then answers with `RegisterAck` as the guaranteed first
+//! response frame. A client that awaits response headers before sending
+//! `RegisterWorker` deadlocks forever; these tests prove the SDK queues the
+//! registration as the first frame, completes `register` only on the ack,
+//! times out retryably against a server that never acks, rejects a non-ack
+//! first frame as a protocol violation, and maps denials unchanged.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -34,12 +36,52 @@ fn failure(message: impl Into<String>) -> WorkerError {
     })
 }
 
+/// What the scripted server does after accepting the `RegisterWorker` frame.
+#[derive(Clone)]
+enum RegistrationScript {
+    /// Send `RegisterAck` as the first response frame (the real contract).
+    Ack,
+    /// Hold the stream open without ever acking (the pre-ack wire shape; the
+    /// SDK must time out retryably, not hang).
+    NeverAck,
+    /// Send a task frame before the ack (a server ordering bug; the SDK must
+    /// surface a typed protocol violation).
+    TaskBeforeAck,
+    /// Fail the RPC with this status (denial taxonomy unchanged).
+    Deny(Status),
+}
+
 /// Scripted `WorkerProtocol` service mirroring the real server's stream
-/// lifecycle: demand `RegisterWorker` first, optionally deny it, then hold
-/// the response stream open without ever sending an ack frame.
+/// lifecycle: demand `RegisterWorker` first, then run the configured script.
 struct ScriptedRealServer {
     registrations: mpsc::UnboundedSender<generated::RegisterWorker>,
-    denial: Option<Status>,
+    script: RegistrationScript,
+}
+
+fn register_ack_frame() -> ServerToWorker {
+    ServerToWorker {
+        message: Some(generated::server_to_worker::Message::RegisterAck(
+            generated::RegisterAck {
+                worker_id: 7,
+                namespace: String::from("default-queue"),
+                heartbeat_window_ms: 30_000,
+            },
+        )),
+    }
+}
+
+fn task_frame() -> ServerToWorker {
+    ServerToWorker {
+        message: Some(generated::server_to_worker::Message::Task(
+            generated::ActivityTask {
+                workflow_id: None,
+                activity_id: None,
+                activity_type: String::from("greet"),
+                input: None,
+                attempt: 1,
+            },
+        )),
+    }
 }
 
 #[tonic::async_trait]
@@ -66,14 +108,24 @@ impl WorkerProtocol for ScriptedRealServer {
         self.registrations
             .send(register)
             .map_err(|_| Status::internal("registration capture closed"))?;
-        if let Some(denial) = self.denial.clone() {
-            return Err(denial);
-        }
         let (task_sender, task_receiver) = mpsc::channel::<Result<ServerToWorker, Status>>(4);
+        match &self.script {
+            RegistrationScript::Deny(denial) => return Err(denial.clone()),
+            RegistrationScript::Ack => {
+                task_sender
+                    .try_send(Ok(register_ack_frame()))
+                    .map_err(|_| Status::internal("ack frame could not be queued"))?;
+            }
+            RegistrationScript::TaskBeforeAck => {
+                task_sender
+                    .try_send(Ok(task_frame()))
+                    .map_err(|_| Status::internal("task frame could not be queued"))?;
+            }
+            RegistrationScript::NeverAck => {}
+        }
         tokio::spawn(async move {
             // Hold the response stream open while draining inbound frames,
-            // matching the real server's post-registration read loop. No
-            // registration-ack frame is ever pushed.
+            // matching the real server's post-registration read loop.
             while let Ok(Some(_)) = inbound.message().await {}
             drop(task_sender);
         });
@@ -82,7 +134,7 @@ impl WorkerProtocol for ScriptedRealServer {
 }
 
 async fn spawn_scripted_server(
-    denial: Option<Status>,
+    script: RegistrationScript,
 ) -> Result<
     (
         std::net::SocketAddr,
@@ -98,7 +150,7 @@ async fn spawn_scripted_server(
     let (registration_sender, registrations) = mpsc::unbounded_channel();
     let service = WorkerProtocolServer::new(ScriptedRealServer {
         registrations: registration_sender,
-        denial,
+        script,
     });
     let server = tonic::transport::Server::builder()
         .add_service(service)
@@ -112,15 +164,15 @@ fn test_config(address: std::net::SocketAddr) -> WorkerConfig {
         "default-queue",
         "rust-worker-1",
         2,
-        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
+        ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(200), 3),
         None,
     )
 }
 
 #[tokio::test]
-async fn register_completes_promptly_against_real_protocol_without_ack_frame()
--> Result<(), WorkerError> {
-    let (address, mut registrations, server_handle) = spawn_scripted_server(None).await?;
+async fn register_completes_on_register_ack_and_captures_ack_payload() -> Result<(), WorkerError> {
+    let (address, mut registrations, server_handle) =
+        spawn_scripted_server(RegistrationScript::Ack).await?;
     let config = test_config(address);
     let activity_types = vec![String::from("greet")];
     let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
@@ -131,12 +183,14 @@ async fn register_completes_promptly_against_real_protocol_without_ack_frame()
         register_connected_session(session, &config, activity_types.clone(), &handlers),
     )
     .await
-    .map_err(|_| {
-        failure(
-            "register did not complete within five seconds: the worker is waiting \
-             for an acknowledgement the wire protocol never sends",
-        )
-    })??;
+    .map_err(|_| failure("register did not complete within five seconds"))??;
+
+    let info = registered
+        .registered_info()
+        .ok_or_else(|| failure("registered session must expose the RegisterAck payload"))?;
+    assert_eq!(info.worker_id, 7);
+    assert_eq!(info.namespace, "default-queue");
+    assert_eq!(info.heartbeat_window, Duration::from_millis(30_000));
 
     let captured = registrations
         .recv()
@@ -150,11 +204,82 @@ async fn register_completes_promptly_against_real_protocol_without_ack_frame()
 }
 
 #[tokio::test]
+async fn register_times_out_retryably_when_server_never_acks() -> Result<(), WorkerError> {
+    let (address, mut registrations, server_handle) =
+        spawn_scripted_server(RegistrationScript::NeverAck).await?;
+    let config = test_config(address);
+    let activity_types = vec![String::from("greet")];
+    let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
+
+    let session = GrpcWorkerSession::connect(config.clone()).await?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        register_connected_session(session, &config, activity_types, &handlers),
+    )
+    .await
+    .map_err(|_| {
+        failure("a never-acking server must time the ack wait out at max_backoff, not hang")
+    })?;
+
+    let Err(error) = result else {
+        return Err(failure(
+            "registration must not succeed without a RegisterAck frame",
+        ));
+    };
+    assert!(
+        error.is_retryable(),
+        "ack-wait timeout must be a retryable registration failure: {error}"
+    );
+    assert!(
+        matches!(error, WorkerError::Registration { .. }),
+        "ack-wait timeout must classify as a registration failure: {error}"
+    );
+    assert!(registrations.recv().await.is_some());
+    server_handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_ack_first_frame_is_a_typed_protocol_violation() -> Result<(), WorkerError> {
+    let (address, mut registrations, server_handle) =
+        spawn_scripted_server(RegistrationScript::TaskBeforeAck).await?;
+    let config = test_config(address);
+    let activity_types = vec![String::from("greet")];
+    let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
+
+    let session = GrpcWorkerSession::connect(config.clone()).await?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        register_connected_session(session, &config, activity_types, &handlers),
+    )
+    .await
+    .map_err(|_| failure("a task-before-ack server must fail registration promptly"))?;
+
+    let Err(error) = result else {
+        return Err(failure(
+            "a task frame before RegisterAck must fail registration",
+        ));
+    };
+    assert!(
+        matches!(error, WorkerError::Decode { .. }),
+        "task-before-ack must be a typed protocol-violation decode error: {error}"
+    );
+    assert!(
+        error.is_retryable(),
+        "the protocol violation must remain a retryable, budgeted drop: {error}"
+    );
+    assert!(registrations.recv().await.is_some());
+    server_handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn register_surfaces_server_permission_denial_as_non_retryable() -> Result<(), WorkerError> {
     let denial = Status::permission_denied(
         "namespace `default-queue` is not granted to subject `rust-worker-1`",
     );
-    let (address, mut registrations, server_handle) = spawn_scripted_server(Some(denial)).await?;
+    let (address, mut registrations, server_handle) =
+        spawn_scripted_server(RegistrationScript::Deny(denial)).await?;
     let config = test_config(address);
     let activity_types = vec![String::from("greet")];
     let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();

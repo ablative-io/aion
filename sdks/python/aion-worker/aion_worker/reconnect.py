@@ -79,15 +79,15 @@ class ReconnectError(Exception):
 
 
 class ServerClosedStreamError(Exception):
-    """The server closed the worker stream cleanly while the run was active.
+    """The server closed the worker stream cleanly without announcing a drain.
 
-    A clean/graceful close is a retryable session drop: the worker redials
-    through the bounded, backed-off reconnect cycle so routine server deploys
-    are ridden through. This error is the classified drop cause chained as
-    the ``__cause__`` of :class:`ReconnectError` when a persistent clean-close
-    loop exhausts the drop budget. An explicit protocol drain signal
-    ("closing, do not reconnect") is planned for the worker-protocol ack wave
-    and will refine the clean-close case.
+    An unannounced clean close is a budgeted retryable session drop: the
+    worker redials through the bounded, backed-off reconnect cycle so routine
+    server deploys are ridden through. This error is the classified drop
+    cause chained as the ``__cause__`` of :class:`ReconnectError` when a
+    persistent unannounced clean-close loop exhausts the drop budget. A
+    server-ANNOUNCED drain (the wire ``DrainRequest`` frame) is classified
+    separately and consumes no budget.
     """
 
 
@@ -113,11 +113,14 @@ PendingActivityReport: TypeAlias = PendingCompletedReport | PendingFailedReport
 
 
 class UnackedResultTracker:
-    """Tracks reported activity outcomes until AW adds an explicit ack frame.
+    """Tracks reported activity outcomes until the server acks them.
 
-    Entries are keyed by (workflow uuid, sequence position): activity ids are
-    per-workflow sequence positions, so reports from distinct workflows that
-    share a position must never replace one another.
+    The server answers every consumed ``ActivityResult`` frame with a
+    ``ResultAck``; only that explicit acknowledgement clears an entry — a
+    successful send proves nothing on its own. Entries are keyed by
+    (workflow uuid, sequence position): activity ids are per-workflow
+    sequence positions, so reports from distinct workflows that share a
+    position must never replace one another.
     """
 
     def __init__(self) -> None:
@@ -353,7 +356,13 @@ async def close_failed_session(session: WorkerSession | None) -> None:
 
 
 async def re_report_unacked(session: WorkerSession, tracker: UnackedResultTracker) -> None:
-    """Re-send every unacknowledged report in deterministic sequence order."""
+    """Re-send every unacknowledged report in deterministic sequence order.
+
+    Server ``ResultAck`` frames clear entries mid-session, so the
+    steady-state backlog is empty and this replay decays to the still-unacked
+    residue. Entries are not removed by sending; only an explicit ack clears
+    the tracker.
+    """
 
     for report in tracker.snapshot():
         if isinstance(report, PendingCompletedReport):

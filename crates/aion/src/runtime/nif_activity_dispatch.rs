@@ -74,6 +74,7 @@ pub(super) fn dispatch_activity_impl(
             name,
             input,
             config,
+            attempt: FIRST_DELIVERY_ATTEMPT,
         },
     )
 }
@@ -141,6 +142,15 @@ fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
     Ok((name, input, config))
 }
 
+/// First delivery: every dispatch issued from workflow code is attempt 1.
+///
+/// The retry executor (unbuilt; the retry POLICY rides in the `config` JSON,
+/// `gleam/aion_flow/src/aion/workflow/run.gleam`, and is consumed by nothing
+/// yet) re-invokes with the incremented attempt when it lands — the wire and
+/// the [`ActivityDispatcher`] seam are ready for it. This is the single
+/// documented producer-side constant; no consumer guesses an attempt.
+pub(super) const FIRST_DELIVERY_ATTEMPT: u32 = 1;
+
 /// Grouped parameters for the activity being dispatched.
 ///
 /// Shared with the `collect_*` fan-out natives, which dispatch N of these
@@ -149,6 +159,9 @@ pub(super) struct ActivityCall {
     pub(super) name: String,
     pub(super) input: String,
     pub(super) config: String,
+    /// One-based delivery attempt stamped onto the dispatch (and from there
+    /// onto the worker wire). See [`FIRST_DELIVERY_ATTEMPT`].
+    pub(super) attempt: u32,
 }
 
 fn dispatch_activity_with_context(
@@ -206,7 +219,13 @@ pub(super) fn spawn_completion_task(
     call: ActivityCall,
 ) {
     let future = dispatcher
-        .dispatch_async_from_process(call.name, call.input, call.config, Some(workflow_pid))
+        .dispatch_async_from_process(
+            call.name,
+            call.input,
+            call.config,
+            call.attempt,
+            Some(workflow_pid),
+        )
         .map(move |result| {
             match result {
             Ok(payload) => {
@@ -414,7 +433,10 @@ mod tests {
     use aion_store::{EventStore, WriteToken};
     use serde_json::json;
 
-    use super::{ActivityAwaitStep, ActivityCall, await_activity_step, spawn_completion_task};
+    use super::{
+        ActivityAwaitStep, ActivityCall, FIRST_DELIVERY_ATTEMPT, await_activity_step,
+        spawn_completion_task,
+    };
     use crate::activity::bridge::ActivityDispatcher;
     use crate::durability::Recorder;
     use crate::registry::{
@@ -709,7 +731,13 @@ mod tests {
     }
 
     impl ActivityDispatcher for GatedDispatcher {
-        fn dispatch(&self, _name: &str, input: &str, _config: &str) -> Result<String, String> {
+        fn dispatch(
+            &self,
+            _name: &str,
+            input: &str,
+            _config: &str,
+            _attempt: u32,
+        ) -> Result<String, String> {
             let receiver = self
                 .release
                 .lock()
@@ -754,6 +782,7 @@ mod tests {
                     name: "gated".to_owned(),
                     input: r#""r0""#.to_owned(),
                     config: "{}".to_owned(),
+                    attempt: FIRST_DELIVERY_ATTEMPT,
                 },
             );
             // The release runs as a task on this same single-threaded

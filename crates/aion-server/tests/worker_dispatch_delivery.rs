@@ -80,12 +80,17 @@ struct Harness {
     /// Keeps the worker's outbound request stream open for the test duration.
     worker_tx: tokio::sync::mpsc::Sender<generated::WorkerToServer>,
     inbound: tonic::Streaming<generated::ServerToWorker>,
+    /// The `RegisterAck` consumed as the guaranteed first response frame.
+    register_ack: generated::RegisterAck,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
 impl Harness {
     /// Boot the real worker gRPC service on a loopback port and connect one
     /// worker stream registered for [`ACTIVITY_TYPE`] in [`NAMESPACE`].
+    ///
+    /// Consumes — and thereby pins — the `RegisterAck` as the first frame on
+    /// the response stream: any other first frame fails the harness.
     async fn start() -> Result<Self, TestError> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -119,16 +124,20 @@ impl Harness {
         request
             .metadata_mut()
             .insert("x-aion-namespaces", NAMESPACE.parse()?);
-        let inbound = client.stream_worker(request).await?.into_inner();
+        let mut inbound = client.stream_worker(request).await?.into_inner();
 
-        // The registration is processed asynchronously by the stream handler;
-        // dispatch is only meaningful once the worker is in the registry.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while registry.workers_for(NAMESPACE, ACTIVITY_TYPE)?.is_empty() {
-            if Instant::now() >= deadline {
-                return Err("worker registration did not reach the registry".into());
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        // The ack is the registration-success signal: once read, the worker
+        // is dispatch-eligible in the registry — no polling needed.
+        let first = inbound
+            .message()
+            .await?
+            .and_then(|frame| frame.message)
+            .ok_or("response stream ended before the RegisterAck")?;
+        let server_to_worker::Message::RegisterAck(register_ack) = first else {
+            return Err(format!("first response frame must be RegisterAck, got {first:?}").into());
+        };
+        if registry.workers_for(NAMESPACE, ACTIVITY_TYPE)?.is_empty() {
+            return Err("RegisterAck arrived before the registry registration".into());
         }
 
         Ok(Self {
@@ -136,6 +145,7 @@ impl Harness {
             registry,
             worker_tx,
             inbound,
+            register_ack,
             server,
         })
     }
@@ -157,6 +167,26 @@ impl Harness {
             }
         }
         Err("worker stream closed before a task was delivered".into())
+    }
+
+    /// Wait for the next `ResultAck` pushed down the worker stream.
+    async fn next_result_ack(&mut self) -> Result<generated::ResultAck, TestError> {
+        while let Some(message) = self.inbound.message().await? {
+            if let Some(server_to_worker::Message::ResultAck(ack)) = message.message {
+                return Ok(ack);
+            }
+        }
+        Err("worker stream closed before a result ack was delivered".into())
+    }
+
+    /// Wait for the next `DrainRequest` pushed down the worker stream.
+    async fn next_drain(&mut self) -> Result<(), TestError> {
+        while let Some(message) = self.inbound.message().await? {
+            if let Some(server_to_worker::Message::Drain(_)) = message.message {
+                return Ok(());
+            }
+        }
+        Err("worker stream closed before a drain request was delivered".into())
     }
 
     /// Report a successful activity result back over the worker stream.
@@ -198,12 +228,16 @@ async fn remote_dispatch_delivers_task_promptly_and_round_trips() -> Result<(), 
     // task: the worst-case calling context the `block_in_place` guard in
     // `dispatch` defends against.
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}")
+        dispatcher.dispatch(ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}", 3)
     }));
 
     let task = harness.next_task().await?;
     let delivery_elapsed = started.elapsed();
     assert_eq!(task.activity_type, ACTIVITY_TYPE);
+    assert_eq!(
+        task.attempt, 3,
+        "the engine-seam attempt must be stamped onto the wire task"
+    );
     assert!(
         delivery_elapsed < Duration::from_secs(5),
         "task took {delivery_elapsed:?} to reach the worker stream; delivery \
@@ -236,7 +270,7 @@ async fn dispatch_times_out_only_when_worker_stays_silent() -> Result<(), TestEr
 
     let started = Instant::now();
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}")
+        dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1)
     }));
 
     // The worker receives the task well before the timeout but never replies.
@@ -254,6 +288,207 @@ async fn dispatch_times_out_only_when_worker_stays_silent() -> Result<(), TestEr
     assert!(
         error.contains("timed out after 2s"),
         "unexpected error: {error}"
+    );
+
+    harness.server.abort();
+    Ok(())
+}
+
+/// Brief test 3: `RegisterAck` is the first response frame, carries the
+/// configured heartbeat window and the authorized namespace, and only then
+/// does a dispatched task arrive — pinning the ack-before-task ordering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_ack_is_first_frame_then_task() -> Result<(), TestError> {
+    let mut harness = Harness::start().await?;
+
+    // Harness::start already failed if the first frame was not the ack.
+    assert_eq!(harness.register_ack.namespace, NAMESPACE);
+    assert_eq!(
+        harness.register_ack.heartbeat_window_ms, 30_000,
+        "the ack must carry the operator-configured heartbeat window"
+    );
+    assert!(
+        harness.register_ack.worker_id > 0,
+        "the ack must carry the server-assigned worker id"
+    );
+
+    let dispatcher = Arc::new(harness.dispatcher());
+    let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
+        dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1)
+    }));
+    let task = harness.next_task().await?;
+    assert_eq!(task.activity_type, ACTIVITY_TYPE);
+    harness.complete(task, br#"{"greeting":"hi"}"#).await?;
+    let result = dispatch_task.await.map_err(|error| error.to_string())?;
+    assert_eq!(result, Ok(r#"{"greeting":"hi"}"#.to_owned()));
+
+    harness.server.abort();
+    Ok(())
+}
+
+/// Brief test 4: a denied registration still fails the RPC with
+/// `PermissionDenied` and delivers no frames — the denial taxonomy is
+/// byte-for-byte unchanged; there is no nack frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let registry = ConnectedWorkerRegistry::default();
+    let resolver = NamespaceResolver::authorization_only(
+        NamespaceMode::SharedEngine,
+        StaticWorkflowNamespaces::default(),
+        StaticScheduleNamespaces::default(),
+    );
+    let state = ServerState::from_parts_with_registry(resolver, runtime_config(), registry.clone());
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(worker_service(state))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+
+    let mut client = WorkerProtocolClient::connect(format!("http://{address}")).await?;
+    let (worker_tx, worker_rx) = tokio::sync::mpsc::channel::<generated::WorkerToServer>(8);
+    worker_tx
+        .send(generated::WorkerToServer {
+            message: Some(worker_to_server::Message::Register(
+                generated::RegisterWorker {
+                    // Registers a namespace the metadata grant does not cover.
+                    namespace: "ungranted".to_owned(),
+                    activity_types: vec![ACTIVITY_TYPE.to_owned()],
+                },
+            )),
+        })
+        .await?;
+    let mut request = tonic::Request::new(ReceiverStream::new(worker_rx));
+    request
+        .metadata_mut()
+        .insert("x-aion-namespaces", NAMESPACE.parse()?);
+
+    let denial = match client.stream_worker(request).await {
+        Ok(mut response) => {
+            // Some transports surface the denial on the first stream read
+            // rather than the RPC call itself; either way no frame arrives.
+            match response.get_mut().message().await {
+                Ok(Some(frame)) => {
+                    return Err(format!("denied registration delivered a frame: {frame:?}").into());
+                }
+                Ok(None) => {
+                    return Err("denied registration ended the stream without a status".into());
+                }
+                Err(status) => status,
+            }
+        }
+        Err(status) => status,
+    };
+    assert_eq!(denial.code(), tonic::Code::PermissionDenied);
+    assert!(registry.workers_for("ungranted", ACTIVITY_TYPE)?.is_empty());
+
+    server.abort();
+    Ok(())
+}
+
+/// Brief tests 5 + 6: every well-formed result frame is answered with a
+/// `ResultAck` carrying its ids — including a duplicate re-report whose
+/// pending waiter is already gone (its obligation is equally discharged).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn result_frames_are_acked_including_duplicates() -> Result<(), TestError> {
+    let mut harness = Harness::start().await?;
+    let dispatcher = Arc::new(harness.dispatcher());
+
+    let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
+        dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1)
+    }));
+    let task = harness.next_task().await?;
+    let workflow_id = task.workflow_id.clone();
+    let activity_id = task.activity_id;
+
+    harness.complete(task.clone(), br#"{"ok":true}"#).await?;
+    let ack = harness.next_result_ack().await?;
+    assert_eq!(ack.workflow_id, workflow_id);
+    assert_eq!(ack.activity_id, activity_id);
+    let result = dispatch_task.await.map_err(|error| error.to_string())?;
+    assert_eq!(result, Ok(r#"{"ok":true}"#.to_owned()));
+
+    // Duplicate re-report: the pending waiter is gone, the engine cannot
+    // apply it again — but the ack must still come back so the worker stops
+    // re-reporting forever.
+    harness.complete(task, br#"{"ok":true}"#).await?;
+    let duplicate_ack = harness.next_result_ack().await?;
+    assert_eq!(duplicate_ack.workflow_id, workflow_id);
+    assert_eq!(duplicate_ack.activity_id, activity_id);
+
+    harness.server.abort();
+    Ok(())
+}
+
+/// Brief test 7: a malformed result (missing activity id) produces no ack —
+/// there is no key to ack with — and the stream stays healthy: a subsequent
+/// well-formed exchange still round-trips and acks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_result_gets_no_ack_and_stream_stays_healthy() -> Result<(), TestError> {
+    let mut harness = Harness::start().await?;
+
+    harness
+        .worker_tx
+        .send(generated::WorkerToServer {
+            message: Some(worker_to_server::Message::Result(
+                generated::ActivityResult {
+                    workflow_id: Some(generated::WorkflowId {
+                        uuid: "00000000-0000-0000-0000-000000000000".to_owned(),
+                    }),
+                    activity_id: None,
+                    outcome: Some(generated::activity_result::Outcome::Result(
+                        generated::Payload {
+                            content_type: "application/json".to_owned(),
+                            bytes: b"{}".to_vec(),
+                        },
+                    )),
+                },
+            )),
+        })
+        .await?;
+
+    // A well-formed exchange afterwards: its task and ack are the next
+    // frames on the stream, proving the malformed frame produced neither an
+    // ack nor a stream teardown.
+    let dispatcher = Arc::new(harness.dispatcher());
+    let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
+        dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1)
+    }));
+    let task = harness.next_task().await?;
+    let workflow_id = task.workflow_id.clone();
+    harness.complete(task, br#"{"ok":true}"#).await?;
+    let ack = harness.next_result_ack().await?;
+    assert_eq!(
+        ack.workflow_id, workflow_id,
+        "the only ack on the stream must belong to the well-formed result"
+    );
+    let result = dispatch_task.await.map_err(|error| error.to_string())?;
+    assert_eq!(result, Ok(r#"{"ok":true}"#.to_owned()));
+
+    harness.server.abort();
+    Ok(())
+}
+
+/// Brief test 10: the drain broadcast reaches the worker stream as a
+/// `DrainRequest` frame, and post-drain dispatch is rejected by the gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drain_broadcast_reaches_worker_and_gates_dispatch() -> Result<(), TestError> {
+    let mut harness = Harness::start().await?;
+
+    assert!(harness.state.drain_state().begin());
+    let delivered = harness.state.worker_registry().broadcast_drain()?;
+    assert_eq!(delivered, 1);
+    harness.next_drain().await?;
+
+    let dispatcher = harness.dispatcher();
+    let dispatch_task =
+        tokio::task::spawn_blocking(move || dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1));
+    let result = dispatch_task.await.map_err(|error| error.to_string())?;
+    let error = result.err().ok_or("post-drain dispatch must be rejected")?;
+    assert!(
+        error.contains("draining"),
+        "rejection must name the drain gate: {error}"
     );
 
     harness.server.abort();

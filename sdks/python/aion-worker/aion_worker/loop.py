@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias, cast
 
-from .context import WIRE_DEFAULT_ATTEMPT, ActivityCancellationHandle, ActivityContext
+from .context import ActivityCancellationHandle, ActivityContext
 from .reconnect import (
     PendingCompletedReport,
     PendingFailedReport,
@@ -29,7 +29,9 @@ from .session import (
     ActivityError,
     ActivityId,
     ActivityTask,
+    DrainReceived,
     Payload,
+    ResultAcknowledged,
     TaskReceived,
     WorkerConfig,
     WorkerSession,
@@ -51,8 +53,17 @@ class ShutdownRequested:
 class StreamFinished:
     """Sentinel returned when the server ends the receive stream cleanly.
 
-    The reconnect-aware run loop treats this as a retryable session drop —
-    never as a run end — so workers ride through graceful server closes.
+    The reconnect-aware run loop treats this unannounced close as a budgeted
+    retryable session drop — never as a run end — so workers ride through
+    graceful server closes.
+    """
+
+
+class Drained:
+    """Sentinel returned when the server announced a drain.
+
+    In-flight work was finished and reported; the run loop reconnects after
+    the schedule's initial backoff without consuming any drop budget.
     """
 
 
@@ -65,6 +76,12 @@ class SessionHealth:
     """Clock reading taken the moment the session's receive stream ended,
     captured before in-flight handlers are drained — so post-drop draining
     never extends the session's measured connected lifetime."""
+    drain_received: bool = False
+    """Latched when a drain frame is observed on this session: the eventual
+    stream end — clean OR abrupt — is then drain-class (the server announced
+    it was going away), so the drop consumes no budget even if the post-drain
+    reporting fails. Survives an error exit because health is an
+    out-parameter."""
 
 
 @dataclass(frozen=True)
@@ -102,18 +119,23 @@ async def serve(
     shutdown: asyncio.Event | None = None,
     health: SessionHealth | None = None,
     clock: Callable[[], float] = time.monotonic,
-) -> ShutdownRequested | StreamFinished:
+) -> ShutdownRequested | StreamFinished | Drained:
     """Serve tasks from an already connected and registered session.
 
     Returns :class:`ShutdownRequested` when the caller's shutdown event ended
-    the loop, or :class:`StreamFinished` when the server ended the task
-    stream cleanly; the reconnect-aware caller treats the latter as a
-    retryable session drop. When ``health`` is supplied, every task whose
-    outcome report was sent on this session increments
-    ``health.tasks_served`` — the end-to-end proof used for drop-budget
-    resets, surviving even when a later failure ends the session — and
-    ``health.stream_ended_at`` records the ``clock`` reading taken the moment
-    the receive stream ended, before in-flight handlers are drained.
+    the loop, :class:`StreamFinished` when the server ended the task stream
+    cleanly without announcing a drain (the reconnect-aware caller treats
+    that unannounced close as a budgeted retryable session drop), or
+    :class:`Drained` when the server announced a drain (an unbudgeted drop;
+    in-flight work is finished and reported before this returns). When
+    ``health`` is supplied, every task whose outcome report was sent on this
+    session increments ``health.tasks_served`` — the end-to-end proof used
+    for drop-budget resets, surviving even when a later failure ends the
+    session — ``health.stream_ended_at`` records the ``clock`` reading taken
+    the moment the receive stream ended, before in-flight handlers are
+    drained, and ``health.drain_received`` latches the drain classification.
+    Server ``ResultAck`` events clear their unacked-tracker entries without
+    occupying a concurrency slot.
     """
 
     if config.max_concurrency <= 0:
@@ -138,6 +160,15 @@ async def serve(
                 )
                 running.add(task)
                 task.add_done_callback(running.discard)
+            elif isinstance(event, ResultAcknowledged):
+                # Acks are bookkeeping, not work: handled without acquiring
+                # a concurrency slot. An unknown ack is a logged no-op.
+                _acknowledge_result(event, unacked)
+            elif isinstance(event, DrainReceived):
+                logger.info("Server drain received; finishing in-flight work before reconnect")
+                if health is not None:
+                    health.drain_received = True
+                return Drained()
             else:
                 _handle_control_event(event, in_flight)
     finally:
@@ -167,23 +198,32 @@ async def connect_register_replay_and_serve(
 
     The run ends only on graceful shutdown, a non-retryable server denial, or
     exhaustion of the cumulative session-drop budget
-    (``reconnect.max_attempts``). A clean/graceful server stream close is a
-    retryable drop: the worker redials through the same budgeted, backed-off
-    cycle, so routine server deploys are ridden through. A retryable failure
-    while replaying unacknowledged results consumes the same budget, while a
-    server denial during replay still fails fast. The budget resets to zero
-    once an established session proves healthy — it served at least one task,
-    or it stayed connected longer than ``reconnect.max_backoff_seconds``
-    measured on the injected monotonic ``clock`` from successful registration
-    to the moment the stream ended (post-drop draining of in-flight handlers
-    never extends it); see :class:`aion_worker.ReconnectConfig`. Shutdown
-    wins promptly during BOTH backoff phases AND during an in-flight dial: a
-    shutdown requested during a mid-run drop backoff or during an
-    establishment-retry backoff inside
+    (``reconnect.max_attempts``). An *unannounced* clean server stream close
+    is a budgeted retryable drop: the worker redials through the same
+    budgeted, backed-off cycle, so routine server deploys are ridden
+    through. A server-announced drain is an UNBUDGETED drop: the worker
+    finishes in-flight work and redials after ``initial_backoff_seconds``;
+    the drain classification latches for the session, so even an abrupt end
+    after the drain frame stays drain-class. A retryable failure while
+    replaying unacknowledged results consumes the budget (the worker never
+    saw a drain announcement), while a server denial during replay still
+    fails fast. The budget resets to zero once an established session proves
+    healthy — it served at least one task, or it stayed connected longer
+    than ``reconnect.max_backoff_seconds`` measured on the injected
+    monotonic ``clock`` from successful registration to the moment the
+    stream ended (post-drop draining of in-flight handlers never extends
+    it); see :class:`aion_worker.ReconnectConfig`. Shutdown wins promptly
+    during BOTH backoff phases AND during an in-flight dial or the
+    unacked-result replay: a shutdown requested during a mid-run drop
+    backoff or during an establishment-retry backoff inside
     :func:`aion_worker.reconnect_with_backoff` wakes the sleep immediately,
     a shutdown requested during a hung dial/handshake/register cancels the
-    in-flight attempt (closing its partially-established session), and the
-    run returns cleanly without dialling again.
+    in-flight attempt (closing its partially-established session), and a
+    shutdown requested during a hung replay send abandons the replay
+    (results stay tracked; entries are recorded before any send). The run
+    outcome at shutdown follows the cross-SDK rule: a pending drain-class or
+    clean-close drop returns cleanly, while a pending error-class drop
+    re-raises its error.
     """
 
     unacked = tracker if tracker is not None else UnackedResultTracker()
@@ -210,9 +250,17 @@ async def connect_register_replay_and_serve(
             return
         established_at = clock()
         health = SessionHealth()
-        drop: BaseException
+        # None = drain-class drop (unbudgeted); ServerClosedStreamError =
+        # unannounced clean close (budgeted); anything else = error-class.
+        drop: BaseException | None
         try:
-            await re_report_unacked(session, unacked)
+            replay_completed = await _replay_or_shutdown(session, unacked, shutdown)
+            if not replay_completed:
+                # Shutdown interrupted the replay: results stay tracked
+                # (entries are recorded before any send and only an explicit
+                # ack removes them), so nothing is lost by abandoning it.
+                await _close_session(session)
+                return
             logger.info("Connected")
             logger.info("Registered activities: %s", ", ".join(activity_types))
             logger.info("Waiting for tasks")
@@ -220,9 +268,14 @@ async def connect_register_replay_and_serve(
             if isinstance(end, ShutdownRequested) or (shutdown is not None and shutdown.is_set()):
                 await _close_session(session)
                 return
-            logger.warning("Server closed the worker stream cleanly; treating it as a session drop")
-            await _close_session(session)
-            drop = ServerClosedStreamError(f"server closed the worker stream cleanly for {config.endpoint}")
+            if isinstance(end, Drained):
+                logger.info("Server drained the worker stream; reconnecting after initial backoff")
+                await _close_session(session)
+                drop = None
+            else:
+                logger.warning("Server closed the worker stream cleanly; treating it as a session drop")
+                await _close_session(session)
+                drop = ServerClosedStreamError(f"server closed the worker stream cleanly for {config.endpoint}")
         except Exception as exc:
             if not is_retryable_session_error(exc):
                 logger.error(
@@ -231,9 +284,16 @@ async def connect_register_replay_and_serve(
                 )
                 await _close_session(session)
                 raise
-            logger.exception("worker session dropped; reconnecting before receiving more tasks")
-            await _close_session(session)
-            drop = exc
+            if health.drain_received:
+                # Drain latch: the server announced it was going away, so the
+                # abrupt end (or a failed post-drain report) is drain-class.
+                logger.warning("Session error after server drain; classified as drain drop: %s", exc)
+                await _close_session(session)
+                drop = None
+            else:
+                logger.exception("worker session dropped; reconnecting before receiving more tasks")
+                await _close_session(session)
+                drop = exc
         # Connected lifetime is measured to the moment the stream ended —
         # never to the end of the post-drop drain, which would let a
         # long-running in-flight handler masquerade as a healthy session. A
@@ -247,10 +307,16 @@ async def connect_register_replay_and_serve(
                     health.tasks_served,
                 )
             dropped_attempt = 0
-        dropped_attempt += 1
-        if dropped_attempt >= backoff.max_attempts:
-            raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {drop}") from drop
-        delay = backoff.delay_for_attempt(dropped_attempt)
+        if drop is None:
+            # An announced drain consumes no drop budget: the server told the
+            # worker it was going away, so the drop is expected operator
+            # behaviour, not flapping.
+            delay = backoff.initial_backoff_seconds
+        else:
+            dropped_attempt += 1
+            if dropped_attempt >= backoff.max_attempts:
+                raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {drop}") from drop
+            delay = backoff.delay_for_attempt(dropped_attempt)
         logger.warning(
             "Reconnecting in %ss (attempt %s/%s)",
             delay,
@@ -258,6 +324,13 @@ async def connect_register_replay_and_serve(
             backoff.max_attempts,
         )
         await sleep_or_shutdown(sleep, delay, shutdown)
+        if shutdown is not None and shutdown.is_set():
+            # Cross-SDK shutdown-outcome rule: a pending drain-class or
+            # clean-close drop ends the run cleanly; a pending error-class
+            # drop surfaces its error.
+            if drop is not None and not isinstance(drop, ServerClosedStreamError):
+                raise drop
+            return
 
 
 async def _receive_next_or_shutdown(
@@ -287,6 +360,71 @@ async def _receive_next_or_shutdown(
         shutdown_task.cancel()
 
 
+async def _replay_or_shutdown(
+    session: WorkerSession,
+    tracker: UnackedResultTracker,
+    shutdown: asyncio.Event | None,
+) -> bool:
+    """Race the unacked-result replay against shutdown.
+
+    A hung replay send must never wedge worker shutdown. Returns ``False``
+    when shutdown won (the replay task is cancelled and awaited; tracked
+    results survive because entries are recorded before any send), ``True``
+    when the replay completed. Replay failures propagate unchanged.
+    """
+
+    if shutdown is None:
+        await re_report_unacked(session, tracker)
+        return True
+    if shutdown.is_set():
+        return False
+    replay_task = asyncio.ensure_future(re_report_unacked(session, tracker))
+    shutdown_task: asyncio.Task[bool] = asyncio.create_task(shutdown.wait())
+    try:
+        wait_tasks = cast(set[asyncio.Future[object]], {replay_task, shutdown_task})
+        done, _pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+        if replay_task in done:
+            replay_task.result()
+            return True
+        logger.info("Shutdown requested during unacked-result replay; abandoning the replay")
+        replay_task.cancel()
+        try:
+            await replay_task
+        except asyncio.CancelledError:
+            if not replay_task.cancelled():
+                # The CancelledError is the enclosing coroutine's own
+                # cancellation, not the replay acknowledging ours.
+                raise
+        except Exception as exc:
+            logger.warning("unacked-result replay abandoned at shutdown failed: %s", exc)
+        return False
+    finally:
+        shutdown_task.cancel()
+        replay_task.cancel()
+
+
+def _acknowledge_result(event: ResultAcknowledged, tracker: UnackedResultTracker) -> None:
+    """Clear the acknowledged tracker entry; an unknown ack is a no-op."""
+
+    if tracker.get(event.workflow_id, event.activity_id) is not None:
+        tracker.acknowledge(event.workflow_id, event.activity_id)
+        logger.debug(
+            "server acknowledged activity result; tracker entry cleared",
+            extra={
+                "workflow_id": event.workflow_id.uuid,
+                "activity_id": event.activity_id.sequence_position,
+            },
+        )
+    else:
+        logger.debug(
+            "result ack for unknown tracker entry ignored",
+            extra={
+                "workflow_id": event.workflow_id.uuid,
+                "activity_id": event.activity_id.sequence_position,
+            },
+        )
+
+
 async def _close_session(session: WorkerSession) -> None:
     close = getattr(session, "close", None)
     if close is None:
@@ -311,16 +449,20 @@ async def _run_and_report(
     key = _in_flight_key(task.workflow_id, task.activity_id)
     try:
         logger.info(
-            "Received task %s for workflow %s",
+            "Received task %s for workflow %s (attempt %s)",
             task.activity_type,
             task.workflow_id.uuid,
-            extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+            task.attempt,
+            extra={
+                **_log_fields(task.workflow_id, task.activity_id, task.activity_type),
+                "attempt": task.attempt,
+            },
         )
         started_at = time.perf_counter()
         context = ActivityContext(
             workflow_id=task.workflow_id,
             activity_id=task.activity_id,
-            attempt=WIRE_DEFAULT_ATTEMPT,
+            attempt=task.attempt,
             session=session,
             content_type=task.input.content_type,
         )

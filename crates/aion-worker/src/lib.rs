@@ -65,10 +65,10 @@ pub use config::{
 pub use context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 pub use error::{MissingActivityHandler, WorkerError};
 pub use protocol::{
-    ActivityTask, GrpcWorkerSession, PendingActivityReport, ReconnectBackoff, UnackedResultTracker,
-    WorkerSession, WorkerSessionEvent, WorkerTaskStream, connect_registered_grpc_session,
-    re_report_unacked, reconnect_with_backoff, reconnect_with_sleep, register_connected_session,
-    validate_activity_handlers,
+    ActivityTask, GrpcWorkerSession, PendingActivityReport, ReconnectBackoff,
+    RegisteredSessionInfo, UnackedResultTracker, WorkerSession, WorkerSessionEvent,
+    WorkerTaskStream, connect_registered_grpc_session, re_report_unacked, reconnect_with_backoff,
+    reconnect_with_sleep, register_connected_session, validate_activity_handlers,
 };
 pub use runtime::{
     ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, SessionHealth,

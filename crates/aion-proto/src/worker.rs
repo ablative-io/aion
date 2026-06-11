@@ -64,11 +64,51 @@ pub struct ProtoActivityTask {
     /// Serialized activity input.
     #[prost(message, optional, tag = "4")]
     pub input: Option<ProtoPayload>,
+    /// One-based delivery attempt stamped by the dispatching engine seam.
+    /// Zero is malformed: consumers reject a task whose attempt is 0 (the
+    /// proto3 default means the producer failed to stamp it).
+    #[prost(uint32, tag = "5")]
+    pub attempt: u32,
 }
 
-/// Graceful-shutdown notification sent by the server to a connected worker.
+/// Server-initiated drain: the server is going away (restart, deploy,
+/// rebalance). The worker finishes already-assigned work, stops expecting
+/// new tasks, and reconnects after the schedule's initial backoff. A drain
+/// frame re-classifies the session's eventual stream end (clean or abrupt)
+/// as a drain-class drop that consumes no drop budget — distinct from denial
+/// (gRPC error status, terminal) and from an unannounced close (budgeted
+/// retryable drop).
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoDrainRequest {}
+
+/// Positive registration acknowledgement — always the first frame on the
+/// response stream. There is no negative counterpart: a denied or invalid
+/// registration fails the RPC with a gRPC error status.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoRegisterAck {
+    /// Server-assigned stream identifier for this registration.
+    #[prost(uint64, tag = "1")]
+    pub worker_id: u64,
+    /// The namespace the registration was authorized against.
+    #[prost(string, tag = "2")]
+    pub namespace: String,
+    /// Operator-configured liveness window on this server, in milliseconds.
+    #[prost(uint64, tag = "3")]
+    pub heartbeat_window_ms: u64,
+}
+
+/// Per-result acknowledgement: the server has consumed the identified
+/// `ActivityResult` frame and the worker may stop re-reporting it. Not a
+/// durability receipt — the durable truth is the workflow's event history.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoResultAck {
+    /// Owning workflow id.
+    #[prost(message, optional, tag = "1")]
+    pub workflow_id: Option<ProtoWorkflowId>,
+    /// Correlating activity id.
+    #[prost(message, optional, tag = "2")]
+    pub activity_id: Option<ProtoActivityId>,
+}
 
 /// Activity result or failure reported by a worker.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
@@ -171,7 +211,8 @@ mod tests {
 
     use super::{
         ProtoActivityError, ProtoActivityErrorKind, ProtoActivityResult, ProtoActivityTask,
-        ProtoDrainRequest, ProtoHeartbeat, ProtoRegisterWorker, proto_activity_result,
+        ProtoDrainRequest, ProtoHeartbeat, ProtoRegisterAck, ProtoRegisterWorker, ProtoResultAck,
+        proto_activity_result,
     };
     use crate::{ProtoActivityId, ProtoPayload, ProtoWorkflowId, WireError};
 
@@ -227,6 +268,7 @@ mod tests {
             input: Some(ProtoPayload::from(aion_core::Payload::from_json(
                 &json!({"amount": 42}),
             )?)),
+            attempt: 3,
         };
 
         assert_json_and_proto_round_trip(&task)
@@ -236,6 +278,88 @@ mod tests {
     fn drain_request_round_trips_through_serde_and_proto() -> Result<(), Box<dyn std::error::Error>>
     {
         assert_json_and_proto_round_trip(&ProtoDrainRequest {})
+    }
+
+    #[test]
+    fn register_ack_round_trips_through_serde_and_proto() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let ack = ProtoRegisterAck {
+            worker_id: 7,
+            namespace: String::from("tenant-a"),
+            heartbeat_window_ms: 30_000,
+        };
+
+        assert_json_and_proto_round_trip(&ack)
+    }
+
+    #[test]
+    fn result_ack_round_trips_through_serde_and_proto() -> Result<(), Box<dyn std::error::Error>> {
+        let ack = ProtoResultAck {
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+            activity_id: Some(ProtoActivityId::from(
+                aion_core::ActivityId::from_sequence_position(11),
+            )),
+        };
+
+        assert_json_and_proto_round_trip(&ack)
+    }
+
+    #[cfg(feature = "generated")]
+    #[test]
+    fn server_to_worker_ack_arms_pin_oneof_tags_three_and_four()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Pins the new ServerToWorker oneof arms to wire tags 3 (register_ack)
+        // and 4 (result_ack): field key = (tag << 3) | 2 (length-delimited).
+        let register_ack = crate::generated::ServerToWorker {
+            message: Some(crate::generated::server_to_worker::Message::RegisterAck(
+                crate::generated::RegisterAck {
+                    worker_id: 1,
+                    namespace: String::from("tenant-a"),
+                    heartbeat_window_ms: 1_000,
+                },
+            )),
+        };
+        let mut bytes = Vec::new();
+        register_ack.encode(&mut bytes)?;
+        assert_eq!(bytes.first(), Some(&0x1A));
+        assert_eq!(
+            crate::generated::ServerToWorker::decode(bytes.as_slice())?,
+            register_ack
+        );
+
+        let result_ack = crate::generated::ServerToWorker {
+            message: Some(crate::generated::server_to_worker::Message::ResultAck(
+                crate::generated::ResultAck {
+                    workflow_id: None,
+                    activity_id: None,
+                },
+            )),
+        };
+        let mut bytes = Vec::new();
+        result_ack.encode(&mut bytes)?;
+        assert_eq!(bytes.first(), Some(&0x22));
+        assert_eq!(
+            crate::generated::ServerToWorker::decode(bytes.as_slice())?,
+            result_ack
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn activity_task_attempt_uses_wire_tag_five() -> Result<(), Box<dyn std::error::Error>> {
+        // Pins the attempt field to proto tag 5 (field key 0x28 = tag 5,
+        // varint wire type) so the hand-written SDK stubs cannot drift.
+        let task = ProtoActivityTask {
+            workflow_id: None,
+            activity_id: None,
+            activity_type: String::new(),
+            input: None,
+            attempt: 9,
+        };
+        let mut bytes = Vec::new();
+        task.encode(&mut bytes)?;
+        assert_eq!(bytes, vec![0x28, 9]);
+        Ok(())
     }
 
     #[test]

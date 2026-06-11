@@ -198,6 +198,8 @@ Use worker SDKs to host activities outside the workflow VM and connect them to t
 - Rust: `crates/aion-worker`
 - Python and TypeScript worker packages under [`../sdks/`](../sdks/) — in progress/hardening.
 
+The worker protocol is a single bidirectional gRPC stream whose authoritative contract lives in [`crates/aion-proto/proto/worker.proto`](../crates/aion-proto/proto/worker.proto): the server acknowledges registration with a `RegisterAck` frame (carrying the assigned worker id, the authorized namespace, and the heartbeat window) before dispatching any task, tasks carry a one-based delivery `attempt`, every consumed activity result is acknowledged with a `ResultAck` (only that ack clears a worker's re-report backlog), and a server `DrainRequest` tells workers to finish in-flight work and reconnect without consuming their reconnect drop budget.
+
 The hello-world quickstart uses the Python worker SDK and registers a `greet` activity.
 
 ## Workflow authoring SDK

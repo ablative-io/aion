@@ -82,39 +82,6 @@ pub(crate) async fn drain_remaining<S>(
     .await;
 }
 
-/// Forwards queued heartbeats and already-finished outcomes without blocking.
-pub(crate) async fn drain_runtime_events<S>(
-    session: &mut S,
-    heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    channels: &mut RuntimeChannels,
-    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
-    tracker: &mut UnackedResultTracker,
-    tasks_reported: &mut usize,
-    pending_error: &mut Option<WorkerError>,
-) where
-    S: WorkerSession,
-{
-    drain_heartbeats(
-        session,
-        heartbeat_bookkeeper,
-        &mut channels.heartbeats,
-        pending_error,
-    )
-    .await;
-    while let Ok(finished) = channels.results.try_recv() {
-        report_finished(
-            session,
-            heartbeat_bookkeeper,
-            finished,
-            in_flight,
-            tracker,
-            tasks_reported,
-            pending_error,
-        )
-        .await;
-    }
-}
-
 async fn drain_heartbeats<S>(
     session: &mut S,
     heartbeat_bookkeeper: &HeartbeatBookkeeper,
@@ -131,7 +98,7 @@ async fn drain_heartbeats<S>(
     }
 }
 
-async fn report_finished<S>(
+pub(crate) async fn report_finished<S>(
     session: &mut S,
     heartbeat_bookkeeper: &HeartbeatBookkeeper,
     finished: DispatchFinished,
@@ -223,7 +190,10 @@ where
     Ok(())
 }
 
-fn record_first_error(pending_error: &mut Option<WorkerError>, result: Result<(), WorkerError>) {
+pub(crate) fn record_first_error(
+    pending_error: &mut Option<WorkerError>,
+    result: Result<(), WorkerError>,
+) {
     if pending_error.is_none() {
         if let Err(error) = result {
             *pending_error = Some(error);

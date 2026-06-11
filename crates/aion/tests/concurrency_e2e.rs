@@ -99,7 +99,13 @@ struct GatedDispatcher {
 }
 
 impl ActivityDispatcher for GatedDispatcher {
-    fn dispatch(&self, name: &str, _input: &str, _config: &str) -> Result<String, String> {
+    fn dispatch(
+        &self,
+        name: &str,
+        _input: &str,
+        _config: &str,
+        _attempt: u32,
+    ) -> Result<String, String> {
         let result = if let Some(key) = name.strip_prefix("gated_ok:") {
             self.gates.wait(key).map(|()| format!("\"done-{key}\""))
         } else if let Some(key) = name.strip_prefix("gated_fail:") {

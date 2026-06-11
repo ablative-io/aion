@@ -98,7 +98,8 @@
               "sequence_position": 1
             },
             "activity_type": "conformance.echo",
-            "input": "${fixtures.payloads.echo}"
+            "input": "${fixtures.payloads.echo}",
+            "attempt": 1
           }
         ],
         "signals": []
@@ -145,7 +146,8 @@
               "sequence_position": 1
             },
             "activity_type": "conformance.fail-retryable",
-            "input": "${fixtures.payloads.retryable_failure_details}"
+            "input": "${fixtures.payloads.retryable_failure_details}",
+            "attempt": 1
           }
         ],
         "signals": []
@@ -190,7 +192,8 @@
               "sequence_position": 1
             },
             "activity_type": "conformance.fail-terminal",
-            "input": "${fixtures.payloads.terminal_failure_details}"
+            "input": "${fixtures.payloads.terminal_failure_details}",
+            "attempt": 1
           }
         ],
         "signals": []
@@ -241,7 +244,8 @@
                 "heartbeatAfterMs": 10,
                 "completeAfterMs": 20
               }
-            }
+            },
+            "attempt": 1
           }
         ],
         "signals": []
@@ -303,7 +307,8 @@
               "json": {
                 "pollEveryMs": 10
               }
-            }
+            },
+            "attempt": 1
           }
         ],
         "signals": [
@@ -368,7 +373,8 @@
               "json": {
                 "message": "before disconnect"
               }
-            }
+            },
+            "attempt": 1
           },
           {
             "workflow_id": {
@@ -384,7 +390,8 @@
                 "message": "after reconnect"
               }
             },
-            "dispatch_after": "re-report-observed"
+            "dispatch_after": "re-report-observed",
+            "attempt": 1
           }
         ],
         "signals": [
@@ -478,7 +485,8 @@
               "json": {
                 "slot": 1
               }
-            }
+            },
+            "attempt": 1
           },
           {
             "workflow_id": {
@@ -493,7 +501,8 @@
               "json": {
                 "slot": 2
               }
-            }
+            },
+            "attempt": 1
           },
           {
             "workflow_id": {
@@ -508,7 +517,8 @@
               "json": {
                 "slot": 3
               }
-            }
+            },
+            "attempt": 1
           },
           {
             "workflow_id": {
@@ -523,7 +533,8 @@
               "json": {
                 "slot": 4
               }
-            }
+            },
+            "attempt": 1
           },
           {
             "workflow_id": {
@@ -538,7 +549,8 @@
               "json": {
                 "slot": 5
               }
-            }
+            },
+            "attempt": 1
           }
         ],
         "signals": [

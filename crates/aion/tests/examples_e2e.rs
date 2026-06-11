@@ -69,7 +69,13 @@ async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std
 struct PipelineDispatcher;
 
 impl ActivityDispatcher for PipelineDispatcher {
-    fn dispatch(&self, name: &str, input: &str, _config: &str) -> Result<String, String> {
+    fn dispatch(
+        &self,
+        name: &str,
+        input: &str,
+        _config: &str,
+        _attempt: u32,
+    ) -> Result<String, String> {
         let value: serde_json::Value =
             serde_json::from_str(input).map_err(|e| format!("terminal:bad input: {e}"))?;
         match name {
@@ -183,7 +189,13 @@ impl RecordingDispatcher {
 }
 
 impl ActivityDispatcher for RecordingDispatcher {
-    fn dispatch(&self, name: &str, input: &str, _config: &str) -> Result<String, String> {
+    fn dispatch(
+        &self,
+        name: &str,
+        input: &str,
+        _config: &str,
+        _attempt: u32,
+    ) -> Result<String, String> {
         let value: serde_json::Value =
             serde_json::from_str(input).map_err(|e| format!("terminal:bad input: {e}"))?;
         if let Ok(mut calls) = self.calls.lock() {

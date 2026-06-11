@@ -5,7 +5,7 @@ import warnings
 
 from . import worker_pb2 as worker__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -27,8 +27,11 @@ if _version_not_supported:
 
 class WorkerProtocolStub:
     """WorkerProtocol is one long-lived gRPC bidirectional stream. A worker sends
-    RegisterWorker first, then ActivityResult and Heartbeat messages. The server
-    pushes ActivityTask messages down the same stream; there is no polling RPC.
+    RegisterWorker first; the server answers with RegisterAck as the guaranteed
+    first frame on the response stream before any other server-to-worker
+    message. The worker then sends ActivityResult and Heartbeat messages while
+    the server pushes ActivityTask, ResultAck, and DrainRequest messages down
+    the same stream; there is no polling RPC.
     """
 
     def __init__(self, channel):
@@ -46,8 +49,11 @@ class WorkerProtocolStub:
 
 class WorkerProtocolServicer:
     """WorkerProtocol is one long-lived gRPC bidirectional stream. A worker sends
-    RegisterWorker first, then ActivityResult and Heartbeat messages. The server
-    pushes ActivityTask messages down the same stream; there is no polling RPC.
+    RegisterWorker first; the server answers with RegisterAck as the guaranteed
+    first frame on the response stream before any other server-to-worker
+    message. The worker then sends ActivityResult and Heartbeat messages while
+    the server pushes ActivityTask, ResultAck, and DrainRequest messages down
+    the same stream; there is no polling RPC.
     """
 
     def StreamWorker(self, request_iterator, context):
@@ -74,8 +80,11 @@ def add_WorkerProtocolServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class WorkerProtocol:
     """WorkerProtocol is one long-lived gRPC bidirectional stream. A worker sends
-    RegisterWorker first, then ActivityResult and Heartbeat messages. The server
-    pushes ActivityTask messages down the same stream; there is no polling RPC.
+    RegisterWorker first; the server answers with RegisterAck as the guaranteed
+    first frame on the response stream before any other server-to-worker
+    message. The worker then sends ActivityResult and Heartbeat messages while
+    the server pushes ActivityTask, ResultAck, and DrainRequest messages down
+    the same stream; there is no polling RPC.
     """
 
     @staticmethod

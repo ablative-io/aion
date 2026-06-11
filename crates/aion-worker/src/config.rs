@@ -54,21 +54,22 @@ impl fmt::Debug for TransportCredentials {
 /// a task or outlives `max_backoff` — exhausts the budget after exactly
 /// `max_attempts` drops.
 ///
-/// **Clean closes:** a clean/graceful server-side stream close is a
-/// retryable drop, not a run end: the worker redials through the same
-/// budgeted, backed-off cycle, so routine server deploys cost at most
-/// transient budget that heals. Only a persistent clean-close loop exhausts
-/// the budget (surfacing [`crate::error::WorkerError::CleanCloseExhausted`]).
-/// An explicit protocol drain signal ("closing, do not reconnect") is
-/// planned for the worker-protocol ack wave and will refine the clean-close
-/// case.
+/// **Drains and clean closes:** a server-announced drain (the wire
+/// `DrainRequest` frame) is an unbudgeted drop — the worker finishes
+/// in-flight work and redials after `initial_backoff`; the drain
+/// classification latches for the session, so even an abrupt end after the
+/// frame stays drain-class. An *unannounced* clean stream close remains a
+/// budgeted retryable drop: the worker redials through the same budgeted,
+/// backed-off cycle, and only a persistent unannounced clean-close loop
+/// exhausts the budget (surfacing
+/// [`crate::error::WorkerError::CleanCloseExhausted`]).
 ///
 /// **Shutdown during a drop backoff:** every SDK races the backoff sleep
-/// against the shutdown signal and returns promptly, but the run outcome
-/// currently diverges: this SDK surfaces the pending drop error (a clean
-/// close pending recovery still ends `Ok`), while the Python and TypeScript
-/// workers return cleanly. Aligning the outcome cross-SDK is deferred to
-/// the protocol drain-signal wave.
+/// against the shutdown signal and returns promptly, and the run outcome is
+/// aligned across the Rust, Python, and TypeScript workers: a pending
+/// drain-class or clean-close drop ends the run cleanly, while a pending
+/// error-class drop surfaces its error — a supervisor sees "this worker was
+/// mid-fault" distinctly from "this worker drained cleanly".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconnectConfig {
     /// Initial reconnect backoff delay. Must be non-zero before reconnecting.

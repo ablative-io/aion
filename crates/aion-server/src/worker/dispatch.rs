@@ -24,6 +24,9 @@ pub struct ScheduledActivity {
     pub activity_id: ActivityId,
     /// Opaque activity input payload.
     pub input: Payload,
+    /// One-based delivery attempt stamped by the dispatching engine seam.
+    /// Zero is malformed on the wire; producers must always stamp it.
+    pub attempt: u32,
 }
 
 impl ScheduledActivity {
@@ -35,6 +38,7 @@ impl ScheduledActivity {
             activity_id: Some(ProtoActivityId::from(self.activity_id.clone())),
             activity_type: self.activity_type.clone(),
             input: Some(ProtoPayload::from(self.input.clone())),
+            attempt: self.attempt,
         }
     }
 }
@@ -291,6 +295,7 @@ mod tests {
             workflow_id: workflow_id(),
             activity_id: activity_id(),
             input: input.clone(),
+            attempt: 1,
         };
 
         dispatcher.dispatch(&scheduled).await?;
@@ -303,6 +308,7 @@ mod tests {
         assert_eq!(task.activity_id, Some(ProtoActivityId::from(activity_id())));
         assert_eq!(task.activity_type, "charge-card");
         assert_eq!(task.input, Some(ProtoPayload::from(input)));
+        assert_eq!(task.attempt, 1, "wire task must carry the stamped attempt");
 
         registration.deregister()?;
         Ok(())
@@ -317,6 +323,7 @@ mod tests {
             workflow_id: workflow_id(),
             activity_id: activity_id(),
             input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            attempt: 1,
         };
 
         let result = dispatcher.dispatch(&scheduled).await;
@@ -343,6 +350,7 @@ mod tests {
             workflow_id: workflow_id(),
             activity_id: activity_id(),
             input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            attempt: 1,
         };
 
         dispatcher.dispatch(&scheduled).await?;

@@ -32,12 +32,34 @@ class WorkerToServer(_message.Message):
     def __init__(self, register: _Optional[_Union[RegisterWorker, _Mapping]] = ..., result: _Optional[_Union[ActivityResult, _Mapping]] = ..., heartbeat: _Optional[_Union[Heartbeat, _Mapping]] = ...) -> None: ...
 
 class ServerToWorker(_message.Message):
-    __slots__ = ("task", "drain")
+    __slots__ = ("task", "drain", "register_ack", "result_ack")
     TASK_FIELD_NUMBER: _ClassVar[int]
     DRAIN_FIELD_NUMBER: _ClassVar[int]
+    REGISTER_ACK_FIELD_NUMBER: _ClassVar[int]
+    RESULT_ACK_FIELD_NUMBER: _ClassVar[int]
     task: ActivityTask
     drain: DrainRequest
-    def __init__(self, task: _Optional[_Union[ActivityTask, _Mapping]] = ..., drain: _Optional[_Union[DrainRequest, _Mapping]] = ...) -> None: ...
+    register_ack: RegisterAck
+    result_ack: ResultAck
+    def __init__(self, task: _Optional[_Union[ActivityTask, _Mapping]] = ..., drain: _Optional[_Union[DrainRequest, _Mapping]] = ..., register_ack: _Optional[_Union[RegisterAck, _Mapping]] = ..., result_ack: _Optional[_Union[ResultAck, _Mapping]] = ...) -> None: ...
+
+class RegisterAck(_message.Message):
+    __slots__ = ("worker_id", "namespace", "heartbeat_window_ms")
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    NAMESPACE_FIELD_NUMBER: _ClassVar[int]
+    HEARTBEAT_WINDOW_MS_FIELD_NUMBER: _ClassVar[int]
+    worker_id: int
+    namespace: str
+    heartbeat_window_ms: int
+    def __init__(self, worker_id: _Optional[int] = ..., namespace: _Optional[str] = ..., heartbeat_window_ms: _Optional[int] = ...) -> None: ...
+
+class ResultAck(_message.Message):
+    __slots__ = ("workflow_id", "activity_id")
+    WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
+    ACTIVITY_ID_FIELD_NUMBER: _ClassVar[int]
+    workflow_id: _common_pb2.WorkflowId
+    activity_id: _common_pb2.ActivityId
+    def __init__(self, workflow_id: _Optional[_Union[_common_pb2.WorkflowId, _Mapping]] = ..., activity_id: _Optional[_Union[_common_pb2.ActivityId, _Mapping]] = ...) -> None: ...
 
 class RegisterWorker(_message.Message):
     __slots__ = ("namespace", "activity_types")
@@ -48,16 +70,18 @@ class RegisterWorker(_message.Message):
     def __init__(self, namespace: _Optional[str] = ..., activity_types: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ActivityTask(_message.Message):
-    __slots__ = ("workflow_id", "activity_id", "activity_type", "input")
+    __slots__ = ("workflow_id", "activity_id", "activity_type", "input", "attempt")
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     ACTIVITY_ID_FIELD_NUMBER: _ClassVar[int]
     ACTIVITY_TYPE_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
     workflow_id: _common_pb2.WorkflowId
     activity_id: _common_pb2.ActivityId
     activity_type: str
     input: _common_pb2.Payload
-    def __init__(self, workflow_id: _Optional[_Union[_common_pb2.WorkflowId, _Mapping]] = ..., activity_id: _Optional[_Union[_common_pb2.ActivityId, _Mapping]] = ..., activity_type: _Optional[str] = ..., input: _Optional[_Union[_common_pb2.Payload, _Mapping]] = ...) -> None: ...
+    attempt: int
+    def __init__(self, workflow_id: _Optional[_Union[_common_pb2.WorkflowId, _Mapping]] = ..., activity_id: _Optional[_Union[_common_pb2.ActivityId, _Mapping]] = ..., activity_type: _Optional[str] = ..., input: _Optional[_Union[_common_pb2.Payload, _Mapping]] = ..., attempt: _Optional[int] = ...) -> None: ...
 
 class ActivityResult(_message.Message):
     __slots__ = ("workflow_id", "activity_id", "result", "error")

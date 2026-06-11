@@ -28,8 +28,20 @@ pub type WorkerTaskStream =
 pub enum WorkerSessionEvent {
     /// A new activity task to execute.
     Task(ProtoActivityTask),
-    /// Server is draining and will not dispatch more activity tasks on this stream.
+    /// Server-initiated drain: the server is going away (restart, deploy,
+    /// rebalance). The worker finishes in-flight work, reports what it can,
+    /// stops expecting new tasks, and reconnects after the schedule's initial
+    /// backoff. A drain frame latches for the session: the eventual stream
+    /// end — clean or abrupt — is drain-class and consumes no drop budget.
     Drain,
+    /// The server consumed the identified `ActivityResult` frame; the worker
+    /// may stop re-reporting it. Clears the matching unacked-tracker entry.
+    ResultAck {
+        /// Workflow owning the acknowledged result.
+        workflow_id: WorkflowId,
+        /// Activity whose result was acknowledged.
+        activity_id: ActivityId,
+    },
     /// Cooperative cancellation for an in-flight activity.
     ///
     /// The current AW worker proto in this worktree does not yet carry this
@@ -64,11 +76,14 @@ pub trait WorkerSession: Send {
     /// Registers activity-type names implemented by this worker.
     ///
     /// Maps to opening AW's `StreamWorker` RPC with `RegisterWorker` queued as
-    /// the mandatory first frame: the server reads that frame before it sends
-    /// response headers, and there is no registration-ack frame in the wire
-    /// protocol — header receipt is the registration outcome. The caller
-    /// supplies `available_handlers` so registration can be rejected before
-    /// serving if any requested name lacks a handler.
+    /// the mandatory first frame and then awaiting the server's `RegisterAck`
+    /// — the guaranteed first frame on the response stream. Registration
+    /// succeeds only when the ack arrives; a denial fails the RPC with a gRPC
+    /// error status (`PermissionDenied` / `Unauthenticated`), and an ack that
+    /// does not arrive within the reconnect policy's `max_backoff` is a
+    /// retryable registration failure. The caller supplies
+    /// `available_handlers` so registration can be rejected before serving if
+    /// any requested name lacks a handler.
     async fn register(
         &mut self,
         activity_types: Vec<String>,
@@ -124,6 +139,19 @@ pub fn validate_activity_handlers(
     Ok(())
 }
 
+/// Server-assigned registration facts carried by the `RegisterAck` frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisteredSessionInfo {
+    /// Server-assigned stream identifier, for correlating worker logs with
+    /// server logs (`worker_id=3 lost`).
+    pub worker_id: u64,
+    /// The namespace the registration was authorized against.
+    pub namespace: String,
+    /// The server's operator-configured liveness window: an in-flight
+    /// activity must heartbeat at least this often or be declared lost.
+    pub heartbeat_window: std::time::Duration,
+}
+
 /// gRPC-backed [`WorkerSession`] using `aion-proto` generated tonic stubs.
 pub struct GrpcWorkerSession {
     config: WorkerConfig,
@@ -131,6 +159,7 @@ pub struct GrpcWorkerSession {
     client: Option<GeneratedClient>,
     sender: Option<mpsc::Sender<aion_proto::generated::WorkerToServer>>,
     receiver: Option<tonic::codec::Streaming<aion_proto::generated::ServerToWorker>>,
+    registered_info: Option<RegisteredSessionInfo>,
 }
 
 impl GrpcWorkerSession {
@@ -154,6 +183,7 @@ impl GrpcWorkerSession {
             client: Some(client),
             sender: None,
             receiver: None,
+            registered_info: None,
         })
     }
 
@@ -166,20 +196,33 @@ impl GrpcWorkerSession {
             client: Some(GeneratedClient::new(channel)),
             sender: None,
             receiver: None,
+            registered_info: None,
         }
     }
 
+    /// Server-assigned registration facts from the `RegisterAck`, available
+    /// once [`WorkerSession::register`] has succeeded.
+    #[must_use]
+    pub const fn registered_info(&self) -> Option<&RegisteredSessionInfo> {
+        self.registered_info.as_ref()
+    }
+
     /// Opens AW's `StreamWorker` RPC with `RegisterWorker` queued as the first
-    /// outbound frame.
+    /// outbound frame and awaits the server's `RegisterAck`.
     ///
     /// The server reads `RegisterWorker` from the inbound stream *before* it
     /// returns its response stream (and therefore before tonic receives
     /// response headers), so the frame must already be queued when the RPC is
     /// issued. Awaiting `stream_worker` before sending `RegisterWorker`
     /// deadlocks: the client waits for headers the server withholds until it
-    /// has read the registration. There is no registration-ack frame in the
-    /// wire protocol — receiving response headers *is* the successful
-    /// registration outcome, and a denial surfaces as the RPC's error status.
+    /// has read the registration.
+    ///
+    /// Registration succeeds only when the server's `RegisterAck` — its
+    /// guaranteed first response frame — arrives. The ack wait is bounded by
+    /// the reconnect policy's `max_backoff` (the operator's own definition of
+    /// the longest tolerable pause); a timeout, a non-ack first frame, or a
+    /// stream that ends before the ack is a retryable registration failure.
+    /// Denials surface as the RPC's gRPC error status exactly as before.
     async fn open_registered_stream(
         &mut self,
         register: aion_proto::generated::RegisterWorker,
@@ -209,12 +252,52 @@ impl GrpcWorkerSession {
             .stream_worker(request)
             .await
             .map_err(registration_denial_error)?;
+        let mut receiver = response.into_inner();
 
+        let first = tokio::time::timeout(self.config.reconnect.max_backoff, receiver.message())
+            .await
+            .map_err(|_| {
+                WorkerError::registration(SessionStateError {
+                    message: format!(
+                        "server did not acknowledge registration within {:?}",
+                        self.config.reconnect.max_backoff
+                    ),
+                })
+            })?
+            .map_err(registration_denial_error)?;
+        let ack = match first.and_then(|frame| frame.message) {
+            Some(aion_proto::generated::server_to_worker::Message::RegisterAck(ack)) => ack,
+            Some(_) => {
+                return Err(WorkerError::decode(SessionStateError {
+                    message: String::from(
+                        "protocol violation: server sent a non-RegisterAck frame before \
+                         acknowledging registration",
+                    ),
+                }));
+            }
+            None => {
+                return Err(WorkerError::registration(SessionStateError {
+                    message: String::from(
+                        "server ended the stream before acknowledging registration",
+                    ),
+                }));
+            }
+        };
+
+        self.registered_info = Some(RegisteredSessionInfo {
+            worker_id: ack.worker_id,
+            namespace: ack.namespace,
+            heartbeat_window: std::time::Duration::from_millis(ack.heartbeat_window_ms),
+        });
         self.sender = Some(sender);
-        self.receiver = Some(response.into_inner());
+        self.receiver = Some(receiver);
         Ok(())
     }
 
+    /// Sends one frame with a per-send deadline of the reconnect policy's
+    /// `max_backoff`: a send that outlives the operator's longest tolerable
+    /// pause is, by that same definition, a dead session and surfaces as a
+    /// retryable transport error instead of hanging the worker forever.
     async fn send_to_server(
         &self,
         message: aion_proto::generated::worker_to_server::Message,
@@ -224,11 +307,17 @@ impl GrpcWorkerSession {
                 message: String::from("worker stream has not been opened"),
             })
         })?;
-        sender
-            .send(aion_proto::generated::WorkerToServer {
-                message: Some(message),
-            })
+        let send = sender.send(aion_proto::generated::WorkerToServer {
+            message: Some(message),
+        });
+        tokio::time::timeout(self.config.reconnect.max_backoff, send)
             .await
+            .map_err(|_| WorkerError::Transport {
+                source: tonic::Status::unavailable(format!(
+                    "worker stream send did not complete within {:?}",
+                    self.config.reconnect.max_backoff
+                )),
+            })?
             .map_err(|source| WorkerError::Transport {
                 source: tonic::Status::unavailable(format!("worker stream send failed: {source}")),
             })
@@ -379,10 +468,53 @@ fn decode_server_message(
         Some(aion_proto::generated::server_to_worker::Message::Drain(_)) => {
             Ok(WorkerSessionEvent::Drain)
         }
+        Some(aion_proto::generated::server_to_worker::Message::ResultAck(ack)) => {
+            decode_result_ack(ack)
+        }
+        Some(aion_proto::generated::server_to_worker::Message::RegisterAck(_)) => {
+            // The ack is consumed inside `open_registered_stream`; a second
+            // one mid-stream is a server ordering bug that must surface.
+            Err(WorkerError::decode(SessionStateError {
+                message: String::from(
+                    "protocol violation: RegisterAck received after registration completed",
+                ),
+            }))
+        }
         None => Err(WorkerError::decode(SessionStateError {
             message: String::from("server-to-worker message was empty"),
         })),
     }
+}
+
+fn decode_result_ack(
+    ack: aion_proto::generated::ResultAck,
+) -> Result<WorkerSessionEvent, WorkerError> {
+    let workflow_id = ack
+        .workflow_id
+        .ok_or_else(|| {
+            WorkerError::decode(SessionStateError {
+                message: String::from("result ack workflow_id is missing"),
+            })
+        })
+        .and_then(|id| {
+            WorkflowId::try_from(ProtoWorkflowId { uuid: id.uuid }).map_err(|source| {
+                WorkerError::decode(SessionStateError {
+                    message: format!("result ack workflow_id is invalid: {source}"),
+                })
+            })
+        })?;
+    let activity_id = ack
+        .activity_id
+        .map(|id| ActivityId::from_sequence_position(id.sequence_position))
+        .ok_or_else(|| {
+            WorkerError::decode(SessionStateError {
+                message: String::from("result ack activity_id is missing"),
+            })
+        })?;
+    Ok(WorkerSessionEvent::ResultAck {
+        workflow_id,
+        activity_id,
+    })
 }
 
 fn generated_activity_result(value: ProtoActivityResult) -> aion_proto::generated::ActivityResult {
@@ -414,6 +546,7 @@ fn proto_task(value: aion_proto::generated::ActivityTask) -> ProtoActivityTask {
         activity_id: value.activity_id.map(proto_activity_id),
         activity_type: value.activity_type,
         input: value.input.map(proto_payload),
+        attempt: value.attempt,
     }
 }
 
@@ -511,6 +644,7 @@ mod tests {
                     activity_id: None,
                     activity_type: String::from("charge-card"),
                     input: None,
+                    attempt: 1,
                 },
             ))]))
         }
@@ -608,6 +742,64 @@ mod tests {
         assert_eq!(session.registrations, vec![activity_types]);
         assert!(received.is_some());
 
+        Ok(())
+    }
+
+    /// Brief test 16: a report send that never completes (server stopped
+    /// reading; outbound channel full) times out retryably at the reconnect
+    /// policy's `max_backoff` on a paused clock — the worker never hangs.
+    #[tokio::test(start_paused = true)]
+    async fn report_send_times_out_retryably_at_max_backoff() -> Result<(), WorkerError> {
+        let config = WorkerConfig::new(
+            "http://127.0.0.1:50051",
+            "payments",
+            "worker-a",
+            1,
+            ReconnectConfig::new(
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(20),
+                3,
+            ),
+            None,
+        );
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        // Fill the channel so the next send blocks forever, modelling a
+        // server that stopped draining its receive side.
+        sender
+            .try_send(aion_proto::generated::WorkerToServer { message: None })
+            .map_err(WorkerError::decode)?;
+        let mut session = super::GrpcWorkerSession {
+            config,
+            activity_types: Vec::new(),
+            client: None,
+            sender: Some(sender),
+            receiver: None,
+            registered_info: None,
+        };
+
+        let result = session
+            .report_result(
+                aion_core::WorkflowId::new_v4(),
+                aion_core::ActivityId::from_sequence_position(1),
+                aion_core::Payload::new(aion_core::ContentType::Json, b"{}".to_vec()),
+            )
+            .await;
+
+        let Err(error) = result else {
+            return Err(WorkerError::Transport {
+                source: tonic::Status::internal("a hung send must time out, not hang"),
+            });
+        };
+        assert!(
+            matches!(error, WorkerError::Transport { .. }),
+            "send deadline elapse must be a retryable transport error: {error}"
+        );
+        assert!(error.is_retryable());
+        assert!(
+            error.to_string().contains("did not complete"),
+            "the error must name the deadline: {error}"
+        );
+        drop(receiver);
         Ok(())
     }
 

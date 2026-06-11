@@ -18,7 +18,13 @@ use serde_json::json;
 struct GreetDispatcher;
 
 impl ActivityDispatcher for GreetDispatcher {
-    fn dispatch(&self, name: &str, input: &str, _config: &str) -> Result<String, String> {
+    fn dispatch(
+        &self,
+        name: &str,
+        input: &str,
+        _config: &str,
+        _attempt: u32,
+    ) -> Result<String, String> {
         if name != "greet" {
             return Err(format!("terminal:unknown activity {name}"));
         }

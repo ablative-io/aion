@@ -110,15 +110,19 @@ impl Worker {
 
     /// Connects to the configured endpoint, registers activities, and serves indefinitely.
     ///
-    /// Session establishment goes through the bounded-backoff reconnect
-    /// machinery configured in [`WorkerConfig::reconnect`], and retryable
-    /// mid-run transport drops — including clean server-side stream closes —
-    /// re-establish through the same machinery: the worker re-registers its
-    /// activity types, re-reports every unacknowledged activity result (the
-    /// engine ingests reports idempotently by `ActivityId`), and resumes
-    /// serving. Deterministic `PermissionDenied` / `Unauthenticated` denials
-    /// surface after exactly one attempt. Without a shutdown signal the run
-    /// ends only on a non-retryable error or drop-budget exhaustion; see
+    /// Registration completes only when the server's `RegisterAck` — the
+    /// guaranteed first response frame — arrives; the worker serves nothing
+    /// before it. Session establishment goes through the bounded-backoff
+    /// reconnect machinery configured in [`WorkerConfig::reconnect`], and
+    /// retryable mid-run transport drops — including clean server-side
+    /// stream closes — re-establish through the same machinery: the worker
+    /// re-registers its activity types, re-reports every unacknowledged
+    /// activity result (cleared only by the server's per-result `ResultAck`
+    /// frames), and resumes serving. A server-announced drain reconnects
+    /// after the schedule's initial backoff without consuming drop budget.
+    /// Deterministic `PermissionDenied` / `Unauthenticated` denials surface
+    /// after exactly one attempt. Without a shutdown signal the run ends
+    /// only on a non-retryable error or drop-budget exhaustion; see
     /// [`crate::config::ReconnectConfig`] for the budget-reset semantics.
     ///
     /// # Errors
@@ -156,10 +160,13 @@ impl Worker {
     /// with bounded exponential backoff, while `PermissionDenied` /
     /// `Unauthenticated` denials surface after exactly one attempt. When an
     /// established session drops retryably mid-run — a retryable transport
-    /// failure or a clean server-side stream close, both count — the worker
-    /// drains in-flight activities into the unacked tracker, backs off,
-    /// reconnects through the same machinery (re-registering its activity
-    /// types), re-reports every unacknowledged result, and resumes serving.
+    /// failure or an unannounced clean server-side stream close, both count —
+    /// the worker drains in-flight activities into the unacked tracker, backs
+    /// off, reconnects through the same machinery (re-registering its
+    /// activity types), re-reports every still-unacknowledged result (the
+    /// shutdown signal can interrupt that replay; tracked results survive),
+    /// and resumes serving. Server `ResultAck` frames clear tracker entries
+    /// mid-session, so the steady-state replay backlog is empty.
     ///
     /// Mid-run drops share one cumulative budget of `reconnect.max_attempts`,
     /// matching the Python and TypeScript workers, and the budget resets to
@@ -167,12 +174,16 @@ impl Worker {
     /// stayed connected longer than `reconnect.max_backoff` (measured
     /// monotonically from successful registration to the moment the stream
     /// ended or dropped — post-drop draining of in-flight activities never
-    /// extends it). See
+    /// extends it). A server-announced drain is unbudgeted: the worker
+    /// finishes in-flight work and redials after `reconnect.initial_backoff`;
+    /// the drain classification latches for the session, so even an abrupt
+    /// end after the drain frame stays drain-class. See
     /// [`crate::config::ReconnectConfig`]. The run therefore ends only on
     /// shutdown, a non-retryable error, or budget exhaustion — never merely
-    /// because the server closed the stream. At most one session is alive at
-    /// a time, and a shutdown signalled during a reconnect or backoff wins
-    /// promptly (returning `Ok` when the pending drop was a clean close).
+    /// because the server closed or drained the stream. At most one session
+    /// is alive at a time, and a shutdown signalled during a reconnect or
+    /// backoff wins promptly (returning `Ok` when the pending drop was a
+    /// drain or clean close, and the pending error when it was a failure).
     ///
     /// # Errors
     ///
@@ -215,7 +226,19 @@ impl Worker {
             let mut session = connected?;
             let session_started = tokio::time::Instant::now();
             let mut health = SessionHealth::default();
-            let served = match re_report_unacked(&tracker, &mut session).await {
+            // The unacked-result replay races shutdown so a hung re-report
+            // send can never wedge worker shutdown. Results stay tracked —
+            // entries are recorded before any send and only an explicit ack
+            // removes them — so nothing is lost by abandoning the replay.
+            let replay = tokio::select! {
+                biased;
+                () = shutdown.wait() => None,
+                result = re_report_unacked(&tracker, &mut session) => Some(result),
+            };
+            let Some(replay_result) = replay else {
+                return Ok(());
+            };
+            let served = match replay_result {
                 Ok(()) => {
                     serve_activity_tasks_until(
                         &self.config,
@@ -230,24 +253,9 @@ impl Worker {
                 Err(report_error) => Err(report_error),
             };
             drop(session);
-            let cause = match served {
-                Ok(ServeEnd::Shutdown) => return Ok(()),
-                Ok(ServeEnd::StreamClosed) => {
-                    if shutdown.fired() {
-                        return Ok(());
-                    }
-                    DropCause::CleanClose
-                }
-                Err(error) if !error.is_retryable() => {
-                    error!(error = %error, "worker session denied by server; not reconnecting");
-                    return Err(error);
-                }
-                Err(error) => {
-                    if shutdown.fired() {
-                        return Err(error);
-                    }
-                    DropCause::Failure(error)
-                }
+            let cause = match classify_serve_outcome(served, &health, shutdown.fired()) {
+                ServeClassification::End(result) => return result,
+                ServeClassification::Drop(cause) => cause,
             };
             // Connected lifetime is measured from successful registration to
             // the moment the stream ended — never to the end of the post-drop
@@ -268,17 +276,25 @@ impl Worker {
                 );
                 drop_failures = 0;
             }
-            drop_failures += 1;
-            if drop_failures >= backoff.attempts() {
-                let error = cause.into_exhaustion_error();
-                error!(
-                    drop_failures,
-                    error = %error,
-                    "worker session drop budget exhausted; not reconnecting"
-                );
-                return Err(error);
-            }
-            let delay = backoff.delay_for_attempt(drop_failures);
+            // An announced drain consumes no drop budget: the server told the
+            // worker it was going away, so the drop is expected operator
+            // behaviour, not flapping. Unannounced closes and failures stay
+            // budgeted exactly as before.
+            let delay = if matches!(cause, DropCause::Drain) {
+                self.config.reconnect.initial_backoff
+            } else {
+                drop_failures += 1;
+                if drop_failures >= backoff.attempts() {
+                    let error = cause.into_exhaustion_error();
+                    error!(
+                        drop_failures,
+                        error = %error,
+                        "worker session drop budget exhausted; not reconnecting"
+                    );
+                    return Err(error);
+                }
+                backoff.delay_for_attempt(drop_failures)
+            };
             warn!(
                 drop_failures,
                 delay_ms = delay.as_millis(),
@@ -346,29 +362,95 @@ impl Worker {
     }
 }
 
+/// What the run loop does with a finished session: end the run or recover.
+enum ServeClassification {
+    /// The run ends now with this result.
+    End(Result<(), WorkerError>),
+    /// The session dropped retryably; enter the recovery cycle.
+    Drop(DropCause),
+}
+
+/// Classifies a serve outcome per the cross-SDK contract: shutdown ends the
+/// run (a pending drain or clean close cleanly, a pending error-class drop
+/// with its error), denials are terminal, a drain — announced by the frame
+/// even when the stream later ended abruptly (the latch in
+/// [`SessionHealth::drain_received`]) — is an unbudgeted drop, and
+/// everything else is a budgeted retryable drop.
+fn classify_serve_outcome(
+    served: Result<ServeEnd, WorkerError>,
+    health: &SessionHealth,
+    shutdown_fired: bool,
+) -> ServeClassification {
+    match served {
+        Ok(ServeEnd::Shutdown) => ServeClassification::End(Ok(())),
+        Ok(ServeEnd::Drained) => {
+            if shutdown_fired {
+                return ServeClassification::End(Ok(()));
+            }
+            ServeClassification::Drop(DropCause::Drain)
+        }
+        Ok(ServeEnd::StreamClosed) => {
+            if shutdown_fired {
+                return ServeClassification::End(Ok(()));
+            }
+            ServeClassification::Drop(DropCause::CleanClose)
+        }
+        Err(error) if !error.is_retryable() => {
+            error!(error = %error, "worker session denied by server; not reconnecting");
+            ServeClassification::End(Err(error))
+        }
+        Err(error) if health.drain_received => {
+            // Drain latch: the server announced it was going away, so the
+            // abrupt end (or a failed post-drain report) is drain-class.
+            // Surface the suppressed error loudly.
+            warn!(
+                error = %error,
+                "session error after server drain; classified as drain drop"
+            );
+            if shutdown_fired {
+                return ServeClassification::End(Ok(()));
+            }
+            ServeClassification::Drop(DropCause::Drain)
+        }
+        Err(error) => {
+            if shutdown_fired {
+                return ServeClassification::End(Err(error));
+            }
+            ServeClassification::Drop(DropCause::Failure(error))
+        }
+    }
+}
+
 /// Cause of a retryable mid-run session drop carried across one recovery cycle.
 enum DropCause {
     /// The session ended with a retryable error.
     Failure(WorkerError),
-    /// The server closed the stream cleanly while the run was still active.
+    /// The server closed the stream cleanly without announcing a drain.
     CleanClose,
+    /// The server announced a drain before the session ended. Unbudgeted:
+    /// the redial happens after the schedule's initial backoff.
+    Drain,
 }
 
 impl DropCause {
     /// The classified error surfaced when this drop exhausts the budget.
+    ///
+    /// `Drain` never consumes budget, so it cannot exhaust it; the mapping
+    /// exists only for match exhaustiveness and mirrors the clean-close
+    /// classification (a drain is an announced clean close).
     fn into_exhaustion_error(self) -> WorkerError {
         match self {
             Self::Failure(error) => error,
-            Self::CleanClose => WorkerError::CleanCloseExhausted,
+            Self::CleanClose | Self::Drain => WorkerError::CleanCloseExhausted,
         }
     }
 
     /// Run outcome when shutdown wins the post-drop backoff: an error drop
-    /// surfaces its error, a clean close is a graceful end.
+    /// surfaces its error, a drain or clean close is a graceful end.
     fn into_shutdown_result(self) -> Result<(), WorkerError> {
         match self {
             Self::Failure(error) => Err(error),
-            Self::CleanClose => Ok(()),
+            Self::CleanClose | Self::Drain => Ok(()),
         }
     }
 
@@ -376,7 +458,7 @@ impl DropCause {
     fn into_recovery_error(self) -> Option<WorkerError> {
         match self {
             Self::Failure(error) => Some(error),
-            Self::CleanClose => None,
+            Self::CleanClose | Self::Drain => None,
         }
     }
 }
@@ -386,6 +468,7 @@ impl std::fmt::Display for DropCause {
         match self {
             Self::Failure(error) => write!(formatter, "{error}"),
             Self::CleanClose => write!(formatter, "server closed the worker stream cleanly"),
+            Self::Drain => write!(formatter, "server drained the worker stream"),
         }
     }
 }
@@ -561,6 +644,315 @@ mod tests {
         }
     }
 
+    /// Session whose reports hang forever, modelling a server that
+    /// stopped reading its inbound stream during the replay.
+    struct HungReportSession {
+        log: mpsc::UnboundedSender<SessionLog>,
+        index: usize,
+    }
+
+    #[async_trait]
+    impl WorkerSession for HungReportSession {
+        async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
+            drop(config.clone());
+            Ok(())
+        }
+
+        async fn register(
+            &mut self,
+            activity_types: Vec<String>,
+            available_handlers: &BTreeSet<String>,
+        ) -> Result<(), WorkerError> {
+            validate_activity_handlers(&activity_types, available_handlers)?;
+            self.log
+                .send(SessionLog::Registered(self.index, activity_types))
+                .map_err(WorkerError::decode)
+        }
+
+        fn receive_tasks(&mut self) -> WorkerTaskStream {
+            Box::pin(stream::pending())
+        }
+
+        async fn report_result(
+            &mut self,
+            _workflow_id: WorkflowId,
+            _activity_id: ActivityId,
+            _result: Payload,
+        ) -> Result<(), WorkerError> {
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+
+        async fn report_failure(
+            &mut self,
+            _workflow_id: WorkflowId,
+            _activity_id: ActivityId,
+            _failure: ActivityError,
+        ) -> Result<(), WorkerError> {
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+
+        async fn send_heartbeat(
+            &mut self,
+            _workflow_id: WorkflowId,
+            _activity_id: ActivityId,
+            _progress: Option<Payload>,
+        ) -> Result<(), WorkerError> {
+            Ok(())
+        }
+    }
+
+    enum SessionKind {
+        Scripted(ScriptedSession),
+        Hung(HungReportSession),
+    }
+
+    #[async_trait]
+    impl WorkerSession for SessionKind {
+        async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
+            match self {
+                Self::Scripted(session) => session.handshake(config).await,
+                Self::Hung(session) => session.handshake(config).await,
+            }
+        }
+
+        async fn register(
+            &mut self,
+            activity_types: Vec<String>,
+            available_handlers: &BTreeSet<String>,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Scripted(session) => {
+                    session.register(activity_types, available_handlers).await
+                }
+                Self::Hung(session) => session.register(activity_types, available_handlers).await,
+            }
+        }
+
+        fn receive_tasks(&mut self) -> WorkerTaskStream {
+            match self {
+                Self::Scripted(session) => session.receive_tasks(),
+                Self::Hung(session) => session.receive_tasks(),
+            }
+        }
+
+        async fn report_result(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            result: Payload,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Scripted(session) => {
+                    session
+                        .report_result(workflow_id, activity_id, result)
+                        .await
+                }
+                Self::Hung(session) => {
+                    session
+                        .report_result(workflow_id, activity_id, result)
+                        .await
+                }
+            }
+        }
+
+        async fn report_failure(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            failure: ActivityError,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Scripted(session) => {
+                    session
+                        .report_failure(workflow_id, activity_id, failure)
+                        .await
+                }
+                Self::Hung(session) => {
+                    session
+                        .report_failure(workflow_id, activity_id, failure)
+                        .await
+                }
+            }
+        }
+
+        async fn send_heartbeat(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            progress: Option<Payload>,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Scripted(session) => {
+                    session
+                        .send_heartbeat(workflow_id, activity_id, progress)
+                        .await
+                }
+                Self::Hung(session) => {
+                    session
+                        .send_heartbeat(workflow_id, activity_id, progress)
+                        .await
+                }
+            }
+        }
+    }
+
+    /// Session that emits one task + drain and fails exactly the report
+    /// for `fail_id`, modelling a server that crashed after announcing
+    /// its drain; re-reports of earlier sessions' entries succeed.
+    struct DrainLatchSession {
+        events: Vec<Result<WorkerSessionEvent, WorkerError>>,
+        fail_id: ActivityId,
+    }
+
+    #[async_trait]
+    impl WorkerSession for DrainLatchSession {
+        async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
+            drop(config.clone());
+            Ok(())
+        }
+
+        async fn register(
+            &mut self,
+            activity_types: Vec<String>,
+            available_handlers: &BTreeSet<String>,
+        ) -> Result<(), WorkerError> {
+            validate_activity_handlers(&activity_types, available_handlers)
+        }
+
+        fn receive_tasks(&mut self) -> WorkerTaskStream {
+            Box::pin(stream::iter(std::mem::take(&mut self.events)))
+        }
+
+        async fn report_result(
+            &mut self,
+            _workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            _result: Payload,
+        ) -> Result<(), WorkerError> {
+            if activity_id == self.fail_id {
+                return Err(WorkerError::Transport {
+                    source: tonic::Status::unavailable(
+                        "stream broke abruptly after the drain frame",
+                    ),
+                });
+            }
+            Ok(())
+        }
+
+        async fn report_failure(
+            &mut self,
+            _workflow_id: WorkflowId,
+            _activity_id: ActivityId,
+            _failure: ActivityError,
+        ) -> Result<(), WorkerError> {
+            Ok(())
+        }
+
+        async fn send_heartbeat(
+            &mut self,
+            _workflow_id: WorkflowId,
+            _activity_id: ActivityId,
+            _progress: Option<Payload>,
+        ) -> Result<(), WorkerError> {
+            Ok(())
+        }
+    }
+
+    enum LatchKind {
+        Latch(DrainLatchSession),
+        Deny(ScriptedSession),
+    }
+
+    #[async_trait]
+    impl WorkerSession for LatchKind {
+        async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
+            match self {
+                Self::Latch(session) => session.handshake(config).await,
+                Self::Deny(session) => session.handshake(config).await,
+            }
+        }
+
+        async fn register(
+            &mut self,
+            activity_types: Vec<String>,
+            available_handlers: &BTreeSet<String>,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Latch(session) => session.register(activity_types, available_handlers).await,
+                Self::Deny(session) => session.register(activity_types, available_handlers).await,
+            }
+        }
+
+        fn receive_tasks(&mut self) -> WorkerTaskStream {
+            match self {
+                Self::Latch(session) => session.receive_tasks(),
+                Self::Deny(session) => session.receive_tasks(),
+            }
+        }
+
+        async fn report_result(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            result: Payload,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Latch(session) => {
+                    session
+                        .report_result(workflow_id, activity_id, result)
+                        .await
+                }
+                Self::Deny(session) => {
+                    session
+                        .report_result(workflow_id, activity_id, result)
+                        .await
+                }
+            }
+        }
+
+        async fn report_failure(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            failure: ActivityError,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Latch(session) => {
+                    session
+                        .report_failure(workflow_id, activity_id, failure)
+                        .await
+                }
+                Self::Deny(session) => {
+                    session
+                        .report_failure(workflow_id, activity_id, failure)
+                        .await
+                }
+            }
+        }
+
+        async fn send_heartbeat(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            progress: Option<Payload>,
+        ) -> Result<(), WorkerError> {
+            match self {
+                Self::Latch(session) => {
+                    session
+                        .send_heartbeat(workflow_id, activity_id, progress)
+                        .await
+                }
+                Self::Deny(session) => {
+                    session
+                        .send_heartbeat(workflow_id, activity_id, progress)
+                        .await
+                }
+            }
+        }
+    }
+
     #[test]
     fn empty_worker_is_rejected() {
         let error = WorkerBuilder::new(test_config()).build().err();
@@ -707,6 +1099,7 @@ mod tests {
                 ContentType::Json,
                 format!("{{\"value\":{value}}}").into_bytes(),
             ))),
+            attempt: 1,
         }
     }
 
@@ -1791,6 +2184,446 @@ mod tests {
 
         // The clean close enters the 5s drop backoff; shutdown must win it
         // promptly and a clean close pending recovery is not an error.
+        let run = worker.run_with_connector_until(connect, shutdown);
+        tokio::time::timeout(Duration::from_millis(500), run)
+            .await
+            .map_err(WorkerError::decode)??;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        drop(log_receiver);
+        Ok(())
+    }
+
+    /// Brief test 13: a `ResultAck` event clears exactly its tracker entry —
+    /// two workflows colliding on the bare sequence position exercise both
+    /// key components — and an unknown ack is a no-op.
+    #[tokio::test]
+    async fn result_ack_clears_exactly_its_tracker_entry() -> Result<(), WorkerError> {
+        use crate::protocol::reconnect::{PendingActivityReport, UnackedResultTracker};
+        use crate::runtime::loop_::{SessionHealth, serve_activity_tasks_until};
+
+        let workflow_a = WorkflowId::new_v4();
+        let workflow_b = WorkflowId::new_v4();
+        let position = ActivityId::from_sequence_position(5);
+        let mut tracker = UnackedResultTracker::new();
+        for workflow in [&workflow_a, &workflow_b] {
+            tracker.record(PendingActivityReport::Completed {
+                workflow_id: workflow.clone(),
+                activity_id: position.clone(),
+                output: Payload::new(ContentType::Json, b"{\"value\":1}".to_vec()),
+            });
+        }
+
+        let worker = two_activity_worker()?;
+        let mut session = ChannelSession {
+            receiver: None,
+            reports: Vec::new(),
+            registered: Vec::new(),
+        };
+        let (sender, receiver) = mpsc::channel(4);
+        sender
+            .send(Ok(WorkerSessionEvent::ResultAck {
+                workflow_id: workflow_a.clone(),
+                activity_id: position.clone(),
+            }))
+            .await
+            .map_err(WorkerError::decode)?;
+        // Unknown ack: never recorded; must be a no-op, not an error.
+        sender
+            .send(Ok(WorkerSessionEvent::ResultAck {
+                workflow_id: WorkflowId::new_v4(),
+                activity_id: ActivityId::from_sequence_position(99),
+            }))
+            .await
+            .map_err(WorkerError::decode)?;
+        drop(sender);
+        session.receiver = Some(receiver);
+
+        let mut health = SessionHealth::default();
+        serve_activity_tasks_until(
+            &test_config(),
+            &mut session,
+            Arc::new(crate::activity::ActivityRegistry::new()),
+            &mut tracker,
+            &mut health,
+            std::future::pending(),
+        )
+        .await?;
+
+        assert_eq!(tracker.len(), 1, "exactly the acked entry must clear");
+        assert!(tracker.get(&workflow_a, &position).is_none());
+        assert!(tracker.get(&workflow_b, &position).is_some());
+        drop(worker);
+        Ok(())
+    }
+
+    /// Brief tests 14 + 15: acks drain the tracker mid-session so the
+    /// next-session replay sends nothing (steady-state decay); a lost ack
+    /// costs exactly one re-report, cleared by the next session's ack.
+    #[tokio::test]
+    async fn acked_results_decay_out_of_the_reconnect_replay() -> Result<(), WorkerError> {
+        use crate::protocol::re_report_unacked;
+        use crate::protocol::reconnect::{PendingActivityReport, UnackedResultTracker};
+        use crate::runtime::loop_::{SessionHealth, serve_activity_tasks_until};
+
+        let workflow_id = WorkflowId::new_v4();
+        let acked_id = ActivityId::from_sequence_position(1);
+        let unacked_id = ActivityId::from_sequence_position(2);
+        let mut tracker = UnackedResultTracker::new();
+        for id in [&acked_id, &unacked_id] {
+            tracker.record(PendingActivityReport::Completed {
+                workflow_id: workflow_id.clone(),
+                activity_id: id.clone(),
+                output: Payload::new(ContentType::Json, b"{\"value\":2}".to_vec()),
+            });
+        }
+
+        // Session 1 acks one of the two reported results; the other ack is
+        // "lost" (never sent).
+        let mut session = ChannelSession {
+            receiver: None,
+            reports: Vec::new(),
+            registered: Vec::new(),
+        };
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .send(Ok(WorkerSessionEvent::ResultAck {
+                workflow_id: workflow_id.clone(),
+                activity_id: acked_id.clone(),
+            }))
+            .await
+            .map_err(WorkerError::decode)?;
+        drop(sender);
+        session.receiver = Some(receiver);
+        let mut health = SessionHealth::default();
+        serve_activity_tasks_until(
+            &test_config(),
+            &mut session,
+            Arc::new(crate::activity::ActivityRegistry::new()),
+            &mut tracker,
+            &mut health,
+            std::future::pending(),
+        )
+        .await?;
+
+        // Session 2 replay: exactly the un-acked entry is re-reported.
+        let mut replay_session = ChannelSession {
+            receiver: None,
+            reports: Vec::new(),
+            registered: Vec::new(),
+        };
+        re_report_unacked(&tracker, &mut replay_session).await?;
+        assert_eq!(
+            replay_session.reports.len(),
+            1,
+            "only the un-acked result may be re-reported"
+        );
+        assert!(matches!(
+            &replay_session.reports[0],
+            RecordedReport::Completed(_, id, _) if id == &unacked_id
+        ));
+
+        // Session 2 acks the re-report; the tracker is now empty and a third
+        // session's replay sends nothing.
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .send(Ok(WorkerSessionEvent::ResultAck {
+                workflow_id: workflow_id.clone(),
+                activity_id: unacked_id.clone(),
+            }))
+            .await
+            .map_err(WorkerError::decode)?;
+        drop(sender);
+        replay_session.receiver = Some(receiver);
+        let mut health = SessionHealth::default();
+        serve_activity_tasks_until(
+            &test_config(),
+            &mut replay_session,
+            Arc::new(crate::activity::ActivityRegistry::new()),
+            &mut tracker,
+            &mut health,
+            std::future::pending(),
+        )
+        .await?;
+        assert!(tracker.is_empty(), "acks must drain the tracker");
+
+        let mut decayed_session = ChannelSession {
+            receiver: None,
+            reports: Vec::new(),
+            registered: Vec::new(),
+        };
+        re_report_unacked(&tracker, &mut decayed_session).await?;
+        assert!(
+            decayed_session.reports.is_empty(),
+            "steady-state replay must send nothing"
+        );
+        Ok(())
+    }
+
+    /// Brief test 17: shutdown interrupts a hung `re_report_unacked` send
+    /// promptly instead of waiting it out; the hung session reports nothing.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_interrupts_hung_unacked_replay_promptly() -> Result<(), WorkerError> {
+        // Two-faced connector: session 1 serves one task whose report send
+        // fails (seeding the unacked tracker), session 2 hangs its replay.
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(3);
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+        let (registered_2_tx, registered_2_rx) = tokio::sync::oneshot::channel::<()>();
+        let registered_2_tx = std::sync::Mutex::new(Some(registered_2_tx));
+        let connect = {
+            let log_sender = log_sender.clone();
+            let workflow_id = workflow_id.clone();
+            let activity_id = activity_id.clone();
+            move |attempt_override: usize| {
+                let log = log_sender.clone();
+                let task = proto_task(workflow_id.clone(), activity_id.clone(), "double", 21);
+                let notify = if attempt_override == 2 {
+                    registered_2_tx
+                        .lock()
+                        .ok()
+                        .and_then(|mut guard| guard.take())
+                } else {
+                    None
+                };
+                async move {
+                    if attempt_override == 1 {
+                        Ok(SessionKind::Scripted(ScriptedSession {
+                            index: 1,
+                            log,
+                            events: vec![Ok(WorkerSessionEvent::Task(task))],
+                            fail_reports: true,
+                            register_denial: None,
+                            delay_stream: None,
+                        }))
+                    } else {
+                        if let Some(notify) = notify {
+                            let _ = notify.send(());
+                        }
+                        Ok(SessionKind::Hung(HungReportSession { index: 2, log }))
+                    }
+                }
+            }
+        };
+
+        let attempts_for_connect = Arc::clone(&attempts);
+        let run = worker.run_with_connector_until(
+            move || {
+                let attempt = attempts_for_connect.fetch_add(1, Ordering::SeqCst) + 1;
+                connect(attempt)
+            },
+            async move {
+                let _ = registered_2_rx.await;
+            },
+        );
+
+        // The hung session's replay never resolves; the session-2 oneshot
+        // fires shutdown, which must win promptly.
+        tokio::time::timeout(Duration::from_secs(60), run)
+            .await
+            .map_err(WorkerError::decode)??;
+
+        drop(log_sender);
+        let mut hung_session_reports = 0_usize;
+        while let Some(entry) = log_receiver.recv().await {
+            if let SessionLog::Reported(2, _) = entry {
+                hung_session_reports += 1;
+            }
+        }
+        assert_eq!(
+            hung_session_reports, 0,
+            "the hung replay must not have produced a report"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    /// Brief test 18: a server-announced drain consumes no drop budget —
+    /// with a budget of two, three drain cycles still leave the worker
+    /// running; a deterministic denial then ends the run.
+    #[tokio::test(start_paused = true)]
+    async fn drain_cycles_reconnect_without_consuming_drop_budget() -> Result<(), WorkerError> {
+        let worker = two_activity_worker_with(test_config_with(ReconnectConfig::new(
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            2,
+        )))?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                async move {
+                    if attempt <= 3 {
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: vec![Ok(WorkerSessionEvent::Drain)],
+                            fail_reports: false,
+                            register_denial: None,
+                            delay_stream: None,
+                        })
+                    } else {
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: Some(tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            )),
+                            delay_stream: None,
+                        })
+                    }
+                }
+            }
+        };
+
+        let result = worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await;
+
+        // Three drain cycles with max_attempts = 2: if drains consumed
+        // budget the run would have ended with CleanCloseExhausted after
+        // the second; instead it survives to the scripted denial.
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        let mut registrations = 0_usize;
+        while let Some(entry) = log_receiver.recv().await {
+            if matches!(entry, SessionLog::Registered(..)) {
+                registrations += 1;
+            }
+        }
+        assert_eq!(registrations, 3, "every drain cycle must re-register");
+        Ok(())
+    }
+
+    /// Brief test 19: the drain classification latches — a session whose
+    /// post-drain report fails abruptly is still drain-class and unbudgeted.
+    /// Replay sends of older entries succeed (a replay failure is an
+    /// *unannounced* drop and stays budgeted, per the reconnect record), so
+    /// each session fails only its own task's report — after the drain frame.
+    #[tokio::test(start_paused = true)]
+    async fn drain_latch_keeps_abrupt_post_drain_failures_unbudgeted() -> Result<(), WorkerError> {
+        let workflow_id = WorkflowId::new_v4();
+        // The activity sleeps on the paused clock so its outcome can only be
+        // reported once the serve loop has gone idle — i.e. after the drain
+        // frame has been read and the loop is draining in-flight work. The
+        // failing report is therefore deterministically post-drain.
+        let worker = Worker::builder(test_config_with(ReconnectConfig::new(
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            2,
+        )))
+        .register_activity("slow_double", |input: TestInput, context| {
+            Box::pin(async move {
+                let _ = context;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                Ok(TestOutput {
+                    value: input.value * 2,
+                })
+            })
+        })?
+        .build()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let workflow_id = workflow_id.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                let attempt_u64 = u64::try_from(attempt).unwrap_or(u64::MAX);
+                let activity_id = ActivityId::from_sequence_position(attempt_u64);
+                let task = proto_task(workflow_id.clone(), activity_id.clone(), "slow_double", 21);
+                async move {
+                    if attempt <= 3 {
+                        Ok(LatchKind::Latch(DrainLatchSession {
+                            events: vec![
+                                Ok(WorkerSessionEvent::Task(task)),
+                                Ok(WorkerSessionEvent::Drain),
+                            ],
+                            fail_id: activity_id,
+                        }))
+                    } else {
+                        Ok(LatchKind::Deny(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: Some(tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            )),
+                            delay_stream: None,
+                        }))
+                    }
+                }
+            }
+        };
+
+        let result = worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await;
+
+        // Three latched drain-class failures with max_attempts = 2: only the
+        // latch keeps the run alive to the scripted denial.
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        drop(log_receiver);
+        Ok(())
+    }
+
+    /// Brief test 21: shutdown during the post-drain redial backoff ends the
+    /// run `Ok` — a pending drain is not an error (the error-class
+    /// counterpart is pinned by `shutdown_during_mid_run_drop_backoff_*`).
+    #[tokio::test]
+    async fn shutdown_during_post_drain_backoff_returns_ok_promptly() -> Result<(), WorkerError> {
+        let worker = two_activity_worker_with(test_config_with(ReconnectConfig::new(
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            5,
+        )))?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: 1,
+                        log,
+                        events: vec![Ok(WorkerSessionEvent::Drain)],
+                        fail_reports: false,
+                        register_denial: None,
+                        delay_stream: None,
+                    })
+                }
+            }
+        };
+        let shutdown = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+
+        // The drain enters the 5s initial-backoff redial sleep; shutdown
+        // must win it promptly and a pending drain is a graceful end.
         let run = worker.run_with_connector_until(connect, shutdown);
         tokio::time::timeout(Duration::from_millis(500), run)
             .await
