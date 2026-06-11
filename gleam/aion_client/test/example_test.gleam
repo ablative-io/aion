@@ -7,7 +7,7 @@ import aion_client/payload
 import aion_client/stream
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleeunit/should
 
 pub fn error_mapping_covers_contract_cases_test() {
@@ -99,20 +99,23 @@ pub fn payload_decode_failure_is_invalid_argument_test() {
 }
 
 pub fn stream_resumes_after_drop_without_duplicates_test() {
+  // Fresh subscribe carries no resume field (None); the reconnect after the
+  // transient disconnect must ask for exactly Some(3) = last delivered + 1.
+  // Any other cursor hits the strict fallback and fails the assertion below.
   let transport =
     stream.StubTransport(open: fn(cursor) {
       case cursor {
-        0 -> [
+        None -> [
           stream.Frame(sequence: 1, payload: payload.encode(1, json.int)),
           stream.Frame(sequence: 2, payload: payload.encode(2, json.int)),
           stream.TransientDisconnect,
         ]
-        3 -> [
+        Some(3) -> [
           stream.Frame(sequence: 2, payload: payload.encode(2, json.int)),
           stream.Frame(sequence: 3, payload: payload.encode(3, json.int)),
           stream.EndOfStream,
         ]
-        _ -> [stream.EndOfStream]
+        Some(_) -> [stream.TerminalFailure(error.InvalidArgument)]
       }
     })
 
@@ -123,6 +126,128 @@ pub fn stream_resumes_after_drop_without_duplicates_test() {
     stream.EventItem(stream.Event(sequence: 1, payload: 1)),
     stream.EventItem(stream.Event(sequence: 2, payload: 2)),
     stream.EventItem(stream.Event(sequence: 3, payload: 3)),
+    stream.StreamEnd,
+  ])
+}
+
+pub fn fresh_subscribe_sends_no_resume_cursor_test() {
+  // A first subscription has delivered nothing, so the request must carry no
+  // resume field at all (None) — never Some(0), never Some(1). A request
+  // with any cursor present surfaces as the InvalidArgument item below and
+  // fails the exact-list assertion.
+  let transport =
+    stream.StubTransport(open: fn(cursor) {
+      case cursor {
+        None -> [
+          stream.Frame(sequence: 1, payload: payload.encode(1, json.int)),
+          stream.EndOfStream,
+        ]
+        Some(_) -> [stream.TerminalFailure(error.InvalidArgument)]
+      }
+    })
+
+  transport
+  |> stream.subscribe_with_stub(decode.int)
+  |> stream.collect
+  |> should.equal([
+    stream.EventItem(stream.Event(sequence: 1, payload: 1)),
+    stream.StreamEnd,
+  ])
+}
+
+pub fn resume_after_disconnect_requests_last_delivered_plus_one_test() {
+  // resume_from_seq is the FIRST sequence wanted: after delivering through
+  // seq 2 the reconnect must request exactly Some(3). The stub replays
+  // nothing for any other cursor, so an off-by-one (Some(2) re-requesting
+  // the delivered event, or Some(4) skipping one) fails loudly.
+  let transport =
+    stream.StubTransport(open: fn(cursor) {
+      case cursor {
+        None -> [
+          stream.Frame(sequence: 1, payload: payload.encode(1, json.int)),
+          stream.Frame(sequence: 2, payload: payload.encode(2, json.int)),
+          stream.TransientDisconnect,
+        ]
+        Some(3) -> [
+          stream.Frame(sequence: 3, payload: payload.encode(3, json.int)),
+          stream.EndOfStream,
+        ]
+        Some(_) -> [stream.TerminalFailure(error.InvalidArgument)]
+      }
+    })
+
+  transport
+  |> stream.subscribe_with_stub(decode.int)
+  |> stream.collect
+  |> should.equal([
+    stream.EventItem(stream.Event(sequence: 1, payload: 1)),
+    stream.EventItem(stream.Event(sequence: 2, payload: 2)),
+    stream.EventItem(stream.Event(sequence: 3, payload: 3)),
+    stream.StreamEnd,
+  ])
+}
+
+pub fn gap_in_replayed_stream_surfaces_unavailable_test() {
+  // The resume replay asked for first-wanted seq 2 but the stream jumps to
+  // seq 3: an event was lost. That must surface as Unavailable, never a
+  // silent skip-ahead.
+  let transport =
+    stream.StubTransport(open: fn(cursor) {
+      case cursor {
+        None -> [
+          stream.Frame(sequence: 1, payload: payload.encode(1, json.int)),
+          stream.TransientDisconnect,
+        ]
+        Some(2) -> [
+          stream.Frame(sequence: 3, payload: payload.encode(3, json.int)),
+          stream.EndOfStream,
+        ]
+        Some(_) -> [stream.TerminalFailure(error.InvalidArgument)]
+      }
+    })
+
+  transport
+  |> stream.subscribe_with_stub(decode.int)
+  |> stream.collect
+  |> should.equal([
+    stream.EventItem(stream.Event(sequence: 1, payload: 1)),
+    stream.StreamError(error.Unavailable),
+  ])
+}
+
+pub fn duplicate_replay_is_deduped_exactly_once_test() {
+  // The server may re-send already-delivered frames on reconnect (here the
+  // whole prefix 1..3 ahead of the new seq 4). Each sequence appears in the
+  // delivered list exactly once and in order — the exact-list assertion
+  // rejects both re-delivery and dropped events.
+  let transport =
+    stream.StubTransport(open: fn(cursor) {
+      case cursor {
+        None -> [
+          stream.Frame(sequence: 1, payload: payload.encode(1, json.int)),
+          stream.Frame(sequence: 2, payload: payload.encode(2, json.int)),
+          stream.Frame(sequence: 3, payload: payload.encode(3, json.int)),
+          stream.TransientDisconnect,
+        ]
+        Some(4) -> [
+          stream.Frame(sequence: 1, payload: payload.encode(1, json.int)),
+          stream.Frame(sequence: 2, payload: payload.encode(2, json.int)),
+          stream.Frame(sequence: 3, payload: payload.encode(3, json.int)),
+          stream.Frame(sequence: 4, payload: payload.encode(4, json.int)),
+          stream.EndOfStream,
+        ]
+        Some(_) -> [stream.TerminalFailure(error.InvalidArgument)]
+      }
+    })
+
+  transport
+  |> stream.subscribe_with_stub(decode.int)
+  |> stream.collect
+  |> should.equal([
+    stream.EventItem(stream.Event(sequence: 1, payload: 1)),
+    stream.EventItem(stream.Event(sequence: 2, payload: 2)),
+    stream.EventItem(stream.Event(sequence: 3, payload: 3)),
+    stream.EventItem(stream.Event(sequence: 4, payload: 4)),
     stream.StreamEnd,
   ])
 }
@@ -218,21 +343,21 @@ pub fn seven_operations_example_flow_test() {
   let subscribe_fixture =
     stream.StubTransport(open: fn(cursor) {
       case cursor {
-        0 -> [
+        None -> [
           stream.Frame(
             sequence: 1,
             payload: payload.encode("started", json.string),
           ),
           stream.TransientDisconnect,
         ]
-        2 -> [
+        Some(2) -> [
           stream.Frame(
             sequence: 2,
             payload: payload.encode("cancelled", json.string),
           ),
           stream.EndOfStream,
         ]
-        _ -> [stream.EndOfStream]
+        Some(_) -> [stream.TerminalFailure(error.InvalidArgument)]
       }
     })
 

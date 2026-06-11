@@ -5,6 +5,7 @@ import aion_client/error.{type Error}
 import aion_client/payload
 import gleam/dynamic/decode
 import gleam/list
+import gleam/option.{type Option, None, Some}
 
 pub type Event(event) {
   Event(sequence: Int, payload: event)
@@ -27,8 +28,21 @@ pub type Frame {
   EndOfStream
 }
 
+/// Stub subscription transport. The cursor passed to `open` mirrors the wire
+/// contract for `PerWorkflowSubscription.resume_from_seq` (proto3
+/// `optional uint64`) exactly:
+///
+/// - `None` — the subscription request carries no resume field: a fresh
+///   live-tail subscription.
+/// - `Some(n)` — `resume_from_seq = n`, the FIRST per-workflow sequence
+///   number the caller wants (last delivered + 1). `Some(1)` asks for a
+///   full-history replay.
+///
+/// On the wire `resume_from_seq = 0` is invalid_input; `Option` makes the
+/// absent case unrepresentable as an integer sentinel, so this client can
+/// never emit it.
 pub type StubTransport {
-  StubTransport(open: fn(Int) -> List(Frame))
+  StubTransport(open: fn(Option(Int)) -> List(Frame))
 }
 
 /// Build a stream for a workflow handle. The concrete WebSocket adapter is an
@@ -42,10 +56,11 @@ pub fn subscribe(
 }
 
 /// Conformance/test helper that exercises the same cursor protocol as the
-/// reference SDK transports: the initial open passes cursor 0 (no events
-/// delivered yet), every reconnect after a transient disconnect passes
-/// last-delivered sequence + 1, re-sent duplicates are filtered, and a
-/// sequence gap surfaces as `Unavailable` instead of silently losing events.
+/// reference SDK transports: the initial open passes `None` (no resume field
+/// — live tail), every reconnect after a transient disconnect passes
+/// `Some(last delivered + 1)` (the first sequence wanted), re-sent
+/// duplicates are filtered, and a sequence gap surfaces as `Unavailable`
+/// instead of silently losing events.
 pub fn subscribe_with_stub(
   transport: StubTransport,
   decoder: decode.Decoder(event),
@@ -65,9 +80,12 @@ fn read_from_stub(
   delivered: List(StreamItem(event)),
 ) -> List(StreamItem(event)) {
   let StubTransport(open: open) = transport
+  // Nothing delivered yet means there is nothing to resume from: subscribe
+  // fresh with no resume field. Otherwise request the first sequence we have
+  // not yet seen.
   let cursor = case last_delivered {
-    0 -> 0
-    sequence -> sequence + 1
+    0 -> None
+    sequence -> Some(sequence + 1)
   }
   let frames = open(cursor)
   read_frames(transport, decoder, frames, last_delivered, delivered)
