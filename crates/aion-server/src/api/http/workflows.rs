@@ -99,14 +99,15 @@ pub(crate) async fn get_workflows(
         query.into_filter().map_err(HttpWireError)?,
         scoped.namespace(),
     );
-    scoped
+    let mut summaries = scoped
         .engine()
         .map_err(|error| HttpWireError(error.to_wire_error()))?
         .visibility_store()
         .list_workflows(filter)
         .await
-        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))
-        .map(Json)
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+    crate::internal_workflow::retain_user_workflows(&mut summaries);
+    Ok(Json(summaries))
 }
 
 #[derive(serde::Serialize)]
@@ -132,11 +133,11 @@ pub(crate) async fn count_workflows(
         query.into_filter().map_err(HttpWireError)?,
         scoped.namespace(),
     );
-    let count = scoped
+    let visibility_store = scoped
         .engine()
         .map_err(|error| HttpWireError(error.to_wire_error()))?
-        .visibility_store()
-        .count_workflows(filter)
+        .visibility_store();
+    let count = crate::internal_workflow::count_user_workflows(&visibility_store, filter)
         .await
         .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
 
@@ -158,14 +159,13 @@ pub(crate) async fn describe_workflow(
 mod tests {
     use std::sync::Arc;
 
-    use aion::EngineBuilder;
     use aion_core::WorkflowStatus;
     use aion_proto::{
         ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
         ProtoStartWorkflowRequest, WireError, WireErrorCode,
     };
     use aion_store::{
-        EventStore, InMemoryStore, WriteToken,
+        WriteToken,
         visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore, WorkflowSummary},
     };
     use axum::{Router, http::StatusCode};
@@ -175,8 +175,8 @@ mod tests {
 
     use super::super::router::workflow_router;
     use super::super::test_support::{
-        NAMESPACE, json_request, proto_payload, read_json, run_id, runtime_config, started_event,
-        workflow_id,
+        NAMESPACE, get_request, json_request, proto_payload, read_json, run_id, runtime_config,
+        shared_engine, started_event, workflow_id,
     };
     use crate::{
         NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
@@ -232,17 +232,7 @@ mod tests {
 
     async fn workflow_router_with_visibility()
     -> Result<(Router, Arc<dyn VisibilityStore>), Box<dyn std::error::Error>> {
-        let backing = Arc::new(InMemoryStore::default());
-        let store: Arc<dyn EventStore> = backing.clone();
-        let visibility_store: Arc<dyn VisibilityStore> = backing;
-        let engine = Arc::new(
-            EngineBuilder::new()
-                .store_arc(Arc::clone(&store))
-                .visibility_store_arc(Arc::clone(&visibility_store))
-                .scheduler_threads(1)
-                .build()
-                .await?,
-        );
+        let (engine, store, visibility_store) = shared_engine().await?;
         store
             .append(
                 WriteToken::recorder(),
@@ -318,19 +308,127 @@ mod tests {
         Ok(())
     }
 
+    /// Regression test (#51): the engine's internal schedule-coordinator
+    /// workflow must never appear in the HTTP enumeration surfaces. The
+    /// coordinator record carries the tenant namespace attribute to model any
+    /// path that scopes the coordinator into a tenant — namespace scoping must
+    /// not be the only thing hiding engine internals.
+    #[tokio::test]
+    async fn http_list_and_count_surfaces_hide_engine_internal_workflows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (router, visibility_store) = workflow_router_with_visibility().await?;
+        let namespace_attributes = std::collections::HashMap::from([(
+            crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+            aion_core::SearchAttributeValue::String(NAMESPACE.to_owned()),
+        )]);
+        visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: run_id(),
+                workflow_type: String::from("fixture"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: namespace_attributes.clone(),
+            })
+            .await?;
+        visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: aion_core::WorkflowId::new(uuid::Uuid::from_u128(0xa10a)),
+                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(0xa10b)),
+                workflow_type: String::from("aion.schedule_coordinator"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: namespace_attributes,
+            })
+            .await?;
+
+        let list_response = router
+            .clone()
+            .oneshot(get_request("/workflows?namespace=tenant-a")?)
+            .await?;
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let summaries: Vec<WorkflowSummary> = read_json(list_response).await?;
+        assert_eq!(
+            summaries.len(),
+            1,
+            "GET /workflows must hide engine-internal workflows"
+        );
+        assert_eq!(summaries[0].workflow_type, "fixture");
+
+        let count_response = router
+            .clone()
+            .oneshot(get_request("/workflows/count?namespace=tenant-a")?)
+            .await?;
+        assert_eq!(count_response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(count_response).await?;
+        assert_eq!(
+            body["count"], 1,
+            "GET /workflows/count must exclude engine-internal workflows"
+        );
+
+        let list = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: Some(aion_proto::encode_core_value(
+                NAMESPACE,
+                None,
+                &ListWorkflowsFilter::default(),
+            )?),
+        };
+        let list_response = router
+            .oneshot(json_request("/workflows/list", &list)?)
+            .await?;
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
+        assert_eq!(
+            list_body.summaries.len(),
+            1,
+            "POST /workflows/list must hide engine-internal workflows"
+        );
+        Ok(())
+    }
+
+    /// Companion to the #51 exclusion: `describe` by explicit workflow id is
+    /// the operator escape hatch and must still resolve the engine-internal
+    /// schedule coordinator.
+    #[tokio::test]
+    async fn describe_by_explicit_id_still_resolves_internal_workflow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (engine, _store, _visibility_store) = shared_engine().await?;
+        // The engine bootstraps the coordinator's WorkflowStarted event, so
+        // describing it by its real id resolves against genuine history.
+        let coordinator_id = engine.schedule_coordinator_workflow_id().clone();
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(coordinator_id.clone(), NAMESPACE)?;
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+
+        let describe = ProtoDescribeWorkflowRequest {
+            namespace: NAMESPACE.to_owned(),
+            workflow_id: Some(coordinator_id.into()),
+            run_id: None,
+            include_history: false,
+        };
+        let response = router
+            .oneshot(json_request("/workflows/describe", &describe)?)
+            .await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "describe by explicit id is the operator escape hatch"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn describe_decodes_json_payloads_for_http() -> Result<(), Box<dyn std::error::Error>> {
-        let backing = Arc::new(InMemoryStore::default());
-        let store: Arc<dyn EventStore> = backing.clone();
-        let visibility_store: Arc<dyn VisibilityStore> = backing;
-        let engine = Arc::new(
-            EngineBuilder::new()
-                .store_arc(Arc::clone(&store))
-                .visibility_store_arc(visibility_store)
-                .scheduler_threads(1)
-                .build()
-                .await?,
-        );
+        let (engine, store, _visibility_store) = shared_engine().await?;
         store
             .append(
                 WriteToken::recorder(),

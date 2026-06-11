@@ -1,9 +1,12 @@
 //! Shared fixtures and request helpers for the HTTP facade tests.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use aion::{Engine, EngineBuilder};
 use aion_core::{Event, EventEnvelope, Payload, WorkflowId};
 use aion_proto::convert::ProtoPayload;
+use aion_store::{EventStore, InMemoryStore, visibility::VisibilityStore};
 use axum::{body, http::Request, response::Response};
 use chrono::Utc;
 use serde_json::json;
@@ -15,6 +18,23 @@ use crate::config::{
 
 pub(crate) const NAMESPACE: &str = "tenant-a";
 pub(crate) const TOKEN: &str = "test-token";
+
+/// Engine over one in-memory backing store shared by events and visibility.
+pub(crate) async fn shared_engine()
+-> Result<(Arc<Engine>, Arc<dyn EventStore>, Arc<dyn VisibilityStore>), aion::EngineError> {
+    let backing = Arc::new(InMemoryStore::default());
+    let store: Arc<dyn EventStore> = backing.clone();
+    let visibility_store: Arc<dyn VisibilityStore> = backing;
+    let engine = Arc::new(
+        EngineBuilder::new()
+            .store_arc(Arc::clone(&store))
+            .visibility_store_arc(Arc::clone(&visibility_store))
+            .scheduler_threads(1)
+            .build()
+            .await?,
+    );
+    Ok((engine, store, visibility_store))
+}
 
 pub(crate) fn json_request<T>(
     path: &str,

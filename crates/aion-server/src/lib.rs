@@ -24,6 +24,8 @@ pub mod config;
 pub mod dashboard;
 /// Server error and stream-failure types.
 pub mod error;
+/// Engine-internal workflow filtering for enumeration surfaces.
+mod internal_workflow;
 /// Namespace resolution and authorization guard types.
 pub mod namespace;
 /// Health, metrics, and tracing support.
