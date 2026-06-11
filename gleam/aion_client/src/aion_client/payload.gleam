@@ -36,7 +36,9 @@ pub fn decode(
   }
 }
 
-fn map_decode_error(result: Result(value, json.DecodeError)) -> Result(value, Error) {
+fn map_decode_error(
+  result: Result(value, json.DecodeError),
+) -> Result(value, Error) {
   case result {
     Ok(value) -> Ok(value)
     Error(_) -> Error(error.InvalidArgument)

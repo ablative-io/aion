@@ -90,3 +90,13 @@ pub fn workflow_with_timeout_returns_typed_timeout_on_expiry_test() {
     Error(error.TimedOutError(error.TimedOut("deadline expired"))),
   )
 }
+
+pub fn workflow_with_timeout_surfaces_engine_failure_as_engine_failure_test() {
+  // An engine fault while arming/settling the scope must never be reported
+  // as a deadline expiry: callers branch on TimedOutError to take the
+  // "deadline passed" business path.
+  workflow.with_timeout(fn() { Ok("never-runs") }, duration.milliseconds(-1))
+  |> should.equal(
+    Error(error.TimeoutEngineFailure("durability:scope state missing")),
+  )
+}

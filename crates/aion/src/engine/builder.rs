@@ -48,11 +48,9 @@ async fn recover_timers_on_startup(
     store: Arc<dyn EventStore>,
 ) -> Result<(), EngineError> {
     let readable_store: Arc<dyn aion_store::ReadableEventStore> = store;
-    let timer_service =
-        crate::runtime::nif_timer::installed_timer_service(nif_state).map_err(|error| {
-            EngineError::Runtime {
-                reason: format!("timer recovery service unavailable: {error}"),
-            }
+    let timer_service = crate::runtime::nif_timer_bridge::installed_timer_service(nif_state)
+        .map_err(|error| EngineError::Runtime {
+            reason: format!("timer recovery service unavailable: {error}"),
         })?;
     TimerRecovery::new(readable_store, timer_service, Duration::ZERO)
         .recover_on_startup(Utc::now())
@@ -79,7 +77,7 @@ fn install_engine_nif_seams(
         Arc::clone(runtime),
         tokio::runtime::Handle::current(),
     );
-    crate::runtime::nif_timer::install_timer_nif_bridge(
+    crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
         nif_state,
         Arc::clone(registry),
         Arc::clone(store),

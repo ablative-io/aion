@@ -127,6 +127,8 @@ fn wait_for_decision(
       )
     Error(error.InnerError(receive_error)) ->
       Error(SignalFailed(receive_error_message(receive_error)))
+    Error(error.TimeoutEngineFailure(message: message)) ->
+      Error(TimerFailed(message))
   }
 }
 

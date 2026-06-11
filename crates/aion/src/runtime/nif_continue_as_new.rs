@@ -54,6 +54,24 @@ fn continue_as_new(args: &[Term], process_context: &ProcessContext) -> Result<()
     context
         .block_on_recorder(|recorder| {
             Box::pin(async move {
+                // Terminal check and terminal record are atomic under the
+                // recorder lock: a concurrent cancel/complete/fail transition
+                // records through the same recorder, and continuing a run that
+                // already has a terminal event would corrupt its history with
+                // a second terminal.
+                let history = recorder.read_history().await?;
+                if crate::lifecycle::completion::terminal_outcome_from_history(
+                    &history,
+                    &parent_run_id,
+                )
+                .is_some()
+                {
+                    return Err(crate::durability::DurabilityError::HistoryShape {
+                        reason: format!(
+                            "continue_as_new rejected: run {parent_run_id} already recorded a terminal event"
+                        ),
+                    });
+                }
                 recorder
                     .record_workflow_continued_as_new(
                         Utc::now(),

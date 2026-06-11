@@ -169,6 +169,8 @@ pub fn timeout_duration(activity: Activity(i, o)) -> Option(duration.Duration) {
 }
 
 /// Return the explicitly attached heartbeat interval, if one exists.
-pub fn heartbeat_interval(activity: Activity(i, o)) -> Option(duration.Duration) {
+pub fn heartbeat_interval(
+  activity: Activity(i, o),
+) -> Option(duration.Duration) {
   activity.heartbeat
 }

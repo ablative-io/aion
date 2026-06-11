@@ -56,8 +56,6 @@ pub async fn continue_as_new(
     request: ContinueAsNewRequest,
 ) -> Result<WorkflowHandle, EngineError> {
     let handle = registered_handle(context.registry, id, run)?;
-    let history = context.store.read_history(id).await?;
-    guard_no_pending_work(&history)?;
 
     let workflow_type = request
         .workflow_type
@@ -80,6 +78,20 @@ pub async fn continue_as_new(
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
+        // History inspection and the terminal record are atomic under the
+        // recorder lock: a concurrent cancel/complete/fail or freshly
+        // resolving activity records through the same recorder, so checking
+        // outside the lock would let a second terminal event (or a missed
+        // pending-work item) slip in between check and record.
+        let history = context.store.read_history(id).await?;
+        if super::completion::terminal_outcome_from_history(&history, run).is_some() {
+            return Err(EngineError::Runtime {
+                reason: format!(
+                    "continue_as_new rejected: workflow {id} run {run} already recorded a terminal event"
+                ),
+            });
+        }
+        guard_no_pending_work(&history)?;
         recorder
             .record_workflow_continued_as_new(
                 Utc::now(),
@@ -502,6 +514,52 @@ mod tests {
                 return Err(format!("expected continue-as-new history, found {other:?}").into());
             }
         }
+        active.runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorded_terminal_rejects_continue_without_second_terminal_event()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let active = active_workflow().await?;
+        {
+            let recorder = active.handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_workflow_cancelled(
+                    chrono::Utc::now(),
+                    "caller requested cancellation".to_owned(),
+                )
+                .await?;
+        }
+
+        let result = continue_as_new(
+            context(&active),
+            active.handle.workflow_id(),
+            active.handle.run_id(),
+            ContinueAsNewRequest {
+                input: payload("next")?,
+                workflow_type: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(EngineError::Runtime { reason })
+                if reason.contains("already recorded a terminal event")
+        ));
+        let history = active
+            .store
+            .read_history(active.handle.workflow_id())
+            .await?;
+        assert!(matches!(
+            history.as_slice(),
+            [
+                Event::WorkflowStarted { .. },
+                Event::WorkflowCancelled { .. }
+            ]
+        ));
         active.runtime.shutdown()?;
         Ok(())
     }

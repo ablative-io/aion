@@ -26,6 +26,7 @@ mod nif_signal;
 pub(crate) mod nif_state;
 pub(crate) mod nif_timeout;
 pub(crate) mod nif_timer;
+pub(crate) mod nif_timer_bridge;
 mod nif_wake;
 /// Workflow process exit outcomes.
 pub mod outcome;

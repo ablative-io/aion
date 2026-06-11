@@ -152,6 +152,8 @@ fn wait_for_billing_period_from(
     Error(error.TimedOutError(error.TimedOut(message: _))) -> Ok(input)
     Error(error.InnerError(receive_error)) ->
       Error(SignalFailed(receive_error_message(receive_error)))
+    Error(error.TimeoutEngineFailure(message: message)) ->
+      Error(TimerFailed(message))
   }
 }
 

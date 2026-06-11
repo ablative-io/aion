@@ -100,6 +100,10 @@ with_timeout(Duration, Operation) ->
     observe(<<"timeout:", Duration/binary>>),
     case Duration of
         <<"0">> -> {error, <<"timeout:deadline expired">>};
+        %% Engine fault while arming the scope: NOT a deadline expiry, so the
+        %% raw error carries no "timeout:" tag and the SDK must not map it to
+        %% TimedOutError.
+        <<"-1">> -> {error, <<"durability:scope state missing">>};
         _ -> {ok, Operation()}
     end.
 

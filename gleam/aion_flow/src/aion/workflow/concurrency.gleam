@@ -41,7 +41,9 @@ pub fn all(
 /// This is FIRST SETTLE semantics, not first-success-wins: the first activity to
 /// finish wins whether it completes successfully or returns an `ActivityError`.
 /// AT records that winner and cancels the losers.
-pub fn race(activities: List(Activity(i, o))) -> Result(o, error.ActivityError) {
+pub fn race(
+  activities: List(Activity(i, o)),
+) -> Result(o, error.ActivityError) {
   case activities {
     [] ->
       Error(error.ActivityEngineFailure(

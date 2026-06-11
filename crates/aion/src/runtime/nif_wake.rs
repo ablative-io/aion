@@ -33,9 +33,12 @@ pub(super) fn consume_wake_marker(process_context: &mut ProcessContext, runtime:
         runtime.timer_fired_atom(),
     ];
     let Some(select) = process_context.select_facility() else {
+        // No facility means an empty mailbox: a subsequent suspend parks
+        // cleanly and the next marker arrival wakes it.
         return;
     };
-    for index in 0..select.message_count() {
+    let message_count = select.message_count();
+    for index in 0..message_count {
         let Some(message) = select.peek_message(index) else {
             continue;
         };
@@ -44,4 +47,14 @@ pub(super) fn consume_wake_marker(process_context: &mut ProcessContext, runtime:
             return;
         }
     }
+    // A non-empty mailbox with no aion marker would make a subsequent
+    // suspend insta-rewake into a busy spin. The engine is the only producer
+    // of workflow-process messages and only enqueues the marker atoms, so
+    // this is unreachable today — but if the message surface ever widens,
+    // this trace is the observable symptom.
+    tracing::warn!(
+        pid = ?process_context.pid(),
+        queued_messages = message_count,
+        "suspending await found no consumable aion wake marker in a non-empty mailbox"
+    );
 }

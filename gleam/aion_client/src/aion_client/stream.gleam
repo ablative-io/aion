@@ -41,14 +41,16 @@ pub fn subscribe(
   EventStream(read_all: fn() { [StreamError(error.Unavailable)] })
 }
 
-/// Conformance/test helper that exercises the same cursor logic as the
-/// WebSocket implementation: after a transient disconnect it reopens from
-/// last-delivered sequence + 1 and filters duplicates.
+/// Conformance/test helper that exercises the same cursor protocol as the
+/// reference SDK transports: the initial open passes cursor 0 (no events
+/// delivered yet), every reconnect after a transient disconnect passes
+/// last-delivered sequence + 1, re-sent duplicates are filtered, and a
+/// sequence gap surfaces as `Unavailable` instead of silently losing events.
 pub fn subscribe_with_stub(
   transport: StubTransport,
   decoder: decode.Decoder(event),
 ) -> EventStream(event) {
-  EventStream(read_all: fn() { read_from_stub(transport, decoder, 1, []) })
+  EventStream(read_all: fn() { read_from_stub(transport, decoder, 0, []) })
 }
 
 pub fn collect(stream: EventStream(event)) -> List(StreamItem(event)) {
@@ -59,19 +61,23 @@ pub fn collect(stream: EventStream(event)) -> List(StreamItem(event)) {
 fn read_from_stub(
   transport: StubTransport,
   decoder: decode.Decoder(event),
-  next_sequence: Int,
+  last_delivered: Int,
   delivered: List(StreamItem(event)),
 ) -> List(StreamItem(event)) {
   let StubTransport(open: open) = transport
-  let frames = open(next_sequence)
-  read_frames(transport, decoder, frames, next_sequence, delivered)
+  let cursor = case last_delivered {
+    0 -> 0
+    sequence -> sequence + 1
+  }
+  let frames = open(cursor)
+  read_frames(transport, decoder, frames, last_delivered, delivered)
 }
 
 fn read_frames(
   transport: StubTransport,
   decoder: decode.Decoder(event),
   frames: List(Frame),
-  next_sequence: Int,
+  last_delivered: Int,
   delivered: List(StreamItem(event)),
 ) -> List(StreamItem(event)) {
   case frames {
@@ -79,16 +85,20 @@ fn read_frames(
     [first, ..rest] ->
       case first {
         Frame(sequence: sequence, payload: raw_payload) -> {
-          case sequence < next_sequence {
+          case sequence <= last_delivered {
+            // The server may re-send already-delivered frames after a
+            // reconnect; resumption must filter them, never re-deliver.
             True ->
-              read_frames(transport, decoder, rest, next_sequence, delivered)
+              read_frames(transport, decoder, rest, last_delivered, delivered)
             False ->
-              case sequence == next_sequence {
+              case sequence == last_delivered + 1 {
+                // A sequence gap means an event was lost in transit: surface
+                // it as an explicit stream error rather than skipping ahead.
                 False -> reverse([StreamError(error.Unavailable), ..delivered])
                 True ->
                   case payload.decode(raw_payload, decoder) {
                     Ok(event) ->
-                      read_frames(transport, decoder, rest, sequence + 1, [
+                      read_frames(transport, decoder, rest, sequence, [
                         EventItem(Event(sequence: sequence, payload: event)),
                         ..delivered
                       ])
@@ -98,7 +108,7 @@ fn read_frames(
           }
         }
         TransientDisconnect ->
-          read_from_stub(transport, decoder, next_sequence, delivered)
+          read_from_stub(transport, decoder, last_delivered, delivered)
         TerminalFailure(error) -> reverse([StreamError(error), ..delivered])
         EndOfStream -> reverse([StreamEnd, ..delivered])
       }

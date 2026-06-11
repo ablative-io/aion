@@ -49,7 +49,8 @@ pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
         Ok(payload) -> {
           case output_codec.decode(payload) {
             Ok(output) -> Ok(output)
-            Error(decode_error) -> Error(error.ActivityDecodeFailed(decode_error))
+            Error(decode_error) ->
+              Error(error.ActivityDecodeFailed(decode_error))
           }
         }
         Error(raw_error) -> Error(activity_error(raw_error))

@@ -10,22 +10,21 @@ import aion_client
 import aion_client/error
 import gleam/io
 import gleam/list
+import gleam/option.{None}
 import gleam/string
-import gleeunit
 import gleeunit/should
 
 const scenarios_path = "../../../conformance/aion-clients/scenarios.json"
-const server_url_env = "AION_SERVER_URL"
 
-pub fn main() {
-  gleeunit.main()
-}
+const server_url_env = "AION_SERVER_URL"
 
 pub fn shared_client_contract_conformance_test() {
   case getenv(server_url_env) {
     "" -> {
       io.println(
-        "SKIP sdk=gleam reason=" <> server_url_env <> " is unset; live aion-server conformance not run",
+        "SKIP sdk=gleam reason="
+        <> server_url_env
+        <> " is unset; live aion-server conformance not run",
       )
       should.equal(Ok(Nil), Ok(Nil))
     }
@@ -75,8 +74,13 @@ fn execute_step(
 ) -> String {
   case operation {
     "connect" -> normalised_connect_result(client_result)
-    "start" | "signal" | "query" | "cancel" | "list" | "describe" | "subscribe" ->
-      "{\"error\":\"Unavailable\"}"
+    "start"
+    | "signal"
+    | "query"
+    | "cancel"
+    | "list"
+    | "describe"
+    | "subscribe" -> "{\"error\":\"Unavailable\"}"
     "harness.forceDisconnect" -> "{\"ok\":{\"kind\":\"disconnectInjected\"}}"
     "harness.assertStream" -> "{\"error\":\"Unavailable\"}"
     _ -> "{\"error\":\"InvalidArgument\"}"
@@ -94,7 +98,9 @@ fn expected_result(
   }
 }
 
-fn normalised_connect_result(result: Result(aion_client.Client, error.Error)) -> String {
+fn normalised_connect_result(
+  result: Result(aion_client.Client, error.Error),
+) -> String {
   case result {
     Ok(_) -> "{\"ok\":{\"kind\":\"client\"}}"
     Error(error) -> "{\"error\":\"" <> error_name(error) <> "\"}"
@@ -154,7 +160,10 @@ fn extract_operation(chunk: String) -> Result(String, Nil) {
   }
 }
 
-fn result_try(value: Result(a, Nil), next: fn(a) -> Result(b, Nil)) -> Result(b, Nil) {
+fn result_try(
+  value: Result(a, Nil),
+  next: fn(a) -> Result(b, Nil),
+) -> Result(b, Nil) {
   case value {
     Ok(inner) -> next(inner)
     Error(Nil) -> Error(Nil)

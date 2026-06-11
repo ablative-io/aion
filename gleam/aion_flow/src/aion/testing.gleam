@@ -57,7 +57,9 @@ pub fn advance(
 }
 
 /// Return the current simulated clock value in milliseconds.
-pub fn current_time_milliseconds(env: TestEnv) -> Result(Int, error.EngineError) {
+pub fn current_time_milliseconds(
+  env: TestEnv,
+) -> Result(Int, error.EngineError) {
   clock.current_time_milliseconds(env)
 }
 

@@ -67,8 +67,11 @@ pub fn cancel_timer(reference: TimerRef) -> Result(Nil, error.EngineError) {
 /// The operation is a thunk so the engine/test FFI can establish the timeout
 /// before the await begins. If the operation completes before the deadline its
 /// `Ok` value is returned. If the operation returns its own typed error, that
-/// error is wrapped in `InnerError`. If AT reports that the deadline expired, the
-/// result is `TimedOutError(TimedOut(...))`.
+/// error is wrapped in `InnerError`. If AT reports that the deadline expired
+/// (the engine's `timeout:`-tagged result), the result is
+/// `TimedOutError(TimedOut(...))`. Any other engine error is surfaced as
+/// `TimeoutEngineFailure` — an infrastructure fault must never be mistaken
+/// for a deadline expiry.
 pub fn with_timeout(
   operation: fn() -> Result(value, inner_error),
   deadline: duration.Duration,
@@ -76,7 +79,16 @@ pub fn with_timeout(
   case ffi.with_timeout(duration_to_boundary(deadline), operation) {
     Ok(Ok(value)) -> Ok(value)
     Ok(Error(inner_error)) -> Error(error.InnerError(inner_error))
-    Error(raw_error) -> Error(error.TimedOutError(timeout_error(raw_error)))
+    Error(raw_error) ->
+      case string.starts_with(raw_error, "timeout:") {
+        True ->
+          Error(
+            error.TimedOutError(
+              error.TimedOut(message: string.drop_start(raw_error, 8)),
+            ),
+          )
+        False -> Error(error.TimeoutEngineFailure(message: raw_error))
+      }
   }
 }
 
@@ -84,11 +96,4 @@ fn duration_to_boundary(duration: duration.Duration) -> String {
   duration
   |> duration.to_milliseconds
   |> int.to_string
-}
-
-fn timeout_error(raw_error: String) -> error.TimeoutError {
-  case string.starts_with(raw_error, "timeout:") {
-    True -> error.TimedOut(message: string.drop_start(raw_error, 8))
-    False -> error.TimedOut(message: raw_error)
-  }
 }

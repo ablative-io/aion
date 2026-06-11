@@ -6,14 +6,9 @@ import aion_client/handle as workflow_handle
 import aion_client/payload
 import aion_client/stream
 import gleam/dynamic/decode
-import gleam/option.{Some}
 import gleam/json
-import gleeunit
+import gleam/option.{Some}
 import gleeunit/should
-
-pub fn main() {
-  gleeunit.main()
-}
 
 pub fn error_mapping_covers_contract_cases_test() {
   error.from_wire(error.WireNotFound, "missing")
@@ -98,7 +93,8 @@ pub fn seven_operations_example_flow_test() {
       namespace: "conformance",
       tls: False,
     )
-  let assert Ok(client) = aion_client.with_transport(config, example_transport())
+  let assert Ok(client) =
+    aion_client.with_transport(config, example_transport())
 
   let assert Ok(handle) =
     aion_client.start(
@@ -125,10 +121,19 @@ pub fn seven_operations_example_flow_test() {
     })
 
   let assert Ok("signal-observed") =
-    workflow_handle.query(handle, "state", Nil, fn(_) { json.null() }, decode.string)
+    workflow_handle.query(
+      handle,
+      "state",
+      Nil,
+      fn(_) { json.null() },
+      decode.string,
+    )
 
   let assert Ok(summaries) =
-    aion_client.list(client, aion_client.ListOptions(namespace: Some("conformance")))
+    aion_client.list(
+      client,
+      aion_client.ListOptions(namespace: Some("conformance")),
+    )
   summaries |> aion_client.workflow_ids |> should.equal(["echo-example"])
 
   let assert Ok(description) = workflow_handle.describe(handle)
@@ -140,7 +145,11 @@ pub fn seven_operations_example_flow_test() {
     status: "running",
   ))
 
-  let assert Ok(Nil) = workflow_handle.cancel(handle, "seven-operations example requested cancellation")
+  let assert Ok(Nil) =
+    workflow_handle.cancel(
+      handle,
+      "seven-operations example requested cancellation",
+    )
 
   workflow_handle.subscribe(handle, decode.string)
   |> stream.collect
@@ -150,11 +159,17 @@ pub fn seven_operations_example_flow_test() {
     stream.StubTransport(open: fn(cursor) {
       case cursor {
         0 -> [
-          stream.Frame(sequence: 1, payload: payload.encode("started", json.string)),
+          stream.Frame(
+            sequence: 1,
+            payload: payload.encode("started", json.string),
+          ),
           stream.TransientDisconnect,
         ]
         2 -> [
-          stream.Frame(sequence: 2, payload: payload.encode("cancelled", json.string)),
+          stream.Frame(
+            sequence: 2,
+            payload: payload.encode("cancelled", json.string),
+          ),
           stream.EndOfStream,
         ]
         _ -> [stream.EndOfStream]
@@ -203,10 +218,21 @@ fn example_start(
   request: aion_client.StartRequest,
 ) -> Result(aion_client.StartResponse, error.Error) {
   let aion_client.StartRequest(options: options, ..) = request
-  let aion_client.StartOptions(workflow_type: workflow_type, idempotency_key: key, ..) = options
-  case key == Some("gleam-seven-operations-example") && workflow_type != "conformance.echo" {
+  let aion_client.StartOptions(
+    workflow_type: workflow_type,
+    idempotency_key: key,
+    ..,
+  ) = options
+  case
+    key == Some("gleam-seven-operations-example")
+    && workflow_type != "conformance.echo"
+  {
     True -> Error(error.AlreadyExists)
-    False -> Ok(aion_client.StartResponse(workflow_id: "echo-example", run_id: "run-example"))
+    False ->
+      Ok(aion_client.StartResponse(
+        workflow_id: "echo-example",
+        run_id: "run-example",
+      ))
   }
 }
 

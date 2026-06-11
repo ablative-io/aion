@@ -1,7 +1,6 @@
 //// Caller-side SDK for aion-server workflow operations.
 
 import aion_client/error.{type Error}
-import aion_client/payload
 import aion_client/payload.{type Payload}
 import gleam/dynamic/decode
 import gleam/json
@@ -46,7 +45,11 @@ pub type StartOptions {
 }
 
 pub type SignalOptions {
-  SignalOptions(workflow_id: String, run_id: Option(String), signal_name: String)
+  SignalOptions(
+    workflow_id: String,
+    run_id: Option(String),
+    signal_name: String,
+  )
 }
 
 pub type QueryOptions {
@@ -94,7 +97,12 @@ pub type DescribeRequest {
 }
 
 pub type WorkflowSummary {
-  WorkflowSummary(workflow_id: String, run_id: String, workflow_type: String, status: String)
+  WorkflowSummary(
+    workflow_id: String,
+    run_id: String,
+    workflow_type: String,
+    status: String,
+  )
 }
 
 pub type WorkflowDescription {
@@ -118,7 +126,10 @@ pub fn connect(config: Config) -> Result(Client, Error) {
 
 /// Test/conformance hook for injecting an HTTP/WebSocket transport while keeping
 /// the public SDK semantics identical.
-pub fn with_transport(config: Config, transport: Transport) -> Result(Client, Error) {
+pub fn with_transport(
+  config: Config,
+  transport: Transport,
+) -> Result(Client, Error) {
   case config.endpoint == "" || config.namespace == "" {
     True -> Error(error.InvalidArgument)
     False -> Ok(Client(config: config, transport: transport))
@@ -143,7 +154,11 @@ pub fn start_raw(
 
   case transport.start(config, StartRequest(options: options, input: input)) {
     Ok(StartResponse(workflow_id: workflow_id, run_id: run_id)) ->
-      Ok(WorkflowHandle(client: client, workflow_id: workflow_id, run_id: run_id))
+      Ok(WorkflowHandle(
+        client: client,
+        workflow_id: workflow_id,
+        run_id: run_id,
+      ))
     Error(error) -> Error(error)
   }
 }
@@ -202,7 +217,10 @@ pub fn cancel(client: Client, options: CancelOptions) -> Result(Nil, Error) {
   transport.cancel(config, CancelRequest(options: options))
 }
 
-pub fn list(client: Client, options: ListOptions) -> Result(List(WorkflowSummary), Error) {
+pub fn list(
+  client: Client,
+  options: ListOptions,
+) -> Result(List(WorkflowSummary), Error) {
   let Client(config: config, transport: transport) = client
   transport.list(config, ListRequest(options: options))
 }

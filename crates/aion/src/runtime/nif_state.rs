@@ -23,7 +23,7 @@ use super::nif_determinism::NifContextSource;
 use super::nif_query::{QueryBridgeState, QueryHandlers};
 use super::nif_signal::SignalNifBridge;
 use super::nif_timeout::TimeoutScope;
-use super::nif_timer::TimerNifBridge;
+use super::nif_timer_bridge::TimerNifBridge;
 
 /// Engine-scoped state shared by every NIF of one engine instance.
 ///

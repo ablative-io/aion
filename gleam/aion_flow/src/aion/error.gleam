@@ -39,7 +39,10 @@ pub fn retryable(message: String) -> ActivityError {
 }
 
 /// Construct a retryable activity failure with an encoded detail payload.
-pub fn retryable_with_details(message: String, details: String) -> ActivityError {
+pub fn retryable_with_details(
+  message: String,
+  details: String,
+) -> ActivityError {
   Retryable(message: message, details: details)
 }
 
@@ -49,7 +52,10 @@ pub fn terminal(message: String) -> ActivityError {
 }
 
 /// Construct a terminal activity failure with an encoded detail payload.
-pub fn terminal_with_details(message: String, details: String) -> ActivityError {
+pub fn terminal_with_details(
+  message: String,
+  details: String,
+) -> ActivityError {
   Terminal(message: message, details: details)
 }
 
@@ -146,7 +152,13 @@ pub type ChildError(workflow_error) {
 }
 
 /// A timeout wrapper for primitives that can either finish or expire.
+///
+/// `TimedOutError` is reserved for genuine deadline expirations; an engine
+/// fault while establishing or settling the timeout scope surfaces as
+/// `TimeoutEngineFailure` so callers never mistake an infrastructure error
+/// for a timeout.
 pub type TimeoutResultError(error) {
   TimedOutError(TimeoutError)
   InnerError(error)
+  TimeoutEngineFailure(message: String)
 }
