@@ -33,7 +33,8 @@ Retryability is "in principle" only: it describes whether a caller may reasonabl
 | `QueryTimeout` | The caller's query deadline elapsed before a query result was available. | `WireErrorCode::QueryTimeout`; gRPC `DeadlineExceeded` for query; client-side caller deadline expiry. | Yes, if the caller is willing to wait longer or retry later. | The query is a synchronous round-trip, not fire-and-forget. |
 | `Cancelled` | The operation was cancelled by the caller context or the server reports cancellation of the requested operation. | Client cancellation token/context; gRPC `Cancelled`; server cancellation status. | Maybe, if the caller did not intend to cancel or creates a new operation. | A successful `cancel` operation itself does not return this; it records a cancellation request. |
 | `Unavailable` | The server or stream is temporarily unreachable. | Transport connect failure, connection drop, DNS/TLS/socket failure, gRPC `Unavailable`, transient WebSocket disconnect before successful resumption, or stream lag/reconnect exhaustion reported as transport unavailability. | Yes. | Subscription streams must surface terminal unavailability as an error item/stream error, not silent end. |
-| `Unauthenticated` | The server rejects or cannot validate the caller credential. | Authentication failure status, gRPC `Unauthenticated`, failed bearer/mTLS credential validation. | No until credentials are corrected or refreshed. | Authorization/namespace denial may map here when AW treats it as credential failure; otherwise SDKs may surface `InvalidArgument` or `Server` according to AW status while preserving this closed taxonomy. |
+| `Unauthenticated` | The server rejects or cannot validate the caller credential. | Authentication failure status, gRPC `Unauthenticated`, failed bearer/mTLS credential validation, HTTP `401 Unauthorized`. | No until credentials are corrected or refreshed. | Credential failure only. Namespace authorization denial is `NamespaceDenied`, never this variant. |
+| `NamespaceDenied` | The caller's credential was accepted, but the caller holds no grant for the requested namespace. | `WireErrorCode::NamespaceDenied`; gRPC `PermissionDenied`; HTTP `403 Forbidden`. | No until the caller's namespace grants or the request's namespace change. | Carries the server's detail message. A workflow that does not exist or is owned by another namespace surfaces as `NotFound` with an identical response either way, so callers cannot probe for cross-namespace existence. SDKs SHALL NOT collapse this variant into `Unauthenticated`, `InvalidArgument`, or `Server`. |
 | `InvalidArgument` | The request is syntactically or semantically invalid as API input. | Malformed IDs, malformed payloads, invalid filters, unsupported query/signal names when AW reports invalid input, `WireErrorCode::UnknownQuery`, `WireErrorCode::NotRunning` when the requested operation cannot apply to the run, gRPC `InvalidArgument`. | No until the request is changed. | Do not hide validation errors behind transport failures. |
 | `Server` | An unexpected server-side failure with diagnostic detail. | `WireErrorCode::Backend`; gRPC `Internal`/`Unknown`; any unexpected server error carrying detail that does not fit another variant. | Maybe. | Preserve the server's detail/message where available for diagnostics. |
 
@@ -82,7 +83,7 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | `WorkflowService.StartWorkflow(StartWorkflowRequest) -> StartWorkflowResponse`. Idempotency key maps to AW-owned start request metadata/field once available. |
 | Inputs | Namespace/default namespace; workflow type name; workflow input as typed value encoded to `Payload` or raw `Payload`; optional caller-supplied idempotency key; optional caller deadline/cancellation context. |
 | Output | `WorkflowHandle` containing the returned `WorkflowId` and `RunId`. The handle exposes per-workflow `signal`, `query`, `cancel`, `describe`, and `subscribe` methods. |
-| Errors | `AlreadyExists`, `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `AlreadyExists`, `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | Retried identical start with the same idempotency key returns the original handle. Conflicting reuse raises `AlreadyExists`. Without a supplied key, normal server start semantics apply and callers must not assume retry safety. |
 
 ## Operation: signal
@@ -92,7 +93,7 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | `WorkflowService.Signal(SignalRequest) -> SignalResponse`. |
 | Inputs | Namespace/default namespace; `WorkflowId`; optional `RunId` (latest run by default); signal name; signal payload as typed value encoded to `Payload` or raw `Payload`; optional caller deadline/cancellation context. |
 | Output | Acknowledgement that the server accepted the signal for delivery to the targeted run. The operation does not return a workflow result. |
-| Errors | `NotFound`, `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `NotFound`, `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | `signal` may be fire-and-forget at the workflow API level after server acceptance, but errors before acceptance must be surfaced. Latest-run targeting is the SDK default when no `RunId` is supplied. |
 
 ## Operation: query
@@ -102,7 +103,7 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | `WorkflowService.Query(QueryRequest) -> QueryResponse`. Query arguments, if AW adds them, use `Payload`; the checked-in `QueryRequest` currently names the query only. |
 | Inputs | Namespace/default namespace; `WorkflowId`; optional `RunId` (latest run by default); query name; optional query arguments when supported by AW, as typed payload or raw `Payload`; caller deadline; optional cancellation context. |
 | Output | Query result as typed decoded value or raw `Payload`, according to the caller's chosen surface. |
-| Errors | `NotFound`, `QueryFailed`, `QueryTimeout`, `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `NotFound`, `QueryFailed`, `QueryTimeout`, `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | `query` is synchronous and deadline-bounded. Deadline expiry maps to `QueryTimeout`; workflow handler errors map to `QueryFailed`. It is not fire-and-forget. |
 
 ## Operation: cancel
@@ -112,7 +113,7 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | `WorkflowService.Cancel(CancelRequest) -> CancelResponse`. |
 | Inputs | Namespace/default namespace; `WorkflowId`; optional `RunId` (latest run by default); optional reason string; optional caller deadline/cancellation context. |
 | Output | Acknowledgement that the server recorded the cooperative cancellation request. |
-| Errors | `NotFound`, `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `NotFound`, `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | Success does not mean the workflow has already stopped. The caller observes eventual terminal status through `describe`, `list`, or `subscribe`. |
 
 ## Operation: list
@@ -122,7 +123,7 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | `WorkflowService.ListWorkflows(ListWorkflowsRequest) -> ListWorkflowsResponse`; filter is an `aion-core` `WorkflowFilter` in `WireEnvelope`; summaries are `aion-core` `WorkflowSummary` values in `WireEnvelope`. |
 | Inputs | Namespace/default namespace; filter dimensions: workflow type, workflow status, started-after time, started-before time, and parent workflow; pagination controls when AW exposes them; optional caller deadline/cancellation context. |
 | Output | A page of workflow summaries plus pagination continuation information when AW exposes it. Each summary contains the AW/core summary projection, including workflow identity, type, status, start/end timestamps, and parent where available. |
-| Errors | `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | The current checked-in `ListWorkflowsRequest` has `namespace` and `WireEnvelope filter`, and `ListWorkflowsResponse` has repeated summaries but no pagination fields. Pagination is required SDK/server behaviour for the public clients once AW exposes token/limit fields; SDKs must not invent private pagination fields meanwhile. |
 
 ## Operation: describe
@@ -132,7 +133,7 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | `WorkflowService.DescribeWorkflow(DescribeWorkflowRequest) -> DescribeWorkflowResponse`; summary and optional history are carried in `WireEnvelope` entries. |
 | Inputs | Namespace/default namespace; `WorkflowId`; optional `RunId` (latest run by default); include-history flag; optional caller deadline/cancellation context. |
 | Output | Workflow description containing the `WorkflowSummary` projection with current status, plus optional event history when requested and authorised. |
-| Errors | `NotFound`, `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `NotFound`, `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | Latest-run targeting is the SDK default when no `RunId` is supplied. History is optional and may be omitted by request or server policy; absence of requested history due to an error must be surfaced rather than silently treated as an empty history. |
 
 ## Operation: subscribe
@@ -142,5 +143,5 @@ The current checked-in `SubscriptionRequest` does not yet expose a resume cursor
 | Transport mapping | WebSocket event stream using `SubscriptionRequest` for subscription intent and `StreamedEvent` frames for delivered events. There is no unary `WorkflowService` subscribe RPC in the checked-in proto. |
 | Inputs | Namespace/default namespace; subscription selector (`PerWorkflowSubscription`, `FilteredSubscription`, or `FirehoseSubscription` as AW exposes and authorises); typed event decoder or raw event payload surface; optional caller cancellation context; resumption cursor managed by the SDK from last delivered `EventEnvelope.seq`. |
 | Output | A language-native async stream/iterator of decoded events. Normal caller cancellation ends the stream according to language idiom; terminal server/transport failures are emitted/surfaced as taxonomy errors. |
-| Errors | `NotFound`, `Unauthenticated`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
+| Errors | `NotFound`, `Unauthenticated`, `NamespaceDenied`, `Unavailable`, `InvalidArgument`, `Server`, `Cancelled`. |
 | Notes | On transient disconnect, the SDK resumes from the last delivered per-workflow sequence number and must not deliver gaps or duplicates. If resumption cannot be completed, the stream surfaces `Unavailable` or the more specific taxonomy variant supplied by AW. |

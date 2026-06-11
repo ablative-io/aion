@@ -50,7 +50,7 @@
       "title": "Shared error taxonomy",
       "spec": "THE SYSTEM SHALL define the closed set of distinguishable client failures and the server condition each maps from, so every SDK renders the same set idiomatically.",
       "acceptance": [
-        "The taxonomy lists exactly: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server.",
+        "The taxonomy lists exactly: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, NamespaceDenied, InvalidArgument, Server.",
         "Each variant states the server/transport condition it maps from (e.g. AlreadyExists <- idempotency-key conflict; Unavailable <- transport/connection failure; Server <- unexpected server error carrying the server's detail).",
         "The document states that no SDK may collapse distinct variants into one opaque error and no SDK may swallow an error.",
         "Each variant is annotated with whether it is retryable in principle (e.g. Unavailable yes, InvalidArgument no)."
@@ -87,7 +87,7 @@
     "SHALL NOT design the worker protocol or any activity-execution semantics (AR)."
   ],
   "verification": [
-    "CLIENT-CONTRACT.md covers all seven operations, all five hard cases, and the nine-variant error taxonomy.",
+    "CLIENT-CONTRACT.md covers all seven operations, all five hard cases, and the ten-variant error taxonomy.",
     "scenarios.json parses as valid JSON (python3 -c 'import json,sys; json.load(open(sys.argv[1]))' on the file).",
     "Every error variant referenced in scenarios.json appears in the contract's taxonomy.",
     "A reader can reconstruct the full client surface and the conformance gate from these two files without reading any SDK code."

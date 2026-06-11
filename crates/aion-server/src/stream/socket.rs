@@ -20,17 +20,29 @@ pub type EncodedFrame = String;
 /// The per-connection buffer bound is read from runtime config, not defaulted in
 /// the transport loop.
 ///
+/// A subscription rejected before streaming (namespace authorization failure or
+/// per-workflow target failure) is never a silent drop: the rejection is sent
+/// to the client as one terminal `{"error": <WireError>}` frame followed by a
+/// close frame, so SDKs can branch on the stable code instead of reconnecting
+/// against a deterministic denial.
+///
 /// # Errors
 ///
 /// Returns [`ServerError`] when namespace authorization, engine subscription,
 /// frame serialization, or bounded-buffer forwarding fails.
 pub async fn handle_subscription_socket(
-    socket: WebSocket,
+    mut socket: WebSocket,
     state: &ServerState,
     caller: &CallerIdentity,
     request: &SubscriptionRequest,
 ) -> Result<(), ServerError> {
-    let subscription = subscribe_events(state.namespace_guard(), caller, request).await?;
+    let subscription = match subscribe_events(state.namespace_guard(), caller, request).await {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            send_wire_error(&mut socket, &error.to_wire_error()).await?;
+            return Err(error);
+        }
+    };
     let outbound_buffer_bound = state.runtime_config().websocket.outbound_buffer_bound;
     forward_subscription(
         socket,
@@ -108,12 +120,21 @@ pub async fn forward_subscription(
     }
 }
 
-async fn send_wire_error<S>(socket_tx: &mut S, error: &WireError) -> Result<(), ServerError>
+/// Send one terminal WebSocket error frame followed by a close frame.
+///
+/// Every WebSocket error frame is the standardized wrapper object
+/// `{"error": <WireError as JSON>}` — the shape every SDK detects as a
+/// terminal stream error — never a bare `WireError`.
+pub(crate) async fn send_wire_error<S>(
+    socket_tx: &mut S,
+    error: &WireError,
+) -> Result<(), ServerError>
 where
     S: futures::Sink<Message> + Unpin,
     <S as futures::Sink<Message>>::Error: std::fmt::Debug,
 {
-    let payload = serde_json::to_string(error).map_err(|source| ServerError::Wire {
+    let frame = serde_json::json!({ "error": error });
+    let payload = serde_json::to_string(&frame).map_err(|source| ServerError::Wire {
         wire: WireError::backend(format!("failed to serialize stream error: {source}")),
     })?;
     if socket_tx.send(Message::Text(payload.into())).await.is_err() {
@@ -340,6 +361,39 @@ mod tests {
             received += 1;
         }
         assert_eq!(received, 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wire_error_frame_is_wrapped_and_followed_by_close()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut sink, collected) = futures::channel::mpsc::unbounded();
+        let error = crate::error::ServerError::lagged_stream().to_wire_error();
+
+        super::send_wire_error(&mut sink, &error).await?;
+        drop(sink);
+
+        let messages: Vec<axum::extract::ws::Message> = collected.collect().await;
+        assert_eq!(
+            messages.len(),
+            2,
+            "expected exactly one error frame + close"
+        );
+
+        let axum::extract::ws::Message::Text(text) = &messages[0] else {
+            return Err("expected a text error frame".into());
+        };
+        let frame: serde_json::Value = serde_json::from_str(text.as_str())?;
+        assert_eq!(frame["error"]["code"], json!("lagged"));
+        assert!(
+            frame["error"]["message"].is_string(),
+            "error frame must carry the informational message"
+        );
+
+        let axum::extract::ws::Message::Close(Some(close)) = &messages[1] else {
+            return Err("expected a close frame after the error frame".into());
+        };
+        assert_eq!(close.reason.as_str(), "lagged");
         Ok(())
     }
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass
 import json
+from dataclasses import dataclass, is_dataclass
 from typing import Any, TypeAlias, TypeVar, cast, overload
 
 from .errors import InvalidArgument
@@ -122,8 +122,8 @@ def payload_from_wire(value: Any) -> Payload:
 def assign_payload(message_payload: Any, payload: Payload) -> None:
     """Copy a ``Payload`` into a generated protobuf payload message."""
 
-    setattr(message_payload, "content_type", payload.content_type)
-    setattr(message_payload, "bytes", payload.bytes)
+    message_payload.content_type = payload.content_type
+    message_payload.bytes = payload.bytes
 
 
 def _coerce(decoded: Any, raw_json: bytes, target_type: type[T]) -> T:
@@ -153,14 +153,14 @@ def _coerce(decoded: Any, raw_json: bytes, target_type: type[T]) -> T:
         if target_type in {str, int, float, bool}:
             if not isinstance(decoded, target_type):
                 raise TypeError(f"JSON payload is not {target_type.__name__}")
-            return cast(T, decoded)
+            return decoded
         callable_target = cast(Any, target_type)
         if is_dataclass(target_type):
             if not isinstance(decoded, dict):
                 raise TypeError("dataclass payload must be a JSON object")
             return cast(T, callable_target(**decoded))
         if isinstance(decoded, target_type):
-            return cast(T, decoded)
+            return decoded
         if isinstance(decoded, dict):
             return cast(T, callable_target(**decoded))
         return cast(T, callable_target(decoded))

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, NoReturn
+from typing import Any, NoReturn
 
 
 class ErrorCode(str, Enum):
@@ -17,6 +18,7 @@ class ErrorCode(str, Enum):
     CANCELLED = "Cancelled"
     UNAVAILABLE = "Unavailable"
     UNAUTHENTICATED = "Unauthenticated"
+    NAMESPACE_DENIED = "NamespaceDenied"
     INVALID_ARGUMENT = "InvalidArgument"
     SERVER = "Server"
 
@@ -73,6 +75,20 @@ class Unauthenticated(AionClientError):
     code = ErrorCode.UNAUTHENTICATED
 
 
+class NamespaceDenied(AionClientError):
+    """The caller has no grant for the requested namespace.
+
+    Raised when the caller's credential is valid but carries no grant for
+    the requested namespace. A workflow that does not exist or is owned by
+    another namespace surfaces as :class:`NotFound` instead — the response
+    is identical in both cases, so existence is never leaked across
+    namespaces. Distinct from :class:`Unauthenticated` (credential rejected)
+    and not retryable until grants change.
+    """
+
+    code = ErrorCode.NAMESPACE_DENIED
+
+
 class InvalidArgument(AionClientError):
     """The request is syntactically or semantically invalid."""
 
@@ -93,6 +109,7 @@ _ERROR_CLASSES: dict[ErrorCode, type[AionClientError]] = {
     ErrorCode.CANCELLED: Cancelled,
     ErrorCode.UNAVAILABLE: Unavailable,
     ErrorCode.UNAUTHENTICATED: Unauthenticated,
+    ErrorCode.NAMESPACE_DENIED: NamespaceDenied,
     ErrorCode.INVALID_ARGUMENT: InvalidArgument,
     ErrorCode.SERVER: ServerError,
 }
@@ -106,7 +123,7 @@ _GRPC_CODE_MAP: dict[str, ErrorCode] = {
     "UNAUTHENTICATED": ErrorCode.UNAUTHENTICATED,
     "INVALID_ARGUMENT": ErrorCode.INVALID_ARGUMENT,
     "FAILED_PRECONDITION": ErrorCode.INVALID_ARGUMENT,
-    "PERMISSION_DENIED": ErrorCode.UNAUTHENTICATED,
+    "PERMISSION_DENIED": ErrorCode.NAMESPACE_DENIED,
     "RESOURCE_EXHAUSTED": ErrorCode.UNAVAILABLE,
     "INTERNAL": ErrorCode.SERVER,
     "UNKNOWN": ErrorCode.SERVER,
@@ -115,8 +132,8 @@ _GRPC_CODE_MAP: dict[str, ErrorCode] = {
 _WIRE_CODE_MAP: dict[str, ErrorCode] = {
     "not_found": ErrorCode.NOT_FOUND,
     "WIRE_ERROR_CODE_NOT_FOUND": ErrorCode.NOT_FOUND,
-    "namespace_denied": ErrorCode.UNAUTHENTICATED,
-    "WIRE_ERROR_CODE_NAMESPACE_DENIED": ErrorCode.UNAUTHENTICATED,
+    "namespace_denied": ErrorCode.NAMESPACE_DENIED,
+    "WIRE_ERROR_CODE_NAMESPACE_DENIED": ErrorCode.NAMESPACE_DENIED,
     "unknown_query": ErrorCode.INVALID_ARGUMENT,
     "WIRE_ERROR_CODE_UNKNOWN_QUERY": ErrorCode.INVALID_ARGUMENT,
     "query_timeout": ErrorCode.QUERY_TIMEOUT,
@@ -125,6 +142,12 @@ _WIRE_CODE_MAP: dict[str, ErrorCode] = {
     "WIRE_ERROR_CODE_NOT_RUNNING": ErrorCode.INVALID_ARGUMENT,
     "lagged": ErrorCode.UNAVAILABLE,
     "WIRE_ERROR_CODE_LAGGED": ErrorCode.UNAVAILABLE,
+    # sequence_conflict signals an engine-internal double-writer bug, never an
+    # idempotency conflict; it is a server fault on every operation.
+    "sequence_conflict": ErrorCode.SERVER,
+    "WIRE_ERROR_CODE_SEQUENCE_CONFLICT": ErrorCode.SERVER,
+    "invalid_input": ErrorCode.INVALID_ARGUMENT,
+    "WIRE_ERROR_CODE_INVALID_INPUT": ErrorCode.INVALID_ARGUMENT,
     "backend": ErrorCode.SERVER,
     "WIRE_ERROR_CODE_BACKEND": ErrorCode.SERVER,
 }
@@ -132,8 +155,6 @@ _WIRE_CODE_MAP: dict[str, ErrorCode] = {
 _START_IDEMPOTENCY_CODES = {
     "already_exists",
     "ALREADY_EXISTS",
-    "sequence_conflict",
-    "WIRE_ERROR_CODE_SEQUENCE_CONFLICT",
 }
 
 
@@ -159,7 +180,9 @@ def raise_mapped(error: BaseException, *, operation: str | None = None) -> NoRet
     raise map_error(error, operation=operation) from error
 
 
-def map_error(error: BaseException, *, operation: str | None = None) -> AionClientError:
+def map_error(
+    error: BaseException | ServerFailure | Mapping[str, object], *, operation: str | None = None
+) -> AionClientError:
     """Map transport/server failures to the shared Aion client taxonomy.
 
     Existing :class:`AionClientError` instances are returned unchanged. gRPC
@@ -171,7 +194,9 @@ def map_error(error: BaseException, *, operation: str | None = None) -> AionClie
     if isinstance(error, AionClientError):
         return error
     if isinstance(error, TimeoutError):
-        return QueryTimeout(str(error) or "query timed out") if operation == "query" else Unavailable(str(error) or "operation timed out")
+        if operation == "query":
+            return QueryTimeout(str(error) or "query timed out")
+        return Unavailable(str(error) or "operation timed out")
     if isinstance(error, OSError):
         return Unavailable(str(error) or "transport unavailable")
     if isinstance(error, ServerFailure):
@@ -193,8 +218,13 @@ def map_error(error: BaseException, *, operation: str | None = None) -> AionClie
 def map_query_error(error: Any) -> AionClientError:
     """Map a QueryResponse error payload to ``QueryFailed`` or a specific status."""
 
+    if isinstance(error, AionClientError):
+        return error
     mapped = _map_wire_like(error, operation="query")
-    if isinstance(mapped, InvalidArgument | QueryTimeout | NotFound | Unauthenticated | Unavailable | Cancelled):
+    if isinstance(
+        mapped,
+        InvalidArgument | QueryTimeout | NotFound | Unauthenticated | NamespaceDenied | Unavailable | Cancelled,
+    ):
         return mapped
     if isinstance(mapped, ServerError):
         return mapped
@@ -231,8 +261,6 @@ def _map_wire_like(error: Any, *, operation: str | None) -> AionClientError:
     mapped = _WIRE_CODE_MAP.get(code_name)
     if mapped is None:
         mapped = _WIRE_CODE_MAP.get(code_name.lower())
-    if mapped is None and code_name in _START_IDEMPOTENCY_CODES:
-        mapped = ErrorCode.SERVER
     if mapped is None:
         mapped = ErrorCode.SERVER
     return error_from_code(mapped, message, detail=detail)
@@ -253,7 +281,8 @@ def _wire_code_name(raw_code: Any) -> str:
             5: "WIRE_ERROR_CODE_QUERY_TIMEOUT",
             6: "WIRE_ERROR_CODE_NOT_RUNNING",
             7: "WIRE_ERROR_CODE_LAGGED",
-            8: "WIRE_ERROR_CODE_BACKEND",
+            8: "WIRE_ERROR_CODE_INVALID_INPUT",
+            9: "WIRE_ERROR_CODE_BACKEND",
         }
         return numeric.get(raw_code, "WIRE_ERROR_CODE_BACKEND")
     return str(raw_code)

@@ -6,6 +6,7 @@ export const aionErrorKinds = [
   "Cancelled",
   "Unavailable",
   "Unauthenticated",
+  "NamespaceDenied",
   "InvalidArgument",
   "Server",
 ] as const;
@@ -64,6 +65,20 @@ export class UnauthenticatedError extends AionClientError {
   readonly kind = "Unauthenticated" as const;
 }
 
+/**
+ * The caller's credential was accepted, but the caller has no grant for the
+ * requested namespace. Workflow-level invisibility within a granted
+ * namespace (a workflow that does not exist or is owned by another
+ * namespace) surfaces as {@link NotFoundError} instead, so the response
+ * never leaks whether the workflow exists. Maps from the `namespace_denied`
+ * wire error code (numeric 2) and HTTP 403. Distinct from
+ * {@link UnauthenticatedError} (credential failure, HTTP 401) and from
+ * {@link InvalidArgumentError}; not retryable until grants change.
+ */
+export class NamespaceDeniedError extends AionClientError {
+  readonly kind = "NamespaceDenied" as const;
+}
+
 export class InvalidArgumentError extends AionClientError {
   readonly kind = "InvalidArgument" as const;
 }
@@ -80,6 +95,7 @@ export type AionError =
   | CancelledError
   | UnavailableError
   | UnauthenticatedError
+  | NamespaceDeniedError
   | InvalidArgumentError
   | ServerError;
 
@@ -114,14 +130,20 @@ export async function mapHttpResponseError(
     case 412:
       return new InvalidArgumentError(message, detail);
     case 401:
-    case 403:
       return new UnauthenticatedError(message, detail);
+    case 403:
+      return new NamespaceDeniedError(message, detail);
     case 404:
       return new NotFoundError(message, detail);
     case 408:
       return new QueryTimeoutError(message, detail);
     case 409:
-      return new AlreadyExistsError(message, detail);
+      // A 409 carrying the `sequence_conflict` wire code is a server
+      // double-writer bug, not a caller-visible conflict; defer to the wire
+      // mapping so it surfaces as ServerError.
+      return normalizeWireCode(asWireError(body)?.code) === "sequence_conflict"
+        ? mapWireError(body, detail)
+        : new AlreadyExistsError(message, detail);
     case 429:
       return new UnavailableError(message, detail);
     default:
@@ -147,7 +169,6 @@ export function mapWireError(
       return new NotFoundError(message, mergedDetail);
     case "already_exists":
     case "idempotency_conflict":
-    case "sequence_conflict":
       return new AlreadyExistsError(message, mergedDetail);
     case "query_failed":
       return new QueryFailedError(message, mergedDetail);
@@ -159,12 +180,19 @@ export function mapWireError(
     case "lagged":
       return new UnavailableError(message, mergedDetail);
     case "unauthenticated":
-    case "namespace_denied":
       return new UnauthenticatedError(message, mergedDetail);
+    case "namespace_denied":
+      return new NamespaceDeniedError(message, mergedDetail);
     case "invalid_argument":
+    case "invalid_input":
     case "unknown_query":
     case "not_running":
       return new InvalidArgumentError(message, mergedDetail);
+    // `sequence_conflict` signals an internal double-writer bug on the
+    // server, never a caller-visible idempotency outcome, so it maps to
+    // ServerError alongside `backend` and any unknown code.
+    case "sequence_conflict":
+    case "backend":
     default:
       return new ServerError(message, mergedDetail);
   }
@@ -236,6 +264,8 @@ function numericWireCode(code: number): string | undefined {
     case 7:
       return "lagged";
     case 8:
+      return "invalid_input";
+    case 9:
       return "backend";
     default:
       return undefined;

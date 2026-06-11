@@ -25,7 +25,14 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Stable, closed, client-branchable wire error codes.
+///
+/// The JSON representation is the `snake_case` code returned by
+/// [`WireErrorCode::as_str`] — the documented stable contract every SDK wire
+/// map branches on. `rename_all = "snake_case"` keeps Serialize/Deserialize
+/// byte-identical to `as_str()` for every variant; the
+/// `json_codes_match_as_str_and_round_trip` pin test enforces this.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum WireErrorCode {
     /// The requested workflow, run, activity, timer, or history item was not found.
     NotFound,
@@ -300,26 +307,71 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
+    /// Exhaustive successor chain over [`WireErrorCode`]. Adding a variant
+    /// makes this match non-exhaustive, so the build breaks until the new
+    /// variant is threaded into the chain and therefore into every test that
+    /// iterates [`all_codes`]. This is deliberately not a hand-maintained
+    /// list.
+    const fn next_code(code: WireErrorCode) -> Option<WireErrorCode> {
+        match code {
+            WireErrorCode::NotFound => Some(WireErrorCode::NamespaceDenied),
+            WireErrorCode::NamespaceDenied => Some(WireErrorCode::SequenceConflict),
+            WireErrorCode::SequenceConflict => Some(WireErrorCode::UnknownQuery),
+            WireErrorCode::UnknownQuery => Some(WireErrorCode::QueryTimeout),
+            WireErrorCode::QueryTimeout => Some(WireErrorCode::NotRunning),
+            WireErrorCode::NotRunning => Some(WireErrorCode::Lagged),
+            WireErrorCode::Lagged => Some(WireErrorCode::InvalidInput),
+            WireErrorCode::InvalidInput => Some(WireErrorCode::Backend),
+            WireErrorCode::Backend => None,
+        }
+    }
+
+    /// Every wire error code, derived from the compile-breaking chain above.
+    fn all_codes() -> Vec<WireErrorCode> {
+        let mut codes = vec![WireErrorCode::NotFound];
+        while let Some(&last) = codes.last() {
+            match next_code(last) {
+                Some(next) => codes.push(next),
+                None => break,
+            }
+        }
+        codes
+    }
+
     #[test]
     fn wire_error_is_send_sync() {
         assert_send_sync::<WireError>();
     }
 
     #[test]
-    fn proto_round_trips_every_code() -> Result<(), WireError> {
-        let codes = [
-            WireErrorCode::NotFound,
-            WireErrorCode::NamespaceDenied,
-            WireErrorCode::SequenceConflict,
-            WireErrorCode::UnknownQuery,
-            WireErrorCode::QueryTimeout,
-            WireErrorCode::NotRunning,
-            WireErrorCode::Lagged,
-            WireErrorCode::InvalidInput,
-            WireErrorCode::Backend,
-        ];
+    fn json_codes_match_as_str_and_round_trip() -> Result<(), serde_json::Error> {
+        for code in all_codes() {
+            let serialized = serde_json::to_value(code)?;
+            assert_eq!(
+                serialized,
+                serde_json::Value::String(code.as_str().to_owned()),
+                "JSON serialization of {code:?} must equal as_str()",
+            );
+            let deserialized: WireErrorCode =
+                serde_json::from_value(serde_json::Value::String(code.as_str().to_owned()))?;
+            assert_eq!(deserialized, code, "{code:?} must round-trip through JSON");
 
-        for code in codes {
+            let error = WireError::new(code, format!("message for {}", code.as_str()));
+            let body = serde_json::to_value(&error)?;
+            assert_eq!(
+                body.get("code"),
+                Some(&serde_json::Value::String(code.as_str().to_owned())),
+                "WireError JSON body must carry the snake_case code for {code:?}",
+            );
+            let decoded: WireError = serde_json::from_value(body)?;
+            assert_eq!(decoded, error);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proto_round_trips_every_code() -> Result<(), WireError> {
+        for code in all_codes() {
             let error = WireError::new_with_type(
                 code,
                 format!("{}Variant", code.as_str()),

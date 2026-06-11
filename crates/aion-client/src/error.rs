@@ -28,6 +28,24 @@ pub enum ClientError {
     /// Authentication credentials were rejected.
     #[error("unauthenticated")]
     Unauthenticated,
+    /// The caller's credential was accepted, but the caller has no grant for
+    /// the requested namespace.
+    ///
+    /// This is exactly a namespace-grant failure. Workflow-level invisibility
+    /// — the workflow does not exist, or is owned by another namespace — is
+    /// reported as [`ClientError::NotFound`] so a cross-tenant probe is
+    /// indistinguishable from a nonexistent workflow.
+    ///
+    /// Maps from the AW wire error code `namespace_denied` and gRPC
+    /// `PERMISSION_DENIED`. Distinct from [`ClientError::Unauthenticated`]
+    /// (credential rejected or unvalidatable) and from
+    /// [`ClientError::InvalidArgument`] (malformed or invalid request). Not
+    /// retryable until the caller's grants change.
+    #[error("namespace denied: {detail}")]
+    NamespaceDenied {
+        /// Server-supplied denial detail message.
+        detail: String,
+    },
     /// The request was malformed or targets an unsupported operation state.
     #[error("invalid argument")]
     InvalidArgument,
@@ -63,14 +81,19 @@ impl ClientError {
 
         match status.code() {
             Code::NotFound => Self::NotFound,
-            Code::AlreadyExists | Code::Aborted => Self::AlreadyExists,
+            Code::AlreadyExists => Self::AlreadyExists,
             Code::DeadlineExceeded => Self::QueryTimeout,
             Code::Cancelled => Self::Cancelled,
             Code::Unavailable | Code::ResourceExhausted => Self::Unavailable,
             Code::Unauthenticated => Self::Unauthenticated,
-            Code::InvalidArgument | Code::FailedPrecondition | Code::PermissionDenied => {
-                Self::InvalidArgument
-            }
+            Code::PermissionDenied => Self::NamespaceDenied {
+                detail: status.message().to_owned(),
+            },
+            Code::InvalidArgument | Code::FailedPrecondition => Self::InvalidArgument,
+            // ABORTED deliberately falls through to Server: the server sends
+            // it only for `sequence_conflict`, an internal single-writer
+            // invariant violation (a double-writer bug), never an
+            // idempotency conflict — so it must not map to AlreadyExists.
             _ => Self::Server {
                 detail: status.message().to_owned(),
             },
@@ -103,14 +126,17 @@ fn decode_status_details(status: &tonic::Status) -> Option<ProtoWireError> {
 fn map_wire_parts(code: WireErrorCode, detail: String) -> ClientError {
     match code {
         WireErrorCode::NotFound => ClientError::NotFound,
-        WireErrorCode::NamespaceDenied
-        | WireErrorCode::UnknownQuery
-        | WireErrorCode::NotRunning
-        | WireErrorCode::InvalidInput => ClientError::InvalidArgument,
-        WireErrorCode::SequenceConflict => ClientError::AlreadyExists,
+        WireErrorCode::NamespaceDenied => ClientError::NamespaceDenied { detail },
+        WireErrorCode::UnknownQuery | WireErrorCode::NotRunning | WireErrorCode::InvalidInput => {
+            ClientError::InvalidArgument
+        }
+        // `sequence_conflict` is emitted solely for the server's internal
+        // single-writer invariant violation (a double-writer bug). The server
+        // has no idempotency-key feature, so this is never AlreadyExists; it
+        // is an unexpected server failure.
+        WireErrorCode::SequenceConflict | WireErrorCode::Backend => ClientError::Server { detail },
         WireErrorCode::QueryTimeout => ClientError::QueryTimeout,
         WireErrorCode::Lagged => ClientError::Unavailable,
-        WireErrorCode::Backend => ClientError::Server { detail },
     }
 }
 
@@ -135,16 +161,79 @@ mod tests {
             ClientError::NotFound
         );
         assert_eq!(
-            ClientError::from_wire_error(WireError::sequence_conflict("conflict")),
-            ClientError::AlreadyExists
-        );
-        assert_eq!(
             ClientError::from_wire_error(WireError::query_timeout("slow")),
             ClientError::QueryTimeout
         );
         assert_eq!(
             ClientError::from_wire_error(WireError::lagged("behind")),
             ClientError::Unavailable
+        );
+    }
+
+    #[test]
+    fn sequence_conflict_is_a_server_bug_not_already_exists() {
+        // The server has no idempotency-key feature; sequence_conflict is its
+        // internal double-writer invariant violation.
+        assert_eq!(
+            ClientError::from_wire_error(WireError::sequence_conflict("conflict")),
+            ClientError::Server {
+                detail: String::from("conflict"),
+            }
+        );
+
+        let aborted = Status::new(Code::Aborted, "sequence position conflicted");
+        assert_eq!(
+            ClientError::from_status(&aborted),
+            ClientError::Server {
+                detail: String::from("sequence position conflicted"),
+            }
+        );
+
+        let already_exists = Status::new(Code::AlreadyExists, "duplicate");
+        assert_eq!(
+            ClientError::from_status(&already_exists),
+            ClientError::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn maps_namespace_denied_wire_error_preserving_detail() {
+        assert_eq!(
+            ClientError::from_wire_error(WireError::namespace_denied(
+                "namespace tenant-b is not granted to this caller"
+            )),
+            ClientError::NamespaceDenied {
+                detail: String::from("namespace tenant-b is not granted to this caller"),
+            }
+        );
+    }
+
+    #[test]
+    fn permission_denied_status_without_details_falls_back_to_namespace_denied() {
+        let status = Status::new(Code::PermissionDenied, "namespace tenant-b denied");
+
+        assert_eq!(
+            ClientError::from_status(&status),
+            ClientError::NamespaceDenied {
+                detail: String::from("namespace tenant-b denied"),
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_namespace_denied_proto_wire_error_from_tonic_status_details() {
+        let proto =
+            aion_proto::ProtoWireError::from(WireError::namespace_denied("tenant-b not visible"));
+        let mut details = Vec::new();
+        let encode_result = proto.encode(&mut details);
+        assert!(encode_result.is_ok());
+        let status = Status::with_details(Code::PermissionDenied, "denied", details.into());
+
+        assert_eq!(
+            ClientError::from_status(&status),
+            ClientError::NamespaceDenied {
+                detail: String::from("tenant-b not visible"),
+            }
         );
     }
 

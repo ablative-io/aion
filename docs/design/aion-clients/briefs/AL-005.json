@@ -32,7 +32,7 @@
       "title": "Error union / class hierarchy",
       "spec": "THE SYSTEM SHALL map server failures to a branchable error type covering the shared taxonomy. THE SYSTEM SHALL NOT reject with a plain Error for a condition that has a specific variant and SHALL NOT swallow failures.",
       "acceptance": [
-        "errors.ts defines the taxonomy as a discriminated union (on a literal kind/code field) and/or an Error-subclass hierarchy with a common base: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server (with detail).",
+        "errors.ts defines the taxonomy as a discriminated union (on a literal kind/code field) and/or an Error-subclass hierarchy with a common base: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, NamespaceDenied, InvalidArgument, Server (with detail).",
         "A mapping function converts a server/transport failure into the correct variant; a unit test asserts the NotFound, AlreadyExists, QueryTimeout, and Unavailable mappings.",
         "The discriminant is exhaustively switchable so a consumer's switch with no default still type-checks for all variants.",
         "No catch block discards an error without re-throwing or converting it."

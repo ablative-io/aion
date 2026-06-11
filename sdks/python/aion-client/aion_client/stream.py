@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-import importlib
 from inspect import isawaitable
-import json
 from types import ModuleType
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
@@ -67,7 +67,7 @@ class EventStream(Generic[T]):
 
         return self._last_seq
 
-    def __aiter__(self) -> "EventStream[T]":
+    def __aiter__(self) -> EventStream[T]:
         return self
 
     async def __anext__(self) -> StreamEvent[T] | T:
@@ -94,7 +94,13 @@ class EventStream(Generic[T]):
                     continue
                 raise mapped from exc
 
-            decoded = self._decode_frame(raw_frame)
+            try:
+                decoded = self._decode_frame(raw_frame)
+            except Unavailable:
+                # A retryable server error frame (e.g. "lagged"): reconnect and
+                # resume rather than surfacing a transient condition.
+                self._current = None
+                continue
             if decoded.seq <= (self._last_seq or 0):
                 continue
             self._last_seq = decoded.seq
@@ -196,7 +202,8 @@ def _event_payload(event: Any) -> Payload:
             if isinstance(content_type, str) and isinstance(raw, bytes):
                 return Payload(content_type=content_type, bytes=raw)
         if "seq" in event:
-            return Payload(content_type="application/json", bytes=json.dumps(event, separators=(",", ":")).encode("utf-8"))
+            encoded = json.dumps(event, separators=(",", ":")).encode("utf-8")
+            return Payload(content_type="application/json", bytes=encoded)
     payload = getattr(event, "payload", None)
     if payload is not None:
         return payload_from_wire(payload)

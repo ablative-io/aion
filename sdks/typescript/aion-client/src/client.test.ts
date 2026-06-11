@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  InvalidArgumentError,
+  NamespaceDeniedError,
   QueryFailedError,
   ServerError,
+  UnauthenticatedError,
+  mapHttpResponseError,
   mapTransportError,
   mapWireError,
 } from "./errors.js";
@@ -15,10 +19,6 @@ test("maps branchable server and transport errors", () => {
     "NotFound",
   );
   assert.equal(
-    mapWireError({ code: "sequence_conflict", message: "conflict" }).kind,
-    "AlreadyExists",
-  );
-  assert.equal(
     mapWireError({ code: "query_timeout", message: "timeout" }).kind,
     "QueryTimeout",
   );
@@ -26,6 +26,194 @@ test("maps branchable server and transport errors", () => {
     mapTransportError(new TypeError("connection refused")).kind,
     "Unavailable",
   );
+});
+
+test("maps sequence_conflict to ServerError: it signals a server double-writer bug, not idempotency", () => {
+  for (const code of ["sequence_conflict", "WIRE_ERROR_CODE_SEQUENCE_CONFLICT", 3]) {
+    const error = mapWireError({ code, message: "conflict" });
+    assert.ok(
+      error instanceof ServerError,
+      `wire code ${JSON.stringify(code)} must map to ServerError`,
+    );
+    assert.equal(error.kind, "Server");
+    assert.equal(error.detail?.code, "sequence_conflict");
+  }
+});
+
+test("maps invalid_input wire code spellings to InvalidArgumentError", () => {
+  for (const code of ["invalid_input", "WIRE_ERROR_CODE_INVALID_INPUT", 8]) {
+    const error = mapWireError({ code, message: "bad input" });
+    assert.ok(
+      error instanceof InvalidArgumentError,
+      `wire code ${JSON.stringify(code)} must map to InvalidArgumentError`,
+    );
+    assert.equal(error.kind, "InvalidArgument");
+    assert.equal(error.detail?.code, "invalid_input");
+  }
+});
+
+test("maps backend wire code spellings to ServerError", () => {
+  for (const code of ["backend", "WIRE_ERROR_CODE_BACKEND", 9]) {
+    const error = mapWireError({ code, message: "store failure" });
+    assert.ok(
+      error instanceof ServerError,
+      `wire code ${JSON.stringify(code)} must map to ServerError`,
+    );
+    assert.equal(error.kind, "Server");
+    assert.equal(error.detail?.code, "backend");
+  }
+});
+
+test("HTTP 409 defers to the body wire code: sequence_conflict is ServerError, idempotency_conflict stays AlreadyExists", async () => {
+  const sequenceConflict = await mapHttpResponseError(
+    new Response(
+      JSON.stringify({ code: "sequence_conflict", message: "double writer" }),
+      { status: 409, statusText: "Conflict" },
+    ),
+  );
+  assert.ok(sequenceConflict instanceof ServerError);
+  assert.equal(sequenceConflict.kind, "Server");
+  assert.equal(sequenceConflict.detail?.code, "sequence_conflict");
+  assert.equal(sequenceConflict.detail?.status, 409);
+
+  const idempotencyConflict = await mapHttpResponseError(
+    new Response(
+      JSON.stringify({
+        code: "idempotency_conflict",
+        message: "conflicting reuse",
+      }),
+      { status: 409, statusText: "Conflict" },
+    ),
+  );
+  assert.equal(idempotencyConflict.kind, "AlreadyExists");
+  assert.equal(idempotencyConflict.detail?.status, 409);
+});
+
+test("maps HTTP 403 with a namespace_denied body to NamespaceDeniedError", async () => {
+  const response = new Response(
+    JSON.stringify({
+      code: "namespace_denied",
+      message: "subject is not granted namespace tenant-a",
+    }),
+    { status: 403, statusText: "Forbidden" },
+  );
+
+  const error = await mapHttpResponseError(response);
+
+  assert.ok(error instanceof NamespaceDeniedError);
+  assert.equal(error.kind, "NamespaceDenied");
+  assert.equal(error.message, "subject is not granted namespace tenant-a");
+  assert.equal(error.detail?.status, 403);
+});
+
+test("maps HTTP 401 to UnauthenticatedError, distinct from namespace denial", async () => {
+  const response = new Response(
+    JSON.stringify({ code: "unauthenticated", message: "bad token" }),
+    { status: 401, statusText: "Unauthorized" },
+  );
+
+  const error = await mapHttpResponseError(response);
+
+  assert.ok(error instanceof UnauthenticatedError);
+  assert.equal(error.kind, "Unauthenticated");
+  assert.equal(error.message, "bad token");
+  assert.equal(error.detail?.status, 401);
+});
+
+test("maps every namespace_denied wire code spelling to NamespaceDeniedError", () => {
+  for (const code of ["namespace_denied", "WIRE_ERROR_CODE_NAMESPACE_DENIED", 2]) {
+    const error = mapWireError({ code, message: "namespace denied" });
+    assert.ok(
+      error instanceof NamespaceDeniedError,
+      `wire code ${JSON.stringify(code)} must map to NamespaceDeniedError`,
+    );
+    assert.equal(error.kind, "NamespaceDenied");
+    assert.equal(error.message, "namespace denied");
+    assert.equal(error.detail?.code, "namespace_denied");
+  }
+});
+
+test("maps the unauthenticated wire code to UnauthenticatedError", () => {
+  const error = mapWireError({
+    code: "unauthenticated",
+    message: "credential rejected",
+  });
+
+  assert.ok(error instanceof UnauthenticatedError);
+  assert.equal(error.kind, "Unauthenticated");
+  assert.equal(error.message, "credential rejected");
+  assert.equal(error.detail?.code, "unauthenticated");
+});
+
+test("namespace denial on a stream is terminal and never retried as transient", async () => {
+  let subscribes = 0;
+  const transport = {
+    async *subscribe(): AsyncIterable<unknown> {
+      subscribes += 1;
+      yield {
+        error: {
+          code: "namespace_denied",
+          message: "subject is not granted namespace tenant-a",
+        },
+      };
+    },
+  };
+
+  const iterator = eventStream({
+    transport,
+    request: { namespace: "tenant-a", workflowId: "workflow" },
+  })[Symbol.asyncIterator]();
+
+  await assert.rejects(
+    async () => iterator.next(),
+    (error: unknown) => {
+      assert.ok(error instanceof NamespaceDeniedError);
+      assert.equal(error.kind, "NamespaceDenied");
+      assert.equal(error.detail?.code, "namespace_denied");
+      assert.equal(
+        error.message,
+        "subject is not granted namespace tenant-a",
+      );
+      return true;
+    },
+  );
+  assert.equal(subscribes, 1);
+});
+
+test("a wrapped lagged error frame is classified Unavailable and the stream reconnects", async () => {
+  assert.equal(
+    mapWireError({ code: "lagged", message: "subscriber lagged" }).kind,
+    "Unavailable",
+  );
+
+  let subscribes = 0;
+  const resumeRequests: Array<number | undefined> = [];
+  const transport = {
+    subscribe(request: SubscribeRequest): AsyncIterable<unknown> {
+      subscribes += 1;
+      resumeRequests.push(request.resumeFrom);
+      return subscribes === 1 ? laggedFrames() : resumedFrames();
+    },
+  };
+  async function* laggedFrames(): AsyncIterable<unknown> {
+    yield frame(1);
+    yield { error: { code: "lagged", message: "subscriber lagged" } };
+  }
+  async function* resumedFrames(): AsyncIterable<unknown> {
+    yield frame(2);
+  }
+
+  const yielded: number[] = [];
+  for await (const event of eventStream({
+    transport,
+    request: { namespace: "default", workflowId: "workflow" },
+  })) {
+    yielded.push(event.seq);
+  }
+
+  assert.deepEqual(yielded, [1, 2]);
+  assert.equal(subscribes, 2);
+  assert.deepEqual(resumeRequests, [undefined, 2]);
 });
 
 test("round-trips typed payloads through JSON payload helpers", () => {

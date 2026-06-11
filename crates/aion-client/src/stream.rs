@@ -351,4 +351,52 @@ mod tests {
         assert_eq!(events.next().await, Some(Err(ClientError::Unauthenticated)));
         assert_eq!(events.next().await, None);
     }
+
+    #[tokio::test]
+    async fn namespace_denied_is_terminal_and_never_retried() {
+        let workflow_id = WorkflowId::new_v4();
+        let stub = Arc::new(SubscribeStub::default());
+        let denied = ClientError::NamespaceDenied {
+            detail: String::from("namespace tenant-b is not granted to this caller"),
+        };
+        stub.attempts
+            .lock()
+            .await
+            .push_back(SubscriptionAttempt::new(
+                stream::iter(vec![Err(denied.clone())]).boxed(),
+            ));
+        let mut events = ResumingEventStream::new(
+            stub.clone(),
+            "tenant-b",
+            SubscribeTarget::Workflow { workflow_id },
+        );
+
+        assert_eq!(events.next().await, Some(Err(denied)));
+        assert_eq!(events.next().await, None);
+        assert_eq!(stub.resume_points.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn not_found_is_terminal_and_never_retried() {
+        // A workflow-level visibility miss surfaces as NotFound (the server's
+        // anti-existence-leak contract); like every non-Unavailable error it
+        // must end the stream instead of reconnecting forever.
+        let workflow_id = WorkflowId::new_v4();
+        let stub = Arc::new(SubscribeStub::default());
+        stub.attempts
+            .lock()
+            .await
+            .push_back(SubscriptionAttempt::new(
+                stream::iter(vec![Err(ClientError::NotFound)]).boxed(),
+            ));
+        let mut events = ResumingEventStream::new(
+            stub.clone(),
+            "tenant-a",
+            SubscribeTarget::Workflow { workflow_id },
+        );
+
+        assert_eq!(events.next().await, Some(Err(ClientError::NotFound)));
+        assert_eq!(events.next().await, None);
+        assert_eq!(stub.resume_points.lock().await.len(), 1);
+    }
 }

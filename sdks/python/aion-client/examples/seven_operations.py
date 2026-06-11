@@ -7,7 +7,7 @@ import os
 import sys
 from typing import Any, NoReturn, cast
 
-from aion_client import AlreadyExists, Client, QueryTimeout, StreamEvent, TLSConfig, Unavailable
+from aion_client import AlreadyExists, Client, EventStream, QueryTimeout, StreamEvent, TLSConfig, Unavailable
 
 
 def _endpoint() -> str:
@@ -57,7 +57,7 @@ async def run() -> None:
         await handle.cancel(reason="seven-operations example requested cancellation")
         print("cancel requested")
 
-        stream = handle.subscribe(raw=True)
+        stream: EventStream[Any] = handle.subscribe(raw=True)
         try:
             event = cast(StreamEvent[Any], await asyncio.wait_for(stream.__anext__(), timeout=5.0))
             print(f"subscribed event seq={event.seq}")

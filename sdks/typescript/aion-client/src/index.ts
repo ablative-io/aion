@@ -33,6 +33,7 @@ export {
   AlreadyExistsError,
   CancelledError,
   InvalidArgumentError,
+  NamespaceDeniedError,
   NotFoundError,
   QueryFailedError,
   QueryTimeoutError,

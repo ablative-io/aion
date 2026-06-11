@@ -9,6 +9,7 @@
     "Cancelled",
     "Unavailable",
     "Unauthenticated",
+    "NamespaceDenied",
     "InvalidArgument",
     "Server"
   ],

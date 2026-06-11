@@ -768,14 +768,17 @@ mod tests {
             .ok_or_else(|| WireError::backend("summary missing"))?;
         assert_eq!(summary.workflow_id, workflow_id());
         // The seeded history records no namespace attribute, so durable
-        // ownership verification must deny targeted access.
+        // ownership verification must reject targeted access with NotFound:
+        // a missing ownership attribute is indistinguishable from a
+        // nonexistent workflow (anti-existence-leak), and NamespaceDenied is
+        // reserved for callers without a grant for the requested namespace.
         assert_eq!(
             resolver
                 .verify_workflow_ownership(NAMESPACE, &workflow_id())
                 .await
                 .err()
                 .map(|error| error.to_wire_error().code),
-            Some(WireErrorCode::NamespaceDenied)
+            Some(WireErrorCode::NotFound)
         );
         Ok(())
     }

@@ -24,6 +24,66 @@ pub fn error_mapping_covers_contract_cases_test() {
   |> should.equal(error.Unavailable)
 }
 
+pub fn namespace_denied_is_distinct_from_unauthenticated_test() {
+  error.from_wire(error.WireNamespaceDenied, "namespace tenants/acme denied")
+  |> should.equal(error.NamespaceDenied("namespace tenants/acme denied"))
+
+  error.from_http_status(403, "namespace tenants/acme denied")
+  |> should.equal(error.NamespaceDenied("namespace tenants/acme denied"))
+
+  error.from_http_status(401, "bearer token rejected")
+  |> should.equal(error.Unauthenticated)
+}
+
+pub fn wire_codes_map_exactly_onto_taxonomy_test() {
+  error.from_wire(error.WireNotFound, "d")
+  |> should.equal(error.NotFound)
+  error.from_wire(error.WireNamespaceDenied, "d")
+  |> should.equal(error.NamespaceDenied("d"))
+  error.from_wire(error.WireSequenceConflict, "d")
+  |> should.equal(error.Server("d"))
+  error.from_wire(error.WireUnknownQuery, "d")
+  |> should.equal(error.InvalidArgument)
+  error.from_wire(error.WireQueryTimeout, "d")
+  |> should.equal(error.QueryTimeout)
+  error.from_wire(error.WireNotRunning, "d")
+  |> should.equal(error.InvalidArgument)
+  error.from_wire(error.WireLagged, "d")
+  |> should.equal(error.Unavailable)
+  error.from_wire(error.WireInvalidInput, "d")
+  |> should.equal(error.InvalidArgument)
+  error.from_wire(error.WireBackend, "d")
+  |> should.equal(error.Server("d"))
+  error.from_wire(error.WireUnknown("mystery"), "d")
+  |> should.equal(error.Server("d"))
+}
+
+pub fn sequence_conflict_is_server_fault_not_already_exists_test() {
+  // sequence_conflict on the wire is the server's internal double-writer-bug
+  // signal, never an idempotency outcome.
+  error.from_wire(error.WireSequenceConflict, "double-writer detected")
+  |> should.equal(error.Server("double-writer detected"))
+
+  // HTTP 409 (idempotent start conflict) still maps to AlreadyExists.
+  error.from_http_status(409, "workflow already started")
+  |> should.equal(error.AlreadyExists)
+}
+
+pub fn gateway_statuses_are_retryable_unavailable_test() {
+  error.from_http_status(502, "bad gateway")
+  |> should.equal(error.Unavailable)
+  error.from_http_status(503, "service unavailable")
+  |> should.equal(error.Unavailable)
+  error.from_http_status(504, "gateway timeout")
+  |> should.equal(error.Unavailable)
+
+  // 500 and unrecognised statuses remain server faults.
+  error.from_http_status(500, "internal")
+  |> should.equal(error.Server("internal"))
+  error.from_http_status(599, "unrecognised")
+  |> should.equal(error.Server("unrecognised"))
+}
+
 pub fn payload_round_trips_json_value_test() {
   let encoded = payload.encode(42, json.int)
 

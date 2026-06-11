@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use aion::Engine;
 use aion_core::{SearchAttributeValue, WorkflowId, search_attributes_from_events};
+use aion_proto::WireError;
 use async_trait::async_trait;
 
 use crate::config::{NamespaceConfig, NamespaceMode};
@@ -284,11 +285,21 @@ impl NamespaceResolver {
 
     /// Verify durable workflow ownership against the requested namespace.
     ///
+    /// `NamespaceDenied` means exactly one thing: the caller has no grant for
+    /// the requested namespace, and that is decided by [`Self::resolve`] before
+    /// this check runs. Workflow-level visibility misses are `NotFound` to
+    /// prevent existence leaks: when the caller's requested namespace is
+    /// granted but the workflow's recorded owner namespace is absent (unknown
+    /// workflow, or no recorded attribute) or different (owned by another
+    /// tenant), both cases return the identical `not_found` wire error with
+    /// the identical message, so a cross-tenant probe is byte-for-byte
+    /// indistinguishable from querying a workflow that never existed.
+    ///
     /// # Errors
     ///
-    /// Returns [`ServerError::Namespace`] when the workflow is unknown, recorded
-    /// no namespace, or belongs to a different namespace; ownership-source read
-    /// failures surface as their own typed errors.
+    /// Returns a [`ServerError::Wire`] `not_found` error when the workflow is
+    /// not visible in the requested namespace; ownership-source read failures
+    /// surface as their own typed errors.
     pub async fn verify_workflow_ownership(
         &self,
         namespace: &str,
@@ -296,9 +307,11 @@ impl NamespaceResolver {
     ) -> Result<(), ServerError> {
         match self.ownership.workflow_namespace(workflow_id).await? {
             Some(owner) if owner == namespace => Ok(()),
-            Some(_) | None => Err(ServerError::namespace_denied(
-                "workflow is not visible in requested namespace",
-            )),
+            // Anti-existence-leak: absent and foreign ownership must be one
+            // identical NotFound, never a distinguishable denial.
+            Some(_) | None => Err(ServerError::Wire {
+                wire: WireError::not_found(format!("workflow not found in namespace {namespace}")),
+            }),
         }
     }
 
@@ -377,7 +390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ownership_verifies_matching_namespace_and_denies_others()
+    async fn ownership_misses_are_indistinguishable_not_found()
     -> Result<(), Box<dyn std::error::Error>> {
         let ownership = StaticWorkflowNamespaces::default();
         let owned = WorkflowId::new(uuid::Uuid::from_u128(1));
@@ -389,17 +402,37 @@ mod tests {
         resolver
             .verify_workflow_ownership("tenant-a", &owned)
             .await?;
-        assert!(
-            resolver
-                .verify_workflow_ownership("tenant-b", &owned)
-                .await
-                .is_err()
-        );
-        assert!(
-            resolver
-                .verify_workflow_ownership("tenant-a", &unknown)
-                .await
-                .is_err()
+
+        // Foreign-owned and nonexistent workflows must produce byte-for-byte
+        // identical NotFound wire errors (anti-existence-leak), never
+        // NamespaceDenied.
+        let foreign = resolver
+            .verify_workflow_ownership("tenant-b", &owned)
+            .await
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected foreign-owned workflow to be rejected")?;
+        let absent = resolver
+            .verify_workflow_ownership("tenant-b", &unknown)
+            .await
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected unknown workflow to be rejected")?;
+
+        assert_eq!(foreign.code, aion_proto::WireErrorCode::NotFound);
+        assert_eq!(foreign, absent);
+        assert_eq!(foreign.message, "workflow not found in namespace tenant-b");
+
+        let absent_in_granted = resolver
+            .verify_workflow_ownership("tenant-a", &unknown)
+            .await
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected unknown workflow to be rejected in granted namespace")?;
+        assert_eq!(absent_in_granted.code, aion_proto::WireErrorCode::NotFound);
+        assert_eq!(
+            absent_in_granted.message,
+            "workflow not found in namespace tenant-a"
         );
         Ok(())
     }

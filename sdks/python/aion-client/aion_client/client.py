@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import Any, TypeVar, cast
 
 from .errors import AionClientError, InvalidArgument, QueryFailed, map_query_error, raise_mapped
+from .handle import WorkflowHandle
 from .payload import JSONValue, Payload, assign_payload, decode_payload, ensure_payload, payload_from_wire
 from .transport import GrpcWorkflowTransport, MappingMetadata, WorkflowTransport, default_events_endpoint, metadata
 
@@ -37,7 +38,8 @@ class Client:
 
     Public methods raise branchable subclasses of ``AionClientError`` according
     to the shared taxonomy: NotFound, AlreadyExists, QueryFailed, QueryTimeout,
-    Cancelled, Unavailable, Unauthenticated, InvalidArgument, and ServerError.
+    Cancelled, Unavailable, Unauthenticated, NamespaceDenied, InvalidArgument,
+    and ServerError.
     """
 
     def __init__(
@@ -53,7 +55,8 @@ class Client:
         """Create a reusable client connection.
 
         Raises:
-            InvalidArgument, Unavailable, Unauthenticated, ServerError, Cancelled.
+            InvalidArgument, Unavailable, Unauthenticated, ServerError,
+            Cancelled.
         """
 
         if not endpoint:
@@ -78,14 +81,22 @@ class Client:
         namespace: str = "default",
         transport: WorkflowTransport | None = None,
         events_endpoint: str | None = None,
-    ) -> "Client":
+    ) -> Client:
         """Create a client and validate the reusable connection if supported.
 
         Raises:
-            InvalidArgument, Unavailable, Unauthenticated, ServerError, Cancelled.
+            InvalidArgument, Unavailable, Unauthenticated, ServerError,
+            Cancelled.
         """
 
-        client = cls(endpoint, auth=auth, tls=tls, namespace=namespace, transport=transport, events_endpoint=events_endpoint)
+        client = cls(
+            endpoint,
+            auth=auth,
+            tls=tls,
+            namespace=namespace,
+            transport=transport,
+            events_endpoint=events_endpoint,
+        )
         connect = getattr(client._transport, "connect", None)
         if callable(connect):
             try:
@@ -96,7 +107,7 @@ class Client:
                 raise_mapped(exc)
         return client
 
-    async def __aenter__(self) -> "Client":
+    async def __aenter__(self) -> Client:
         return self
 
     async def __aexit__(
@@ -130,15 +141,13 @@ class Client:
         content_type: str | None = None,
         namespace: str | None = None,
         idempotency_key: str | None = None,
-    ) -> "WorkflowHandle":
+    ) -> WorkflowHandle:
         """Start a workflow and return a bound ``WorkflowHandle``.
 
         Raises:
-            AlreadyExists, Unauthenticated, Unavailable, InvalidArgument,
-            ServerError, Cancelled.
+            AlreadyExists, Unauthenticated, NamespaceDenied, Unavailable,
+            InvalidArgument, ServerError, Cancelled.
         """
-
-        from .handle import WorkflowHandle
 
         if not workflow_type:
             raise InvalidArgument("workflow_type must not be empty")
@@ -157,7 +166,12 @@ class Client:
             if isinstance(exc, AionClientError):
                 raise
             raise_mapped(exc, operation="start")
-        return WorkflowHandle(client=self, workflow_id=workflow_id, run_id=run_id, namespace=namespace or self.namespace)
+        return WorkflowHandle(
+            client=self,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            namespace=namespace or self.namespace,
+        )
 
     async def signal(
         self,
@@ -173,7 +187,8 @@ class Client:
         """Send a signal to a workflow run or latest run.
 
         Raises:
-            NotFound, Unauthenticated, Unavailable, InvalidArgument, ServerError, Cancelled.
+            NotFound, Unauthenticated, NamespaceDenied, Unavailable,
+            InvalidArgument, ServerError, Cancelled.
         """
 
         if not workflow_id or not signal_name:
@@ -202,8 +217,9 @@ class Client:
         a query payload field in ``QueryRequest``.
 
         Raises:
-            NotFound, QueryFailed, QueryTimeout, Unauthenticated, Unavailable,
-            InvalidArgument, ServerError, Cancelled.
+            NotFound, QueryFailed, QueryTimeout, Unauthenticated,
+            NamespaceDenied, Unavailable, InvalidArgument, ServerError,
+            Cancelled.
         """
 
         if not workflow_id or not query_name:
@@ -219,7 +235,7 @@ class Client:
                 raise map_query_error(response.error)
             if outcome != "result":
                 raise QueryFailed("query response did not contain a result")
-            return cast(T | JSONValue | bytes, decode_payload(payload_from_wire(response.result), target_type))
+            return decode_payload(payload_from_wire(response.result), target_type)
         except BaseException as exc:
             if isinstance(exc, AionClientError):
                 raise
@@ -236,7 +252,8 @@ class Client:
         """Request cooperative cancellation of a workflow run or latest run.
 
         Raises:
-            NotFound, Unauthenticated, Unavailable, InvalidArgument, ServerError, Cancelled.
+            NotFound, Unauthenticated, NamespaceDenied, Unavailable,
+            InvalidArgument, ServerError, Cancelled.
         """
 
         request = self._targeted_message("CancelRequest", namespace, workflow_id, run_id)
@@ -247,7 +264,8 @@ class Client:
         """List workflow summaries in the namespace.
 
         Raises:
-            Unauthenticated, Unavailable, InvalidArgument, ServerError, Cancelled.
+            Unauthenticated, NamespaceDenied, Unavailable, InvalidArgument,
+            ServerError, Cancelled.
         """
 
         request = self._message("ListWorkflowsRequest")
@@ -268,7 +286,8 @@ class Client:
         """Describe workflow state and optional event history.
 
         Raises:
-            NotFound, Unauthenticated, Unavailable, InvalidArgument, ServerError, Cancelled.
+            NotFound, Unauthenticated, NamespaceDenied, Unavailable,
+            InvalidArgument, ServerError, Cancelled.
         """
 
         request = self._targeted_message("DescribeWorkflowRequest", namespace, workflow_id, run_id)
@@ -276,18 +295,21 @@ class Client:
         response = await self._call("describe", self._transport.describe_workflow(request, self._metadata))
         return WorkflowDescription(summary=response.summary, history=list(getattr(response, "history", [])))
 
-    def handle(self, workflow_id: str, *, run_id: str | None = None, namespace: str | None = None) -> "WorkflowHandle":
+    def handle(self, workflow_id: str, *, run_id: str | None = None, namespace: str | None = None) -> WorkflowHandle:
         """Construct a bare-ID workflow handle targeting latest or a concrete run.
 
         Raises:
             InvalidArgument: workflow_id is empty.
         """
 
-        from .handle import WorkflowHandle
-
         if not workflow_id:
             raise InvalidArgument("workflow_id must not be empty")
-        return WorkflowHandle(client=self, workflow_id=workflow_id, run_id=run_id, namespace=namespace or self.namespace)
+        return WorkflowHandle(
+            client=self,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            namespace=namespace or self.namespace,
+        )
 
     def _targeted_message(self, name: str, namespace: str | None, workflow_id: str, run_id: str | None) -> Any:
         if not workflow_id:
@@ -337,7 +359,7 @@ def _id_value(value: Any) -> str:
 def _set_id(target: Any, value: str) -> None:
     if not value:
         raise InvalidArgument("id value must not be empty")
-    setattr(target, "uuid", value)
+    target.uuid = value
 
 
 def _which_oneof(message: Any, name: str) -> str | None:

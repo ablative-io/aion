@@ -41,9 +41,12 @@ impl NamespaceGuard {
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::Namespace`] when the caller cannot access the
-    /// requested namespace, when a subscription selects another namespace, or
-    /// when a targeted workflow is not owned by the authorized namespace.
+    /// Returns [`ServerError::Namespace`] (`namespace_denied`) when the caller
+    /// has no grant for the requested namespace or a subscription selects
+    /// another namespace. Returns a `not_found` wire error when the requested
+    /// namespace is granted but a targeted workflow is not visible in it —
+    /// foreign-owned and nonexistent workflows are deliberately
+    /// indistinguishable so the guard never leaks cross-tenant existence.
     pub async fn scope(
         &self,
         caller: &CallerIdentity,
@@ -494,7 +497,13 @@ mod tests {
 
         for operation in operations {
             let result = guard.scope(&caller(), &operation).await;
-            assert!(result.is_err());
+            // Ownership miss in a granted namespace is NotFound, not
+            // NamespaceDenied: cross-tenant probes must be indistinguishable
+            // from nonexistent workflows.
+            assert_eq!(
+                result.err().map(|error| error.to_wire_error().code),
+                Some(aion_proto::WireErrorCode::NotFound)
+            );
         }
         assert!(fake.calls()?.is_empty());
         Ok(())
@@ -570,21 +579,50 @@ mod tests {
         };
 
         let target = WorkflowTarget::with_run(&workflow_id, &run_id);
+        // Namespace-grant and selector failures stay NamespaceDenied; a
+        // workflow-targeted subscription that misses ownership in a granted
+        // namespace is NotFound (anti-existence-leak).
         let denied_subscriptions = [
-            NamespaceOperation::subscribe(SubscriptionScope::Filtered(&filtered), &event_filter),
-            NamespaceOperation::subscribe(
-                SubscriptionScope::Filtered(&filtered_by_workflow),
-                &cross_namespace_filter,
+            (
+                NamespaceOperation::subscribe(
+                    SubscriptionScope::Filtered(&filtered),
+                    &event_filter,
+                ),
+                aion_proto::WireErrorCode::NamespaceDenied,
             ),
-            NamespaceOperation::subscribe(
-                SubscriptionScope::PerWorkflow(&per_workflow, target),
-                &cross_namespace_filter,
+            (
+                NamespaceOperation::subscribe(
+                    SubscriptionScope::Filtered(&filtered_by_workflow),
+                    &cross_namespace_filter,
+                ),
+                aion_proto::WireErrorCode::NotFound,
             ),
-            NamespaceOperation::subscribe(SubscriptionScope::Firehose(&firehose), &event_filter),
+            (
+                NamespaceOperation::subscribe(
+                    SubscriptionScope::PerWorkflow(&per_workflow, target),
+                    &cross_namespace_filter,
+                ),
+                aion_proto::WireErrorCode::NotFound,
+            ),
+            (
+                NamespaceOperation::subscribe(
+                    SubscriptionScope::Firehose(&firehose),
+                    &event_filter,
+                ),
+                aion_proto::WireErrorCode::NamespaceDenied,
+            ),
         ];
 
-        for operation in &denied_subscriptions {
-            assert!(guard.scope(&caller(), operation).await.is_err());
+        for (operation, expected_code) in &denied_subscriptions {
+            assert_eq!(
+                guard
+                    .scope(&caller(), operation)
+                    .await
+                    .err()
+                    .map(|error| error.to_wire_error().code)
+                    .as_ref(),
+                Some(expected_code)
+            );
         }
         assert!(fake.calls()?.is_empty());
         Ok(())

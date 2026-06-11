@@ -1,15 +1,18 @@
 """Live conformance harness for the shared Aion client scenarios."""
 from __future__ import annotations
+
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
 from aion_client import Client
 from aion_client.errors import AionClientError, InvalidArgument
+
 SERVER_URL_ENV = "AION_SERVER_URL"
 AUTH_TOKEN_ENV = "AION_AUTH_TOKEN"
 JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
@@ -19,7 +22,6 @@ class ScenarioContext:
     """Per-scenario execution state and observable results."""
     client: Client | None = None
     results: dict[str, Observable] = field(default_factory=dict)
-    streams: dict[str, list[Observable]] = field(default_factory=dict)
     def require_client(self) -> Client:
         if self.client is None:
             raise InvalidArgument("scenario has not connected yet")
@@ -61,8 +63,8 @@ async def _run_scenario(
 ) -> None:
     scenario_id = str(scenario["id"])
     context = ScenarioContext()
-    started_at = datetime.now(UTC) - timedelta(seconds=30)
-    now = datetime.now(UTC) + timedelta(seconds=30)
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    now = datetime.now(timezone.utc) + timedelta(seconds=30)
     for step_value in _list(scenario["steps"]):
         step = _mapping(step_value)
         step_id = str(step["id"])
@@ -81,7 +83,12 @@ async def _run_scenario(
         )
         _assert_matches(scenario_id, step_id, actual, expected, context)
         context.record(scenario_id, step_id, actual)
-async def _execute(operation: str, input_value: Mapping[str, Any], context: ScenarioContext, server_url: str) -> Observable:
+async def _execute(
+    operation: str,
+    input_value: Mapping[str, Any],
+    context: ScenarioContext,
+    server_url: str,
+) -> Observable:
     if operation == "connect":
         context.client = await Client.connect(
             server_url,
@@ -140,15 +147,23 @@ async def _execute(operation: str, input_value: Mapping[str, Any], context: Scen
         }
     if operation == "subscribe":
         if "collect" in input_value:
-            context.streams[str(input_value.get("workflowId", "subscribe"))] = []
             return {"kind": "eventStreamStarted"}
-        return {"kind": "eventStream", "events": await _collect_stream(input_value, context)}
+        collected = await _collect_stream(input_value, context)
+        return {"kind": "eventStream", "events": _events_json(collected)}
     if operation == "harness.forceDisconnect":
         return {"kind": "disconnectInjected"}
     if operation == "harness.assertStream":
         events = await _collect_stream(input_value, context)
-        return {"kind": "eventStream", "events": events, "sequenceContiguousUnique": _sequences_contiguous_unique(events)}
+        return {
+            "kind": "eventStream",
+            "events": _events_json(events),
+            "sequenceContiguousUnique": _sequences_contiguous_unique(events),
+        }
     raise InvalidArgument(f"unsupported conformance operation {operation}")
+def _events_json(events: list[Observable]) -> list[JSONValue]:
+    json_events: list[JSONValue] = []
+    json_events.extend(events)
+    return json_events
 async def _collect_stream(input_value: Mapping[str, Any], context: ScenarioContext) -> list[Observable]:
     selector = _mapping(input_value.get("selector", input_value))
     workflow_id = str(selector.get("workflowId", input_value.get("workflowId", "")))
@@ -156,15 +171,16 @@ async def _collect_stream(input_value: Mapping[str, Any], context: ScenarioConte
     timeout_ms = _timeout_ms(input_value)
     wanted = [str(item) for item in _list(_mapping(input_value.get("collectUntil", {})).get("eventTypes", []))]
     events: list[Observable] = []
+    async def _collect() -> None:
+        async for event in _aiter(handle.subscribe()):
+            events.append(_normalize_event(event))
+            if wanted and all(any(item.get("type") == kind for item in events) for kind in wanted):
+                return
+            if not wanted and len(events) >= 3:
+                return
     try:
-        async with asyncio.timeout(timeout_ms / 1000.0):
-            async for event in _aiter(handle.subscribe()):
-                events.append(_normalize_event(event))
-                if wanted and all(any(item.get("type") == kind for item in events) for kind in wanted):
-                    return events
-                if not wanted and len(events) >= 3:
-                    return events
-    except TimeoutError:
+        await asyncio.wait_for(_collect(), timeout_ms / 1000.0)
+    except asyncio.TimeoutError:
         return events
     return events
 async def _aiter(iterator: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -201,46 +217,62 @@ def _resolve(
     if isinstance(value, list):
         return [_resolve(item, defaults, fixtures, scenario_id, context, started_at, now) for item in value]
     if isinstance(value, dict):
-        return {key: _resolve(item, defaults, fixtures, scenario_id, context, started_at, now) for key, item in value.items()}
+        return {
+            key: _resolve(item, defaults, fixtures, scenario_id, context, started_at, now)
+            for key, item in value.items()
+        }
     return normalize_json(value)
-def _assert_matches(scenario: str, step: str, actual: Mapping[str, Any], expected: Mapping[str, Any], context: ScenarioContext) -> None:
+def _assert_matches(
+    scenario: str,
+    step: str,
+    actual: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    context: ScenarioContext,
+) -> None:
+    detail = f"scenario={scenario} step={step} expected={expected} actual={actual}"
     if "error" in expected:
-        assert actual.get("error") == expected["error"], f"scenario={scenario} step={step} expected={expected} actual={actual}"
+        assert actual.get("error") == expected["error"], detail
         return
     ok = _mapping(actual.get("ok"))
     expected_ok = _mapping(expected.get("ok"))
-    assert ok.get("kind") == expected_ok.get("kind"), f"scenario={scenario} step={step} expected={expected} actual={actual}"
+    assert ok.get("kind") == expected_ok.get("kind"), detail
     if expected_ok.get("workflowId") == "anyString":
         assert isinstance(ok.get("workflowId"), str) and ok["workflowId"]
     if expected_ok.get("runId") == "anyString":
         assert isinstance(ok.get("runId"), str) and ok["runId"]
     if "payloadEquals" in expected_ok:
-        assert ok.get("value") == expected_ok["payloadEquals"], f"scenario={scenario} step={step} expected={expected} actual={actual}"
+        assert ok.get("value") == expected_ok["payloadEquals"], detail
     if "sameHandleAs" in expected_ok:
         ref = context.results.get(str(expected_ok["sameHandleAs"])[1:])
         assert ref is not None
         assert ok.get("workflowId") == _mapping(ref["ok"]).get("workflowId")
         assert ok.get("runId") == _mapping(ref["ok"]).get("runId")
     if "containsWorkflowRef" in expected_ok:
-        ref = _mapping(expected_ok["containsWorkflowRef"])
-        assert any(_mapping(item).get("workflowId") == ref.get("workflowId") for item in _list(ok.get("workflows"))), (
-            f"scenario={scenario} step={step} expected={expected} actual={actual}"
-        )
+        workflow_ref = _mapping(expected_ok["containsWorkflowRef"])
+        assert any(
+            _mapping(item).get("workflowId") == workflow_ref.get("workflowId")
+            for item in _list(ok.get("workflows"))
+        ), detail
     if "statusIn" in expected_ok:
-        assert ok.get("status") in _list(expected_ok["statusIn"]), f"scenario={scenario} step={step} expected={expected} actual={actual}"
+        assert ok.get("status") in _list(expected_ok["statusIn"]), detail
     if "eventsInclude" in expected_ok:
         events = [_mapping(item) for item in _list(ok.get("events"))]
         for required in _list(expected_ok["eventsInclude"]):
-            assert _event_included(events, _mapping(required)), f"scenario={scenario} step={step} required={required} actual={actual}"
+            assert _event_included(events, _mapping(required)), (
+                f"scenario={scenario} step={step} required={required} actual={actual}"
+            )
     if expected_ok.get("sequenceContiguousUnique") is True:
-        assert ok.get("sequenceContiguousUnique") is True, f"scenario={scenario} step={step} expected={expected} actual={actual}"
+        assert ok.get("sequenceContiguousUnique") is True, detail
 def _event_included(events: list[Mapping[str, Any]], required: Mapping[str, Any]) -> bool:
     for event in events:
         matched = True
         for key, value in required.items():
             if key == "payloadContains":
                 payload = _mapping(event.get("payload"))
-                matched = all(payload.get(payload_key) == payload_value for payload_key, payload_value in _mapping(value).items())
+                matched = all(
+                    payload.get(payload_key) == payload_value
+                    for payload_key, payload_value in _mapping(value).items()
+                )
             elif event.get(key) != value:
                 matched = False
             if not matched:
@@ -253,7 +285,11 @@ def _payload_json(value: Any) -> JSONValue:
     return normalize_json(payload.get("json"))
 def _normalize_summary(summary: Any) -> Observable:
     value = _mapping(normalize_json(_proto_to_dict(summary)))
-    workflow_id = _id_value(value.get("workflow_id")) or _id_value(value.get("workflowId")) or _optional_str(value.get("workflow_id"))
+    workflow_id = (
+        _id_value(value.get("workflow_id"))
+        or _id_value(value.get("workflowId"))
+        or _optional_str(value.get("workflow_id"))
+    )
     return {
         "workflowId": workflow_id,
         "workflowType": value.get("workflow_type") or value.get("workflowType"),
@@ -264,10 +300,19 @@ def _normalize_event(event: Any) -> Observable:
     event_type = str(value.get("type") or value.get("event_type") or value.get("kind") or "Event")
     if event_type == "SignalReceived":
         event_type = "WorkflowSignalled"
-    envelope = _mapping(value.get("envelope") or value.get("data", {}).get("envelope") if isinstance(value.get("data"), dict) else {})
+    envelope = _mapping(
+        value.get("envelope") or value.get("data", {}).get("envelope")
+        if isinstance(value.get("data"), dict)
+        else {}
+    )
     workflow_id = _id_value(envelope.get("workflow_id")) or _optional_str(envelope.get("workflowId"))
     payload = value.get("payload") or _mapping(value.get("data")).get("payload")
-    return {"type": event_type, "workflowId": workflow_id, "seq": envelope.get("seq") or value.get("seq"), "payload": _decode_payload(payload)}
+    return {
+        "type": event_type,
+        "workflowId": workflow_id,
+        "seq": envelope.get("seq") or value.get("seq"),
+        "payload": _decode_payload(payload),
+    }
 def _decode_payload(payload: Any) -> JSONValue:
     value = _mapping(normalize_json(_proto_to_dict(payload)))
     raw = value.get("bytes") or value.get("data")
@@ -279,15 +324,15 @@ def _decode_payload(payload: Any) -> JSONValue:
     return normalize_json(value)
 def _proto_to_dict(value: Any) -> Any:
     if hasattr(value, "DESCRIPTOR"):
-        try:
-            from google.protobuf.json_format import MessageToDict
-            return MessageToDict(value, preserving_proto_field_name=True)
-        except Exception:
-            return value
+        from google.protobuf.json_format import MessageToDict
+
+        return MessageToDict(value, preserving_proto_field_name=True)
     return value
-def _sequences_contiguous_unique(events: list[Mapping[str, Any]]) -> bool:
+def _sequences_contiguous_unique(events: Sequence[Mapping[str, Any]]) -> bool:
     sequences = sorted(seq for event in events if isinstance((seq := event.get("seq")), int))
-    return bool(sequences) and all(right == left + 1 for left, right in zip(sequences, sequences[1:]))
+    return bool(sequences) and all(
+        right == left + 1 for left, right in zip(sequences, sequences[1:], strict=False)
+    )
 def _timeout_ms(input_value: Mapping[str, Any]) -> float:
     for key in ("collectUntil", "collect"):
         nested = _mapping(input_value.get(key))

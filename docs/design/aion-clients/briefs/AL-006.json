@@ -32,7 +32,7 @@
       "title": "Error custom type",
       "spec": "THE SYSTEM SHALL define an error custom type mapping the shared taxonomy and return Result(_, Error) from every operation. THE SYSTEM SHALL NOT collapse distinct conditions into one variant.",
       "acceptance": [
-        "error.gleam defines a public Error type with variants NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, and Server(detail: String).",
+        "error.gleam defines a public Error type with variants NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, NamespaceDenied(detail: String), InvalidArgument, and Server(detail: String).",
         "A mapping function converts a server/transport failure into the correct variant; a test asserts the NotFound, AlreadyExists, QueryTimeout, and Unavailable mappings.",
         "Every operation returns Result(value, Error); none returns a bare value that hides a failure.",
         "The variant set matches the AL-001 taxonomy exactly (no extra, no missing)."

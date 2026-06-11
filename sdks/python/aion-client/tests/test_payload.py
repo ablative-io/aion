@@ -15,7 +15,7 @@ class Greeting:
 
 
 def test_json_payload_round_trips_value() -> None:
-    value = {"name": "aion", "count": 2, "ok": True}
+    value: dict[str, JSONValue] = {"name": "aion", "count": 2, "ok": True}
     payload = json_payload(value)
     assert payload.content_type == "application/json"
     assert decode_payload(payload) == value

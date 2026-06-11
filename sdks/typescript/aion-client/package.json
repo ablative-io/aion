@@ -26,10 +26,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/**/*.test.js",
-    "lint": "eslint src examples --ext .ts"
+    "test": "rm -rf dist && tsc -p tsconfig.json && node --test \"dist/**/*.test.js\"",
+    "lint": "eslint src examples --ext .ts",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
