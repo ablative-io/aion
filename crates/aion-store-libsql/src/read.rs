@@ -19,7 +19,7 @@ pub(crate) async fn read_history(
     workflow_id: &WorkflowId,
 ) -> Result<Vec<Event>, StoreError> {
     let workflow_id = workflow_id.to_string();
-    let mut rows = conn
+    let rows = conn
         .query(
             "SELECT event FROM events WHERE workflow_id = ?1 ORDER BY seq ASC",
             params![workflow_id],
@@ -27,6 +27,38 @@ pub(crate) async fn read_history(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
+    collect_events(rows).await
+}
+
+/// Read a workflow's event history restricted to `seq >= from_seq`, in sequence order.
+///
+/// The range scan is served by the `events` primary key `(workflow_id, seq)`: `SQLite` plans it as
+/// `SEARCH events USING INDEX sqlite_autoindex_events_1 (workflow_id=? AND seq>?)`, so resume
+/// reads cost O(delta), not O(history).
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL failures and `StoreError::Serialization` when a stored
+/// event blob cannot be decoded as an Aion event. Unknown workflows and `from_seq` beyond the
+/// current head both return an empty history.
+pub(crate) async fn read_history_from(
+    conn: &libsql::Connection,
+    workflow_id: &WorkflowId,
+    from_seq: u64,
+) -> Result<Vec<Event>, StoreError> {
+    let workflow_id = workflow_id.to_string();
+    let rows = conn
+        .query(
+            "SELECT event FROM events WHERE workflow_id = ?1 AND seq >= ?2 ORDER BY seq ASC",
+            params![workflow_id, from_seq],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    collect_events(rows).await
+}
+
+async fn collect_events(mut rows: libsql::Rows) -> Result<Vec<Event>, StoreError> {
     let mut events = Vec::new();
     while let Some(row) = rows
         .next()

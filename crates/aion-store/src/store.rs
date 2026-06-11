@@ -61,6 +61,33 @@ pub trait ReadableEventStore: Send + Sync + 'static {
     /// This method must not return [`StoreError::NotFound`] for absent workflows.
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError>;
 
+    /// Reads the event history for `workflow_id` restricted to events with sequence number
+    /// greater than or equal to `from_seq`, in ascending sequence order.
+    ///
+    /// This is the range-read primitive behind O(delta) WS resume: callers replaying from a
+    /// cursor must not pay for the full history. Semantics:
+    ///
+    /// - `from_seq <= 1` is equivalent to [`Self::read_history`]: sequence numbers start at 1,
+    ///   so every recorded event satisfies the bound.
+    /// - `from_seq` beyond the current head returns an empty vector, never an error. Whether a
+    ///   beyond-head cursor is *valid* is protocol judgment, not store judgment: the WS resume
+    ///   protocol rejects `resume_from_seq > head + 1` as an invalid cursor
+    ///   (`ResumeCursorAheadOfHistory`), but it makes that call by comparing the cursor against
+    ///   the head it observes — the store only answers which events exist at or after the
+    ///   requested sequence.
+    /// - Unknown workflows behave exactly like [`Self::read_history`] for unknown workflows:
+    ///   empty history, never [`StoreError::NotFound`], because "unknown workflow" and "empty
+    ///   history" are the same observable state for reads.
+    ///
+    /// There is deliberately no default implementation: a read-all-then-filter fallback would
+    /// silently reintroduce O(history) behavior. Every backend must implement this as a real
+    /// range read (for SQL backends, an indexed `seq >= ?` range scan).
+    async fn read_history_from(
+        &self,
+        workflow_id: &WorkflowId,
+        from_seq: u64,
+    ) -> Result<Vec<Event>, StoreError>;
+
     /// Reads the concrete run chain for `workflow_id` in continuation order.
     async fn read_run_chain(&self, workflow_id: &WorkflowId)
     -> Result<Vec<RunSummary>, StoreError>;

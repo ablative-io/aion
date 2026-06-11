@@ -12,6 +12,8 @@ use chrono::{DateTime, Utc};
 
 use crate::{EventStore, RunSummary, StoreError, TimerEntry};
 
+mod range_read;
+
 /// Runs the shared behavioural suite for an [`EventStore`] implementation.
 ///
 /// The supplied factory is called once per scenario and must return a fresh, isolated store. Durable
@@ -28,6 +30,12 @@ where
     MakeFuture: Future<Output = Arc<dyn EventStore>>,
 {
     append_and_read_history_round_trip(make_store().await).await?;
+    range_read::middle_of_history_returns_ordered_suffix(make_store().await).await?;
+    range_read::from_seq_one_matches_full_read(make_store().await).await?;
+    range_read::beyond_head_returns_empty_not_error(make_store().await).await?;
+    range_read::unknown_workflow_matches_full_read_semantics(make_store().await).await?;
+    range_read::single_event_history_boundaries(make_store().await).await?;
+    range_read::from_seq_at_head_returns_only_head_event(make_store().await).await?;
     multi_batch_append_advances_sequence(make_store().await).await?;
     stale_expected_sequence_writes_nothing(make_store().await).await?;
     list_active_reflects_projected_status(make_store().await).await?;

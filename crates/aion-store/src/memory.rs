@@ -154,6 +154,26 @@ impl ReadableEventStore for InMemoryStore {
             .map_or_else(Vec::new, |history| history_in_sequence_order(history)))
     }
 
+    async fn read_history_from(
+        &self,
+        workflow_id: &WorkflowId,
+        from_seq: u64,
+    ) -> Result<Vec<Event>, StoreError> {
+        let state = self.lock_state()?;
+        Ok(state
+            .histories
+            .get(workflow_id)
+            .map_or_else(Vec::new, |history| {
+                let mut events = history
+                    .iter()
+                    .filter(|event| event.seq() >= from_seq)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                events.sort_by_key(Event::seq);
+                events
+            }))
+    }
+
     async fn read_run_chain(
         &self,
         workflow_id: &WorkflowId,
