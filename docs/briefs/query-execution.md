@@ -6,6 +6,18 @@
 
 This brief is self-contained: an implementing agent needs no prior conversation context.
 
+## DECISIONS — SIGNED OFF (Tom, 2026-06-11 — strict resolution, no halfway house)
+
+- **Q1 → (b).** New `WireErrorCode::QueryFailed` (`query_failed`): `common.proto` enum + `aion-proto/src/error.rs` (incl. downgrade table) + CLIENT-CONTRACT row + Rust/Python/Gleam client maps (TS already cases the string).
+- **Q2 → AMENDED, stricter than the brief.** NO server-config default. `query_timeout` is REQUIRED aion-server config; startup validation FAILS with a precise message when absent — the T2 precedent applies because `/workflows/query` is unconditionally mounted, and a mounted-but-unconfigured surface is the original bug class. Engine builder stays explicit-no-default.
+- **Q3 → `not_running`.** ReplyDropped maps to `not_running` ("workflow ended before answering").
+- **Q4 → typed NotRunning ships now.** Resume-on-query / snapshot answering for suspended workflows is NOT commissioned.
+- **Q5 → IN SCOPE.** Per-pid servicing guard: recording NIFs refuse with a typed error while a query handler runs → surfaces as `HandlerFailed`, never a silent history write.
+- **Q6 → CONFIRMED queries-first** at every yield point.
+- **Q7 → AMENDED, IN SCOPE OF THIS DELIVERY.** Converting `await_child`/`collect_*` from dirty blocking NIFs to two-phase suspending natives (task #58, design brief `child-await-two-phase.md`) ships as part of this effort, not as a follow-up: a parent parked on its children must answer queries like any other parked workflow. The query e2e matrix gains "query a parent parked in await_child" and the delivery is not complete until it passes. The design coordinates with task #56 (child-initiation crash window) since both rework the same module set.
+- **Q8 → noted, none commissioned.** All three beamr follow-ups remain Tom-gated, shipped only through the beamr process if ever.
+- **Q9 → AMENDED, gated not documented.** `dispatch_query` is gated behind the Q5 servicing/replay guard: a nondeterministic read reached from workflow code under replay or during query servicing fails typed instead of relying on a doc comment.
+
 ---
 
 ## 1. Verified current-state map
