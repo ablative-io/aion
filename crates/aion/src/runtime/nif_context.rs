@@ -208,6 +208,19 @@ impl NifContext {
         self.handle.allocate_timer_ordinals(1)
     }
 
+    /// Returns the next deterministic child-workflow spawn ordinal.
+    ///
+    /// Same run-scoped sequence contract as [`Self::next_activity_ordinal`]:
+    /// the n-th `spawn_child` call a run makes correlates with the n-th
+    /// recorded `ChildWorkflowStarted` in the run's history segment. The
+    /// ordinal is never derived from the recorder's sequence head, which
+    /// moves with asynchronous-arrival appends and with the resume position
+    /// after recovery.
+    #[must_use]
+    pub fn next_child_ordinal(&self) -> u64 {
+        self.handle.allocate_child_ordinals(1)
+    }
+
     /// Number of `receive_signal(name)` calls this run has completed.
     #[must_use]
     pub fn signal_receives_consumed(&self, name: &str) -> u64 {
@@ -387,9 +400,14 @@ impl NifContext {
         // the top of history; commands consumed by earlier calls in the same
         // live execution sit before the one being resolved. Skip to this
         // command's correlation key so sequential workflow steps never
-        // re-read earlier recorded results.
+        // re-read earlier recorded results. AwaitChild has no positional
+        // key — its replay identity is the awaited child workflow id — so it
+        // skips to that child's recorded terminal outcome instead.
         if let Some(key) = command.key() {
             self.resolver.fast_forward_to(key);
+        } else if let Command::AwaitChild { child_workflow_id } = &command {
+            self.resolver
+                .fast_forward_to_child_terminal(child_workflow_id);
         }
         self.resolver.resolve(command).map_err(Into::into)
     }
@@ -617,6 +635,104 @@ mod tests {
                 input: payload("activity-input")?,
             })?,
             ResolveOutcome::Recorded(Resolution::ActivityCompleted(result))
+        );
+        Ok(())
+    }
+
+    fn child_history(
+        workflow_id: &aion_core::WorkflowId,
+        child_workflow_id: &aion_core::WorkflowId,
+        include_terminal: bool,
+    ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        let timer_id = aion_core::TimerId::anonymous(0);
+        let mut history = vec![
+            Event::ActivityScheduled {
+                envelope: envelope(workflow_id, 2)?,
+                activity_id: ActivityId::from_sequence_position(0),
+                activity_type: "activity".to_owned(),
+                input: payload("activity-input")?,
+            },
+            Event::ActivityCompleted {
+                envelope: envelope(workflow_id, 3)?,
+                activity_id: ActivityId::from_sequence_position(0),
+                result: payload("activity-result")?,
+            },
+            Event::TimerStarted {
+                envelope: envelope(workflow_id, 4)?,
+                timer_id: timer_id.clone(),
+                fire_at: Utc
+                    .timestamp_opt(99, 0)
+                    .single()
+                    .ok_or_else(|| "invalid timestamp".to_owned())?,
+            },
+            Event::TimerFired {
+                envelope: envelope(workflow_id, 5)?,
+                timer_id,
+            },
+            Event::ChildWorkflowStarted {
+                envelope: envelope(workflow_id, 6)?,
+                child_workflow_id: child_workflow_id.clone(),
+                workflow_type: "child".to_owned(),
+                input: payload("child-input")?,
+            },
+        ];
+        if include_terminal {
+            history.push(Event::ChildWorkflowCompleted {
+                envelope: envelope(workflow_id, 7)?,
+                child_workflow_id: child_workflow_id.clone(),
+                result: payload("child-result")?,
+            });
+        }
+        Ok(history)
+    }
+
+    #[test]
+    fn await_child_skips_consumed_commands_to_recorded_terminal() -> TestResult {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let child_workflow_id = aion_core::WorkflowId::new_v4();
+        // Activity, timer, and spawn history all precede the awaited child's
+        // terminal: each per-NIF resolver starts at the top of history, so
+        // AwaitChild must skip those consumed commands instead of reporting
+        // a false non-determinism mismatch on the first matchable event.
+        let history = child_history(&workflow_id, &child_workflow_id, true)?;
+        let (registry, store, _handle) = context_with_history(&runtime, 88, workflow_id, &history)?;
+        let mut context = NifContext::new_with_history_store(
+            88,
+            &registry,
+            runtime.handle().clone(),
+            Some(store),
+        )?;
+
+        assert_eq!(
+            context.resolve_command(Command::AwaitChild {
+                child_workflow_id: child_workflow_id.clone(),
+            })?,
+            ResolveOutcome::Recorded(Resolution::ChildCompleted(payload("child-result")?))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn await_child_without_recorded_terminal_resumes_live() -> TestResult {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let child_workflow_id = aion_core::WorkflowId::new_v4();
+        // History ends after ChildWorkflowStarted (crash mid-child): the
+        // await must hand off to live execution for the same child instead
+        // of mismatching on the recorded start event.
+        let history = child_history(&workflow_id, &child_workflow_id, false)?;
+        let (registry, store, _handle) = context_with_history(&runtime, 89, workflow_id, &history)?;
+        let mut context = NifContext::new_with_history_store(
+            89,
+            &registry,
+            runtime.handle().clone(),
+            Some(store),
+        )?;
+
+        assert_eq!(
+            context.resolve_command(Command::AwaitChild { child_workflow_id })?,
+            ResolveOutcome::ResumeLive
         );
         Ok(())
     }

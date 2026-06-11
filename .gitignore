@@ -5,7 +5,7 @@
 # Gleam
 **/build
 *.beam
-!crates/aion/tests/fixtures/aion_fixture_workflow.beam
+!crates/aion/tests/fixtures/*.beam
 *.ez
 
 # Node / TypeScript

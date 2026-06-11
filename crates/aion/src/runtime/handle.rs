@@ -1,5 +1,6 @@
 //! `RuntimeHandle` spawn, register, cancel, and shutdown support.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aion_core::{ActivityError, Payload};
@@ -77,6 +78,14 @@ pub struct RuntimeHandle {
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
     signal_delivery: SignalDeliveryConfig,
+    /// Highest process identifier this runtime has spawned.
+    ///
+    /// beamr allocates pids from a monotonic counter, so any pid at or below
+    /// this watermark was spawned here and its exit outcome stays observable
+    /// through the scheduler's exit tombstones even after the process leaves
+    /// the live table. Monitor installation uses this to accept processes
+    /// that exited between spawn and monitor setup.
+    spawned_pid_watermark: AtomicU64,
 }
 
 impl RuntimeHandle {
@@ -117,6 +126,7 @@ impl RuntimeHandle {
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
+            spawned_pid_watermark: AtomicU64::new(0),
         })
     }
 
@@ -214,6 +224,7 @@ impl RuntimeHandle {
             .scheduler
             .spawn_trap_exit(module, function, terms)
             .map_err(runtime_error_from_display)?;
+        self.record_spawned_pid(pid);
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -248,6 +259,7 @@ impl RuntimeHandle {
                 .spawn_link(parent_pid, module, function_atom, terms)
                 .map_err(runtime_error_from_display)?
         };
+        self.record_spawned_pid(pid);
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -344,8 +356,13 @@ impl RuntimeHandle {
             .scheduler
             .spawn(module, function, terms)
             .map_err(runtime_error_from_display)?;
+        self.record_spawned_pid(pid);
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
+    }
+
+    fn record_spawned_pid(&self, pid: Pid) {
+        self.spawned_pid_watermark.fetch_max(pid, Ordering::AcqRel);
     }
 
     fn retain_spawn_heaps(&self, pid: Pid, heaps: RetainedHeaps) {
@@ -383,6 +400,27 @@ impl RuntimeHandle {
         } else {
             Err(runtime_error(format!("process {pid} is not live")))
         }
+    }
+
+    /// Ensure `pid` has an observable exit outcome: it is either live now or
+    /// was spawned by this runtime and already exited.
+    ///
+    /// A workflow can run to completion on a scheduler thread between its
+    /// spawn and the caller's monitor installation. The exited process is no
+    /// longer in the live table, but beamr keeps its exit tombstone, so
+    /// `run_until_exit` still returns the recorded outcome immediately.
+    /// Rejecting such pids would spuriously fail the spawn of any workflow
+    /// that finishes faster than its monitor is installed.
+    pub(super) fn ensure_monitorable_pid(&self, pid: Pid) -> Result<(), EngineError> {
+        if self.scheduler.process_table().get(pid).is_some() {
+            return Ok(());
+        }
+        if pid > 0 && pid <= self.spawned_pid_watermark.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        Err(runtime_error(format!(
+            "process {pid} was never spawned by this runtime"
+        )))
     }
 
     /// Register a test module whose exported function waits indefinitely.
@@ -430,7 +468,9 @@ impl RuntimeHandle {
     /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
     #[cfg(test)]
     pub fn spawn_test_process(&self) -> Result<Pid, EngineError> {
-        Ok(self.scheduler.spawn_test_process(false))
+        let pid = self.scheduler.spawn_test_process(false);
+        self.record_spawned_pid(pid);
+        Ok(pid)
     }
 
     /// Spawn an inert test process with explicit trap-exit state.
@@ -440,7 +480,9 @@ impl RuntimeHandle {
     /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
     #[cfg(test)]
     pub fn spawn_test_process_with_trap_exit(&self, trap_exit: bool) -> Result<Pid, EngineError> {
-        Ok(self.scheduler.spawn_test_process(trap_exit))
+        let pid = self.scheduler.spawn_test_process(trap_exit);
+        self.record_spawned_pid(pid);
+        Ok(pid)
     }
 
     /// Spawn an inert linked test child without enabling trap-exit on the child.
@@ -452,9 +494,12 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub fn spawn_linked_test_process(&self, parent_pid: Pid) -> Result<Pid, EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        self.scheduler
+        let pid = self
+            .scheduler
             .spawn_linked_test_process(parent_pid)
-            .map_err(runtime_error_from_display)
+            .map_err(runtime_error_from_display)?;
+        self.record_spawned_pid(pid);
+        Ok(pid)
     }
 
     /// Return true when a live process has a trapped EXIT message from `source_pid`.

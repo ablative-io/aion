@@ -72,9 +72,9 @@ fn signal_command(name: &str, index: usize) -> Command {
     }
 }
 
-fn child_command(child_start_seq: u64) -> Result<Command, Box<dyn std::error::Error>> {
+fn child_command(spawn_ordinal: u64) -> Result<Command, Box<dyn std::error::Error>> {
     Ok(Command::SpawnChild {
-        key: CorrelationKey::Child(child_start_seq),
+        key: CorrelationKey::Child(spawn_ordinal),
         workflow_type: "child".to_owned(),
         input: payload("child-input")?,
     })
@@ -464,7 +464,9 @@ async fn fully_recorded_history_replays_to_terminal_with_zero_live_calls()
         activity_command(0)?,
         timer_command(TimerId::anonymous(4))?,
         signal_command("ready", 0),
-        child_command(7)?,
+        // The recorded ChildWorkflowStarted sits at seq 7, but the spawn
+        // correlates by positional ordinal: the run's first child is 0.
+        child_command(0)?,
         Command::AwaitChild {
             child_workflow_id: child_workflow_id(),
         },

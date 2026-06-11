@@ -135,6 +135,7 @@ pub struct WorkflowHandle {
     deterministic_nif_sequence: Arc<AtomicU64>,
     activity_ordinal_sequence: Arc<AtomicU64>,
     timer_ordinal_sequence: Arc<AtomicU64>,
+    child_ordinal_sequence: Arc<AtomicU64>,
     signal_receive_counts: Arc<dashmap::DashMap<String, u64>>,
 }
 
@@ -155,11 +156,12 @@ impl WorkflowHandle {
             deterministic_nif_sequence: Arc::new(AtomicU64::new(0)),
             activity_ordinal_sequence: Arc::new(AtomicU64::new(0)),
             timer_ordinal_sequence: Arc::new(AtomicU64::new(0)),
+            child_ordinal_sequence: Arc::new(AtomicU64::new(0)),
             signal_receive_counts: Arc::new(dashmap::DashMap::new()),
         }
     }
 
-    /// Allocate `count` consecutive activity/child correlation ordinals.
+    /// Allocate `count` consecutive activity correlation ordinals.
     ///
     /// The sequence is monotonic per run and shared by every NIF call the
     /// run makes (handles clone the same counter), so distinct workflow
@@ -169,6 +171,21 @@ impl WorkflowHandle {
     #[must_use]
     pub fn allocate_activity_ordinals(&self, count: u64) -> u64 {
         self.activity_ordinal_sequence
+            .fetch_add(count, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Allocate `count` consecutive child-workflow spawn ordinals.
+    ///
+    /// Same determinism contract as [`Self::allocate_activity_ordinals`]:
+    /// monotonic per run, shared by every NIF call the run makes, and
+    /// re-allocated identically by replayed code on a re-spawned run. The
+    /// n-th allocated ordinal correlates the n-th `spawn_child` call with
+    /// the n-th recorded `ChildWorkflowStarted` in the run's history
+    /// segment, independent of event sequence numbers and of any
+    /// asynchronous-arrival events interleaved between spawns.
+    #[must_use]
+    pub fn allocate_child_ordinals(&self, count: u64) -> u64 {
+        self.child_ordinal_sequence
             .fetch_add(count, std::sync::atomic::Ordering::SeqCst)
     }
 

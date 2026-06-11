@@ -356,7 +356,9 @@ async fn recorded_history_returns_resolutions_without_live_calls()
             &mut recorder,
             &executor,
             Command::SpawnChild {
-                key: CorrelationKey::Child(6),
+                // Positional spawn ordinal: the first child of the run, not
+                // the recorded ChildWorkflowStarted sequence number.
+                key: CorrelationKey::Child(0),
                 workflow_type: "child".to_owned(),
                 input: payload("child-input")?,
             },

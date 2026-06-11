@@ -62,7 +62,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
     let bridge = child_bridge(ctx)?;
     let pid = ctx.pid().ok_or_else(|| "missing_caller_pid".to_owned())?;
     let mut nif = new_context(&bridge, pid)?;
-    let key = next_child_key(&nif)?;
+    let key = next_child_key(&nif);
     let command = Command::SpawnChild {
         key,
         workflow_type: workflow_type.clone(),
@@ -159,10 +159,16 @@ fn new_context(bridge: &ChildNifBridge, pid: u64) -> Result<NifContext, String> 
     .map_err(|error| context_error(&error))
 }
 
-fn next_child_key(nif: &NifContext) -> Result<CorrelationKey, String> {
-    let next_seq = next_sequence(nif.current_recorder_head())
-        .map_err(|error| context_error(&NifContextError::Durability(error)))?;
-    Ok(CorrelationKey::Child(next_seq))
+/// Derives the spawn's correlation key from the run-scoped child ordinal.
+///
+/// The ordinal counter lives on the workflow handle and restarts at zero for
+/// every fresh run (live start, crash-recovery re-spawn, continue-as-new
+/// replacement), so the n-th `spawn_child` call always correlates with the
+/// n-th recorded `ChildWorkflowStarted` in the run segment — independent of
+/// the recorder's sequence head, which moves with asynchronous-arrival
+/// appends and resumes at the full history head after recovery.
+fn next_child_key(nif: &NifContext) -> CorrelationKey {
+    CorrelationKey::Child(nif.next_child_ordinal())
 }
 
 fn recording_context(nif: &NifContext) -> Result<ChildWorkflowRecordingContext, String> {
@@ -256,4 +262,96 @@ fn alloc_tuple_term(elements: &[Term]) -> Option<Term> {
     let term = boxed::write_tuple(&mut heap, elements)?;
     CHILD_NIF_HEAP.with_borrow_mut(|parked| parked.push(heap));
     Some(term)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
+    use aion_package::ContentHash;
+    use aion_store::{EventStore, InMemoryStore, WriteToken};
+    use serde_json::json;
+
+    use super::next_child_key;
+    use crate::durability::{CorrelationKey, Recorder};
+    use crate::registry::{
+        CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
+    };
+    use crate::runtime::nif_context::NifContext;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn started_event(workflow_id: &WorkflowId, run_id: &RunId) -> TestEvent {
+        Ok(Event::WorkflowStarted {
+            envelope: EventEnvelope {
+                seq: 1,
+                recorded_at: chrono::Utc::now(),
+                workflow_id: workflow_id.clone(),
+            },
+            workflow_type: "parent".to_owned(),
+            input: Payload::from_json(&json!({ "fixture": "input" }))?,
+            run_id: run_id.clone(),
+            parent_run_id: None,
+        })
+    }
+
+    type TestEvent = Result<Event, Box<dyn std::error::Error>>;
+
+    fn registered_context(
+        runtime: &tokio::runtime::Runtime,
+        pid: u64,
+        resume_head: u64,
+    ) -> Result<(Registry, Arc<dyn EventStore>), Box<dyn std::error::Error>> {
+        let registry = Registry::default();
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = RunId::new_v4();
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        runtime.block_on(store.append(
+            WriteToken::recorder(),
+            &workflow_id,
+            &[started_event(&workflow_id, &run_id)?],
+            0,
+        ))?;
+        let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), resume_head);
+        let handle = WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            pid,
+            workflow_type: "parent".to_owned(),
+            loaded_version: ContentHash::from_bytes([3; 32]),
+            cached_status: WorkflowStatus::Running,
+            residency: HandleResidency::Resident,
+            recorder,
+            completion: CompletionNotifier::new(),
+        });
+        registry.insert((workflow_id, run_id), handle)?;
+        Ok((registry, store))
+    }
+
+    #[test]
+    fn child_keys_are_run_scoped_ordinals_independent_of_recorder_head() -> TestResult {
+        let runtime = tokio::runtime::Runtime::new()?;
+        // A recovered run resumes its recorder at the full history head; the
+        // spawn key must still start at ordinal zero, not head + 1.
+        let (registry, store) = registered_context(&runtime, 91, 57)?;
+        let first_call = NifContext::new_with_history_store(
+            91,
+            &registry,
+            runtime.handle().clone(),
+            Some(Arc::clone(&store)),
+        )?;
+        let second_call = NifContext::new_with_history_store(
+            91,
+            &registry,
+            runtime.handle().clone(),
+            Some(store),
+        )?;
+
+        assert_eq!(next_child_key(&first_call), CorrelationKey::Child(0));
+        // Distinct NIF calls share the handle-owned counter, so the second
+        // spawn in the same run advances to the next ordinal.
+        assert_eq!(next_child_key(&second_call), CorrelationKey::Child(1));
+        Ok(())
+    }
 }

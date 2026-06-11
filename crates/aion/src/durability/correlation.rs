@@ -12,9 +12,15 @@ pub enum CorrelationKey {
         /// Deterministic scheduling ordinal.
         u64,
     ),
-    /// Child workflow scheduled at the deterministic ordinal currently represented by its start sequence.
+    /// Child workflow scheduled at the deterministic spawn ordinal.
+    ///
+    /// The ordinal is positional: the n-th `spawn_child` call a run makes
+    /// correlates with the n-th recorded `ChildWorkflowStarted` in that run's
+    /// history segment. Like activity ordinals it restarts at zero for every
+    /// run, so replay re-derives the same identity regardless of how many
+    /// asynchronous-arrival events (signals, timer fires) interleave.
     Child(
-        /// Deterministic child scheduling ordinal.
+        /// Zero-based spawn ordinal within the run segment.
         u64,
     ),
     /// Timer selected by workflow code or assigned by the engine.
@@ -33,21 +39,24 @@ pub enum CorrelationKey {
 
 /// Derives correlation keys for every event in an ordered history.
 ///
-/// Non-world-touching events and activity/timer/child outcome events do not introduce a new call key,
-/// so their slots contain `None`. Child workflow start events currently use the event sequence as the
-/// child ordinal because `aion_core::WorkflowId` does not expose a child scheduling ordinal.
+/// Non-world-touching events and activity/timer/child outcome events do not introduce a new call
+/// key, so their slots contain `None`. Signal keys carry the per-name occurrence index and child
+/// workflow start keys carry the positional spawn ordinal, both derived from event order within
+/// the supplied history slice.
 #[must_use]
 pub fn correlation_keys_for_history(events: &[Event]) -> Vec<Option<CorrelationKey>> {
-    let mut signal_counts = HashMap::<String, usize>::new();
+    let mut counters = OccurrenceCounters::default();
     events
         .iter()
-        .map(|event| key_for_event_with_signal_counts(event, &mut signal_counts))
+        .map(|event| key_for_event_with_counters(event, &mut counters))
         .collect()
 }
 
 /// Derives the correlation key for one event in an ordered history.
 ///
-/// `index` is the event's index inside `events`; it is used to count prior signals with the same name.
+/// `index` is the event's index inside `events`; it is used to count prior signals with the same
+/// name and prior child workflow starts, so signal occurrence indices and child spawn ordinals are
+/// positional within the slice.
 #[must_use]
 pub fn key_for_event(events: &[Event], index: usize) -> Option<CorrelationKey> {
     let event = events.get(index)?;
@@ -63,34 +72,60 @@ pub fn key_for_event(events: &[Event], index: usize) -> Option<CorrelationKey> {
                 index: prior_same_name,
             })
         }
-        _ => key_for_matchable_non_signal_event(event),
+        Event::ChildWorkflowStarted { .. } => {
+            let prior_starts = events
+                .iter()
+                .take(index)
+                .filter(|prior| matches!(prior, Event::ChildWorkflowStarted { .. }))
+                .count();
+            // A history slice can never hold more than u64::MAX events; a
+            // failed conversion yields no key, which replay surfaces loudly
+            // as a non-determinism mismatch rather than a silent wrong match.
+            u64::try_from(prior_starts).ok().map(CorrelationKey::Child)
+        }
+        _ => key_for_positionless_event(event),
     }
 }
 
-fn key_for_event_with_signal_counts(
+/// Running occurrence counts used to derive positional keys in one history pass.
+#[derive(Default)]
+struct OccurrenceCounters {
+    signal_counts: HashMap<String, usize>,
+    child_spawns: u64,
+}
+
+fn key_for_event_with_counters(
     event: &Event,
-    signal_counts: &mut HashMap<String, usize>,
+    counters: &mut OccurrenceCounters,
 ) -> Option<CorrelationKey> {
     match event {
         Event::SignalReceived { name, .. } | Event::SignalSent { name, .. } => {
-            let index = signal_counts.get(name).copied().unwrap_or_default();
-            signal_counts.insert(name.clone(), index + 1);
+            let index = counters
+                .signal_counts
+                .get(name)
+                .copied()
+                .unwrap_or_default();
+            counters.signal_counts.insert(name.clone(), index + 1);
             Some(CorrelationKey::Signal {
                 name: name.clone(),
                 index,
             })
         }
-        _ => key_for_matchable_non_signal_event(event),
+        Event::ChildWorkflowStarted { .. } => {
+            let ordinal = counters.child_spawns;
+            counters.child_spawns += 1;
+            Some(CorrelationKey::Child(ordinal))
+        }
+        _ => key_for_positionless_event(event),
     }
 }
 
-fn key_for_matchable_non_signal_event(event: &Event) -> Option<CorrelationKey> {
+fn key_for_positionless_event(event: &Event) -> Option<CorrelationKey> {
     match event {
         Event::ActivityScheduled { activity_id, .. } => {
             Some(CorrelationKey::Activity(activity_id.sequence_position()))
         }
         Event::TimerStarted { timer_id, .. } => Some(CorrelationKey::Timer(timer_id.clone())),
-        Event::ChildWorkflowStarted { .. } => Some(CorrelationKey::Child(event.seq())),
         _ => None,
     }
 }
@@ -102,7 +137,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::{CorrelationKey, correlation_keys_for_history};
+    use super::{CorrelationKey, correlation_keys_for_history, key_for_event};
 
     fn envelope(seq: u64) -> EventEnvelope {
         EventEnvelope {
@@ -155,6 +190,72 @@ mod tests {
                 }),
             ]
         );
+        Ok(())
+    }
+
+    fn child_started(seq: u64, child: u128) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ChildWorkflowStarted {
+            envelope: envelope(seq),
+            child_workflow_id: WorkflowId::new(Uuid::from_u128(child)),
+            workflow_type: "child".to_owned(),
+            input: payload()?,
+        })
+    }
+
+    #[test]
+    fn derives_positional_child_ordinals_independent_of_sequence_numbers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Deliberately sparse, late sequence numbers: positional ordinals
+        // must not be derived from event sequence values.
+        let history = vec![child_started(41, 1)?, child_started(97, 2)?];
+
+        let keys = correlation_keys_for_history(&history);
+
+        assert_eq!(
+            keys,
+            vec![
+                Some(CorrelationKey::Child(0)),
+                Some(CorrelationKey::Child(1)),
+            ]
+        );
+        assert_eq!(key_for_event(&history, 0), Some(CorrelationKey::Child(0)));
+        assert_eq!(key_for_event(&history, 1), Some(CorrelationKey::Child(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn interleaved_async_arrivals_do_not_shift_child_ordinals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let history = vec![
+            child_started(1, 1)?,
+            Event::SignalReceived {
+                envelope: envelope(2),
+                name: "mid".to_owned(),
+                payload: payload()?,
+            },
+            Event::ChildWorkflowCompleted {
+                envelope: envelope(3),
+                child_workflow_id: WorkflowId::new(Uuid::from_u128(1)),
+                result: payload()?,
+            },
+            child_started(4, 2)?,
+        ];
+
+        let keys = correlation_keys_for_history(&history);
+
+        assert_eq!(
+            keys,
+            vec![
+                Some(CorrelationKey::Child(0)),
+                Some(CorrelationKey::Signal {
+                    name: "mid".to_owned(),
+                    index: 0,
+                }),
+                None,
+                Some(CorrelationKey::Child(1)),
+            ]
+        );
+        assert_eq!(key_for_event(&history, 3), Some(CorrelationKey::Child(1)));
         Ok(())
     }
 }

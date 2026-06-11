@@ -63,6 +63,8 @@ pub enum Command {
 impl Command {
     /// Returns the correlation key for cursor-matched commands.
     ///
+    /// [`Command::AwaitChild`] returns `None` because its replay identity is the awaited child
+    /// workflow id, matched against recorded child terminal events rather than a positional key.
     /// [`Command::CompleteWorkflow`] returns `None` because completion is terminal intent, not a
     /// recorded event family consumed by [`crate::durability::HistoryCursor`].
     #[must_use]

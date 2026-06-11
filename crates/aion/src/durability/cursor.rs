@@ -86,6 +86,24 @@ pub enum CursorResolveResult {
     },
 }
 
+/// Outcome of asking the cursor for the recorded terminal outcome of one awaited child workflow.
+///
+/// `AwaitChild` is keyed by the child workflow id rather than a positional correlation key, so its
+/// mismatch variant carries only the found-event descriptor; the resolver supplies the awaited
+/// child identity in its diagnostics.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChildTerminalResolveResult {
+    /// The awaited child's recorded terminal event was consumed.
+    Matched(Vec<Event>),
+    /// The cursor has no remaining recorded event to consider.
+    Exhausted,
+    /// The next matchable recorded event is not the awaited child's terminal outcome.
+    Mismatch {
+        /// Descriptor for the recorded event actually at the cursor position.
+        found: FoundEventDescriptor,
+    },
+}
+
 /// Ordered cursor over a workflow's recorded history.
 #[derive(Clone, Debug)]
 pub struct HistoryCursor {
@@ -167,32 +185,44 @@ impl HistoryCursor {
         }
     }
 
+    /// Advance to the recorded terminal outcome for `child_workflow_id`.
+    ///
+    /// `AwaitChild` has no positional correlation key — its replay identity
+    /// is the child workflow id returned by the matching spawn — so it gets
+    /// the same skip treatment keyed commands receive from
+    /// [`HistoryCursor::fast_forward_to_key`]: recorded commands consumed by
+    /// earlier resolver instances of the same live execution are skipped
+    /// until the awaited child's `ChildWorkflowCompleted`/`ChildWorkflowFailed`
+    /// is reached. With no recorded terminal for that child the cursor
+    /// exhausts, leaving resolution to hand off live. Strict full-history
+    /// replay (recovery, the replay driver) never calls this.
+    pub fn fast_forward_to_child_terminal(&mut self, child_workflow_id: &WorkflowId) {
+        while let Some(index) = self.next_matchable_index() {
+            if is_child_terminal_for(&self.events[index], child_workflow_id) {
+                return;
+            }
+            self.position = index + 1;
+        }
+    }
+
     /// Resolves the next recorded child terminal outcome for `child_workflow_id`.
     #[must_use]
     pub fn resolve_child_terminal(
         &mut self,
         child_workflow_id: &WorkflowId,
-    ) -> CursorResolveResult {
+    ) -> ChildTerminalResolveResult {
         let Some(found_index) = self.next_matchable_index() else {
-            return CursorResolveResult::Exhausted;
+            return ChildTerminalResolveResult::Exhausted;
         };
         self.position = found_index;
         match self.events.get(found_index) {
-            Some(
-                Event::ChildWorkflowCompleted {
-                    child_workflow_id: completed_child,
-                    ..
-                }
-                | Event::ChildWorkflowFailed {
-                    child_workflow_id: completed_child,
-                    ..
-                },
-            ) if completed_child == child_workflow_id => self.consume_one(),
-            Some(event) => CursorResolveResult::Mismatch {
-                expected_key: CorrelationKey::Child(0),
+            Some(event) if is_child_terminal_for(event, child_workflow_id) => {
+                ChildTerminalResolveResult::Matched(self.take_range(found_index, found_index + 1))
+            }
+            Some(event) => ChildTerminalResolveResult::Mismatch {
                 found: self.descriptor_at(found_index, event),
             },
-            None => CursorResolveResult::Exhausted,
+            None => ChildTerminalResolveResult::Exhausted,
         }
     }
 
@@ -329,9 +359,13 @@ impl HistoryCursor {
     }
 
     fn consume_range(&mut self, start: usize, end: usize) -> CursorResolveResult {
+        CursorResolveResult::Matched(self.take_range(start, end))
+    }
+
+    fn take_range(&mut self, start: usize, end: usize) -> Vec<Event> {
         let consumed = self.events[start..end].to_vec();
         self.position = end;
-        CursorResolveResult::Matched(consumed)
+        consumed
     }
 
     fn next_matchable_index(&self) -> Option<usize> {
@@ -420,6 +454,19 @@ impl HistoryCursor {
     }
 }
 
+fn is_child_terminal_for(event: &Event, child_workflow_id: &WorkflowId) -> bool {
+    matches!(
+        event,
+        Event::ChildWorkflowCompleted {
+            child_workflow_id: terminal_child,
+            ..
+        } | Event::ChildWorkflowFailed {
+            child_workflow_id: terminal_child,
+            ..
+        } if terminal_child == child_workflow_id
+    )
+}
+
 fn family_for_event(event: &Event) -> Option<RecordedEventFamily> {
     match event {
         Event::ActivityScheduled { .. } => Some(RecordedEventFamily::Activity),
@@ -479,7 +526,9 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::{CursorResolveResult, HistoryCursor, RecordedEventFamily};
+    use super::{
+        ChildTerminalResolveResult, CursorResolveResult, HistoryCursor, RecordedEventFamily,
+    };
     use crate::durability::correlation::CorrelationKey;
 
     fn timestamp() -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
@@ -677,6 +726,103 @@ mod tests {
             }
             CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
                 return Err("retry history should resolve to eventual completion".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn child_id(value: u128) -> WorkflowId {
+        WorkflowId::new(Uuid::from_u128(value))
+    }
+
+    fn child_started(seq: u64, child: u128) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ChildWorkflowStarted {
+            envelope: envelope(seq)?,
+            child_workflow_id: child_id(child),
+            workflow_type: "child".to_owned(),
+            input: payload()?,
+        })
+    }
+
+    fn child_completed(seq: u64, child: u128) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ChildWorkflowCompleted {
+            envelope: envelope(seq)?,
+            child_workflow_id: child_id(child),
+            result: payload()?,
+        })
+    }
+
+    fn signal_received(seq: u64, name: &str) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::SignalReceived {
+            envelope: envelope(seq)?,
+            name: name.to_owned(),
+            payload: payload()?,
+        })
+    }
+
+    #[test]
+    fn fast_forward_to_child_terminal_skips_consumed_commands()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            completed(2, 0)?,
+            child_started(3, 1)?,
+            signal_received(4, "mid")?,
+            child_started(5, 2)?,
+            child_completed(6, 1)?,
+        ])?;
+
+        cursor.fast_forward_to_child_terminal(&child_id(1));
+        let result = cursor.resolve_child_terminal(&child_id(1));
+
+        match result {
+            ChildTerminalResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 1);
+                assert!(matches!(
+                    events.first(),
+                    Some(Event::ChildWorkflowCompleted { child_workflow_id, .. })
+                        if *child_workflow_id == child_id(1)
+                ));
+            }
+            ChildTerminalResolveResult::Exhausted | ChildTerminalResolveResult::Mismatch { .. } => {
+                return Err("await must reach the awaited child's recorded terminal".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fast_forward_to_child_terminal_exhausts_when_no_terminal_recorded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            completed(2, 0)?,
+            child_started(3, 1)?,
+        ])?;
+
+        cursor.fast_forward_to_child_terminal(&child_id(1));
+
+        assert_eq!(
+            cursor.resolve_child_terminal(&child_id(1)),
+            ChildTerminalResolveResult::Exhausted
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_child_terminal_reports_mismatch_without_skipping_in_strict_replay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![scheduled(1, 0)?, child_completed(2, 1)?])?;
+
+        let result = cursor.resolve_child_terminal(&child_id(1));
+
+        match result {
+            ChildTerminalResolveResult::Mismatch { found } => {
+                assert_eq!(found.seq, 1);
+                assert_eq!(found.family, Some(RecordedEventFamily::Activity));
+            }
+            ChildTerminalResolveResult::Matched(_) | ChildTerminalResolveResult::Exhausted => {
+                return Err("strict replay must not skip an unconsumed recorded command".into());
             }
         }
         Ok(())

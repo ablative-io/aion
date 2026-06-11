@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use crate::durability::{
     Command, CorrelationKey, CursorResolveResult, DurabilityError, HistoryCursor,
     NonDeterminismError, RecordedEventFamily, Recorder, Resolution, ResolveOutcome,
-    cursor::FoundEventDescriptor,
+    cursor::{ChildTerminalResolveResult, FoundEventDescriptor},
 };
 
 /// Stable [`WorkflowError::message`] prefix used when a replay violation fails a workflow.
@@ -70,6 +70,13 @@ impl Resolver {
         self.cursor.fast_forward_to_key(key);
     }
 
+    /// Advance the cursor to the recorded terminal outcome for one awaited
+    /// child workflow. See [`HistoryCursor::fast_forward_to_child_terminal`].
+    pub fn fast_forward_to_child_terminal(&mut self, child_workflow_id: &WorkflowId) {
+        self.cursor
+            .fast_forward_to_child_terminal(child_workflow_id);
+    }
+
     /// Resolves a command and includes the consumed recorded timestamp for replay bookkeeping.
     ///
     /// The returned [`ResolvedCommand`] preserves the existing recorded/resume-live decision while
@@ -87,16 +94,22 @@ impl Resolver {
     ) -> Result<ResolvedCommand, DurabilityError> {
         if let Command::AwaitChild { child_workflow_id } = command {
             return match self.cursor.resolve_child_terminal(&child_workflow_id) {
-                CursorResolveResult::Matched(events) => resolution_from_matched(&events),
-                CursorResolveResult::Exhausted => {
+                ChildTerminalResolveResult::Matched(events) => resolution_from_matched(&events),
+                ChildTerminalResolveResult::Exhausted => {
                     Ok(ResolvedCommand::ResumeLive { recorded_at: None })
                 }
-                CursorResolveResult::Mismatch {
-                    expected_key,
-                    found,
-                } => Err(self
-                    .mismatch_error(RecordedEventFamily::Child, &expected_key, &found)
-                    .into()),
+                ChildTerminalResolveResult::Mismatch { found } => Err(NonDeterminismError {
+                    workflow_id: self.workflow_id.clone(),
+                    seq: found.seq,
+                    expected: format!(
+                        "Child terminal outcome for child workflow {child_workflow_id}"
+                    ),
+                    found: format!(
+                        "{} family {:?} key {:?}",
+                        found.kind, found.family, found.key
+                    ),
+                }
+                .into()),
             };
         }
 
@@ -502,7 +515,9 @@ mod tests {
         );
         assert_eq!(
             resolver.resolve(Command::SpawnChild {
-                key: CorrelationKey::Child(6),
+                // The first spawn in the run correlates positionally with the
+                // first recorded ChildWorkflowStarted, never with its seq.
+                key: CorrelationKey::Child(0),
                 workflow_type: "child".to_owned(),
                 input: payload("child-input")?,
             })?,
@@ -548,7 +563,7 @@ mod tests {
         );
         assert_eq!(
             resolver.resolve(Command::SpawnChild {
-                key: CorrelationKey::Child(3),
+                key: CorrelationKey::Child(0),
                 workflow_type: "child".to_owned(),
                 input: payload("child-input")?,
             })?,

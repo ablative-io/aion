@@ -458,19 +458,6 @@ impl EngineBuilder {
         );
         let supervision = Arc::new(SupervisionTree::new());
         let search_attribute_schema = Arc::new(self.search_attribute_schema);
-        recover_active_workflows_on_startup(StartupRecoveryContext {
-            store: Arc::clone(&store),
-            visibility_store: Arc::clone(&visibility_store),
-            runtime: Arc::clone(&runtime),
-            loaded_workflows: &loaded_workflows,
-            registry: Arc::clone(&registry),
-            supervision: Arc::clone(&supervision),
-            recovery: self.recovery,
-            search_attribute_schema: Arc::clone(&search_attribute_schema),
-        })
-        .await?;
-        recover_timers_on_startup(&nif_state, Arc::clone(&store)).await?;
-
         let signal_handoff = Arc::new(SignalResumeHandoff::new());
 
         let delegated = if let Some(factory) = self.signal_router_factory {
@@ -506,6 +493,25 @@ impl EngineBuilder {
                 tokio_handle: tokio::runtime::Handle::current(),
             })),
         );
+
+        // Startup recovery re-spawns active workflow processes, and those
+        // processes begin replaying on scheduler threads immediately. Replay
+        // re-executes workflow code through the engine NIFs, so every NIF
+        // bridge (signal, child) must be installed before the first recovered
+        // process can run, or an early replayed spawn_child/receive_signal
+        // call fails with a missing-bridge error.
+        recover_active_workflows_on_startup(StartupRecoveryContext {
+            store: Arc::clone(&store),
+            visibility_store: Arc::clone(&visibility_store),
+            runtime: Arc::clone(&runtime),
+            loaded_workflows: &loaded_workflows,
+            registry: Arc::clone(&registry),
+            supervision: Arc::clone(&supervision),
+            recovery: self.recovery,
+            search_attribute_schema: Arc::clone(&search_attribute_schema),
+        })
+        .await?;
+        recover_timers_on_startup(&nif_state, Arc::clone(&store)).await?;
 
         let visibility_reconciliation_task =
             self.visibility_reconciliation_interval.map(|interval| {
