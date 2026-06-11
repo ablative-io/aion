@@ -23,6 +23,19 @@ use aion_package::{
 use aion_store::{EventStore, InMemoryStore, WriteToken};
 use serde_json::json;
 
+/// Real content-hash version of a single-module fixture package, in the
+/// durable textual form recorded on start events. Synthesized histories
+/// must pin the version the engine actually loads or recovery refuses them.
+fn fixture_version(
+    module: &str,
+    beam: &[u8],
+) -> Result<aion_core::PackageVersion, Box<dyn std::error::Error>> {
+    let beams = BeamSet::new(vec![BeamModule::new(module, beam)])?;
+    Ok(aion_core::PackageVersion::new(
+        aion_package::content_hash(&beams).to_string(),
+    ))
+}
+
 const PARENT_MODULE: &str = "aion_parent_fixture";
 const CHILD_MODULE: &str = "aion_child_fixture";
 const PARENT_BEAM: &[u8] = include_bytes!("fixtures/aion_parent_fixture.beam");
@@ -246,6 +259,7 @@ async fn restart_mid_child_resumes_awaiting_same_child() -> TestResult {
                     input: parent_input()?,
                     run_id: parent_run_id.clone(),
                     parent_run_id: None,
+                    package_version: fixture_version(PARENT_MODULE, PARENT_BEAM)?,
                 },
                 Event::ChildWorkflowStarted {
                     envelope: EventEnvelope {
@@ -256,6 +270,7 @@ async fn restart_mid_child_resumes_awaiting_same_child() -> TestResult {
                     child_workflow_id: child_workflow_id.clone(),
                     workflow_type: CHILD_MODULE.to_owned(),
                     input: Payload::new(ContentType::Json, br#""child-input""#.to_vec()),
+                    package_version: fixture_version(CHILD_MODULE, CHILD_BEAM)?,
                 },
             ],
             0,
@@ -275,6 +290,7 @@ async fn restart_mid_child_resumes_awaiting_same_child() -> TestResult {
                 input: Payload::new(ContentType::Json, br#""child-input""#.to_vec()),
                 run_id: child_run_id,
                 parent_run_id: None,
+                package_version: fixture_version(CHILD_MODULE, CHILD_BEAM)?,
             }],
             0,
         )

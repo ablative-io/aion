@@ -9,7 +9,7 @@ use chrono::Utc;
 use tokio::runtime::Handle;
 
 use crate::EngineError;
-use crate::loader::LoadedWorkflows;
+use crate::loader::WorkflowCatalog;
 use crate::registry::{Registry, Residency, TerminalOutcome, WorkflowHandle};
 use crate::runtime::{RuntimeHandle, WorkflowProcessOutcome};
 use crate::supervision::SupervisionTree;
@@ -26,8 +26,8 @@ pub struct ProcessExitContext {
     pub visibility_store: Arc<dyn VisibilityStore>,
     /// Active execution registry to reconcile status and residency.
     pub registry: Arc<Registry>,
-    /// Loaded workflow records used to start continue-as-new replacements.
-    pub loaded_workflows: Arc<LoadedWorkflows>,
+    /// Shared workflow catalog used to start continue-as-new replacements.
+    pub catalog: Arc<WorkflowCatalog>,
     /// Runtime boundary used to spawn continue-as-new replacements.
     pub runtime: Arc<RuntimeHandle>,
     /// Structural supervision tree for replacement workflow placement.
@@ -187,7 +187,7 @@ async fn start_continuation_replacement(
         StartWorkflowContext {
             store: Arc::clone(&context.store),
             visibility_store: Arc::clone(&context.visibility_store),
-            loaded_workflows: context.loaded_workflows.as_ref(),
+            catalog: Arc::clone(&context.catalog),
             runtime: Arc::clone(&context.runtime),
             supervision: Arc::clone(&context.supervision),
             registry: Arc::clone(&context.registry),
@@ -200,7 +200,9 @@ async fn start_continuation_replacement(
         StartWorkflowOptions {
             workflow_id: Some(handle.workflow_id().clone()),
             parent_run_id: Some(parent_run_id),
-            loaded_version: Some(handle.loaded_version().clone()),
+            // D1: the continue-as-new successor resolves the latest loaded
+            // version at record time, identically to the startup sweep.
+            loaded_version: None,
             // Recorded attributes carry into the replacement run's projection.
             search_attributes: std::collections::HashMap::new(),
         },
@@ -290,7 +292,7 @@ mod tests {
 
     use super::{ProcessExitContext, handle_process_exit_async, terminal_outcome_from_history};
     use crate::durability::Recorder;
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
         WorkflowHandleParts,
@@ -325,9 +327,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let handle = WorkflowHandle::new(WorkflowHandleParts {
@@ -347,7 +353,7 @@ mod tests {
                 store,
                 visibility_store,
                 registry,
-                loaded_workflows: Arc::new(LoadedWorkflows::new()),
+                catalog: Arc::new(WorkflowCatalog::new()),
                 runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
                 supervision: Arc::new(SupervisionTree::new()),
                 tokio_handle: tokio::runtime::Handle::current(),
@@ -426,6 +432,7 @@ mod tests {
                 input: payload("first")?,
                 run_id: old_run_id.clone(),
                 parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2),
@@ -439,6 +446,7 @@ mod tests {
                 input,
                 run_id: new_run_id.clone(),
                 parent_run_id: Some(old_run_id.clone()),
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowCompleted {
                 envelope: envelope(4),

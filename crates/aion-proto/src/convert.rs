@@ -626,6 +626,7 @@ mod tests {
             input: aion_core::Payload::from_json(&json!({ "cart": ["sku-1"] }))?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         };
 
         let envelope = encode_core_value("tenant-a", Some(String::from("request-1")), &event)?;

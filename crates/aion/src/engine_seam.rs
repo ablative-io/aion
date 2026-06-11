@@ -127,6 +127,8 @@ pub struct ChildWorkflowSpawnRequest {
     pub workflow_type: String,
     /// Opaque child workflow input payload.
     pub input: Payload,
+    /// Package version resolved for the child at record time.
+    pub package_version: aion_core::PackageVersion,
 }
 
 /// AE's result after starting a linked child workflow execution.

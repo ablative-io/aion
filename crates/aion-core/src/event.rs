@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActivityError, ActivityId, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeValue,
-    TimerId, WorkflowError, WorkflowId,
+    ActivityError, ActivityId, PackageVersion, Payload, RunId, ScheduleConfig, ScheduleId,
+    SearchAttributeValue, TimerId, WorkflowError, WorkflowId,
 };
 
 /// Metadata recorded with every workflow history event.
@@ -44,6 +44,11 @@ pub enum Event {
         /// Parent run that continued as this run, when this start is part of a
         /// continue-as-new chain.
         parent_run_id: Option<RunId>,
+        /// Package version this run was resolved against at record time.
+        ///
+        /// Recovery and replay resolve workflow code from this recorded
+        /// version; they never re-resolve a "latest" version.
+        package_version: PackageVersion,
     },
     /// A workflow execution completed successfully; this terminal event projects to Completed.
     WorkflowCompleted {
@@ -212,6 +217,12 @@ pub enum Event {
         workflow_type: String,
         /// Opaque child workflow input payload.
         input: Payload,
+        /// Package version resolved for the child at record time.
+        ///
+        /// The crash-repair sweep and the child's own start use exactly this
+        /// recorded version, so the crash path resolves identically to the
+        /// crash-free path.
+        package_version: PackageVersion,
     },
     /// A child workflow completed successfully.
     ChildWorkflowCompleted {
@@ -363,10 +374,14 @@ mod tests {
 
     use super::{Event, EventEnvelope};
     use crate::{
-        ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, Payload, RunId,
-        ScheduleConfig, ScheduleId, SearchAttributeValue, TimerId, TriggerSpec, WorkflowError,
-        WorkflowId,
+        ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, PackageVersion,
+        Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeValue, TimerId, TriggerSpec,
+        WorkflowError, WorkflowId,
     };
+
+    fn package_version() -> PackageVersion {
+        PackageVersion::new("a".repeat(64))
+    }
 
     fn recorded_at() -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000, 123_000_000).unwrap_or_default()
@@ -437,6 +452,7 @@ mod tests {
             input: payload("input")?,
             run_id: RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+            package_version: package_version(),
         };
 
         assert_eq!(event.seq(), 17);
@@ -447,7 +463,6 @@ mod tests {
 
     #[test]
     fn events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
-        let child_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(1));
         let fire_at = DateTime::from_timestamp(1_700_000_100, 0).unwrap_or_default();
         let events = vec![
             Event::WorkflowStarted {
@@ -456,6 +471,7 @@ mod tests {
                 input: payload("workflow-input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
+                package_version: package_version(),
             },
             Event::WorkflowCompleted {
                 envelope: envelope(2),
@@ -522,11 +538,24 @@ mod tests {
                 name: String::from("approve"),
                 payload: payload("signal-sent")?,
             },
+        ];
+
+        for event in events {
+            round_trip(&event)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn child_events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
+        let child_workflow_id = WorkflowId::new(uuid::Uuid::from_u128(1));
+        let events = vec![
             Event::ChildWorkflowStarted {
                 envelope: envelope(16),
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: String::from("fulfillment"),
                 input: payload("child-input")?,
+                package_version: package_version(),
             },
             Event::ChildWorkflowCompleted {
                 envelope: envelope(16),

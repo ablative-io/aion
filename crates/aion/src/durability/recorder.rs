@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use aion_core::{
-    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId,
-    SearchAttributeSchema, SearchAttributeValue, TimerId, WithTimeoutOutcome, WorkflowError,
-    WorkflowId,
+    ActivityError, ActivityId, Event, EventEnvelope, PackageVersion, Payload, RunId,
+    ScheduleConfig, ScheduleId, SearchAttributeSchema, SearchAttributeValue, TimerId,
+    WithTimeoutOutcome, WorkflowError, WorkflowId,
 };
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
 use aion_store::{EventStore, WriteToken};
@@ -25,6 +25,8 @@ pub struct WorkflowStartRecord {
     pub run_id: RunId,
     /// Parent run that continued into this run, when applicable.
     pub parent_run_id: Option<RunId>,
+    /// Package version this run was resolved against at record time.
+    pub package_version: PackageVersion,
 }
 
 /// Single append authority for one workflow history.
@@ -108,34 +110,22 @@ impl Recorder {
     pub async fn record_workflow_started(
         &mut self,
         recorded_at: DateTime<Utc>,
-        workflow_type: String,
-        input: Payload,
-        run_id: RunId,
+        start: WorkflowStartRecord,
     ) -> Result<(), DurabilityError> {
-        self.record_workflow_started_with_parent(recorded_at, workflow_type, input, run_id, None)
-            .await
-    }
-
-    /// Records workflow start with an optional parent run for continue-as-new chains.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
-    /// tracker cannot advance after a successful append.
-    pub async fn record_workflow_started_with_parent(
-        &mut self,
-        recorded_at: DateTime<Utc>,
-        workflow_type: String,
-        input: Payload,
-        run_id: RunId,
-        parent_run_id: Option<RunId>,
-    ) -> Result<(), DurabilityError> {
+        let WorkflowStartRecord {
+            workflow_type,
+            input,
+            run_id,
+            parent_run_id,
+            package_version,
+        } = start;
         self.append_with(recorded_at, |envelope| Event::WorkflowStarted {
             envelope,
             workflow_type,
             input,
             run_id,
             parent_run_id,
+            package_version,
         })
         .await
     }
@@ -161,26 +151,19 @@ impl Recorder {
         attributes: HashMap<String, SearchAttributeValue>,
         schema: &SearchAttributeSchema,
     ) -> Result<(), DurabilityError> {
+        if attributes.is_empty() {
+            return self.record_workflow_started(recorded_at, start).await;
+        }
+        for (name, value) in &attributes {
+            schema.validate(name, value)?;
+        }
         let WorkflowStartRecord {
             workflow_type,
             input,
             run_id,
             parent_run_id,
+            package_version,
         } = start;
-        if attributes.is_empty() {
-            return self
-                .record_workflow_started_with_parent(
-                    recorded_at,
-                    workflow_type,
-                    input,
-                    run_id,
-                    parent_run_id,
-                )
-                .await;
-        }
-        for (name, value) in &attributes {
-            schema.validate(name, value)?;
-        }
 
         let started_envelope = self.next_envelope(recorded_at)?;
         let attributes_envelope = self.envelope_after(&started_envelope, recorded_at)?;
@@ -192,6 +175,7 @@ impl Recorder {
                 input,
                 run_id,
                 parent_run_id,
+                package_version,
             },
             Event::SearchAttributesUpdated {
                 envelope: attributes_envelope,
@@ -658,12 +642,14 @@ impl Recorder {
         child_workflow_id: WorkflowId,
         workflow_type: String,
         input: Payload,
+        package_version: PackageVersion,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::ChildWorkflowStarted {
             envelope,
             child_workflow_id,
             workflow_type,
             input,
+            package_version,
         })
         .await
     }
@@ -953,6 +939,7 @@ mod tests {
             input: payload("workflow-input")?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 
@@ -966,9 +953,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 recorded_at(1),
-                String::from("checkout"),
-                payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         recorder
@@ -996,9 +987,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 recorded_at(1),
-                String::from("checkout"),
-                payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         recorder
@@ -1052,9 +1047,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 recorded_at(1),
-                String::from("checkout"),
-                payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         recorder
@@ -1107,6 +1106,7 @@ mod tests {
                     input: payload("input")?,
                     run_id: run_id.clone(),
                     parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
                 },
                 attributes.clone(),
                 &schema,
@@ -1171,6 +1171,7 @@ mod tests {
                     input: payload("input")?,
                     run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
                     parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
                 },
                 attributes,
                 &schema,
@@ -1204,6 +1205,7 @@ mod tests {
                     input: payload("input")?,
                     run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
                     parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
                 },
                 HashMap::new(),
                 &schema,
@@ -1231,9 +1233,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 recorded_at(1),
-                String::from("checkout"),
-                payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let attributes = HashMap::from([(
@@ -1282,9 +1288,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 recorded_at(1),
-                String::from("checkout"),
-                payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         recorder
@@ -1326,9 +1336,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 recorded_at(1),
-                String::from("checkout"),
-                payload("input")?,
-                run_id.clone(),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         recorder

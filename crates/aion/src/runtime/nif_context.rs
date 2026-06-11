@@ -499,6 +499,7 @@ mod tests {
             input: payload("input")?,
             run_id: run_id.clone(),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 
@@ -740,6 +741,7 @@ mod tests {
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: "child".to_owned(),
                 input: payload("child-input")?,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
         ];
         if include_terminal {

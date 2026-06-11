@@ -686,6 +686,7 @@ mod tests {
                 input: Payload::from_json(&json!({}))?,
                 run_id: run_id.clone(),
                 parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             }];
             events.extend_from_slice(extra_events);
             let head = events.len() as u64;

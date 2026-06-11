@@ -60,6 +60,10 @@ pub enum EngineError {
     #[error("active workflow registry lock was poisoned")]
     RegistryPoisoned,
 
+    /// The workflow catalog lock was poisoned.
+    #[error("workflow catalog lock was poisoned")]
+    CatalogPoisoned,
+
     /// The engine is already shutting down and no new workflow starts are accepted.
     #[error("engine is shutting down")]
     ShuttingDown,

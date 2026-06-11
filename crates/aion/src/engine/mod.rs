@@ -8,6 +8,8 @@ mod api_schedule;
 pub mod builder;
 /// Delegated signal, query, and event-publishing seams.
 pub mod delegated;
+/// Runtime package-load seam: live load, routing, listing, unload.
+mod reload;
 /// `EngineHandle` seam implementation for the engine.
 mod seam_handle;
 /// Seam-assembly helpers used by `EngineBuilder::build()`.
@@ -16,6 +18,8 @@ mod seams;
 mod shutdown_gate;
 /// Startup recovery wiring used by `EngineBuilder::build()`.
 mod startup;
+/// Crash-window repair sweeps run by startup recovery.
+mod startup_sweeps;
 
 pub use api::Engine;
 pub use builder::EngineBuilder;

@@ -24,6 +24,8 @@ pub enum LiveChildOutcome {
     Completed {
         /// Identifier AE assigned to the child workflow instance.
         child_workflow_id: WorkflowId,
+        /// Package version AE resolved for the child at spawn time.
+        package_version: aion_core::PackageVersion,
         /// Opaque child result payload.
         result: Payload,
     },
@@ -31,12 +33,25 @@ pub enum LiveChildOutcome {
     Failed {
         /// Identifier AE assigned to the child workflow instance.
         child_workflow_id: WorkflowId,
+        /// Package version AE resolved for the child at spawn time.
+        package_version: aion_core::PackageVersion,
         /// Terminal child workflow error.
         error: WorkflowError,
     },
 }
 
 impl LiveChildOutcome {
+    fn package_version(&self) -> aion_core::PackageVersion {
+        match self {
+            Self::Completed {
+                package_version, ..
+            }
+            | Self::Failed {
+                package_version, ..
+            } => package_version.clone(),
+        }
+    }
+
     fn child_workflow_id(&self) -> WorkflowId {
         match self {
             Self::Completed {
@@ -228,6 +243,7 @@ async fn execute_live_and_record(
                     outcome.child_workflow_id(),
                     workflow_type,
                     input,
+                    outcome.package_version(),
                 )
                 .await?;
             match outcome {

@@ -23,15 +23,16 @@ child_then_signal(_Input) ->
     {ChildId, ChildResult}.
 
 %% Spawn a child whose workflow type is never loaded by the test engine.
-%% The engine records ChildWorkflowStarted before starting the child, so the
-%% start failure is an engine-internal obligation (F3): spawn_child must
-%% still return {ok, ChildId} and the parent must complete normally. A
-%% workflow-visible error here would diverge from replay, which resolves the
-%% spawn from the recorded event as success.
+%% Durable version pinning (#62 D1) resolves the child's package version at
+%% record time, so an unloaded child type fails *before* anything is
+%% recorded: spawn_child returns {error, _} to workflow code and the parent
+%% history carries no ChildWorkflowStarted. Pre-record failures are
+%% replay-safe (nothing durable exists to diverge from); F3 still governs
+%% every post-record start failure.
 spawn_unloaded(_Input) ->
-    {ok, ChildId} = aion_flow_ffi:spawn_child(
+    {error, Reason} = aion_flow_ffi:spawn_child(
         <<"aion_never_loaded_child">>, <<"\"child-input\"">>, <<"{}">>),
-    ChildId.
+    Reason.
 
 %% Spawn two children with a "mid" signal consumed between the spawns, so an
 %% asynchronous SignalReceived event lands between the two recorded

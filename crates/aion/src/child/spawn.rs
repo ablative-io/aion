@@ -93,6 +93,7 @@ pub fn spawn(
     child_type: impl Into<String>,
     input: Payload,
     child_workflow_id: WorkflowId,
+    package_version: aion_core::PackageVersion,
 ) -> Result<SpawnedChildWorkflow, ChildWorkflowError> {
     let workflow_type = child_type.into();
 
@@ -101,6 +102,7 @@ pub fn spawn(
         child_workflow_id: child_workflow_id.clone(),
         workflow_type: workflow_type.clone(),
         input: input.clone(),
+        package_version: package_version.clone(),
     };
     engine.record_workflow_event(recording.parent_workflow_id(), event)?;
 
@@ -109,6 +111,7 @@ pub fn spawn(
         child_workflow_id: child_workflow_id.clone(),
         workflow_type,
         input,
+        package_version,
     };
     let result = engine.spawn_child_workflow(request)?;
     if result.child_workflow_id != child_workflow_id {
@@ -165,6 +168,7 @@ mod tests {
             "child.worker",
             input.clone(),
             child.clone(),
+            aion_core::PackageVersion::new("a".repeat(64)),
         )?;
 
         assert_eq!(spawned.child_workflow_id, child);
@@ -220,6 +224,7 @@ mod tests {
             "child.worker",
             payload(b"null"),
             child.clone(),
+            aion_core::PackageVersion::new("a".repeat(64)),
         );
 
         assert!(matches!(observed, Err(ChildWorkflowError::Engine(_))));
@@ -251,6 +256,7 @@ mod tests {
             "child.worker",
             payload(b"null"),
             WorkflowId::new_v4(),
+            aion_core::PackageVersion::new("a".repeat(64)),
         );
 
         match observed {

@@ -116,6 +116,24 @@ impl RuntimeHandle {
         self.module_registry.lookup(module).is_some()
     }
 
+    /// Return true when a registered module exports `function` at any arity.
+    ///
+    /// Workflow entry points are spawned at arity 0 or 1 depending on input;
+    /// the load-time route commit only needs to know the name is exported at
+    /// all — a wrong-arity spawn still fails typed at dispatch.
+    #[must_use]
+    pub fn module_exports_function(&self, deployed_name: &str, function: &str) -> bool {
+        let module_atom = self.atom_table.intern(deployed_name);
+        let Some(module) = self.module_registry.lookup(module_atom) else {
+            return false;
+        };
+        let function_atom = self.atom_table.intern(function);
+        module
+            .exports
+            .keys()
+            .any(|(name, _arity)| *name == function_atom)
+    }
+
     /// Remove a module registered during a failed staged package load.
     pub(crate) fn unregister_module(&self, deployed_name: &str) -> Result<(), EngineError> {
         let module = self.atom_table.intern(deployed_name);

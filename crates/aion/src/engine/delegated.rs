@@ -470,7 +470,7 @@ mod tests {
     use crate::engine::api::EngineComponents;
     use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandleParts};
     use crate::{
-        LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SupervisionTree, WorkflowHandle,
+        Registry, RuntimeConfig, RuntimeHandle, SupervisionTree, WorkflowCatalog, WorkflowHandle,
     };
 
     use super::*;
@@ -554,7 +554,7 @@ mod tests {
             store,
             visibility_store,
             runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
-            loaded_workflows: LoadedWorkflows::new(),
+            catalog: Arc::new(WorkflowCatalog::new()),
             registry: Arc::new(Registry::default()),
             supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
@@ -577,9 +577,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         Ok(WorkflowHandle::new(WorkflowHandleParts {
@@ -781,9 +785,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         recorder
@@ -820,6 +828,7 @@ mod tests {
             input: payload("input")?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         };
         let engine = engine_with_seams(
             Arc::new(DeferredSignalRouter),

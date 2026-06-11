@@ -10,8 +10,8 @@ use aion_store::visibility::VisibilityStore;
 use aion_store::{EventStore, InMemoryStore};
 
 use crate::{
-    EngineError, LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SignalDeliveryConfig,
-    SupervisionTree,
+    EngineError, Registry, RuntimeConfig, RuntimeHandle, SignalDeliveryConfig, SupervisionTree,
+    WorkflowCatalog,
     activity::bridge::ActivityDispatcher,
     durability::ActiveWorkflowRecoverySeam,
     runtime::{
@@ -91,14 +91,14 @@ fn install_engine_nif_seams(
     query_mailbox_engine
 }
 
-fn load_workflow_sources(
+async fn load_workflow_sources(
     runtime: &RuntimeHandle,
     sources: Vec<WorkflowPackageSource>,
-) -> Result<LoadedWorkflows, EngineError> {
-    let mut loaded_workflows = LoadedWorkflows::new();
+) -> Result<Arc<WorkflowCatalog>, EngineError> {
+    let catalog = Arc::new(WorkflowCatalog::new());
     for source in sources {
         let package = package_from_source(source)?;
-        let loaded_workflow = loaded_workflows.load_package(runtime, &package)?;
+        let loaded_workflow = catalog.load_package(runtime, &package).await?;
         tracing::info!(
             workflow_type = loaded_workflow.workflow_type(),
             content_hash = %loaded_workflow.version(),
@@ -106,7 +106,7 @@ fn load_workflow_sources(
             loaded_workflow.workflow_type()
         );
     }
-    Ok(loaded_workflows)
+    Ok(catalog)
 }
 
 impl From<Package> for WorkflowPackageSource {
@@ -483,7 +483,7 @@ impl EngineBuilder {
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);
         runtime.install_nifs(nifs)?;
 
-        let loaded_workflows = load_workflow_sources(runtime.as_ref(), self.workflow_sources)?;
+        let catalog = load_workflow_sources(runtime.as_ref(), self.workflow_sources).await?;
 
         let registry = self
             .active_registry
@@ -526,7 +526,7 @@ impl EngineBuilder {
             store: &store,
             visibility_store: &visibility_store,
             runtime: &runtime,
-            loaded_workflows: &loaded_workflows,
+            catalog: &catalog,
             registry: &registry,
             supervision: &supervision,
             signal_handoff: &signal_handoff,
@@ -544,7 +544,7 @@ impl EngineBuilder {
             store: Arc::clone(&store),
             visibility_store: Arc::clone(&visibility_store),
             runtime: Arc::clone(&runtime),
-            loaded_workflows: &loaded_workflows,
+            catalog: Arc::clone(&catalog),
             registry: Arc::clone(&registry),
             supervision: Arc::clone(&supervision),
             recovery: self.recovery,
@@ -566,7 +566,7 @@ impl EngineBuilder {
             store,
             visibility_store,
             runtime,
-            loaded_workflows,
+            catalog,
             registry,
             supervision,
             delegated,
@@ -586,7 +586,7 @@ struct ChildBridgeAssembly<'a> {
     store: &'a Arc<dyn EventStore>,
     visibility_store: &'a Arc<dyn VisibilityStore>,
     runtime: &'a Arc<RuntimeHandle>,
-    loaded_workflows: &'a LoadedWorkflows,
+    catalog: &'a Arc<WorkflowCatalog>,
     registry: &'a Arc<Registry>,
     supervision: &'a Arc<SupervisionTree>,
     signal_handoff: &'a Arc<SignalResumeHandoff>,
@@ -605,7 +605,7 @@ fn install_configured_child_nif_bridge(
             store: Arc::clone(assembly.store),
             visibility_store: Arc::clone(assembly.visibility_store),
             runtime: Arc::clone(assembly.runtime),
-            loaded_workflows: assembly.loaded_workflows.clone(),
+            catalog: Arc::clone(assembly.catalog),
             registry: Arc::clone(assembly.registry),
             supervision: Arc::clone(assembly.supervision),
             signal_handoff: Arc::clone(assembly.signal_handoff),
@@ -617,7 +617,7 @@ fn install_configured_child_nif_bridge(
     Ok(())
 }
 
-fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
+pub(super) fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
     match source {
         WorkflowPackageSource::Path(path) => {
             Package::load_from_path(&path).map_err(|error| EngineError::Load {
@@ -673,6 +673,7 @@ mod tests {
             input: payload()?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 
@@ -798,9 +799,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 Utc::now(),
-                "checkout".to_owned(),
-                payload()?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(7)),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload()?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(7)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
 
@@ -871,9 +876,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 Utc::now(),
-                "checkout".to_owned(),
-                payload()?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload()?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let handle = crate::registry::WorkflowHandle::new(crate::registry::WorkflowHandleParts {
@@ -996,7 +1005,7 @@ mod tests {
 
         assert!(engine.registry().list()?.is_empty());
         assert_eq!(engine.supervision().type_supervisor_count()?, 1);
-        assert_eq!(engine.loaded_workflows().iter().count(), 0);
+        assert_eq!(engine.workflow_catalog().workflows()?.len(), 0);
 
         let coordinator_id = schedule_coordinator_workflow_id();
         let active = store.list_active().await?;
@@ -1064,8 +1073,8 @@ mod tests {
             .await?;
 
         let loaded = engine
-            .loaded_workflows()
-            .get("counter", &version)
+            .workflow_catalog()
+            .get("counter", &version)?
             .ok_or("loaded package record missing")?;
         assert_eq!(loaded.deployed_entry_module(), deployed_entry_module);
         assert!(
@@ -1164,7 +1173,12 @@ mod tests {
             .await?;
         std::fs::remove_file(path)?;
 
-        assert!(engine.loaded_workflows().get("counter", &version).is_some());
+        assert!(
+            engine
+                .workflow_catalog()
+                .get("counter", &version)?
+                .is_some()
+        );
         Ok(())
     }
 }

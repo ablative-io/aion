@@ -14,7 +14,7 @@ use chrono::Utc;
 use super::completion::{ProcessExitContext, handle_process_exit};
 use super::visibility::upsert_workflow_visibility;
 use crate::durability::Recorder;
-use crate::loader::LoadedWorkflows;
+use crate::loader::WorkflowCatalog;
 use crate::registry::{
     CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
 };
@@ -30,13 +30,13 @@ use crate::{
 };
 
 /// Dependencies required to start one workflow execution.
-pub struct StartWorkflowContext<'a> {
+pub struct StartWorkflowContext {
     /// Durable event store used by the workflow's single recorder.
     pub store: Arc<dyn EventStore>,
     /// Visibility index updated after state-changing workflow events.
     pub visibility_store: Arc<dyn VisibilityStore>,
-    /// Loader-owned workflow records keyed by logical workflow type and version.
-    pub loaded_workflows: &'a LoadedWorkflows,
+    /// Shared workflow catalog resolving types to loaded package versions.
+    pub catalog: Arc<WorkflowCatalog>,
     /// Runtime boundary used to spawn the workflow process.
     pub runtime: Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
@@ -77,7 +77,7 @@ pub struct StartWorkflowOptions {
 /// supervision, and registry failures surface as their typed [`EngineError`]
 /// variants.
 pub async fn start_workflow(
-    context: StartWorkflowContext<'_>,
+    context: StartWorkflowContext,
     workflow_type: &str,
     input: Payload,
 ) -> Result<WorkflowHandle, EngineError> {
@@ -96,18 +96,22 @@ pub async fn start_workflow(
 ///
 /// Returns the same typed errors as [`start_workflow`].
 pub async fn start_workflow_with_options(
-    context: StartWorkflowContext<'_>,
+    context: StartWorkflowContext,
     workflow_type: &str,
     input: Payload,
     options: StartWorkflowOptions,
 ) -> Result<WorkflowHandle, EngineError> {
-    let loaded = match &options.loaded_version {
-        Some(version) => context.loaded_workflows.get(workflow_type, version),
-        None => context.loaded_workflows.latest(workflow_type),
+    // The pinned resolution is held for the whole start: from here until the
+    // registry insert lands (or the start fails), unload verification sees
+    // this version as in use, closing the registration birth window.
+    let pinned = match &options.loaded_version {
+        Some(version) => context.catalog.resolve_exact(workflow_type, version)?,
+        None => context.catalog.resolve_routed(workflow_type)?,
     }
     .ok_or_else(|| EngineError::WorkflowNotFound {
         workflow_type: workflow_type.to_owned(),
     })?;
+    let loaded = pinned.workflow();
 
     let supplied_workflow_id = options.workflow_id.is_some();
     let workflow_id = options.workflow_id.unwrap_or_else(WorkflowId::new_v4);
@@ -138,6 +142,7 @@ pub async fn start_workflow_with_options(
                 input: input.clone(),
                 run_id: run_id.clone(),
                 parent_run_id: options.parent_run_id,
+                package_version: crate::loader::package_version_of(loaded.version()),
             },
             options.search_attributes,
             &context.search_attribute_schema,
@@ -204,7 +209,7 @@ pub async fn start_workflow_with_options(
 }
 
 fn install_completion_monitor(
-    context: &StartWorkflowContext<'_>,
+    context: &StartWorkflowContext,
     pid: crate::Pid,
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
@@ -212,7 +217,7 @@ fn install_completion_monitor(
         store: Arc::clone(&context.store),
         visibility_store: Arc::clone(&context.visibility_store),
         registry: Arc::clone(&context.registry),
-        loaded_workflows: Arc::new(context.loaded_workflows.clone()),
+        catalog: Arc::clone(&context.catalog),
         runtime: Arc::clone(&context.runtime),
         supervision: Arc::clone(&context.supervision),
         // Epoch-stable by the StartWorkflowContext contract: the monitor
@@ -231,7 +236,7 @@ fn install_completion_monitor(
     Ok(())
 }
 
-fn deliver_deferred_signals(context: &StartWorkflowContext<'_>, handle: &WorkflowHandle) {
+fn deliver_deferred_signals(context: &StartWorkflowContext, handle: &WorkflowHandle) {
     let Some(handoff) = &context.signal_handoff else {
         return;
     };

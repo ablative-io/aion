@@ -204,6 +204,7 @@ fn started(seq: u64, workflow_id: &WorkflowId) -> Result<Event, TestError> {
         input: Payload::from_json(&json!({ "seq": seq }))?,
         run_id: aion_core::RunId::new(uuid::Uuid::from_u128(u128::from(seq))),
         parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
 }
 
@@ -437,6 +438,7 @@ fn typed_started(
         input: Payload::from_json(&json!({ "seq": seq }))?,
         run_id: aion_core::RunId::new(uuid::Uuid::new_v4()),
         parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
 }
 

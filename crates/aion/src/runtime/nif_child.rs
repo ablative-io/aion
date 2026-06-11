@@ -104,6 +104,14 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             Err(format!("unexpected_child_spawn_resolution:{other:?}"))
         }
         ResolveOutcome::ResumeLive => {
+            // D1: the child's package version is resolved once, here, at
+            // record time — always the latest loaded version of the child's
+            // type — and recorded durably so the spawn, the background
+            // retry, and the crash-repair sweep all start exactly it.
+            let package_version = bridge
+                .routed_package_version(&workflow_type)
+                .map_err(|error| format!("child_version_resolution:{error}"))?
+                .ok_or_else(|| format!("child_workflow_type_not_loaded:{workflow_type}"))?;
             // Record-then-spawn (#56): the id is recorded nondeterminism —
             // drawn once here, durably recorded before any observable use,
             // returned from history on every replay.
@@ -112,6 +120,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                 let child_workflow_id = child_workflow_id.clone();
                 let workflow_type = workflow_type.clone();
                 let input = input.clone();
+                let package_version = package_version.clone();
                 Box::pin(async move {
                     recorder
                         .record_child_workflow_started(
@@ -119,6 +128,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                             child_workflow_id,
                             workflow_type,
                             input,
+                            package_version,
                         )
                         .await
                 })
@@ -137,6 +147,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                 child_workflow_id: child_workflow_id.clone(),
                 workflow_type: workflow_type.clone(),
                 input: input.clone(),
+                package_version: package_version.clone(),
             };
             match engine.spawn_child_workflow(request) {
                 Ok(result) if result.child_workflow_id == child_workflow_id => {}
@@ -157,6 +168,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                         &child_workflow_id,
                         workflow_type,
                         input,
+                        package_version,
                     );
                 }
                 Err(error) => {
@@ -172,6 +184,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                         &child_workflow_id,
                         workflow_type,
                         input,
+                        package_version,
                     );
                 }
             }
@@ -187,6 +200,7 @@ fn recover_spawn_in_background(
     child_workflow_id: &WorkflowId,
     workflow_type: String,
     input: Payload,
+    package_version: aion_core::PackageVersion,
 ) {
     let armed = super::nif_child_spawn_retry::ensure_child_started_in_background(
         bridge,
@@ -195,6 +209,7 @@ fn recover_spawn_in_background(
             child_workflow_id: child_workflow_id.clone(),
             workflow_type,
             input,
+            package_version,
         },
     );
     if !armed {
@@ -607,7 +622,7 @@ mod tests {
 
     use super::{AwaitChildStep, await_child_step, next_child_key};
     use crate::durability::{CorrelationKey, Recorder};
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
     };
@@ -685,7 +700,7 @@ mod tests {
                 store: Arc::clone(&store),
                 visibility_store,
                 runtime: Arc::clone(&runtime),
-                loaded_workflows: LoadedWorkflows::new(),
+                catalog: Arc::new(WorkflowCatalog::new()),
                 registry,
                 supervision: Arc::new(SupervisionTree::new()),
                 signal_handoff: Arc::new(SignalResumeHandoff::new()),
@@ -740,6 +755,7 @@ mod tests {
             child_workflow_id: child_workflow_id.clone(),
             workflow_type: "child".to_owned(),
             input: Payload::new(aion_core::ContentType::Json, br#""child-input""#.to_vec()),
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         }
     }
 
@@ -771,6 +787,7 @@ mod tests {
             input: Payload::from_json(&json!({ "fixture": "input" }))?,
             run_id: run_id.clone(),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 

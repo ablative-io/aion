@@ -35,6 +35,35 @@ impl fmt::Display for WorkflowId {
     }
 }
 
+/// Canonical textual content hash identifying one loaded workflow package version.
+///
+/// History events pin every workflow run to the package version it started on.
+/// `aion-core` is a leaf crate that cannot depend on `aion-package`, so the
+/// durable form is the stable 64-character lowercase hexadecimal content-hash
+/// text; the engine parses it back to a typed content hash at its boundary.
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PackageVersion(String);
+
+impl PackageVersion {
+    /// Creates a package version from its canonical textual content-hash form.
+    #[must_use]
+    pub fn new(version: impl Into<String>) -> Self {
+        Self(version.into())
+    }
+
+    /// Returns the canonical textual content-hash form.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PackageVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// Identifier for an activity scheduled within a workflow history.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActivityId(u64);

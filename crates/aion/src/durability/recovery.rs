@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use aion_core::{Event, RunId, WorkflowId};
+use aion_core::{Event, PackageVersion, RunId, WorkflowId};
 use aion_package::ContentHash;
 use aion_store::EventStore;
 use chrono::{DateTime, Utc};
@@ -12,7 +12,7 @@ use crate::durability::{
     Resolution, fail_on_violation,
 };
 use crate::supervision::spawn_workflow_with_policy;
-use crate::{EngineError, LoadedWorkflows, Pid, RuntimeHandle, RuntimeInput};
+use crate::{EngineError, Pid, RuntimeHandle, RuntimeInput, WorkflowCatalog};
 
 /// AE-provided replay inputs for one active workflow.
 #[derive(Clone, Debug)]
@@ -28,6 +28,7 @@ pub struct RecoveryPlan {
 struct StartedMetadata<'a> {
     input: &'a aion_core::Payload,
     run_id: &'a RunId,
+    package_version: &'a PackageVersion,
 }
 
 fn started_metadata<'a>(
@@ -35,15 +36,18 @@ fn started_metadata<'a>(
     expected_workflow_type: &str,
     history: &'a [Event],
 ) -> Result<StartedMetadata<'a>, EngineError> {
-    let Some((workflow_type, input, run_id)) = history.iter().rev().find_map(|event| match event {
-        Event::WorkflowStarted {
-            workflow_type,
-            input,
-            run_id,
-            ..
-        } => Some((workflow_type, input, run_id)),
-        _ => None,
-    }) else {
+    let Some((workflow_type, input, run_id, package_version)) =
+        history.iter().rev().find_map(|event| match event {
+            Event::WorkflowStarted {
+                workflow_type,
+                input,
+                run_id,
+                package_version,
+                ..
+            } => Some((workflow_type, input, run_id, package_version)),
+            _ => None,
+        })
+    else {
         return Err(EngineError::Load {
             reason: format!(
                 "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
@@ -59,7 +63,11 @@ fn started_metadata<'a>(
         });
     }
 
-    Ok(StartedMetadata { input, run_id })
+    Ok(StartedMetadata {
+        input,
+        run_id,
+        package_version,
+    })
 }
 
 /// Small AE/test seam that supplies the execution-specific inputs AD cannot infer from history.
@@ -240,7 +248,7 @@ pub trait ActiveWorkflowRecoverySeam: Send + Sync {
         workflow_id: &WorkflowId,
         workflow_type: &str,
         history: &[Event],
-        loaded_workflows: &LoadedWorkflows,
+        catalog: &WorkflowCatalog,
     ) -> Result<ActiveWorkflowRecovery, EngineError>;
 }
 
@@ -271,12 +279,17 @@ impl ActiveWorkflowRecoverySeam for ActiveWorkflowRecoverySeamImpl {
         workflow_id: &WorkflowId,
         workflow_type: &str,
         history: &[Event],
-        loaded_workflows: &LoadedWorkflows,
+        catalog: &WorkflowCatalog,
     ) -> Result<ActiveWorkflowRecovery, EngineError> {
         let started = started_metadata(workflow_id, workflow_type, history)?;
-        let loaded = loaded_workflows
-            .single_loaded(workflow_type)
-            .map_err(|reason| EngineError::Load { reason })?;
+        let version = crate::loader::parse_package_version(workflow_type, started.package_version)?;
+        let loaded = catalog
+            .get(workflow_type, &version)?
+            .ok_or_else(|| EngineError::Load {
+                reason: format!(
+                    "active workflow `{workflow_id}` is pinned to package version `{version}` of `{workflow_type}`, which is not loaded"
+                ),
+            })?;
         let runtime_input = RuntimeInput::from_payload(started.input)?;
         let pid = spawn_workflow_with_policy(
             &self.runtime,
@@ -537,6 +550,7 @@ mod tests {
             input: payload("input")?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(10)),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 

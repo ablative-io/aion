@@ -145,6 +145,7 @@ pub(super) async fn append_continued_chain(
             input: payload()?,
             run_id: first.clone(),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         },
         Event::WorkflowContinuedAsNew {
             envelope: event_envelope(2),
@@ -158,6 +159,7 @@ pub(super) async fn append_continued_chain(
             input: payload()?,
             run_id: latest.clone(),
             parent_run_id: Some(first.clone()),
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         },
     ];
     store
@@ -213,6 +215,7 @@ fn started_event() -> Result<Event, aion_core::PayloadError> {
         input: payload()?,
         run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
         parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
 }
 

@@ -272,6 +272,7 @@ mod tests {
             input: Payload::from_json(&serde_json::json!({ "seq": seq }))?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(u128::from(seq))),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 

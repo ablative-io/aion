@@ -73,8 +73,8 @@ async fn cancel_propagates_kill_to_linked_activity() -> Result<(), Box<dyn std::
         )
         .await?;
     let deployed_module = engine
-        .loaded_workflows()
-        .latest(FIXTURE_MODULE)
+        .workflow_catalog()
+        .routed(FIXTURE_MODULE)?
         .ok_or("fixture workflow was not loaded")?
         .deployed_entry_module()
         .to_owned();

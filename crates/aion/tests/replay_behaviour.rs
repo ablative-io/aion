@@ -90,9 +90,13 @@ async fn record_full_history(
     recorder
         .record_workflow_started(
             timestamp(10)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run_id(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder
@@ -125,6 +129,7 @@ async fn record_full_history(
             child_workflow_id(),
             "child".to_owned(),
             payload("child-input")?,
+            aion_core::PackageVersion::new("a".repeat(64)),
         )
         .await?;
     recorder
@@ -152,9 +157,13 @@ async fn record_partial_history_for(
     recorder
         .record_workflow_started(
             timestamp(timestamp_base)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run_id(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder
@@ -183,9 +192,13 @@ async fn record_terminal_history_for(
     recorder
         .record_workflow_started(
             timestamp(200)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run_id(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder
@@ -202,9 +215,13 @@ async fn record_divergent_history_for(
     recorder
         .record_workflow_started(
             timestamp(300)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run_id(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder
@@ -268,9 +285,13 @@ async fn record_round_trip_history(
     recorder
         .record_workflow_started(
             timestamp(10)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run,
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run,
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder
@@ -368,9 +389,13 @@ async fn record_partial_history(
     recorder
         .record_workflow_started(
             timestamp(10)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run_id(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder
@@ -779,9 +804,13 @@ async fn terminal_activity_failure_is_served_from_history_cache_without_live_cal
     recorder
         .record_workflow_started(
             timestamp(10)?,
-            "workflow".to_owned(),
-            payload("input")?,
-            run_id(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder

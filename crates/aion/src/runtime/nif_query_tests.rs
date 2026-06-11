@@ -186,6 +186,7 @@ fn seed_started_workflow(
         input: aion_core::Payload::from_json(&serde_json::json!({ "label": "input" }))?,
         run_id: run_id.clone(),
         parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     };
     runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, &[started], 0))?;
     let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(store) as _, 1);
