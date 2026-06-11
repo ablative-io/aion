@@ -28,6 +28,7 @@ class WireErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WIRE_ERROR_CODE_LAGGED: _ClassVar[WireErrorCode]
     WIRE_ERROR_CODE_INVALID_INPUT: _ClassVar[WireErrorCode]
     WIRE_ERROR_CODE_BACKEND: _ClassVar[WireErrorCode]
+    WIRE_ERROR_CODE_QUERY_FAILED: _ClassVar[WireErrorCode]
 WORKFLOW_STATUS_UNSPECIFIED: WorkflowStatus
 WORKFLOW_STATUS_RUNNING: WorkflowStatus
 WORKFLOW_STATUS_COMPLETED: WorkflowStatus
@@ -45,6 +46,7 @@ WIRE_ERROR_CODE_NOT_RUNNING: WireErrorCode
 WIRE_ERROR_CODE_LAGGED: WireErrorCode
 WIRE_ERROR_CODE_INVALID_INPUT: WireErrorCode
 WIRE_ERROR_CODE_BACKEND: WireErrorCode
+WIRE_ERROR_CODE_QUERY_FAILED: WireErrorCode
 
 class WorkflowId(_message.Message):
     __slots__ = ("uuid",)

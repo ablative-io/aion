@@ -478,18 +478,31 @@ mod tests {
             ),
         ];
 
+        // Count-lock: the pin list must grow with the enum. The exhaustive
+        // match below numbers every variant; a new variant breaks the match
+        // first, and updating the match without pinning the new mapping
+        // breaks this assertion.
+        let variant_count = arms
+            .iter()
+            .map(|(query, _, _)| match query {
+                QueryError::UnknownQuery(_) => 0,
+                QueryError::Timeout => 1,
+                QueryError::NotRunning(_) => 2,
+                QueryError::Unknown(_) => 3,
+                QueryError::ReplyDropped => 4,
+                QueryError::HandlerFailed { .. } => 5,
+                QueryError::Engine(_) => 6,
+            })
+            .collect::<std::collections::BTreeSet<usize>>()
+            .len();
+        assert_eq!(
+            arms.len(),
+            variant_count,
+            "every QueryError variant must appear exactly once in the pin list",
+        );
+        assert_eq!(variant_count, 7, "pin list must cover all 7 variants");
+
         for (query, expected_code, expected_type) in arms {
-            // Compile-time exhaustiveness: a new QueryError variant must be
-            // added to the list above before this match compiles again.
-            match &query {
-                QueryError::UnknownQuery(_)
-                | QueryError::Timeout
-                | QueryError::NotRunning(_)
-                | QueryError::Unknown(_)
-                | QueryError::ReplyDropped
-                | QueryError::HandlerFailed { .. }
-                | QueryError::Engine(_) => {}
-            }
             let wire = query_wire(query.clone());
             assert_eq!(
                 wire.code, expected_code,
