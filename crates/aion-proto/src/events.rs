@@ -39,9 +39,31 @@ pub struct PerWorkflowSubscription {
     /// Workflow whose events are requested.
     #[prost(message, optional, tag = "2")]
     pub workflow_id: Option<ProtoWorkflowId>,
+    /// First per-workflow sequence number the caller wants — not the last seq
+    /// already seen. When present, the server replays recorded history events
+    /// with seq >= `resume_from_seq` in order, then splices into the live
+    /// stream with no gaps and no duplicates. Sequence numbers start at 1; 0
+    /// is rejected as `invalid_input`. Absent = live tail only (current
+    /// behaviour). `resume_from_seq` = 1 replays the full history.
+    ///
+    /// Only per-workflow subscriptions carry a resume cursor: per-workflow
+    /// seq is the only ordering that exists, so [`FilteredSubscription`] and
+    /// [`FirehoseSubscription`] are live-only by design.
+    ///
+    /// RESERVED compaction signal (documentation-only, no code yet): a cursor
+    /// older than the earliest retained event yields `not_found` with
+    /// `error_type` `"HistoryCompacted"`; callers restart with a fresh
+    /// subscription.
+    #[prost(uint64, optional, tag = "3")]
+    pub resume_from_seq: Option<u64>,
 }
 
 /// Subscribe to events selected by optional workflow metadata.
+///
+/// Filtered streams carry NO resume cursor and are live-only by design:
+/// per-workflow seq is the only ordering that exists, so resumption is not
+/// representable here. Disconnection after at least one delivered event
+/// surfaces Unavailable client-side — never a silent gapped reattach.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct FilteredSubscription {
     /// Caller namespace used for adapter-boundary authorisation.
@@ -59,6 +81,11 @@ pub struct FilteredSubscription {
 }
 
 /// Subscribe to every event visible in the caller's namespace.
+///
+/// Firehose streams carry NO resume cursor and are live-only by design:
+/// per-workflow seq is the only ordering that exists, so resumption is not
+/// representable here. Disconnection after at least one delivered event
+/// surfaces Unavailable client-side — never a silent gapped reattach.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct FirehoseSubscription {
     /// Caller namespace used for adapter-boundary authorisation.
@@ -166,6 +193,16 @@ mod tests {
                     PerWorkflowSubscription {
                         namespace: String::from("tenant-a"),
                         workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+                        resume_from_seq: None,
+                    },
+                )),
+            },
+            SubscriptionRequest {
+                subscription: Some(subscription_request::Subscription::PerWorkflow(
+                    PerWorkflowSubscription {
+                        namespace: String::from("tenant-a"),
+                        workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+                        resume_from_seq: Some(42),
                     },
                 )),
             },
@@ -207,6 +244,95 @@ mod tests {
             let from_proto = SubscriptionRequest::decode(bytes.as_slice())?;
             assert_eq!(from_proto, request);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn per_workflow_resume_cursor_round_trips_prost() -> Result<(), Box<dyn std::error::Error>> {
+        let with_cursor = PerWorkflowSubscription {
+            namespace: String::from("tenant-a"),
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+            resume_from_seq: Some(7),
+        };
+        let decoded = PerWorkflowSubscription::decode(with_cursor.encode_to_vec().as_slice())?;
+        assert_eq!(decoded, with_cursor);
+        assert_eq!(decoded.resume_from_seq, Some(7));
+
+        let without_cursor = PerWorkflowSubscription {
+            namespace: String::from("tenant-a"),
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+            resume_from_seq: None,
+        };
+        let decoded = PerWorkflowSubscription::decode(without_cursor.encode_to_vec().as_slice())?;
+        assert_eq!(decoded, without_cursor);
+        assert_eq!(decoded.resume_from_seq, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn per_workflow_resume_cursor_json_shape_is_pinned() -> Result<(), Box<dyn std::error::Error>> {
+        let with_cursor = PerWorkflowSubscription {
+            namespace: String::from("tenant-a"),
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+            resume_from_seq: Some(7),
+        };
+        let value = serde_json::to_value(&with_cursor)?;
+        assert_eq!(
+            value,
+            json!({
+                "namespace": "tenant-a",
+                "workflow_id": { "uuid": "00000000-0000-0000-0000-000000000000" },
+                "resume_from_seq": 7,
+            })
+        );
+        let from_json: PerWorkflowSubscription = serde_json::from_value(value)?;
+        assert_eq!(from_json, with_cursor);
+
+        let without_cursor = PerWorkflowSubscription {
+            namespace: String::from("tenant-a"),
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+            resume_from_seq: None,
+        };
+        let value = serde_json::to_value(&without_cursor)?;
+        assert_eq!(
+            value,
+            json!({
+                "namespace": "tenant-a",
+                "workflow_id": { "uuid": "00000000-0000-0000-0000-000000000000" },
+                "resume_from_seq": null,
+            })
+        );
+        let from_json: PerWorkflowSubscription = serde_json::from_value(value)?;
+        assert_eq!(from_json, without_cursor);
+
+        Ok(())
+    }
+
+    #[test]
+    fn subscription_request_without_resume_field_decodes_to_none()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request: SubscriptionRequest = serde_json::from_value(json!({
+            "subscription": {
+                "PerWorkflow": {
+                    "namespace": "tenant-a",
+                    "workflow_id": { "uuid": "00000000-0000-0000-0000-000000000000" },
+                }
+            }
+        }))?;
+
+        let Some(subscription_request::Subscription::PerWorkflow(per_workflow)) =
+            request.subscription
+        else {
+            return Err(Box::from("expected a per-workflow subscription"));
+        };
+        assert_eq!(per_workflow.namespace, "tenant-a");
+        assert_eq!(
+            per_workflow.workflow_id,
+            Some(ProtoWorkflowId::from(workflow_id()))
+        );
+        assert_eq!(per_workflow.resume_from_seq, None);
 
         Ok(())
     }

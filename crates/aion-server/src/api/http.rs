@@ -906,6 +906,7 @@ fn decode_per_workflow_subscription(value: &Value) -> Result<PerWorkflowSubscrip
                 WireError::invalid_input("per-workflow subscription requires workflow_id")
             })?,
         )?),
+        resume_from_seq: None,
     })
 }
 

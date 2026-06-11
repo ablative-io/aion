@@ -19,11 +19,31 @@ message SubscriptionRequest {
 message PerWorkflowSubscription {
   string namespace = 1;
   WorkflowId workflow_id = 2;
+  // First per-workflow sequence number the caller wants — not the last seq
+  // already seen. When present, the server replays recorded history events
+  // with seq >= resume_from_seq in order, then splices into the live stream
+  // with no gaps and no duplicates. Sequence numbers start at 1; 0 is
+  // rejected as invalid_input. Absent = live tail only (current behaviour).
+  // resume_from_seq = 1 replays the full history.
+  //
+  // Only per-workflow subscriptions carry a resume cursor: per-workflow seq
+  // is the only ordering that exists, so FilteredSubscription and
+  // FirehoseSubscription are live-only by design (see those messages).
+  //
+  // RESERVED compaction signal (documentation-only, no code yet): a cursor
+  // older than the earliest retained event yields not_found with error_type
+  // "HistoryCompacted"; callers restart with a fresh subscription.
+  optional uint64 resume_from_seq = 3;
 }
 
 // Subscribe to events matching optional selectors. The namespace field is the
 // caller's namespace; namespace_selector narrows the selection and must be
 // authorised by the server before any engine call.
+//
+// Filtered streams carry NO resume cursor and are live-only by design:
+// per-workflow seq is the only ordering that exists, so resumption is not
+// representable here. Disconnection after at least one delivered event
+// surfaces Unavailable client-side — never a silent gapped reattach.
 message FilteredSubscription {
   string namespace = 1;
   optional string workflow_type = 2;
@@ -32,6 +52,11 @@ message FilteredSubscription {
 }
 
 // Subscribe to every event visible in the caller's namespace.
+//
+// Firehose streams carry NO resume cursor and are live-only by design:
+// per-workflow seq is the only ordering that exists, so resumption is not
+// representable here. Disconnection after at least one delivered event
+// surfaces Unavailable client-side — never a silent gapped reattach.
 message FirehoseSubscription {
   string namespace = 1;
 }

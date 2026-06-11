@@ -44,6 +44,7 @@ impl SubscribeTarget {
                     PerWorkflowSubscription {
                         namespace: namespace.to_owned(),
                         workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
+                        resume_from_seq: None,
                     },
                 )),
             },
