@@ -18,7 +18,9 @@ pub fn to_payload<T>(value: &T) -> Result<Payload, ClientError>
 where
     T: Serialize + ?Sized,
 {
-    let bytes = serde_json::to_vec(value).map_err(|_| ClientError::InvalidArgument)?;
+    let bytes = serde_json::to_vec(value).map_err(|source| {
+        ClientError::invalid_argument(format!("value cannot be JSON-encoded: {source}"))
+    })?;
     Ok(Payload::new(JSON_CONTENT_TYPE, bytes))
 }
 
@@ -35,7 +37,11 @@ pub fn from_payload<T>(payload: &Payload) -> Result<T, ClientError>
 where
     T: DeserializeOwned,
 {
-    serde_json::from_slice(payload.bytes()).map_err(|_| ClientError::InvalidArgument)
+    serde_json::from_slice(payload.bytes()).map_err(|source| {
+        ClientError::invalid_argument(format!(
+            "payload bytes do not match the requested typed shape: {source}"
+        ))
+    })
 }
 
 #[cfg(test)]

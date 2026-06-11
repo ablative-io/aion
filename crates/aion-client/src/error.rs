@@ -47,8 +47,11 @@ pub enum ClientError {
         detail: String,
     },
     /// The request was malformed or targets an unsupported operation state.
-    #[error("invalid argument")]
-    InvalidArgument,
+    #[error("invalid argument: {detail}")]
+    InvalidArgument {
+        /// Precise description of what was invalid and how to fix it.
+        detail: String,
+    },
     /// The server reported an unexpected internal failure.
     #[error("server error: {detail}")]
     Server {
@@ -89,7 +92,9 @@ impl ClientError {
             Code::PermissionDenied => Self::NamespaceDenied {
                 detail: status.message().to_owned(),
             },
-            Code::InvalidArgument | Code::FailedPrecondition => Self::InvalidArgument,
+            Code::InvalidArgument | Code::FailedPrecondition => Self::InvalidArgument {
+                detail: status.message().to_owned(),
+            },
             // ABORTED deliberately falls through to Server: the server sends
             // it only for `sequence_conflict`, an internal single-writer
             // invariant violation (a double-writer bug), never an
@@ -113,6 +118,14 @@ impl ClientError {
             detail: detail.into(),
         }
     }
+
+    /// Creates an [`ClientError::InvalidArgument`] carrying a precise message.
+    #[must_use]
+    pub fn invalid_argument(detail: impl Into<String>) -> Self {
+        Self::InvalidArgument {
+            detail: detail.into(),
+        }
+    }
 }
 
 fn decode_status_details(status: &tonic::Status) -> Option<ProtoWireError> {
@@ -128,7 +141,7 @@ fn map_wire_parts(code: WireErrorCode, detail: String) -> ClientError {
         WireErrorCode::NotFound => ClientError::NotFound,
         WireErrorCode::NamespaceDenied => ClientError::NamespaceDenied { detail },
         WireErrorCode::UnknownQuery | WireErrorCode::NotRunning | WireErrorCode::InvalidInput => {
-            ClientError::InvalidArgument
+            ClientError::InvalidArgument { detail }
         }
         // `sequence_conflict` is emitted solely for the server's internal
         // single-writer invariant violation (a double-writer bug). The server
@@ -172,6 +185,26 @@ mod tests {
         assert_eq!(
             ClientError::from_wire_error(WireError::lagged("behind")),
             ClientError::Unavailable
+        );
+    }
+
+    #[test]
+    fn invalid_input_preserves_the_precise_detail() {
+        assert_eq!(
+            ClientError::from_wire_error(WireError::invalid_input("resume_from_seq must be >= 1")),
+            ClientError::InvalidArgument {
+                detail: String::from("resume_from_seq must be >= 1"),
+            }
+        );
+        assert_eq!(
+            ClientError::from_status(&Status::new(Code::InvalidArgument, "bad cursor")),
+            ClientError::InvalidArgument {
+                detail: String::from("bad cursor"),
+            }
+        );
+        assert_eq!(
+            ClientError::invalid_argument("no stream endpoint").to_string(),
+            "invalid argument: no stream endpoint"
         );
     }
 

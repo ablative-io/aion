@@ -1,5 +1,6 @@
 //! start/signal/query/cancel/list/describe over the transport.
 
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use aion_core::{Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSummary};
@@ -18,7 +19,7 @@ use crate::client::Client;
 use crate::error::ClientError;
 use crate::handle::WorkflowHandle;
 use crate::payload::{from_payload, to_payload};
-use crate::stream::{EventStream, SubscribeTarget, event_stream};
+use crate::stream::{EventStream, SubscribeTarget, event_stream, event_stream_from};
 
 /// Options accepted by [`Client::start`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -338,6 +339,26 @@ impl Client {
         )
     }
 
+    /// Subscribes to events for a workflow, attaching from an explicit
+    /// per-workflow sequence cursor.
+    ///
+    /// `resume_from` is the first sequence number wanted (`resume_from_seq`
+    /// on the wire); `1` replays the workflow's full recorded history before
+    /// splicing into the live stream, gap-free and duplicate-free.
+    #[must_use]
+    pub fn subscribe_workflow_from(
+        &self,
+        workflow_id: &WorkflowId,
+        resume_from: NonZeroU64,
+    ) -> EventStream {
+        event_stream_from(
+            self.transport.clone(),
+            self.namespace().to_owned(),
+            workflow_id.clone(),
+            resume_from,
+        )
+    }
+
     /// Subscribes to events selected by the supplied workflow filter.
     #[must_use]
     pub fn subscribe(&self, filter: WorkflowFilter) -> EventStream {
@@ -399,14 +420,19 @@ fn validate_start_options(opts: &StartOptions) -> Result<(), ClientError> {
         .as_ref()
         .is_some_and(std::string::String::is_empty)
     {
-        return Err(ClientError::InvalidArgument);
+        return Err(ClientError::invalid_argument(
+            "idempotency_key must not be empty",
+        ));
     }
     Ok(())
 }
 
 fn validate_query_args(args: &Payload) -> Result<(), ClientError> {
     if !args.bytes().is_empty() {
-        return Err(ClientError::InvalidArgument);
+        return Err(ClientError::invalid_argument(
+            "query arguments are not carried by the current wire contract; \
+             pass an empty payload",
+        ));
     }
     Ok(())
 }
@@ -425,7 +451,10 @@ where
 
 fn validate_list_page(page: &ListPage) -> Result<(), ClientError> {
     if page.limit.is_some() || page.cursor.is_some() {
-        return Err(ClientError::InvalidArgument);
+        return Err(ClientError::invalid_argument(
+            "list pagination limit/cursor are reserved by the contract and \
+             not yet carried by the wire",
+        ));
     }
     Ok(())
 }
@@ -434,7 +463,9 @@ fn workflow_filter_to_visibility(
     filter: &WorkflowFilter,
 ) -> Result<ListWorkflowsFilter, ClientError> {
     if filter.parent.is_some() {
-        return Err(ClientError::InvalidArgument);
+        return Err(ClientError::invalid_argument(
+            "parent workflow filters are not carried by the visibility wire contract",
+        ));
     }
 
     Ok(ListWorkflowsFilter {
@@ -744,7 +775,10 @@ mod tests {
             .await;
 
         assert_eq!(result, Err(ClientError::QueryTimeout));
-        assert_eq!(unsupported_args, Err(ClientError::InvalidArgument));
+        assert!(
+            matches!(unsupported_args, Err(ClientError::InvalidArgument { .. })),
+            "got {unsupported_args:?}"
+        );
         let recorded = stub.last_query.lock().await.clone();
         assert!(recorded.is_some());
         let request = recorded.ok_or_else(|| ClientError::server("missing query"))?;
@@ -848,7 +882,10 @@ mod tests {
             )
             .await;
 
-        assert_eq!(result, Err(ClientError::InvalidArgument));
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument { .. })),
+            "got {result:?}"
+        );
         assert!(stub.last_query.lock().await.is_none());
     }
 

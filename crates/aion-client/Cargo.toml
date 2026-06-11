@@ -19,6 +19,7 @@ workspace = true
 aion-core = { version = "0.1.0", path = "../aion-core" }
 aion-proto = { version = "0.1.0", path = "../aion-proto", features = ["generated"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tonic = { workspace = true, features = ["transport", "tls-webpki-roots"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
@@ -31,6 +32,16 @@ chrono.workspace = true
 uuid.workspace = true
 aion = { version = "0.1.0", path = "../aion", optional = true, package = "aion-rs" }
 aion-store = { version = "0.1.0", path = "../aion-store" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 
 [features]
 default = []
