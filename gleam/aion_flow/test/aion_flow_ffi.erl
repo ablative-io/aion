@@ -186,6 +186,13 @@ await_child(ChildId) ->
     observe(<<"child_await:", ChildId/binary>>),
     case erlang:get({aion_child_result, self(), ChildId}) of
         undefined -> {error, <<"unknown child">>};
+        %% One-shot query sentinel: the first await surfaces a pending query
+        %% (the engine's yield-point behavior), and the pump's re-entered
+        %% await resolves with the real terminal. Only the `queried-child`
+        %% type stores this shape.
+        {sentinel_then, Sentinel, Result} ->
+            erlang:put({aion_child_result, self(), ChildId}, Result),
+            Sentinel;
         Result -> Result
     end.
 
@@ -329,6 +336,11 @@ child_result(<<"declining-child">>, _Input) ->
     {ok, <<"error:\"declined\"">>};
 child_result(<<"malformed-child">>, _Input) ->
     {ok, <<"ok:{\"id\":1,\"approved\":true}">>};
+child_result(<<"queried-child">>, _Input) ->
+    %% First await yields a query sentinel; the re-entered await resolves.
+    {sentinel_then,
+        {error, <<"aion_query:{\"query_id\":\"q-child\",\"name\":\"child-state\"}">>},
+        {ok, <<"ok:\"queried-child-receipt\"">>}};
 child_result(_Name, _Input) ->
     {error, <<"unknown child workflow">>}.
 

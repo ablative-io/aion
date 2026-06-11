@@ -9,6 +9,7 @@
 //// used without touching recorded observations (queries never write
 //// history).
 
+import aion/child
 import aion/codec
 import aion/internal/ffi
 import aion/internal/pump
@@ -210,6 +211,33 @@ pub fn sentinel_missing_name_replies_malformed_error_test() {
   replies
   |> string.contains("malformed query sentinel")
   |> should.be_true()
+}
+
+pub fn child_await_services_pending_query_before_resolving_test() {
+  // `child.await` is a yield point like activity/signal/timer awaits: a
+  // query sentinel surfaced while the parent is parked on a child terminal
+  // must be serviced and the await re-entered, not surfaced as a bogus
+  // child failure. The `queried-child` double yields one sentinel before
+  // resolving.
+  fresh_env()
+  ffi.register_query_handler("child-state", reply_with("{\"pending\":1}"))
+
+  let string_codec = codec.json_codec(json.string, decode.string)
+  let assert Ok(handle) =
+    child.spawn(
+      "queried-child",
+      fn(_input) { Ok("type-anchor-only") },
+      "ignored-input",
+      string_codec,
+      string_codec,
+      string_codec,
+    )
+
+  child.await(handle)
+  |> should.equal(Ok("queried-child-receipt"))
+
+  query_replies()
+  |> should.equal("[\"ok:q-child:{\\\"pending\\\":1}\"]")
 }
 
 pub fn query_handler_registration_answers_through_pump_test() {

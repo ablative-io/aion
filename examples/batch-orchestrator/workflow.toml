@@ -1,5 +1,11 @@
 # Workflow packaging descriptor consumed by `aion-cli package`.
 # Reference: docs/packaging.md.
+#
+# Two entries: the parent orchestrator and the single-item child workflow.
+# A spawned child's workflow type is resolved by entry module name against
+# the engine's loaded packages, so the child needs its own archive loaded
+# alongside the parent's. Both archives share the same beam set and content
+# hash; only the entry module differs.
 
 [[workflow]]
 entry_module = "batch_orchestrator"
@@ -7,5 +13,16 @@ entry_function = "run"
 timeout_seconds = 3600
 input_schema = "schemas/input.json"
 output_schema = "schemas/output.json"
-activities = ["process-batch-item"]
+# The parent schedules no activities itself: it spawns child workflows and
+# aggregates their outcomes. `process-batch-item` belongs to the child entry.
+activities = []
 output = "batch-orchestrator.aion"
+
+[[workflow]]
+entry_module = "batch_orchestrator_item"
+entry_function = "run"
+timeout_seconds = 600
+input_schema = "schemas/item_input.json"
+output_schema = "schemas/item_output.json"
+activities = ["process-batch-item"]
+output = "batch-orchestrator-item.aion"

@@ -6,14 +6,12 @@ Use this pattern when each item needs its own workflow execution boundary: indep
 
 ## What is in the example
 
-- `definition()` defines the parent `batch-orchestrator` workflow with `workflow.define()`.
-- `child_definition()` defines the single-item `batch-orchestrator-item` child workflow.
-- The parent calls `child.spawn()` once per work item and stores each child handle with the original item id.
-- The child runs one typed `process-batch-item` activity. This is a deterministic stub: ids or payloads containing `fail` return a terminal activity failure.
+- `src/batch_orchestrator.gleam` defines the parent `batch-orchestrator` workflow: it spawns one child per work item, registers the `batch_progress` query, awaits every child, and aggregates outcomes.
+- `src/batch_orchestrator_item.gleam` defines the single-item child workflow. It is a separate entry module because **the engine resolves a spawned child's workflow type against loaded packages by entry module name** — the same way `start` resolves a top-level type. The parent spawns children of type `batch_orchestrator_item`, so that module must be packaged and loaded in its own right.
+- `workflow.toml` declares both workflows. Packaging produces two archives that share one content-hash version; the engine must load **both**.
+- The child runs one typed `process-batch-item` activity, served by the Python worker in `worker/worker.py`. The worker stub is deterministic: ids or payloads containing `fail` raise a terminal failure, everything else is processed successfully. The Gleam module carries a local stub with the same contract for the pure-Gleam test double.
 - The parent calls `child.await()` for each handle. Successful children become `succeeded` item outcomes, and child failures become `failed` item outcomes instead of crashing the parent.
-- The parent registers a read-only `batch_progress` query. The current public SDK function is `query.handler(...)`; it wraps the engine's query registration and reply path internally.
-
-> Note: the public SDK currently exposes `query.handler`, not separate `query.register` and `query.reply` functions. This example stays on the public SDK surface and does not import internal FFI modules.
+- The parent registers a read-only `batch_progress` query with `query.handler(...)`; child awaits are yield points, so pending queries are answered while the parent waits.
 
 ## Prerequisites
 
@@ -21,11 +19,12 @@ Install these tools before starting:
 
 - [Gleam CLI](https://gleam.run/getting-started/installing/) with Erlang/OTP available on your `PATH`
 - Rust toolchain and Cargo (`rustup` is recommended)
+- Python 3.11+ for the activity worker
 - `jq`, optional but useful for extracting workflow ids from CLI JSON
 
 All commands below are copy-pasteable from the repository root unless noted.
 
-## 1. Build the Gleam workflow
+## 1. Build the Gleam workflows
 
 ```sh
 cd examples/batch-orchestrator
@@ -33,37 +32,57 @@ gleam build
 cd ../..
 ```
 
-The source lives in `examples/batch-orchestrator/src/batch_orchestrator.gleam` and consumes only the public `aion_flow` modules: `aion/workflow`, `aion/child`, `aion/query`, `aion/activity`, `aion/codec`, and `aion/error`.
+The source consumes only the public `aion_flow` modules: `aion/workflow`, `aion/child`, `aion/query`, `aion/activity`, `aion/codec`, and `aion/error`.
 
-## 2. Package and load the workflow
+## 2. Package and load both workflows
 
 ```sh
 cargo run -p aion-cli -- package examples/batch-orchestrator
 ```
 
-This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference) and writes `examples/batch-orchestrator/batch-orchestrator.aion`. Load it with `--workflow-package` or a `workflow_packages` entry in `dev-config.toml`. The generated `manifest.toml` is committed so dependency resolution is reproducible, matching the other Gleam examples.
+This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference) and writes **two** archives:
 
-The package exposes:
+- `examples/batch-orchestrator/batch-orchestrator.aion` — parent type `batch_orchestrator`
+- `examples/batch-orchestrator/batch-orchestrator-item.aion` — child type `batch_orchestrator_item`
 
-- parent workflow type: `batch_orchestrator`
-- entry module: `batch_orchestrator`
-- entry function: `run`
-- input shape: `{ "items": [{ "id": String, "payload": String }] }`
-- output shape: summary with `total_processed`, `success_count`, `failure_count`, and `items`
-- activity name: `process-batch-item`
-- query name: `batch_progress`
+Both share the same beam set and content-hash version; only the entry module differs. The generated `manifest.toml` is committed so dependency resolution is reproducible, matching the other Gleam examples.
 
-Then start the dev server in terminal 1:
+Start the dev server in terminal 1 with **both** packages loaded — the parent spawns children by type, and an engine that has only the parent archive fails every spawn with an unknown child workflow type:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024 \
+AION_RUNTIME_QUERY_TIMEOUT_MS=10000 \
+cargo run -p aion-server -- \
+  --workflow-package examples/batch-orchestrator/batch-orchestrator.aion \
+  --workflow-package examples/batch-orchestrator/batch-orchestrator-item.aion
 ```
+
+(When using `--config dev-config.toml` instead, list both archives in `workflow_packages`.)
 
 Leave the server running.
 
-## 3. Start a batch
+## 3. Start the Python activity worker
 
-In terminal 2, start a workflow with several independent items. One payload intentionally contains `fail` so you can see a child failure recorded as an item outcome while the parent still completes.
+The child workflow's `process-batch-item` activity executes on a connected worker. In terminal 2, create a virtual environment and install the local worker SDK:
+
+```sh
+python -m venv .venv && source .venv/bin/activate
+python -m pip install -e sdks/python/aion-worker
+```
+
+Then run the worker:
+
+```sh
+python examples/batch-orchestrator/worker/worker.py
+```
+
+It registers exactly one activity, `process-batch-item`, and serves tasks until interrupted. The standard worker environment variables apply (`AION_WORKER_ENDPOINT`, `AION_TASK_QUEUE`, `AION_WORKER_IDENTITY`, `AION_WORKER_CONCURRENCY`, `AION_WORKER_NAMESPACE`, `AION_WORKER_SUBJECT`), defaulting to the local dev server.
+
+Leave the worker running.
+
+## 4. Start a batch
+
+In terminal 3, start a workflow with several independent items. One payload intentionally contains `fail` so you can see a child failure recorded as an item outcome while the parent still completes.
 
 ```sh
 START_RESPONSE=$(cargo run -q -p aion-cli -- \
@@ -79,9 +98,9 @@ printf 'workflow_id=%s\nrun_id=%s\n' "$WORKFLOW_ID" "$RUN_ID"
 
 If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JSON output into shell variables manually.
 
-## 4. Query live progress
+## 5. Query live progress
 
-While the parent is still awaiting children, query the `batch_progress` handler:
+While the parent is still awaiting children, query the `batch_progress` handler (a four-item batch finishes in well under a second, so use a larger batch when you want to observe intermediate progress):
 
 ```sh
 cargo run -q -p aion-cli -- \
@@ -100,11 +119,11 @@ The query response is structured as:
 }
 ```
 
-Use `--run-id "$RUN_ID"` when you need to target a specific run rather than the latest run for a workflow id.
+Use `--run-id "$RUN_ID"` when you need to target a specific run rather than the latest run for a workflow id. Querying an already-completed workflow returns an error, because queries are answered by the live workflow process at yield points.
 
 Queries are read-only. A query handler should return already-known workflow state; it must not schedule activities, await children, send signals, or mutate counters.
 
-## 5. Inspect the final summary
+## 6. Inspect the final summary
 
 After all children complete or fail, describe the workflow:
 
@@ -131,3 +150,7 @@ The completed workflow result has this shape:
 ```
 
 The important behavior is that `item-3` failing does not fail the parent and does not prevent siblings from being awaited. Spawn failures, if the engine cannot create a child execution at all, are also captured as failed item outcomes so the parent can report the whole batch.
+
+## How the child failure round-trips
+
+The child entry function (`batch_orchestrator_item.run`) encodes both its success and its failure payload to JSON text. The engine records those exact payloads as the child terminal, and the awaiting parent decodes them with the same codecs the child module exports (`item_result_codec`, `item_error_codec`). That is why the parent can report `deterministic failure for item item-3` verbatim: the typed error crossed the parent-child boundary as data, not as a crash.
