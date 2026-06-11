@@ -186,17 +186,14 @@ pub fn spawn_encoded_event_stream(
     let reader_done = tokio::spawn(async move {
         let mut lag_tx = Some(lag_tx);
         while let Some(item) = events.next().await {
-            let event = match item {
-                Ok(event) => event,
-                // An engine-side lag item routes into the existing terminal
-                // lagged path: one error frame, then close.
-                Err(_) => {
-                    if let Some(sender) = lag_tx.take() {
-                        let send_result = sender.send(ServerError::lagged_stream().to_wire_error());
-                        drop(send_result);
-                    }
-                    break;
+            // An engine-side lag item routes into the existing terminal
+            // lagged path: one error frame, then close.
+            let Ok(event) = item else {
+                if let Some(sender) = lag_tx.take() {
+                    let send_result = sender.send(ServerError::lagged_stream().to_wire_error());
+                    drop(send_result);
                 }
+                break;
             };
             let terminal = workflow_target.as_ref().is_some_and(|target| {
                 event.workflow_id() == target && is_terminal_workflow_event(&event)
