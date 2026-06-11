@@ -40,6 +40,13 @@ pub(super) fn dispatch_activity_impl(
         Ok(state) => state,
         Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     };
+    // dispatch_activity records `ActivityScheduled`; a query handler must
+    // stay read-only.
+    if let Err(error) =
+        super::nif_query_pump::ensure_not_servicing_query(&state, pid, "dispatch_activity")
+    {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
     let runtime = match runtime_context(&state) {
         Ok(runtime) => runtime,
         Err(error) => return Ok(context_error_term(&error)),
@@ -217,6 +224,23 @@ fn await_activity_result_with_context(
     process_context: &mut ProcessContext,
     correlation: &str,
 ) -> Result<Term, Term> {
+    // A query handler must not nest into another await; refuse before any
+    // marker is consumed or resolution attempted.
+    if let Err(error) = crate::runtime::nif_query_pump::ensure_not_servicing_query(
+        state,
+        context.pid(),
+        "await_activity_result",
+    ) {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
+    // Queries first (Q6), and deliberately BEFORE the recorded-resolution
+    // fast path below: a tight replay loop whose awaits all resolve from
+    // history instantly must still drain queued queries at each yield point.
+    if let Some(sentinel) =
+        crate::runtime::nif_query_pump::take_pending_query_sentinel(state, context.pid())
+    {
+        return Ok(error_result_term(&sentinel).unwrap_or(Term::NIL));
+    }
     let activity_id = activity_id_from_correlation(correlation)?;
     if let Some(recorded) = recorded_resolution_for(&mut context, &activity_id)? {
         return Ok(recorded_result_term(recorded));

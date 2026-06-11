@@ -42,6 +42,10 @@ fn continue_as_new(args: &[Term], process_context: &ProcessContext) -> Result<()
     let pid = process_context.pid().ok_or_else(|| {
         error_result_term("continue_as_new: missing calling pid").unwrap_or(Term::NIL)
     })?;
+    // continue_as_new records a terminal event; a query handler must stay
+    // read-only.
+    crate::runtime::nif_query_pump::ensure_not_servicing_query(&state, pid, "continue_as_new")
+        .map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))?;
     let context = NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle.clone())
         .map_err(|error| context_error_term(&error))?;
     let input_text = decode_string_arg(args[0]).map_err(|error| {

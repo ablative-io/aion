@@ -262,18 +262,27 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
-    /// is not live. Other typed errors come from the configured query seam.
+    /// Returns [`EngineError::Query`] with [`crate::query::QueryError::NotRunning`]
+    /// when the `(workflow, run)` pair is durably terminal,
+    /// [`EngineError::WorkflowNotFound`] when it is unknown, and other typed
+    /// errors from the configured query seam.
     pub async fn query(
         &self,
         id: &WorkflowId,
         run: &RunId,
         name: impl Into<String>,
     ) -> Result<Payload, EngineError> {
-        let handle = self
-            .registry()
-            .get(id, run)?
-            .ok_or_else(|| workflow_not_found(id, run))?;
+        let Some(handle) = self.registry().get(id, run)? else {
+            // Mirror Engine::signal's registry-miss handling: a completed
+            // workflow is NotRunning per the query contract, never NotFound.
+            let history = self.store().read_history(id).await?;
+            if run_has_terminal_history(&history, run) {
+                return Err(EngineError::Query(crate::query::QueryError::NotRunning(
+                    id.clone(),
+                )));
+            }
+            return Err(workflow_not_found(id, run));
+        };
         self.delegated()
             .query_service()
             .query(&handle, name.into())
@@ -595,6 +604,44 @@ mod tests {
             .map_err(|_| EngineError::RegistryPoisoned)?;
         assert_eq!(calls.as_slice(), &[(handle.pid(), "state".to_owned())]);
         drop(calls);
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_terminal_run_is_not_running_and_unknown_is_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = engine_with_seams(
+            Arc::new(DeferredSignalRouter),
+            Arc::new(DeferredQueryService),
+            Arc::new(DeferredEventPublisher),
+        )?;
+        // Durably terminal run with no registry entry: a completed workflow.
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+        let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), engine.store());
+        recorder
+            .record_workflow_started(
+                chrono::Utc::now(),
+                "checkout".to_owned(),
+                payload("input")?,
+                run_id.clone(),
+            )
+            .await?;
+        recorder
+            .record_workflow_completed(chrono::Utc::now(), payload("result")?)
+            .await?;
+
+        let terminal = engine.query(&workflow_id, &run_id, "state").await;
+        assert!(matches!(
+            terminal,
+            Err(EngineError::Query(crate::query::QueryError::NotRunning(id))) if id == workflow_id
+        ));
+
+        let unknown = engine
+            .query(&WorkflowId::new_v4(), &RunId::new_v4(), "state")
+            .await;
+        assert!(matches!(unknown, Err(EngineError::WorkflowNotFound { .. })));
         engine.shutdown()?;
         Ok(())
     }

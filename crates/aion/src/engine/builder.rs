@@ -14,7 +14,6 @@ use crate::{
     SupervisionTree,
     activity::bridge::ActivityDispatcher,
     durability::ActiveWorkflowRecoverySeam,
-    publish::PublishingEventStore,
     runtime::{
         ChildNifBridge, ChildNifBridgeParts, NifEntry, NifRegistration, install_child_nif_bridge,
         install_nif_runtime_context, install_query_bridge, install_signal_nif_bridge,
@@ -25,6 +24,9 @@ use crate::{
 
 use super::api::{Engine, EngineComponents};
 use super::delegated::{DelegatedSeams, EventPublisher, QueryService, SignalRouter};
+use super::seams::{
+    SeamAssembly, SignalRouterFactory, assemble_delegated_seams, wrap_event_streaming,
+};
 use super::startup::{
     StartupRecoveryContext, recover_active_workflows_on_startup, recover_timers_on_startup,
 };
@@ -42,13 +44,18 @@ pub enum WorkflowPackageSource {
 /// Install the engine-scoped NIF seams that are available before delegated
 /// seams exist: runtime context, timer bridge, deterministic context source,
 /// query bridge, and the optional activity dispatcher.
+///
+/// Returns the query mailbox engine handle installed in the query bridge, so
+/// `build()` can wire the concrete query-dispatch seam over the same
+/// delivery path the NIF-side `dispatch_query` uses.
 fn install_engine_nif_seams(
     nif_state: &Arc<crate::runtime::EngineNifState>,
     registry: &Arc<Registry>,
     store: &Arc<dyn EventStore>,
     runtime: &Arc<RuntimeHandle>,
     activity_dispatcher: Option<Arc<dyn ActivityDispatcher>>,
-) {
+    query_timeout: Option<Duration>,
+) -> Arc<dyn crate::engine_seam::EngineHandle> {
     install_nif_runtime_context(
         nif_state,
         Arc::clone(registry),
@@ -69,14 +76,17 @@ fn install_engine_nif_seams(
             Arc::clone(store),
         )),
     );
-    install_query_bridge(
+    let query_mailbox_engine = install_query_bridge(
         nif_state,
         Arc::clone(registry),
+        runtime,
         tokio::runtime::Handle::current(),
+        query_timeout,
     );
     if let Some(dispatcher) = activity_dispatcher {
         nif_state.set_activity_dispatcher(dispatcher);
     }
+    query_mailbox_engine
 }
 
 fn load_workflow_sources(
@@ -150,10 +160,6 @@ impl From<String> for WorkflowPackageSource {
     }
 }
 
-type SignalRouterFactory = Arc<
-    dyn Fn(Arc<RuntimeHandle>, Arc<SignalResumeHandoff>) -> Arc<dyn SignalRouter> + Send + Sync,
->;
-
 /// Builder for the embedded, transport-agnostic workflow engine.
 pub struct EngineBuilder {
     store: Option<Arc<dyn EventStore>>,
@@ -171,6 +177,8 @@ pub struct EngineBuilder {
     search_attribute_schema: SearchAttributeSchema,
     event_streaming_capacity: Option<NonZeroUsize>,
     event_publisher_overridden: bool,
+    query_timeout: Option<Duration>,
+    query_service_overridden: bool,
 }
 
 impl Default for EngineBuilder {
@@ -200,7 +208,28 @@ impl EngineBuilder {
             search_attribute_schema: SearchAttributeSchema::new(),
             event_streaming_capacity: None,
             event_publisher_overridden: false,
+            query_timeout: None,
+            query_service_overridden: false,
         }
+    }
+
+    /// Record the caller-supplied workflow query reply timeout.
+    ///
+    /// Setting a timeout installs the concrete query-dispatch seam during
+    /// `build()` (unless [`Self::query_service`] overrides it) and enables
+    /// the in-engine `dispatch_query` NIF. There is no default: without this
+    /// call the query seam stays deferred and `Engine::query` fails typed
+    /// with its "not configured" error.
+    #[must_use]
+    pub const fn query_timeout(mut self, timeout: Duration) -> Self {
+        self.query_timeout = Some(timeout);
+        self
+    }
+
+    /// Inspect the configured workflow query reply timeout.
+    #[must_use]
+    pub const fn configured_query_timeout(&self) -> Option<Duration> {
+        self.query_timeout
     }
 
     /// Opt in to live event streaming with a caller-provided broadcast capacity.
@@ -365,8 +394,12 @@ impl EngineBuilder {
     }
 
     /// Override the AT query-dispatch seam.
+    ///
+    /// An explicit override wins over the concrete service that
+    /// [`Self::query_timeout`] would otherwise install during `build()`.
     #[must_use]
     pub fn query_service(mut self, query_service: Arc<dyn QueryService>) -> Self {
+        self.query_service_overridden = true;
         self.delegated = DelegatedSeams::new(
             self.delegated.signal_router_arc(),
             query_service,
@@ -454,27 +487,28 @@ impl EngineBuilder {
             .active_registry
             .unwrap_or_else(|| Arc::new(Registry::default()));
         let nif_state = Arc::clone(runtime.nif_state());
-        install_engine_nif_seams(
+        let query_mailbox_engine = install_engine_nif_seams(
             &nif_state,
             &registry,
             &store,
             &runtime,
             self.activity_dispatcher,
+            self.query_timeout,
         );
         let supervision = Arc::new(SupervisionTree::new());
         let search_attribute_schema = Arc::new(self.search_attribute_schema);
         let signal_handoff = Arc::new(SignalResumeHandoff::new());
 
-        let delegated = if let Some(factory) = self.signal_router_factory {
-            DelegatedSeams::new(
-                factory(Arc::clone(&runtime), Arc::clone(&signal_handoff)),
-                self.delegated.query_service_arc(),
-                self.delegated.event_publisher_arc(),
-            )
-        } else {
-            self.delegated
-        };
-        let delegated = install_streaming_publisher(delegated, streaming_publisher);
+        let delegated = assemble_delegated_seams(SeamAssembly {
+            configured: self.delegated,
+            signal_router_factory: self.signal_router_factory,
+            runtime: Arc::clone(&runtime),
+            signal_handoff: Arc::clone(&signal_handoff),
+            streaming_publisher,
+            query_mailbox_engine,
+            query_timeout: self.query_timeout,
+            query_service_overridden: self.query_service_overridden,
+        });
 
         install_signal_nif_bridge(
             &nif_state,
@@ -543,45 +577,6 @@ impl EngineBuilder {
         engine.catchup_schedule_coordinator().await?;
         engine.recover_schedules_on_startup(Utc::now()).await?;
         Ok(engine)
-    }
-}
-
-/// Store and optional publisher produced by [`wrap_event_streaming`].
-type EventStreamingParts = (Arc<dyn EventStore>, Option<Arc<dyn EventPublisher>>);
-
-/// Wrap the configured store for live event streaming when opted in.
-///
-/// The wrap happens before any recorder, recovery path, or NIF bridge clones
-/// the store, so every append flows through the publishing wrapper.
-fn wrap_event_streaming(
-    store: Arc<dyn EventStore>,
-    capacity: Option<NonZeroUsize>,
-    event_publisher_overridden: bool,
-) -> Result<EventStreamingParts, EngineError> {
-    let Some(capacity) = capacity else {
-        return Ok((store, None));
-    };
-    if event_publisher_overridden {
-        return Err(EngineError::ConflictingEventPublisher);
-    }
-    let publishing = PublishingEventStore::new(store, capacity)?;
-    let publisher: Arc<dyn EventPublisher> = Arc::new(publishing.publisher());
-    Ok((Arc::new(publishing), Some(publisher)))
-}
-
-/// Install the broadcast publisher built by [`wrap_event_streaming`] into the
-/// delegated seams, keeping the configured signal and query seams.
-fn install_streaming_publisher(
-    delegated: DelegatedSeams,
-    streaming_publisher: Option<Arc<dyn EventPublisher>>,
-) -> DelegatedSeams {
-    match streaming_publisher {
-        Some(publisher) => DelegatedSeams::new(
-            delegated.signal_router_arc(),
-            delegated.query_service_arc(),
-            publisher,
-        ),
-        None => delegated,
     }
 }
 
@@ -816,6 +811,92 @@ mod tests {
             error,
             Some(EngineError::ConflictingEventPublisher)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_timeout_is_only_set_by_caller() {
+        assert_eq!(EngineBuilder::new().configured_query_timeout(), None);
+        assert_eq!(
+            EngineBuilder::new()
+                .query_timeout(Duration::from_secs(3))
+                .configured_query_timeout(),
+            Some(Duration::from_secs(3))
+        );
+    }
+
+    async fn insert_running_workflow(
+        engine: &crate::Engine,
+    ) -> Result<(WorkflowId, aion_core::RunId), Box<dyn std::error::Error>> {
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+        let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), engine.store());
+        recorder
+            .record_workflow_started(
+                Utc::now(),
+                "checkout".to_owned(),
+                payload()?,
+                run_id.clone(),
+            )
+            .await?;
+        let handle = crate::registry::WorkflowHandle::new(crate::registry::WorkflowHandleParts {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            pid: engine.runtime().spawn_test_process_with_trap_exit(true)?,
+            workflow_type: "checkout".to_owned(),
+            loaded_version: aion_package::ContentHash::from_bytes([2; 32]),
+            cached_status: WorkflowStatus::Running,
+            residency: crate::registry::HandleResidency::Resident,
+            recorder,
+            completion: crate::registry::CompletionNotifier::new(),
+        });
+        engine
+            .registry()
+            .insert((workflow_id.clone(), run_id.clone()), handle)?;
+        Ok((workflow_id, run_id))
+    }
+
+    #[tokio::test]
+    async fn query_timeout_installs_the_concrete_query_seam()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .in_memory_visibility()
+            .query_timeout(Duration::from_millis(250))
+            .build()
+            .await?;
+        let (workflow_id, run_id) = insert_running_workflow(&engine).await?;
+
+        // The concrete seam reached the query mailbox engine, which answers
+        // an unregistered name with a typed UnknownQuery — the deferred seam
+        // would have failed with its "not configured" runtime error instead.
+        let result = engine.query(&workflow_id, &run_id, "state").await;
+
+        assert!(matches!(
+            result,
+            Err(crate::EngineError::Query(crate::QueryError::UnknownQuery(name))) if name == "state"
+        ));
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn without_query_timeout_the_query_seam_stays_deferred()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .in_memory_visibility()
+            .build()
+            .await?;
+        let (workflow_id, run_id) = insert_running_workflow(&engine).await?;
+
+        let result = engine.query(&workflow_id, &run_id, "state").await;
+
+        assert!(matches!(
+            result,
+            Err(crate::EngineError::Runtime { reason }) if reason.contains("not configured")
+        ));
+        engine.shutdown()?;
         Ok(())
     }
 

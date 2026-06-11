@@ -142,12 +142,16 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             nif_signal::send_signal,
         ),
         NifEntry::new(
-            Mfa::new(FFI_MODULE, "register_query", 3),
+            Mfa::new(FFI_MODULE, "register_query", 2),
             super::nif_query::register_query,
         ),
         NifEntry::dirty(
             Mfa::new(FFI_MODULE, "reply_query", 2),
             super::nif_query::reply_query,
+        ),
+        NifEntry::dirty(
+            Mfa::new(FFI_MODULE, "reply_query_error", 2),
+            super::nif_query::reply_query_error,
         ),
         NifEntry::dirty(
             Mfa::new(FFI_MODULE, "dispatch_query", 2),
@@ -228,7 +232,7 @@ mod tests {
             .map(|entry| entry.mfa.display())
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(entries.len(), 20);
+        assert_eq!(entries.len(), 21);
         assert_eq!(unique.len(), entries.len());
         for normal_nif in [
             "dispatch_activity",
@@ -269,6 +273,7 @@ mod tests {
             "collect_map",
             "register_query",
             "reply_query",
+            "reply_query_error",
             "dispatch_query",
             "spawn_child",
             "await_child",

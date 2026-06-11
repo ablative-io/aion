@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use tokio::time;
 
 use crate::engine_seam::{
-    EngineHandle, EngineSeamError, WorkflowMailboxMessage, WorkflowResidency,
+    EngineHandle, EngineSeamError, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
 };
 
 /// Result sent by workflow query handlers over a query reply channel.
@@ -39,6 +39,13 @@ pub enum QueryError {
     /// The workflow query reply channel closed before a handler response was sent.
     #[error("query reply channel closed before a handler response was sent")]
     ReplyDropped,
+
+    /// The workflow's query handler ran and reported an application-level failure.
+    #[error("query handler failed: {message}")]
+    HandlerFailed {
+        /// Failure reason reported by the workflow's query handler.
+        message: String,
+    },
 
     /// The engine seam failed while resolving or delivering the query.
     #[error("query engine seam failed: {0}")]
@@ -93,7 +100,29 @@ where
             }
             WorkflowResidency::Unknown => return Err(QueryError::Unknown(workflow_id.clone())),
         };
+        self.query_process(process, name, args).await
+    }
 
+    /// Dispatches a read-only query to an already-resolved workflow process.
+    ///
+    /// Run-exact variant of [`Self::query`] for callers that resolved the
+    /// target handle themselves (the engine seam resolves `(workflow, run)`
+    /// before delegation, so re-resolving by workflow id here would race
+    /// continue-as-new and multi-run histories).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Timeout`] when no handler reply arrives before the configured
+    /// timeout, [`QueryError::UnknownQuery`] when the workflow replies that no handler exists,
+    /// [`QueryError::HandlerFailed`] when the handler ran and reported failure,
+    /// [`QueryError::ReplyDropped`] when the workflow ended before answering, and
+    /// [`QueryError::Engine`] for seam failures.
+    pub async fn query_process(
+        &self,
+        process: WorkflowProcessHandle,
+        name: impl Into<String>,
+        args: Payload,
+    ) -> QueryServiceResult {
         let (reply_to, reply_from) = oneshot::channel();
         self.engine.deliver_workflow_message(
             process,
@@ -139,6 +168,7 @@ mod tests {
     #[derive(Clone)]
     enum QueryBehavior {
         Reply(Payload),
+        Fail(String),
         HoldSender,
     }
 
@@ -250,6 +280,16 @@ mod tests {
                     match behavior {
                         Some(QueryBehavior::Reply(payload)) => {
                             if reply_to.send(Ok(payload)).is_err() {
+                                return Err(EngineSeamError::Delivery {
+                                    reason: "query caller dropped reply receiver".to_owned(),
+                                });
+                            }
+                        }
+                        Some(QueryBehavior::Fail(message)) => {
+                            if reply_to
+                                .send(Err(QueryError::HandlerFailed { message }))
+                                .is_err()
+                            {
                                 return Err(EngineSeamError::Delivery {
                                     reason: "query caller dropped reply receiver".to_owned(),
                                 });
@@ -477,6 +517,67 @@ mod tests {
             non_resident_result,
             Err(QueryError::NotRunning(non_resident_id))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_process_dispatches_to_the_resolved_process_without_resolving()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = Arc::new(FakeQueryEngine::default());
+        // The workflow id is deliberately never registered for residency:
+        // query_process must not resolve, only deliver to the given process.
+        let workflow_id = WorkflowId::new_v4();
+        let process = WorkflowProcessHandle::new(11);
+        let reply = payload("run-exact");
+        engine.set_resident_workflow(
+            workflow_id.clone(),
+            process,
+            known_workflow(reply.clone()),
+        )?;
+        engine.set_residency(workflow_id, WorkflowResidency::Unknown)?;
+        let service = QueryService::new(Arc::clone(&engine), QUERY_TIMEOUT);
+
+        let returned = service
+            .query_process(process, "state", payload("args"))
+            .await?;
+
+        assert_eq!(returned, reply);
+        assert_eq!(engine.query_count(process)?, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handler_failure_propagates_as_typed_handler_failed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = Arc::new(FakeQueryEngine::default());
+        let workflow_id = WorkflowId::new_v4();
+        let process = WorkflowProcessHandle::new(12);
+        let mut handlers = HashMap::new();
+        handlers.insert(
+            "state".to_owned(),
+            QueryBehavior::Fail("handler raised".to_owned()),
+        );
+        engine.set_resident_workflow(
+            workflow_id.clone(),
+            process,
+            FakeQueryWorkflow {
+                handlers,
+                query_count: 0,
+                last_payload: None,
+            },
+        )?;
+        let service = QueryService::new(Arc::clone(&engine), QUERY_TIMEOUT);
+
+        let resolved = service.query(&workflow_id, "state", payload("args")).await;
+        let run_exact = service
+            .query_process(process, "state", payload("args"))
+            .await;
+
+        let expected = Err(QueryError::HandlerFailed {
+            message: "handler raised".to_owned(),
+        });
+        assert_eq!(resolved, expected);
+        assert_eq!(run_exact, expected);
         Ok(())
     }
 

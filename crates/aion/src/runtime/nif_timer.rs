@@ -24,7 +24,25 @@ use crate::time;
 /// the sleep; an expired enclosing `with_timeout` deadline cancels it
 /// durably; anything else parks again.
 pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
-    consume_one_wake_marker(ctx);
+    // Queries first (Q6): the entry check runs on every invocation — fresh
+    // and wake re-entry — before this await's own resolution. The servicing
+    // refusal precedes the marker consumption so a refused handler call
+    // never eats a wake; the recording guard itself re-fires inside
+    // `timer_call` for the non-sleep timer NIFs.
+    if let Ok(state) = super::nif_state::engine_nif_state(ctx)
+        && let Some(pid) = ctx.pid()
+    {
+        if let Err(error) = super::nif_query_pump::ensure_not_servicing_query(&state, pid, "sleep")
+        {
+            return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+        }
+        consume_one_wake_marker(ctx);
+        if let Some(sentinel) = super::nif_query_pump::take_pending_query_sentinel(&state, pid) {
+            return Ok(error_result_term(&sentinel).unwrap_or(Term::NIL));
+        }
+    } else {
+        consume_one_wake_marker(ctx);
+    }
     timer_call("sleep", 1, args, ctx, |state, mut context, args| {
         let pid = context.pid();
         let duration = decode_duration_arg("sleep duration", args[0])?;
@@ -183,6 +201,13 @@ where
         Ok(state) => state,
         Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     };
+    // Every timer NIF records durable timer events; refuse while the caller
+    // is servicing a query so handler misuse never writes history.
+    if let Some(pid) = process_context.pid()
+        && let Err(error) = super::nif_query_pump::ensure_not_servicing_query(&state, pid, name)
+    {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
     match build_context(&state, process_context).and_then(|context| f(&state, context, args)) {
         Ok(NifResult::Ok(value)) => Ok(ok_result_term(&value).unwrap_or(Term::NIL)),
         Ok(NifResult::Error(message)) => Ok(error_result_term(&message).unwrap_or(Term::NIL)),

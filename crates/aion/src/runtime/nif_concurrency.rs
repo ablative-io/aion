@@ -370,6 +370,10 @@ fn context_from_process(
                 .unwrap_or(Term::NIL),
         );
     };
+    // Every collect_* NIF records activity events; a query handler must stay
+    // read-only.
+    crate::runtime::nif_query_pump::ensure_not_servicing_query(state, pid, label)
+        .map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))?;
     let runtime = runtime_context(state).map_err(|error| context_error_term(&error))?;
     NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle)
         .map_err(|error| context_error_term(&error))

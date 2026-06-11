@@ -95,6 +95,10 @@ pub enum EngineError {
     /// Signal routing failed after the target was resolved.
     #[error("signal router error: {0}")]
     SignalRouter(#[from] SignalRouterError),
+
+    /// Live workflow query dispatch failed after the target was resolved.
+    #[error("query error: {0}")]
+    Query(#[from] crate::query::QueryError),
 }
 
 /// Errors surfaced by the signal routing boundary.

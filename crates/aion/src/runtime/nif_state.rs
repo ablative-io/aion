@@ -7,6 +7,7 @@
 //! are per-scheduler (each instance numbers from 1), so a pid-keyed global
 //! resolved workflows against whichever engine installed last.
 
+use std::collections::VecDeque;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -61,6 +62,25 @@ pub(crate) struct EngineNifState {
     /// blocking await at a time; the entry is cleared on every terminal
     /// resolution and when the workflow process ends.
     pub(super) pending_awaits: DashMap<u64, PendingAwait>,
+    /// FIFO of queries delivered to each workflow pid but not yet handed to
+    /// the workflow's query pump. Suspending awaits drain one entry per
+    /// invocation through the query-pump entry check.
+    pub(super) pending_queries: DashMap<u64, VecDeque<PendingQuery>>,
+    /// Query id each workflow pid is currently servicing, set when an await
+    /// returns the query sentinel and cleared when the pump replies.
+    /// Recording NIFs refuse while an entry exists for their caller pid, so
+    /// query-handler misuse surfaces as a typed error instead of a silent
+    /// history write.
+    pub(super) servicing_queries: DashMap<u64, String>,
+}
+
+/// One query delivered to a workflow pid, awaiting pump pickup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingQuery {
+    /// Host-side query identifier correlating the pending reply sender.
+    pub(super) query_id: String,
+    /// Query name selected by the caller.
+    pub(super) name: String,
 }
 
 /// The await a suspended workflow process is parked on.
@@ -109,10 +129,18 @@ impl EngineNifState {
     /// (any outcome), so awaits and timeout scopes interrupted by the exit
     /// never leak map entries. beamr pids are never reused within a
     /// scheduler, so removal cannot race a new process under the same key.
+    ///
+    /// Queries the exited workflow never answered are drained here: dropping
+    /// their pending reply senders makes each caller's `QueryService` observe
+    /// `ReplyDropped` (the query-racing-completion path) instead of hanging
+    /// until its timeout.
     pub(crate) fn cleanup_process(&self, pid: u64) {
         self.pending_awaits.remove(&pid);
         self.timeout_scope_stacks.remove(&pid);
         self.timeout_scopes.retain(|_, scope| scope.pid != pid);
+        self.pending_queries.remove(&pid);
+        self.servicing_queries.remove(&pid);
+        self.query_handlers.cleanup_pid(pid);
     }
 }
 

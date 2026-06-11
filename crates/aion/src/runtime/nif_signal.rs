@@ -349,9 +349,22 @@ pub(super) fn receive_signal(args: &[Term], ctx: &mut ProcessContext) -> Result<
         Ok(bridge) => bridge,
         Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     };
+    // A query handler must not nest into another await (and must not record
+    // a signal receive); refuse before any marker is consumed.
+    if let Err(error) =
+        super::nif_query_pump::ensure_not_servicing_query(&state, pid, "receive_signal")
+    {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
     // One wake marker is consumed per invocation; leaving it queued would
     // insta-rewake the suspend below into a busy spin.
     super::nif_wake::consume_wake_marker(ctx, &bridge.runtime);
+    // Queries first (Q6): a pending query is serviced before this await's
+    // own resolution, so operator queries are never starved by a workflow
+    // whose awaits keep resolving immediately.
+    if let Some(sentinel) = super::nif_query_pump::take_pending_query_sentinel(&state, pid) {
+        return Ok(error_result_term(&sentinel).unwrap_or(Term::NIL));
+    }
     match receive_signal_impl(&state, &bridge, &name, &config, pid) {
         Ok(SignalReceiveOutcome::Payload(result)) => {
             Ok(ok_result_term(&result).unwrap_or(Term::NIL))
@@ -402,6 +415,16 @@ pub(super) fn send_signal(args: &[Term], ctx: &mut ProcessContext) -> Result<Ter
     let Some(pid) = ctx.pid() else {
         return Ok(error_result_term("send_signal: missing caller pid").unwrap_or(Term::NIL));
     };
+    let state = match super::nif_state::engine_nif_state(ctx) {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+    };
+    // send_signal records `SignalSent`; a query handler must stay read-only.
+    if let Err(error) =
+        super::nif_query_pump::ensure_not_servicing_query(&state, pid, "send_signal")
+    {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
     let bridge = match signal_bridge(ctx) {
         Ok(bridge) => bridge,
         Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),

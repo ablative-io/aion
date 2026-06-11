@@ -23,7 +23,11 @@ use crate::RuntimeHandle;
 /// Consuming a marker destined for a different await is safe: that await
 /// re-checks its own recorded or runtime state on entry and completes
 /// without needing the wake, and any surplus marker drains through the next
-/// suspend/wake cycle.
+/// suspend/wake cycle. That includes the `aion_query` marker: a query marker
+/// consumed by an await that then resolves without ever suspending again is
+/// only safe because every suspending await runs the query-pump entry check
+/// on every invocation — not just wakes — so the queued query is still
+/// drained at the next yield point regardless of which await ate its marker.
 pub(super) fn consume_wake_marker(process_context: &mut ProcessContext, runtime: &RuntimeHandle) {
     let markers = [
         runtime.activity_complete_atom(),
@@ -31,6 +35,7 @@ pub(super) fn consume_wake_marker(process_context: &mut ProcessContext, runtime:
         runtime.activity_result_atom(),
         runtime.signal_received_atom(),
         runtime.timer_fired_atom(),
+        runtime.query_marker_atom(),
     ];
     let Some(select) = process_context.select_facility() else {
         // No facility means an empty mailbox: a subsequent suspend parks

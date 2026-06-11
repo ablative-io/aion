@@ -68,6 +68,24 @@ impl RuntimeHandle {
         self.enqueue_signal_marker_with_retry(workflow_pid, marker)
     }
 
+    /// Deliver a pending-query wake marker to the workflow mailbox surface.
+    ///
+    /// The marker is a pure wake: the pending query (id and name) was already
+    /// queued in the engine NIF state by the query mailbox engine, and the
+    /// woken suspending await drains it through the query-pump entry check.
+    /// Nothing is retained here and nothing is recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// mailbox marker cannot be queued.
+    pub(crate) fn deliver_query_request(&self, workflow_pid: Pid) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        self.wait_for_process_ready(workflow_pid)?;
+        let marker = self.atom_table.intern("aion_query");
+        self.enqueue_signal_marker_with_retry(workflow_pid, marker)
+    }
+
     /// Deliver a two-phase activity completion marker to the workflow mailbox.
     ///
     /// The structured `{activity_complete, CorrelationId, Result}` payload is
@@ -248,6 +266,10 @@ impl RuntimeHandle {
 
     pub(crate) fn timer_fired_atom(&self) -> Atom {
         self.atom_table.intern("aion_timer_fired")
+    }
+
+    pub(crate) fn query_marker_atom(&self) -> Atom {
+        self.atom_table.intern("aion_query")
     }
 
     pub(crate) fn wait_for_process_ready(&self, pid: Pid) -> Result<(), EngineError> {

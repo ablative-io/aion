@@ -6,6 +6,8 @@ pub mod api;
 pub mod builder;
 /// Delegated signal, query, and event-publishing seams.
 pub mod delegated;
+/// Seam-assembly helpers used by `EngineBuilder::build()`.
+mod seams;
 /// Startup recovery wiring used by `EngineBuilder::build()`.
 mod startup;
 

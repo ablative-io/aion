@@ -61,6 +61,10 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
     decode_string_arg(args[2]).map_err(|error| format!("options:{error}"))?;
     let bridge = child_bridge(ctx)?;
     let pid = ctx.pid().ok_or_else(|| "missing_caller_pid".to_owned())?;
+    // spawn_child records `ChildWorkflowStarted`; a query handler must stay
+    // read-only.
+    let state = super::nif_state::engine_nif_state(ctx)?;
+    super::nif_query_pump::ensure_not_servicing_query(&state, pid, "spawn_child")?;
     let mut nif = new_context(&bridge, pid)?;
     let key = next_child_key(&nif);
     let command = Command::SpawnChild {
@@ -100,6 +104,10 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
     let child_workflow_id = parse_workflow_id(&decode_string_arg(args[0])?)?;
     let bridge = child_bridge(ctx)?;
     let pid = ctx.pid().ok_or_else(|| "missing_caller_pid".to_owned())?;
+    // await_child records the awaited child terminal through the recorder; a
+    // query handler must stay read-only.
+    let state = super::nif_state::engine_nif_state(ctx)?;
+    super::nif_query_pump::ensure_not_servicing_query(&state, pid, "await_child")?;
     let mut nif = new_context(&bridge, pid)?;
     let command = Command::AwaitChild {
         child_workflow_id: child_workflow_id.clone(),

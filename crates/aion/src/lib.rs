@@ -74,6 +74,7 @@ pub use engine_seam::EngineHandle;
 pub use error::{EngineError, SignalRouterError};
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};
 pub use publish::{BroadcastEventPublisher, PublishError, PublishingEventStore};
+pub use query::{ConcreteQueryService, QueryError};
 pub use registry::{
     CompletionNotifier, HandleResidency, Registry, Residency, TerminalOutcome, WorkflowHandle,
     WorkflowHandleParts,

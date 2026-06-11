@@ -95,6 +95,13 @@ pub(super) fn with_timeout_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
         Ok(state) => state,
         Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
     };
+    // with_timeout records its durable deadline timer; a query handler must
+    // stay read-only.
+    if let Err(error) =
+        super::nif_query_pump::ensure_not_servicing_query(&state, pid, "with_timeout")
+    {
+        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+    }
     match arm_scope(&state, args, pid) {
         Ok((fun, state_id)) => {
             ctx.set_continuation_trampoline(

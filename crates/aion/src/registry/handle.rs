@@ -202,6 +202,37 @@ impl WorkflowHandle {
             .fetch_add(count, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Activity ordinals allocated so far by this run's execution.
+    ///
+    /// Read-only progress probe: replay re-allocates deterministically, so a
+    /// value below the run segment's recorded `ActivityScheduled` count means
+    /// the run is still mid-replay.
+    #[must_use]
+    pub fn activity_ordinals_allocated(&self) -> u64 {
+        self.activity_ordinal_sequence
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Timer ordinals allocated so far by this run's execution.
+    ///
+    /// Same replay-progress contract as [`Self::activity_ordinals_allocated`],
+    /// measured against recorded anonymous `TimerStarted` events.
+    #[must_use]
+    pub fn timer_ordinals_allocated(&self) -> u64 {
+        self.timer_ordinal_sequence
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Child-workflow ordinals allocated so far by this run's execution.
+    ///
+    /// Same replay-progress contract as [`Self::activity_ordinals_allocated`],
+    /// measured against recorded `ChildWorkflowStarted` events.
+    #[must_use]
+    pub fn child_ordinals_allocated(&self) -> u64 {
+        self.child_ordinal_sequence
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Number of `receive_signal(name)` calls this run has completed.
     ///
     /// Drives the run-scoped consumption index for signal awaits: the k-th
