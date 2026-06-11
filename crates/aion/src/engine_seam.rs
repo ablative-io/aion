@@ -6,7 +6,7 @@
 //! target workflow's single AD Recorder. AT does not manage workflow process lifecycle,
 //! supervision, or module loading directly.
 
-use aion_core::{Event, Payload, RunId, TimerId, WorkflowError, WorkflowId};
+use aion_core::{Event, Payload, TimerId, WorkflowError, WorkflowId};
 
 use crate::Pid;
 use chrono::{DateTime, Utc};
@@ -108,28 +108,25 @@ pub enum WorkflowMailboxMessage {
     },
 }
 
-/// Parent/child process relationship requested for a child workflow spawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChildWorkflowSpawnMode {
-    /// Link the child to the parent so parent cancellation propagates as an exit signal.
-    Linked,
-    /// Detach the child from blocking await semantics and monitor it for terminal exits.
-    DetachedMonitor,
-}
-
 /// Request from AT to AE to spawn a child workflow under a parent process.
+///
+/// The child workflow identifier is pre-allocated by the parent and durably
+/// recorded as `ChildWorkflowStarted` in the parent's history *before* this
+/// request is issued (record-then-spawn), so a crash between the record and
+/// the start leaves a recoverable record instead of an unrecorded orphan.
+/// AE must start the child under exactly this identifier. Children are not
+/// process-linked to their parents: parent death leaves children running,
+/// and awaited terminals are observed through the child-terminal watcher.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChildWorkflowSpawnRequest {
-    /// Parent workflow whose process owns the link.
+    /// Parent workflow requesting the child execution.
     pub parent_workflow_id: WorkflowId,
+    /// Pre-allocated child workflow identifier already recorded by the parent.
+    pub child_workflow_id: WorkflowId,
     /// Child workflow type selected by the parent workflow.
     pub workflow_type: String,
     /// Opaque child workflow input payload.
     pub input: Payload,
-    /// Concrete run identifier requested for the child execution.
-    pub run_id: RunId,
-    /// Relationship AE should establish between parent and child processes.
-    pub mode: ChildWorkflowSpawnMode,
 }
 
 /// AE's result after starting a linked child workflow execution.
@@ -378,8 +375,6 @@ pub(crate) mod test_support {
         operations: Vec<FakeEngineOperation>,
         recorder_store: Option<Arc<dyn WritableEventStore>>,
         record_responses: VecDeque<Result<(), EngineSeamError>>,
-        linked_children: HashMap<WorkflowId, Vec<WorkflowId>>,
-        propagated_child_exits: Vec<(WorkflowId, WorkflowId)>,
     }
 
     /// Cloneable projection of delivered mailbox messages for seam tests.
@@ -597,32 +592,6 @@ pub(crate) mod test_support {
             Ok(self.state()?.terminated_activities.clone())
         }
 
-        /// Simulates AE terminating a parent process and propagating exits to linked children.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
-        pub fn terminate_parent(&self, parent: &WorkflowId) -> Result<(), EngineSeamError> {
-            let mut state = self.state()?;
-            if let Some(children) = state.linked_children.get(parent).cloned() {
-                for child in children {
-                    state.propagated_child_exits.push((parent.clone(), child));
-                }
-            }
-            Ok(())
-        }
-
-        /// Returns propagated linked-child exits observed by the fake.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
-        pub fn propagated_child_exits(
-            &self,
-        ) -> Result<Vec<(WorkflowId, WorkflowId)>, EngineSeamError> {
-            Ok(self.state()?.propagated_child_exits.clone())
-        }
-
         fn state(&self) -> Result<MutexGuard<'_, FakeEngineState>, EngineSeamError> {
             self.state.lock().map_err(|_| EngineSeamError::Recorder {
                 reason: "fake engine state lock was poisoned".to_owned(),
@@ -671,15 +640,6 @@ pub(crate) mod test_support {
                 .operations
                 .push(FakeEngineOperation::ChildSpawnRequested(request.clone()));
             if let Some(response) = state.child_spawn_responses.pop_front() {
-                if let Ok(result) = &response {
-                    if request.mode == ChildWorkflowSpawnMode::Linked {
-                        state
-                            .linked_children
-                            .entry(request.parent_workflow_id.clone())
-                            .or_default()
-                            .push(result.child_workflow_id.clone());
-                    }
-                }
                 response
             } else {
                 Err(EngineSeamError::ChildSpawn {

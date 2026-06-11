@@ -157,11 +157,17 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "dispatch_query", 2),
             super::nif_query::dispatch_query,
         ),
+        // spawn_child stays dirty: it does recorder appends plus a child
+        // start round trip — short, bounded blocking work, no suspension.
         NifEntry::dirty(
             Mfa::new(FFI_MODULE, "spawn_child", 3),
             nif_child::spawn_child_impl,
         ),
-        NifEntry::dirty(
+        // await_child is a two-phase suspending native: it parks via
+        // request_suspend and the child-terminal watcher wakes it, so a
+        // dirty thread would only be wasted (and ten long-lived children
+        // would wedge the default dirty IO pool).
+        NifEntry::new(
             Mfa::new(FFI_MODULE, "await_child", 1),
             nif_child::await_child_impl,
         ),
@@ -244,6 +250,7 @@ mod tests {
             "receive_signal",
             "with_timeout",
             "register_query",
+            "await_child",
         ] {
             let found = entries
                 .iter()
@@ -264,6 +271,7 @@ mod tests {
                         | "receive_signal"
                         | "with_timeout"
                         | "register_query"
+                        | "await_child"
                 ))
                 .all(|entry| entry.is_dirty)
         );

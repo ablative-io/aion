@@ -14,9 +14,10 @@ use crate::{
     SupervisionTree, WorkflowHandle, WorkflowHandleParts,
     durability::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
-        Recorder,
+        Recorder, current_run_segment,
     },
     lifecycle::completion::{ProcessExitContext, handle_process_exit},
+    lifecycle::start::{StartWorkflowContext, StartWorkflowOptions, start_workflow_with_options},
     time::TimerRecovery,
 };
 
@@ -182,6 +183,7 @@ async fn repopulate_active_workflows(
                     );
                     return Err(error);
                 }
+                sweep_recorded_children(context, &workflow_id, &run_id, &history).await?;
             }
             ActiveWorkflowRecovery::ScheduleCoordinator { run_id } => {
                 registry.reconcile(&workflow_id, &run_id, &history)?;
@@ -189,6 +191,84 @@ async fn repopulate_active_workflows(
         }
     }
 
+    Ok(())
+}
+
+/// Start every recorded-but-never-spawned child of a recovered parent (#56).
+///
+/// Record-then-spawn means a crash between the parent's durable
+/// `ChildWorkflowStarted` and the child's actual start leaves a child with
+/// a recorded identity but no history. The sweep repairs that window: for
+/// each `ChildWorkflowStarted` in the recovered run segment without a
+/// parent-side terminal, an *empty* child history means the child never
+/// started — start it now under the recorded id, type, and input.
+/// Idempotent: a non-empty child history means the child exists (its own
+/// `list_active` recovery owns its process), and the parent's replayed
+/// spawn resolves from the recorded event, so no path starts a duplicate.
+/// The sweep also covers fire-and-forget children, which no await would
+/// ever lazily repair.
+async fn sweep_recorded_children(
+    context: &StartupRecoveryContext<'_>,
+    parent_workflow_id: &aion_core::WorkflowId,
+    parent_run_id: &RunId,
+    parent_history: &[Event],
+) -> Result<(), EngineError> {
+    let segment = current_run_segment(parent_history.to_vec(), parent_run_id)?;
+    for event in &segment {
+        let Event::ChildWorkflowStarted {
+            child_workflow_id,
+            workflow_type,
+            input,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        let has_parent_side_terminal = segment.iter().any(|candidate| {
+            matches!(
+                candidate,
+                Event::ChildWorkflowCompleted { child_workflow_id: recorded, .. }
+                | Event::ChildWorkflowFailed { child_workflow_id: recorded, .. }
+                    if recorded == child_workflow_id
+            )
+        });
+        if has_parent_side_terminal {
+            continue;
+        }
+        let child_history = context
+            .store
+            .as_ref()
+            .read_history(child_workflow_id)
+            .await?;
+        if !child_history.is_empty() {
+            continue;
+        }
+        tracing::info!(
+            parent_workflow_id = %parent_workflow_id,
+            child_workflow_id = %child_workflow_id,
+            workflow_type = %workflow_type,
+            "starting recorded-but-never-spawned child found by the recovery sweep"
+        );
+        start_workflow_with_options(
+            StartWorkflowContext {
+                store: Arc::clone(&context.store),
+                visibility_store: Arc::clone(&context.visibility_store),
+                loaded_workflows: context.loaded_workflows,
+                runtime: Arc::clone(&context.runtime),
+                supervision: Arc::clone(&context.supervision),
+                registry: Arc::clone(&context.registry),
+                signal_handoff: None,
+                search_attribute_schema: Arc::clone(&context.search_attribute_schema),
+            },
+            workflow_type,
+            input.clone(),
+            StartWorkflowOptions {
+                workflow_id: Some(child_workflow_id.clone()),
+                ..StartWorkflowOptions::default()
+            },
+        )
+        .await?;
+    }
     Ok(())
 }
 

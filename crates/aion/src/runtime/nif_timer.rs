@@ -53,6 +53,11 @@ pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term
                     "sleep: process is pinned to a pending signal await".to_owned(),
                 ));
             }
+            Some(PendingAwait::Child { .. }) => {
+                return Err(NifTimerError::Context(
+                    "sleep: process is pinned to a pending child await".to_owned(),
+                ));
+            }
             None => None,
         };
         let first_arrival = pinned.is_none();

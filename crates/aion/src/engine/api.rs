@@ -706,6 +706,11 @@ impl Engine {
             task.abort();
         }
         self.shutdown_gate.close_and_wait()?;
+        // Child-terminal watcher tasks live on the host Tokio runtime, not
+        // the beamr scheduler: abort them here so none outlives this engine
+        // and double-writes a parent history a successor engine over the
+        // same store records into.
+        self.runtime.nif_state().shutdown_child_terminal_watches();
         self.runtime.shutdown()
     }
 }

@@ -1,6 +1,6 @@
 //! race: first wins, cancel + record the rest
 
-use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId};
+use aion_core::{Event, EventEnvelope, Payload, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::concurrency::{
@@ -8,9 +8,7 @@ use crate::concurrency::{
     CorrelatedSlotState, CorrelationBatch, CorrelationError, CorrelationMailbox, CorrelationToken,
     InFlightChild, LinkedChild, cancel_remaining,
 };
-use crate::engine_seam::{
-    ChildWorkflowSpawnMode, ChildWorkflowSpawnRequest, EngineHandle, EngineSeamError,
-};
+use crate::engine_seam::{ChildWorkflowSpawnRequest, EngineHandle, EngineSeamError};
 
 /// Metadata used to envelope race child observations before routing through the recorder seam.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,18 +82,22 @@ pub struct RaceChildSpec {
     pub workflow_type: String,
     /// Opaque child workflow input payload.
     pub input: Payload,
-    /// Concrete run identifier requested for the child execution.
-    pub run_id: RunId,
+    /// Pre-allocated child workflow identifier recorded before the start.
+    pub child_workflow_id: WorkflowId,
 }
 
 impl RaceChildSpec {
     /// Creates a child workflow spec for a race fan-out.
     #[must_use]
-    pub fn new(workflow_type: impl Into<String>, input: Payload, run_id: RunId) -> Self {
+    pub fn new(
+        workflow_type: impl Into<String>,
+        input: Payload,
+        child_workflow_id: WorkflowId,
+    ) -> Self {
         Self {
             workflow_type: workflow_type.into(),
             input,
-            run_id,
+            child_workflow_id,
         }
     }
 }
@@ -139,7 +141,7 @@ pub enum RaceError {
     /// Correlation derivation, matching, or loser cancellation failed.
     #[error(transparent)]
     Correlation(#[from] CorrelationError),
-    /// AE returned an invalid child identity for a race spawn request.
+    /// AE started a child under a different identity than the recorded one.
     #[error(
         "child workflow spawn returned invalid child id {child_workflow_id} for parent {parent_workflow_id}"
     )]
@@ -201,21 +203,34 @@ fn spawn_linked_children(
 ) -> Result<Vec<InFlightChild>, RaceError> {
     let mut children = Vec::with_capacity(specs.len());
     for (slot, spec) in batch.slots().iter().copied().zip(specs.iter()) {
-        let request = ChildWorkflowSpawnRequest {
-            parent_workflow_id: recording.parent_workflow_id().clone(),
+        // Record-then-spawn (#56): the pre-allocated id is durably recorded
+        // before AE is asked to start the child.
+        let event = Event::ChildWorkflowStarted {
+            envelope: recording.next_envelope()?,
+            child_workflow_id: spec.child_workflow_id.clone(),
             workflow_type: spec.workflow_type.clone(),
             input: spec.input.clone(),
-            run_id: spec.run_id.clone(),
-            mode: ChildWorkflowSpawnMode::Linked,
+        };
+        if let Err(error) = engine.record_workflow_event(recording.parent_workflow_id(), event) {
+            cancel_spawned_children(engine, recording, batch, &children)?;
+            return Err(RaceError::Engine(error));
+        }
+        let request = ChildWorkflowSpawnRequest {
+            parent_workflow_id: recording.parent_workflow_id().clone(),
+            child_workflow_id: spec.child_workflow_id.clone(),
+            workflow_type: spec.workflow_type.clone(),
+            input: spec.input.clone(),
         };
         let spawned = match engine.spawn_child_workflow(request) {
             Ok(spawned) => spawned,
             Err(error) => {
+                // The recorded start survives the failed request by design
+                // (the crash-window record the recovery sweep repairs from).
                 cancel_spawned_children(engine, recording, batch, &children)?;
                 return Err(RaceError::Engine(error));
             }
         };
-        if spawned.child_workflow_id == *recording.parent_workflow_id() {
+        if spawned.child_workflow_id != spec.child_workflow_id {
             engine.terminate_linked_child_workflow(
                 recording.parent_workflow_id(),
                 spawned.child_process,
@@ -226,21 +241,6 @@ fn spawn_linked_children(
                 parent_workflow_id: recording.parent_workflow_id().clone(),
                 child_workflow_id: spawned.child_workflow_id,
             });
-        }
-        let event = Event::ChildWorkflowStarted {
-            envelope: recording.next_envelope()?,
-            child_workflow_id: spawned.child_workflow_id.clone(),
-            workflow_type: spec.workflow_type.clone(),
-            input: spec.input.clone(),
-        };
-        if let Err(error) = engine.record_workflow_event(recording.parent_workflow_id(), event) {
-            engine.terminate_linked_child_workflow(
-                recording.parent_workflow_id(),
-                spawned.child_process,
-                slot.token().value(),
-            )?;
-            cancel_spawned_children(engine, recording, batch, &children)?;
-            return Err(RaceError::Engine(error));
         }
         children.push(InFlightChild::new(
             slot.index(),
@@ -315,7 +315,7 @@ fn pending_count(table: &CorrelatedResultTable) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{ContentType, Event, Payload, RunId, WorkflowError, WorkflowId};
+    use aion_core::{ContentType, Event, Payload, WorkflowError, WorkflowId};
     use chrono::DateTime;
 
     use super::{RaceChildSpec, RaceError, RaceRecordingContext, RaceWinner, race};
@@ -339,7 +339,7 @@ mod tests {
         let mut mailbox =
             VecCorrelationMailbox::new(vec![completed(children[1].clone(), 101, b"second")]);
         let engine = engine_with_children(&children)?;
-        let specs = specs(3);
+        let specs = specs(&children);
         let mut recording = recording(parent.clone(), 100)?;
 
         let winner = race(&engine, &mut recording, &mut mailbox, &specs)?;
@@ -369,7 +369,7 @@ mod tests {
         let mut mailbox =
             VecCorrelationMailbox::new(vec![failed(children[0].clone(), 200, error.clone())]);
         let engine = engine_with_children(&children)?;
-        let specs = specs(3);
+        let specs = specs(&children);
         let mut recording = recording(parent.clone(), 200)?;
 
         let winner = race(&engine, &mut recording, &mut mailbox, &specs)?;
@@ -417,7 +417,7 @@ mod tests {
                 child_process: process,
             }))?;
         }
-        let specs = specs(3);
+        let specs = specs(&children);
         let mut recording = recording(parent.clone(), 300)?;
 
         let winner = race(&engine, &mut recording, &mut mailbox, &specs)?;
@@ -480,7 +480,7 @@ mod tests {
                 child_process: process,
             }))?;
         }
-        let specs = specs(3);
+        let specs = specs(&children);
         let mut recording = recording(parent.clone(), 400)?;
 
         let error = match race(&engine, &mut recording, &mut mailbox, &specs) {
@@ -529,10 +529,12 @@ mod tests {
         Ok(engine)
     }
 
-    fn specs(len: usize) -> Vec<RaceChildSpec> {
-        (0..len)
-            .map(|index| {
-                RaceChildSpec::new(format!("child.{index}"), payload(b"{}"), RunId::new_v4())
+    fn specs(children: &[WorkflowId; 3]) -> Vec<RaceChildSpec> {
+        children
+            .iter()
+            .enumerate()
+            .map(|(index, child)| {
+                RaceChildSpec::new(format!("child.{index}"), payload(b"{}"), child.clone())
             })
             .collect()
     }

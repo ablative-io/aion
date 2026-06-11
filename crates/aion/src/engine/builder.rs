@@ -519,20 +519,18 @@ impl EngineBuilder {
                 delegated.signal_router_arc(),
             )),
         );
-        install_child_nif_bridge(
-            &nif_state,
-            Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
-                store: Arc::clone(&store),
-                visibility_store: Arc::clone(&visibility_store),
-                runtime: Arc::clone(&runtime),
-                loaded_workflows: loaded_workflows.clone(),
-                registry: Arc::clone(&registry),
-                supervision: Arc::clone(&supervision),
-                signal_handoff: Arc::clone(&signal_handoff),
-                search_attribute_schema: Arc::clone(&search_attribute_schema),
-                tokio_handle: tokio::runtime::Handle::current(),
-            })),
-        );
+        install_configured_child_nif_bridge(&ChildBridgeAssembly {
+            nif_state: &nif_state,
+            store: &store,
+            visibility_store: &visibility_store,
+            runtime: &runtime,
+            loaded_workflows: &loaded_workflows,
+            registry: &registry,
+            supervision: &supervision,
+            signal_handoff: &signal_handoff,
+            search_attribute_schema: &search_attribute_schema,
+            watch_backoff: self.signal_delivery,
+        });
 
         // Startup recovery re-spawns active workflow processes, and those
         // processes begin replaying on scheduler threads immediately. Replay
@@ -578,6 +576,40 @@ impl EngineBuilder {
         engine.recover_schedules_on_startup(Utc::now()).await?;
         Ok(engine)
     }
+}
+
+/// Borrowed engine components assembled into the child NIF bridge.
+struct ChildBridgeAssembly<'a> {
+    nif_state: &'a Arc<crate::runtime::EngineNifState>,
+    store: &'a Arc<dyn EventStore>,
+    visibility_store: &'a Arc<dyn VisibilityStore>,
+    runtime: &'a Arc<RuntimeHandle>,
+    loaded_workflows: &'a LoadedWorkflows,
+    registry: &'a Arc<Registry>,
+    supervision: &'a Arc<SupervisionTree>,
+    signal_handoff: &'a Arc<SignalResumeHandoff>,
+    search_attribute_schema: &'a Arc<aion_core::SearchAttributeSchema>,
+    /// The child-terminal watcher reuses the builder's delivery retry
+    /// policy for its registry-miss backoff windows.
+    watch_backoff: SignalDeliveryConfig,
+}
+
+fn install_configured_child_nif_bridge(assembly: &ChildBridgeAssembly<'_>) {
+    install_child_nif_bridge(
+        assembly.nif_state,
+        Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
+            store: Arc::clone(assembly.store),
+            visibility_store: Arc::clone(assembly.visibility_store),
+            runtime: Arc::clone(assembly.runtime),
+            loaded_workflows: assembly.loaded_workflows.clone(),
+            registry: Arc::clone(assembly.registry),
+            supervision: Arc::clone(assembly.supervision),
+            signal_handoff: Arc::clone(assembly.signal_handoff),
+            search_attribute_schema: Arc::clone(assembly.search_attribute_schema),
+            tokio_handle: tokio::runtime::Handle::current(),
+            watch_backoff: assembly.watch_backoff,
+        })),
+    );
 }
 
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {

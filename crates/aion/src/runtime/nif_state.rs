@@ -104,6 +104,11 @@ pub(crate) enum PendingAwait {
         /// Per-name zero-based occurrence index pinned at first arrival.
         index: usize,
     },
+    /// `await_child` parked on one child workflow's terminal outcome.
+    Child {
+        /// Awaited child workflow identity pinned at first live arrival.
+        child_workflow_id: aion_core::WorkflowId,
+    },
 }
 
 impl EngineNifState {
@@ -134,6 +139,10 @@ impl EngineNifState {
     /// their pending reply senders makes each caller's `QueryService` observe
     /// `ReplyDropped` (the query-racing-completion path) instead of hanging
     /// until its timeout.
+    ///
+    /// Child-terminal watcher tasks armed by the exited parent are aborted
+    /// here too: a dead parent can never consume the wake, and an orphaned
+    /// watcher must not keep a recorder path alive past the process.
     pub(crate) fn cleanup_process(&self, pid: u64) {
         self.pending_awaits.remove(&pid);
         self.timeout_scope_stacks.remove(&pid);
@@ -141,6 +150,28 @@ impl EngineNifState {
         self.pending_queries.remove(&pid);
         self.servicing_queries.remove(&pid);
         self.query_handlers.cleanup_pid(pid);
+        if let Some(bridge) = self.installed_child_bridge() {
+            bridge.abort_child_terminal_watches_for_parent(pid);
+        }
+    }
+
+    /// Abort every armed child-terminal watcher task across the engine.
+    ///
+    /// Called from engine shutdown: watcher tasks live on the host Tokio
+    /// runtime (not the beamr scheduler), so they would otherwise outlive
+    /// the engine and could double-write a parent history a successor
+    /// engine instance over the same store also records into.
+    pub(crate) fn shutdown_child_terminal_watches(&self) {
+        if let Some(bridge) = self.installed_child_bridge() {
+            bridge.abort_all_child_terminal_watches();
+        }
+    }
+
+    fn installed_child_bridge(&self) -> Option<Arc<ChildNifBridge>> {
+        match self.child_bridge.read() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 }
 

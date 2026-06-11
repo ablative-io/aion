@@ -2,12 +2,11 @@
 
 use std::sync::Arc;
 
-use aion_core::{Event, WorkflowError, WorkflowId};
+use aion_core::{Event, WorkflowId};
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use tokio::runtime::Handle;
 
-use crate::child::{ChildWorkflowError, ChildWorkflowMailbox};
 use crate::durability::DurabilityError;
 use crate::engine_seam::{
     ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
@@ -17,8 +16,9 @@ use crate::lifecycle::start::{
     StartWorkflowContext, StartWorkflowOptions, start_workflow_with_options,
 };
 use crate::loader::LoadedWorkflows;
-use crate::registry::{HandleResidency, Registry, TerminalOutcome, WorkflowHandle};
-use crate::runtime::RuntimeHandle;
+use crate::registry::{HandleResidency, Registry, WorkflowHandle};
+use crate::runtime::nif_child_watch::ChildTerminalWatches;
+use crate::runtime::{RuntimeHandle, SignalDeliveryConfig};
 use crate::signal::SignalResumeHandoff;
 use crate::supervision::SupervisionTree;
 
@@ -33,6 +33,10 @@ pub(crate) struct ChildNifBridge {
     signal_handoff: Arc<SignalResumeHandoff>,
     search_attribute_schema: Arc<aion_core::SearchAttributeSchema>,
     tokio_handle: Handle,
+    /// Armed child-terminal watcher tasks keyed by `(parent pid, child id)`.
+    child_terminal_watches: Arc<ChildTerminalWatches>,
+    /// Builder-supplied backoff policy for watcher registry-miss windows.
+    watch_backoff: SignalDeliveryConfig,
 }
 
 /// Constructor dependencies for [`ChildNifBridge`].
@@ -46,6 +50,7 @@ pub(crate) struct ChildNifBridgeParts {
     pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
     pub(crate) search_attribute_schema: Arc<aion_core::SearchAttributeSchema>,
     pub(crate) tokio_handle: Handle,
+    pub(crate) watch_backoff: SignalDeliveryConfig,
 }
 
 impl ChildNifBridge {
@@ -62,6 +67,7 @@ impl ChildNifBridge {
             signal_handoff,
             search_attribute_schema,
             tokio_handle,
+            watch_backoff,
         } = parts;
         Self {
             store,
@@ -73,6 +79,8 @@ impl ChildNifBridge {
             signal_handoff,
             search_attribute_schema,
             tokio_handle,
+            child_terminal_watches: Arc::new(ChildTerminalWatches::default()),
+            watch_backoff,
         }
     }
 
@@ -80,95 +88,38 @@ impl ChildNifBridge {
         self.registry.as_ref()
     }
 
+    pub(crate) fn registry_arc(&self) -> Arc<Registry> {
+        Arc::clone(&self.registry)
+    }
+
     pub(crate) fn store(&self) -> Arc<dyn EventStore> {
         Arc::clone(&self.store)
+    }
+
+    pub(crate) fn runtime(&self) -> Arc<RuntimeHandle> {
+        Arc::clone(&self.runtime)
     }
 
     pub(crate) fn tokio_handle(&self) -> Handle {
         self.tokio_handle.clone()
     }
-}
 
-pub(crate) struct CompletionMailbox {
-    message: Option<WorkflowMailboxMessage>,
-}
-
-impl CompletionMailbox {
-    pub(crate) fn new(
-        bridge: &ChildNifBridge,
-        child_workflow_id: &WorkflowId,
-    ) -> Result<Self, String> {
-        let child = bridge
-            .registry
-            .list()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|handle| handle.workflow_id() == child_workflow_id)
-            .ok_or_else(|| format!("unknown_child_workflow:{child_workflow_id}"))?;
-        let mut receiver = child.completion().subscribe();
-        let outcome = bridge.tokio_handle.block_on(async {
-            loop {
-                if let Some(outcome) = receiver.borrow().clone() {
-                    break Ok(outcome);
-                }
-                if receiver.changed().await.is_err() {
-                    break Err("child_completion_channel_closed".to_owned());
-                }
-            }
-        })?;
-        Ok(Self {
-            message: Some(outcome_to_message(child_workflow_id.clone(), outcome)?),
-        })
+    pub(crate) fn child_terminal_watches(&self) -> Arc<ChildTerminalWatches> {
+        Arc::clone(&self.child_terminal_watches)
     }
-}
 
-impl ChildWorkflowMailbox for CompletionMailbox {
-    fn receive_child_workflow_message(
-        &mut self,
-        child_workflow_id: &WorkflowId,
-    ) -> Result<WorkflowMailboxMessage, ChildWorkflowError> {
-        self.message
-            .take()
-            .ok_or_else(|| ChildWorkflowError::MailboxClosed {
-                child_workflow_id: child_workflow_id.clone(),
-            })
+    pub(crate) fn watch_backoff(&self) -> SignalDeliveryConfig {
+        self.watch_backoff
     }
-}
 
-fn outcome_to_message(
-    child_workflow_id: WorkflowId,
-    outcome: TerminalOutcome,
-) -> Result<WorkflowMailboxMessage, String> {
-    match outcome {
-        TerminalOutcome::Completed(result) => Ok(WorkflowMailboxMessage::ChildWorkflowCompleted {
-            child_workflow_id,
-            correlation: 0,
-            result,
-        }),
-        TerminalOutcome::Failed(error) => Ok(WorkflowMailboxMessage::ChildWorkflowFailed {
-            child_workflow_id,
-            correlation: 0,
-            error,
-        }),
-        TerminalOutcome::Cancelled(reason) => Ok(WorkflowMailboxMessage::ChildWorkflowFailed {
-            child_workflow_id,
-            correlation: 0,
-            error: WorkflowError {
-                message: format!("cancelled:{reason}"),
-                details: None,
-            },
-        }),
-        TerminalOutcome::TimedOut(timeout) => Ok(WorkflowMailboxMessage::ChildWorkflowFailed {
-            child_workflow_id,
-            correlation: 0,
-            error: WorkflowError {
-                message: format!("timed_out:{timeout}"),
-                details: None,
-            },
-        }),
-        TerminalOutcome::ContinuedAsNew { .. } => {
-            Err("child_continued_as_new_without_terminal_result".to_owned())
-        }
+    /// Abort every child-terminal watcher armed by an exited parent pid.
+    pub(crate) fn abort_child_terminal_watches_for_parent(&self, parent_pid: u64) {
+        self.child_terminal_watches.abort_for_parent(parent_pid);
+    }
+
+    /// Abort every armed child-terminal watcher (engine shutdown).
+    pub(crate) fn abort_all_child_terminal_watches(&self) {
+        self.child_terminal_watches.abort_all();
     }
 }
 
@@ -259,6 +210,10 @@ impl EngineHandle for NifChildEngine {
                     &request.workflow_type,
                     request.input,
                     StartWorkflowOptions {
+                        // Record-then-spawn (#56): the parent already recorded
+                        // ChildWorkflowStarted under this pre-allocated id, so
+                        // the child must start under exactly this identity.
+                        workflow_id: Some(request.child_workflow_id),
                         search_attributes: inherited,
                         ..StartWorkflowOptions::default()
                     },

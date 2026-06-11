@@ -46,7 +46,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{ContentType, Event, Payload, RunId, WorkflowError, WorkflowId};
+    use aion_core::{ContentType, Event, Payload, WorkflowError, WorkflowId};
     use chrono::DateTime;
 
     use super::{child_specs_from_items, map};
@@ -76,7 +76,17 @@ mod tests {
         AllChildWorkflowSpec::new(
             "child",
             Payload::new(ContentType::Json, vec![item]),
-            RunId::new_v4(),
+            WorkflowId::new_v4(),
+        )
+    }
+
+    /// Spec builder pinning each item's pre-allocated child id to the
+    /// response queued for that position, matching the spawn echo check.
+    fn spec_from_item_with_child(item: u8, children: &[WorkflowId]) -> AllChildWorkflowSpec {
+        AllChildWorkflowSpec::new(
+            "child",
+            Payload::new(ContentType::Json, vec![item]),
+            children[usize::from(item)].clone(),
         )
     }
 
@@ -165,7 +175,7 @@ mod tests {
         ]);
 
         let results = map(&engine, &recording, &mut mailbox, &items, |&item| {
-            spec_from_item(item)
+            spec_from_item_with_child(item, &children)
         })?;
 
         assert_eq!(results, vec![result_a, result_b, result_c]);
@@ -214,7 +224,7 @@ mod tests {
             }]);
 
         let error = map(&engine, &recording, &mut mailbox, &items, |&item| {
-            spec_from_item(item)
+            spec_from_item_with_child(item, &children)
         });
 
         assert_eq!(

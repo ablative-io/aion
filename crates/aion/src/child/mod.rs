@@ -1,9 +1,6 @@
-//! Child-workflow spawning and completion helpers.
+//! Child-workflow spawning helpers.
 
-/// Child-workflow spawn, await, and mailbox recording primitives.
+/// Record-then-spawn child-workflow primitives over the AE engine seam.
 pub mod spawn;
 
-pub use spawn::{
-    ChildWorkflowError, ChildWorkflowMailbox, ChildWorkflowRecordingContext, SpawnedChildWorkflow,
-    VecChildWorkflowMailbox, await_child, spawn, spawn_and_wait, spawn_fire_and_forget,
-};
+pub use spawn::{ChildWorkflowError, ChildWorkflowRecordingContext, SpawnedChildWorkflow, spawn};

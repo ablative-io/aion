@@ -86,6 +86,26 @@ impl RuntimeHandle {
         self.enqueue_signal_marker_with_retry(workflow_pid, marker)
     }
 
+    /// Deliver a recorded child-terminal wake marker to the parent workflow
+    /// mailbox surface.
+    ///
+    /// The marker is a pure wake: the child's terminal outcome was already
+    /// durably recorded into the parent's history (as
+    /// `ChildWorkflowCompleted`/`ChildWorkflowFailed`) by the child-terminal
+    /// watcher before delivery, and the awaiting NIF resolves it from
+    /// recorded history. Nothing is retained here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// mailbox marker cannot be queued.
+    pub(crate) fn deliver_child_terminal(&self, workflow_pid: Pid) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        self.wait_for_process_ready(workflow_pid)?;
+        let marker = self.atom_table.intern("aion_child_terminal");
+        self.enqueue_signal_marker_with_retry(workflow_pid, marker)
+    }
+
     /// Deliver a two-phase activity completion marker to the workflow mailbox.
     ///
     /// The structured `{activity_complete, CorrelationId, Result}` payload is
@@ -270,6 +290,10 @@ impl RuntimeHandle {
 
     pub(crate) fn query_marker_atom(&self) -> Atom {
         self.atom_table.intern("aion_query")
+    }
+
+    pub(crate) fn child_terminal_atom(&self) -> Atom {
+        self.atom_table.intern("aion_child_terminal")
     }
 
     pub(crate) fn wait_for_process_ready(&self, pid: Pid) -> Result<(), EngineError> {

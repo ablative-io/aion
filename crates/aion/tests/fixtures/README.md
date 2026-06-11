@@ -6,6 +6,7 @@ in:
 
 - `aion_fixture_workflow.erl` / `.beam`
 - `aion_parent_fixture.erl` / `.beam`
+- `aion_parent_query_fixture.erl` / `.beam`
 - `aion_child_fixture.erl` / `.beam`
 - `aion_fixture_query.erl` / `.beam`
 
@@ -29,7 +30,10 @@ erlc -Werror -o crates/aion/tests/fixtures crates/aion/tests/fixtures/*.erl
 
 `aion_parent_fixture` exercises the child-workflow NIF bridge
 (`aion_flow_ffi:spawn_child/3`, `await_child/1`, `receive_signal/2`) for the
-child correlation/replay end-to-end tests in `tests/child_workflows_e2e.rs`:
+child correlation/replay end-to-end tests in `tests/child_workflows_e2e.rs`.
+`await_child/1` returns child success/failure as data with the SDK's
+`"ok:"`/`"error:"` payload prefixes; `{error, _}` is reserved for engine
+faults:
 
 - `child_round_trip/1` spawns one `aion_child_fixture` child, awaits it, and
   returns `{ChildId, ChildResult}`.
@@ -38,10 +42,27 @@ child correlation/replay end-to-end tests in `tests/child_workflows_e2e.rs`:
 - `two_children/1` spawns two children with a `mid` signal consumed between
   the spawns, awaits both, gates on `release`, and returns both child ids.
 
+`aion_parent_query_fixture` exercises the two-phase suspending `await_child`
+native for `tests/child_await_e2e.rs`, hand-rolling the same query pump loop
+as `aion_fixture_query` so a parent parked inside `await_child` can answer
+queries:
+
+- `await_gated/1` spawns one `aion_child_fixture` child, parks in a pumped
+  `await_child`, gates on `release`, and returns only the child's result
+  (so cross-run history-shape comparisons never embed child ids).
+- `queryable_await/1` registers a `state` query handler first, then runs
+  `await_gated/1`.
+
 `aion_child_fixture` is the child workflow type those parents spawn:
 
 - `complete/1` returns the known result `42`.
 - `wait/1` blocks in `receive` so tests can observe a live child execution.
+- `gated/1` parks in the suspending `receive_signal` native until a
+  `child_go` signal arrives, then returns `42` — used to hold a parent
+  parked in `await_child` for as long as a test needs.
+- `can_once/1` continues-as-new once (input `"second"` marks the
+  replacement run) and the replacement completes with `42` — used to prove
+  `await_child` follows the continue-as-new run chain transparently.
 
 `aion_fixture_query` exercises the workflow-query yield-point pump protocol
 (`aion_flow_ffi:register_query/2`, `reply_query/2`, `reply_query_error/2`,

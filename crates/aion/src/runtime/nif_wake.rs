@@ -1,10 +1,11 @@
 //! Shared wake-marker consumption for suspending awaits.
 //!
 //! Every asynchronous arrival (activity completion or failure, signal,
-//! fired timer) wakes a suspended workflow process by enqueueing one atom
-//! marker into its mailbox. Markers are pure wakes: the arrival's state
-//! lives in recorded history or the runtime's completion maps, never in the
-//! marker itself, so any aion await may consume any marker.
+//! fired timer, recorded child terminal, pending query) wakes a suspended
+//! workflow process by enqueueing one atom marker into its mailbox. Markers
+//! are pure wakes: the arrival's state lives in recorded history or the
+//! runtime's completion maps, never in the marker itself, so any aion await
+//! may consume any marker.
 
 use beamr::native::ProcessContext;
 use beamr::term::Term;
@@ -13,7 +14,8 @@ use crate::RuntimeHandle;
 
 /// Remove one queued aion wake marker from the calling process mailbox.
 ///
-/// Suspending awaits (`sleep`, `receive_signal`, `await_activity_result`)
+/// Suspending awaits (`sleep`, `receive_signal`, `await_activity_result`,
+/// `await_child`)
 /// must call this exactly once per invocation before deciding to suspend
 /// again. A marker left queued would defeat the suspend — beamr's parked
 /// wait re-checks `mailbox().is_empty()` and immediately re-wakes — turning
@@ -36,6 +38,7 @@ pub(super) fn consume_wake_marker(process_context: &mut ProcessContext, runtime:
         runtime.signal_received_atom(),
         runtime.timer_fired_atom(),
         runtime.query_marker_atom(),
+        runtime.child_terminal_atom(),
     ];
     let Some(select) = process_context.select_facility() else {
         // No facility means an empty mailbox: a subsequent suspend parks

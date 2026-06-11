@@ -376,13 +376,6 @@ impl NifContext {
             .map_err(Into::into)
     }
 
-    pub(crate) fn current_recorder_head(&self) -> u64 {
-        self.tokio_handle.block_on(async {
-            let recorder = self.recorder.lock().await;
-            recorder.current_head()
-        })
-    }
-
     /// Returns a snapshot of the recorded history visible to this NIF context.
     #[must_use]
     pub fn history(&self) -> &[aion_core::Event] {

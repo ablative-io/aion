@@ -4,7 +4,7 @@
 //! are treated as already-recorded asynchronous observations; this module records child starts via
 //! the child-spawn helper and records cancellation for any still-pending children on fail-fast.
 
-use aion_core::{Payload, RunId, WorkflowError, WorkflowId};
+use aion_core::{Payload, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::child::{ChildWorkflowError, ChildWorkflowRecordingContext, spawn};
@@ -21,18 +21,22 @@ pub struct AllChildWorkflowSpec {
     pub workflow_type: String,
     /// Opaque input passed to the child workflow.
     pub input: Payload,
-    /// Concrete child run identifier requested from AE.
-    pub run_id: RunId,
+    /// Pre-allocated child workflow identifier recorded before the start.
+    pub child_workflow_id: WorkflowId,
 }
 
 impl AllChildWorkflowSpec {
     /// Creates a child workflow spec for [`all`].
     #[must_use]
-    pub fn new(workflow_type: impl Into<String>, input: Payload, run_id: RunId) -> Self {
+    pub fn new(
+        workflow_type: impl Into<String>,
+        input: Payload,
+        child_workflow_id: WorkflowId,
+    ) -> Self {
         Self {
             workflow_type: workflow_type.into(),
             input,
-            run_id,
+            child_workflow_id,
         }
     }
 }
@@ -249,7 +253,7 @@ fn spawn_children(
             &mut start_recording,
             spec.workflow_type.clone(),
             spec.input.clone(),
-            spec.run_id.clone(),
+            spec.child_workflow_id.clone(),
         ) {
             Ok(spawned) => spawned,
             Err(spawn_error) => {
@@ -319,15 +323,14 @@ fn ordered_results(results: Vec<Option<Payload>>) -> Result<Vec<Payload>, AllErr
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{ContentType, Event, Payload, RunId, WorkflowError, WorkflowId};
+    use aion_core::{ContentType, Event, Payload, WorkflowError, WorkflowId};
     use chrono::DateTime;
 
     use super::{AllChildWorkflowSpec, AllError, AllRecordingContext, all};
     use crate::concurrency::VecCorrelationMailbox;
     use crate::engine_seam::test_support::FakeEngineHandle;
     use crate::engine_seam::{
-        ChildWorkflowSpawnMode, ChildWorkflowSpawnResult, EngineSeamError, WorkflowMailboxMessage,
-        WorkflowProcessHandle,
+        ChildWorkflowSpawnResult, EngineSeamError, WorkflowMailboxMessage, WorkflowProcessHandle,
     };
 
     fn payload(bytes: &'static [u8]) -> Payload {
@@ -345,8 +348,8 @@ mod tests {
         }
     }
 
-    fn spec(label: &'static [u8]) -> AllChildWorkflowSpec {
-        AllChildWorkflowSpec::new("child", payload(label), RunId::new_v4())
+    fn spec(label: &'static [u8], child_workflow_id: &WorkflowId) -> AllChildWorkflowSpec {
+        AllChildWorkflowSpec::new("child", payload(label), child_workflow_id.clone())
     }
 
     fn queue_spawns(
@@ -378,9 +381,9 @@ mod tests {
         ];
         queue_spawns(&engine, &children)?;
         let specs = vec![
-            spec(br#"{"input":0}"#),
-            spec(br#"{"input":1}"#),
-            spec(br#"{"input":2}"#),
+            spec(br#"{"input":0}"#, &children[0]),
+            spec(br#"{"input":1}"#, &children[1]),
+            spec(br#"{"input":2}"#, &children[2]),
         ];
         let recording = AllRecordingContext::new(parent.clone(), 40, timestamp()?);
         let result_a = payload(br#"{"result":0}"#);
@@ -410,10 +413,13 @@ mod tests {
         assert!(mailbox.is_empty());
         let requests = engine.child_spawn_requests()?;
         assert_eq!(requests.len(), 3);
-        assert!(
+        assert_eq!(
             requests
                 .iter()
-                .all(|request| request.mode == ChildWorkflowSpawnMode::Linked)
+                .map(|request| request.child_workflow_id.clone())
+                .collect::<Vec<_>>(),
+            children,
+            "each start request must carry its spec's pre-allocated child id"
         );
         let recorded = engine.recorded_events()?;
         assert_eq!(recorded.len(), 3);
@@ -441,9 +447,9 @@ mod tests {
         ];
         let processes = queue_spawns(&engine, &children)?;
         let specs = vec![
-            spec(br#"{"input":0}"#),
-            spec(br#"{"input":1}"#),
-            spec(br#"{"input":2}"#),
+            spec(br#"{"input":0}"#, &children[0]),
+            spec(br#"{"input":1}"#, &children[1]),
+            spec(br#"{"input":2}"#, &children[2]),
         ];
         let recording = AllRecordingContext::new(parent.clone(), 50, timestamp()?);
         let failure = workflow_error("boom");
@@ -499,9 +505,9 @@ mod tests {
         ];
         let processes = queue_spawns(&engine, &children)?;
         let specs = vec![
-            spec(br#"{"input":0}"#),
-            spec(br#"{"input":1}"#),
-            spec(br#"{"input":2}"#),
+            spec(br#"{"input":0}"#, &children[0]),
+            spec(br#"{"input":1}"#, &children[1]),
+            spec(br#"{"input":2}"#, &children[2]),
         ];
         let recording = AllRecordingContext::new(parent.clone(), 60, timestamp()?);
         let failure = workflow_error("late boom");
@@ -549,7 +555,8 @@ mod tests {
         engine.push_child_spawn_response(Err(EngineSeamError::ChildSpawn {
             reason: "capacity unavailable".to_owned(),
         }))?;
-        let specs = vec![spec(br#"{"input":0}"#)];
+        let child = WorkflowId::new_v4();
+        let specs = vec![spec(br#"{"input":0}"#, &child)];
         let recording = AllRecordingContext::new(parent, 80, timestamp()?);
         let mut mailbox = VecCorrelationMailbox::new(Vec::new());
 
@@ -563,7 +570,14 @@ mod tests {
                 })
             ))
         );
-        assert!(engine.recorded_events()?.is_empty());
+        // Record-then-spawn: the durable ChildWorkflowStarted precedes the
+        // failed start request and survives it (#56 crash-window record).
+        let recorded = engine.recorded_events()?;
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(
+            &recorded[0].1,
+            Event::ChildWorkflowStarted { child_workflow_id, .. } if child_workflow_id == &child
+        ));
         assert!(engine.terminated_child_workflows()?.is_empty());
         Ok(())
     }

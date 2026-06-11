@@ -42,6 +42,19 @@ pub(super) struct TimeoutScope {
     replay_timed_out: Option<bool>,
 }
 
+#[cfg(test)]
+impl TimeoutScope {
+    /// Build a replay-outcome scope so suspending-await tests can exercise
+    /// the expired-deadline abort path without arming a live timer.
+    pub(super) fn replayed_for_test(pid: u64, timed_out: bool) -> Self {
+        Self {
+            pid,
+            timer_id: TimerId::anonymous(0),
+            replay_timed_out: Some(timed_out),
+        }
+    }
+}
+
 /// Return the message for an expired enclosing `with_timeout` scope, if any.
 ///
 /// Suspending awaits call this before parking and after every wake: an

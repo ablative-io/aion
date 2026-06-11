@@ -15,6 +15,7 @@ mod nif_activity;
 mod nif_activity_dispatch;
 mod nif_child;
 mod nif_child_engine;
+mod nif_child_watch;
 mod nif_concurrency;
 /// Workflow NIF execution context.
 pub mod nif_context;
