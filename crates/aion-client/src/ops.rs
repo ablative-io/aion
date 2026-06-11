@@ -6,8 +6,8 @@ use aion_core::{Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSumma
 use aion_proto::{
     ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoPayload,
     ProtoQueryRequest, ProtoRunId, ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoWorkflowId,
-    WireError, WireErrorCode, decode_core_value, decode_event, decode_workflow_summary,
-    encode_core_value, proto_query_response,
+    WireError, decode_core_value, decode_event, decode_workflow_summary, encode_core_value,
+    proto_query_response,
 };
 use aion_store::visibility::ListWorkflowsFilter;
 
@@ -477,11 +477,13 @@ fn decode_required_run_id(value: Option<ProtoRunId>, context: &str) -> Result<Ru
         .map_err(ClientError::from_wire_error)
 }
 
+/// Maps a `QueryResponse.error` payload through the shared wire taxonomy.
+///
+/// The server reports query-handler application failures with the dedicated
+/// `query_failed` wire code, so the shared map yields [`ClientError::QueryFailed`]
+/// directly; `backend` stays an unexpected server fault.
 fn query_error(error: aion_proto::ProtoWireError) -> ClientError {
-    match WireError::try_from(error) {
-        Ok(error) if error.code == WireErrorCode::Backend => ClientError::QueryFailed,
-        Ok(error) | Err(error) => ClientError::from_wire_error(error),
-    }
+    ClientError::from_proto_wire_error(error)
 }
 
 #[cfg(test)]
@@ -747,6 +749,61 @@ mod tests {
         assert!(recorded.is_some());
         let request = recorded.ok_or_else(|| ClientError::server("missing query"))?;
         assert!(request.run_id.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_failed_outcome_error_maps_to_query_failed() -> Result<(), ClientError> {
+        let stub = Arc::new(StubTransport::default());
+        *stub.query_response.lock().await = Some(Ok(ProtoQueryResponse {
+            outcome: Some(proto_query_response::Outcome::Error(
+                aion_proto::ProtoWireError::from(WireError::query_failed("handler raised")),
+            )),
+        }));
+        let client = client_with(Arc::clone(&stub));
+
+        let result = client
+            .query(
+                &workflow_id(),
+                Some(&run_id()),
+                "state",
+                empty_payload(),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert_eq!(result, Err(ClientError::QueryFailed));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backend_outcome_error_is_a_server_fault_not_query_failed() -> Result<(), ClientError> {
+        // `backend` in QueryResponse.error is an unexpected server fault; the
+        // application-level handler failure has its own `query_failed` code.
+        let stub = Arc::new(StubTransport::default());
+        *stub.query_response.lock().await = Some(Ok(ProtoQueryResponse {
+            outcome: Some(proto_query_response::Outcome::Error(
+                aion_proto::ProtoWireError::from(WireError::backend("store down")),
+            )),
+        }));
+        let client = client_with(Arc::clone(&stub));
+
+        let result = client
+            .query(
+                &workflow_id(),
+                Some(&run_id()),
+                "state",
+                empty_payload(),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert_eq!(
+            result,
+            Err(ClientError::Server {
+                detail: String::from("store down"),
+            })
+        );
         Ok(())
     }
 

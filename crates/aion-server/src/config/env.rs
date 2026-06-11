@@ -37,6 +37,9 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
             "AION_RUNTIME_SCHEDULER_THREADS" => {
                 config.runtime.scheduler_threads = parse_positive_usize(&name, &value)?;
             }
+            "AION_RUNTIME_QUERY_TIMEOUT_MS" => {
+                config.runtime.query_timeout_ms = Some(parse_positive_u64(&name, &value)?);
+            }
             "AION_DRAIN_TIMEOUT_SECONDS" => {
                 config.drain.timeout_seconds = parse_positive_u64(&name, &value)?;
             }

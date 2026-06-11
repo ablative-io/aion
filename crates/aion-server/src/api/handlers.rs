@@ -165,18 +165,26 @@ pub async fn query(
         query_name = %query_name,
     );
 
-    let result = async {
-        engine
-            .query(&workflow_id, &run_id, query_name)
-            .await
-            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
-    }
-    .instrument(span)
-    .await?;
+    let outcome = async { engine.query(&workflow_id, &run_id, query_name).await }
+        .instrument(span)
+        .await;
 
-    Ok(ProtoQueryResponse {
-        outcome: Some(proto_query_response::Outcome::Result(result.into())),
-    })
+    match outcome {
+        Ok(result) => Ok(ProtoQueryResponse {
+            outcome: Some(proto_query_response::Outcome::Result(result.into())),
+        }),
+        // Query-semantic failures (unknown query, timeout, not running,
+        // handler failure, reply dropped) are the operation's documented
+        // outcome and ride the QueryResponse.error oneof, which every SDK
+        // query op parses. Namespace, not-found, and backend failures stay
+        // transport-level errors, exactly as for every other operation.
+        Err(error @ aion::EngineError::Query(_)) => Ok(ProtoQueryResponse {
+            outcome: Some(proto_query_response::Outcome::Error(
+                ServerError::from(error).to_wire_error().into(),
+            )),
+        }),
+        Err(error) => Err(map_workflow_operation_error(error, &workflow_id)),
+    }
 }
 
 /// Handles a decoded cancel request.
@@ -544,6 +552,52 @@ mod tests {
             error.message,
             format!("workflow {} not found", workflow_id())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_handler_returns_not_running_outcome_for_terminal_workflow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_completed(context.store.as_ref()).await?;
+        // Resolve the latest run from the chain: the completed history was
+        // recorded for the started run, not the fixed test run id.
+        let mut request = query_request();
+        request.run_id = None;
+
+        let response = query(&context.guard, &context.caller, request).await?;
+
+        // A terminal workflow is a query-semantic outcome: the transport call
+        // succeeds and the typed error rides the QueryResponse.error oneof.
+        let Some(proto_query_response::Outcome::Error(error)) = response.outcome else {
+            return Err("expected a QueryResponse.error outcome".into());
+        };
+        let error = WireError::try_from(error)?;
+        assert_eq!(error.code, WireErrorCode::NotRunning);
+        assert_eq!(error.error_type.as_deref(), Some("QueryNotRunning"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_handler_keeps_non_resident_non_terminal_workflow_as_transport_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A recorded but non-resident, non-terminal workflow misses the live
+        // registry and has no terminal history, so Engine::query reports
+        // WorkflowNotFound — a transport-level error, never an outcome.error.
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_started(context.store.as_ref()).await?;
+        let mut request = query_request();
+        request.run_id = None;
+
+        let error = query(&context.guard, &context.caller, request).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
         Ok(())
     }
 

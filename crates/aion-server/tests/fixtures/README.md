@@ -12,6 +12,13 @@ loading, so running `cargo test` does **not** require an Erlang or Gleam
 toolchain. The child workflow it spawns is the `aion_fixture_workflow` fixture
 committed under `crates/aion/tests/fixtures/`.
 
+`tests/query_workflow.rs` likewise reuses a committed engine-crate fixture
+rather than duplicating it here: `aion_fixture_query.erl`/`.beam` from
+`crates/aion/tests/fixtures/` (the hand-rolled query-pump fixture with the
+`state`/`boom` handlers and the pump-free `unpumped` timeout entry), included
+by relative path exactly as `namespace_restart.rs` includes
+`aion_fixture_workflow`.
+
 To regenerate the BEAM after editing the source, run from the repository root:
 
 ```sh

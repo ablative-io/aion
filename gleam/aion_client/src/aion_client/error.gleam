@@ -22,7 +22,7 @@ pub type Error {
 }
 
 /// AW wire error codes that can be decoded by transports before mapping them
-/// to the closed caller-side taxonomy. Mirrors the nine codes of the wire
+/// to the closed caller-side taxonomy. Mirrors the ten codes of the wire
 /// error enum in `crates/aion-proto/proto/common.proto` exactly; `WireUnknown`
 /// preserves any code this SDK does not recognise.
 pub type WireErrorCode {
@@ -35,6 +35,7 @@ pub type WireErrorCode {
   WireLagged
   WireInvalidInput
   WireBackend
+  WireQueryFailed
   WireUnknown(code: String)
 }
 
@@ -54,6 +55,7 @@ pub fn from_wire(code: WireErrorCode, detail: String) -> Error {
     WireLagged -> Unavailable
     WireInvalidInput -> InvalidArgument
     WireBackend -> Server(detail)
+    WireQueryFailed -> QueryFailed
     WireUnknown(_) -> Server(detail)
   }
 }

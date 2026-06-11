@@ -360,9 +360,9 @@ fn wire_from_engine(source: &EngineError) -> WireError {
 
 /// Wire mapping for live-query dispatch failures (per the #45 brief).
 ///
-/// `HandlerFailed` rides the `backend` code with `error_type` `"QueryFailed"`
-/// until the dedicated `query_failed` wire code lands with the #45 server
-/// wave (decision Q1b), which replaces this arm.
+/// `ReplyDropped` maps to `not_running` per decision Q3: the workflow ended
+/// before answering. `HandlerFailed` maps to the dedicated `query_failed`
+/// code per decision Q1(b).
 fn wire_from_query(query: &aion::QueryError, source: &EngineError) -> WireError {
     match query {
         aion::QueryError::UnknownQuery(_) => WireError::unknown_query(source.to_string()),
@@ -373,7 +373,10 @@ fn wire_from_query(query: &aion::QueryError, source: &EngineError) -> WireError 
         aion::QueryError::Unknown(_) => {
             WireError::not_found_with_type(query_error_type(query), source.to_string())
         }
-        aion::QueryError::HandlerFailed { .. } | aion::QueryError::Engine(_) => {
+        aion::QueryError::HandlerFailed { .. } => {
+            WireError::query_failed(source.to_string()).with_error_type(query_error_type(query))
+        }
+        aion::QueryError::Engine(_) => {
             WireError::backend_with_type(query_error_type(query), source.to_string())
         }
     }
@@ -399,6 +402,8 @@ fn wire_from_store(source: &StoreError) -> WireError {
 #[cfg(test)]
 mod tests {
     use super::{ServerError, StreamFailure};
+    use aion::{EngineError, QueryError, engine_seam::EngineSeamError};
+    use aion_core::WorkflowId;
     use aion_proto::WireErrorCode;
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -415,5 +420,99 @@ mod tests {
         };
 
         assert_eq!(error.to_wire_error().code, WireErrorCode::Lagged);
+    }
+
+    fn workflow_id() -> WorkflowId {
+        WorkflowId::new(uuid::Uuid::from_u128(7))
+    }
+
+    fn query_wire(query: QueryError) -> aion_proto::WireError {
+        ServerError::EngineCall {
+            source: EngineError::Query(query),
+        }
+        .to_wire_error()
+    }
+
+    /// Pins the wire mapping for every `QueryError` arm (#45 decisions
+    /// Q1(b)/Q3): adding a variant breaks the exhaustive list below until its
+    /// mapping is decided and pinned here.
+    #[test]
+    fn every_query_error_arm_maps_to_its_pinned_wire_code() {
+        let arms: Vec<(QueryError, WireErrorCode, Option<&str>)> = vec![
+            (
+                QueryError::UnknownQuery(String::from("state")),
+                WireErrorCode::UnknownQuery,
+                None,
+            ),
+            (QueryError::Timeout, WireErrorCode::QueryTimeout, None),
+            (
+                QueryError::NotRunning(workflow_id()),
+                WireErrorCode::NotRunning,
+                Some("QueryNotRunning"),
+            ),
+            (
+                QueryError::Unknown(workflow_id()),
+                WireErrorCode::NotFound,
+                Some("QueryUnknownWorkflow"),
+            ),
+            // Q3: the workflow ended before answering — not_running, not backend.
+            (
+                QueryError::ReplyDropped,
+                WireErrorCode::NotRunning,
+                Some("QueryReplyDropped"),
+            ),
+            // Q1(b): the dedicated query_failed wire code.
+            (
+                QueryError::HandlerFailed {
+                    message: String::from("handler raised"),
+                },
+                WireErrorCode::QueryFailed,
+                Some("QueryFailed"),
+            ),
+            (
+                QueryError::Engine(EngineSeamError::Delivery {
+                    reason: String::from("mailbox closed"),
+                }),
+                WireErrorCode::Backend,
+                Some("QueryEngine"),
+            ),
+        ];
+
+        for (query, expected_code, expected_type) in arms {
+            // Compile-time exhaustiveness: a new QueryError variant must be
+            // added to the list above before this match compiles again.
+            match &query {
+                QueryError::UnknownQuery(_)
+                | QueryError::Timeout
+                | QueryError::NotRunning(_)
+                | QueryError::Unknown(_)
+                | QueryError::ReplyDropped
+                | QueryError::HandlerFailed { .. }
+                | QueryError::Engine(_) => {}
+            }
+            let wire = query_wire(query.clone());
+            assert_eq!(
+                wire.code, expected_code,
+                "{query:?} must map to {expected_code:?}",
+            );
+            assert_eq!(
+                wire.error_type.as_deref(),
+                expected_type,
+                "{query:?} must carry error_type {expected_type:?}",
+            );
+        }
+    }
+
+    /// The trace discriminator for `HandlerFailed` matches the wire
+    /// `error_type` so operators can correlate logs with client branches.
+    #[test]
+    fn handler_failed_trace_fields_use_query_failed_type() {
+        let error = ServerError::EngineCall {
+            source: EngineError::Query(QueryError::HandlerFailed {
+                message: String::from("handler raised"),
+            }),
+        };
+
+        assert_eq!(error.trace_fields().error_type, "QueryFailed");
     }
 }

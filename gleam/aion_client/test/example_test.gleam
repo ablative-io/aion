@@ -54,6 +54,8 @@ pub fn wire_codes_map_exactly_onto_taxonomy_test() {
   |> should.equal(error.InvalidArgument)
   error.from_wire(error.WireBackend, "d")
   |> should.equal(error.Server("d"))
+  error.from_wire(error.WireQueryFailed, "d")
+  |> should.equal(error.QueryFailed)
   error.from_wire(error.WireUnknown("mystery"), "d")
   |> should.equal(error.Server("d"))
 }

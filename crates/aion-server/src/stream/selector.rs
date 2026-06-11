@@ -9,9 +9,12 @@
 //! Selector semantics (documented in `docs/API.md`):
 //!
 //! - `workflow_type` matches when the event's workflow has that recorded type
-//!   (the most recent `WorkflowStarted` at or before the delivered event). A
-//!   workflow whose history records no started run never matches a type
-//!   selector.
+//!   at the time the namespace gate resolved it: the initial durable read
+//!   returns the head-of-history `WorkflowStarted` type at read time, which on
+//!   a continue-as-new chain can briefly run ahead of an older delivered event
+//!   (a one-event-loop forward-skew window) until the stream's own
+//!   `WorkflowStarted` refresh self-heals the cached type. A workflow whose
+//!   history records no started run never matches a type selector.
 //! - `status` matches per event kind: each terminal lifecycle event matches
 //!   exactly its projected status (`WorkflowCompleted` → `Completed`,
 //!   `WorkflowFailed` → `Failed`, `WorkflowCancelled` → `Cancelled`,

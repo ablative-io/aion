@@ -4,7 +4,7 @@ Aion exposes the engine through the standalone `aion-server` plus language-speci
 
 ## Implementation status
 
-- **Implemented:** engine crash/restart recovery for active workflow histories, durable timer recovery, HTTP/JSON workflow operations, gRPC worker/client APIs, and the WebSocket event-stream route described below.
+- **Implemented:** engine crash/restart recovery for active workflow histories, durable timer recovery, HTTP/JSON workflow operations (including live workflow queries), gRPC worker/client APIs, and the WebSocket event-stream route described below.
 - **In progress:** dashboard UX and cross-language SDK/conformance hardening. Prefer `aion-cli`, HTTP, gRPC, or the Rust client when you need the most exercised surfaces.
 
 ## Authentication and caller metadata
@@ -28,7 +28,7 @@ The public HTTP router currently mounts these routes:
 | `GET` | `/workflows/count` | Same query parameters as `/workflows`. | `{ "count": <number> }` | Implemented |
 | `POST` | `/workflows/start` | JSON body with `namespace`, `workflow_type`, optional `input`. `input` may be an ordinary JSON value or a `ProtoPayload` envelope with `content_type` and byte-array `bytes`. | `ProtoStartWorkflowResponse` (`workflow_id`, `run_id`). | Implemented |
 | `POST` | `/workflows/signal` | `ProtoSignalRequest`: `namespace`, `workflow_id`, optional `run_id`, `signal_name`, optional `payload`. | Empty acknowledgement object. | Implemented |
-| `POST` | `/workflows/query` | `ProtoQueryRequest`: `namespace`, `workflow_id`, optional `run_id`, `query_name`. | `ProtoQueryResponse` with result or typed error. | Wire surface only — engine-side handler execution is not yet implemented; every query currently fails with a configuration error |
+| `POST` | `/workflows/query` | `ProtoQueryRequest`: `namespace`, `workflow_id`, optional `run_id`, `query_name`. | `ProtoQueryResponse` with result or typed error (see [Query semantics](#query-semantics)). | Implemented |
 | `POST` | `/workflows/cancel` | `ProtoCancelRequest`: `namespace`, `workflow_id`, optional `run_id`, `reason`. | Empty acknowledgement object. | Implemented |
 | `POST` | `/workflows/list` | `ProtoListWorkflowsRequest`: `namespace`, optional encoded visibility `filter`. | `ProtoListWorkflowsResponse`. | Implemented |
 | `POST` | `/workflows/describe` | `ProtoDescribeWorkflowRequest`: `namespace`, `workflow_id`, optional `run_id`, `include_history`. | Workflow summary plus optional history. | Implemented |
@@ -108,6 +108,21 @@ For non-JSON binary payloads, use the envelope form with `bytes` as a JSON array
 ```
 
 `POST /workflows/list` returns the raw wire form — `{"summaries":[...]}` with serde-encoded envelopes whose payload `bytes` are JSON byte arrays. Prefer `GET /workflows` or `aion-cli list` for human-readable output.
+
+### Query semantics
+
+`POST /workflows/query` (and the gRPC `WorkflowService.Query`) is a synchronous, deadline-bounded round trip into the live workflow process: the engine delivers the query to the workflow's registered handler and waits for its reply up to the server-configured deadline. The server **requires** `runtime.query_timeout_ms` in its configuration (env: `AION_RUNTIME_QUERY_TIMEOUT_MS`) — startup fails without it, because the query route is always mounted.
+
+Query-semantic failures ride the `QueryResponse.error` oneof on a successful transport call (HTTP 200 / gRPC OK):
+
+| `error.code` | Meaning | Typical cause |
+|---|---|---|
+| `unknown_query` | The workflow has no registered handler for the requested query name. | Wrong query name, or the workflow has not reached its registration code yet. |
+| `query_timeout` | No handler reply arrived before the configured `runtime.query_timeout_ms`. | The workflow is busy between yield points, or parked in a non-yielding (blocking) call. |
+| `not_running` | The workflow cannot answer a live query: it is terminal, suspended, or ended before answering (`error_type` distinguishes `QueryNotRunning` from `QueryReplyDropped`). | Querying a completed/failed/cancelled workflow, or racing its completion. |
+| `query_failed` | The workflow's query handler ran and reported an application-level failure. | The handler raised or replied with an error. |
+
+Namespace denial, unknown workflow ids, and backend faults remain transport-level errors with the usual status codes (403/404/500), exactly as for every other operation — a query against another tenant's workflow is byte-identical to one against a workflow that never existed.
 
 ## WebSocket event streaming
 

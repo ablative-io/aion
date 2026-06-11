@@ -1,4 +1,5 @@
 """Live conformance harness for the shared Aion client scenarios."""
+
 from __future__ import annotations
 
 import asyncio
@@ -217,24 +218,30 @@ class StreamCollector:
 @dataclass(slots=True)
 class ScenarioContext:
     """Per-scenario execution state and observable results."""
+
     client: Client | None = None
     relay: StreamRelay | None = None
     collector: StreamCollector | None = None
     collect_plan: CollectPlan | None = None
     results: dict[str, Observable] = field(default_factory=dict)
     error_identities: dict[str, Observable] = field(default_factory=dict)
+
     def require_client(self) -> Client:
         if self.client is None:
             raise InvalidArgument("scenario has not connected yet")
         return self.client
+
     def require_collector(self) -> tuple[StreamCollector, CollectPlan]:
         if self.collector is None or self.collect_plan is None:
             raise InvalidArgument("scenario has no active stream collector; run a subscribe step with collect first")
         return self.collector, self.collect_plan
+
     def record(self, scenario: str, step: str, value: Observable) -> None:
         self.results[f"{scenario}.{step}"] = value
+
     def record_error_identity(self, scenario: str, step: str, identity: Observable) -> None:
         self.error_identities[f"{scenario}.{step}"] = identity
+
     def lookup(self, current_scenario: str, path: str) -> JSONValue:
         parts = path.split(".")
         if len(parts) >= 2 and f"{parts[0]}.{parts[1]}" in self.results:
@@ -249,6 +256,8 @@ class ScenarioContext:
                 return None
             value = value.get(field_name)
         return normalize_json(value)
+
+
 def test_shared_client_contract_conformance() -> None:
     """Run every shared scenario when a live server URL is configured."""
     server_url = os.environ.get(SERVER_URL_ENV)
@@ -256,12 +265,16 @@ def test_shared_client_contract_conformance() -> None:
         print(f"SKIP sdk=python reason={SERVER_URL_ENV} is unset; live aion-server conformance not run")
         return
     asyncio.run(_run_all(server_url))
+
+
 async def _run_all(server_url: str) -> None:
     scenarios_doc = _load_scenarios()
     defaults = _mapping(scenarios_doc["defaults"])
     fixtures = _mapping(scenarios_doc["fixtures"])
     for scenario_value in _list(scenarios_doc["scenarios"]):
         await _run_scenario(_mapping(scenario_value), defaults, fixtures, server_url)
+
+
 async def _run_scenario(
     scenario: Mapping[str, Any],
     defaults: Mapping[str, Any],
@@ -297,6 +310,8 @@ async def _run_scenario(
                 context.record_error_identity(scenario_id, step_id, error_identity)
     finally:
         await _teardown(context)
+
+
 async def _teardown(context: ScenarioContext) -> None:
     """Release the scenario's collector, relay, and client.
 
@@ -324,6 +339,8 @@ async def _teardown(context: ScenarioContext) -> None:
             failures.append(exc)
     if failures:
         raise failures[0]
+
+
 async def _execute(
     operation: str,
     input_value: Mapping[str, Any],
@@ -405,6 +422,8 @@ async def _execute(
     if operation == "harness.assertStream":
         return await _assert_stream(input_value, context)
     raise InvalidArgument(f"unsupported conformance operation {operation}")
+
+
 async def _relayed_events_endpoint(context: ScenarioContext, server_url: str, tls: bool) -> str | None:
     """Start the scenario's TCP relay and return the relayed ws endpoint.
 
@@ -425,6 +444,8 @@ async def _relayed_events_endpoint(context: ScenarioContext, server_url: str, tl
     await relay.start()
     context.relay = relay
     return f"ws://127.0.0.1:{relay.port}{direct.path}"
+
+
 async def _force_disconnect(context: ScenarioContext) -> Observable:
     """Sever the live piped stream sockets after the before-disconnect minimum."""
     collector, plan = context.require_collector()
@@ -445,6 +466,8 @@ async def _force_disconnect(context: ScenarioContext) -> Observable:
     if dropped == 0:
         raise Unavailable("no live stream connection was piped through the relay to disconnect")
     return {"kind": "disconnectInjected", "droppedConnections": dropped}
+
+
 async def _assert_stream(input_value: Mapping[str, Any], context: ScenarioContext) -> Observable:
     """Await the subscribe step's collector and report its accumulated list."""
     collector, plan = context.require_collector()
@@ -460,9 +483,13 @@ async def _assert_stream(input_value: Mapping[str, Any], context: ScenarioContex
         "events": _events_json(events),
         "sequenceContiguousUnique": _sequences_contiguous_unique(events),
     }
+
+
 def _selector_workflow_id(input_value: Mapping[str, Any]) -> str:
     selector = _mapping(input_value.get("selector", input_value))
     return str(selector.get("workflowId", input_value.get("workflowId", "")))
+
+
 def _collect_plan(input_value: Mapping[str, Any]) -> CollectPlan:
     collect = _mapping(input_value.get("collect"))
     return CollectPlan(
@@ -470,16 +497,21 @@ def _collect_plan(input_value: Mapping[str, Any]) -> CollectPlan:
         minimum_events_after_reconnect=int(collect.get("minimumEventsAfterReconnect", 0)),
         timeout_ms=_timeout_ms(input_value),
     )
+
+
 def _events_json(events: list[Observable]) -> list[JSONValue]:
     json_events: list[JSONValue] = []
     json_events.extend(events)
     return json_events
+
+
 async def _collect_stream(input_value: Mapping[str, Any], context: ScenarioContext) -> list[Observable]:
     handle = context.require_client().handle(_selector_workflow_id(input_value))
     timeout_ms = _timeout_ms(input_value)
     wanted = [str(item) for item in _list(_mapping(input_value.get("collectUntil", {})).get("eventTypes", []))]
     events: list[Observable] = []
     stream: EventStream[Any] = handle.subscribe()
+
     async def _collect() -> None:
         async for event in stream:
             events.append(_normalize_event(event))
@@ -487,6 +519,7 @@ async def _collect_stream(input_value: Mapping[str, Any], context: ScenarioConte
                 return
             if not wanted and len(events) >= 3:
                 return
+
     try:
         await asyncio.wait_for(_collect(), timeout_ms / 1000.0)
     except asyncio.TimeoutError:
@@ -495,9 +528,13 @@ async def _collect_stream(input_value: Mapping[str, Any], context: ScenarioConte
     finally:
         await stream.aclose()
     return events
+
+
 def _load_scenarios() -> Mapping[str, Any]:
     path = Path(__file__).resolve().parents[5] / "conformance" / "aion-clients" / "scenarios.json"
     return _mapping(json.loads(path.read_text(encoding="utf-8")))
+
+
 def _resolve(
     value: Any,
     defaults: Mapping[str, Any],
@@ -531,6 +568,8 @@ def _resolve(
             for key, item in value.items()
         }
     return normalize_json(value)
+
+
 def _assert_matches(
     scenario: str,
     step: str,
@@ -546,9 +585,7 @@ def _assert_matches(
             reference = context.error_identities.get(str(expected["errorSameAs"]))
             assert reference is not None, detail
             assert error_identity is not None, detail
-            assert error_identity == reference, (
-                f"{detail} error_identity={error_identity} reference={reference}"
-            )
+            assert error_identity == reference, f"{detail} error_identity={error_identity} reference={reference}"
         return
     ok = _mapping(actual.get("ok"))
     expected_ok = _mapping(expected.get("ok"))
@@ -567,8 +604,7 @@ def _assert_matches(
     if "containsWorkflowRef" in expected_ok:
         workflow_ref = _mapping(expected_ok["containsWorkflowRef"])
         assert any(
-            _mapping(item).get("workflowId") == workflow_ref.get("workflowId")
-            for item in _list(ok.get("workflows"))
+            _mapping(item).get("workflowId") == workflow_ref.get("workflowId") for item in _list(ok.get("workflows"))
         ), detail
     if "statusIn" in expected_ok:
         assert ok.get("status") in _list(expected_ok["statusIn"]), detail
@@ -580,6 +616,8 @@ def _assert_matches(
             )
     if expected_ok.get("sequenceContiguousUnique") is True:
         assert ok.get("sequenceContiguousUnique") is True, detail
+
+
 def _event_included(events: list[Mapping[str, Any]], required: Mapping[str, Any]) -> bool:
     for event in events:
         matched = True
@@ -587,8 +625,7 @@ def _event_included(events: list[Mapping[str, Any]], required: Mapping[str, Any]
             if key == "payloadContains":
                 payload = _mapping(event.get("payload"))
                 matched = all(
-                    payload.get(payload_key) == payload_value
-                    for payload_key, payload_value in _mapping(value).items()
+                    payload.get(payload_key) == payload_value for payload_key, payload_value in _mapping(value).items()
                 )
             elif event.get(key) != value:
                 matched = False
@@ -597,9 +634,13 @@ def _event_included(events: list[Mapping[str, Any]], required: Mapping[str, Any]
         if matched:
             return True
     return False
+
+
 def _payload_json(value: Any) -> JSONValue:
     payload = _mapping(value)
     return normalize_json(payload.get("json"))
+
+
 def _normalize_summary(summary: Any) -> Observable:
     value = _mapping(normalize_json(_proto_to_dict(summary)))
     workflow_id = (
@@ -612,15 +653,15 @@ def _normalize_summary(summary: Any) -> Observable:
         "workflowType": value.get("workflow_type") or value.get("workflowType"),
         "status": _status_name(value.get("status")),
     }
+
+
 def _normalize_event(event: Any) -> Observable:
     value = _mapping(normalize_json(_proto_to_dict(event)))
     event_type = str(value.get("type") or value.get("event_type") or value.get("kind") or "Event")
     if event_type == "SignalReceived":
         event_type = "WorkflowSignalled"
     envelope = _mapping(
-        value.get("envelope") or value.get("data", {}).get("envelope")
-        if isinstance(value.get("data"), dict)
-        else {}
+        value.get("envelope") or value.get("data", {}).get("envelope") if isinstance(value.get("data"), dict) else {}
     )
     workflow_id = _id_value(envelope.get("workflow_id")) or _optional_str(envelope.get("workflowId"))
     payload = value.get("payload") or _mapping(value.get("data")).get("payload")
@@ -630,6 +671,8 @@ def _normalize_event(event: Any) -> Observable:
         "seq": envelope.get("seq") or value.get("seq"),
         "payload": _decode_payload(payload),
     }
+
+
 def _decode_payload(payload: Any) -> JSONValue:
     value = _mapping(normalize_json(_proto_to_dict(payload)))
     raw = value.get("bytes") or value.get("data")
@@ -639,17 +682,21 @@ def _decode_payload(payload: Any) -> JSONValue:
         except json.JSONDecodeError:
             return raw
     return normalize_json(value)
+
+
 def _proto_to_dict(value: Any) -> Any:
     if hasattr(value, "DESCRIPTOR"):
         from google.protobuf.json_format import MessageToDict
 
         return MessageToDict(value, preserving_proto_field_name=True)
     return value
+
+
 def _sequences_contiguous_unique(events: Sequence[Mapping[str, Any]]) -> bool:
     sequences = sorted(seq for event in events if isinstance((seq := event.get("seq")), int))
-    return bool(sequences) and all(
-        right == left + 1 for left, right in zip(sequences, sequences[1:], strict=False)
-    )
+    return bool(sequences) and all(right == left + 1 for left, right in zip(sequences, sequences[1:], strict=False))
+
+
 def _timeout_ms(input_value: Mapping[str, Any]) -> float:
     for key in ("collectUntil", "collect"):
         nested = _mapping(input_value.get(key))
@@ -658,15 +705,21 @@ def _timeout_ms(input_value: Mapping[str, Any]) -> float:
             return float(timeout)
     timeout = input_value.get("timeoutMs")
     return float(timeout) if isinstance(timeout, int | float) else 10_000.0
+
+
 def _lookup(root: Mapping[str, Any], path: str) -> Any:
     current: Any = root
     for part in path.split("."):
         current = _mapping(current).get(part)
     return current
+
+
 def _id_value(value: Any) -> str | None:
     mapped = _mapping(value)
     uuid = mapped.get("uuid")
     return uuid if isinstance(uuid, str) else None
+
+
 def _status_name(value: Any) -> JSONValue:
     if isinstance(value, str):
         return value
@@ -674,12 +727,20 @@ def _status_name(value: Any) -> JSONValue:
         names = {0: "UNKNOWN", 1: "RUNNING", 2: "COMPLETED", 3: "FAILED", 4: "CANCELLED", 5: "TIMED_OUT"}
         return names.get(value, str(value))
     return normalize_json(value)
+
+
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
 def normalize_json(value: Any) -> JSONValue:
     if value is None or isinstance(value, bool | int | float | str):
         return value

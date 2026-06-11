@@ -166,6 +166,41 @@ def test_wire_numeric_backend_maps_to_server_error() -> None:
     assert error.detail == "store down"
 
 
+def test_wire_query_failed_lowercase_maps_to_query_failed() -> None:
+    error = map_query_error(_WireQueryError(code="query_failed", message="handler raised", detail="boom"))
+    assert isinstance(error, QueryFailed)
+    assert not isinstance(error, ServerError)
+    assert str(error) == "handler raised"
+    assert error.detail == "boom"
+
+
+def test_wire_query_failed_screaming_maps_to_query_failed() -> None:
+    error = map_query_error(
+        _WireQueryError(code="WIRE_ERROR_CODE_QUERY_FAILED", message="handler raised", detail="boom")
+    )
+    assert isinstance(error, QueryFailed)
+    assert str(error) == "handler raised"
+    assert error.detail == "boom"
+
+
+def test_wire_numeric_query_failed_maps_to_query_failed() -> None:
+    # Numeric pin: query_failed is wire enum value 10.
+    error = map_query_error(_WireQueryError(code=10, message="handler raised", detail="boom"))
+    assert isinstance(error, QueryFailed)
+    assert not isinstance(error, ServerError)
+    assert str(error) == "handler raised"
+    assert error.detail == "boom"
+
+
+def test_wire_query_failed_maps_to_query_failed_outside_query_operations() -> None:
+    # The wire taxonomy is operation-independent: query_failed is QueryFailed
+    # wherever it appears, never collapsed to ServerError.
+    error = map_error(ServerFailure(code="query_failed", message="handler raised", detail="boom"))
+    assert isinstance(error, QueryFailed)
+    assert str(error) == "handler raised"
+    assert error.detail == "boom"
+
+
 def test_namespace_denied_is_branchable_and_distinct() -> None:
     with pytest.raises(NamespaceDenied):
         raise map_error(ServerFailure(code="namespace_denied", message="denied"))

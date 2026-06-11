@@ -108,6 +108,11 @@ pub struct StoreConfig {
 pub struct RuntimeSection {
     /// Number of scheduler worker threads.
     pub scheduler_threads: usize,
+    /// Engine reply deadline for workflow queries, in milliseconds.
+    /// REQUIRED — the server always mounts `/workflows/query`, so the query
+    /// reply deadline must be an explicit operator decision; there is no
+    /// default. The engine builder is equally explicit-no-default.
+    pub query_timeout_ms: Option<u64>,
 }
 
 /// Graceful drain settings from `[drain]`.
@@ -232,6 +237,9 @@ pub struct WebSocketConfig {
 /// Operator-facing message for an absent or zero `event_broadcast_capacity`.
 pub(crate) const EVENT_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.event_broadcast_capacity is required and has no default: the server always mounts /events/stream, so live event streaming capacity must be configured explicitly; set websocket.event_broadcast_capacity (or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY) to a positive integer sized for global event volume across all namespaces";
 
+/// Operator-facing message for an absent or zero `query_timeout_ms`.
+pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms is required and has no default: the server always mounts /workflows/query, so the workflow query reply deadline must be configured explicitly; set runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to a positive number of milliseconds";
+
 /// Runtime settings retained in shared server state for transport adapters.
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -253,6 +261,11 @@ pub struct RuntimeConfig {
     pub workflow_packages: Vec<PathBuf>,
     /// Engine scheduler thread count.
     pub scheduler_threads: usize,
+    /// Engine reply deadline for workflow queries. REQUIRED — carried as an
+    /// [`Option`] only so state construction can re-validate (defense in
+    /// depth, like `websocket.event_broadcast_capacity`); validated
+    /// configurations always hold [`Some`] non-zero duration.
+    pub query_timeout: Option<Duration>,
     /// Default namespace used by worker dispatch and unauthenticated local callers.
     pub default_namespace: String,
     /// Graceful drain timeout.
@@ -329,6 +342,7 @@ impl ServerConfig {
             websocket: self.websocket,
             workflow_packages: self.workflow_packages,
             scheduler_threads: self.runtime.scheduler_threads,
+            query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
             drain_timeout: Duration::from_secs(self.drain.timeout_seconds),
             metrics: self.metrics,
@@ -406,6 +420,10 @@ impl ServerConfig {
             None | Some(0) => return config_error(EVENT_BROADCAST_CAPACITY_REQUIRED),
             Some(_) => {}
         }
+        match self.runtime.query_timeout_ms {
+            None | Some(0) => return config_error(QUERY_TIMEOUT_REQUIRED),
+            Some(_) => {}
+        }
         Ok(())
     }
 }
@@ -432,6 +450,9 @@ impl Default for RuntimeSection {
     fn default() -> Self {
         Self {
             scheduler_threads: 1,
+            // Deliberately absent: validation fails loudly until the operator
+            // sets the workflow query reply deadline for the deployment.
+            query_timeout_ms: None,
         }
     }
 }
@@ -605,6 +626,7 @@ mod tests {
 
                 [runtime]
                 scheduler_threads = 2
+                query_timeout_ms = 10000
 
                 [drain]
                 timeout_seconds = 45
@@ -629,6 +651,7 @@ mod tests {
         assert_eq!(config.store.backend, StoreBackend::LibSql);
         assert_eq!(config.store.url.as_deref(), Some("aion.db"));
         assert_eq!(config.runtime.scheduler_threads, 2);
+        assert_eq!(config.runtime.query_timeout_ms, Some(10_000));
         assert_eq!(config.namespaces.default, "production");
         assert_eq!(config.websocket.outbound_buffer_bound, 16);
         assert_eq!(config.websocket.event_broadcast_capacity, Some(1024));
@@ -674,6 +697,55 @@ mod tests {
     }
 
     #[test]
+    fn missing_query_timeout_fails_startup_validation_naming_the_key() {
+        // The server unconditionally mounts /workflows/query; a configuration
+        // without an explicit query reply deadline must fail loudly at
+        // startup instead of mounting an unanswerable surface.
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                scheduler_threads = 1
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("runtime.query_timeout_ms"),
+            "validation message must name the missing key: {message}"
+        );
+        assert!(
+            message.contains("AION_RUNTIME_QUERY_TIMEOUT_MS"),
+            "validation message must name the environment override: {message}"
+        );
+    }
+
+    #[test]
+    fn zero_query_timeout_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 0
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("runtime.query_timeout_ms"),
+            "validation message must name the zero-valued key: {message}"
+        );
+    }
+
+    #[test]
     fn invalid_values_name_problematic_field() {
         let result = ServerConfig::from_slice(
             br"
@@ -695,6 +767,9 @@ mod tests {
                 [store]
                 backend = "libsql"
                 url = "file.db"
+
+                [runtime]
+                query_timeout_ms = 10000
 
                 [websocket]
                 event_broadcast_capacity = 64
@@ -725,10 +800,13 @@ mod tests {
         assert_eq!(config.namespaces.default, "default");
         assert!(!config.auth.enabled);
         assert!(config.metrics.enabled);
-        // event_broadcast_capacity is the one deliberately defaultless value:
-        // defaults validate only once the operator supplies it.
+        // event_broadcast_capacity and query_timeout_ms are the deliberately
+        // defaultless values: defaults validate only once the operator
+        // supplies them.
         assert_eq!(config.websocket.event_broadcast_capacity, None);
+        assert_eq!(config.runtime.query_timeout_ms, None);
         config.websocket.event_broadcast_capacity = Some(64);
+        config.runtime.query_timeout_ms = Some(10_000);
         config.validate()?;
         Ok(())
     }
@@ -800,9 +878,12 @@ mod tests {
             ..CliOverrides::default()
         };
         let mut config = ServerConfig::default();
-        // Even zero-config development runs must size event streaming
-        // explicitly (config key or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY).
+        // Even zero-config development runs must size event streaming and the
+        // query reply deadline explicitly (config keys or the
+        // AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY /
+        // AION_RUNTIME_QUERY_TIMEOUT_MS environment overrides).
         config.websocket.event_broadcast_capacity = Some(64);
+        config.runtime.query_timeout_ms = Some(10_000);
         config.load_discovered_workflow_packages(&cli, temp_dir.path())?;
 
         config.validate()?;
@@ -821,6 +902,9 @@ mod tests {
         let mut config = ServerConfig::from_slice(
             br#"
                 workflow_packages = ["config.aion"]
+
+                [runtime]
+                query_timeout_ms = 10000
 
                 [websocket]
                 event_broadcast_capacity = 64

@@ -68,6 +68,7 @@ enum WireErrorCode {
   WIRE_ERROR_CODE_LAGGED = 7;
   WIRE_ERROR_CODE_INVALID_INPUT = 8;
   WIRE_ERROR_CODE_BACKEND = 9;
+  WIRE_ERROR_CODE_QUERY_FAILED = 10;
 }
 
 // Wire-safe error value returned by server, client, and worker APIs.

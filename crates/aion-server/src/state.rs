@@ -81,6 +81,16 @@ impl ServerState {
             .ok_or_else(|| ServerError::Config {
                 message: crate::config::EVENT_BROADCAST_CAPACITY_REQUIRED.to_owned(),
             })?;
+        // The server unconditionally mounts /workflows/query, so the engine's
+        // query seam must be installed with an explicitly configured reply
+        // deadline here — a mounted-but-unconfigured query surface is never
+        // acceptable.
+        let query_timeout = runtime
+            .query_timeout
+            .filter(|timeout| !timeout.is_zero())
+            .ok_or_else(|| ServerError::Config {
+                message: crate::config::QUERY_TIMEOUT_REQUIRED.to_owned(),
+            })?;
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
         let instrumented_store = Arc::new(InstrumentedEventStore::new(
             store.clone(),
@@ -125,6 +135,7 @@ impl ServerState {
             .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
                 Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
             })
+            .query_timeout(query_timeout)
             .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
             .build()
             .await?;
@@ -348,6 +359,7 @@ mod tests {
             },
             workflow_packages: Vec::new(),
             scheduler_threads: 1,
+            query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),
             drain_timeout: Duration::from_secs(30),
             metrics: MetricsConfig { enabled: true },
@@ -382,6 +394,46 @@ mod tests {
                 .to_string()
                 .contains("websocket.event_broadcast_capacity"),
             "error must name the missing key: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_build_fails_without_query_timeout() -> Result<(), Box<dyn std::error::Error>> {
+        let mut runtime = runtime_config();
+        runtime.query_timeout = None;
+
+        let error = ServerState::build_with_store(InMemoryStore::default(), runtime)
+            .await
+            .err()
+            .ok_or("state build must fail when the query reply deadline is unset")?;
+
+        assert!(error.is_config(), "expected a config error, got {error}");
+        assert!(
+            error.to_string().contains("runtime.query_timeout_ms"),
+            "error must name the missing key: {error}"
+        );
+        assert!(
+            error.to_string().contains("AION_RUNTIME_QUERY_TIMEOUT_MS"),
+            "error must name the environment override: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_build_fails_with_zero_query_timeout() -> Result<(), Box<dyn std::error::Error>> {
+        let mut runtime = runtime_config();
+        runtime.query_timeout = Some(Duration::ZERO);
+
+        let error = ServerState::build_with_store(InMemoryStore::default(), runtime)
+            .await
+            .err()
+            .ok_or("state build must fail when the query reply deadline is zero")?;
+
+        assert!(error.is_config(), "expected a config error, got {error}");
+        assert!(
+            error.to_string().contains("runtime.query_timeout_ms"),
+            "error must name the zero-valued key: {error}"
         );
         Ok(())
     }

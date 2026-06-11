@@ -835,7 +835,10 @@ fn http_status(code: WireErrorCode) -> StatusCode {
         WireErrorCode::QueryTimeout => StatusCode::REQUEST_TIMEOUT,
         WireErrorCode::NotRunning => StatusCode::PRECONDITION_FAILED,
         WireErrorCode::Lagged => StatusCode::TOO_MANY_REQUESTS,
-        WireErrorCode::Backend => StatusCode::INTERNAL_SERVER_ERROR,
+        // query_failed normally rides QueryResponse.error inside a 200; when
+        // a transport-level surface must carry it, it is a server-reported
+        // application-level handler failure alongside backend faults.
+        WireErrorCode::Backend | WireErrorCode::QueryFailed => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -1733,6 +1736,7 @@ mod tests {
             },
             workflow_packages: Vec::new(),
             scheduler_threads: 1,
+            query_timeout: Some(std::time::Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),
             drain_timeout: std::time::Duration::from_secs(30),
             metrics: MetricsConfig { enabled: true },

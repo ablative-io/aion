@@ -64,6 +64,7 @@ fn runtime_config() -> RuntimeConfig {
         },
         workflow_packages: Vec::new(),
         scheduler_threads: 1,
+        query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: false },

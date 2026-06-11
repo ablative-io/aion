@@ -198,9 +198,7 @@ class EventStream(Generic[T]):
         if self._resume_from() is not None and not self._transport_supports_resume:
             raise Unavailable(_RESUME_UNSUPPORTED_MESSAGE) from (cause if close_error is None else close_error)
         if close_error is not None:
-            raise Unavailable(
-                f"transport failed to close during reconnection: {close_error}"
-            ) from close_error
+            raise Unavailable(f"transport failed to close during reconnection: {close_error}") from close_error
 
     async def _open(self, resume_from: int | None) -> AsyncIterator[Any]:
         try:

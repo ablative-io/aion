@@ -95,7 +95,10 @@ impl NamespaceEventGate {
     /// A delivered `WorkflowStarted` event refreshes the cached type inline
     /// (continue-as-new chains record each run's type on its own
     /// `WorkflowStarted`), so the cached type follows the stream's own order
-    /// without extra reads.
+    /// without extra reads. The initial durable read instead resolves the
+    /// head-of-history type at read time, which on a continue-as-new chain
+    /// can run ahead of an older delivered event for at most one event-loop
+    /// turn before the inline refresh self-heals it.
     ///
     /// # Errors
     ///

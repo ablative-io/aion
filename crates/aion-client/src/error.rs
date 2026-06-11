@@ -135,6 +135,7 @@ fn map_wire_parts(code: WireErrorCode, detail: String) -> ClientError {
         // has no idempotency-key feature, so this is never AlreadyExists; it
         // is an unexpected server failure.
         WireErrorCode::SequenceConflict | WireErrorCode::Backend => ClientError::Server { detail },
+        WireErrorCode::QueryFailed => ClientError::QueryFailed,
         WireErrorCode::QueryTimeout => ClientError::QueryTimeout,
         WireErrorCode::Lagged => ClientError::Unavailable,
     }
@@ -163,6 +164,10 @@ mod tests {
         assert_eq!(
             ClientError::from_wire_error(WireError::query_timeout("slow")),
             ClientError::QueryTimeout
+        );
+        assert_eq!(
+            ClientError::from_wire_error(WireError::query_failed("handler raised")),
+            ClientError::QueryFailed
         );
         assert_eq!(
             ClientError::from_wire_error(WireError::lagged("behind")),

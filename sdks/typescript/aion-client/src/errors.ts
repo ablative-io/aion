@@ -267,6 +267,8 @@ function numericWireCode(code: number): string | undefined {
       return "invalid_input";
     case 9:
       return "backend";
+    case 10:
+      return "query_failed";
     default:
       return undefined;
   }

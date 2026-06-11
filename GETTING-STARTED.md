@@ -53,6 +53,7 @@ The server starts from built-in defaults, then applies config-file values, then 
 | `AION_STORE_BACKEND` | Store backend selection; accepted values are `memory` or `libsql` (case-insensitive). | `memory` |
 | `AION_STORE_URL` | Non-empty backend connection URL/path when the selected store needs one; setting it also selects `libsql` if the backend is still `memory`. | unset |
 | `AION_RUNTIME_SCHEDULER_THREADS` | Positive integer number of scheduler runtime threads. | `1` |
+| `AION_RUNTIME_QUERY_TIMEOUT_MS` | Positive integer workflow query reply deadline in milliseconds. REQUIRED with no default (config key `runtime.query_timeout_ms`): the server always mounts `/workflows/query`, so startup fails until it is set. | none — must be set |
 | `AION_DRAIN_TIMEOUT_SECONDS` | Positive integer graceful shutdown drain timeout in seconds. | `30` |
 | `AION_AUTH_ENABLED` | Enables or disables server auth; accepted booleans are `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off` (case-insensitive). | `false` |
 | `AION_AUTH_JWKS_URL` | Non-empty JWKS endpoint used when auth is enabled with JWKS validation. | unset |
@@ -70,7 +71,7 @@ AION_LOG=debug cargo run -p aion-server -- --config dev-config.toml \
 
 ### Config auto-discovery
 
-When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults for everything except `websocket.event_broadcast_capacity`, which has no default — supply it via `AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY` when running without a config file. To use auto-discovery from the repository root, copy the dev config and start the server. Include the package flag unless you also edit `aion.toml` to add the package path:
+When `--config` is omitted, `aion-server` looks for `aion.toml` in the process working directory. If that file exists, the server loads and validates it; if it is absent, the server uses local development defaults for everything except `websocket.event_broadcast_capacity` and `runtime.query_timeout_ms`, which have no defaults — supply them via `AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY` and `AION_RUNTIME_QUERY_TIMEOUT_MS` when running without a config file. To use auto-discovery from the repository root, copy the dev config and start the server. Include the package flag unless you also edit `aion.toml` to add the package path:
 
 ```sh
 cp dev-config.toml aion.toml

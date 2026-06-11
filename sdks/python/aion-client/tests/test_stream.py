@@ -634,9 +634,7 @@ async def test_builtin_transport_resumes_with_cursor_after_abnormal_closure(
 
     delivered = [await stream.__anext__() for _ in range(4)]
     assert delivered == [{"seq": 1}, {"seq": 2}, {"seq": 3}, {"seq": 4}]
-    assert first.sent == [
-        {"per_workflow": {"namespace": "default", "workflow_id": {"uuid": "wf"}}}
-    ]
+    assert first.sent == [{"per_workflow": {"namespace": "default", "workflow_id": {"uuid": "wf"}}}]
     assert second.sent == [
         {"per_workflow": {"namespace": "default", "workflow_id": {"uuid": "wf"}, "resume_from_seq": 3}}
     ]

@@ -8,9 +8,10 @@
 #
 # You can also load a package without editing this file. `--config` is optional
 # for local development; no-config mode uses in-memory local defaults, but
-# `websocket.event_broadcast_capacity` has no default and must then come from
-# the environment:
+# `websocket.event_broadcast_capacity` and `runtime.query_timeout_ms` have no
+# defaults and must then come from the environment:
 #   AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024 \
+#   AION_RUNTIME_QUERY_TIMEOUT_MS=10000 \
 #   cargo run -p aion-server -- \
 #     --workflow-package examples/hello-world/hello-world.aion
 
@@ -22,6 +23,12 @@ grpc_address = "127.0.0.1:50051"
 
 [store]
 backend = "memory"
+
+[runtime]
+# REQUIRED, no default: engine reply deadline for /workflows/query, in
+# milliseconds. 10000 is a sample value for local development; size it for
+# your deployment's slowest acceptable query round trip.
+query_timeout_ms = 10000
 
 [namespaces]
 default = "default"

@@ -381,7 +381,12 @@ fn grpc_code(code: aion_proto::WireErrorCode) -> Code {
         aion_proto::WireErrorCode::QueryTimeout => Code::DeadlineExceeded,
         aion_proto::WireErrorCode::NotRunning => Code::FailedPrecondition,
         aion_proto::WireErrorCode::Lagged => Code::ResourceExhausted,
-        aion_proto::WireErrorCode::Backend => Code::Internal,
+        // query_failed normally rides QueryResponse.error inside an OK
+        // response; a transport-level carrier still attaches the typed
+        // ProtoWireError detail, so detail-aware clients keep QueryFailed.
+        aion_proto::WireErrorCode::Backend | aion_proto::WireErrorCode::QueryFailed => {
+            Code::Internal
+        }
     }
 }
 
@@ -819,6 +824,7 @@ mod tests {
             },
             workflow_packages: Vec::new(),
             scheduler_threads: 1,
+            query_timeout: Some(std::time::Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),
             drain_timeout: std::time::Duration::from_secs(30),
             metrics: MetricsConfig { enabled: true },

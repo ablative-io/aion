@@ -150,6 +150,8 @@ _WIRE_CODE_MAP: dict[str, ErrorCode] = {
     "WIRE_ERROR_CODE_INVALID_INPUT": ErrorCode.INVALID_ARGUMENT,
     "backend": ErrorCode.SERVER,
     "WIRE_ERROR_CODE_BACKEND": ErrorCode.SERVER,
+    "query_failed": ErrorCode.QUERY_FAILED,
+    "WIRE_ERROR_CODE_QUERY_FAILED": ErrorCode.QUERY_FAILED,
 }
 
 _START_IDEMPOTENCY_CODES = {
@@ -223,7 +225,14 @@ def map_query_error(error: Any) -> AionClientError:
     mapped = _map_wire_like(error, operation="query")
     if isinstance(
         mapped,
-        InvalidArgument | QueryTimeout | NotFound | Unauthenticated | NamespaceDenied | Unavailable | Cancelled,
+        QueryFailed
+        | InvalidArgument
+        | QueryTimeout
+        | NotFound
+        | Unauthenticated
+        | NamespaceDenied
+        | Unavailable
+        | Cancelled,
     ):
         return mapped
     if isinstance(mapped, ServerError):
@@ -256,8 +265,6 @@ def _map_wire_like(error: Any, *, operation: str | None) -> AionClientError:
     code_name = _wire_code_name(raw_code)
     if operation == "start" and code_name in _START_IDEMPOTENCY_CODES:
         return AlreadyExists(message, detail=detail)
-    if operation == "query" and code_name in {"query_failed", "QUERY_FAILED"}:
-        return QueryFailed(message, detail=detail)
     mapped = _WIRE_CODE_MAP.get(code_name)
     if mapped is None:
         mapped = _WIRE_CODE_MAP.get(code_name.lower())
@@ -283,6 +290,7 @@ def _wire_code_name(raw_code: Any) -> str:
             7: "WIRE_ERROR_CODE_LAGGED",
             8: "WIRE_ERROR_CODE_INVALID_INPUT",
             9: "WIRE_ERROR_CODE_BACKEND",
+            10: "WIRE_ERROR_CODE_QUERY_FAILED",
         }
         return numeric.get(raw_code, "WIRE_ERROR_CODE_BACKEND")
     return str(raw_code)

@@ -52,6 +52,19 @@ test("maps invalid_input wire code spellings to InvalidArgumentError", () => {
   }
 });
 
+test("maps query_failed wire code spellings to QueryFailedError", () => {
+  // Numeric pin: query_failed is wire enum value 10.
+  for (const code of ["query_failed", "WIRE_ERROR_CODE_QUERY_FAILED", 10]) {
+    const error = mapWireError({ code, message: "handler raised" });
+    assert.ok(
+      error instanceof QueryFailedError,
+      `wire code ${JSON.stringify(code)} must map to QueryFailedError`,
+    );
+    assert.equal(error.kind, "QueryFailed");
+    assert.equal(error.detail?.code, "query_failed");
+  }
+});
+
 test("maps backend wire code spellings to ServerError", () => {
   for (const code of ["backend", "WIRE_ERROR_CODE_BACKEND", 9]) {
     const error = mapWireError({ code, message: "store failure" });
