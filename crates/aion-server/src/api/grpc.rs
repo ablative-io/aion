@@ -687,6 +687,29 @@ mod tests {
     const NAMESPACE: &str = "tenant-a";
     const TOKEN: &str = "test-token";
 
+    /// Server state whose bearer validation matches the compiled auth path:
+    /// under `feature = "auth"` a real [`crate::auth::JwksCache`] is fetched
+    /// from a live fixture JWKS endpoint; otherwise the development token path
+    /// needs no cache.
+    async fn server_state(
+        resolver: NamespaceResolver,
+        runtime: RuntimeConfig,
+    ) -> Result<ServerState, Box<dyn std::error::Error>> {
+        #[cfg(feature = "auth")]
+        {
+            let url = crate::auth::test_support::serve_jwks()?;
+            let refresh = std::time::Duration::from_secs(runtime.auth.jwks_refresh_seconds);
+            let cache = crate::auth::JwksCache::new(url, refresh).await?;
+            Ok(ServerState::from_parts_with_jwks(resolver, runtime, cache))
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            // Yield to preserve the async signature required by the auth-feature branch.
+            tokio::task::yield_now().await;
+            Ok(ServerState::from_parts(resolver, runtime))
+        }
+    }
+
     #[tokio::test]
     async fn in_process_tonic_start_and_list_use_shared_handlers()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -729,7 +752,7 @@ mod tests {
             },
             engine,
         );
-        let state = ServerState::from_parts(resolver.clone(), runtime_config());
+        let state = server_state(resolver.clone(), runtime_config()).await?;
         let service = WorkflowGrpcService::new(state);
 
         let mut start = Request::new(generated::StartWorkflowRequest {
@@ -791,13 +814,23 @@ mod tests {
 
     fn apply_metadata(
         metadata: &mut tonic::metadata::MetadataMap,
-    ) -> Result<(), tonic::metadata::errors::InvalidMetadataValue> {
-        metadata.insert("authorization", format!("Bearer {TOKEN}").parse()?);
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Bearer credential accepted by the compiled authentication path: a
+        // JWT minted against the fixture JWKS under `feature = "auth"`, the
+        // development shared-secret token otherwise.
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = TOKEN.to_owned();
+        metadata.insert("authorization", format!("Bearer {bearer}").parse()?);
         metadata.insert("x-aion-subject", "alice".parse()?);
         metadata.insert("x-aion-namespaces", NAMESPACE.parse()?);
         Ok(())
     }
 
+    /// Test runtime settings with authentication enabled; under
+    /// `feature = "auth"` validation runs against the [`server_state`]-injected
+    /// JWKS cache, so the configured dev-secret `jwks_url` is never fetched.
     fn runtime_config() -> RuntimeConfig {
         RuntimeConfig {
             listen: ListenConfig {

@@ -15,9 +15,35 @@ use crate::config::{
     AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
     NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
+use crate::{NamespaceResolver, ServerState};
 
 pub(crate) const NAMESPACE: &str = "tenant-a";
+
+/// Development shared-secret token validated by the `cfg(not(feature = "auth"))`
+/// path (it doubles as the configured `jwks_url` dev value).
 pub(crate) const TOKEN: &str = "test-token";
+
+/// Server state whose bearer validation matches the compiled auth path: under
+/// `feature = "auth"` a real [`crate::auth::JwksCache`] is fetched from a live
+/// fixture JWKS endpoint; otherwise the development token path needs no cache.
+pub(crate) async fn server_state(
+    resolver: NamespaceResolver,
+    runtime: RuntimeConfig,
+) -> Result<ServerState, Box<dyn std::error::Error>> {
+    #[cfg(feature = "auth")]
+    {
+        let url = crate::auth::test_support::serve_jwks()?;
+        let refresh = std::time::Duration::from_secs(runtime.auth.jwks_refresh_seconds);
+        let cache = crate::auth::JwksCache::new(url, refresh).await?;
+        Ok(ServerState::from_parts_with_jwks(resolver, runtime, cache))
+    }
+    #[cfg(not(feature = "auth"))]
+    {
+        // Yield to preserve the async signature required by the auth-feature branch.
+        tokio::task::yield_now().await;
+        Ok(ServerState::from_parts(resolver, runtime))
+    }
+}
 
 /// Engine over one in-memory backing store shared by events and visibility.
 pub(crate) async fn shared_engine()
@@ -44,22 +70,33 @@ where
     T: serde::Serialize,
 {
     let body = serde_json::to_vec(value)?;
-    Ok(authenticated_request(path)
+    // Bearer credential accepted by the compiled authentication path: a JWT
+    // minted against the fixture JWKS under `feature = "auth"`, the
+    // development shared-secret token otherwise.
+    #[cfg(feature = "auth")]
+    let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+    #[cfg(not(feature = "auth"))]
+    let bearer = TOKEN.to_owned();
+    Ok(authenticated_request(path, &bearer)
         .method("POST")
         .header("content-type", "application/json")
         .body(body::Body::from(body))?)
 }
 
 pub(crate) fn get_request(path: &str) -> Result<Request<body::Body>, Box<dyn std::error::Error>> {
-    Ok(authenticated_request(path)
+    #[cfg(feature = "auth")]
+    let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+    #[cfg(not(feature = "auth"))]
+    let bearer = TOKEN.to_owned();
+    Ok(authenticated_request(path, &bearer)
         .method("GET")
         .body(body::Body::empty())?)
 }
 
-fn authenticated_request(path: &str) -> axum::http::request::Builder {
+fn authenticated_request(path: &str, bearer: &str) -> axum::http::request::Builder {
     Request::builder()
         .uri(path)
-        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("authorization", format!("Bearer {bearer}"))
         .header("x-aion-subject", "alice")
         .header("x-aion-namespaces", NAMESPACE)
 }
@@ -77,6 +114,13 @@ pub(crate) async fn read_text(response: Response) -> Result<String, Box<dyn std:
     Ok(String::from_utf8(bytes.to_vec())?)
 }
 
+/// Test runtime settings with authentication enabled.
+///
+/// `auth.jwks_url` carries the development shared secret; the states built by
+/// [`server_state`] under `feature = "auth"` validate against an injected
+/// [`crate::auth::JwksCache`] (fed by a live fixture JWKS endpoint), and the
+/// one test that exercises the production `build_with_store` startup path
+/// overrides `jwks_url` with a live endpoint itself.
 pub(crate) fn runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         listen: ListenConfig {

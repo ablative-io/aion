@@ -5,5 +5,8 @@ pub mod jwks;
 /// Bearer-token extraction and authorization middleware helpers.
 pub mod middleware;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use jwks::{AuthenticatedClaims, JwksCache, JwksError};
 pub use middleware::{AuthError, BearerToken, authorize_bearer_token, extract_http_bearer};

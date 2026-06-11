@@ -42,7 +42,9 @@ toml = "1.1.2"
 prometheus = "0.14.0"
 async-trait.workspace = true
 base64 = "0.22.1"
-jsonwebtoken = { version = "10.3.0", optional = true }
+# jsonwebtoken 10 panics at validation time unless exactly one crypto-provider
+# feature is selected; rust_crypto is the pure-Rust provider.
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"], optional = true }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"], optional = true }
 clap = { workspace = true, features = ["derive"] }
 

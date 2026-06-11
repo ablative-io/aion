@@ -151,18 +151,21 @@ mod tests {
     use aion::EngineBuilder;
     use aion_proto::{ProtoListWorkflowsRequest, WireError, WireErrorCode};
     use aion_store::{EventStore, InMemoryStore};
-    use axum::{body, http::Request, http::StatusCode, response::Response};
+    #[cfg(not(feature = "auth"))]
+    use axum::response::Response;
+    use axum::{body, http::Request, http::StatusCode};
     use tower::ServiceExt;
 
     use super::super::router::workflow_router;
-    use super::super::test_support::{NAMESPACE, TOKEN, read_json, runtime_config};
+    #[cfg(not(feature = "auth"))]
+    use super::super::test_support::TOKEN;
+    use super::super::test_support::{NAMESPACE, read_json, runtime_config, server_state};
     use crate::{
-        NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
+        NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
         config::NamespaceMode,
     };
 
-    #[tokio::test]
-    async fn http_auth_failure_messages_are_specific() -> Result<(), Box<dyn std::error::Error>> {
+    async fn list_router() -> Result<axum::Router, Box<dyn std::error::Error>> {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         let engine = Arc::new(
             EngineBuilder::new()
@@ -178,7 +181,89 @@ mod tests {
             Arc::new(StaticWorkflowNamespaces::default()),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        Ok(workflow_router(
+            server_state(resolver, runtime_config()).await?,
+        ))
+    }
+
+    /// JWT-path failure modes: missing, malformed, and expired bearers are
+    /// redacted 401s (no oracle for why validation failed), while an
+    /// authenticated subject lacking the requested grant gets the specific
+    /// namespace denial.
+    #[cfg(feature = "auth")]
+    #[tokio::test]
+    async fn http_auth_failure_messages_are_specific() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::auth::test_support::{mint_expired_token, mint_token};
+
+        let router = list_router().await?;
+        let request = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: None,
+        };
+
+        let missing = router.clone().oneshot(jwt_request(&request, None)?).await?;
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let malformed = router
+            .clone()
+            .oneshot(jwt_request(&request, Some("not-a-jwt".to_owned()))?)
+            .await?;
+        assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED);
+
+        let expired = router
+            .clone()
+            .oneshot(jwt_request(
+                &request,
+                Some(mint_expired_token("alice", NAMESPACE)?),
+            )?)
+            .await?;
+        assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
+
+        let foreign = router
+            .oneshot(jwt_request(
+                &request,
+                Some(mint_token("alice", "tenant-b")?),
+            )?)
+            .await?;
+        assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+        let error: WireError = read_json(foreign).await?;
+        assert_eq!(error.code, WireErrorCode::NamespaceDenied);
+        assert!(
+            error
+                .message
+                .contains("subject not authorized for namespace tenant-a"),
+            "denial must name the ungranted namespace: {}",
+            error.message
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "auth")]
+    fn jwt_request<T>(
+        value: &T,
+        bearer: Option<String>,
+    ) -> Result<Request<body::Body>, Box<dyn std::error::Error>>
+    where
+        T: serde::Serialize,
+    {
+        let body = serde_json::to_vec(value)?;
+        let mut builder = Request::builder()
+            .uri("/workflows/list")
+            .method("POST")
+            .header("content-type", "application/json");
+        if let Some(bearer) = bearer {
+            builder = builder.header("authorization", format!("Bearer {bearer}"));
+        }
+        Ok(builder.body(body::Body::from(body))?)
+    }
+
+    /// Development-token-path failure modes: each failure surfaces a specific,
+    /// actionable denial message.
+    #[cfg(not(feature = "auth"))]
+    #[tokio::test]
+    async fn http_auth_failure_messages_are_specific() -> Result<(), Box<dyn std::error::Error>> {
+        let router = list_router().await?;
         let request = ProtoListWorkflowsRequest {
             namespace: NAMESPACE.to_owned(),
             filter: None,
@@ -235,6 +320,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(feature = "auth"))]
     async fn assert_auth_error(
         response: Response,
         expected_phrase: &str,
@@ -256,6 +342,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(feature = "auth"))]
     #[derive(Clone, Copy)]
     enum HeaderCase {
         MissingAuthorization,
@@ -264,6 +351,7 @@ mod tests {
         WrongNamespace,
     }
 
+    #[cfg(not(feature = "auth"))]
     fn unauthorized_json_request<T>(
         value: &T,
         header_case: HeaderCase,

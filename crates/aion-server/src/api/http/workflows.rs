@@ -176,10 +176,10 @@ mod tests {
     use super::super::router::workflow_router;
     use super::super::test_support::{
         NAMESPACE, get_request, json_request, proto_payload, read_json, run_id, runtime_config,
-        shared_engine, started_event, workflow_id,
+        server_state, shared_engine, started_event, workflow_id,
     };
     use crate::{
-        NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
+        NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
         config::NamespaceMode,
     };
 
@@ -247,7 +247,7 @@ mod tests {
             Arc::new(StaticWorkflowNamespaces::default()),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let state = ServerState::from_parts(resolver, runtime_config());
+        let state = server_state(resolver, runtime_config()).await?;
         Ok((workflow_router(state), visibility_store))
     }
 
@@ -407,7 +407,7 @@ mod tests {
             Arc::new(ownership),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
 
         let describe = ProtoDescribeWorkflowRequest {
             namespace: NAMESPACE.to_owned(),
@@ -445,7 +445,7 @@ mod tests {
             Arc::new(ownership),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
 
         let describe = ProtoDescribeWorkflowRequest {
             namespace: NAMESPACE.to_owned(),

@@ -178,6 +178,33 @@ impl ServerState {
         }
     }
 
+    /// Build shared state from explicit parts with a caller-supplied JWKS cache.
+    ///
+    /// Embedders that construct their own [`JwksCache`] (for example against a
+    /// private issuer) can install it here; transports then validate bearer
+    /// tokens against it exactly as with a [`Self::build`]-constructed state.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn from_parts_with_jwks(
+        namespace_resolver: NamespaceResolver,
+        runtime: RuntimeConfig,
+        jwks_cache: JwksCache,
+    ) -> Self {
+        Self {
+            inner: Arc::new(ServerStateInner {
+                namespace_guard: NamespaceGuard::new(namespace_resolver),
+                runtime,
+                worker_registry: ConnectedWorkerRegistry::default(),
+                pending_activities: PendingActivities::default(),
+                heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
+                drain_state: DrainState::default(),
+                metrics: None,
+                health: None,
+                jwks_cache: Some(jwks_cache),
+            }),
+        }
+    }
+
     /// Build shared state from explicit parts with a caller-supplied registry.
     #[must_use]
     pub fn from_parts_with_registry(
