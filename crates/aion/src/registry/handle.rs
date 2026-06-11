@@ -137,6 +137,7 @@ pub struct WorkflowHandle {
     timer_ordinal_sequence: Arc<AtomicU64>,
     child_ordinal_sequence: Arc<AtomicU64>,
     signal_receive_counts: Arc<dashmap::DashMap<String, u64>>,
+    signal_send_counts: Arc<dashmap::DashMap<String, u64>>,
 }
 
 impl WorkflowHandle {
@@ -158,6 +159,7 @@ impl WorkflowHandle {
             timer_ordinal_sequence: Arc::new(AtomicU64::new(0)),
             child_ordinal_sequence: Arc::new(AtomicU64::new(0)),
             signal_receive_counts: Arc::new(dashmap::DashMap::new()),
+            signal_send_counts: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -253,6 +255,23 @@ impl WorkflowHandle {
             .signal_receive_counts
             .entry(name.to_owned())
             .or_insert(0) += 1;
+    }
+
+    /// Number of `send_signal(name)` calls this run has completed.
+    ///
+    /// Drives the run-scoped correlation index for sends: the k-th completed
+    /// send for a name correlates with the k-th recorded `SignalSent` for
+    /// that name in this run's segment. Replayed code re-executes the same
+    /// sends in order and re-derives the same indices, independent of any
+    /// same-name arrivals recorded around them.
+    #[must_use]
+    pub fn signal_sends_completed(&self, name: &str) -> u64 {
+        self.signal_send_counts.get(name).map_or(0, |entry| *entry)
+    }
+
+    /// Advance the completed-send count for `name` by one.
+    pub fn mark_signal_send_completed(&self, name: &str) {
+        *self.signal_send_counts.entry(name.to_owned()).or_insert(0) += 1;
     }
 
     /// Returns the logical workflow identifier.

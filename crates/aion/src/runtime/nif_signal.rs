@@ -142,6 +142,40 @@ fn nth_received_occurrence_index(history: &[Event], name: &str, k: u64) -> Optio
     None
 }
 
+/// Occurrence index (among sends and receives of `name`, history order) of
+/// the k-th recorded `SignalSent` for `name`, if it exists.
+///
+/// `send_signal` correlation is positional: the k-th completed send for a
+/// name replays the k-th recorded `SignalSent` for that name. `SignalReceived`
+/// events share the per-name occurrence keyspace, so a send's correlation
+/// index can exceed its send rank when the workflow also receives the name.
+/// Counting the full run segment instead derived a key PAST the recorded
+/// send whenever any same-name occurrence was recorded after it; the replay
+/// cursor found no match and the recovered send re-routed the signal and
+/// recorded a second `SignalSent` — duplicate delivery.
+fn nth_sent_occurrence_index(history: &[Event], name: &str, k: u64) -> Option<usize> {
+    let mut occurrence = 0_usize;
+    let mut sends_seen = 0_u64;
+    for event in history {
+        match event {
+            Event::SignalSent {
+                name: event_name, ..
+            } if event_name == name => {
+                if sends_seen == k {
+                    return Some(occurrence);
+                }
+                sends_seen += 1;
+                occurrence += 1;
+            }
+            Event::SignalReceived {
+                name: event_name, ..
+            } if event_name == name => occurrence += 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Envelope sequence of the recorded event at per-name occurrence `index`.
 ///
 /// Occurrence indices count `SignalReceived` and `SignalSent` events of
@@ -346,7 +380,14 @@ fn send_signal_impl(
         bridge.runtime.signal_delivery(),
     )
     .map_err(signal_error)?;
-    let index = signal_occurrence_index(context.history(), name);
+    // The k-th completed send for a name replays the k-th recorded
+    // `SignalSent` for that name (same-name arrivals share the occurrence
+    // keyspace and may be recorded after the send); with no k-th send
+    // recorded, the next free occurrence slot — matching no recorded event —
+    // keys the live path.
+    let completed = context.signal_sends_completed(name);
+    let index = nth_sent_occurrence_index(context.history(), name, completed)
+        .unwrap_or_else(|| signal_occurrence_index(context.history(), name));
     let delivery = SignalDelivery {
         target_workflow_id: target_workflow_id.clone(),
         name: name.to_owned(),
@@ -361,7 +402,10 @@ fn send_signal_impl(
     };
 
     match context.resolve_command(command).map_err(signal_error)? {
-        ResolveOutcome::Recorded(Resolution::SignalSent) => Ok("delivered".to_owned()),
+        ResolveOutcome::Recorded(Resolution::SignalSent) => {
+            context.mark_signal_send_completed(name);
+            Ok("delivered".to_owned())
+        }
         ResolveOutcome::Recorded(other) => Err(format!("unexpected signal resolution: {other:?}")),
         ResolveOutcome::ResumeLive => {
             let target_handle = resolve_target(bridge.registry.as_ref(), &target_workflow_id)?;
@@ -387,6 +431,7 @@ fn send_signal_impl(
                     })
                 })
                 .map_err(signal_error)?;
+            context.mark_signal_send_completed(name);
             Ok("delivered".to_owned())
         }
     }
@@ -527,7 +572,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        SignalNifBridge, SignalReceiveOutcome, receive_signal_impl, signal_occurrence_index,
+        SignalNifBridge, SignalReceiveOutcome, receive_signal_impl, send_signal_impl,
+        signal_occurrence_index,
     };
     use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
     use aion_package::ContentHash;
@@ -564,6 +610,33 @@ mod tests {
         }
     }
 
+    /// Counts live deliveries so duplicate-delivery tests can assert that a
+    /// replayed send never reaches the router again.
+    #[derive(Default)]
+    struct CountingRouter {
+        routes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingRouter {
+        fn routes(&self) -> usize {
+            self.routes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl SignalRouter for CountingRouter {
+        async fn route(
+            &self,
+            _target: &WorkflowHandle,
+            _name: String,
+            _payload: Payload,
+        ) -> Result<(), EngineError> {
+            self.routes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
     /// Everything one `receive_signal_impl` determinism test needs over a
     /// synthesized parent history.
     struct SignalHarness {
@@ -571,12 +644,30 @@ mod tests {
         bridge: Arc<SignalNifBridge>,
         handle: WorkflowHandle,
         runtime: Arc<RuntimeHandle>,
+        registry: Arc<Registry>,
+        store: Arc<dyn EventStore>,
         pid: u64,
     }
 
     impl SignalHarness {
         async fn over_history(pid: u64, extra_events: &[Event]) -> TestHarness {
-            let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+            Self::over_history_with(
+                pid,
+                extra_events,
+                Arc::new(InMemoryStore::default()),
+                Arc::new(RejectingRouter),
+            )
+            .await
+        }
+
+        /// Like [`Self::over_history`], with the event store and signal
+        /// router chosen by the test (stale-read races, delivery counting).
+        async fn over_history_with(
+            pid: u64,
+            extra_events: &[Event],
+            store: Arc<dyn EventStore>,
+            router: Arc<dyn SignalRouter>,
+        ) -> TestHarness {
             let registry = Arc::new(Registry::default());
             let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
             let workflow_id = WorkflowId::new_v4();
@@ -615,16 +706,18 @@ mod tests {
             });
             registry.insert((workflow_id, run_id), handle.clone())?;
             let bridge = Arc::new(SignalNifBridge::new(
-                registry,
+                Arc::clone(&registry),
                 Arc::clone(&runtime),
                 tokio::runtime::Handle::current(),
-                Arc::new(RejectingRouter),
+                router,
             ));
             Ok(Self {
                 state: Arc::new(EngineNifState::default()),
                 bridge,
                 handle,
                 runtime,
+                registry,
+                store,
                 pid,
             })
         }
@@ -633,6 +726,18 @@ mod tests {
             tokio::task::block_in_place(|| {
                 receive_signal_impl(&self.state, &self.bridge, name, "{}", self.pid)
             })
+        }
+
+        fn send(&self, target: &str, name: &str, payload_json: &str) -> Result<String, String> {
+            tokio::task::block_in_place(|| {
+                send_signal_impl(&self.bridge, target, name, payload_json, self.pid)
+            })
+        }
+
+        async fn history_len(&self) -> Result<usize, Box<dyn std::error::Error>> {
+            let recorder = self.handle.recorder();
+            let recorder = recorder.lock().await;
+            Ok(recorder.read_history().await?.len())
         }
 
         fn expire_replayed_scope(&self, deadline: aion_core::TimerId) {
@@ -681,6 +786,135 @@ mod tests {
             envelope: envelope_for(workflow_id, seq),
             timer_id: aion_core::TimerId::anonymous(ordinal),
         }
+    }
+
+    fn sent(
+        workflow_id: &WorkflowId,
+        seq: u64,
+        name: &str,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::SignalSent {
+            envelope: envelope_for(workflow_id, seq),
+            target_workflow_id: WorkflowId::new_v4(),
+            name: name.to_owned(),
+            payload: Payload::from_json(&json!({"n": seq}))?,
+        })
+    }
+
+    /// Crash-recovery duplicate delivery: a `SignalSent` whose name occurs
+    /// again later in history (here an arrival of the same name recorded
+    /// after the send) must still replay as `Recorded(SignalSent)`. Counting
+    /// the FULL run segment for the send's occurrence key derives an index
+    /// PAST the recorded send, the cursor finds no match, and the send takes
+    /// the live path on recovery — re-routing the signal and recording a
+    /// second `SignalSent`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovered_send_replays_recorded_sent_despite_later_same_name_arrival() -> TestResult {
+        let pid = 421;
+        let envelope_id = WorkflowId::new_v4();
+        let router = Arc::new(CountingRouter::default());
+        // Recorded run: send_signal("go") landed at seq 2, then an arrival
+        // of the SAME name landed at seq 3. Crash; this fresh harness (zeroed
+        // per-run counters over the full recorded history) is the recovery
+        // replay.
+        let harness = SignalHarness::over_history_with(
+            pid,
+            &[
+                sent(&envelope_id, 2, "go")?,
+                received(&envelope_id, 3, "go")?,
+            ],
+            Arc::new(InMemoryStore::default()),
+            Arc::clone(&router) as Arc<dyn SignalRouter>,
+        )
+        .await?;
+        // Self-target: registered, so an erroneous live path routes for real.
+        let target = harness.handle.workflow_id().to_string();
+
+        let outcome = harness.send(&target, "go", "{\"ok\":true}");
+        assert_eq!(outcome.as_deref(), Ok("delivered"));
+        assert_eq!(
+            router.routes(),
+            0,
+            "the recovered send must not deliver the signal a second time"
+        );
+        assert_eq!(
+            harness.history_len().await?,
+            3,
+            "the recovered send must not record a second SignalSent"
+        );
+
+        // The replayed receive still consumes the recorded arrival at its
+        // recorded occurrence slot.
+        match harness.receive("go") {
+            Ok(SignalReceiveOutcome::Payload(payload)) => {
+                assert!(payload.contains('3'), "payload: {payload}");
+            }
+            other => {
+                return Err(
+                    format!("the recorded arrival must resolve on replay: {other:?}").into(),
+                );
+            }
+        }
+        assert_eq!(
+            harness.history_len().await?,
+            3,
+            "replay of the recovered history must append zero events"
+        );
+        harness.shutdown()
+    }
+
+    /// Replay stability across the interleaving classes: multiple same-name
+    /// sends, an arrival of the same name between them, and foreign events
+    /// (a scope deadline's `TimerFired`) inside the segment. Replaying the
+    /// recovered run's calls in order must resolve every one from history —
+    /// zero routes, zero appended events.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovered_interleaved_sends_and_receives_replay_without_appends() -> TestResult {
+        let pid = 422;
+        let envelope_id = WorkflowId::new_v4();
+        let router = Arc::new(CountingRouter::default());
+        // Live order was: send (2), receive resolved the arrival (3), the
+        // enclosing scope's deadline fired (4), send (5). Crash; replay.
+        let harness = SignalHarness::over_history_with(
+            pid,
+            &[
+                sent(&envelope_id, 2, "go")?,
+                received(&envelope_id, 3, "go")?,
+                fired(&envelope_id, 4, 7),
+                sent(&envelope_id, 5, "go")?,
+            ],
+            Arc::new(InMemoryStore::default()),
+            Arc::clone(&router) as Arc<dyn SignalRouter>,
+        )
+        .await?;
+        let target = harness.handle.workflow_id().to_string();
+
+        assert_eq!(
+            harness.send(&target, "go", "{\"k\":0}").as_deref(),
+            Ok("delivered")
+        );
+        match harness.receive("go") {
+            Ok(SignalReceiveOutcome::Payload(payload)) => {
+                assert!(payload.contains('3'), "payload: {payload}");
+            }
+            other => {
+                return Err(
+                    format!("the recorded arrival must resolve on replay: {other:?}").into(),
+                );
+            }
+        }
+        assert_eq!(
+            harness.send(&target, "go", "{\"k\":1}").as_deref(),
+            Ok("delivered")
+        );
+
+        assert_eq!(router.routes(), 0, "replay must deliver nothing twice");
+        assert_eq!(
+            harness.history_len().await?,
+            5,
+            "replay of the recovered history must append zero events"
+        );
+        harness.shutdown()
     }
 
     /// N-2 (Recorded path, F1b): a signal recorded AFTER the expired
@@ -765,21 +999,48 @@ mod tests {
 
     /// N-2 (`ResumeLive` path): with neither the arrival nor the deadline's
     /// `TimerFired` in the resolution snapshot, the receive must suspend —
-    /// never decide the timeout branch from a fresh store read. Before the
-    /// fix `expired_scope_message` re-read the store: a live run whose gap
-    /// held [arrival(2), TimerFired(3)] timed out, while replay resolved the
-    /// arrival via F1b (2 < 3) — opposite branches.
+    /// never decide the timeout branch from a fresh store read. Race
+    /// modeled with a stale-read store: the durable history already holds
+    /// [arrival(2), TimerFired(3)] but step 1's resolution read is truncated
+    /// to the `WorkflowStarted` prefix. Before the fix `expired_scope_message`
+    /// re-read the store via the timer bridge, saw the fired deadline, and
+    /// timed the live receive out — while replay resolved the arrival via
+    /// F1b (2 < 3): opposite branches.
     #[tokio::test(flavor = "multi_thread")]
     async fn live_expiry_is_decided_from_the_resolution_snapshot_only() -> TestResult {
         let pid = 413;
-        let harness = SignalHarness::over_history(pid, &[]).await?;
-        // Live scope, deadline timer 9: nothing recorded in the snapshot.
-        harness.state.timeout_scopes.insert(
-            2,
-            TimeoutScope::live_for_test(pid, aion_core::TimerId::anonymous(9)),
+        let envelope_id = WorkflowId::new_v4();
+        let scope_timer = aion_core::TimerId::anonymous(9);
+        // Durable truth: arrival (seq 2) BEFORE the deadline (seq 3); step
+        // 1's resolution read sees only the WorkflowStarted prefix.
+        let backing = Arc::new(crate::runtime::nif_test_stores::StaleReadStore::new(1));
+        let harness = SignalHarness::over_history_with(
+            pid,
+            &[received(&envelope_id, 2, "go")?, fired(&envelope_id, 3, 9)],
+            Arc::clone(&backing) as Arc<dyn EventStore>,
+            Arc::new(RejectingRouter),
+        )
+        .await?;
+        backing.set_stale_target(harness.handle.workflow_id(), 1);
+        // The timer bridge backs the OLD fresh-read path; installing it
+        // proves this test fails pre-fix instead of accidentally passing
+        // because the fresh read was unavailable.
+        crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
+            &harness.state,
+            Arc::clone(&harness.registry),
+            Arc::clone(&harness.store),
+            tokio::runtime::Handle::current(),
+            crate::runtime::SignalDeliveryConfig::default(),
         );
+        // Live scope whose deadline is the recorded TimerFired(seq 3).
+        harness
+            .state
+            .timeout_scopes
+            .insert(2, TimeoutScope::live_for_test(pid, scope_timer));
         harness.state.timeout_scope_stacks.insert(pid, vec![2]);
 
+        // Step 1 — stale resolution snapshot (neither event): must park,
+        // never decide the timeout branch from a fresh store read.
         match harness.receive("go") {
             Ok(SignalReceiveOutcome::Suspend) => {}
             other => {
@@ -794,25 +1055,10 @@ mod tests {
             Some(PendingAwait::Signal { index: 0 })
         );
 
-        // The gap lands durably: arrival (seq 2) BEFORE the deadline (seq 3).
-        {
-            let recorder = harness.handle.recorder();
-            let mut recorder = recorder.lock().await;
-            recorder
-                .record_signal_received(
-                    Utc::now(),
-                    "go".to_owned(),
-                    Payload::from_json(&json!({"n": 2}))?,
-                )
-                .await?;
-            recorder
-                .record_timer_fired(Utc::now(), aion_core::TimerId::anonymous(9))
-                .await?;
-        }
-
-        // The wake re-entry converges on the Recorded path: F1b orders the
-        // arrival before the deadline and resolves the payload — exactly
-        // what replay derives from the same history.
+        // The wake re-entry reads the full history and converges on the
+        // Recorded path: F1b orders the arrival before the deadline and
+        // resolves the payload — exactly what replay derives from the same
+        // history.
         match harness.receive("go") {
             Ok(SignalReceiveOutcome::Payload(payload)) => {
                 assert!(payload.contains('2'), "payload: {payload}");

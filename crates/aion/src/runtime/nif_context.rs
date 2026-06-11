@@ -189,6 +189,17 @@ impl NifContext {
         self.handle.mark_signal_receive_consumed(name);
     }
 
+    /// Number of `send_signal(name)` calls this run has completed.
+    #[must_use]
+    pub fn signal_sends_completed(&self, name: &str) -> u64 {
+        self.handle.signal_sends_completed(name)
+    }
+
+    /// Advance the completed-send count for `name` by one.
+    pub fn mark_signal_send_completed(&self, name: &str) {
+        self.handle.mark_signal_send_completed(name);
+    }
+
     /// Returns a clone of the resolved workflow handle.
     #[must_use]
     pub fn workflow_handle(&self) -> WorkflowHandle {
