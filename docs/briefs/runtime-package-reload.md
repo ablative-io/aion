@@ -7,6 +7,13 @@
 
 This brief is self-contained: an implementing agent needs no prior conversation context.
 
+## DECISIONS — SIGNED OFF (Tom, 2026-06-12 — all four adopted)
+
+- **D1 → (b).** Child + CAN-successor version resolution is **always-latest-at-record-time, recorded durably** in `ChildWorkflowStarted` / the successor's `WorkflowStarted`; replay and the crash-repair sweeps read the recorded version, never re-resolve.
+- **D2 → (a).** Manual `unload_workflow_version` with engine-enforced safety checks (route-inactive + no resident pin + no recoverable pin + in-flight start guards); the platform owns *when*; no auto-GC inside aion.
+- **D3 → (a).** Embedded-engine API now, serde-ready types from day one; the aion-server endpoint is deferred to its own follow-up brief with a deploy-authz design.
+- **D4 → (a).** Required `package_version` field on workflow-start events; `single_loaded` deleted; **NO migration** — Tom explicitly confirmed all existing event stores are dev/test data and may be wiped.
+
 ---
 
 ## 1. Verified current-state map
@@ -207,9 +214,11 @@ Unit: catalog load/rollback/preflight (ported from `loader/load.rs` tests), rout
 
 ---
 
-## 5. DECISION points for Tom
+## 5. DECISION points for Tom — all four ADOPTED (Tom, 2026-06-12)
 
 ### D1 — Child-workflow and CAN-successor version resolution
+
+**ADOPTED (Tom, 2026-06-12): (b)** — always-latest-at-record-time, recorded durably for children and CAN successors.
 
 **What the code does TODAY (verified, §1.3):** children = `latest()` at spawn time, *not* parent-pinned; CAN = pinned-to-predecessor on the live paths but `latest()` in the crash-recovery sweep (inconsistent). Nothing is recorded durably.
 
@@ -225,6 +234,8 @@ Unit: catalog load/rollback/preflight (ported from `loader/load.rs` tests), rout
 
 ### D2 — Version retirement / unload
 
+**ADOPTED (Tom, 2026-06-12): (a)** — manual `unload_workflow_version` with engine-enforced safety checks; platform owns when; no auto-GC.
+
 **What beamr supports (verified, §1.5):** `delete_module` removes a uniquely-named version atomically; no process-reference check, but running holders keep their `Arc` (no use-after-free); future calls into the name → `Undef`. Safe-purge-with-process-kill exists only for same-name old-code, irrelevant under content-hash naming. So unload is fully buildable aion-side; the entire safety burden is "prove nothing pins it" (§2.4).
 
 - **(a) Manual `unload_workflow_version` with full safety verification** — Meridian P8 explicitly owns retirement policy ("unload a version when no running or recoverable instance pins it… Meridian's reload endpoint calls the engine seam"), so the engine provides the *mechanism with hard safety checks* and the *listing to decide from*, and the embedder decides *when*. No policy defaults inside aion (house rule).
@@ -235,12 +246,16 @@ Unit: catalog load/rollback/preflight (ported from `loader/load.rs` tests), rout
 
 ### D3 — aion-server exposure now vs. embedded-only
 
+**ADOPTED (Tom, 2026-06-12): (a)** — embedded-engine API now, serde-ready types; server endpoint deferred to its own follow-up brief with a deploy-authz design.
+
 - **(a) Embedded-only API now; server endpoint in a follow-up brief** — Meridian embeds the engine directly (its reload endpoint is *Meridian's*, calling this seam), so P8/C27 are fully unblocked with zero wire-contract churn. The wire cost of an endpoint is real: proto messages, `WireErrorCode` rows, CLIENT-CONTRACT, four client SDKs, namespace/authz semantics for a *code-deployment* surface (a categorically more privileged operation than start/signal — it deserves its own authz design, not a bolt-on).
 - **(b) Endpoint now** — the #37 live-conformance closeout runs against a live server and would mildly benefit from restartless fixture deploys, and aion-server deployments get parity. But #37's remaining scope (Rust client wave + conformance) does not *require* it, and rushing a deployment-privilege endpoint without the authz story is the wrong kind of ambitious.
 
 **Recommendation: (a)**, with every listing/result type serde-derived from day one (§3) so the later endpoint is mechanical, and the follow-up brief explicitly covering deploy authz. Revisit immediately if the #37 closeout in practice needs restartless deploys.
 
 ### D4 — Strictness of the new `package_version` event field
+
+**ADOPTED (Tom, 2026-06-12): (a)** — required field, `single_loaded` deleted, NO migration. The flag below is resolved: Tom explicitly confirmed all existing event stores are dev/test data and may be wiped.
 
 - **(a) Required field, no `Option`, `single_loaded` deleted** — pre-1.0 NO BACKWARDS COMPATIBILITY rule (CLAUDE.md); histories written before Wave 0 fail deserialization and dev/test stores get reset. One code path, no zombie fallback that silently picks an arbitrary version.
 - **(b) `Option<PackageVersion>` with `single_loaded` retained as the `None` fallback** — tolerant of existing histories, but institutionalizes the exact ambiguity this brief exists to kill, forever, in every consumer.
