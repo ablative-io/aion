@@ -48,8 +48,11 @@ impl QueryMailboxEngine {
 
     /// Park the reply, queue the query, and wake the workflow process.
     ///
-    /// On marker-delivery failure every inserted entry is removed before the
-    /// typed error is reported, so a failed delivery leaves no stale state.
+    /// On marker-delivery failure every inserted entry is removed, so a
+    /// failed delivery leaves no stale state. A failure against a pid that
+    /// is no longer live is the query-racing-completion window — the caller
+    /// observes the typed `ReplyDropped` through its dropped sender; only a
+    /// failure against a live process is reported as an engine fault.
     fn enqueue_query(
         &self,
         state: &EngineNifState,
@@ -77,14 +80,22 @@ impl QueryMailboxEngine {
                 name,
             });
         if let Err(error) = runtime.deliver_query_request(pid) {
-            // Roll back both entries; the caller gets the typed failure
-            // through its own reply channel.
+            // Roll back both entries before classifying the failure.
             if let Some(mut queue) = state.pending_queries.get_mut(&pid) {
                 queue.retain(|pending| pending.query_id != query_id);
             }
             let removed = take_pending_reply(state, &query_id)
                 .map_err(|reason| QueryError::Engine(delivery_error(reason)))?;
             drop(removed);
+            // A workflow that exited between the caller's residency/terminal
+            // checks and the wake-marker enqueue can never answer — this is
+            // the query-racing-completion window, not an engine fault.
+            // Dropping the parked sender above resolves the waiting caller
+            // with the same typed `ReplyDropped` as exit-time cleanup
+            // ("workflow ended before answering").
+            if !runtime.is_live(pid) {
+                return Ok(());
+            }
             return Err(QueryError::Engine(delivery_error(format!(
                 "query wake marker delivery failed: {error}"
             ))));
@@ -151,10 +162,25 @@ impl EngineHandle for QueryMailboxEngine {
                 // `enqueue_query`; surface the failure to the seam caller.
                 Err(error) => Err(delivery_error(format!("query enqueue failed: {error}"))),
             },
-            // An unregistered name never disturbs the workflow process.
-            Ok(false) => reply_to
-                .send(Err(QueryError::UnknownQuery(name)))
-                .map_err(|_| delivery_error("query caller dropped reply receiver")),
+            // An unregistered name never disturbs the workflow process. On a
+            // pid that is no longer live the missing registration is the
+            // completion race (exit-time cleanup dropped it), not an author
+            // error: the caller observes "workflow ended before answering",
+            // never a misleading UnknownQuery.
+            Ok(false) => {
+                let pid_live = self
+                    .runtime
+                    .upgrade()
+                    .is_some_and(|runtime| runtime.is_live(process.pid()));
+                let reply = if pid_live {
+                    Err(QueryError::UnknownQuery(name))
+                } else {
+                    Err(QueryError::ReplyDropped)
+                };
+                reply_to
+                    .send(reply)
+                    .map_err(|_| delivery_error("query caller dropped reply receiver"))
+            }
             Err(error) => reply_to
                 .send(Err(QueryError::Engine(delivery_error(error))))
                 .map_err(|_| delivery_error("query caller dropped reply receiver")),
