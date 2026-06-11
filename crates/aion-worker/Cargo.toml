@@ -16,8 +16,8 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion-core = { version = "0.1.0", path = "../aion-core" }
-aion-proto = { version = "0.1.0", path = "../aion-proto", features = ["generated"] }
+aion-core = { version = "0.2.0", path = "../aion-core" }
+aion-proto = { version = "0.2.0", path = "../aion-proto", features = ["generated"] }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
 prost = { workspace = true }

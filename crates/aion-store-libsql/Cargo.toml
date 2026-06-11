@@ -16,14 +16,14 @@ categories = ["asynchronous", "database"]
 workspace = true
 
 [dependencies]
-aion-store = { version = "0.1.0", path = "../aion-store" }
+aion-store = { version = "0.2.0", path = "../aion-store" }
 libsql = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-aion-core = { version = "0.1.0", path = "../aion-core" }
+aion-core = { version = "0.2.0", path = "../aion-core" }
 uuid.workspace = true
 
 [dev-dependencies]

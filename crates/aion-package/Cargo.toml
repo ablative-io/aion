@@ -19,7 +19,7 @@ workspace = true
 test-support = []
 
 [dependencies]
-aion-core = { version = "0.1.0", path = "../aion-core" }
+aion-core = { version = "0.2.0", path = "../aion-core" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

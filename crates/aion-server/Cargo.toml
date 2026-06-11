@@ -16,10 +16,10 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion = { package = "aion-rs", version = "0.1.0", path = "../aion" }
-aion-proto = { version = "0.1.0", path = "../aion-proto", features = ["generated"] }
-aion-store-libsql = { version = "0.1.0", path = "../aion-store-libsql" }
-aion-store = { version = "0.1.0", path = "../aion-store" }
+aion = { package = "aion-rs", version = "0.2.0", path = "../aion" }
+aion-proto = { version = "0.2.0", path = "../aion-proto", features = ["generated"] }
+aion-store-libsql = { version = "0.2.0", path = "../aion-store-libsql" }
+aion-store = { version = "0.2.0", path = "../aion-store" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
@@ -27,7 +27,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-aion-core = { version = "0.1.0", path = "../aion-core" }
+aion-core = { version = "0.2.0", path = "../aion-core" }
 dashmap = { workspace = true }
 uuid.workspace = true
 futures.workspace = true
@@ -49,8 +49,8 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-aion-package = { version = "0.1.0", path = "../aion-package" }
-aion-worker = { version = "0.1.0", path = "../aion-worker" }
+aion-package = { version = "0.2.0", path = "../aion-package" }
+aion-worker = { path = "../aion-worker" }
 tempfile = "3.27.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-tungstenite = "0.29.0"
