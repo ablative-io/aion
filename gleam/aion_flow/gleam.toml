@@ -2,7 +2,7 @@ name = "aion_flow"
 version = "0.1.0"
 target = "erlang"
 description = "Typed durable workflow authoring SDK for Aion."
-licences = ["Apache-2.0"]
+licences = ["MIT", "Apache-2.0"]
 repository = { type = "github", user = "ablative-io", repo = "aion" }
 
 [dependencies]
