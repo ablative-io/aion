@@ -86,13 +86,33 @@ pub trait QueryService: Send + Sync {
     async fn query(&self, target: &WorkflowHandle, name: String) -> Result<Payload, EngineError>;
 }
 
+/// A live subscription fell behind the publisher and skipped events.
+///
+/// Publishers yield this as a stream item — never a silent skip and never a
+/// silent stream end — and then continue with subsequent live events, so the
+/// consumer always learns exactly how many events it missed.
+#[derive(thiserror::Error, Clone, Copy, Debug, PartialEq, Eq)]
+#[error("event subscription lagged behind the live stream and skipped {skipped} events")]
+pub struct EventStreamLagged {
+    /// Number of events the subscriber missed.
+    pub skipped: u64,
+}
+
 /// AD/AT live event publisher seam.
 ///
 /// Implementations own event publication and filtering. The engine exposes the
 /// in-process subscription surface without owning publication machinery.
 pub trait EventPublisher: Send + Sync {
     /// Subscribe to a filtered stream of live workflow events.
-    fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event>;
+    ///
+    /// A subscriber that falls behind the publisher receives one
+    /// `Err(`[`EventStreamLagged`]`)` item carrying the skipped count and then
+    /// continues with subsequent events; lag never silently drops events and
+    /// never silently ends the stream.
+    fn subscribe(
+        &self,
+        filter: EventFilter,
+    ) -> BoxStream<'static, Result<Event, EventStreamLagged>>;
 }
 
 /// Object-safe delegated seams held by the engine for AT/AD integration.
@@ -197,7 +217,10 @@ impl QueryService for DeferredQueryService {
 pub struct DeferredEventPublisher;
 
 impl EventPublisher for DeferredEventPublisher {
-    fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event> {
+    fn subscribe(
+        &self,
+        filter: EventFilter,
+    ) -> BoxStream<'static, Result<Event, EventStreamLagged>> {
         let _ = filter;
         Box::pin(stream::empty())
     }
@@ -258,8 +281,14 @@ impl Engine {
     }
 
     /// Subscribe to the live event stream through the AD/AT publisher seam.
+    ///
+    /// A subscriber that falls behind receives one `Err(`[`EventStreamLagged`]`)`
+    /// item with the skipped count and then continues with subsequent events.
     #[must_use]
-    pub fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event> {
+    pub fn subscribe(
+        &self,
+        filter: EventFilter,
+    ) -> BoxStream<'static, Result<Event, EventStreamLagged>> {
         self.delegated().event_publisher().subscribe(filter)
     }
 }
@@ -415,12 +444,16 @@ mod tests {
     }
 
     impl EventPublisher for FakePublisher {
-        fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event> {
+        fn subscribe(
+            &self,
+            filter: EventFilter,
+        ) -> BoxStream<'static, Result<Event, EventStreamLagged>> {
             let events = self
                 .events
                 .iter()
                 .filter(|event| filter.matches(event))
                 .cloned()
+                .map(Ok)
                 .collect::<Vec<_>>();
             stream::iter(events).boxed()
         }
@@ -600,7 +633,7 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
 
-        assert_eq!(events, vec![matching]);
+        assert_eq!(events, vec![Ok(matching)]);
         engine.shutdown()?;
         Ok(())
     }

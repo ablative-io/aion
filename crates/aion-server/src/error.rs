@@ -251,6 +251,10 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::MissingVisibilityStore => {
             simple_engine_fields("MissingVisibilityStore", source)
         }
+        EngineError::ConflictingEventPublisher => {
+            simple_engine_fields("ConflictingEventPublisher", source)
+        }
+        EngineError::EventStreaming(_) => simple_engine_fields("EventStreaming", source),
         EngineError::Load { .. } => simple_engine_fields("Load", source),
         EngineError::Package(_) => simple_engine_fields("Package", source),
         EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
@@ -314,6 +318,12 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         }
         EngineError::MissingVisibilityStore => {
             WireError::backend_with_type("MissingVisibilityStore", source.to_string())
+        }
+        EngineError::ConflictingEventPublisher => {
+            WireError::backend_with_type("ConflictingEventPublisher", source.to_string())
+        }
+        EngineError::EventStreaming(_) => {
+            WireError::backend_with_type("EventStreaming", source.to_string())
         }
         EngineError::Load { .. } => WireError::backend_with_type("Load", source.to_string()),
         EngineError::Package(_) => WireError::backend_with_type("Package", source.to_string()),

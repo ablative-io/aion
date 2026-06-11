@@ -1845,7 +1845,10 @@ mod tests {
     }
 
     impl EventPublisher for TestEventPublisher {
-        fn subscribe(&self, filter: EventFilter) -> BoxStream<'static, Event> {
+        fn subscribe(
+            &self,
+            filter: EventFilter,
+        ) -> BoxStream<'static, Result<Event, aion::EventStreamLagged>> {
             let receiver = self.events.subscribe();
             self.subscribed.add_permits(1);
             Box::pin(stream::unfold(
@@ -1855,10 +1858,15 @@ mod tests {
                         match receiver.recv().await {
                             Ok(event) => {
                                 if filter.matches(&event) {
-                                    return Some((event, (receiver, filter)));
+                                    return Some((Ok(event), (receiver, filter)));
                                 }
                             }
-                            Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                return Some((
+                                    Err(aion::EventStreamLagged { skipped }),
+                                    (receiver, filter),
+                                ));
+                            }
                             Err(broadcast::error::RecvError::Closed) => return None,
                         }
                     }

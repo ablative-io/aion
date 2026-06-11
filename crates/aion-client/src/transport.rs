@@ -356,7 +356,16 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
     ) -> Result<SubscriptionAttempt, ClientError> {
         let filter = embedded_event_filter(request)?;
         Ok(SubscriptionAttempt::new(
-            self.engine.subscribe(filter).map(Ok).boxed(),
+            self.engine
+                .subscribe(filter)
+                .map(|item| {
+                    item.map_err(|lagged| {
+                        ClientError::from_wire_error(aion_proto::WireError::lagged(
+                            lagged.to_string(),
+                        ))
+                    })
+                })
+                .boxed(),
         ))
     }
 }

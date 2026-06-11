@@ -1,5 +1,6 @@
 //! WebSocket forward loop + lag handling.
 
+use aion::EventStreamLagged;
 use aion_core::{Event, WorkflowId};
 use aion_proto::SubscriptionRequest;
 use aion_proto::{WireError, encode_streamed_event};
@@ -64,7 +65,7 @@ pub async fn forward_subscription(
     socket: WebSocket,
     namespace: String,
     workflow_target: Option<WorkflowId>,
-    events: BoxStream<'static, Event>,
+    events: BoxStream<'static, Result<Event, EventStreamLagged>>,
     outbound_buffer_bound: usize,
 ) -> Result<(), ServerError> {
     let EncodedEventStream {
@@ -171,7 +172,7 @@ pub struct EncodedEventStream {
 pub fn spawn_encoded_event_stream(
     namespace: String,
     workflow_target: Option<WorkflowId>,
-    mut events: BoxStream<'static, Event>,
+    mut events: BoxStream<'static, Result<Event, EventStreamLagged>>,
     outbound_buffer_bound: usize,
 ) -> Result<EncodedEventStream, ServerError> {
     if outbound_buffer_bound == 0 {
@@ -184,7 +185,19 @@ pub fn spawn_encoded_event_stream(
     let (lag_tx, lagged) = oneshot::channel();
     let reader_done = tokio::spawn(async move {
         let mut lag_tx = Some(lag_tx);
-        while let Some(event) = events.next().await {
+        while let Some(item) = events.next().await {
+            let event = match item {
+                Ok(event) => event,
+                // An engine-side lag item routes into the existing terminal
+                // lagged path: one error frame, then close.
+                Err(_) => {
+                    if let Some(sender) = lag_tx.take() {
+                        let send_result = sender.send(ServerError::lagged_stream().to_wire_error());
+                        drop(send_result);
+                    }
+                    break;
+                }
+            };
             let terminal = workflow_target.as_ref().is_some_and(|target| {
                 event.workflow_id() == target && is_terminal_workflow_event(&event)
             });
@@ -300,9 +313,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
         let events = stream::iter([
-            started(1, &workflow_id)?,
-            completed(2, &workflow_id)?,
-            started(3, &workflow_id)?,
+            Ok(started(1, &workflow_id)?),
+            Ok(completed(2, &workflow_id)?),
+            Ok(started(3, &workflow_id)?),
         ])
         .boxed();
         let mut stream =
@@ -322,7 +335,8 @@ mod tests {
     async fn dropping_receiver_cleans_up_subscription_reader()
     -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
-        let events = stream::iter([started(1, &workflow_id)?, started(2, &workflow_id)?]).boxed();
+        let events =
+            stream::iter([Ok(started(1, &workflow_id)?), Ok(started(2, &workflow_id)?)]).boxed();
         let stream = spawn_encoded_event_stream("tenant-a".to_owned(), None, events, 1)?;
         drop(stream.frames);
 
@@ -334,10 +348,10 @@ mod tests {
     async fn slow_consumer_lags_without_blocking_fast_consumer()
     -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
-        let events = vec![
-            started(1, &workflow_id)?,
-            started(2, &workflow_id)?,
-            completed(3, &workflow_id)?,
+        let events: Vec<Result<aion_core::Event, aion::EventStreamLagged>> = vec![
+            Ok(started(1, &workflow_id)?),
+            Ok(started(2, &workflow_id)?),
+            Ok(completed(3, &workflow_id)?),
         ];
         let slow = spawn_encoded_event_stream(
             "tenant-a".to_owned(),

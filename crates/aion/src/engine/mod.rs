@@ -6,10 +6,12 @@ pub mod api;
 pub mod builder;
 /// Delegated signal, query, and event-publishing seams.
 pub mod delegated;
+/// Startup recovery wiring used by `EngineBuilder::build()`.
+mod startup;
 
 pub use api::Engine;
 pub use builder::EngineBuilder;
 pub use delegated::{
     DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams,
-    EventFamily, EventFilter, EventPublisher, QueryService, SignalRouter,
+    EventFamily, EventFilter, EventPublisher, EventStreamLagged, QueryService, SignalRouter,
 };

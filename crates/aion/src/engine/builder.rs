@@ -1,37 +1,33 @@
 //! `EngineBuilder` and build wiring.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 use chrono::Utc;
 
-use aion_core::{Event, Payload, RunId, SearchAttributeSchema, status_from_events};
+use aion_core::SearchAttributeSchema;
 use aion_package::Package;
 use aion_store::visibility::VisibilityStore;
 use aion_store::{EventStore, InMemoryStore};
 
 use crate::{
-    CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeConfig,
-    RuntimeHandle, SignalDeliveryConfig, SupervisionTree, WorkflowHandle, WorkflowHandleParts,
+    EngineError, LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SignalDeliveryConfig,
+    SupervisionTree,
     activity::bridge::ActivityDispatcher,
-    durability::{
-        ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
-        Recorder,
-    },
-    lifecycle::completion::{ProcessExitContext, handle_process_exit},
+    durability::ActiveWorkflowRecoverySeam,
+    publish::PublishingEventStore,
     runtime::{
         ChildNifBridge, ChildNifBridgeParts, NifEntry, NifRegistration, install_child_nif_bridge,
         install_nif_runtime_context, install_query_bridge, install_signal_nif_bridge,
         nif_determinism::{NifContextSource, install_nif_context_source},
     },
     signal::SignalResumeHandoff,
-    time::TimerRecovery,
 };
 
-use super::api::{
-    Engine, EngineComponents, schedule_coordinator_run_id, schedule_coordinator_workflow_id,
-    schedule_coordinator_workflow_type,
-};
+use super::api::{Engine, EngineComponents};
 use super::delegated::{DelegatedSeams, EventPublisher, QueryService, SignalRouter};
+use super::startup::{
+    StartupRecoveryContext, recover_active_workflows_on_startup, recover_timers_on_startup,
+};
 
 /// Source for a workflow package collected before `build()` performs fallible
 /// loading and runtime registration.
@@ -41,24 +37,6 @@ pub enum WorkflowPackageSource {
     Path(PathBuf),
     /// Use an already-loaded package value.
     Package(Box<Package>),
-}
-
-async fn recover_timers_on_startup(
-    nif_state: &crate::runtime::EngineNifState,
-    store: Arc<dyn EventStore>,
-) -> Result<(), EngineError> {
-    let readable_store: Arc<dyn aion_store::ReadableEventStore> = store;
-    let timer_service = crate::runtime::nif_timer_bridge::installed_timer_service(nif_state)
-        .map_err(|error| EngineError::Runtime {
-            reason: format!("timer recovery service unavailable: {error}"),
-        })?;
-    TimerRecovery::new(readable_store, timer_service, Duration::ZERO)
-        .recover_on_startup(Utc::now())
-        .await
-        .map(|_| ())
-        .map_err(|error| EngineError::Runtime {
-            reason: format!("timer recovery failed: {error}"),
-        })
 }
 
 /// Install the engine-scoped NIF seams that are available before delegated
@@ -191,6 +169,8 @@ pub struct EngineBuilder {
     active_registry: Option<Arc<Registry>>,
     visibility_reconciliation_interval: Option<Duration>,
     search_attribute_schema: SearchAttributeSchema,
+    event_streaming_capacity: Option<NonZeroUsize>,
+    event_publisher_overridden: bool,
 }
 
 impl Default for EngineBuilder {
@@ -218,7 +198,24 @@ impl EngineBuilder {
             active_registry: None,
             visibility_reconciliation_interval: None,
             search_attribute_schema: SearchAttributeSchema::new(),
+            event_streaming_capacity: None,
+            event_publisher_overridden: false,
         }
+    }
+
+    /// Opt in to live event streaming with a caller-provided broadcast capacity.
+    ///
+    /// `build()` wraps the configured store in a
+    /// [`PublishingEventStore`](crate::publish::PublishingEventStore) before any
+    /// recorder, recovery, or NIF bridge captures the store — so every
+    /// successful append publishes — and installs the matching
+    /// [`BroadcastEventPublisher`](crate::publish::BroadcastEventPublisher) as
+    /// the event-publisher seam behind [`Engine::subscribe`]. Without this call
+    /// the deferred publisher remains installed and subscriptions are empty.
+    #[must_use]
+    pub const fn event_streaming(mut self, capacity: NonZeroUsize) -> Self {
+        self.event_streaming_capacity = Some(capacity);
+        self
     }
 
     /// Supply the search attribute schema validating every recorded attribute.
@@ -379,8 +376,12 @@ impl EngineBuilder {
     }
 
     /// Override the AD/AT live event-publisher seam.
+    ///
+    /// Mutually exclusive with [`Self::event_streaming`], which installs the
+    /// broadcast publisher itself; configuring both fails `build()`.
     #[must_use]
     pub fn event_publisher(mut self, event_publisher: Arc<dyn EventPublisher>) -> Self {
+        self.event_publisher_overridden = true;
         self.delegated = DelegatedSeams::new(
             self.delegated.signal_router_arc(),
             self.delegated.query_service_arc(),
@@ -430,7 +431,11 @@ impl EngineBuilder {
     /// NIF registration, package loading, store reads, registry/supervision lock
     /// poison, or deferred AD recovery failures for active histories.
     pub async fn build(self) -> Result<Engine, EngineError> {
-        let store = self.store.ok_or(EngineError::MissingStore)?;
+        let (store, streaming_publisher) = wrap_event_streaming(
+            self.store.ok_or(EngineError::MissingStore)?,
+            self.event_streaming_capacity,
+            self.event_publisher_overridden,
+        )?;
         let visibility_store = self
             .visibility_store
             .ok_or(EngineError::MissingVisibilityStore)?;
@@ -469,6 +474,7 @@ impl EngineBuilder {
         } else {
             self.delegated
         };
+        let delegated = install_streaming_publisher(delegated, streaming_publisher);
 
         install_signal_nif_bridge(
             &nif_state,
@@ -540,32 +546,43 @@ impl EngineBuilder {
     }
 }
 
-struct StartupRecoveryContext<'a> {
+/// Store and optional publisher produced by [`wrap_event_streaming`].
+type EventStreamingParts = (Arc<dyn EventStore>, Option<Arc<dyn EventPublisher>>);
+
+/// Wrap the configured store for live event streaming when opted in.
+///
+/// The wrap happens before any recorder, recovery path, or NIF bridge clones
+/// the store, so every append flows through the publishing wrapper.
+fn wrap_event_streaming(
     store: Arc<dyn EventStore>,
-    visibility_store: Arc<dyn VisibilityStore>,
-    runtime: Arc<RuntimeHandle>,
-    loaded_workflows: &'a LoadedWorkflows,
-    registry: Arc<Registry>,
-    supervision: Arc<SupervisionTree>,
-    recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
-    search_attribute_schema: Arc<SearchAttributeSchema>,
+    capacity: Option<NonZeroUsize>,
+    event_publisher_overridden: bool,
+) -> Result<EventStreamingParts, EngineError> {
+    let Some(capacity) = capacity else {
+        return Ok((store, None));
+    };
+    if event_publisher_overridden {
+        return Err(EngineError::ConflictingEventPublisher);
+    }
+    let publishing = PublishingEventStore::new(store, capacity)?;
+    let publisher: Arc<dyn EventPublisher> = Arc::new(publishing.publisher());
+    Ok((Arc::new(publishing), Some(publisher)))
 }
 
-async fn recover_active_workflows_on_startup(
-    context: StartupRecoveryContext<'_>,
-) -> Result<(), EngineError> {
-    bootstrap_schedule_coordinator(Arc::clone(&context.store)).await?;
-    crate::lifecycle::visibility::reconcile_visibility(
-        Arc::clone(&context.store),
-        Arc::clone(&context.visibility_store),
-    )
-    .await?;
-    let recovery = context.recovery.clone().unwrap_or_else(|| {
-        Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
-            &context.runtime,
-        ))) as Arc<dyn ActiveWorkflowRecoverySeam>
-    });
-    repopulate_active_workflows(&context, recovery.as_ref()).await
+/// Install the broadcast publisher built by [`wrap_event_streaming`] into the
+/// delegated seams, keeping the configured signal and query seams.
+fn install_streaming_publisher(
+    delegated: DelegatedSeams,
+    streaming_publisher: Option<Arc<dyn EventPublisher>>,
+) -> DelegatedSeams {
+    match streaming_publisher {
+        Some(publisher) => DelegatedSeams::new(
+            delegated.signal_router_arc(),
+            delegated.query_service_arc(),
+            publisher,
+        ),
+        None => delegated,
+    }
 }
 
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
@@ -582,242 +599,9 @@ fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineE
     }
 }
 
-async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
-    let workflow_id = schedule_coordinator_workflow_id();
-    let history = store.as_ref().read_history(&workflow_id).await?;
-    if !history.is_empty() {
-        return Ok(());
-    }
-
-    let input = Payload::from_json(&serde_json::json!({})).map_err(|error| EngineError::Load {
-        reason: format!("failed to build schedule coordinator input payload: {error}"),
-    })?;
-    let run_id = schedule_coordinator_run_id();
-    let mut recorder = Recorder::new(workflow_id, store);
-    recorder
-        .record_workflow_started(
-            Utc::now(),
-            schedule_coordinator_workflow_type().to_owned(),
-            input,
-            run_id,
-        )
-        .await?;
-    Ok(())
-}
-
-async fn repopulate_active_workflows(
-    context: &StartupRecoveryContext<'_>,
-    recovery: &dyn ActiveWorkflowRecoverySeam,
-) -> Result<(), EngineError> {
-    let store = &context.store;
-    let visibility_store = &context.visibility_store;
-    let runtime = &context.runtime;
-    let loaded_workflows = context.loaded_workflows;
-    let registry = &context.registry;
-    let supervision = &context.supervision;
-    for workflow_id in store.as_ref().list_active().await? {
-        let history = store.as_ref().read_history(&workflow_id).await?;
-        let workflow_type = started_workflow_type(&workflow_id, &history)?;
-        let projected_status = status_from_events(&history);
-        if projected_status.is_terminal() {
-            tracing::warn!(
-                workflow_id = %workflow_id,
-                status = ?projected_status,
-                "store listed terminal workflow as active during startup; skipping resident recovery"
-            );
-            continue;
-        }
-        supervision.ensure_type_supervisor(workflow_type.clone())?;
-
-        let recovered = recover_active_workflow(
-            recovery,
-            &workflow_id,
-            &workflow_type,
-            &history,
-            loaded_workflows,
-        )?;
-        let history_head = history.last().map(Event::seq).unwrap_or_default();
-        match recovered {
-            ActiveWorkflowRecovery::Resident {
-                run_id,
-                loaded_version,
-                pid,
-            } => {
-                let recorder =
-                    Recorder::resume_at(workflow_id.clone(), Arc::clone(store), history_head)
-                        .with_visibility(run_id.clone(), Arc::clone(visibility_store));
-                let completion = CompletionNotifier::new();
-                let handle = WorkflowHandle::new(WorkflowHandleParts {
-                    workflow_id: workflow_id.clone(),
-                    run_id: run_id.clone(),
-                    pid,
-                    workflow_type: workflow_type.clone(),
-                    loaded_version,
-                    cached_status: projected_status,
-                    residency: HandleResidency::Resident,
-                    recorder,
-                    completion,
-                });
-                if let Err(error) = registry
-                    .insert((workflow_id.clone(), run_id.clone()), handle.clone())
-                    .and_then(|_| registry.reconcile(&workflow_id, &run_id, &history))
-                    .and_then(|_| {
-                        supervision
-                            .place_workflow(workflow_type.clone(), pid)
-                            .map(|_| ())
-                    })
-                    .and_then(|()| {
-                        install_recovered_completion_monitor(
-                            RecoveredMonitorParts {
-                                store: Arc::clone(store),
-                                visibility_store: Arc::clone(visibility_store),
-                                runtime: Arc::clone(runtime),
-                                registry: Arc::clone(registry),
-                                loaded_workflows: Arc::new(loaded_workflows.clone()),
-                                supervision: Arc::clone(supervision),
-                                search_attribute_schema: Arc::clone(
-                                    &context.search_attribute_schema,
-                                ),
-                            },
-                            &handle,
-                        )
-                    })
-                {
-                    rollback_recovered_resident(
-                        runtime,
-                        registry,
-                        &workflow_id,
-                        &run_id,
-                        pid,
-                        &error,
-                    );
-                    return Err(error);
-                }
-            }
-            ActiveWorkflowRecovery::ScheduleCoordinator { run_id } => {
-                registry.reconcile(&workflow_id, &run_id, &history)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-struct RecoveredMonitorParts {
-    store: Arc<dyn EventStore>,
-    visibility_store: Arc<dyn VisibilityStore>,
-    runtime: Arc<RuntimeHandle>,
-    registry: Arc<Registry>,
-    loaded_workflows: Arc<LoadedWorkflows>,
-    supervision: Arc<SupervisionTree>,
-    search_attribute_schema: Arc<SearchAttributeSchema>,
-}
-
-fn install_recovered_completion_monitor(
-    parts: RecoveredMonitorParts,
-    handle: &WorkflowHandle,
-) -> Result<(), EngineError> {
-    let pid = handle.pid();
-    let runtime = Arc::clone(&parts.runtime);
-    let completion_context = ProcessExitContext {
-        store: parts.store,
-        visibility_store: parts.visibility_store,
-        registry: parts.registry,
-        loaded_workflows: parts.loaded_workflows,
-        runtime: parts.runtime,
-        supervision: parts.supervision,
-        tokio_handle: tokio::runtime::Handle::current(),
-        search_attribute_schema: parts.search_attribute_schema,
-    };
-    let completion_handle = handle.clone();
-    runtime.monitor_process(pid, move |outcome| {
-        if let Err(error) = handle_process_exit(completion_context, completion_handle, outcome) {
-            tracing::error!(workflow_pid = pid, error = %error, "recovered workflow process monitor completion failed");
-        }
-    })?;
-    Ok(())
-}
-
-fn rollback_recovered_resident(
-    runtime: &RuntimeHandle,
-    registry: &Registry,
-    workflow_id: &aion_core::WorkflowId,
-    run_id: &RunId,
-    pid: crate::Pid,
-    cause: &EngineError,
-) {
-    if let Err(error) = registry.remove(workflow_id, run_id) {
-        tracing::warn!(workflow_id = %workflow_id, error = %error, "failed to roll back recovered workflow registry entry");
-    }
-    if let Err(error) = runtime.cancel_pid(pid) {
-        tracing::warn!(workflow_id = %workflow_id, pid, error = %error, cause = %cause, "failed to cancel recovered workflow process after startup registration failed");
-    }
-}
-
-fn recover_active_workflow(
-    recovery: &dyn ActiveWorkflowRecoverySeam,
-    workflow_id: &aion_core::WorkflowId,
-    workflow_type: &str,
-    history: &[Event],
-    loaded_workflows: &LoadedWorkflows,
-) -> Result<ActiveWorkflowRecovery, EngineError> {
-    if workflow_id == &schedule_coordinator_workflow_id()
-        && workflow_type == schedule_coordinator_workflow_type()
-    {
-        let run_id = started_run_id(workflow_id, history)?;
-        return Ok(ActiveWorkflowRecovery::ScheduleCoordinator { run_id });
-    }
-
-    recovery.recover_active_workflow(workflow_id, workflow_type, history, loaded_workflows)
-}
-
-fn started_workflow_type(
-    workflow_id: &aion_core::WorkflowId,
-    history: &[Event],
-) -> Result<String, EngineError> {
-    if let Some(workflow_type) = history.iter().find_map(|event| match event {
-        Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.clone()),
-        _ => None,
-    }) {
-        return Ok(workflow_type);
-    }
-
-    if workflow_id == &schedule_coordinator_workflow_id() {
-        return Ok(schedule_coordinator_workflow_type().to_owned());
-    }
-
-    Err(EngineError::Load {
-        reason: format!(
-            "active workflow `{workflow_id}` has no WorkflowStarted event in durable history"
-        ),
-    })
-}
-
-fn started_run_id(
-    workflow_id: &aion_core::WorkflowId,
-    history: &[Event],
-) -> Result<RunId, EngineError> {
-    if let Some(run_id) = history.iter().find_map(|event| match event {
-        Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
-        _ => None,
-    }) {
-        return Ok(run_id);
-    }
-
-    if workflow_id == &schedule_coordinator_workflow_id() {
-        return Ok(schedule_coordinator_run_id());
-    }
-
-    Err(EngineError::Load {
-        reason: format!(
-            "active workflow `{workflow_id}` has no WorkflowStarted run id in durable history"
-        ),
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
+    use std::{num::NonZeroUsize, path::PathBuf, process::Command, sync::Arc, time::Duration};
 
     use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
     use aion_package::{
@@ -827,6 +611,7 @@ mod tests {
     use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
     use aion_store::{InMemoryStore, ReadableEventStore, WritableEventStore, WriteToken};
     use chrono::Utc;
+    use futures::StreamExt;
     use serde_json::json;
 
     use crate::engine::api::{
@@ -952,6 +737,85 @@ mod tests {
             .await?;
 
         engine.shutdown()?;
+        Ok(())
+    }
+
+    fn capacity(value: usize) -> Result<NonZeroUsize, Box<dyn std::error::Error>> {
+        NonZeroUsize::new(value).ok_or_else(|| "capacity must be non-zero".into())
+    }
+
+    #[tokio::test]
+    async fn event_streaming_delivers_recorder_appends_through_engine_subscribe()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .in_memory_visibility()
+            .event_streaming(capacity(8)?)
+            .build()
+            .await?;
+        let workflow_id = WorkflowId::new_v4();
+        let mut subscription = engine.subscribe(crate::EventFilter {
+            workflow_id: Some(workflow_id.clone()),
+            run: None,
+            family: None,
+        });
+
+        // The production append path: a Recorder over the engine's store,
+        // which `event_streaming` wrapped before any recorder existed.
+        let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), engine.store());
+        recorder
+            .record_workflow_started(
+                Utc::now(),
+                "checkout".to_owned(),
+                payload()?,
+                aion_core::RunId::new(uuid::Uuid::from_u128(7)),
+            )
+            .await?;
+
+        let item = tokio::time::timeout(Duration::from_secs(2), subscription.next())
+            .await?
+            .ok_or("subscription ended without delivering the appended event")?;
+        let event = item?;
+        assert_eq!(event.workflow_id(), &workflow_id);
+        assert_eq!(event.seq(), 1);
+        assert!(matches!(event, Event::WorkflowStarted { .. }));
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn without_event_streaming_subscriptions_stay_on_deferred_empty_stream()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .in_memory_visibility()
+            .build()
+            .await?;
+
+        let mut subscription = engine.subscribe(crate::EventFilter::default());
+        let item = tokio::time::timeout(Duration::from_secs(2), subscription.next()).await?;
+
+        assert!(item.is_none(), "deferred publisher streams must be empty");
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn event_streaming_conflicts_with_explicit_event_publisher()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let error = EngineBuilder::new()
+            .store(InMemoryStore::default())
+            .in_memory_visibility()
+            .event_publisher(Arc::new(crate::DeferredEventPublisher))
+            .event_streaming(capacity(8)?)
+            .build()
+            .await
+            .err();
+
+        assert!(matches!(
+            error,
+            Some(EngineError::ConflictingEventPublisher)
+        ));
         Ok(())
     }
 

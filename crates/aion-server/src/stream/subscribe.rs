@@ -19,7 +19,7 @@ pub struct EventSubscription {
     /// Per-workflow target, when the subscription is tied to one workflow.
     pub workflow_target: Option<WorkflowId>,
     /// Live event stream obtained from `Engine::subscribe` after authorization.
-    pub events: BoxStream<'static, aion_core::Event>,
+    pub events: BoxStream<'static, Result<aion_core::Event, aion::EventStreamLagged>>,
 }
 
 /// Authorize a subscription request and obtain the engine event tail.

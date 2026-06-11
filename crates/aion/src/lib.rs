@@ -44,6 +44,8 @@ pub mod error;
 pub mod lifecycle;
 /// `.aion` package loading into runtime modules.
 pub mod loader;
+/// Live event publication: publish-after-commit store wrapper and publisher.
+pub mod publish;
 /// Query dispatch services and mailbox support.
 pub mod query;
 /// Active workflow registry and handle residency tracking.
@@ -65,11 +67,13 @@ pub use activity::{
 pub use durability::ActiveWorkflowRecoverySeamImpl;
 pub use engine::{
     DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams, Engine,
-    EngineBuilder, EventFamily, EventFilter, EventPublisher, QueryService, SignalRouter,
+    EngineBuilder, EventFamily, EventFilter, EventPublisher, EventStreamLagged, QueryService,
+    SignalRouter,
 };
 pub use engine_seam::EngineHandle;
 pub use error::{EngineError, SignalRouterError};
 pub use loader::{LoadedWorkflow, LoadedWorkflows, load_package};
+pub use publish::{BroadcastEventPublisher, PublishError, PublishingEventStore};
 pub use registry::{
     CompletionNotifier, HandleResidency, Registry, Residency, TerminalOutcome, WorkflowHandle,
     WorkflowHandleParts,

@@ -27,6 +27,16 @@ pub enum EngineError {
         reason: String,
     },
 
+    /// The builder was given both `event_streaming` and an explicit event-publisher seam.
+    #[error(
+        "conflicting event publisher configuration: EngineBuilder::event_streaming installs the broadcast publisher and cannot be combined with EngineBuilder::event_publisher"
+    )]
+    ConflictingEventPublisher,
+
+    /// Live event streaming setup failed.
+    #[error("event streaming setup failed: {0}")]
+    EventStreaming(#[from] crate::publish::PublishError),
+
     /// The configured event store returned an error.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
