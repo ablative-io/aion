@@ -37,6 +37,60 @@ async fn read_history_returns_events_in_appended_order() -> Result<(), StoreErro
 }
 
 #[tokio::test]
+async fn read_history_from_returns_range_suffix() -> Result<(), StoreError> {
+    let store = open_test_store("range-suffix").await?;
+    let unknown = workflow_id(2);
+    let workflow_id = workflow_id(1);
+    let events = vec![
+        workflow_started(1, &workflow_id, "checkout"),
+        signal_received(2, &workflow_id, "wake"),
+        workflow_completed(3, &workflow_id),
+    ];
+
+    store
+        .append(WriteToken::recorder(), &workflow_id, &events, 0)
+        .await?;
+
+    assert_eq!(store.read_history_from(&workflow_id, 2).await?, events[1..]);
+    assert_eq!(store.read_history_from(&workflow_id, 1).await?, events);
+    assert_eq!(store.read_history_from(&workflow_id, 4).await?, Vec::new());
+    assert_eq!(store.read_history_from(&unknown, 1).await?, Vec::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_history_from_range_scan_uses_primary_key_index() -> Result<(), StoreError> {
+    let store = open_test_store("range-plan").await?;
+    let mut rows = store
+        .connection()
+        .query(
+            "EXPLAIN QUERY PLAN SELECT event FROM events WHERE workflow_id = ?1 AND seq >= ?2 ORDER BY seq ASC",
+            ("00000000-0000-0000-0000-000000000001", 2_u64),
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let mut plan = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let detail: String = row
+            .get(3)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        plan.push(detail);
+    }
+
+    let plan = plan.join("\n");
+    assert!(
+        plan.contains("USING INDEX sqlite_autoindex_events_1"),
+        "range read should use the events (workflow_id, seq) primary key index, plan was: {plan}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn malformed_event_blob_maps_to_serialization_error() -> Result<(), StoreError> {
     let store = open_test_store("malformed-blob").await?;
     let workflow_id = workflow_id(1);
