@@ -617,7 +617,7 @@ fn install_configured_child_nif_bridge(
     Ok(())
 }
 
-fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
+pub(super) fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
     match source {
         WorkflowPackageSource::Path(path) => {
             Package::load_from_path(&path).map_err(|error| EngineError::Load {

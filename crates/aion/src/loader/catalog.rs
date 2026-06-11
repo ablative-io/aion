@@ -110,6 +110,24 @@ impl Drop for StartPin {
     }
 }
 
+/// A version swapped out of the snapshot during unload verification.
+///
+/// Restoring it is the same single-pointer commit as removing it was.
+#[derive(Debug)]
+pub(crate) struct RemovedVersion {
+    workflow_type: String,
+    version: ContentHash,
+    entry: CatalogEntry,
+    modules: Vec<(String, ContentHash)>,
+}
+
+impl RemovedVersion {
+    /// Deployed module names registered for the removed version.
+    pub(crate) fn module_names(&self) -> impl Iterator<Item = &str> {
+        self.modules.iter().map(|(name, _)| name.as_str())
+    }
+}
+
 impl Default for WorkflowCatalog {
     fn default() -> Self {
         Self::new()
@@ -294,7 +312,6 @@ impl WorkflowCatalog {
     /// # Errors
     ///
     /// Returns [`EngineError::CatalogPoisoned`] when the pin lock is poisoned.
-    #[cfg(test)]
     pub(crate) fn has_pinned_starts(
         &self,
         workflow_type: &str,
@@ -474,6 +491,104 @@ impl WorkflowCatalog {
         Ok(record)
     }
 
+    /// Re-points the route for `workflow_type` at an already-loaded version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Load`] naming the loaded set when the version is
+    /// not loaded, and [`EngineError::CatalogPoisoned`] on lock poison.
+    pub(crate) async fn route_version(
+        &self,
+        workflow_type: &str,
+        version: &ContentHash,
+    ) -> Result<(), EngineError> {
+        let _mutation = self.mutations.lock().await;
+        let snapshot = self.current()?;
+        let key = (workflow_type.to_owned(), version.clone());
+        if !snapshot.by_version.contains_key(&key) {
+            return Err(load_error(format!(
+                "cannot route workflow `{workflow_type}` to version `{version}`: not loaded (loaded versions: {})",
+                snapshot.loaded_versions_of(workflow_type)
+            )));
+        }
+        if snapshot.routed.get(workflow_type) == Some(version) {
+            return Ok(());
+        }
+        let mut next = (*snapshot).clone();
+        next.routed
+            .insert(workflow_type.to_owned(), version.clone());
+        self.install(next)
+    }
+
+    /// Acquires the catalog mutation lock for a multi-step protocol (unload).
+    pub(crate) async fn begin_mutation(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutations.lock().await
+    }
+
+    /// Swaps a non-routed version out of the snapshot so no new resolution
+    /// can produce it. Caller must hold the mutation lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Load`] when the version is not loaded or is the
+    /// route-active version of its type.
+    pub(crate) fn swap_out_version(
+        &self,
+        workflow_type: &str,
+        version: &ContentHash,
+    ) -> Result<RemovedVersion, EngineError> {
+        let snapshot = self.current()?;
+        let key = (workflow_type.to_owned(), version.clone());
+        let Some(entry) = snapshot.by_version.get(&key) else {
+            return Err(load_error(format!(
+                "cannot unload workflow `{workflow_type}` version `{version}`: not loaded (loaded versions: {})",
+                snapshot.loaded_versions_of(workflow_type)
+            )));
+        };
+        if snapshot.routed.get(workflow_type) == Some(version) {
+            return Err(load_error(format!(
+                "cannot unload workflow `{workflow_type}` version `{version}`: it is the route-active version; route another version first"
+            )));
+        }
+        let mut next = (*snapshot).clone();
+        next.by_version.remove(&key);
+        let modules: Vec<(String, ContentHash)> = next
+            .registered_modules
+            .iter()
+            .filter(|(_, hash)| *hash == version)
+            .map(|(name, hash)| (name.clone(), hash.clone()))
+            .collect();
+        for (name, _) in &modules {
+            next.registered_modules.remove(name);
+        }
+        self.install(next)?;
+        Ok(RemovedVersion {
+            workflow_type: workflow_type.to_owned(),
+            version: version.clone(),
+            entry: entry.clone(),
+            modules,
+        })
+    }
+
+    /// Restores a version swapped out by [`Self::swap_out_version`] after a
+    /// failed unload check. Caller must hold the mutation lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CatalogPoisoned`] on lock poison.
+    pub(crate) fn restore_version(&self, removed: RemovedVersion) -> Result<(), EngineError> {
+        let snapshot = self.current()?;
+        let mut next = (*snapshot).clone();
+        next.by_version.insert(
+            (removed.workflow_type.clone(), removed.version.clone()),
+            removed.entry,
+        );
+        for (name, hash) in removed.modules {
+            next.registered_modules.insert(name, hash);
+        }
+        self.install(next)
+    }
+
     /// Returns true when the catalog has committed the deployed module name.
     #[must_use]
     #[cfg(test)]
@@ -549,6 +664,21 @@ impl CatalogSnapshot {
         let version = self.routed.get(workflow_type)?;
         self.by_version
             .get(&(workflow_type.to_owned(), version.clone()))
+    }
+
+    fn loaded_versions_of(&self, workflow_type: &str) -> String {
+        let mut versions: Vec<String> = self
+            .by_version
+            .keys()
+            .filter(|(loaded_type, _)| loaded_type == workflow_type)
+            .map(|(_, version)| version.to_string())
+            .collect();
+        versions.sort();
+        if versions.is_empty() {
+            "none".to_owned()
+        } else {
+            versions.join(", ")
+        }
     }
 }
 

@@ -437,3 +437,55 @@ fn content_hash_fixture_changes_when_bytes_change() -> Result<(), PackageError> 
     assert_ne!(content_hash(&first), content_hash(&second));
     Ok(())
 }
+
+#[tokio::test]
+async fn route_version_re_points_and_rejects_unknown_hashes() -> TestResult {
+    let first = package("workflow/order", vec![1, 2, 3])?;
+    let second = package("workflow/order", vec![1, 2, 4])?;
+    let catalog = WorkflowCatalog::new();
+    let first_record = load_plain(&catalog, &first).await?;
+    load_plain(&catalog, &second).await?;
+
+    catalog
+        .route_version("workflow/order", first.content_hash())
+        .await?;
+    assert_eq!(catalog.routed("workflow/order")?, Some(first_record));
+
+    let unknown = aion_package::ContentHash::from_bytes([7; 32]);
+    let result = catalog.route_version("workflow/order", &unknown).await;
+    assert!(
+        matches!(&result, Err(EngineError::Load { reason })
+            if reason.contains("not loaded") && reason.contains(&first.content_hash().to_string())),
+        "unknown route target must fail typed naming the loaded set: {result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn swap_out_refuses_routed_version_and_restore_round_trips() -> TestResult {
+    let first = package("workflow/order", vec![1, 2, 3])?;
+    let second = package("workflow/order", vec![1, 2, 4])?;
+    let catalog = WorkflowCatalog::new();
+    let first_record = load_plain(&catalog, &first).await?;
+    load_plain(&catalog, &second).await?;
+
+    {
+        let _mutation = catalog.begin_mutation().await;
+        let routed = catalog.swap_out_version("workflow/order", second.content_hash());
+        assert!(
+            matches!(&routed, Err(EngineError::Load { reason }) if reason.contains("route-active")),
+            "swapping out the routed version must be refused: {routed:?}"
+        );
+
+        let removed = catalog.swap_out_version("workflow/order", first.content_hash())?;
+        assert_eq!(catalog.get("workflow/order", first.content_hash())?, None);
+        assert!(!catalog.has_registered_module(first_record.deployed_entry_module()));
+
+        catalog.restore_version(removed)?;
+    }
+    assert_eq!(
+        catalog.get("workflow/order", first.content_hash())?,
+        Some(first_record)
+    );
+    Ok(())
+}
