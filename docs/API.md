@@ -28,7 +28,7 @@ The public HTTP router currently mounts these routes:
 | `GET` | `/workflows/count` | Same query parameters as `/workflows`. | `{ "count": <number> }` | Implemented |
 | `POST` | `/workflows/start` | JSON body with `namespace`, `workflow_type`, optional `input`. `input` may be an ordinary JSON value or a `ProtoPayload` envelope with `content_type` and byte-array `bytes`. | `ProtoStartWorkflowResponse` (`workflow_id`, `run_id`). | Implemented |
 | `POST` | `/workflows/signal` | `ProtoSignalRequest`: `namespace`, `workflow_id`, optional `run_id`, `signal_name`, optional `payload`. | Empty acknowledgement object. | Implemented |
-| `POST` | `/workflows/query` | `ProtoQueryRequest`: `namespace`, `workflow_id`, optional `run_id`, `query_name`. | `ProtoQueryResponse` with result or typed error. | Implemented |
+| `POST` | `/workflows/query` | `ProtoQueryRequest`: `namespace`, `workflow_id`, optional `run_id`, `query_name`. | `ProtoQueryResponse` with result or typed error. | Wire surface only — engine-side handler execution is not yet implemented; every query currently fails with a configuration error |
 | `POST` | `/workflows/cancel` | `ProtoCancelRequest`: `namespace`, `workflow_id`, optional `run_id`, `reason`. | Empty acknowledgement object. | Implemented |
 | `POST` | `/workflows/list` | `ProtoListWorkflowsRequest`: `namespace`, optional encoded visibility `filter`. | `ProtoListWorkflowsResponse`. | Implemented |
 | `POST` | `/workflows/describe` | `ProtoDescribeWorkflowRequest`: `namespace`, `workflow_id`, optional `run_id`, `include_history`. | Workflow summary plus optional history. | Implemented |
