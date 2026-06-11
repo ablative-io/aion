@@ -184,6 +184,13 @@ export interface ReconnectDependencies {
 	readonly createSession: WorkerSessionFactory;
 	readonly sleep?: (delayMs: number) => Promise<void>;
 	readonly logger?: WorkerLogger;
+	/**
+	 * Graceful-shutdown signal raced against every establishment-backoff
+	 * sleep. Required (pass `undefined` explicitly when no shutdown signal
+	 * exists) so no caller can silently keep the stall where a worker told
+	 * to stop waits out the remaining backoff schedule.
+	 */
+	readonly signal: AbortSignal | undefined;
 }
 
 export interface WorkerLogger {
@@ -223,16 +230,36 @@ export class ServerClosedStreamError extends Error {
 	}
 }
 
+/**
+ * Connects, handshakes, and registers with bounded exponential backoff.
+ * Deterministic PERMISSION_DENIED / UNAUTHENTICATED denials are rethrown
+ * immediately instead of consuming further attempts; exhausting the budget
+ * throws {@link ReconnectExhaustedError} with the last failure as `cause`.
+ *
+ * Shutdown wins promptly during the establishment backoff exactly as it does
+ * during the worker loop's drop backoff: every backoff sleep is raced
+ * against `dependencies.signal` and no further dial is attempted once it
+ * aborts. Resolves `undefined` when shutdown ended the establishment cycle
+ * so the caller returns cleanly; a failed attempt's partially-established
+ * session is always closed before the backoff begins.
+ */
 export async function reconnectWithBackoff(
 	config: WorkerConfig,
 	activityTypes: readonly string[],
 	dependencies: ReconnectDependencies,
-): Promise<WorkerSession> {
+): Promise<WorkerSession | undefined> {
 	const reconnect = requireReconnectConfig(config.reconnect);
 	let attempt = 1;
 	let lastError: unknown;
 
 	while (attempt <= reconnect.maxAttempts) {
+		if (dependencies.signal?.aborted === true) {
+			dependencies.logger?.info(
+				"worker shutdown requested during reconnect; not dialling",
+				{ attempt },
+			);
+			return undefined;
+		}
 		let session: WorkerSession | undefined;
 		try {
 			dependencies.logger?.info("worker reconnect attempt", { attempt });
@@ -262,8 +289,10 @@ export async function reconnectWithBackoff(
 			if (attempt === reconnect.maxAttempts) {
 				break;
 			}
-			await (dependencies.sleep ?? defaultSleep)(
+			await sleepUnlessAborted(
+				dependencies.sleep ?? defaultSleep,
 				delayForAttempt(reconnect, attempt),
+				dependencies.signal,
 			);
 			attempt += 1;
 		}
@@ -272,6 +301,44 @@ export async function reconnectWithBackoff(
 	throw new ReconnectExhaustedError("worker reconnect attempts exhausted", {
 		cause: lastError,
 	});
+}
+
+/**
+ * Runs the injectable backoff sleep but resolves immediately when the
+ * shutdown signal aborts, so a worker told to stop during a long backoff —
+ * an establishment retry or a drop recovery — never stalls for the
+ * remainder of the delay (a SIGTERM-to-SIGKILL window in orchestrated
+ * deployments). The caller re-checks the signal after this resolves; the
+ * abort listener is always removed so repeated backoffs never accumulate
+ * listeners.
+ */
+export async function sleepUnlessAborted(
+	sleep: (delayMs: number) => Promise<void>,
+	delayMs: number,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	if (signal === undefined) {
+		await sleep(delayMs);
+		return;
+	}
+	if (signal.aborted) {
+		return;
+	}
+	let unsubscribe = (): void => undefined;
+	const aborted = new Promise<void>((resolve) => {
+		const onAbort = (): void => {
+			resolve();
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		unsubscribe = (): void => {
+			signal.removeEventListener("abort", onAbort);
+		};
+	});
+	try {
+		await Promise.race([sleep(delayMs), aborted]);
+	} finally {
+		unsubscribe();
+	}
 }
 
 /**

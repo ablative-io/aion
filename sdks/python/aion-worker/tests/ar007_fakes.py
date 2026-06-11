@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from aion_worker import (
     ActivityExecutionContext,
@@ -150,8 +151,11 @@ class RecordingDispatcher:
             self.active -= 1
 
 
+_TaskResult = TypeVar("_TaskResult")
+
+
 async def wait_for_condition(
-    run: asyncio.Task[None],
+    run: asyncio.Task[_TaskResult],
     condition: Callable[[], bool],
     timeout_seconds: float = 5.0,
 ) -> None:

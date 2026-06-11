@@ -56,8 +56,7 @@ async def test_serve_applies_max_concurrency_backpressure() -> None:
     await session.finish()
 
     serving = asyncio.create_task(serve(config(max_concurrency=2), session, dispatcher))
-    while dispatcher.started < 2:
-        await asyncio.sleep(0)
+    await wait_for_condition(serving, lambda: dispatcher.started >= 2)
     await asyncio.sleep(0.02)
     assert dispatcher.started == 2
     assert dispatcher.peak == 2
@@ -250,6 +249,46 @@ async def test_reconnect_logs_attempts_delays_and_exhausts_cleanly(
     assert "Reconnecting in 0.02s (attempt 2/3)" in messages
     assert sleeps == [0.01, 0.02]
     assert attempts == 3
+
+
+async def test_shutdown_during_establishment_backoff_returns_promptly() -> None:
+    """Shutdown is raced against the establishment-backoff sleep, never waited out.
+
+    Parity with the Rust worker's
+    ``shutdown_during_establishment_backoff_returns_promptly``: a worker stuck
+    in establishment retries (server down, long delays) must honour SIGTERM
+    immediately instead of stalling through the remaining backoff schedule.
+    """
+
+    shutdown = asyncio.Event()
+    backoff_entered = asyncio.Event()
+    attempts = 0
+
+    async def fail_connect() -> NoReturn:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("dial refused")
+
+    async def hanging_sleep(delay: float) -> None:
+        del delay
+        backoff_entered.set()
+        # Stands in for an arbitrarily long backoff: it never completes, so
+        # only the shutdown race can end the wait.
+        await asyncio.Event().wait()
+
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(
+            config(), fail_connect, RecordingDispatcher(), sleep=hanging_sleep, shutdown=shutdown
+        )
+    )
+    await asyncio.wait_for(backoff_entered.wait(), timeout=5)
+    shutdown.set()
+    # Returns cleanly well before any backoff could elapse — the timeout only
+    # fires if the worker stalls waiting out the establishment sleep.
+    await asyncio.wait_for(run, timeout=5)
+
+    # Exactly the one pre-shutdown dial: shutdown never grows the session count.
+    assert attempts == 1
 
 
 async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_completion(

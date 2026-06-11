@@ -22,6 +22,7 @@ from .reconnect import (
     is_retryable_session_error,
     re_report_unacked,
     reconnect_with_backoff,
+    sleep_or_shutdown,
 )
 from .session import (
     ActivityCancelled,
@@ -176,8 +177,10 @@ async def connect_register_replay_and_serve(
     measured on the injected monotonic ``clock`` from successful registration
     to the moment the stream ended (post-drop draining of in-flight handlers
     never extends it); see :class:`aion_worker.ReconnectConfig`. Shutdown
-    requested during a drop backoff wakes the sleep immediately and returns
-    cleanly.
+    wins promptly during BOTH backoff phases: a shutdown requested during a
+    mid-run drop backoff or during an establishment-retry backoff inside
+    :func:`aion_worker.reconnect_with_backoff` wakes the sleep immediately
+    and returns cleanly without dialling again.
     """
 
     unacked = tracker if tracker is not None else UnackedResultTracker()
@@ -191,8 +194,15 @@ async def connect_register_replay_and_serve(
             activity_types=activity_types,
             available_handlers=activity_types,
             backoff=backoff,
+            shutdown=shutdown,
             sleep=sleep,
         )
+        if session is None:
+            # Shutdown fired during the establishment cycle (most often inside
+            # an establishment-backoff sleep): return cleanly, mirroring the
+            # drop-backoff shutdown path. No session exists at this point —
+            # failed attempts are closed inside reconnect_with_backoff.
+            return
         established_at = clock()
         health = SessionHealth()
         drop: BaseException
@@ -242,7 +252,7 @@ async def connect_register_replay_and_serve(
             dropped_attempt,
             backoff.max_attempts,
         )
-        await _sleep_or_shutdown(sleep, delay, shutdown)
+        await sleep_or_shutdown(sleep, delay, shutdown)
 
 
 async def _receive_next_or_shutdown(
@@ -270,35 +280,6 @@ async def _receive_next_or_shutdown(
             return StreamFinished()
     finally:
         shutdown_task.cancel()
-
-
-async def _sleep_or_shutdown(sleep: SleepFactory, delay: float, shutdown: asyncio.Event | None) -> None:
-    """Run the injected backoff sleep, waking immediately when shutdown fires.
-
-    A worker told to stop during a long drop backoff must never stall for the
-    remainder of the delay (a SIGTERM-to-SIGKILL window in orchestrated
-    deployments). The caller's loop condition re-checks the shutdown event
-    after this returns. A sleep that completes first propagates its own
-    failure, matching a directly awaited sleep.
-    """
-
-    if shutdown is None:
-        await sleep(delay)
-        return
-    if shutdown.is_set():
-        return
-    sleep_task = asyncio.ensure_future(sleep(delay))
-    shutdown_task: asyncio.Task[bool] = asyncio.create_task(shutdown.wait())
-    try:
-        wait_tasks = cast(set[asyncio.Future[object]], {sleep_task, shutdown_task})
-        done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
-        for pending_task in pending:
-            pending_task.cancel()
-        if sleep_task in done:
-            sleep_task.result()
-    finally:
-        shutdown_task.cancel()
-        sleep_task.cancel()
 
 
 async def _close_session(session: WorkerSession) -> None:

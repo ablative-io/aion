@@ -8,7 +8,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, TypeAlias, cast, runtime_checkable
 
 import grpc
 
@@ -182,8 +182,9 @@ async def reconnect_with_backoff(
     activity_types: Iterable[str],
     available_handlers: Iterable[str],
     backoff: ReconnectBackoff,
+    shutdown: asyncio.Event | None,
     sleep: SleepFactory = asyncio.sleep,
-) -> WorkerSession:
+) -> WorkerSession | None:
     """Connect, handshake, and register with bounded exponential backoff.
 
     Matches the Rust reference: the backoff loop wraps connect AND
@@ -191,10 +192,20 @@ async def reconnect_with_backoff(
     handshakes backs off exponentially rather than hammering at
     initial_backoff_seconds. Deterministic PERMISSION_DENIED / UNAUTHENTICATED
     denials are re-raised immediately instead of consuming further attempts.
+
+    Shutdown wins promptly during the establishment backoff exactly as it
+    does during the run loop's drop backoff: every backoff sleep is raced
+    against ``shutdown`` and no further dial is attempted once it fires.
+    Returns ``None`` when shutdown ended the establishment cycle so the
+    caller returns cleanly; a failed attempt's partially-established session
+    is always closed before the backoff begins.
     """
 
     last_error: BaseException | None = None
     for attempt in range(1, backoff.max_attempts + 1):
+        if shutdown is not None and shutdown.is_set():
+            logger.info("Shutdown requested during connection establishment; not dialling")
+            return None
         session: WorkerSession | None = None
         try:
             session = await connect()
@@ -220,8 +231,37 @@ async def reconnect_with_backoff(
                 attempt,
                 backoff.max_attempts,
             )
-            await sleep(delay)
+            await sleep_or_shutdown(sleep, delay, shutdown)
     raise ReconnectError(f"worker reconnect attempts exhausted for {config.endpoint}: {last_error}") from last_error
+
+
+async def sleep_or_shutdown(sleep: SleepFactory, delay: float, shutdown: asyncio.Event | None) -> None:
+    """Run the injected backoff sleep, waking immediately when shutdown fires.
+
+    A worker told to stop during a long backoff — an establishment retry or a
+    mid-run drop recovery — must never stall for the remainder of the delay
+    (a SIGTERM-to-SIGKILL window in orchestrated deployments). The caller
+    re-checks the shutdown event after this returns. A sleep that completes
+    first propagates its own failure, matching a directly awaited sleep.
+    """
+
+    if shutdown is None:
+        await sleep(delay)
+        return
+    if shutdown.is_set():
+        return
+    sleep_task = asyncio.ensure_future(sleep(delay))
+    shutdown_task: asyncio.Task[bool] = asyncio.create_task(shutdown.wait())
+    try:
+        wait_tasks = cast(set[asyncio.Future[object]], {sleep_task, shutdown_task})
+        done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+        for pending_task in pending:
+            pending_task.cancel()
+        if sleep_task in done:
+            sleep_task.result()
+    finally:
+        shutdown_task.cancel()
+        sleep_task.cancel()
 
 
 async def close_failed_session(session: WorkerSession | None) -> None:

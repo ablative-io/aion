@@ -35,6 +35,7 @@ export {
 	requireReconnectConfig,
 	reReportUnacked,
 	ServerClosedStreamError,
+	sleepUnlessAborted,
 	UnackedResultTracker,
 } from "./reconnect.js";
 export type {

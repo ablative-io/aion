@@ -884,6 +884,56 @@ describe("runWorkerLoop", () => {
 		expect(session.closed).toBe(true);
 	});
 
+	it("returns promptly when shutdown aborts during an establishment backoff inside recovery", async () => {
+		const controller = new AbortController();
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		const session = new ScriptedSession([{ kind: "throw", error: drop }]);
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+
+		// Every drop recovery re-enters establishment with a fresh inner
+		// backoff schedule, so a stall there would multiply across outer drop
+		// cycles. The drop backoff (first sleep) completes instantly so the
+		// loop reaches the establishment retries inside reconnectWithBackoff;
+		// the establishment backoff (second sleep) never resolves, so only
+		// the abort race can end the wait. The loop must return cleanly (the
+		// TS shutdown contract) without dialling again, well before the
+		// backoff could elapse.
+		await runWorkerLoop({
+			config: reconnectingConfig(5),
+			session,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				factoryCalls += 1;
+				throw serviceError(
+					status.UNAVAILABLE,
+					"14 UNAVAILABLE: engine unreachable",
+				);
+			},
+			sleep: (delayMs) => {
+				sleeps.push(delayMs);
+				if (sleeps.length === 1) {
+					return Promise.resolve();
+				}
+				setImmediate(() => {
+					controller.abort();
+				});
+				return new Promise<void>(() => undefined);
+			},
+			signal: controller.signal,
+			now: () => 0,
+		});
+
+		// One failed redial only: shutdown never grows the session count, and
+		// the dropped session was closed when its stream failed.
+		expect(sleeps).toEqual([1, 1]);
+		expect(factoryCalls).toBe(1);
+		expect(session.closed).toBe(true);
+	});
+
 	it("rejects with the denial when a server denial races an abort during registration", async () => {
 		const denial = serviceError(
 			status.PERMISSION_DENIED,

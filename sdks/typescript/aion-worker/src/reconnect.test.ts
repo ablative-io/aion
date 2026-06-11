@@ -124,7 +124,11 @@ describe("reconnect", () => {
 		const session = await reconnectWithBackoff(config(), ["charge"], {
 			createSession: async () => new RecordingSession(events),
 			sleep: () => Promise.resolve(),
+			signal: undefined,
 		});
+		if (session === undefined) {
+			throw new Error("expected reconnectWithBackoff to resolve a session");
+		}
 		await reReportUnacked(session, tracker);
 
 		const iterator = session.receiveTasks()[Symbol.asyncIterator]();
@@ -157,6 +161,7 @@ describe("reconnect", () => {
 				sleep: async (delayMs) => {
 					sleeps.push(delayMs);
 				},
+				signal: undefined,
 			}),
 		).rejects.toBe(denial);
 
@@ -188,6 +193,7 @@ describe("reconnect", () => {
 				sleep: async (delayMs) => {
 					sleeps.push(delayMs);
 				},
+				signal: undefined,
 			}),
 		).rejects.toBe(denial);
 
@@ -212,6 +218,7 @@ describe("reconnect", () => {
 			sleep: async (delayMs) => {
 				sleeps.push(delayMs);
 			},
+			signal: undefined,
 		}).then(
 			() => {
 				throw new Error("expected reconnectWithBackoff to reject");
@@ -229,6 +236,58 @@ describe("reconnect", () => {
 		expect(attempts).toBe(2);
 		expect(sleeps).toEqual([1]);
 		expect(isRetryableSessionError(unavailable)).toBe(true);
+	});
+
+	it("resolves undefined promptly when shutdown aborts during an establishment backoff", async () => {
+		const unavailable = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: engine unreachable",
+		);
+		const controller = new AbortController();
+		const sleeps: number[] = [];
+		let attempts = 0;
+
+		// The establishment-backoff sleep never resolves — it stands in for an
+		// arbitrarily long delay — so only the abort race can end the wait.
+		// The result must be undefined (the caller's clean-return contract,
+		// mirroring the drop backoff) well before the backoff could elapse.
+		const session = await reconnectWithBackoff(config(), ["charge"], {
+			createSession: async () => {
+				attempts += 1;
+				throw unavailable;
+			},
+			sleep: (delayMs) => {
+				sleeps.push(delayMs);
+				setImmediate(() => {
+					controller.abort();
+				});
+				return new Promise<void>(() => undefined);
+			},
+			signal: controller.signal,
+		});
+
+		expect(session).toBeUndefined();
+		// Exactly the one pre-abort dial: shutdown never grows the session count.
+		expect(attempts).toBe(1);
+		expect(sleeps).toEqual([1]);
+	});
+
+	it("resolves undefined without dialling when the signal is already aborted", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		let attempts = 0;
+
+		const session = await reconnectWithBackoff(config(), ["charge"], {
+			createSession: async () => {
+				attempts += 1;
+				return new RecordingSession([]);
+			},
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+		});
+
+		expect(session).toBeUndefined();
+		expect(attempts).toBe(0);
 	});
 
 	it("requires a reconnect config and rejects non-positive values", () => {
@@ -289,6 +348,7 @@ describe("reconnect", () => {
 			sleep: async () => {
 				events.push("sleep");
 			},
+			signal: undefined,
 		});
 
 		expect(attempts).toBe(2);
@@ -321,6 +381,7 @@ describe("reconnect", () => {
 					return new ThrowingCloseSession(events, denial, closeFailure);
 				},
 				sleep: () => Promise.resolve(),
+				signal: undefined,
 				logger: {
 					info: () => undefined,
 					warn: (message, fields) => {

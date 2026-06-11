@@ -10,6 +10,7 @@ import {
 	requireReconnectConfig,
 	reReportUnacked,
 	ServerClosedStreamError,
+	sleepUnlessAborted,
 	UnackedResultTracker,
 	type WorkerLogger,
 } from "./reconnect.js";
@@ -45,7 +46,11 @@ export interface RunWorkerLoopOptions {
 	 * a clean close or a handled retryable stream failure observed after the
 	 * abort returns instead of dialling a replacement session the caller no
 	 * longer wants, and a reconnect already in flight closes its fresh
-	 * session and returns. A signal aborted before (or during) the initial
+	 * session and returns. The signal wins promptly during BOTH backoff
+	 * phases: the drop backoff and the establishment-retry backoffs inside
+	 * `reconnectWithBackoff` each race their sleep against the abort, so a
+	 * stopping worker never waits out a backoff schedule. A signal aborted
+	 * before (or during) the initial
 	 * handshake/register returns cleanly without serving — the abort handler
 	 * closes the session, so the registration write failing is shutdown, not
 	 * an error. Without a `sessionFactory` the loop never reconnects, so the
@@ -242,11 +247,28 @@ export async function runWorkerLoop(
 				);
 				return;
 			}
-			session = await reconnectWithBackoff(options.config, activityTypes, {
-				createSession: options.sessionFactory,
-				sleep: options.sleep,
-				logger: options.logger,
-			});
+			const replacement = await reconnectWithBackoff(
+				options.config,
+				activityTypes,
+				{
+					createSession: options.sessionFactory,
+					sleep: options.sleep,
+					logger: options.logger,
+					signal: options.signal,
+				},
+			);
+			if (replacement === undefined) {
+				// Shutdown fired during the establishment cycle (most often
+				// inside an establishment-backoff sleep): return cleanly,
+				// mirroring the drop-backoff shutdown path. No session is open
+				// at this point — failed attempts are closed inside
+				// reconnectWithBackoff.
+				options.logger?.info(
+					"worker shutdown requested during reconnect backoff; not reconnecting",
+				);
+				return;
+			}
+			session = replacement;
 			// Health accounting restarts at the replacement session's
 			// registration: its survival and served tasks are what may reset
 			// the budget at its own eventual drop.
@@ -317,43 +339,6 @@ function describeError(error: unknown): string {
  */
 function shutdownRequested(signal: AbortSignal | undefined): boolean {
 	return signal?.aborted === true;
-}
-
-/**
- * Runs the injectable backoff sleep but resolves immediately when the
- * shutdown signal aborts, so a worker told to stop during a long drop
- * backoff never stalls for the remainder of the delay (a SIGTERM-to-SIGKILL
- * window in orchestrated deployments). The caller re-checks the signal
- * after this resolves; the abort listener is always removed so repeated
- * backoffs never accumulate listeners.
- */
-async function sleepUnlessAborted(
-	sleep: (delayMs: number) => Promise<void>,
-	delayMs: number,
-	signal: AbortSignal | undefined,
-): Promise<void> {
-	if (signal === undefined) {
-		await sleep(delayMs);
-		return;
-	}
-	if (signal.aborted) {
-		return;
-	}
-	let unsubscribe = (): void => undefined;
-	const aborted = new Promise<void>((resolve) => {
-		const onAbort = (): void => {
-			resolve();
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
-		unsubscribe = (): void => {
-			signal.removeEventListener("abort", onAbort);
-		};
-	});
-	try {
-		await Promise.race([sleep(delayMs), aborted]);
-	} finally {
-		unsubscribe();
-	}
 }
 
 /**

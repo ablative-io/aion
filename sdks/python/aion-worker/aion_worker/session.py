@@ -60,8 +60,10 @@ class ReconnectConfig:
     explicit protocol drain signal ("closing, do not reconnect") is planned
     for the worker-protocol ack wave and will refine the clean-close case.
 
-    Shutdown during a drop backoff: every SDK races the backoff sleep against
-    the shutdown signal and returns promptly, but the run outcome currently
+    Shutdown during a backoff: shutdown wins promptly during BOTH backoff
+    phases — the session-establishment retries and the mid-run drop
+    backoffs. Every SDK races each backoff sleep against the shutdown signal
+    and never dials again once it fires, but the run outcome currently
     diverges — this SDK and the TypeScript worker return cleanly, while the
     Rust worker surfaces the pending drop error. Aligning the outcome
     cross-SDK is deferred to the protocol drain-signal wave.

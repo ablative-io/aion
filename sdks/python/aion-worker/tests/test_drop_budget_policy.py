@@ -92,10 +92,9 @@ async def test_drop_budget_resets_after_each_session_that_serves_a_task() -> Non
         )
     )
     # Wait until the worker has survived all five drops and dialled the
-    # sixth (blocking) session; run.done() guards against a budget
-    # exhaustion ending the run early.
-    while attempts < 6 and not run.done():
-        await asyncio.sleep(0)
+    # sixth (blocking) session; wait_for_condition guards against a budget
+    # exhaustion ending the run early and against the suite hanging forever.
+    await wait_for_condition(run, lambda: attempts >= 6)
     shutdown.set()
     await run
 
@@ -496,6 +495,64 @@ async def test_shutdown_during_error_backoff_wakes_immediately() -> None:
     await asyncio.wait_for(run, timeout=5)
 
     assert attempts == 1
+
+
+async def test_shutdown_during_recovery_establishment_backoff_returns_promptly() -> None:
+    """Shutdown wins inside the establishment retries of a drop-recovery cycle.
+
+    The drop budget re-enters establishment with a fresh inner backoff
+    schedule on every recovery, so a stall there would multiply across outer
+    drop cycles. The first session drops, the drop backoff completes
+    instantly, the redial fails, and shutdown fires during the establishment
+    backoff: the run must return cleanly without dialling again, with the
+    dropped session closed.
+    """
+
+    shutdown = asyncio.Event()
+    establishment_backoff_entered = asyncio.Event()
+    dropping = FakeSession(drop_after_events=True)
+    await dropping.finish()
+    attempts = 0
+    sleep_calls = 0
+
+    async def connect() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return dropping
+        raise OSError("dial refused")
+
+    async def hanging_establishment_sleep(delay: float) -> None:
+        del delay
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            # The drop backoff completes instantly so the loop reaches the
+            # establishment retries inside reconnect_with_backoff.
+            return
+        establishment_backoff_entered.set()
+        # The establishment backoff never completes; only the shutdown race
+        # can end the wait.
+        await asyncio.Event().wait()
+
+    run = asyncio.create_task(
+        connect_register_replay_and_serve(
+            _config(max_attempts=5),
+            connect,
+            RecordingDispatcher(),
+            sleep=hanging_establishment_sleep,
+            shutdown=shutdown,
+            clock=_frozen_clock,
+        )
+    )
+    await asyncio.wait_for(establishment_backoff_entered.wait(), timeout=5)
+    shutdown.set()
+    await asyncio.wait_for(run, timeout=5)
+
+    # One established session plus the one failed redial: shutdown never
+    # grows the dial count, and the dropped session was closed on the drop.
+    assert attempts == 2
+    assert dropping.closed is True
 
 
 async def test_shutdown_during_clean_close_backoff_returns_cleanly() -> None:
