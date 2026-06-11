@@ -22,12 +22,15 @@ class ScenarioContext:
     """Per-scenario execution state and observable results."""
     client: Client | None = None
     results: dict[str, Observable] = field(default_factory=dict)
+    error_identities: dict[str, Observable] = field(default_factory=dict)
     def require_client(self) -> Client:
         if self.client is None:
             raise InvalidArgument("scenario has not connected yet")
         return self.client
     def record(self, scenario: str, step: str, value: Observable) -> None:
         self.results[f"{scenario}.{step}"] = value
+    def record_error_identity(self, scenario: str, step: str, identity: Observable) -> None:
+        self.error_identities[f"{scenario}.{step}"] = identity
     def lookup(self, current_scenario: str, path: str) -> JSONValue:
         parts = path.split(".")
         if len(parts) >= 2 and f"{parts[0]}.{parts[1]}" in self.results:
@@ -71,18 +74,22 @@ async def _run_scenario(
         operation = str(step["operation"])
         input_value = _resolve(step.get("input", None), defaults, fixtures, scenario_id, context, started_at, now)
         expected = _mapping(_resolve(step["expect"], defaults, fixtures, scenario_id, context, started_at, now))
+        error_identity: Observable | None = None
         try:
             ok = await _execute(operation, _mapping(input_value), context, server_url)
             actual: Observable = {"ok": ok}
         except AionClientError as exc:
             actual = {"error": exc.code.value}
+            error_identity = {"code": exc.code.value, "message": str(exc), "detail": exc.detail}
         print(
             "AION_CONFORMANCE "
             f"sdk=python scenario={scenario_id} step={step_id} "
             f"result={json.dumps(actual, sort_keys=True, separators=(',', ':'))}"
         )
-        _assert_matches(scenario_id, step_id, actual, expected, context)
+        _assert_matches(scenario_id, step_id, actual, expected, context, error_identity)
         context.record(scenario_id, step_id, actual)
+        if error_identity is not None:
+            context.record_error_identity(scenario_id, step_id, error_identity)
 async def _execute(
     operation: str,
     input_value: Mapping[str, Any],
@@ -228,10 +235,18 @@ def _assert_matches(
     actual: Mapping[str, Any],
     expected: Mapping[str, Any],
     context: ScenarioContext,
+    error_identity: Observable | None,
 ) -> None:
     detail = f"scenario={scenario} step={step} expected={expected} actual={actual}"
     if "error" in expected:
         assert actual.get("error") == expected["error"], detail
+        if "errorSameAs" in expected:
+            reference = context.error_identities.get(str(expected["errorSameAs"]))
+            assert reference is not None, detail
+            assert error_identity is not None, detail
+            assert error_identity == reference, (
+                f"{detail} error_identity={error_identity} reference={reference}"
+            )
         return
     ok = _mapping(actual.get("ok"))
     expected_ok = _mapping(expected.get("ok"))

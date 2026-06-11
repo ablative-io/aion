@@ -98,11 +98,18 @@ async function runScenario(
 			),
 		);
 		let actual: JsonRecord;
+		let errorIdentity: JsonRecord | null = null;
 		try {
 			actual = { ok: await execute(operation, input, context, serverUrl) };
 		} catch (error) {
 			if (error instanceof AionClientError) {
 				actual = { error: error.kind };
+				errorIdentity = {
+					code: error.kind,
+					message: error.message,
+					status: error.detail?.status ?? null,
+					wireCode: error.detail?.code ?? null,
+				};
 			} else {
 				throw error;
 			}
@@ -110,8 +117,11 @@ async function runScenario(
 		console.log(
 			`AION_CONFORMANCE sdk=typescript scenario=${scenarioId} step=${stepId} result=${JSON.stringify(actual)}`,
 		);
-		assertMatches(scenarioId, stepId, actual, expected, context);
+		assertMatches(scenarioId, stepId, actual, expected, context, errorIdentity);
 		context.record(scenarioId, stepId, actual);
+		if (errorIdentity !== null) {
+			context.recordErrorIdentity(scenarioId, stepId, errorIdentity);
+		}
 	}
 }
 
@@ -274,6 +284,7 @@ function assertMatches(
 	actual: JsonRecord,
 	expected: JsonRecord,
 	context: ScenarioContext,
+	errorIdentity: JsonRecord | null,
 ): void {
 	if ("error" in expected) {
 		assert.equal(
@@ -281,6 +292,24 @@ function assertMatches(
 			expected.error,
 			`scenario=${scenario} step=${step}`,
 		);
+		if ("errorSameAs" in expected) {
+			const reference = context.errorIdentities.get(
+				String(expected.errorSameAs),
+			);
+			assert(
+				reference !== undefined,
+				`scenario=${scenario} step=${step} errorSameAs references unrecorded step ${String(expected.errorSameAs)}`,
+			);
+			assert(
+				errorIdentity !== null,
+				`scenario=${scenario} step=${step} errorSameAs requires the step to surface an error`,
+			);
+			assert.deepEqual(
+				errorIdentity,
+				reference,
+				`scenario=${scenario} step=${step} errorSameAs=${String(expected.errorSameAs)}`,
+			);
+		}
 		return;
 	}
 	const ok = asRecord(actual.ok);
@@ -528,6 +557,7 @@ function assertNonEmpty(value: Json, scenario: string, step: string): void {
 class ScenarioContext {
 	client?: Client;
 	readonly results = new Map<string, JsonRecord>();
+	readonly errorIdentities = new Map<string, JsonRecord>();
 
 	requireClient(): Client {
 		if (this.client === undefined)
@@ -537,6 +567,14 @@ class ScenarioContext {
 
 	record(scenario: string, step: string, value: JsonRecord): void {
 		this.results.set(`${scenario}.${step}`, value);
+	}
+
+	recordErrorIdentity(
+		scenario: string,
+		step: string,
+		identity: JsonRecord,
+	): void {
+		this.errorIdentities.set(`${scenario}.${step}`, identity);
 	}
 
 	lookup(currentScenario: string, path: string): Json {

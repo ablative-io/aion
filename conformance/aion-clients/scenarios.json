@@ -30,7 +30,8 @@
     "statusIn": "status is one of the listed workflow statuses",
     "eventsInclude": "stream contains events matching all listed event predicates",
     "sequenceContiguousUnique": "delivered event sequence numbers contain no gaps and no duplicates after resume",
-    "sameHandleAs": "returned handle has the same workflowId and runId as the referenced start step"
+    "sameHandleAs": "returned handle has the same workflowId and runId as the referenced start step",
+    "errorSameAs": "the SDK-observable error identity (taxonomy member, message, and detail) is byte-identical to the error recorded by the referenced scenario step"
   },
   "fixtures": {
     "workflowType": "conformance.echo",
@@ -41,6 +42,11 @@
     "queries": {
       "state": "state",
       "slow": "slow"
+    },
+    "deniedNamespace": "conformance-denied",
+    "foreignWorkflow": {
+      "workflowId": "f0e1d2c3-0000-4000-8000-000000000403",
+      "runId": "f0e1d2c3-0000-4000-8000-000000000404"
     }
   },
   "scenarios": [
@@ -417,6 +423,163 @@
           },
           "expect": {
             "error": "NotFound"
+          }
+        }
+      ]
+    },
+    {
+      "id": "namespace-denied",
+      "description": "A request targeting a namespace the caller holds no grant for surfaces NamespaceDenied: the credential is accepted, the namespace grant is missing. Never Unauthenticated (credential rejection), never NotFound, and never collapsed into Server or InvalidArgument.",
+      "requires": [
+        "The conformance credential is valid and holds a grant for defaults.namespace but no grant for fixtures.deniedNamespace.",
+        "Namespace fixtures.deniedNamespace exists on the server, so the denial exercises authorization rather than namespace existence."
+      ],
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "start-denied",
+          "operation": "start",
+          "input": {
+            "namespace": "${fixtures.deniedNamespace}",
+            "workflowType": "${fixtures.workflowType}",
+            "idempotencyKey": "namespace-denied-001",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "message": "must-not-start"
+              }
+            }
+          },
+          "expect": {
+            "error": "NamespaceDenied"
+          }
+        },
+        {
+          "id": "connect-denied",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}",
+            "namespace": "${fixtures.deniedNamespace}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "list-denied",
+          "operation": "list",
+          "input": {
+            "namespace": "${fixtures.deniedNamespace}",
+            "pagination": {
+              "pageSize": 50,
+              "pageToken": null
+            }
+          },
+          "expect": {
+            "error": "NamespaceDenied"
+          }
+        }
+      ]
+    },
+    {
+      "id": "not-found-anti-leak",
+      "description": "A granted caller probing a workflow owned by a namespace it cannot access receives an error byte-identical to probing a workflow that exists nowhere: the shared NotFound taxonomy member with the message workflow not found in namespace conformance, so cross-namespace existence is never leaked and the probe never surfaces NamespaceDenied.",
+      "requires": [
+        "The conformance environment provisions a running workflow inside a namespace the caller holds no grant for, addressable by the exact identifiers in fixtures.foreignWorkflow.",
+        "No workflow exists anywhere with workflowId 00000000-0000-0000-0000-000000000604."
+      ],
+      "steps": [
+        {
+          "id": "connect",
+          "operation": "connect",
+          "input": {
+            "endpoint": "${defaults.endpoint}",
+            "auth": "${defaults.auth}",
+            "tls": "${defaults.tls}"
+          },
+          "expect": {
+            "ok": {
+              "kind": "client"
+            }
+          }
+        },
+        {
+          "id": "describe-nonexistent",
+          "operation": "describe",
+          "input": {
+            "workflowId": "00000000-0000-0000-0000-000000000604",
+            "runId": "00000000-0000-0000-0000-000000000605",
+            "includeHistory": false
+          },
+          "expect": {
+            "error": "NotFound"
+          }
+        },
+        {
+          "id": "describe-foreign",
+          "operation": "describe",
+          "input": {
+            "workflowId": "${fixtures.foreignWorkflow.workflowId}",
+            "runId": "${fixtures.foreignWorkflow.runId}",
+            "includeHistory": false
+          },
+          "expect": {
+            "error": "NotFound",
+            "errorSameAs": "not-found-anti-leak.describe-nonexistent"
+          }
+        },
+        {
+          "id": "signal-nonexistent",
+          "operation": "signal",
+          "input": {
+            "workflowId": "00000000-0000-0000-0000-000000000604",
+            "runId": "00000000-0000-0000-0000-000000000605",
+            "signalName": "${fixtures.signals.record}",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "value": "anti-leak-probe"
+              }
+            }
+          },
+          "expect": {
+            "error": "NotFound"
+          }
+        },
+        {
+          "id": "signal-foreign",
+          "operation": "signal",
+          "input": {
+            "workflowId": "${fixtures.foreignWorkflow.workflowId}",
+            "runId": "${fixtures.foreignWorkflow.runId}",
+            "signalName": "${fixtures.signals.record}",
+            "payload": {
+              "contentType": "application/json",
+              "json": {
+                "value": "anti-leak-probe"
+              }
+            }
+          },
+          "expect": {
+            "error": "NotFound",
+            "errorSameAs": "not-found-anti-leak.signal-nonexistent"
           }
         }
       ]

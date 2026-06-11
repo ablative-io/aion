@@ -93,16 +93,32 @@ async fn run_scenario(
             now,
         );
         let actual = execute_step(operation, &input, &mut context, server_url).await;
-        let normalized = match actual {
-            Ok(value) => json!({ "ok": value }),
-            Err(error) => json!({ "error": error_variant(&error) }),
+        let (normalized, error_identity) = match actual {
+            Ok(value) => (json!({ "ok": value }), None),
+            Err(error) => (
+                json!({ "error": error_variant(&error) }),
+                Some(json!({
+                    "code": error_variant(&error),
+                    "message": error.to_string()
+                })),
+            ),
         };
         println!(
             "AION_CONFORMANCE sdk=rust scenario={scenario_id} step={step_id} result={}",
             serde_json::to_string(&normalized)?
         );
-        assert_matches(scenario_id, step_id, &normalized, &expected, &context);
+        assert_matches(
+            scenario_id,
+            step_id,
+            &normalized,
+            &expected,
+            &context,
+            error_identity.as_ref(),
+        );
         context.record(scenario_id, step_id, normalized);
+        if let Some(identity) = error_identity {
+            context.record_error_identity(scenario_id, step_id, identity);
+        }
     }
 
     Ok(())
@@ -371,12 +387,20 @@ fn assert_matches(
     actual: &Value,
     expected: &Value,
     context: &ScenarioContext,
+    error_identity: Option<&Value>,
 ) {
     if let Some(expected_error) = expected.get("error").and_then(Value::as_str) {
         assert_eq!(
             actual.get("error").and_then(Value::as_str),
             Some(expected_error),
             "scenario={scenario} step={step}"
+        );
+        assert_error_identity_matches(
+            scenario,
+            step,
+            expected.get("errorSameAs").and_then(Value::as_str),
+            context,
+            error_identity,
         );
         return;
     }
@@ -387,23 +411,16 @@ fn assert_matches(
         expected_ok.get("kind"),
         "scenario={scenario} step={step}"
     );
-    if expected_ok.get("workflowId") == Some(&Value::String("anyString".to_owned())) {
-        assert!(
-            actual_ok
-                .get("workflowId")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.is_empty()),
-            "scenario={scenario} step={step}"
-        );
-    }
-    if expected_ok.get("runId") == Some(&Value::String("anyString".to_owned())) {
-        assert!(
-            actual_ok
-                .get("runId")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.is_empty()),
-            "scenario={scenario} step={step}"
-        );
+    for identifier in ["workflowId", "runId"] {
+        if expected_ok.get(identifier) == Some(&Value::String("anyString".to_owned())) {
+            assert!(
+                actual_ok
+                    .get(identifier)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()),
+                "scenario={scenario} step={step} field={identifier}"
+            );
+        }
     }
     if let Some(expected_value) = expected_ok.get("payloadEquals") {
         assert_eq!(
@@ -467,6 +484,34 @@ fn assert_matches(
             "scenario={scenario} step={step}"
         );
     }
+}
+
+/// Asserts the `errorSameAs` expectation: the current step's SDK-observable
+/// error identity must be byte-identical to the identity recorded by the
+/// referenced step, pinning the anti-existence-leak equivalence.
+fn assert_error_identity_matches(
+    scenario: &str,
+    step: &str,
+    reference: Option<&str>,
+    context: &ScenarioContext,
+    error_identity: Option<&Value>,
+) {
+    let Some(reference) = reference else {
+        return;
+    };
+    let recorded = context.error_identity(reference);
+    assert!(
+        recorded.is_some(),
+        "scenario={scenario} step={step} errorSameAs references unrecorded step {reference}"
+    );
+    assert!(
+        error_identity.is_some(),
+        "scenario={scenario} step={step} errorSameAs requires the step to surface an error"
+    );
+    assert_eq!(
+        error_identity, recorded,
+        "scenario={scenario} step={step} errorSameAs={reference}"
+    );
 }
 
 fn event_included(events: &[Value], required: &Value) -> bool {
@@ -664,6 +709,7 @@ fn error_variant(error: &ClientError) -> &'static str {
 struct ScenarioContext {
     client: Option<Client>,
     results: HashMap<String, Value>,
+    error_identities: HashMap<String, Value>,
 }
 
 impl ScenarioContext {
@@ -673,6 +719,15 @@ impl ScenarioContext {
 
     fn record(&mut self, scenario: &str, step: &str, result: Value) {
         self.results.insert(format!("{scenario}.{step}"), result);
+    }
+
+    fn record_error_identity(&mut self, scenario: &str, step: &str, identity: Value) {
+        self.error_identities
+            .insert(format!("{scenario}.{step}"), identity);
+    }
+
+    fn error_identity(&self, reference: &str) -> Option<&Value> {
+        self.error_identities.get(reference)
     }
 
     fn lookup_reference(&self, current_scenario: &str, path: &str) -> Option<Value> {

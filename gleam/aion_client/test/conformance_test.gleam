@@ -22,10 +22,11 @@ const scenarios_path = "../../conformance/aion-clients/scenarios.json"
 
 const server_url_env = "AION_SERVER_URL"
 
-/// The shared scenario document defines five scenarios today. Extracting
-/// fewer means the document or this decoder regressed, and the gate must fail
-/// loudly instead of asserting nothing.
-const minimum_scenario_count = 5
+/// The shared scenario document defines seven scenarios today (including
+/// namespace-denied and not-found-anti-leak). Extracting fewer means the
+/// document or this decoder regressed, and the gate must fail loudly instead
+/// of asserting nothing.
+const minimum_scenario_count = 7
 
 pub fn shared_client_contract_conformance_test() {
   let assert Ok(source) = read_file(scenarios_path)

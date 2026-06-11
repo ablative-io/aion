@@ -11,6 +11,11 @@ AL-007 consumes a live `aion-server` fixture; it does not start one. Bring up a 
 
 The server binary expects a config file (`aion-server <config.json>`). Use a fixture config with non-zero gRPC/HTTP listen ports, auth enabled with a bearer token if required, the `conformance` namespace available, worker connectivity, and websocket/event streaming enabled.
 
+The authorization scenarios need two additional fixtures:
+
+- The `conformance-denied` namespace (`fixtures.deniedNamespace`) exists on the server, and the conformance credential holds a grant for `conformance` but **no** grant for `conformance-denied` — the `namespace-denied` scenario pins that requests into it surface `NamespaceDenied` (never `Unauthenticated`).
+- A running workflow provisioned inside a namespace the conformance credential cannot access, addressable by the exact identifiers in `fixtures.foreignWorkflow` — the `not-found-anti-leak` scenario pins that probing it is byte-identical to probing a workflow that exists nowhere (`NotFound`, never `NamespaceDenied`), so cross-namespace existence is never leaked.
+
 ## Environment
 
 All harnesses use the same runtime gate:
@@ -84,7 +89,9 @@ or:
 {"error":"AlreadyExists"}
 ```
 
-Error names are the shared contract taxonomy only: `NotFound`, `AlreadyExists`, `QueryFailed`, `QueryTimeout`, `Cancelled`, `Unavailable`, `Unauthenticated`, `InvalidArgument`, and `Server`.
+Error names are the shared contract taxonomy only: `NotFound`, `AlreadyExists`, `QueryFailed`, `QueryTimeout`, `Cancelled`, `Unavailable`, `Unauthenticated`, `NamespaceDenied`, `InvalidArgument`, and `Server`.
+
+Steps whose expectation carries `errorSameAs` additionally pin the SDK-observable error identity (taxonomy member, message, and detail) to be byte-identical to the error recorded by the referenced step. The `not-found-anti-leak` scenario uses this to prove a foreign-owned workflow probe is indistinguishable from a nonexistent-workflow probe.
 
 ## Cross-SDK equivalence rule
 
