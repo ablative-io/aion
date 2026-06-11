@@ -673,6 +673,7 @@ mod tests {
             input: payload()?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 
@@ -798,9 +799,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 Utc::now(),
-                "checkout".to_owned(),
-                payload()?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(7)),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload()?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(7)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
 
@@ -871,9 +876,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 Utc::now(),
-                "checkout".to_owned(),
-                payload()?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload()?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let handle = crate::registry::WorkflowHandle::new(crate::registry::WorkflowHandleParts {

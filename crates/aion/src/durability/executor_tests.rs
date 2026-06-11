@@ -99,6 +99,7 @@ fn child_started(seq: u64) -> Result<Event, Box<dyn std::error::Error>> {
         child_workflow_id: child_workflow_id(),
         workflow_type: "child".to_owned(),
         input: payload("child-input")?,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
 }
 
@@ -237,6 +238,7 @@ impl LiveExecutor for RecordingExecutor {
             result: payload("child-live").map_err(|error| DurabilityError::HistoryShape {
                 reason: error.to_string(),
             })?,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 }

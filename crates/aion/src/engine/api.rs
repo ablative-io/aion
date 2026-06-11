@@ -604,9 +604,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                workflow_type.to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: workflow_type.to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let pid = engine.runtime().spawn_test_process_with_trap_exit(true)?;

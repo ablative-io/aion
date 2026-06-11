@@ -439,9 +439,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "parent".to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "parent".to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         Ok(WorkflowHandle::new(WorkflowHandleParts {
@@ -944,6 +948,7 @@ mod tests {
                 input: payload("first")?,
                 run_id: first.clone(),
                 parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2),
@@ -957,6 +962,7 @@ mod tests {
                 input: payload("next")?,
                 run_id: second.clone(),
                 parent_run_id: Some(first),
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
         ];
 

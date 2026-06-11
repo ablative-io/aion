@@ -540,6 +540,19 @@ async fn queried_crash_recovery_matches_unqueried_uncrashed_control() -> TestRes
     Ok(())
 }
 
+/// Real content-hash version of a single-module fixture package, in the
+/// durable textual form recorded on start events. Synthesized histories
+/// must pin the version the engine actually loads or recovery refuses them.
+fn fixture_version(
+    module: &str,
+    beam: &[u8],
+) -> Result<aion_core::PackageVersion, Box<dyn std::error::Error>> {
+    let beams = BeamSet::new(vec![BeamModule::new(module, beam)])?;
+    Ok(aion_core::PackageVersion::new(
+        aion_package::content_hash(&beams).to_string(),
+    ))
+}
+
 /// Synthesize the crash-window parent history: `WorkflowStarted` plus one
 /// recorded `ChildWorkflowStarted` for `child_workflow_id`, nothing else.
 async fn synthesize_parent_with_recorded_spawn(
@@ -564,6 +577,7 @@ async fn synthesize_parent_with_recorded_spawn(
                     input: parent_input()?,
                     run_id: parent_run_id.clone(),
                     parent_run_id: None,
+                    package_version: fixture_version(PLAIN_PARENT_MODULE, PLAIN_PARENT_BEAM)?,
                 },
                 Event::ChildWorkflowStarted {
                     envelope: EventEnvelope {
@@ -574,6 +588,7 @@ async fn synthesize_parent_with_recorded_spawn(
                     child_workflow_id: child_workflow_id.clone(),
                     workflow_type: CHILD_MODULE.to_owned(),
                     input: Payload::new(ContentType::Json, br#""child-input""#.to_vec()),
+                    package_version: fixture_version(CHILD_MODULE, CHILD_BEAM)?,
                 },
             ],
             0,
@@ -604,6 +619,7 @@ async fn synthesize_completed_child(
                     input: Payload::new(ContentType::Json, br#""child-input""#.to_vec()),
                     run_id: RunId::new_v4(),
                     parent_run_id: None,
+                    package_version: fixture_version(CHILD_MODULE, CHILD_BEAM)?,
                 },
                 Event::WorkflowCompleted {
                     envelope: EventEnvelope {
@@ -879,6 +895,7 @@ async fn synthesize_child_mid_continue_as_new(
                     input: Payload::new(ContentType::Json, br#""child-input""#.to_vec()),
                     run_id: first_run.clone(),
                     parent_run_id: None,
+                    package_version: fixture_version(CHILD_MODULE, CHILD_BEAM)?,
                 },
                 Event::WorkflowContinuedAsNew {
                     envelope: EventEnvelope {
@@ -983,18 +1000,17 @@ async fn can_replacement_sweep_starts_the_successor_run_at_startup() -> TestResu
     Ok(())
 }
 
-// --- F3: post-record spawn failure is never workflow-visible ------------------
+// --- D1: an unloaded child type fails before anything is recorded -----------
 
-/// F3: `spawn_child` records `ChildWorkflowStarted` and only then starts the
-/// child, so a start failure after the record (here: the child type is never
-/// loaded) must stay an engine-internal obligation. The NIF returns the
-/// recorded child id and the parent completes; the failed start is retried in
-/// the background until the epoch ends. Before the fix `spawn_child` returned
-/// `{error, <<"child_spawn:...">>}` and the fixture's badmatch failed the
-/// workflow — the exact live-vs-replay branch divergence F3 forbids (replay
-/// resolves the spawn from the recorded event as success).
+/// Durable version pinning (#62 D1) resolves the child's package version at
+/// record time, so a child type with no loaded version fails the spawn
+/// *before* `ChildWorkflowStarted` exists: workflow code observes a typed
+/// `{error, _}` and the parent history records no child at all. Pre-record
+/// failures are replay-safe (nothing durable exists to diverge from); the F3
+/// invariant — post-record start failures are never workflow-visible — now
+/// applies strictly to failures after a successful versioned record.
 #[tokio::test]
-async fn post_record_spawn_failure_is_not_workflow_visible() -> TestResult {
+async fn unloaded_child_type_fails_before_recording() -> TestResult {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
@@ -1014,30 +1030,26 @@ async fn post_record_spawn_failure_is_not_workflow_visible() -> TestResult {
         .await?;
     let (parent_workflow_id, parent_run_id) = start_parent(&engine, PLAIN_PARENT_MODULE).await?;
 
-    // The parent completes normally with the recorded child id — the start
-    // failure never reached workflow code.
+    // The fixture matches `{error, Reason}` and completes with the reason,
+    // so a completed parent proves the error was workflow-visible and typed.
     let result = engine
         .result(&parent_workflow_id, &parent_run_id)
         .await?
-        .map_err(|error| format!("post-record spawn failure was workflow-visible: {error:?}"))?;
-    let parent_history = store.read_history(&parent_workflow_id).await?;
-    let recorded_children = child_started_ids(&parent_history);
-    assert_eq!(
-        recorded_children.len(),
-        1,
-        "exactly one ChildWorkflowStarted must be recorded: {parent_history:#?}"
-    );
-    assert_eq!(
-        result_json(&result)?,
-        json!(recorded_children[0].to_string()),
-        "the NIF must return the recorded child id"
+        .map_err(|error| format!("unloaded child type must fail the spawn as data: {error:?}"))?;
+    let reason = result_json(&result)?;
+    let reason_text = reason
+        .as_str()
+        .ok_or_else(|| format!("expected error reason string, got {reason}"))?;
+    assert!(
+        reason_text.contains("child_workflow_type_not_loaded"),
+        "the spawn error must name the resolution failure: {reason_text}"
     );
 
-    // The unloadable child was never started, and shutdown closes the epoch
-    // with the spawn-recovery task still armed (abort + await, F4).
+    // Nothing durable: no ChildWorkflowStarted in the parent history.
+    let parent_history = store.read_history(&parent_workflow_id).await?;
     assert!(
-        store.read_history(&recorded_children[0]).await?.is_empty(),
-        "an unloadable child type must not produce child history"
+        child_started_ids(&parent_history).is_empty(),
+        "an unresolvable child type must record nothing: {parent_history:#?}"
     );
     engine.shutdown()?;
     Ok(())

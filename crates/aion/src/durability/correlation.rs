@@ -203,6 +203,7 @@ mod tests {
             child_workflow_id: WorkflowId::new(Uuid::from_u128(child)),
             workflow_type: "child".to_owned(),
             input: payload()?,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 

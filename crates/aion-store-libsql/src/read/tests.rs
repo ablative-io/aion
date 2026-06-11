@@ -511,6 +511,7 @@ fn workflow_started_at(
         input: payload("input"),
         run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
         parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     }
 }
 
@@ -558,6 +559,7 @@ fn child_workflow_started(
         child_workflow_id: child.clone(),
         workflow_type: workflow_type.to_owned(),
         input: payload("child-input"),
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     }
 }
 

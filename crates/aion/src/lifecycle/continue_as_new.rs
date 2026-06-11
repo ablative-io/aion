@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use aion_core::{ActivityId, Event, Payload, RunId, SearchAttributeSchema, WorkflowId};
-use aion_package::ContentHash;
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
@@ -71,11 +70,7 @@ pub async fn continue_as_new(
             ),
         });
     }
-    validate_replacement_workflow_type(
-        context.loaded_workflows,
-        workflow_type,
-        handle.loaded_version(),
-    )?;
+    validate_replacement_workflow_type(context.loaded_workflows, workflow_type)?;
 
     {
         let recorder = handle.recorder();
@@ -121,7 +116,10 @@ pub async fn continue_as_new(
         StartWorkflowOptions {
             workflow_id: Some(id.clone()),
             parent_run_id: Some(run.clone()),
-            loaded_version: Some(handle.loaded_version().clone()),
+            // D1: continue-as-new is the upgrade path for long-lived
+            // workflows — the successor resolves the latest loaded version
+            // at record time and pins it durably in its own WorkflowStarted.
+            loaded_version: None,
             // Attributes already recorded in this workflow's history carry into
             // the replacement run's projection; nothing new is recorded here.
             search_attributes: std::collections::HashMap::new(),
@@ -222,10 +220,9 @@ fn registered_handle(
 fn validate_replacement_workflow_type(
     loaded_workflows: &LoadedWorkflows,
     workflow_type: &str,
-    loaded_version: &ContentHash,
 ) -> Result<(), EngineError> {
     loaded_workflows
-        .get(workflow_type, loaded_version)
+        .latest(workflow_type)
         .ok_or_else(|| EngineError::WorkflowNotFound {
             workflow_type: workflow_type.to_owned(),
         })
@@ -307,9 +304,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let pid = runtime.spawn_test_process_with_trap_exit(true)?;
@@ -412,6 +413,7 @@ mod tests {
                     aion_core::WorkflowId::new_v4(),
                     "fulfillment".to_owned(),
                     payload("child")?,
+                    aion_core::PackageVersion::new("a".repeat(64)),
                 )
                 .await?;
         }
@@ -475,8 +477,8 @@ mod tests {
         assert_eq!(new_handle.workflow_type(), "checkout");
         assert_eq!(
             new_handle.loaded_version(),
-            &ContentHash::from_bytes([3; 32]),
-            "replacement must use the old run's loaded version, not latest"
+            &ContentHash::from_bytes([4; 32]),
+            "the continue-as-new successor must take the latest loaded version (D1)"
         );
         assert_eq!(active.registry.get(&old_workflow_id, &old_run_id)?, None);
         assert_eq!(

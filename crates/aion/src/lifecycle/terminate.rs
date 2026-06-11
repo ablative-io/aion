@@ -212,9 +212,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let pid = runtime.spawn_test_process_with_trap_exit(true)?;

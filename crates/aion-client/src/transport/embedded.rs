@@ -573,9 +573,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 Utc::now(),
-                String::from("checkout"),
-                Payload::from_json(&serde_json::json!({ "cart": [] }))?,
-                RunId::new(uuid::Uuid::from_u128(7)),
+                aion::durability::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: Payload::from_json(&serde_json::json!({ "cart": [] }))?,
+                    run_id: RunId::new(uuid::Uuid::from_u128(7)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         for seq in 2..=3 {

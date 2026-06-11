@@ -138,6 +138,7 @@ pub async fn start_workflow_with_options(
                 input: input.clone(),
                 run_id: run_id.clone(),
                 parent_run_id: options.parent_run_id,
+                package_version: crate::loader::package_version_of(loaded.version()),
             },
             options.search_attributes,
             &context.search_attribute_schema,

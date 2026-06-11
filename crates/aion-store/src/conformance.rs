@@ -641,6 +641,7 @@ fn workflow_started_with_run(
         input: payload("input")?,
         run_id: run_id.clone(),
         parent_run_id,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
 }
 
@@ -656,6 +657,7 @@ fn workflow_started_at(
         input: payload("input")?,
         run_id: run_id(u128::from(seq)),
         parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
 }
 

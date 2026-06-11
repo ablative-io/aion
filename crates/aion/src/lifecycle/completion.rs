@@ -200,7 +200,9 @@ async fn start_continuation_replacement(
         StartWorkflowOptions {
             workflow_id: Some(handle.workflow_id().clone()),
             parent_run_id: Some(parent_run_id),
-            loaded_version: Some(handle.loaded_version().clone()),
+            // D1: the continue-as-new successor resolves the latest loaded
+            // version at record time, identically to the startup sweep.
+            loaded_version: None,
             // Recorded attributes carry into the replacement run's projection.
             search_attributes: std::collections::HashMap::new(),
         },
@@ -325,9 +327,13 @@ mod tests {
         recorder
             .record_workflow_started(
                 chrono::Utc::now(),
-                "checkout".to_owned(),
-                payload("input")?,
-                run_id.clone(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "checkout".to_owned(),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
             )
             .await?;
         let handle = WorkflowHandle::new(WorkflowHandleParts {
@@ -426,6 +432,7 @@ mod tests {
                 input: payload("first")?,
                 run_id: old_run_id.clone(),
                 parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2),
@@ -439,6 +446,7 @@ mod tests {
                 input,
                 run_id: new_run_id.clone(),
                 parent_run_id: Some(old_run_id.clone()),
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowCompleted {
                 envelope: envelope(4),

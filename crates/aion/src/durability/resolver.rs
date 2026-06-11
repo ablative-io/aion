@@ -435,6 +435,7 @@ mod tests {
             child_workflow_id: child_workflow_id(),
             workflow_type: "child".to_owned(),
             input: payload("child-input")?,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 

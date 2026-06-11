@@ -29,9 +29,13 @@ async fn workflow_search_attributes_are_queryable_through_visibility_store()
     matching
         .record_workflow_started(
             recorded_at(1),
-            String::from("checkout"),
-            payload("input")?,
-            run_id.clone(),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: String::from("checkout"),
+                input: payload("input")?,
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     matching
@@ -47,9 +51,13 @@ async fn workflow_search_attributes_are_queryable_through_visibility_store()
     other
         .record_workflow_started(
             recorded_at(3),
-            String::from("support"),
-            payload("other")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(20)),
+            aion::durability::WorkflowStartRecord {
+                workflow_type: String::from("support"),
+                input: payload("other")?,
+                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(20)),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     other

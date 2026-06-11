@@ -7,7 +7,7 @@ use ts_rs::{Config, TS};
 
 use crate::{
     ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType, Event, EventEnvelope,
-    OverlapPolicy, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
+    OverlapPolicy, PackageVersion, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
     SearchAttributeValue, TimerId, TriggerSpec, WorkflowError, WorkflowFilter, WorkflowId,
     WorkflowStatus, WorkflowSummary,
 };
@@ -39,6 +39,7 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
 
     push_type::<WorkflowId>(&config, &mut output)?;
     push_type::<RunId>(&config, &mut output)?;
+    push_type::<PackageVersion>(&config, &mut output)?;
     push_type::<ScheduleId>(&config, &mut output)?;
     push_type::<ActivityId>(&config, &mut output)?;
     push_type::<TimerId>(&config, &mut output)?;

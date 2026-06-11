@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use aion_core::{Payload, WorkflowId};
+use aion_core::{PackageVersion, Payload, WorkflowId};
 
 use crate::engine_seam::ChildWorkflowSpawnRequest;
 use crate::runtime::nif_child_engine::ChildNifBridge;
@@ -27,6 +27,8 @@ pub(super) struct RecordedChildSpawn {
     pub(super) workflow_type: String,
     /// Recorded child input payload.
     pub(super) input: Payload,
+    /// Recorded child package version.
+    pub(super) package_version: PackageVersion,
 }
 
 /// Arm a background task that starts the recorded child until it exists.
@@ -84,6 +86,7 @@ async fn run_spawn_retry(bridge: &Arc<ChildNifBridge>, spawn: &RecordedChildSpaw
             child_workflow_id: spawn.child_workflow_id.clone(),
             workflow_type: spawn.workflow_type.clone(),
             input: spawn.input.clone(),
+            package_version: spawn.package_version.clone(),
         };
         match bridge
             .start_child_under_recorded_id(&spawn.parent_workflow_id, request)
@@ -189,6 +192,7 @@ mod tests {
             child_workflow_id: child.clone(),
             workflow_type: "never_loaded_child".to_owned(),
             input: Payload::new(ContentType::Json, br#""input""#.to_vec()),
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         }
     }
 
@@ -330,6 +334,7 @@ mod tests {
                 child_workflow_id: child.clone(),
                 workflow_type: "never_loaded_child".to_owned(),
                 input: Payload::new(ContentType::Json, br#""input""#.to_vec()),
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
         ));
 
@@ -417,6 +422,7 @@ mod tests {
             input: Payload::new(ContentType::Json, br#""input""#.to_vec()),
             run_id: aion_core::RunId::new_v4(),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         };
         bridge
             .store()

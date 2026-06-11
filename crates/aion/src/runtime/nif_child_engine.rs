@@ -119,6 +119,17 @@ impl ChildNifBridge {
         self.watch_backoff
     }
 
+    /// Latest loaded package version for a child workflow type, in its
+    /// durable textual form, resolved at child-record time (D1).
+    pub(crate) fn latest_package_version(
+        &self,
+        workflow_type: &str,
+    ) -> Option<aion_core::PackageVersion> {
+        self.loaded_workflows
+            .latest(workflow_type)
+            .map(|loaded| crate::loader::package_version_of(loaded.version()))
+    }
+
     /// Abort every child-terminal watcher armed by an exited parent pid.
     pub(crate) fn abort_child_terminal_watches_for_parent(&self, parent_pid: u64) {
         self.child_tasks.abort_watches_for_parent(parent_pid);
@@ -152,6 +163,8 @@ impl ChildNifBridge {
         // follows the execution tree.
         let parent_history = self.store.read_history(parent_workflow_id).await?;
         let inherited = aion_core::search_attributes_from_events(&parent_history);
+        let loaded_version =
+            crate::loader::parse_package_version(&request.workflow_type, &request.package_version)?;
         start_workflow_with_options(
             StartWorkflowContext {
                 store: Arc::clone(&self.store),
@@ -171,8 +184,10 @@ impl ChildNifBridge {
             StartWorkflowOptions {
                 // Record-then-spawn (#56): the parent already recorded
                 // ChildWorkflowStarted under this pre-allocated id, so the
-                // child must start under exactly this identity.
+                // child must start under exactly this identity — and on
+                // exactly the recorded package version (D1).
                 workflow_id: Some(request.child_workflow_id),
+                loaded_version: Some(loaded_version),
                 search_attributes: inherited,
                 ..StartWorkflowOptions::default()
             },
@@ -330,6 +345,7 @@ fn record_child_event(
                     child_workflow_id,
                     workflow_type,
                     input,
+                    package_version,
                     envelope,
                 } => {
                     recorder
@@ -338,6 +354,7 @@ fn record_child_event(
                             child_workflow_id,
                             workflow_type,
                             input,
+                            package_version,
                         )
                         .await
                 }

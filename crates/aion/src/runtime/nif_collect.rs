@@ -699,6 +699,7 @@ mod tests {
                 input,
                 run_id,
                 parent_run_id,
+                package_version,
                 ..
             } => Event::WorkflowStarted {
                 envelope,
@@ -706,6 +707,7 @@ mod tests {
                 input,
                 run_id,
                 parent_run_id,
+                package_version,
             },
             Event::ActivityScheduled {
                 activity_id,
@@ -765,6 +767,7 @@ mod tests {
             input: Payload::from_json(&json!({ "fixture": "input" }))?,
             run_id: run_id.clone(),
             parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         })
     }
 

@@ -332,6 +332,15 @@ pub(crate) const fn schedule_coordinator_workflow_type() -> &'static str {
     "aion.schedule_coordinator"
 }
 
+/// Reserved package version recorded for the virtual schedule coordinator.
+///
+/// The coordinator is an engine-internal history with no loaded package or
+/// runtime process; recovery special-cases it before any version resolution,
+/// so this sentinel is never parsed as a content hash.
+pub(crate) fn schedule_coordinator_package_version() -> aion_core::PackageVersion {
+    aion_core::PackageVersion::new("aion:schedule-coordinator")
+}
+
 fn schedule_event_envelope(recorded_at: DateTime<Utc>) -> EventEnvelope {
     EventEnvelope {
         seq: 0,

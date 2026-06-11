@@ -1,6 +1,37 @@
 //! Workflow package loading surfaces.
 
+use aion_core::PackageVersion;
+use aion_package::ContentHash;
+
+use crate::error::EngineError;
+
 /// Package loading and workflow entry discovery.
 pub mod load;
 
 pub use load::{LoadedWorkflow, LoadedWorkflows, load_package};
+
+/// Canonical durable form of a loaded package version.
+#[must_use]
+pub fn package_version_of(hash: &ContentHash) -> PackageVersion {
+    PackageVersion::new(hash.to_string())
+}
+
+/// Parses a durably recorded package version back to a typed content hash.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Load`] naming the workflow type and the malformed
+/// version text when the recorded value is not a canonical content hash.
+pub fn parse_package_version(
+    workflow_type: &str,
+    version: &PackageVersion,
+) -> Result<ContentHash, EngineError> {
+    version
+        .as_str()
+        .parse::<ContentHash>()
+        .map_err(|error| EngineError::Load {
+            reason: format!(
+                "workflow `{workflow_type}` recorded package version `{version}` that is not a canonical content hash: {error}"
+            ),
+        })
+}

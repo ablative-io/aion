@@ -5,6 +5,8 @@ export type WorkflowId = string;
 
 export type RunId = string;
 
+export type PackageVersion = string;
+
 export type ScheduleId = string;
 
 export type ActivityId = number;
@@ -175,7 +177,14 @@ run_id: RunId,
  * Parent run that continued as this run, when this start is part of a
  * continue-as-new chain.
  */
-parent_run_id: RunId | null, } } | { "type": "WorkflowCompleted", "data": { 
+parent_run_id: RunId | null, 
+/**
+ * Package version this run was resolved against at record time.
+ *
+ * Recovery and replay resolve workflow code from this recorded
+ * version; they never re-resolve a "latest" version.
+ */
+package_version: PackageVersion, } } | { "type": "WorkflowCompleted", "data": { 
 /**
  * Recording metadata for this event.
  */
@@ -388,7 +397,15 @@ workflow_type: string,
 /**
  * Opaque child workflow input payload.
  */
-input: Payload, } } | { "type": "ChildWorkflowCompleted", "data": { 
+input: Payload, 
+/**
+ * Package version resolved for the child at record time.
+ *
+ * The crash-repair sweep and the child's own start use exactly this
+ * recorded version, so the crash path resolves identically to the
+ * crash-free path.
+ */
+package_version: PackageVersion, } } | { "type": "ChildWorkflowCompleted", "data": { 
 /**
  * Recording metadata for this event.
  */

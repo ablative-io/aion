@@ -524,6 +524,7 @@ mod tests {
                 "input": payload(label)?,
                 "run_id": uuid::Uuid::from_u128(seq.into()).to_string(),
                 "parent_run_id": null,
+                "package_version": "a".repeat(64),
             }
         }))
     }

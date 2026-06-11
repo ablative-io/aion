@@ -122,6 +122,7 @@ async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn st
             input: recorded_input,
             run_id: _,
             parent_run_id: None,
+            ..
         } => {
             assert_eq!(envelope.seq, 1);
             assert_eq!(&envelope.workflow_id, &active[0]);
@@ -287,6 +288,7 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
             input: recorded_input,
             run_id: recorded_run_id,
             parent_run_id: None,
+            ..
         } => {
             assert_eq!(envelope.seq, 1);
             assert_eq!(&envelope.workflow_id, handle.workflow_id());
@@ -317,9 +319,13 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
     recorder
         .record_workflow_started(
             chrono::Utc::now(),
-            "checkout".to_owned(),
-            payload("first")?,
-            aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            crate::durability::WorkflowStartRecord {
+                workflow_type: "checkout".to_owned(),
+                input: payload("first")?,
+                run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
         )
         .await?;
     recorder

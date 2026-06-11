@@ -388,6 +388,7 @@ mod tests {
                 input: payload("input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
+                package_version: crate::PackageVersion::new("a".repeat(64)),
             },
             Event::SearchAttributesUpdated {
                 envelope: envelope(2, &workflow_id),
@@ -431,6 +432,7 @@ mod tests {
                 input: payload("input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
+                package_version: crate::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowCompleted {
                 envelope: envelope(2, &workflow_id),
@@ -461,6 +463,7 @@ mod tests {
                 input: payload("input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
+                package_version: crate::PackageVersion::new("a".repeat(64)),
             },
             Event::ScheduleTriggered {
                 envelope: envelope(2, &workflow_id),
@@ -490,6 +493,7 @@ mod tests {
                 input: payload("input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
+                package_version: crate::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2, &workflow_id),
@@ -520,6 +524,7 @@ mod tests {
                 input: payload("input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: None,
+                package_version: crate::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2, &workflow_id),
@@ -533,6 +538,7 @@ mod tests {
                 input: payload("continued-input")?,
                 run_id: RunId::new(uuid::Uuid::from_u128(1)),
                 parent_run_id: Some(parent_run_id),
+                package_version: crate::PackageVersion::new("a".repeat(64)),
             },
         ];
 

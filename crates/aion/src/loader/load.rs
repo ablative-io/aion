@@ -123,33 +123,6 @@ impl LoadedWorkflows {
         self.get(workflow_type, version)
     }
 
-    /// Look up the only loaded version for a workflow type.
-    ///
-    /// Recovery uses this only when durable history predates explicit package-version
-    /// metadata. Refusing ambiguous multi-version state prevents silently selecting
-    /// an arbitrary latest package during crash recovery.
-    ///
-    /// # Errors
-    ///
-    /// Returns a human-readable load error when the workflow type is absent or has
-    /// more than one loaded version.
-    pub fn single_loaded(&self, workflow_type: &str) -> Result<&LoadedWorkflow, String> {
-        let versions = self.by_type.get(workflow_type).ok_or_else(|| {
-            format!("workflow `{workflow_type}` is not loaded for active workflow recovery")
-        })?;
-        let [version] = versions.as_slice() else {
-            return Err(format!(
-                "workflow `{workflow_type}` has {} loaded versions; active recovery requires an exact persisted package version",
-                versions.len()
-            ));
-        };
-        self.get(workflow_type, version).ok_or_else(|| {
-            format!(
-                "workflow `{workflow_type}` version `{version}` is indexed by type but missing from the loaded package table"
-            )
-        })
-    }
-
     /// Iterate all retained loaded workflow records.
     pub fn iter(&self) -> impl Iterator<Item = &LoadedWorkflow> {
         self.by_version.values()

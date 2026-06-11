@@ -25,8 +25,8 @@ use crate::{
 };
 
 use super::api_schedule::{
-    schedule_coordinator_run_id, schedule_coordinator_workflow_id,
-    schedule_coordinator_workflow_type,
+    schedule_coordinator_package_version, schedule_coordinator_run_id,
+    schedule_coordinator_workflow_id, schedule_coordinator_workflow_type,
 };
 
 pub(super) async fn recover_timers_on_startup(
@@ -91,9 +91,13 @@ async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<()
     recorder
         .record_workflow_started(
             Utc::now(),
-            schedule_coordinator_workflow_type().to_owned(),
-            input,
-            run_id,
+            crate::durability::WorkflowStartRecord {
+                workflow_type: schedule_coordinator_workflow_type().to_owned(),
+                input,
+                run_id,
+                parent_run_id: None,
+                package_version: schedule_coordinator_package_version(),
+            },
         )
         .await?;
     Ok(())
@@ -104,8 +108,6 @@ async fn repopulate_active_workflows(
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
     let store = &context.store;
-    let visibility_store = &context.visibility_store;
-    let runtime = &context.runtime;
     let loaded_workflows = context.loaded_workflows;
     let registry = &context.registry;
     let supervision = &context.supervision;
@@ -123,13 +125,28 @@ async fn repopulate_active_workflows(
         }
         supervision.ensure_type_supervisor(workflow_type.clone())?;
 
-        let recovered = recover_active_workflow(
+        // Per-workflow isolation (#62): a run whose pinned package version
+        // (or replay metadata) cannot be resolved fails its own recovery with
+        // a typed error, logged here; it must not abort the engine build or
+        // other workflows' recovery.
+        let recovered = match recover_active_workflow(
             recovery,
             &workflow_id,
             &workflow_type,
             &history,
             loaded_workflows,
-        )?;
+        ) {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                tracing::error!(
+                    workflow_id = %workflow_id,
+                    workflow_type = %workflow_type,
+                    error = %error,
+                    "active workflow failed startup recovery; skipping it and continuing"
+                );
+                continue;
+            }
+        };
         let history_head = history.last().map(Event::seq).unwrap_or_default();
         match recovered {
             ActiveWorkflowRecovery::Resident {
@@ -137,57 +154,20 @@ async fn repopulate_active_workflows(
                 loaded_version,
                 pid,
             } => {
-                let recorder =
-                    Recorder::resume_at(workflow_id.clone(), Arc::clone(store), history_head)
-                        .with_visibility(run_id.clone(), Arc::clone(visibility_store));
-                let completion = CompletionNotifier::new();
-                let handle = WorkflowHandle::new(WorkflowHandleParts {
-                    workflow_id: workflow_id.clone(),
-                    run_id: run_id.clone(),
-                    pid,
-                    workflow_type: workflow_type.clone(),
-                    loaded_version,
-                    cached_status: projected_status,
-                    residency: HandleResidency::Resident,
-                    recorder,
-                    completion,
-                });
-                if let Err(error) = registry
-                    .insert((workflow_id.clone(), run_id.clone()), handle.clone())
-                    .and_then(|_| registry.reconcile(&workflow_id, &run_id, &history))
-                    .and_then(|_| {
-                        supervision
-                            .place_workflow(workflow_type.clone(), pid)
-                            .map(|_| ())
-                    })
-                    .and_then(|()| {
-                        install_recovered_completion_monitor(
-                            RecoveredMonitorParts {
-                                store: Arc::clone(store),
-                                visibility_store: Arc::clone(visibility_store),
-                                runtime: Arc::clone(runtime),
-                                registry: Arc::clone(registry),
-                                loaded_workflows: Arc::new(loaded_workflows.clone()),
-                                supervision: Arc::clone(supervision),
-                                search_attribute_schema: Arc::clone(
-                                    &context.search_attribute_schema,
-                                ),
-                            },
-                            &handle,
-                        )
-                    })
-                {
-                    rollback_recovered_resident(
-                        runtime,
-                        registry,
-                        &workflow_id,
-                        &run_id,
+                register_recovered_resident(
+                    context,
+                    RecoveredResident {
+                        workflow_id: &workflow_id,
+                        workflow_type: &workflow_type,
+                        history: &history,
+                        history_head,
+                        projected_status,
+                        run_id,
+                        loaded_version,
                         pid,
-                        &error,
-                    );
-                    return Err(error);
-                }
-                sweep_recorded_children(context, &workflow_id, &run_id, &history).await?;
+                    },
+                )
+                .await?;
             }
             ActiveWorkflowRecovery::ScheduleCoordinator { run_id } => {
                 registry.reconcile(&workflow_id, &run_id, &history)?;
@@ -196,6 +176,90 @@ async fn repopulate_active_workflows(
     }
 
     Ok(())
+}
+
+/// One resident workflow recovered by the AD seam, ready for registration.
+struct RecoveredResident<'a> {
+    workflow_id: &'a aion_core::WorkflowId,
+    workflow_type: &'a str,
+    history: &'a [Event],
+    history_head: u64,
+    projected_status: WorkflowStatus,
+    run_id: RunId,
+    loaded_version: aion_package::ContentHash,
+    pid: crate::Pid,
+}
+
+/// Register one recovered resident process: recorder, registry, supervision,
+/// completion monitor, and the recorded-children crash-window sweep.
+async fn register_recovered_resident(
+    context: &StartupRecoveryContext<'_>,
+    resident: RecoveredResident<'_>,
+) -> Result<(), EngineError> {
+    let RecoveredResident {
+        workflow_id,
+        workflow_type,
+        history,
+        history_head,
+        projected_status,
+        run_id,
+        loaded_version,
+        pid,
+    } = resident;
+    let recorder = Recorder::resume_at(
+        workflow_id.clone(),
+        Arc::clone(&context.store),
+        history_head,
+    )
+    .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
+    let completion = CompletionNotifier::new();
+    let handle = WorkflowHandle::new(WorkflowHandleParts {
+        workflow_id: workflow_id.clone(),
+        run_id: run_id.clone(),
+        pid,
+        workflow_type: workflow_type.to_owned(),
+        loaded_version,
+        cached_status: projected_status,
+        residency: HandleResidency::Resident,
+        recorder,
+        completion,
+    });
+    if let Err(error) = context
+        .registry
+        .insert((workflow_id.clone(), run_id.clone()), handle.clone())
+        .and_then(|_| context.registry.reconcile(workflow_id, &run_id, history))
+        .and_then(|_| {
+            context
+                .supervision
+                .place_workflow(workflow_type.to_owned(), pid)
+                .map(|_| ())
+        })
+        .and_then(|()| {
+            install_recovered_completion_monitor(
+                RecoveredMonitorParts {
+                    store: Arc::clone(&context.store),
+                    visibility_store: Arc::clone(&context.visibility_store),
+                    runtime: Arc::clone(&context.runtime),
+                    registry: Arc::clone(&context.registry),
+                    loaded_workflows: Arc::new(context.loaded_workflows.clone()),
+                    supervision: Arc::clone(&context.supervision),
+                    search_attribute_schema: Arc::clone(&context.search_attribute_schema),
+                },
+                &handle,
+            )
+        })
+    {
+        rollback_recovered_resident(
+            &context.runtime,
+            &context.registry,
+            workflow_id,
+            &run_id,
+            pid,
+            &error,
+        );
+        return Err(error);
+    }
+    sweep_recorded_children(context, workflow_id, &run_id, history).await
 }
 
 /// Start every recorded-but-never-spawned child of a recovered parent (#56).
@@ -223,6 +287,7 @@ async fn sweep_recorded_children(
             child_workflow_id,
             workflow_type,
             input,
+            package_version,
             ..
         } = event
         else {
@@ -269,6 +334,12 @@ async fn sweep_recorded_children(
             input.clone(),
             StartWorkflowOptions {
                 workflow_id: Some(child_workflow_id.clone()),
+                // The crash path resolves exactly the version the parent
+                // recorded at spawn-record time (D1), never a fresh "latest".
+                loaded_version: Some(crate::loader::parse_package_version(
+                    workflow_type,
+                    package_version,
+                )?),
                 ..StartWorkflowOptions::default()
             },
         )
@@ -711,6 +782,7 @@ mod tests {
                 input: Payload::from_json(&json!({"first": true}))?,
                 run_id: first_run.clone(),
                 parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
             },
             Event::WorkflowContinuedAsNew {
                 envelope: envelope(2),
@@ -726,6 +798,7 @@ mod tests {
             input,
             run_id: second_run,
             parent_run_id: Some(first_run.clone()),
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
         });
         Ok((base, full, first_run))
     }

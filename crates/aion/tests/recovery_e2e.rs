@@ -65,6 +65,7 @@ async fn interrupted_workflow_recovers_and_completes() -> Result<(), Box<dyn std
                 input,
                 run_id: run_id.clone(),
                 parent_run_id: None,
+                package_version: aion_core::PackageVersion::new(package.content_hash().to_string()),
             }],
             0,
         )
