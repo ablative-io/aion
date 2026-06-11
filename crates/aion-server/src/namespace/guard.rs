@@ -1,7 +1,7 @@
 //! Adapter-boundary namespace enforcement.
 
 use aion::EventFilter;
-use aion_core::{RunId, WorkflowFilter, WorkflowId};
+use aion_core::{RunId, ScheduleId, WorkflowFilter, WorkflowId};
 use aion_proto::{
     FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
     ProtoCountWorkflowsRequest, ProtoCreateScheduleRequest, ProtoDescribeWorkflowRequest,
@@ -78,17 +78,17 @@ pub enum NamespaceOperation<'a> {
     /// Create schedule request.
     CreateSchedule(&'a ProtoCreateScheduleRequest),
     /// Update schedule request.
-    UpdateSchedule(&'a ProtoUpdateScheduleRequest),
+    UpdateSchedule(&'a ProtoUpdateScheduleRequest, ScheduleTarget<'a>),
     /// Pause schedule request.
-    PauseSchedule(&'a ProtoScheduleIdRequest),
+    PauseSchedule(&'a ProtoScheduleIdRequest, ScheduleTarget<'a>),
     /// Resume schedule request.
-    ResumeSchedule(&'a ProtoScheduleIdRequest),
+    ResumeSchedule(&'a ProtoScheduleIdRequest, ScheduleTarget<'a>),
     /// Delete schedule request.
-    DeleteSchedule(&'a ProtoScheduleIdRequest),
+    DeleteSchedule(&'a ProtoScheduleIdRequest, ScheduleTarget<'a>),
     /// List schedules request.
     ListSchedules(&'a ProtoListSchedulesRequest),
     /// Describe schedule request.
-    DescribeSchedule(&'a ProtoScheduleIdRequest),
+    DescribeSchedule(&'a ProtoScheduleIdRequest, ScheduleTarget<'a>),
     /// Event subscription request.
     Subscribe(SubscriptionScope<'a>, &'a EventFilter),
     /// Worker registration request.
@@ -149,26 +149,38 @@ impl<'a> NamespaceOperation<'a> {
 
     /// Create an update-schedule operation descriptor.
     #[must_use]
-    pub const fn update_schedule(request: &'a ProtoUpdateScheduleRequest) -> Self {
-        Self::UpdateSchedule(request)
+    pub const fn update_schedule(
+        request: &'a ProtoUpdateScheduleRequest,
+        target: ScheduleTarget<'a>,
+    ) -> Self {
+        Self::UpdateSchedule(request, target)
     }
 
     /// Create a pause-schedule operation descriptor.
     #[must_use]
-    pub const fn pause_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
-        Self::PauseSchedule(request)
+    pub const fn pause_schedule(
+        request: &'a ProtoScheduleIdRequest,
+        target: ScheduleTarget<'a>,
+    ) -> Self {
+        Self::PauseSchedule(request, target)
     }
 
     /// Create a resume-schedule operation descriptor.
     #[must_use]
-    pub const fn resume_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
-        Self::ResumeSchedule(request)
+    pub const fn resume_schedule(
+        request: &'a ProtoScheduleIdRequest,
+        target: ScheduleTarget<'a>,
+    ) -> Self {
+        Self::ResumeSchedule(request, target)
     }
 
     /// Create a delete-schedule operation descriptor.
     #[must_use]
-    pub const fn delete_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
-        Self::DeleteSchedule(request)
+    pub const fn delete_schedule(
+        request: &'a ProtoScheduleIdRequest,
+        target: ScheduleTarget<'a>,
+    ) -> Self {
+        Self::DeleteSchedule(request, target)
     }
 
     /// Create a list-schedules operation descriptor.
@@ -179,8 +191,11 @@ impl<'a> NamespaceOperation<'a> {
 
     /// Create a describe-schedule operation descriptor.
     #[must_use]
-    pub const fn describe_schedule(request: &'a ProtoScheduleIdRequest) -> Self {
-        Self::DescribeSchedule(request)
+    pub const fn describe_schedule(
+        request: &'a ProtoScheduleIdRequest,
+        target: ScheduleTarget<'a>,
+    ) -> Self {
+        Self::DescribeSchedule(request, target)
     }
 
     /// Create a subscribe operation descriptor.
@@ -205,11 +220,11 @@ impl<'a> NamespaceOperation<'a> {
             Self::CountWorkflows(request) => request.namespace.as_str(),
             Self::Describe(request, _target) => request.namespace.as_str(),
             Self::CreateSchedule(request) => request.namespace.as_str(),
-            Self::UpdateSchedule(request) => request.namespace.as_str(),
-            Self::PauseSchedule(request)
-            | Self::ResumeSchedule(request)
-            | Self::DeleteSchedule(request)
-            | Self::DescribeSchedule(request) => request.namespace.as_str(),
+            Self::UpdateSchedule(request, _target) => request.namespace.as_str(),
+            Self::PauseSchedule(request, _target)
+            | Self::ResumeSchedule(request, _target)
+            | Self::DeleteSchedule(request, _target)
+            | Self::DescribeSchedule(request, _target) => request.namespace.as_str(),
             Self::ListSchedules(request) => request.namespace.as_str(),
             Self::Subscribe(scope, _filter) => scope.namespace(),
             Self::RegisterWorker(request) => request.namespace.as_str(),
@@ -226,19 +241,27 @@ impl<'a> NamespaceOperation<'a> {
             | Self::Query(_, target)
             | Self::Cancel(_, target)
             | Self::Describe(_, target) => target.verify(resolver, authorized_namespace).await,
+            Self::UpdateSchedule(_, target)
+            | Self::PauseSchedule(_, target)
+            | Self::ResumeSchedule(_, target)
+            | Self::DeleteSchedule(_, target)
+            | Self::DescribeSchedule(_, target) => {
+                target.verify(resolver, authorized_namespace).await
+            }
             Self::Subscribe(scope, filter) => {
                 scope.verify(resolver, authorized_namespace, filter).await
             }
+            // CreateSchedule needs no target verification: the schedule id is
+            // server-generated at creation, so a create can never collide with
+            // or probe another tenant's resource; the handler stamps the
+            // authorized namespace into the recorded config. ListSchedules is
+            // grant-checked here and result-filtered in the handler, exactly
+            // like workflow list.
             Self::StartWorkflow(_)
             | Self::ListWorkflows(_, _)
             | Self::CountWorkflows(_)
             | Self::CreateSchedule(_)
-            | Self::UpdateSchedule(_)
-            | Self::PauseSchedule(_)
-            | Self::ResumeSchedule(_)
-            | Self::DeleteSchedule(_)
             | Self::ListSchedules(_)
-            | Self::DescribeSchedule(_)
             | Self::RegisterWorker(_) => Ok(()),
         }
     }
@@ -289,6 +312,36 @@ impl<'a> WorkflowTarget<'a> {
     ) -> Result<(), ServerError> {
         resolver
             .verify_workflow_ownership(namespace, self.workflow_id)
+            .await
+    }
+}
+
+/// Target schedule identifier decoded by a handler before the engine call.
+#[derive(Clone, Copy)]
+pub struct ScheduleTarget<'a> {
+    schedule_id: &'a ScheduleId,
+}
+
+impl<'a> ScheduleTarget<'a> {
+    /// Build a target for operations that identify one schedule.
+    #[must_use]
+    pub const fn schedule(schedule_id: &'a ScheduleId) -> Self {
+        Self { schedule_id }
+    }
+
+    /// Target schedule id.
+    #[must_use]
+    pub const fn schedule_id(&self) -> &ScheduleId {
+        self.schedule_id
+    }
+
+    async fn verify(
+        &self,
+        resolver: &NamespaceResolver,
+        namespace: &str,
+    ) -> Result<(), ServerError> {
+        resolver
+            .verify_schedule_ownership(namespace, self.schedule_id)
             .await
     }
 }
@@ -402,18 +455,27 @@ async fn verify_subscription_filter_target(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    use aion_core::{RunId, WorkflowFilter, WorkflowId};
+    use aion_core::{RunId, ScheduleId, WorkflowFilter, WorkflowId};
     use aion_proto::{
         FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
-        ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoQueryRequest,
-        ProtoRegisterWorker, ProtoSignalRequest, ProtoStartWorkflowRequest,
+        ProtoCreateScheduleRequest, ProtoDescribeWorkflowRequest, ProtoListSchedulesRequest,
+        ProtoListWorkflowsRequest, ProtoQueryRequest, ProtoRegisterWorker, ProtoScheduleIdRequest,
+        ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoUpdateScheduleRequest,
     };
+    use async_trait::async_trait;
 
-    use super::{NamespaceGuard, NamespaceOperation, SubscriptionScope, WorkflowTarget};
+    use super::{
+        NamespaceGuard, NamespaceOperation, ScheduleTarget, SubscriptionScope, WorkflowTarget,
+    };
     use crate::config::NamespaceMode;
-    use crate::namespace::{CallerIdentity, NamespaceResolver, StaticWorkflowNamespaces};
+    use crate::error::ServerError;
+    use crate::namespace::{
+        CallerIdentity, NamespaceResolver, ScheduleNamespaceSource, StaticScheduleNamespaces,
+        StaticWorkflowNamespaces,
+    };
 
     struct RecordingFakeEngine {
         calls: Mutex<Vec<&'static str>>,
@@ -435,9 +497,57 @@ mod tests {
         }
     }
 
+    /// Schedule ownership source that counts every verification consult so
+    /// tests can prove whether the guard reached durable ownership at all:
+    /// ownership misses must consult exactly once per operation, while grant
+    /// denials must short-circuit before any consult.
+    #[derive(Clone)]
+    struct CountingScheduleNamespaces {
+        inner: StaticScheduleNamespaces,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingScheduleNamespaces {
+        fn wrapping(inner: StaticScheduleNamespaces) -> Self {
+            Self {
+                inner,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ScheduleNamespaceSource for CountingScheduleNamespaces {
+        async fn schedule_namespace(
+            &self,
+            schedule_id: &ScheduleId,
+        ) -> Result<Option<String>, ServerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.schedule_namespace(schedule_id).await
+        }
+    }
+
     fn guard_with_ownership(ownership: StaticWorkflowNamespaces) -> NamespaceGuard {
-        let resolver =
-            NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
+        let resolver = NamespaceResolver::authorization_only(
+            NamespaceMode::SharedEngine,
+            ownership,
+            StaticScheduleNamespaces::default(),
+        );
+        NamespaceGuard::new(resolver)
+    }
+
+    fn guard_with_schedule_ownership(
+        schedule_ownership: impl ScheduleNamespaceSource + 'static,
+    ) -> NamespaceGuard {
+        let resolver = NamespaceResolver::authorization_only(
+            NamespaceMode::SharedEngine,
+            StaticWorkflowNamespaces::default(),
+            schedule_ownership,
+        );
         NamespaceGuard::new(resolver)
     }
 
@@ -628,6 +738,138 @@ mod tests {
         Ok(())
     }
 
+    fn schedule_id() -> ScheduleId {
+        ScheduleId::new(uuid::Uuid::from_u128(9))
+    }
+
+    fn schedule_id_request(namespace: &str) -> ProtoScheduleIdRequest {
+        ProtoScheduleIdRequest {
+            namespace: namespace.to_owned(),
+            schedule_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_ownership_misses_are_not_found_and_do_not_call_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let schedule_id = schedule_id();
+        let schedule_ownership = StaticScheduleNamespaces::default();
+        schedule_ownership.record(schedule_id.clone(), "tenant-b")?;
+        let counting = CountingScheduleNamespaces::wrapping(schedule_ownership);
+        // The resolver carries no engine handle at all (`authorization_only`),
+        // so every operation that errors here provably erred before any engine
+        // access could exist.
+        let guard = guard_with_schedule_ownership(counting.clone());
+        let target = ScheduleTarget::schedule(&schedule_id);
+
+        let update = ProtoUpdateScheduleRequest {
+            namespace: String::from("tenant-a"),
+            schedule_id: None,
+            config: None,
+        };
+        let id_request = schedule_id_request("tenant-a");
+
+        let operations = [
+            NamespaceOperation::update_schedule(&update, target),
+            NamespaceOperation::pause_schedule(&id_request, target),
+            NamespaceOperation::resume_schedule(&id_request, target),
+            NamespaceOperation::delete_schedule(&id_request, target),
+            NamespaceOperation::describe_schedule(&id_request, target),
+        ];
+        let operation_count = operations.len();
+
+        for operation in operations {
+            let result = guard.scope(&caller(), &operation).await;
+            // Ownership miss in a granted namespace is NotFound, not
+            // NamespaceDenied: cross-tenant probes must be indistinguishable
+            // from nonexistent schedules.
+            let error = result
+                .err()
+                .map(|error| error.to_wire_error())
+                .ok_or("expected foreign-owned schedule to be rejected")?;
+            assert_eq!(error.code, aion_proto::WireErrorCode::NotFound);
+            assert_eq!(error.message, "schedule not found in namespace tenant-a");
+        }
+        // Durable ownership was consulted exactly once per targeted operation:
+        // the NotFound came from the verification step, not from skipping it.
+        assert_eq!(counting.calls(), operation_count);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ungranted_schedule_operations_are_namespace_denied()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let schedule_id = schedule_id();
+        let schedule_ownership = StaticScheduleNamespaces::default();
+        schedule_ownership.record(schedule_id.clone(), "tenant-b")?;
+        let counting = CountingScheduleNamespaces::wrapping(schedule_ownership);
+        let guard = guard_with_schedule_ownership(counting.clone());
+        let target = ScheduleTarget::schedule(&schedule_id);
+
+        let create = ProtoCreateScheduleRequest {
+            namespace: String::from("tenant-b"),
+            config: None,
+        };
+        let update = ProtoUpdateScheduleRequest {
+            namespace: String::from("tenant-b"),
+            schedule_id: None,
+            config: None,
+        };
+        let id_request = schedule_id_request("tenant-b");
+        let list = ProtoListSchedulesRequest {
+            namespace: String::from("tenant-b"),
+        };
+
+        let operations = [
+            NamespaceOperation::create_schedule(&create),
+            NamespaceOperation::update_schedule(&update, target),
+            NamespaceOperation::pause_schedule(&id_request, target),
+            NamespaceOperation::resume_schedule(&id_request, target),
+            NamespaceOperation::delete_schedule(&id_request, target),
+            NamespaceOperation::describe_schedule(&id_request, target),
+            NamespaceOperation::list_schedules(&list),
+        ];
+
+        // No grant for the requested namespace is NamespaceDenied for all
+        // seven schedule operations — even when the target schedule really is
+        // owned by that namespace, the grant check decides first.
+        for operation in operations {
+            let result = guard.scope(&caller(), &operation).await;
+            assert_eq!(
+                result.err().map(|error| error.to_wire_error().code),
+                Some(aion_proto::WireErrorCode::NamespaceDenied)
+            );
+        }
+        // The grant check short-circuits before target verification: durable
+        // ownership must never be consulted for an ungranted namespace.
+        assert_eq!(counting.calls(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn granted_schedule_create_and_list_return_scoped_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let guard = guard_with_schedule_ownership(StaticScheduleNamespaces::default());
+        let create = ProtoCreateScheduleRequest {
+            namespace: String::from("tenant-a"),
+            config: None,
+        };
+        let list = ProtoListSchedulesRequest {
+            namespace: String::from("tenant-a"),
+        };
+
+        let scoped_create = guard
+            .scope(&caller(), &NamespaceOperation::create_schedule(&create))
+            .await?;
+        let scoped_list = guard
+            .scope(&caller(), &NamespaceOperation::list_schedules(&list))
+            .await?;
+
+        assert_eq!(scoped_create.namespace(), "tenant-a");
+        assert_eq!(scoped_list.namespace(), "tenant-a");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn authorized_start_returns_scoped_engine() -> Result<(), Box<dyn std::error::Error>> {
         let guard = guard_with_ownership(StaticWorkflowNamespaces::default());
@@ -653,6 +895,7 @@ mod tests {
                 namespace: String::from("tenant-a"),
             },
             StaticWorkflowNamespaces::default(),
+            StaticScheduleNamespaces::default(),
         );
         let guard = NamespaceGuard::new(resolver);
         let request = ProtoRegisterWorker {

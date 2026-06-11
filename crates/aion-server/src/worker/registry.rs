@@ -346,7 +346,7 @@ impl Drop for WorkerRegistration {
 #[cfg(test)]
 mod tests {
     use crate::config::NamespaceMode;
-    use crate::namespace::{NamespaceResolver, StaticWorkflowNamespaces};
+    use crate::namespace::{NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces};
 
     use super::*;
 
@@ -354,6 +354,7 @@ mod tests {
         NamespaceGuard::new(NamespaceResolver::authorization_only(
             NamespaceMode::SharedEngine,
             StaticWorkflowNamespaces::default(),
+            StaticScheduleNamespaces::default(),
         ))
     }
 

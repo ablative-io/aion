@@ -10,12 +10,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
 use aion::Engine;
-use aion_core::{SearchAttributeValue, WorkflowId, search_attributes_from_events};
+use aion_core::{ScheduleId, SearchAttributeValue, WorkflowId, search_attributes_from_events};
 use aion_proto::WireError;
 use async_trait::async_trait;
 
 use crate::config::{NamespaceConfig, NamespaceMode};
 use crate::error::ServerError;
+
+use super::schedule_source::{HistoryScheduleNamespaceSource, ScheduleNamespaceSource};
 
 /// Search attribute name that records the owning namespace of every workflow
 /// started through this server.
@@ -184,6 +186,7 @@ pub struct NamespaceResolver {
     mode: NamespaceMode,
     engine: Option<Arc<Engine>>,
     ownership: Arc<dyn WorkflowNamespaceSource>,
+    schedule_ownership: Arc<dyn ScheduleNamespaceSource>,
 }
 
 impl NamespaceResolver {
@@ -196,6 +199,7 @@ impl NamespaceResolver {
             ownership: Arc::new(HistoryNamespaceSource {
                 engine: Arc::clone(&engine),
             }),
+            schedule_ownership: Arc::new(HistoryScheduleNamespaceSource::new(Arc::clone(&engine))),
             engine: Some(engine),
         }
     }
@@ -206,11 +210,13 @@ impl NamespaceResolver {
         mode: NamespaceMode,
         engine: Option<Arc<Engine>>,
         ownership: Arc<dyn WorkflowNamespaceSource>,
+        schedule_ownership: Arc<dyn ScheduleNamespaceSource>,
     ) -> Self {
         Self {
             mode,
             engine,
             ownership,
+            schedule_ownership,
         }
     }
 
@@ -222,8 +228,14 @@ impl NamespaceResolver {
     pub fn authorization_only(
         mode: NamespaceMode,
         ownership: impl WorkflowNamespaceSource + 'static,
+        schedule_ownership: impl ScheduleNamespaceSource + 'static,
     ) -> Self {
-        Self::from_parts(mode, None, Arc::new(ownership))
+        Self::from_parts(
+            mode,
+            None,
+            Arc::new(ownership),
+            Arc::new(schedule_ownership),
+        )
     }
 
     /// Inspect the configured namespace mode.
@@ -315,6 +327,42 @@ impl NamespaceResolver {
         }
     }
 
+    /// Verify durable schedule ownership against the requested namespace.
+    ///
+    /// `NamespaceDenied` means exactly one thing: the caller has no grant for
+    /// the requested namespace, and that is decided by [`Self::resolve`] before
+    /// this check runs. Schedule-level visibility misses are `NotFound` to
+    /// prevent existence leaks: when the caller's requested namespace is
+    /// granted but the schedule's creation-recorded owner namespace is absent
+    /// (unknown schedule, or no recorded attribute) or different (owned by
+    /// another tenant), both cases return the identical `not_found` wire error
+    /// with the identical message, so a cross-tenant probe is byte-for-byte
+    /// indistinguishable from targeting a schedule that never existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ServerError::Wire`] `not_found` error when the schedule is
+    /// not visible in the requested namespace; ownership-source read failures
+    /// surface as their own typed errors.
+    pub async fn verify_schedule_ownership(
+        &self,
+        namespace: &str,
+        schedule_id: &ScheduleId,
+    ) -> Result<(), ServerError> {
+        match self
+            .schedule_ownership
+            .schedule_namespace(schedule_id)
+            .await?
+        {
+            Some(owner) if owner == namespace => Ok(()),
+            // Anti-existence-leak: absent and foreign ownership must be one
+            // identical NotFound, never a distinguishable denial.
+            Some(_) | None => Err(ServerError::Wire {
+                wire: WireError::not_found(format!("schedule not found in namespace {namespace}")),
+            }),
+        }
+    }
+
     fn scoped(&self, namespace: &str) -> ScopedEngine {
         ScopedEngine {
             namespace: namespace.to_owned(),
@@ -336,10 +384,15 @@ mod tests {
         CallerIdentity, NamespaceResolver, StaticWorkflowNamespaces, WorkflowNamespaceSource,
     };
     use crate::config::NamespaceMode;
-    use aion_core::WorkflowId;
+    use crate::namespace::StaticScheduleNamespaces;
+    use aion_core::{ScheduleId, WorkflowId};
 
     fn resolver(mode: NamespaceMode) -> NamespaceResolver {
-        NamespaceResolver::authorization_only(mode, StaticWorkflowNamespaces::default())
+        NamespaceResolver::authorization_only(
+            mode,
+            StaticWorkflowNamespaces::default(),
+            StaticScheduleNamespaces::default(),
+        )
     }
 
     #[test]
@@ -396,8 +449,11 @@ mod tests {
         let owned = WorkflowId::new(uuid::Uuid::from_u128(1));
         let unknown = WorkflowId::new(uuid::Uuid::from_u128(2));
         ownership.record(owned.clone(), "tenant-a")?;
-        let resolver =
-            NamespaceResolver::authorization_only(NamespaceMode::SharedEngine, ownership);
+        let resolver = NamespaceResolver::authorization_only(
+            NamespaceMode::SharedEngine,
+            ownership,
+            StaticScheduleNamespaces::default(),
+        );
 
         resolver
             .verify_workflow_ownership("tenant-a", &owned)
@@ -433,6 +489,57 @@ mod tests {
         assert_eq!(
             absent_in_granted.message,
             "workflow not found in namespace tenant-a"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schedule_ownership_misses_are_indistinguishable_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let schedule_ownership = StaticScheduleNamespaces::default();
+        let owned = ScheduleId::new(uuid::Uuid::from_u128(1));
+        let unknown = ScheduleId::new(uuid::Uuid::from_u128(2));
+        schedule_ownership.record(owned.clone(), "tenant-a")?;
+        let resolver = NamespaceResolver::authorization_only(
+            NamespaceMode::SharedEngine,
+            StaticWorkflowNamespaces::default(),
+            schedule_ownership,
+        );
+
+        resolver
+            .verify_schedule_ownership("tenant-a", &owned)
+            .await?;
+
+        // Foreign-owned and nonexistent schedules must produce byte-for-byte
+        // identical NotFound wire errors (anti-existence-leak), never
+        // NamespaceDenied.
+        let foreign = resolver
+            .verify_schedule_ownership("tenant-b", &owned)
+            .await
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected foreign-owned schedule to be rejected")?;
+        let absent = resolver
+            .verify_schedule_ownership("tenant-b", &unknown)
+            .await
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected unknown schedule to be rejected")?;
+
+        assert_eq!(foreign.code, aion_proto::WireErrorCode::NotFound);
+        assert_eq!(foreign, absent);
+        assert_eq!(foreign.message, "schedule not found in namespace tenant-b");
+
+        let absent_in_granted = resolver
+            .verify_schedule_ownership("tenant-a", &unknown)
+            .await
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected unknown schedule to be rejected in granted namespace")?;
+        assert_eq!(absent_in_granted.code, aion_proto::WireErrorCode::NotFound);
+        assert_eq!(
+            absent_in_granted.message,
+            "schedule not found in namespace tenant-a"
         );
         Ok(())
     }

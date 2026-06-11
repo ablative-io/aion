@@ -14,7 +14,7 @@ use aion_proto::{
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
-use crate::{CallerIdentity, ServerState, api::handlers};
+use crate::{CallerIdentity, ServerState, api::handlers, api::schedule_handlers};
 
 /// Cloneable tonic implementation for workflow management.
 #[derive(Clone)]
@@ -157,7 +157,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::CreateScheduleRequest>,
     ) -> Result<Response<generated::CreateScheduleResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::create_schedule(
+        let response = schedule_handlers::create_schedule(
             self.state.namespace_guard(),
             &caller,
             decode_create_schedule_request(request.into_inner()),
@@ -172,7 +172,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::UpdateScheduleRequest>,
     ) -> Result<Response<generated::UpdateScheduleResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::update_schedule(
+        let response = schedule_handlers::update_schedule(
             self.state.namespace_guard(),
             &caller,
             decode_update_schedule_request(request.into_inner()),
@@ -187,7 +187,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::PauseScheduleResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::pause_schedule(
+        let response = schedule_handlers::pause_schedule(
             self.state.namespace_guard(),
             &caller,
             decode_schedule_id_request(request.into_inner()),
@@ -202,7 +202,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::ResumeScheduleResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::resume_schedule(
+        let response = schedule_handlers::resume_schedule(
             self.state.namespace_guard(),
             &caller,
             decode_schedule_id_request(request.into_inner()),
@@ -217,7 +217,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::DeleteScheduleResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::delete_schedule(
+        let response = schedule_handlers::delete_schedule(
             self.state.namespace_guard(),
             &caller,
             decode_schedule_id_request(request.into_inner()),
@@ -232,7 +232,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::ListSchedulesRequest>,
     ) -> Result<Response<generated::ListSchedulesResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::list_schedules(
+        let response = schedule_handlers::list_schedules(
             self.state.namespace_guard(),
             &caller,
             decode_list_schedules_request(request.into_inner()),
@@ -247,7 +247,7 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::ScheduleIdRequest>,
     ) -> Result<Response<generated::DescribeScheduleResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::describe_schedule(
+        let response = schedule_handlers::describe_schedule(
             self.state.namespace_guard(),
             &caller,
             decode_schedule_id_request(request.into_inner()),

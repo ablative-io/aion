@@ -4,9 +4,14 @@
 pub mod guard;
 /// Caller identity resolution and scoped-engine selection.
 pub mod resolver;
+/// Durable schedule→namespace ownership sources.
+pub mod schedule_source;
 
-pub use guard::{NamespaceGuard, NamespaceOperation, SubscriptionScope, WorkflowTarget};
+pub use guard::{
+    NamespaceGuard, NamespaceOperation, ScheduleTarget, SubscriptionScope, WorkflowTarget,
+};
 pub use resolver::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceResolver, ScopedEngine, StaticWorkflowNamespaces,
     WorkflowNamespaceSource,
 };
+pub use schedule_source::{ScheduleNamespaceSource, StaticScheduleNamespaces};

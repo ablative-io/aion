@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers, dashboard::assets,
-    observability, stream::handle_subscription_socket,
+    CallerIdentity, NamespaceOperation, ServerError, ServerState, api::handlers,
+    api::schedule_handlers, dashboard::assets, observability, stream::handle_subscription_socket,
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -279,7 +279,7 @@ async fn create_schedule(
     HttpCaller(caller): HttpCaller,
     Json(request): Json<ProtoCreateScheduleRequest>,
 ) -> Result<(StatusCode, Json<ProtoCreateScheduleResponse>), HttpWireError> {
-    handlers::create_schedule(state.namespace_guard(), &caller, request)
+    schedule_handlers::create_schedule(state.namespace_guard(), &caller, request)
         .await
         .map(|response| (StatusCode::CREATED, Json(response)))
         .map_err(HttpWireError)
@@ -292,7 +292,7 @@ async fn update_schedule(
     Json(mut request): Json<ProtoUpdateScheduleRequest>,
 ) -> Result<Json<ProtoUpdateScheduleResponse>, HttpWireError> {
     request.schedule_id = Some(ProtoScheduleId { uuid: id });
-    handlers::update_schedule(state.namespace_guard(), &caller, request)
+    schedule_handlers::update_schedule(state.namespace_guard(), &caller, request)
         .await
         .map(Json)
         .map_err(HttpWireError)
@@ -304,7 +304,7 @@ async fn pause_schedule(
     Path(id): Path<String>,
     Query(query): Query<NamespaceQuery>,
 ) -> Result<Json<ProtoPauseScheduleResponse>, HttpWireError> {
-    handlers::pause_schedule(
+    schedule_handlers::pause_schedule(
         state.namespace_guard(),
         &caller,
         schedule_id_request(query, id),
@@ -320,7 +320,7 @@ async fn resume_schedule(
     Path(id): Path<String>,
     Query(query): Query<NamespaceQuery>,
 ) -> Result<Json<ProtoResumeScheduleResponse>, HttpWireError> {
-    handlers::resume_schedule(
+    schedule_handlers::resume_schedule(
         state.namespace_guard(),
         &caller,
         schedule_id_request(query, id),
@@ -336,7 +336,7 @@ async fn delete_schedule(
     Path(id): Path<String>,
     Query(query): Query<NamespaceQuery>,
 ) -> Result<Json<ProtoDeleteScheduleResponse>, HttpWireError> {
-    handlers::delete_schedule(
+    schedule_handlers::delete_schedule(
         state.namespace_guard(),
         &caller,
         schedule_id_request(query, id),
@@ -351,7 +351,7 @@ async fn list_schedules(
     HttpCaller(caller): HttpCaller,
     Query(query): Query<NamespaceQuery>,
 ) -> Result<Json<ProtoListSchedulesResponse>, HttpWireError> {
-    handlers::list_schedules(
+    schedule_handlers::list_schedules(
         state.namespace_guard(),
         &caller,
         ProtoListSchedulesRequest {
@@ -369,7 +369,7 @@ async fn describe_schedule(
     Path(id): Path<String>,
     Query(query): Query<NamespaceQuery>,
 ) -> Result<Json<ProtoDescribeScheduleResponse>, HttpWireError> {
-    handlers::describe_schedule(
+    schedule_handlers::describe_schedule(
         state.namespace_guard(),
         &caller,
         schedule_id_request(query, id),
@@ -1049,7 +1049,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        NamespaceResolver, StaticWorkflowNamespaces,
+        NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
         config::{
             AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
             NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
@@ -1079,6 +1079,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1151,6 +1152,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1309,6 +1311,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let state = ServerState::from_parts(resolver, runtime_config());
         Ok((workflow_router(state), visibility_store))
@@ -1427,6 +1430,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
 
@@ -1489,6 +1493,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
         let request = ProtoListWorkflowsRequest {
@@ -1586,6 +1591,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let router = workflow_router(ServerState::from_parts(resolver, runtime_config()));
 
@@ -1680,6 +1686,7 @@ mod tests {
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
         );
         let mut config = runtime_config();
         config.dashboard = DashboardConfig {

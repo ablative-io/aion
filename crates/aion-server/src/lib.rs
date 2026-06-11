@@ -41,8 +41,8 @@ pub use config::ServerConfig;
 pub use error::{ServerError, StreamFailure};
 pub use namespace::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceOperation, NamespaceResolver,
-    ScopedEngine, StaticWorkflowNamespaces, SubscriptionScope, WorkflowNamespaceSource,
-    WorkflowTarget,
+    ScheduleNamespaceSource, ScheduleTarget, ScopedEngine, StaticScheduleNamespaces,
+    StaticWorkflowNamespaces, SubscriptionScope, WorkflowNamespaceSource, WorkflowTarget,
 };
 pub use state::ServerState;
 pub use worker::{

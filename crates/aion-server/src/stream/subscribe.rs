@@ -138,7 +138,8 @@ mod tests {
     use super::map_subscription_request;
     use crate::config::NamespaceMode;
     use crate::namespace::{
-        CallerIdentity, NamespaceGuard, NamespaceResolver, StaticWorkflowNamespaces,
+        CallerIdentity, NamespaceGuard, NamespaceResolver, StaticScheduleNamespaces,
+        StaticWorkflowNamespaces,
     };
 
     fn workflow_id() -> WorkflowId {
@@ -183,6 +184,7 @@ mod tests {
         NamespaceGuard::new(NamespaceResolver::authorization_only(
             NamespaceMode::SharedEngine,
             StaticWorkflowNamespaces::default(),
+            StaticScheduleNamespaces::default(),
         ))
     }
 
