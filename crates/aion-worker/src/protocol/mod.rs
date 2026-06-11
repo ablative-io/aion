@@ -10,6 +10,10 @@ pub mod session;
 pub mod task;
 
 pub use heartbeat::{ActivityExecutionKey, HeartbeatBookkeeper, send_heartbeat};
+pub use reconnect::{
+    PendingActivityReport, ReconnectBackoff, UnackedResultTracker, connect_registered_grpc_session,
+    re_report_unacked, reconnect_with_backoff, reconnect_with_sleep, register_connected_session,
+};
 pub use session::{
     GrpcWorkerSession, WorkerSession, WorkerSessionEvent, WorkerTaskStream,
     validate_activity_handlers,

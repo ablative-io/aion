@@ -16,7 +16,8 @@ use super::{ActivityDispatcher, DispatchOutcome, serve_activity_tasks};
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::{
-    ActivityTask, WorkerSession, WorkerSessionEvent, WorkerTaskStream, validate_activity_handlers,
+    ActivityTask, PendingActivityReport, UnackedResultTracker, WorkerSession, WorkerSessionEvent,
+    WorkerTaskStream, validate_activity_handlers,
 };
 use crate::{ReconnectConfig, WorkerConfig};
 
@@ -209,8 +210,9 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
         dispatched: Mutex::new(Vec::new()),
     });
     let config = test_config(2);
+    let mut tracker = UnackedResultTracker::new();
 
-    serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher)).await?;
+    serve_activity_tasks(&config, &mut session, Arc::clone(&dispatcher), &mut tracker).await?;
 
     assert_eq!(
         *dispatcher.dispatched.lock().await,
@@ -219,10 +221,19 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
     assert_eq!(
         session.reports,
         vec![
-            RecordedReport::Completed(first_activity, first_output),
-            RecordedReport::Failed(second_activity, failure),
+            RecordedReport::Completed(first_activity.clone(), first_output),
+            RecordedReport::Failed(second_activity.clone(), failure),
         ]
     );
+    assert_eq!(tracker.len(), 2);
+    assert!(matches!(
+        tracker.get(&first_activity),
+        Some(PendingActivityReport::Completed { .. })
+    ));
+    assert!(matches!(
+        tracker.get(&second_activity),
+        Some(PendingActivityReport::Failed { .. })
+    ));
     Ok(())
 }
 
@@ -255,8 +266,10 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
     let worker = tokio::spawn({
         let dispatcher = Arc::clone(&dispatcher);
         async move {
-            let result = serve_activity_tasks(&config, &mut session, dispatcher).await;
-            (result, session)
+            let mut tracker = UnackedResultTracker::new();
+            let result =
+                serve_activity_tasks(&config, &mut session, dispatcher, &mut tracker).await;
+            (result, session, tracker)
         }
     });
 
@@ -266,10 +279,11 @@ async fn max_concurrency_caps_dispatches_at_two() -> Result<(), WorkerError> {
     assert_eq!(dispatcher.peak.load(Ordering::SeqCst), 2);
 
     dispatcher.release.store(true, Ordering::SeqCst);
-    let (result, session) = worker.await.map_err(WorkerError::decode)?;
+    let (result, session, tracker) = worker.await.map_err(WorkerError::decode)?;
     result?;
 
     assert_eq!(session.reports.len(), 5);
+    assert_eq!(tracker.len(), 5);
     assert_eq!(dispatcher.peak.load(Ordering::SeqCst), 2);
     Ok(())
 }
@@ -299,7 +313,9 @@ async fn cancellation_event_flips_context_without_suppressing_result() -> Result
     let worker = tokio::spawn({
         let dispatcher = Arc::clone(&dispatcher);
         async move {
-            let result = serve_activity_tasks(&config, &mut session, dispatcher).await;
+            let mut tracker = UnackedResultTracker::new();
+            let result =
+                serve_activity_tasks(&config, &mut session, dispatcher, &mut tracker).await;
             (result, session)
         }
     });

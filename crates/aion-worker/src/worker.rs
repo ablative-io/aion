@@ -2,16 +2,22 @@
 
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tracing::{error, warn};
 
 use crate::activity::{ActivityRegistry, HandlerFuture};
 use crate::config::WorkerConfig;
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
-use crate::protocol::reconnect::{connect_registered_grpc_session, register_connected_session};
+use crate::protocol::reconnect::{
+    ReconnectBackoff, UnackedResultTracker, re_report_unacked, reconnect_with_backoff,
+    register_connected_session,
+};
 use crate::protocol::{GrpcWorkerSession, WorkerSession};
 use crate::runtime::{NoShutdown, serve_activity_tasks, serve_activity_tasks_until};
 
@@ -102,6 +108,15 @@ impl Worker {
 
     /// Connects to the configured endpoint, registers activities, and serves until the stream ends.
     ///
+    /// Session establishment goes through the bounded-backoff reconnect
+    /// machinery configured in [`WorkerConfig::reconnect`], and retryable
+    /// mid-run transport drops re-establish through the same machinery: the
+    /// worker re-registers its activity types, re-reports every
+    /// unacknowledged activity result (the engine ingests reports
+    /// idempotently by `ActivityId`), and resumes serving. Deterministic
+    /// `PermissionDenied` / `Unauthenticated` denials surface after exactly
+    /// one attempt.
+    ///
     /// # Errors
     ///
     /// Returns [`WorkerError`] for connection, registration, dispatch, heartbeat, or report failures.
@@ -111,8 +126,11 @@ impl Worker {
 
     /// Connects to the configured endpoint, registers activities, and serves until shutdown fires.
     ///
-    /// On shutdown, no new tasks are pulled, in-flight activity contexts are marked cancelled,
-    /// and all in-flight activities are drained before this returns.
+    /// Establishment and mid-run reconnect behaviour match [`Worker::run`].
+    /// On shutdown, no new tasks are pulled, in-flight activity contexts are
+    /// marked cancelled, and all in-flight activities are drained before this
+    /// returns; shutdown signalled during a reconnect or backoff wins
+    /// promptly without waiting out the backoff delay.
     ///
     /// # Errors
     ///
@@ -121,13 +139,116 @@ impl Worker {
     where
         Shutdown: Future<Output = ()> + Send,
     {
-        let mut session = connect_registered_grpc_session(
-            &self.config,
-            self.activity_types.clone(),
-            &self.available_handlers,
-        )
-        .await?;
-        serve_activity_tasks_until(&self.config, &mut session, self.activities, shutdown).await
+        let config = self.config.clone();
+        self.run_with_connector_until(move || GrpcWorkerSession::connect(config.clone()), shutdown)
+            .await
+    }
+
+    /// Runs the reconnect-aware serve loop over an injected session factory.
+    ///
+    /// Session establishment goes through
+    /// [`reconnect_with_backoff`](crate::protocol::reconnect::reconnect_with_backoff):
+    /// transient failures retry up to the configured `reconnect.max_attempts`
+    /// with bounded exponential backoff, while `PermissionDenied` /
+    /// `Unauthenticated` denials surface after exactly one attempt. When an
+    /// established session drops retryably mid-run, the worker drains
+    /// in-flight activities into the unacked tracker, backs off, reconnects
+    /// through the same machinery (re-registering its activity types),
+    /// re-reports every unacknowledged result, and resumes serving. Mid-run
+    /// drops share one cumulative budget of `reconnect.max_attempts` per run,
+    /// matching the Python worker. At most one session is alive at a time,
+    /// and a shutdown signalled during a reconnect or backoff wins promptly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError`] when establishment attempts are exhausted or
+    /// denied, when a non-retryable error occurs mid-run, when the mid-run
+    /// drop budget is exhausted, or when shutdown interrupts an unrecovered
+    /// session drop.
+    pub async fn run_with_connector_until<S, F, Fut, Shutdown>(
+        self,
+        mut connect: F,
+        shutdown: Shutdown,
+    ) -> Result<(), WorkerError>
+    where
+        S: WorkerSession,
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<S, WorkerError>>,
+        Shutdown: Future<Output = ()> + Send,
+    {
+        let backoff = ReconnectBackoff::from_config(&self.config)?;
+        let mut tracker = UnackedResultTracker::new();
+        tokio::pin!(shutdown);
+        let mut shutdown = SharedShutdown::new(shutdown);
+        let mut drop_failures = 0_usize;
+        let mut recovery_error: Option<WorkerError> = None;
+
+        loop {
+            let connected = tokio::select! {
+                biased;
+                () = shutdown.wait() => {
+                    return recovery_error.take().map_or(Ok(()), Err);
+                }
+                result = reconnect_with_backoff(
+                    &self.config,
+                    self.activity_types.clone(),
+                    &self.available_handlers,
+                    &mut connect,
+                ) => result,
+            };
+            let mut session = connected?;
+            let served = match re_report_unacked(&tracker, &mut session).await {
+                Ok(()) => {
+                    serve_activity_tasks_until(
+                        &self.config,
+                        &mut session,
+                        Arc::clone(&self.activities),
+                        &mut tracker,
+                        shutdown.wait(),
+                    )
+                    .await
+                }
+                Err(report_error) => Err(report_error),
+            };
+            drop(session);
+            match served {
+                Ok(()) => return Ok(()),
+                Err(error) if !error.is_retryable() => {
+                    error!(error = %error, "worker session denied by server; not reconnecting");
+                    return Err(error);
+                }
+                Err(error) => {
+                    if shutdown.fired() {
+                        return Err(error);
+                    }
+                    drop_failures += 1;
+                    if drop_failures >= backoff.attempts() {
+                        error!(
+                            drop_failures,
+                            error = %error,
+                            "worker session drop budget exhausted; not reconnecting"
+                        );
+                        return Err(error);
+                    }
+                    let delay = backoff.delay_for_attempt(drop_failures);
+                    warn!(
+                        drop_failures,
+                        delay_ms = delay.as_millis(),
+                        error = %error,
+                        "worker session dropped; reconnecting after backoff"
+                    );
+                    let shutdown_won = tokio::select! {
+                        biased;
+                        () = shutdown.wait() => true,
+                        () = tokio::time::sleep(delay) => false,
+                    };
+                    if shutdown_won {
+                        return Err(error);
+                    }
+                    recovery_error = Some(error);
+                }
+            }
+        }
     }
 
     /// Test seam that handshakes, registers, and serves an injected session until its stream ends.
@@ -164,8 +285,62 @@ impl Worker {
             &self.available_handlers,
         )
         .await?;
-        serve_activity_tasks_until(&self.config, &mut session, self.activities, shutdown).await?;
+        let mut tracker = UnackedResultTracker::new();
+        serve_activity_tasks_until(
+            &self.config,
+            &mut session,
+            self.activities,
+            &mut tracker,
+            shutdown,
+        )
+        .await?;
         Ok(session)
+    }
+}
+
+/// Level-triggered, re-pollable view over the caller's one-shot shutdown future.
+///
+/// The run loop observes the same shutdown signal from several places —
+/// session establishment, the serving loop, and reconnect backoff sleeps —
+/// but a `Future` must not be polled again once it has completed. This
+/// wrapper polls the underlying future at most to completion and then
+/// latches, so every subsequent [`SharedShutdown::wait`] resolves
+/// immediately.
+struct SharedShutdown<'a, S> {
+    inner: Pin<&'a mut S>,
+    fired: bool,
+}
+
+impl<'a, S> SharedShutdown<'a, S>
+where
+    S: Future<Output = ()> + Send,
+{
+    const fn new(inner: Pin<&'a mut S>) -> Self {
+        Self {
+            inner,
+            fired: false,
+        }
+    }
+
+    /// Returns whether the shutdown future has already completed.
+    const fn fired(&self) -> bool {
+        self.fired
+    }
+
+    /// Waits for shutdown; resolves immediately once it has fired before.
+    fn wait(&mut self) -> impl Future<Output = ()> + Send {
+        std::future::poll_fn(|context| {
+            if self.fired {
+                return Poll::Ready(());
+            }
+            match self.inner.as_mut().poll(context) {
+                Poll::Ready(()) => {
+                    self.fired = true;
+                    Poll::Ready(())
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        })
     }
 }
 
@@ -204,7 +379,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream;
     use serde::{Deserialize, Serialize};
-    use tokio::sync::mpsc;
+    use tokio::sync::{Notify, mpsc};
 
     use super::{Worker, WorkerBuilder};
     use crate::config::{ReconnectConfig, WorkerConfig};
@@ -345,6 +520,7 @@ mod tests {
                 workflow_id,
                 activity_id.clone(),
                 "slow",
+                0,
             ))))
             .await
             .map_err(WorkerError::decode)?;
@@ -402,7 +578,11 @@ mod tests {
     }
 
     fn two_activity_worker() -> Result<Worker, WorkerError> {
-        Worker::builder(test_config())
+        two_activity_worker_with(test_config())
+    }
+
+    fn two_activity_worker_with(config: WorkerConfig) -> Result<Worker, WorkerError> {
+        Worker::builder(config)
             .register_activity("double", |input: TestInput, context| {
                 Box::pin(async move {
                     let _ = context;
@@ -426,6 +606,7 @@ mod tests {
         workflow_id: WorkflowId,
         activity_id: ActivityId,
         activity_type: &str,
+        value: i32,
     ) -> ProtoActivityTask {
         ProtoActivityTask {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
@@ -433,7 +614,7 @@ mod tests {
             activity_type: activity_type.to_owned(),
             input: Some(ProtoPayload::from(Payload::new(
                 ContentType::Json,
-                b"{\"value\":0}".to_vec(),
+                format!("{{\"value\":{value}}}").into_bytes(),
             ))),
         }
     }
@@ -445,17 +626,411 @@ mod tests {
     }
 
     fn test_config() -> WorkerConfig {
+        test_config_with(ReconnectConfig::new(
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            3,
+        ))
+    }
+
+    fn test_config_with(reconnect: ReconnectConfig) -> WorkerConfig {
         WorkerConfig::new(
             "http://127.0.0.1:50051",
             "payments",
             "worker-a",
             1,
-            ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(20), 3),
+            reconnect,
             None,
         )
+    }
+
+    fn slow_reconnect_config() -> WorkerConfig {
+        test_config_with(ReconnectConfig::new(
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            5,
+        ))
     }
 
     #[derive(Debug, thiserror::Error)]
     #[error("failed to send shutdown signal")]
     struct SendFailed;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("expected the worker run to fail")]
+    struct UnexpectedSuccess;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("expected a completed activity report")]
+    struct UnexpectedReportShape;
+
+    /// Per-session record emitted by [`ScriptedSession`] for post-run assertions.
+    #[derive(Debug)]
+    enum SessionLog {
+        Registered(usize, Vec<String>),
+        Reported(usize, RecordedReport),
+    }
+
+    /// Factory-injected session whose stream contents, registration outcome,
+    /// and report behaviour are scripted per connection attempt.
+    struct ScriptedSession {
+        index: usize,
+        log: mpsc::UnboundedSender<SessionLog>,
+        events: Vec<Result<WorkerSessionEvent, WorkerError>>,
+        fail_reports: bool,
+        register_denial: Option<tonic::Status>,
+    }
+
+    #[async_trait]
+    impl WorkerSession for ScriptedSession {
+        async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
+            drop(config.clone());
+            Ok(())
+        }
+
+        async fn register(
+            &mut self,
+            activity_types: Vec<String>,
+            available_handlers: &BTreeSet<String>,
+        ) -> Result<(), WorkerError> {
+            validate_activity_handlers(&activity_types, available_handlers)?;
+            if let Some(denial) = self.register_denial.take() {
+                return Err(WorkerError::Registration {
+                    source: Box::new(denial),
+                });
+            }
+            self.log
+                .send(SessionLog::Registered(self.index, activity_types))
+                .map_err(WorkerError::decode)
+        }
+
+        fn receive_tasks(&mut self) -> WorkerTaskStream {
+            Box::pin(stream::iter(std::mem::take(&mut self.events)))
+        }
+
+        async fn report_result(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            result: Payload,
+        ) -> Result<(), WorkerError> {
+            let _ = workflow_id;
+            if self.fail_reports {
+                return Err(WorkerError::Transport {
+                    source: tonic::Status::unavailable("transport dropped before result ack"),
+                });
+            }
+            self.log
+                .send(SessionLog::Reported(
+                    self.index,
+                    RecordedReport::Completed(activity_id, result),
+                ))
+                .map_err(WorkerError::decode)
+        }
+
+        async fn report_failure(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            failure: ActivityError,
+        ) -> Result<(), WorkerError> {
+            let _ = workflow_id;
+            if self.fail_reports {
+                return Err(WorkerError::Transport {
+                    source: tonic::Status::unavailable("transport dropped before failure ack"),
+                });
+            }
+            self.log
+                .send(SessionLog::Reported(
+                    self.index,
+                    RecordedReport::Failed(activity_id, failure),
+                ))
+                .map_err(WorkerError::decode)
+        }
+
+        async fn send_heartbeat(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            progress: Option<Payload>,
+        ) -> Result<(), WorkerError> {
+            drop((workflow_id, activity_id, progress));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn establishment_retries_transient_failures_until_attempts_exhausted()
+    -> Result<(), WorkerError> {
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Err::<ScriptedSession, _>(WorkerError::Transport {
+                        source: tonic::Status::unavailable("engine unreachable"),
+                    })
+                }
+            }
+        };
+
+        let result = worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn establishment_denial_surfaces_after_one_attempt() -> Result<(), WorkerError> {
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: 1,
+                        log,
+                        events: Vec::new(),
+                        fail_reports: false,
+                        register_denial: Some(tonic::Status::permission_denied(
+                            "namespace `payments` is not granted to subject `worker-a`",
+                        )),
+                    })
+                }
+            }
+        };
+
+        let result = worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        assert_eq!(
+            error.grpc_status().map(tonic::Status::message),
+            Some("namespace `payments` is not granted to subject `worker-a`")
+        );
+        drop(log_receiver);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mid_run_drop_reconnects_re_registers_and_re_reports_unacked() -> Result<(), WorkerError>
+    {
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(3);
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let log_sender = log_sender.clone();
+            let workflow_id = workflow_id.clone();
+            let activity_id = activity_id.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                let task = proto_task(workflow_id.clone(), activity_id.clone(), "double", 21);
+                async move {
+                    if attempt == 1 {
+                        Ok(ScriptedSession {
+                            index: 1,
+                            log,
+                            events: vec![Ok(WorkerSessionEvent::Task(task))],
+                            fail_reports: true,
+                            register_denial: None,
+                        })
+                    } else {
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: None,
+                        })
+                    }
+                }
+            }
+        };
+
+        worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await?;
+
+        drop(log_sender);
+        let mut registrations = Vec::new();
+        let mut reports = Vec::new();
+        while let Some(entry) = log_receiver.recv().await {
+            match entry {
+                SessionLog::Registered(index, types) => registrations.push((index, types)),
+                SessionLog::Reported(index, report) => reports.push((index, report)),
+            }
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let expected_types = vec![String::from("double"), String::from("increment")];
+        assert_eq!(
+            registrations,
+            vec![(1, expected_types.clone()), (2, expected_types)]
+        );
+        assert_eq!(reports.len(), 1);
+        let (session_index, report) = &reports[0];
+        assert_eq!(*session_index, 2);
+        let RecordedReport::Completed(reported_id, payload) = report else {
+            return Err(WorkerError::decode(UnexpectedReportShape));
+        };
+        assert_eq!(reported_id, &activity_id);
+        let output: TestOutput =
+            serde_json::from_slice(payload.bytes()).map_err(WorkerError::decode)?;
+        assert_eq!(output.value, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mid_run_denial_surfaces_without_reconnect() -> Result<(), WorkerError> {
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: 1,
+                        log,
+                        events: vec![Err(WorkerError::Transport {
+                            source: tonic::Status::permission_denied(
+                                "namespace `payments` revoked for subject `worker-a`",
+                            ),
+                        })],
+                        fail_reports: false,
+                        register_denial: None,
+                    })
+                }
+            }
+        };
+
+        let result = worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        assert_eq!(
+            error.grpc_status().map(tonic::Status::message),
+            Some("namespace `payments` revoked for subject `worker-a`")
+        );
+        drop(log_receiver);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_establishment_backoff_returns_promptly() -> Result<(), WorkerError> {
+        let worker = two_activity_worker_with(slow_reconnect_config())?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let notify = Arc::new(Notify::new());
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let notify = Arc::clone(&notify);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                notify.notify_one();
+                async move {
+                    Err::<ScriptedSession, _>(WorkerError::Transport {
+                        source: tonic::Status::unavailable("engine unreachable"),
+                    })
+                }
+            }
+        };
+        let shutdown = {
+            let notify = Arc::clone(&notify);
+            async move {
+                notify.notified().await;
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, shutdown);
+        tokio::time::timeout(Duration::from_millis(500), run)
+            .await
+            .map_err(WorkerError::decode)??;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_mid_run_drop_backoff_returns_promptly() -> Result<(), WorkerError> {
+        let worker = two_activity_worker_with(slow_reconnect_config())?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: 1,
+                        log,
+                        events: vec![Err(WorkerError::Transport {
+                            source: tonic::Status::unavailable("stream reset by peer"),
+                        })],
+                        fail_reports: false,
+                        register_denial: None,
+                    })
+                }
+            }
+        };
+        let shutdown = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+
+        let run = worker.run_with_connector_until(connect, shutdown);
+        let result = tokio::time::timeout(Duration::from_millis(500), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+        drop(log_receiver);
+        Ok(())
+    }
 }

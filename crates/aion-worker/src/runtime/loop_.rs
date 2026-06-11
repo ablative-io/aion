@@ -14,6 +14,7 @@ use tracing::{debug, info};
 use crate::config::WorkerConfig;
 use crate::context::{ActivityCancellationHandle, ActivityContext, HeartbeatRequest};
 use crate::error::WorkerError;
+use crate::protocol::reconnect::{PendingActivityReport, UnackedResultTracker};
 use crate::protocol::{
     ActivityExecutionKey, ActivityTask, HeartbeatBookkeeper, WorkerSession, WorkerSessionEvent,
 };
@@ -56,6 +57,10 @@ pub type NoShutdown = future::Pending<()>;
 /// never emits automatic heartbeats, never enforces heartbeat timeouts, and never
 /// aborts running handler tasks on cancellation.
 ///
+/// Every computed dispatch outcome is recorded in `tracker` before its report
+/// is sent, so a caller that reconnects after a transport drop can re-report
+/// the backlog; the engine ingests reports idempotently by `ActivityId`.
+///
 /// # Errors
 ///
 /// Returns [`WorkerError`] when task decode, dispatch, heartbeat send, or result
@@ -64,12 +69,13 @@ pub async fn serve_activity_tasks<S, D>(
     config: &WorkerConfig,
     session: &mut S,
     dispatcher: Arc<D>,
+    tracker: &mut UnackedResultTracker,
 ) -> Result<(), WorkerError>
 where
     S: WorkerSession,
     D: ActivityDispatcher,
 {
-    serve_activity_tasks_until(config, session, dispatcher, future::pending()).await
+    serve_activity_tasks_until(config, session, dispatcher, tracker, future::pending()).await
 }
 
 /// Runs the worker receive loop until the session's task stream completes.
@@ -77,6 +83,12 @@ where
 /// The loop only forwards explicit handler heartbeats and cancellation flags. It
 /// never emits automatic heartbeats, never enforces heartbeat timeouts, and never
 /// aborts running handler tasks on cancellation.
+///
+/// Every computed dispatch outcome is recorded in `tracker` before its report
+/// is sent, so a caller that reconnects after a transport drop can re-report
+/// the backlog; the engine ingests reports idempotently by `ActivityId`. Only
+/// an explicit engine acknowledgement clears tracker entries, so successful
+/// sends leave their entries in place.
 ///
 /// # Errors
 ///
@@ -86,6 +98,7 @@ pub async fn serve_activity_tasks_until<S, D, Shutdown>(
     config: &WorkerConfig,
     session: &mut S,
     dispatcher: Arc<D>,
+    tracker: &mut UnackedResultTracker,
     shutdown: Shutdown,
 ) -> Result<(), WorkerError>
 where
@@ -113,6 +126,7 @@ where
             &mut heartbeat_receiver,
             &mut result_receiver,
             &mut in_flight,
+            tracker,
             &mut pending_error,
         )
         .await;
@@ -174,6 +188,7 @@ where
         &mut heartbeat_receiver,
         &mut result_receiver,
         &mut in_flight,
+        tracker,
         &mut pending_error,
     )
     .await;
@@ -317,6 +332,7 @@ async fn drain_remaining<S>(
     heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
     result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
     in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    tracker: &mut UnackedResultTracker,
     pending_error: &mut Option<WorkerError>,
 ) where
     S: WorkerSession,
@@ -329,6 +345,7 @@ async fn drain_remaining<S>(
                     heartbeat_bookkeeper,
                     finished,
                     in_flight,
+                    tracker,
                     pending_error,
                 )
                 .await;
@@ -358,6 +375,7 @@ async fn drain_runtime_events<S>(
     heartbeat_receiver: &mut mpsc::UnboundedReceiver<HeartbeatRequest>,
     result_receiver: &mut mpsc::UnboundedReceiver<DispatchFinished>,
     in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    tracker: &mut UnackedResultTracker,
     pending_error: &mut Option<WorkerError>,
 ) where
     S: WorkerSession,
@@ -375,6 +393,7 @@ async fn drain_runtime_events<S>(
             heartbeat_bookkeeper,
             finished,
             in_flight,
+            tracker,
             pending_error,
         )
         .await;
@@ -402,6 +421,7 @@ async fn report_finished<S>(
     heartbeat_bookkeeper: &HeartbeatBookkeeper,
     finished: DispatchFinished,
     in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    tracker: &mut UnackedResultTracker,
     pending_error: &mut Option<WorkerError>,
 ) where
     S: WorkerSession,
@@ -414,21 +434,40 @@ async fn report_finished<S>(
         );
     }
     match finished.outcome {
-        Ok(outcome) => record_first_error(
-            pending_error,
-            report_outcome(
-                session,
-                finished.key.workflow_id,
-                finished.key.activity_id,
-                outcome,
-            )
-            .await,
-        ),
+        Ok(outcome) => {
+            tracker.record(pending_report(&finished.key, &outcome));
+            record_first_error(
+                pending_error,
+                report_outcome(
+                    session,
+                    finished.key.workflow_id,
+                    finished.key.activity_id,
+                    outcome,
+                )
+                .await,
+            );
+        }
         Err(error) => {
             if pending_error.is_none() {
                 *pending_error = Some(error);
             }
         }
+    }
+}
+
+/// Builds the unacked-tracker entry for a computed outcome before it is sent.
+fn pending_report(key: &ActivityExecutionKey, outcome: &DispatchOutcome) -> PendingActivityReport {
+    match outcome {
+        DispatchOutcome::Completed { output } => PendingActivityReport::Completed {
+            workflow_id: key.workflow_id.clone(),
+            activity_id: key.activity_id.clone(),
+            output: output.clone(),
+        },
+        DispatchOutcome::Failed { failure } => PendingActivityReport::Failed {
+            workflow_id: key.workflow_id.clone(),
+            activity_id: key.activity_id.clone(),
+            failure: failure.clone(),
+        },
     }
 }
 

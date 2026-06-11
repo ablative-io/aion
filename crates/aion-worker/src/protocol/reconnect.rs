@@ -132,14 +132,21 @@ impl ReconnectBackoff {
         })
     }
 
-    fn delay_for_attempt(&self, completed_failures: usize) -> Duration {
+    /// Returns the bounded exponential delay after `completed_failures` failures.
+    ///
+    /// The delay doubles per completed failure starting from the configured
+    /// initial backoff and is capped at the configured maximum backoff.
+    #[must_use]
+    pub fn delay_for_attempt(&self, completed_failures: usize) -> Duration {
         let bounded_shift = completed_failures.saturating_sub(1).min(31);
         let shift = u32::try_from(bounded_shift).map_or(31, |shift| shift);
         let factor = 1_u32.checked_shl(shift).map_or(u32::MAX, |factor| factor);
         self.initial.saturating_mul(factor).min(self.max)
     }
 
-    fn attempts(&self) -> usize {
+    /// Returns the configured maximum number of reconnect attempts.
+    #[must_use]
+    pub const fn attempts(&self) -> usize {
         self.attempts
     }
 }
