@@ -3,6 +3,7 @@
 import aion/codec.{type Codec}
 import aion/error
 import aion/internal/ffi
+import aion/internal/pump
 import gleam/json
 import gleam/string
 
@@ -53,10 +54,16 @@ pub fn spawn(
 /// AT/AD own blocking, replay resolution, and event recording. This wrapper
 /// decodes the raw recorded envelope with the codecs carried on the handle and
 /// returns decode/engine failures as typed data.
+///
+/// The await is a yield point: pending workflow queries are serviced by the
+/// query pump before the child terminal resolves, exactly as activity awaits,
+/// signal receives, and timers do. Without the pump, a query arriving while
+/// the workflow is parked here would surface its sentinel as a bogus child
+/// failure and leave the engine refusing every later await in the run.
 pub fn await(
   handle: ChildHandle(output, workflow_error),
 ) -> Result(output, error.ChildError(workflow_error)) {
-  case ffi.await_child(child_id(handle)) {
+  case pump.run(fn() { ffi.await_child(child_id(handle)) }) {
     Ok(raw_result) -> decode_child_result(raw_result, handle)
     Error(raw_error) -> Error(child_engine_error(raw_error))
   }

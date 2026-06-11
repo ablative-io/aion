@@ -4,29 +4,25 @@
 //// read-only progress query, and aggregates every child outcome into a final
 //// summary. Child workflow failures are collected as per-item failed outcomes so
 //// one bad item does not fail the parent or its siblings.
+////
+//// The single-item child workflow lives in `batch_orchestrator_item.gleam` and
+//// is packaged as its own `[[workflow]]` entry: the engine resolves a spawned
+//// child's workflow type against loaded packages by entry module name, so the
+//// child module's archive must be loaded alongside this one.
 
-import aion/activity
 import aion/child
 import aion/codec
 import aion/error
 import aion/query
 import aion/workflow
+import batch_orchestrator_item as item
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/string
 
 pub type BatchInput {
-  BatchInput(items: List(WorkItem))
-}
-
-pub type WorkItem {
-  WorkItem(id: String, payload: String)
-}
-
-pub type ItemResult {
-  ItemResult(item_id: String, processed_payload: String, detail: String)
+  BatchInput(items: List(item.WorkItem))
 }
 
 pub type ItemOutcome {
@@ -47,14 +43,14 @@ pub type BatchSummary {
 }
 
 pub type WorkflowError {
-  ActivityFailed(message: String)
+  InputDecodeFailed(message: String)
   QueryRegistrationFailed(message: String)
 }
 
 type SpawnedChild {
   SpawnedChild(
-    item: WorkItem,
-    handle: child.ChildHandle(ItemResult, WorkflowError),
+    item: item.WorkItem,
+    handle: child.ChildHandle(item.ItemResult, item.ItemError),
   )
 }
 
@@ -77,16 +73,6 @@ pub fn definition() -> workflow.WorkflowDefinition(BatchInput, BatchSummary, Wor
   )
 }
 
-pub fn child_definition() -> workflow.WorkflowDefinition(WorkItem, ItemResult, WorkflowError) {
-  workflow.define(
-    "batch-orchestrator-item",
-    work_item_codec(),
-    item_result_codec(),
-    workflow_error_codec(),
-    process_item,
-  )
-}
-
 /// Engine entry point.
 ///
 /// The runtime delivers the start input as a raw JSON string: decode it with
@@ -106,10 +92,10 @@ pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
             Error(workflow_error) -> Error(workflow_error)
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
-          Error(ActivityFailed("failed to decode workflow input: " <> reason))
+          Error(InputDecodeFailed("failed to decode workflow input: " <> reason))
       }
     }
-    Error(_) -> Error(ActivityFailed("workflow input payload was not a string"))
+    Error(_) -> Error(InputDecodeFailed("workflow input payload was not a string"))
   }
 }
 
@@ -147,19 +133,12 @@ pub fn execute(input: BatchInput) -> Result(BatchSummary, WorkflowError) {
   ))
 }
 
-pub fn process_item(item: WorkItem) -> Result(ItemResult, WorkflowError) {
-  case workflow.run(process_item_activity(item)) {
-    Ok(result) -> Ok(result)
-    Error(activity_error) -> Error(ActivityFailed(activity_error_message(activity_error)))
-  }
-}
-
 type SpawnResult {
   SpawnResult(children: List(SpawnedChild), spawn_failures: List(ItemOutcome))
 }
 
 fn spawn_children(
-  items: List(WorkItem),
+  items: List(item.WorkItem),
   children: List(SpawnedChild),
   spawn_failures: List(ItemOutcome),
 ) -> SpawnResult {
@@ -168,22 +147,26 @@ fn spawn_children(
       children: list.reverse(children),
       spawn_failures: spawn_failures,
     )
-    [item, ..rest] -> {
+    [work_item, ..rest] -> {
       case
         child.spawn(
-          "batch-orchestrator-item",
-          process_item,
-          item,
-          work_item_codec(),
-          item_result_codec(),
-          workflow_error_codec(),
+          item.workflow_type,
+          item.process_item,
+          work_item,
+          item.work_item_codec(),
+          item.item_result_codec(),
+          item.item_error_codec(),
         )
       {
         Ok(handle) ->
-          spawn_children(rest, [SpawnedChild(item: item, handle: handle), ..children], spawn_failures)
+          spawn_children(
+            rest,
+            [SpawnedChild(item: work_item, handle: handle), ..children],
+            spawn_failures,
+          )
         Error(spawn_error) -> {
           let failure = ItemOutcome(
-            item_id: item.id,
+            item_id: work_item.id,
             status: "failed",
             detail: "child spawn failed: " <> engine_error_message(spawn_error),
           )
@@ -227,7 +210,7 @@ fn apply_spawn_failures(progress: BatchProgress, failure_count: Int) -> BatchPro
   )
 }
 
-fn record_success(state: CollectionState, result: ItemResult) -> CollectionState {
+fn record_success(state: CollectionState, result: item.ItemResult) -> CollectionState {
   let progress = mark_completed(state.progress)
   let outcome = ItemOutcome(
     item_id: result.item_id,
@@ -245,12 +228,12 @@ fn record_success(state: CollectionState, result: ItemResult) -> CollectionState
 
 fn record_failure(
   state: CollectionState,
-  item: WorkItem,
-  child_error: error.ChildError(WorkflowError),
+  work_item: item.WorkItem,
+  child_error: error.ChildError(item.ItemError),
 ) -> CollectionState {
   let progress = mark_failed(state.progress)
   let outcome = ItemOutcome(
-    item_id: item.id,
+    item_id: work_item.id,
     status: "failed",
     detail: child_error_message(child_error),
   )
@@ -281,83 +264,17 @@ fn mark_failed(progress: BatchProgress) -> BatchProgress {
   )
 }
 
-fn process_item_activity(item: WorkItem) -> activity.Activity(WorkItem, ItemResult) {
-  activity.new(
-    "process-batch-item",
-    item,
-    work_item_codec(),
-    item_result_codec(),
-    local_process_item,
-  )
-}
-
-fn local_process_item(item: WorkItem) -> Result(ItemResult, error.ActivityError) {
-  case should_fail(item) {
-    True -> Error(error.terminal("deterministic failure for item " <> item.id))
-    False ->
-      Ok(ItemResult(
-        item_id: item.id,
-        processed_payload: "processed:" <> item.payload,
-        detail: "processed item " <> item.id,
-      ))
-  }
-}
-
-fn should_fail(item: WorkItem) -> Bool {
-  string.contains(item.id, "fail") || string.contains(item.payload, "fail")
-}
-
 fn batch_input_codec() -> codec.Codec(BatchInput) {
   codec.json_codec(batch_input_to_json, batch_input_decoder())
 }
 
 fn batch_input_to_json(input: BatchInput) -> json.Json {
-  json.object([#("items", json.array(input.items, work_item_to_json))])
+  json.object([#("items", json.array(input.items, item.work_item_to_json))])
 }
 
 fn batch_input_decoder() -> decode.Decoder(BatchInput) {
-  use items <- decode.field("items", decode.list(work_item_decoder()))
+  use items <- decode.field("items", decode.list(item.work_item_decoder()))
   decode.success(BatchInput(items: items))
-}
-
-fn work_item_codec() -> codec.Codec(WorkItem) {
-  codec.json_codec(work_item_to_json, work_item_decoder())
-}
-
-fn work_item_to_json(item: WorkItem) -> json.Json {
-  json.object([
-    #("id", json.string(item.id)),
-    #("payload", json.string(item.payload)),
-  ])
-}
-
-fn work_item_decoder() -> decode.Decoder(WorkItem) {
-  use id <- decode.field("id", decode.string)
-  use payload <- decode.field("payload", decode.string)
-  decode.success(WorkItem(id: id, payload: payload))
-}
-
-fn item_result_codec() -> codec.Codec(ItemResult) {
-  codec.json_codec(item_result_to_json, item_result_decoder())
-}
-
-fn item_result_to_json(result: ItemResult) -> json.Json {
-  json.object([
-    #("item_id", json.string(result.item_id)),
-    #("processed_payload", json.string(result.processed_payload)),
-    #("detail", json.string(result.detail)),
-  ])
-}
-
-fn item_result_decoder() -> decode.Decoder(ItemResult) {
-  use item_id <- decode.field("item_id", decode.string)
-  use processed_payload <- decode.field("processed_payload", decode.string)
-  use detail <- decode.field("detail", decode.string)
-  decode.success(ItemResult(
-    item_id: item_id,
-    processed_payload: processed_payload,
-    detail: detail,
-  ))
 }
 
 fn item_outcome_to_json(outcome: ItemOutcome) -> json.Json {
@@ -433,9 +350,9 @@ fn workflow_error_codec() -> codec.Codec(WorkflowError) {
 
 fn workflow_error_to_json(workflow_error: WorkflowError) -> json.Json {
   case workflow_error {
-    ActivityFailed(message) ->
+    InputDecodeFailed(message) ->
       json.object([
-        #("type", json.string("activity_failed")),
+        #("type", json.string("input_decode_failed")),
         #("message", json.string(message)),
       ])
     QueryRegistrationFailed(message) ->
@@ -449,50 +366,26 @@ fn workflow_error_to_json(workflow_error: WorkflowError) -> json.Json {
 fn workflow_error_decoder() -> decode.Decoder(WorkflowError) {
   use error_type <- decode.field("type", decode.string)
   case error_type {
-    "activity_failed" -> {
-      use message <- decode.field("message", decode.string)
-      decode.success(ActivityFailed(message: message))
-    }
     "query_registration_failed" -> {
       use message <- decode.field("message", decode.string)
       decode.success(QueryRegistrationFailed(message: message))
     }
     _ -> {
       use message <- decode.field("message", decode.string)
-      decode.success(ActivityFailed(message: message))
+      decode.success(InputDecodeFailed(message: message))
     }
   }
 }
 
-fn activity_error_message(activity_error: error.ActivityError) -> String {
-  case activity_error {
-    error.Retryable(message: message, details: _) -> message
-    error.Terminal(message: message, details: _) -> message
-    error.ActivityDecodeFailed(_) -> "activity result could not be decoded"
-    error.ActivityTimedOut(error.TimedOut(message: message)) -> message
-    error.ActivityCancelled(error.Cancelled(reason: reason)) -> reason
-    error.ActivityNonDeterministic(error.NonDeterminismViolation(message: message)) ->
-      message
-    error.ActivityEngineFailure(message: message) -> message
-  }
-}
-
-fn child_error_message(child_error: error.ChildError(WorkflowError)) -> String {
+fn child_error_message(child_error: error.ChildError(item.ItemError)) -> String {
   case child_error {
-    error.ChildWorkflowFailed(workflow_error) -> workflow_error_message(workflow_error)
+    error.ChildWorkflowFailed(item.ItemFailed(message)) -> message
     error.ChildOutputDecodeFailed(_) -> "child output could not be decoded"
     error.ChildErrorDecodeFailed(_) -> "child error could not be decoded"
     error.ChildCancelled(error.Cancelled(reason: reason)) -> reason
     error.ChildNonDeterministic(error.NonDeterminismViolation(message: message)) ->
       message
     error.ChildEngineFailure(message: message) -> message
-  }
-}
-
-fn workflow_error_message(workflow_error: WorkflowError) -> String {
-  case workflow_error {
-    ActivityFailed(message) -> message
-    QueryRegistrationFailed(message) -> message
   }
 }
 

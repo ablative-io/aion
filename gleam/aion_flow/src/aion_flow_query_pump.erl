@@ -31,7 +31,13 @@
 %% yield-point pump expects it. Gleam never touches raw process-dictionary
 %% types; `aion/internal/ffi` binds this helper instead. Returns `nil`
 %% (Gleam's `Nil`).
-register(Name, Handler) when is_binary(Name), is_function(Handler, 1) ->
+%%
+%% The fun guards are arity-blind `is_function/1`, not `is_function/2`: the
+%% beamr VM (as of 0.4.9) cannot execute the `is_function2` test instruction
+%% (its loader drops the arity operand), and this module's contract is to
+%% use only constructs beamr executes. Handler arity is already fixed to 1
+%% by the typed Gleam binding in `aion/internal/ffi`.
+register(Name, Handler) when is_binary(Name), is_function(Handler) ->
     erlang:put({aion_query_handler, Name}, Handler),
     nil.
 
@@ -64,7 +70,7 @@ run_handler(QueryId, Name) ->
                 QueryId,
                 <<"no handler registered in the process dictionary for query ", Name/binary>>
             );
-        Handler when is_function(Handler, 1) ->
+        Handler when is_function(Handler) ->
             try Handler(QueryId) of
                 %% The handler replies through `reply_query` itself and
                 %% returns that result. A failed reply ({error, _}: late
@@ -78,7 +84,7 @@ run_handler(QueryId, Name) ->
         _NotAFun ->
             reply_error(
                 QueryId,
-                <<"registered query handler for ", Name/binary, " is not a unary fun">>
+                <<"registered query handler for ", Name/binary, " is not a fun">>
             )
     end.
 

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["item_id", "processed_payload", "detail"],
+  "additionalProperties": false,
+  "properties": {
+    "item_id": { "type": "string" },
+    "processed_payload": { "type": "string" },
+    "detail": { "type": "string" }
+  }
+}
