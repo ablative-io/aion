@@ -42,7 +42,9 @@ pub enum PublishError {
 ///
 /// A send with no live subscribers is not a failure: live subscriptions are a
 /// tail, and events committed before a subscriber attaches are observed
-/// through history reads, not the broadcast.
+/// through history reads, not the broadcast. Once any subscriber has
+/// existed, up to `capacity` already-delivered events stay resident in the
+/// channel slots until overwritten by later sends.
 pub struct PublishingEventStore {
     inner: Arc<dyn EventStore>,
     events: broadcast::Sender<Event>,
@@ -75,6 +77,14 @@ impl PublishingEventStore {
 
 #[async_trait]
 impl WritableEventStore for PublishingEventStore {
+    /// Append through the wrapped store, then broadcast the committed events.
+    ///
+    /// Not cancellation-safe: dropping this future between the inner store's
+    /// durable commit and the broadcast sends would leave events committed
+    /// but never published — a silent gap no lag error reports. No engine
+    /// append site wraps this future in a timeout or `select!`; any new
+    /// caller must preserve that, or the subscribe-then-snapshot splice
+    /// proof (committed ⇒ published after attach) no longer holds.
     async fn append(
         &self,
         token: WriteToken,
@@ -86,6 +96,13 @@ impl WritableEventStore for PublishingEventStore {
             .append(token, workflow_id, events, expected_seq)
             .await?;
         for event in events {
+            // A send with no receivers would early-return without buffering,
+            // so skipping it (and the payload deep clone) is behavior-
+            // identical; checked per event because a subscriber may attach
+            // mid-batch.
+            if self.events.receiver_count() == 0 {
+                continue;
+            }
             // A broadcast send only errs when no subscriber is attached;
             // publication is a live tail, so that is a non-event, not a
             // swallowed failure.
