@@ -111,6 +111,17 @@ async fn query_when_registered(
             {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
+            Err(EngineError::Query(QueryError::ReplyDropped)) => {
+                // ReplyDropped on a workflow that should be parked usually
+                // means its process died under the engine; the recorded
+                // terminal (if any) carries the death cause, so surface
+                // durable history alongside the error.
+                let history = engine.store().read_history(workflow_id).await;
+                eprintln!(
+                    "query_when_registered({name}) observed ReplyDropped; history: {history:#?}"
+                );
+                return Err(EngineError::Query(QueryError::ReplyDropped));
+            }
             other => return other,
         }
     }
@@ -185,12 +196,20 @@ fn run_shape(history: &[Event]) -> Vec<String> {
 
 async fn release_and_await_42(
     engine: &Engine,
+    store: &Arc<dyn EventStore>,
     workflow_id: &WorkflowId,
     run_id: &RunId,
 ) -> TestResult {
-    engine
+    if let Err(error) = engine
         .signal(workflow_id, run_id, "release", signal_payload("release")?)
-        .await?;
+        .await
+    {
+        // A delivery failure here means the workflow process died under the
+        // engine; the recorded terminal carries the death cause, so surface
+        // the durable history alongside the delivery error.
+        let history = store.read_history(workflow_id).await?;
+        return Err(format!("release signal failed: {error:?}; history: {history:#?}").into());
+    }
     let result = engine
         .result(workflow_id, run_id)
         .await?
@@ -222,7 +241,7 @@ async fn query_answers_at_yield_point_without_touching_history() -> TestResult {
     let after = store.read_history(&workflow_id).await?;
     assert_eq!(after, before, "the query path must never append events");
 
-    release_and_await_42(&engine, &workflow_id, &run_id).await?;
+    release_and_await_42(&engine, &store, &workflow_id, &run_id).await?;
     let terminal = store.read_history(&workflow_id).await?;
     assert_eq!(
         event_kinds(&terminal),
@@ -267,7 +286,7 @@ async fn recovered_workflow_answers_queries_and_matches_unqueried_control_histor
         post_recovery, pre_restart,
         "neither replay nor queries may append or rewrite events"
     );
-    release_and_await_42(&recovered, &workflow_id, &run_id).await?;
+    release_and_await_42(&recovered, &store, &workflow_id, &run_id).await?;
     let queried_history = store.read_history(&workflow_id).await?;
     recovered.shutdown()?;
 
@@ -278,7 +297,7 @@ async fn recovered_workflow_answers_queries_and_matches_unqueried_control_histor
     control
         .signal(&control_id, &control_run, "step", signal_payload("step")?)
         .await?;
-    release_and_await_42(&control, &control_id, &control_run).await?;
+    release_and_await_42(&control, &control_store, &control_id, &control_run).await?;
     let control_history = control_store.read_history(&control_id).await?;
     control.shutdown()?;
 
@@ -351,7 +370,7 @@ async fn unknown_query_name_is_typed_and_workflow_still_answers() -> TestResult 
     let (answer, _) = state_reply(&engine.query(&workflow_id, &run_id, "state").await?)?;
     assert_eq!(answer, 1);
 
-    release_and_await_42(&engine, &workflow_id, &run_id).await?;
+    release_and_await_42(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }
@@ -391,7 +410,7 @@ async fn raising_handler_is_handler_failed_and_workflow_survives() -> TestResult
     // subsequent signal completes it normally.
     let (answer, _) = state_reply(&engine.query(&workflow_id, &run_id, "state").await?)?;
     assert_eq!(answer, 1);
-    release_and_await_42(&engine, &workflow_id, &run_id).await?;
+    release_and_await_42(&engine, &store, &workflow_id, &run_id).await?;
     let terminal = store.read_history(&workflow_id).await?;
     assert_eq!(
         event_kinds(&terminal),
@@ -483,7 +502,7 @@ async fn eight_concurrent_queries_are_all_answered_with_distinct_ids() -> TestRe
         vec!["workflow_started"]
     );
 
-    release_and_await_42(&engine, &workflow_id, &run_id).await?;
+    release_and_await_42(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }
@@ -579,7 +598,7 @@ async fn query_during_active_sleep_loop_is_answered_at_the_next_yield_point() ->
     assert_eq!(answer, 1);
     assert!(!query_id.is_empty());
 
-    release_and_await_42(&engine, &workflow_id, &run_id).await?;
+    release_and_await_42(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }
@@ -621,7 +640,7 @@ async fn handler_calling_recording_nif_is_handler_failed_with_zero_events() -> T
     // and completes normally.
     let (answer, _) = state_reply(&engine.query(&workflow_id, &run_id, "state").await?)?;
     assert_eq!(answer, 1);
-    release_and_await_42(&engine, &workflow_id, &run_id).await?;
+    release_and_await_42(&engine, &store, &workflow_id, &run_id).await?;
     let terminal = store.read_history(&workflow_id).await?;
     assert_eq!(
         event_kinds(&terminal),

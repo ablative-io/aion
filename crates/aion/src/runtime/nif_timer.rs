@@ -249,7 +249,13 @@ pub(super) fn build_context_for_pid(
     pid: u64,
 ) -> Result<NifContext, NifTimerError> {
     let bridge = timer_bridge(state)?;
-    NifContext::new(pid, bridge.registry.as_ref(), bridge.tokio_handle.clone()).map_err(Into::into)
+    NifContext::new(
+        pid,
+        bridge.registry.as_ref(),
+        bridge.tokio_handle.clone(),
+        bridge.birth_wait,
+    )
+    .map_err(Into::into)
 }
 
 pub(super) fn decode_duration_arg(label: &str, term: Term) -> Result<Duration, NifTimerError> {

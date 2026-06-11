@@ -46,6 +46,8 @@ pub(super) struct QueryBridgeState {
     engine: Arc<dyn EngineHandle>,
     tokio_handle: Handle,
     mailbox_engine: Arc<QueryMailboxEngine>,
+    /// Builder-supplied bound for the registry-registration birth wait.
+    birth_wait: crate::runtime::SignalDeliveryConfig,
     /// Engine-configured query timeout for in-engine `dispatch_query` calls.
     /// `None` means the engine was built without `EngineBuilder::query_timeout`
     /// and dispatching fails typed — never a hardcoded fallback.
@@ -96,6 +98,7 @@ pub(crate) fn install_query_bridge(
         tokio_handle,
         mailbox_engine.clone(),
         query_timeout,
+        runtime.signal_delivery(),
     );
     mailbox_engine
 }
@@ -107,6 +110,7 @@ pub(super) struct TestQueryBridgeParts {
     pub(super) runtime: std::sync::Weak<RuntimeHandle>,
     pub(super) tokio_handle: Handle,
     pub(super) query_timeout: Option<Duration>,
+    pub(super) birth_wait: crate::runtime::SignalDeliveryConfig,
 }
 
 #[cfg(test)]
@@ -123,6 +127,7 @@ fn install_query_bridge_with_engine(state: &Arc<EngineNifState>, parts: TestQuer
         parts.tokio_handle,
         mailbox_engine,
         parts.query_timeout,
+        parts.birth_wait,
     );
 }
 
@@ -133,12 +138,14 @@ fn install_query_bridge_state(
     tokio_handle: Handle,
     mailbox_engine: Arc<QueryMailboxEngine>,
     query_timeout: Option<Duration>,
+    birth_wait: crate::runtime::SignalDeliveryConfig,
 ) {
     let installed = QueryBridgeState {
         registry,
         engine,
         tokio_handle,
         mailbox_engine,
+        birth_wait,
         query_timeout,
     };
     match state.query_bridge.lock() {
@@ -153,12 +160,20 @@ pub(crate) fn register_query_impl(
     config: &str,
     caller_pid: Option<u64>,
 ) -> Result<String, String> {
-    let context = context_for(state, caller_pid)?;
+    // The calling pid is authoritative: the NIF executes inside the workflow
+    // process, so no registry lookup is needed — and none is permitted. The
+    // start path inserts the registry handle only after the process is
+    // spawned, so a workflow whose first instruction registers a handler can
+    // run this NIF before its handle exists; requiring the entry made that
+    // birth window a typed failure the SDK treats as fatal, killing the
+    // workflow at startup (F8 registration race). Registration also runs on
+    // the normal schedulers and must never read history or block.
+    let pid = calling_workflow_pid(caller_pid)?;
     let _ = config;
     state
         .query_handlers
         .lock_handlers()?
-        .insert((context.pid(), name.to_owned()));
+        .insert((pid, name.to_owned()));
     Ok("registered".to_owned())
 }
 
@@ -168,11 +183,15 @@ pub(crate) fn reply_query_impl(
     response_payload: &str,
     caller_pid: Option<u64>,
 ) -> Result<String, String> {
-    let context = context_for(state, caller_pid)?;
+    // The calling pid is authoritative (see `register_query_impl`); the
+    // reply NIFs run on the normal schedulers (F8), so they must never read
+    // history or block. A full `NifContext` is replay machinery the reply
+    // path does not need.
+    let pid = calling_workflow_pid(caller_pid)?;
     // The servicing guard lifts even when the reply itself fails below: a
     // late reply after caller timeout must not leave the workflow refusing
     // every recording NIF forever.
-    clear_servicing_query(state, context.pid(), query_id);
+    clear_servicing_query(state, pid, query_id);
     let pending = state
         .query_handlers
         .lock_pending()?
@@ -192,8 +211,8 @@ pub(crate) fn reply_query_error_impl(
     message: &str,
     caller_pid: Option<u64>,
 ) -> Result<String, String> {
-    let context = context_for(state, caller_pid)?;
-    clear_servicing_query(state, context.pid(), query_id);
+    let pid = calling_workflow_pid(caller_pid)?;
+    clear_servicing_query(state, pid, query_id);
     let pending = state
         .query_handlers
         .lock_pending()?
@@ -443,8 +462,30 @@ pub(crate) fn dispatch_query(args: &[Term], ctx: &mut ProcessContext) -> Result<
 fn context_for(state: &EngineNifState, caller_pid: Option<u64>) -> Result<NifContext, String> {
     let pid = caller_pid.ok_or_else(|| "missing_process_pid".to_owned())?;
     let bridge = query_bridge(state)?;
-    NifContext::new(pid, bridge.registry.as_ref(), bridge.tokio_handle.clone())
-        .map_err(|error| error.to_string())
+    NifContext::new(
+        pid,
+        bridge.registry.as_ref(),
+        bridge.tokio_handle.clone(),
+        bridge.birth_wait,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Resolve the calling workflow pid from the NIF invocation context.
+///
+/// The pid beamr hands a native is the process executing it, so it needs no
+/// registry confirmation — and must not get one: the start path registers
+/// the workflow handle only after spawning the process, so a workflow whose
+/// first instructions call these NIFs can legitimately run before its
+/// registry entry exists (the F8 registration race). These NIFs also run on
+/// the normal schedulers: a blocking history read here stalls a scheduler
+/// thread, and routing the replies through the dirty pool instead is what
+/// originally let beamr's dirty-result resume kill the workflow process
+/// (the dirty resume deep-copies the result onto the workflow heap without
+/// being able to GC; a full heap turns the copy into a fatal `Badarg`).
+/// Queries are non-recording, so the pid is all these NIFs ever need.
+fn calling_workflow_pid(caller_pid: Option<u64>) -> Result<u64, String> {
+    caller_pid.ok_or_else(|| "missing_process_pid".to_owned())
 }
 
 fn query_bridge(state: &EngineNifState) -> Result<QueryBridgeState, String> {

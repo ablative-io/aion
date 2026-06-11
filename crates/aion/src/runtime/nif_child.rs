@@ -133,17 +133,86 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             })
             .map_err(|error| context_error(&error))?;
 
+            // From the durable record on, the start is an engine-internal
+            // obligation, never a workflow-visible outcome (F3): replay
+            // resolves this spawn from the recorded event as success, so the
+            // live path must report success too — a start failure here is
+            // recovered in the background (or by the next epoch's startup
+            // sweep), exactly like the crash-in-the-window case.
             let engine = NifChildEngine::new(Arc::clone(&bridge), nif.workflow_handle().clone());
-            engine
-                .spawn_child_workflow(ChildWorkflowSpawnRequest {
-                    parent_workflow_id: nif.workflow_id().clone(),
-                    child_workflow_id: child_workflow_id.clone(),
-                    workflow_type,
-                    input,
-                })
-                .map_err(|error| format!("child_spawn:{error}"))?;
+            let request = ChildWorkflowSpawnRequest {
+                parent_workflow_id: nif.workflow_id().clone(),
+                child_workflow_id: child_workflow_id.clone(),
+                workflow_type: workflow_type.clone(),
+                input: input.clone(),
+            };
+            match engine.spawn_child_workflow(request) {
+                Ok(result) if result.child_workflow_id == child_workflow_id => {}
+                Ok(result) => {
+                    // Engine invariant violation (F6): the start path must
+                    // echo the pre-allocated identity it was given. Recover
+                    // through the same internal path as a failed start; the
+                    // recovery task verifies store truth before retrying.
+                    tracing::error!(
+                        parent_workflow_id = %nif.workflow_id(),
+                        recorded_child_workflow_id = %child_workflow_id,
+                        started_workflow_id = %result.child_workflow_id,
+                        "engine invariant violation: child start echoed a different workflow id"
+                    );
+                    recover_spawn_in_background(
+                        &bridge,
+                        &nif,
+                        &child_workflow_id,
+                        workflow_type,
+                        input,
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        parent_workflow_id = %nif.workflow_id(),
+                        child_workflow_id = %child_workflow_id,
+                        error = %error,
+                        "recorded child start failed; recovering in the background"
+                    );
+                    recover_spawn_in_background(
+                        &bridge,
+                        &nif,
+                        &child_workflow_id,
+                        workflow_type,
+                        input,
+                    );
+                }
+            }
             term_or_encoding_error(ok_result_term(&child_workflow_id.to_string()))
         }
+    }
+}
+
+/// Hand a failed post-record child start to the background recovery task.
+fn recover_spawn_in_background(
+    bridge: &Arc<ChildNifBridge>,
+    nif: &NifContext,
+    child_workflow_id: &WorkflowId,
+    workflow_type: String,
+    input: Payload,
+) {
+    let armed = super::nif_child_spawn_retry::ensure_child_started_in_background(
+        bridge,
+        super::nif_child_spawn_retry::RecordedChildSpawn {
+            parent_workflow_id: nif.workflow_id().clone(),
+            child_workflow_id: child_workflow_id.clone(),
+            workflow_type,
+            input,
+        },
+    );
+    if !armed {
+        // Shutdown gate or an already-armed task: either the next epoch's
+        // startup sweep repairs the recorded-but-never-started child, or the
+        // existing task already owns the obligation.
+        tracing::debug!(
+            child_workflow_id = %child_workflow_id,
+            "spawn recovery not armed (already armed or epoch closing)"
+        );
     }
 }
 
@@ -249,11 +318,21 @@ fn await_child_step(
         // data with `ok:`/`error:` payload prefixes (the SDK decode
         // contract); `{error, _}` is reserved for engine faults.
         ResolveOutcome::Recorded(Resolution::ChildCompleted(result)) => {
+            if let Some(message) =
+                scope_expired_before_child_terminal(state, bridge, &nif, pid, child_workflow_id)
+            {
+                return Ok(AwaitChildStep::ScopeExpired(message));
+            }
             state.pending_awaits.remove(&pid);
             let payload = payload_text(&result)?;
             Ok(AwaitChildStep::ChildResolved(format!("ok:{payload}")))
         }
         ResolveOutcome::Recorded(Resolution::ChildFailed(error)) => {
+            if let Some(message) =
+                scope_expired_before_child_terminal(state, bridge, &nif, pid, child_workflow_id)
+            {
+                return Ok(AwaitChildStep::ScopeExpired(message));
+            }
             state.pending_awaits.remove(&pid);
             let details = workflow_error_text(&error);
             Ok(AwaitChildStep::ChildResolved(format!("error:{details}")))
@@ -263,10 +342,13 @@ fn await_child_step(
         }
         ResolveOutcome::ResumeLive => {
             // An expired enclosing with_timeout deadline aborts the await:
-            // the typed scope error is returned, the pin is released, and
-            // the child is left running (it remains awaitable; D-1).
+            // the typed scope error is returned, the pin is released, the
+            // armed watcher is disarmed (F1a — a later child terminal must
+            // not be recorded into history the live run already branched
+            // away from), and the child is left running (D-1).
             if let Some(message) = super::nif_timeout::expired_scope_message(state, pid) {
                 state.pending_awaits.remove(&pid);
+                bridge.child_tasks().abort_watch(pid, child_workflow_id);
                 return Ok(AwaitChildStep::ScopeExpired(message));
             }
             ensure_awaitable_child(bridge, &nif, child_workflow_id)?;
@@ -274,13 +356,13 @@ fn await_child_step(
                 store: bridge.store(),
                 registry: bridge.registry_arc(),
                 runtime: bridge.runtime(),
-                watches: bridge.child_terminal_watches(),
+                tasks: bridge.child_tasks(),
                 backoff: bridge.watch_backoff(),
                 parent: nif.workflow_handle(),
                 child_workflow_id: child_workflow_id.clone(),
             };
             // Idempotent: re-entries while the watcher runs are no-ops.
-            arm_child_terminal_watch(&bridge.tokio_handle(), context);
+            arm_child_terminal_watch(context);
             state.pending_awaits.insert(
                 pid,
                 PendingAwait::Child {
@@ -290,6 +372,58 @@ fn await_child_step(
             Ok(AwaitChildStep::Suspend)
         }
     }
+}
+
+/// F1b — order an enclosing expired `with_timeout` deadline against the
+/// recorded child terminal, identically on the live and replayed paths.
+///
+/// The watcher records the child terminal asynchronously, so a deadline
+/// `TimerFired` and a `ChildWorkflowCompleted/Failed` can both be in the
+/// run segment when this await resolves. History order is the truth both
+/// paths share: if the deadline fired before the child terminal was
+/// recorded, the await takes the timeout branch (releasing the pin and
+/// disarming the watcher); only a terminal recorded *before* the deadline
+/// resolves as the child's outcome. Without this rule a live run that
+/// timed out (terminal recorded later by a racing watcher) would replay
+/// into the success branch — opposite branches live vs replay.
+fn scope_expired_before_child_terminal(
+    state: &EngineNifState,
+    bridge: &Arc<ChildNifBridge>,
+    nif: &NifContext,
+    pid: u64,
+    child_workflow_id: &WorkflowId,
+) -> Option<String> {
+    let deadline = super::nif_timeout::expired_scope_deadline(state, pid, nif.history())?;
+    let child_terminal_seq = nif.history().iter().find_map(|event| match event {
+        aion_core::Event::ChildWorkflowCompleted {
+            envelope,
+            child_workflow_id: recorded,
+            ..
+        }
+        | aion_core::Event::ChildWorkflowFailed {
+            envelope,
+            child_workflow_id: recorded,
+            ..
+        } if recorded == child_workflow_id => Some(envelope.seq),
+        _ => None,
+    });
+    let deadline_first = match (deadline, child_terminal_seq) {
+        (super::nif_timeout::ExpiredScopeDeadline::RecordedAt(fired_seq), Some(child_seq)) => {
+            fired_seq < child_seq
+        }
+        // An expiry without a recorded position orders before every arrival
+        // (replay-derived scope state), and a resolved child terminal must be
+        // in the segment — if it cannot be located the deterministic choice
+        // is the deadline branch either way.
+        (super::nif_timeout::ExpiredScopeDeadline::Unordered, _)
+        | (super::nif_timeout::ExpiredScopeDeadline::RecordedAt(_), None) => true,
+    };
+    if !deadline_first {
+        return None;
+    }
+    state.pending_awaits.remove(&pid);
+    bridge.child_tasks().abort_watch(pid, child_workflow_id);
+    Some(super::nif_timeout::SCOPE_EXPIRED_MESSAGE.to_owned())
 }
 
 /// Reject awaiting a child the engine has no trace of, before suspending.
@@ -363,6 +497,7 @@ fn new_context(bridge: &ChildNifBridge, pid: u64) -> Result<NifContext, String> 
         bridge.registry(),
         bridge.tokio_handle(),
         Some(bridge.store()),
+        bridge.watch_backoff(),
     )
     .map_err(|error| context_error(&error))
 }
@@ -532,7 +667,7 @@ mod tests {
                 search_attribute_schema: Arc::new(aion_core::SearchAttributeSchema::new()),
                 tokio_handle: tokio::runtime::Handle::current(),
                 watch_backoff: SignalDeliveryConfig::default(),
-            }));
+            })?);
             Ok(Self {
                 state: Arc::new(EngineNifState::default()),
                 bridge,
@@ -560,7 +695,7 @@ mod tests {
         }
 
         fn shutdown(self) -> TestResult {
-            self.bridge.abort_all_child_terminal_watches();
+            self.bridge.shutdown_child_tasks();
             self.runtime.shutdown()?;
             Ok(())
         }
@@ -658,12 +793,14 @@ mod tests {
             &registry,
             runtime.handle().clone(),
             Some(Arc::clone(&store)),
+            SignalDeliveryConfig::default(),
         )?;
         let second_call = NifContext::new_with_history_store(
             91,
             &registry,
             runtime.handle().clone(),
             Some(store),
+            SignalDeliveryConfig::default(),
         )?;
 
         assert_eq!(next_child_key(&first_call), CorrelationKey::Child(0));
@@ -684,12 +821,12 @@ mod tests {
         // First live arrival: pin set, watcher armed, suspend requested.
         assert_eq!(harness.step(), Ok(AwaitChildStep::Suspend));
         assert_eq!(harness.pinned_child(), Some(child.clone()));
-        assert_eq!(harness.bridge.child_terminal_watches().armed_count(), 1);
+        assert_eq!(harness.bridge.child_tasks().armed_watch_count(), 1);
 
         // Wake re-entry with nothing recorded: same pin, no second watcher.
         assert_eq!(harness.step(), Ok(AwaitChildStep::Suspend));
         assert_eq!(harness.pinned_child(), Some(child));
-        assert_eq!(harness.bridge.child_terminal_watches().armed_count(), 1);
+        assert_eq!(harness.bridge.child_tasks().armed_watch_count(), 1);
         harness.shutdown()
     }
 
@@ -821,12 +958,154 @@ mod tests {
             ))
         );
         assert_eq!(harness.pinned_child(), None);
-        assert_eq!(harness.bridge.child_terminal_watches().armed_count(), 0);
+        assert_eq!(harness.bridge.child_tasks().armed_watch_count(), 0);
         assert_eq!(
             harness.store.read_history(&parent_id).await?,
             parent_history_before
         );
         assert!(harness.store.read_history(&child).await?.is_empty());
+        harness.shutdown()
+    }
+
+    /// F1a: a scope expiring after the watcher was armed must disarm it —
+    /// otherwise the watcher records the child terminal into a history the
+    /// live run already branched away from, and replay resolves the await
+    /// against an arrival live never observed. Before the fix the watcher
+    /// stayed armed (count 1) through the expired-scope abort.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_scope_disarms_the_armed_watcher() -> TestResult {
+        let child = WorkflowId::new_v4();
+        let parent_id = WorkflowId::new_v4();
+        let harness =
+            AwaitHarness::over_parent_history(307, &child, &[child_started(&parent_id, &child, 2)])
+                .await?;
+
+        // Live first arrival: the watcher arms and the await parks.
+        assert_eq!(harness.step(), Ok(AwaitChildStep::Suspend));
+        assert_eq!(harness.bridge.child_tasks().armed_watch_count(), 1);
+
+        // The enclosing with_timeout deadline expires before any terminal.
+        harness
+            .state
+            .timeout_scopes
+            .insert(9, TimeoutScope::replayed_for_test(harness.pid, true));
+        harness
+            .state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![9]);
+
+        assert_eq!(
+            harness.step(),
+            Ok(AwaitChildStep::ScopeExpired(
+                "timeout:deadline expired".to_owned()
+            ))
+        );
+        assert_eq!(harness.pinned_child(), None);
+        assert_eq!(
+            harness.bridge.child_tasks().armed_watch_count(),
+            0,
+            "the expired-scope abort must disarm the await's watcher (F1a)"
+        );
+        harness.shutdown()
+    }
+
+    /// F1b: when both the scope deadline's `TimerFired` and the child
+    /// terminal are recorded, history order decides the branch — a deadline
+    /// recorded first means the live run timed out before the watcher's
+    /// record landed, so resolution takes the timeout branch on live and
+    /// replay alike. Before the fix this resolved `ChildResolved("ok:42")`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deadline_recorded_before_child_terminal_takes_the_timeout_branch() -> TestResult {
+        let child = WorkflowId::new_v4();
+        let parent_id = WorkflowId::new_v4();
+        let harness = AwaitHarness::over_parent_history(
+            308,
+            &child,
+            &[
+                child_started(&parent_id, &child, 2),
+                Event::TimerFired {
+                    envelope: envelope(&parent_id, 3),
+                    timer_id: aion_core::TimerId::anonymous(0),
+                },
+                Event::ChildWorkflowCompleted {
+                    envelope: envelope(&parent_id, 4),
+                    child_workflow_id: child.clone(),
+                    result: Payload::from_json(&json!(42))?,
+                },
+            ],
+        )
+        .await?;
+        harness.state.pending_awaits.insert(
+            harness.pid,
+            PendingAwait::Child {
+                child_workflow_id: child.clone(),
+            },
+        );
+        harness
+            .state
+            .timeout_scopes
+            .insert(11, TimeoutScope::replayed_for_test(harness.pid, true));
+        harness
+            .state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![11]);
+
+        assert_eq!(
+            harness.step(),
+            Ok(AwaitChildStep::ScopeExpired(
+                "timeout:deadline expired".to_owned()
+            )),
+            "a deadline recorded before the child terminal must win (F1b)"
+        );
+        assert_eq!(harness.pinned_child(), None);
+        harness.shutdown()
+    }
+
+    /// F1b converse: a child terminal recorded *before* the deadline fired
+    /// was observed by the live run, so both live and replay resolve the
+    /// child's outcome even though the scope is expired by resolution time.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn child_terminal_recorded_before_deadline_resolves_the_child() -> TestResult {
+        let child = WorkflowId::new_v4();
+        let parent_id = WorkflowId::new_v4();
+        let harness = AwaitHarness::over_parent_history(
+            309,
+            &child,
+            &[
+                child_started(&parent_id, &child, 2),
+                Event::ChildWorkflowCompleted {
+                    envelope: envelope(&parent_id, 3),
+                    child_workflow_id: child.clone(),
+                    result: Payload::from_json(&json!(42))?,
+                },
+                Event::TimerFired {
+                    envelope: envelope(&parent_id, 4),
+                    timer_id: aion_core::TimerId::anonymous(0),
+                },
+            ],
+        )
+        .await?;
+        harness.state.pending_awaits.insert(
+            harness.pid,
+            PendingAwait::Child {
+                child_workflow_id: child.clone(),
+            },
+        );
+        harness
+            .state
+            .timeout_scopes
+            .insert(13, TimeoutScope::replayed_for_test(harness.pid, true));
+        harness
+            .state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![13]);
+
+        assert_eq!(
+            harness.step(),
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned())),
+            "a child terminal recorded before the deadline resolves the child"
+        );
+        assert_eq!(harness.pinned_child(), None);
         harness.shutdown()
     }
 
@@ -874,7 +1153,7 @@ mod tests {
             "error: {error}"
         );
         assert_eq!(harness.pinned_child(), None);
-        assert_eq!(harness.bridge.child_terminal_watches().armed_count(), 0);
+        assert_eq!(harness.bridge.child_tasks().armed_watch_count(), 0);
         harness.shutdown()
     }
 }

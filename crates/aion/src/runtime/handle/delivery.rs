@@ -170,6 +170,7 @@ impl RuntimeHandle {
             .insert((parent_pid, activity_pid), payload);
         let marker = self.atom_table.intern("aion_activity_result");
         if self.scheduler.enqueue_atom_message(parent_pid, marker) {
+            self.confirm_marker_wake(parent_pid);
             Ok(())
         } else {
             Err(runtime_error(format!(
@@ -202,6 +203,7 @@ impl RuntimeHandle {
         correlation_id: &str,
     ) -> Result<(), EngineError> {
         if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+            self.confirm_marker_wake(workflow_pid);
             tracing::debug!(
                 workflow_pid,
                 correlation_id,
@@ -343,6 +345,7 @@ impl RuntimeHandle {
         let mut backoff = self.signal_delivery.initial_backoff;
         for attempt in 1..=attempts {
             if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+                self.confirm_marker_wake(workflow_pid);
                 return Ok(());
             }
 
@@ -367,6 +370,26 @@ impl RuntimeHandle {
         Err(runtime_error(format!(
             "failed to deliver signal to workflow process {workflow_pid} after {attempts} attempts"
         )))
+    }
+
+    /// Arm the consumption-gated wake ladder for a delivered marker.
+    ///
+    /// `enqueue_atom_message` stores the message and wakes the pid, but
+    /// beamr 0.4.9's `Wait`-arm gap can swallow that wake (the message is
+    /// stored after the parked process's mailbox re-check and the wake runs
+    /// before its wait-set insert), parking the process forever on a
+    /// one-shot delivery. Follow-up wakes land after the insert and drain
+    /// the already-stored message; the ladder stops once the target's
+    /// wake-observation epoch moves — a suspending-native entry or process
+    /// exit after this delivery — so it survives arbitrarily stretched gaps
+    /// (OS preemption) without waking healthy processes forever.
+    fn confirm_marker_wake(&self, workflow_pid: Pid) {
+        let state = std::sync::Arc::clone(self.nif_state());
+        let snapshot = state.wake_observation_epoch(workflow_pid);
+        self.wake_confirmer
+            .confirm(self.scheduler.wake_notifier(workflow_pid), move || {
+                state.wake_ladder_done(workflow_pid, snapshot)
+            });
     }
 }
 

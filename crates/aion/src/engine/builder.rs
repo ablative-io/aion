@@ -67,6 +67,7 @@ fn install_engine_nif_seams(
         Arc::clone(registry),
         Arc::clone(store),
         tokio::runtime::Handle::current(),
+        runtime.signal_delivery(),
     );
     install_nif_context_source(
         nif_state,
@@ -74,6 +75,7 @@ fn install_engine_nif_seams(
             Arc::clone(registry),
             tokio::runtime::Handle::current(),
             Arc::clone(store),
+            runtime.signal_delivery(),
         )),
     );
     let query_mailbox_engine = install_query_bridge(
@@ -530,7 +532,7 @@ impl EngineBuilder {
             signal_handoff: &signal_handoff,
             search_attribute_schema: &search_attribute_schema,
             watch_backoff: self.signal_delivery,
-        });
+        })?;
 
         // Startup recovery re-spawns active workflow processes, and those
         // processes begin replaying on scheduler threads immediately. Replay
@@ -594,7 +596,9 @@ struct ChildBridgeAssembly<'a> {
     watch_backoff: SignalDeliveryConfig,
 }
 
-fn install_configured_child_nif_bridge(assembly: &ChildBridgeAssembly<'_>) {
+fn install_configured_child_nif_bridge(
+    assembly: &ChildBridgeAssembly<'_>,
+) -> Result<(), EngineError> {
     install_child_nif_bridge(
         assembly.nif_state,
         Arc::new(ChildNifBridge::new(ChildNifBridgeParts {
@@ -608,8 +612,9 @@ fn install_configured_child_nif_bridge(assembly: &ChildBridgeAssembly<'_>) {
             search_attribute_schema: Arc::clone(assembly.search_attribute_schema),
             tokio_handle: tokio::runtime::Handle::current(),
             watch_backoff: assembly.watch_backoff,
-        })),
+        })?),
     );
+    Ok(())
 }
 
 fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
@@ -641,7 +646,7 @@ mod tests {
     use futures::StreamExt;
     use serde_json::json;
 
-    use crate::engine::api::{
+    use crate::engine::api_schedule::{
         schedule_coordinator_run_id, schedule_coordinator_workflow_id,
         schedule_coordinator_workflow_type,
     };

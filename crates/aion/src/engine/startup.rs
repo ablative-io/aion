@@ -5,7 +5,10 @@ use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
 
-use aion_core::{Event, Payload, RunId, SearchAttributeSchema, status_from_events};
+use aion_core::{
+    Event, Payload, RunId, SearchAttributeSchema, WorkflowFilter, WorkflowStatus,
+    status_from_events,
+};
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 
@@ -21,7 +24,7 @@ use crate::{
     time::TimerRecovery,
 };
 
-use super::api::{
+use super::api_schedule::{
     schedule_coordinator_run_id, schedule_coordinator_workflow_id,
     schedule_coordinator_workflow_type,
 };
@@ -69,7 +72,8 @@ pub(super) async fn recover_active_workflows_on_startup(
             &context.runtime,
         ))) as Arc<dyn ActiveWorkflowRecoverySeam>
     });
-    repopulate_active_workflows(&context, recovery.as_ref()).await
+    repopulate_active_workflows(&context, recovery.as_ref()).await?;
+    sweep_continued_as_new_replacements(&context).await
 }
 
 async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
@@ -270,6 +274,132 @@ async fn sweep_recorded_children(
         .await?;
     }
     Ok(())
+}
+
+/// Start the recorded-but-never-started successor run for every workflow
+/// whose latest run continued as new — the continue-as-new dual of
+/// [`sweep_recorded_children`].
+///
+/// The successor run is normally started by the exiting run's monitor
+/// (`start_continuation_replacement`); a crash after the
+/// `WorkflowContinuedAsNew` record but before the successor's
+/// `WorkflowStarted` leaves the whole run chain wedged: the history projects
+/// the *terminal* `ContinuedAsNew` status, so `list_active` never surfaces
+/// the workflow and no recovery path restarts it — and a parent awaiting the
+/// child backs off in its watcher forever. This sweep enumerates exactly
+/// those histories by status projection and starts the successor under the
+/// recorded identity, input, and run chain.
+///
+/// Idempotent: a started successor appends a `WorkflowStarted` that flips
+/// the projection back to `Running`, so a repaired workflow never matches
+/// the enumeration again, and the in-history `parent_run_id` guard mirrors
+/// `start_continuation_replacement`'s own duplicate check.
+async fn sweep_continued_as_new_replacements(
+    context: &StartupRecoveryContext<'_>,
+) -> Result<(), EngineError> {
+    let stranded = context
+        .store
+        .as_ref()
+        .query(&WorkflowFilter {
+            status: Some(WorkflowStatus::ContinuedAsNew),
+            ..WorkflowFilter::default()
+        })
+        .await?;
+    for summary in stranded {
+        let workflow_id = summary.workflow_id;
+        let history = context.store.as_ref().read_history(&workflow_id).await?;
+        // The most recent rotation is the one that lost its successor; any
+        // earlier rotation already has a later `WorkflowStarted`.
+        let Some((input, type_override, continued_run_id)) =
+            history.iter().rev().find_map(|event| match event {
+                Event::WorkflowContinuedAsNew {
+                    input,
+                    workflow_type,
+                    parent_run_id,
+                    ..
+                } => Some((input.clone(), workflow_type.clone(), parent_run_id.clone())),
+                _ => None,
+            })
+        else {
+            // The projection said continue-as-new but the event is gone —
+            // a racing append between the query and the read. Nothing to
+            // repair against this snapshot.
+            continue;
+        };
+        let already_started = history.iter().any(|event| {
+            matches!(
+                event,
+                Event::WorkflowStarted {
+                    parent_run_id: Some(existing),
+                    ..
+                } if existing == &continued_run_id
+            )
+        });
+        if already_started {
+            continue;
+        }
+        let replacement_type = match type_override {
+            Some(workflow_type) => workflow_type,
+            None => continued_run_workflow_type(&workflow_id, &history, &continued_run_id)?,
+        };
+        tracing::info!(
+            workflow_id = %workflow_id,
+            continued_run_id = %continued_run_id,
+            workflow_type = %replacement_type,
+            "starting continue-as-new successor run found by the recovery sweep"
+        );
+        start_workflow_with_options(
+            StartWorkflowContext {
+                store: Arc::clone(&context.store),
+                visibility_store: Arc::clone(&context.visibility_store),
+                loaded_workflows: context.loaded_workflows,
+                runtime: Arc::clone(&context.runtime),
+                supervision: Arc::clone(&context.supervision),
+                registry: Arc::clone(&context.registry),
+                signal_handoff: None,
+                search_attribute_schema: Arc::clone(&context.search_attribute_schema),
+            },
+            &replacement_type,
+            input,
+            StartWorkflowOptions {
+                workflow_id: Some(workflow_id.clone()),
+                parent_run_id: Some(continued_run_id),
+                // Recorded attributes carry into the replacement run's
+                // projection, exactly as in the monitor's replacement start.
+                ..StartWorkflowOptions::default()
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Workflow type of the run that recorded the continue-as-new terminal.
+///
+/// The replacement inherits it when the rotation carried no type override —
+/// the startup-time equivalent of the exit monitor's `handle.workflow_type()`
+/// fallback.
+fn continued_run_workflow_type(
+    workflow_id: &aion_core::WorkflowId,
+    history: &[Event],
+    continued_run_id: &RunId,
+) -> Result<String, EngineError> {
+    history
+        .iter()
+        .find_map(|event| match event {
+            Event::WorkflowStarted {
+                run_id,
+                workflow_type,
+                ..
+            } if run_id == continued_run_id => Some(workflow_type.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| EngineError::Load {
+            reason: format!(
+                "workflow `{workflow_id}` continued from run `{continued_run_id}` \
+                 but that run has no WorkflowStarted event in durable history"
+            ),
+        })
 }
 
 struct RecoveredMonitorParts {

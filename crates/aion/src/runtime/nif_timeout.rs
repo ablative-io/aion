@@ -31,6 +31,9 @@ use crate::runtime::nif_timer::{
     recorded_now, schedule_sleep_timer, timer_command, timer_terminal_recorded,
 };
 
+/// Canonical workflow-visible message for an expired deadline scope.
+pub(crate) const SCOPE_EXPIRED_MESSAGE: &str = "timeout:deadline expired";
+
 /// One armed `with_timeout` deadline scope.
 pub(super) struct TimeoutScope {
     /// Workflow process the scope belongs to.
@@ -71,7 +74,7 @@ pub(crate) fn expired_scope_message(state: &EngineNifState, pid: u64) -> Option<
                 continue;
             };
             match scope.replay_timed_out {
-                Some(true) => return Some("timeout:deadline expired".to_owned()),
+                Some(true) => return Some(SCOPE_EXPIRED_MESSAGE.to_owned()),
                 Some(false) => {}
                 None => live_deadlines.push(scope.timer_id.clone()),
             }
@@ -84,7 +87,80 @@ pub(crate) fn expired_scope_message(state: &EngineNifState, pid: u64) -> Option<
     live_deadlines
         .iter()
         .any(|timer_id| timer_fired_recorded(&context, timer_id).unwrap_or(false))
-        .then(|| "timeout:deadline expired".to_owned())
+        .then(|| SCOPE_EXPIRED_MESSAGE.to_owned())
+}
+
+/// History position of an expired enclosing `with_timeout` deadline.
+///
+/// Used by awaits that resolve recorded *arrivals* (a child terminal
+/// recorded by the watcher) to order the scope's expiry against the arrival:
+/// an arrival recorded after the deadline's `TimerFired` was never observed
+/// by the live run (it took the timeout branch), so the replayed await must
+/// take the timeout branch too (F1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExpiredScopeDeadline {
+    /// The deadline's `TimerFired` is recorded at this envelope sequence.
+    RecordedAt(u64),
+    /// The scope is known expired but its `TimerFired` is not in the run
+    /// segment (replay-derived scope state); the expiry is treated as
+    /// preceding every recorded arrival.
+    Unordered,
+}
+
+/// Earliest recorded deadline position among the pid's expired scopes.
+///
+/// Returns `None` when no enclosing scope is expired. `history` is the
+/// caller's run-segment snapshot — the same events its own resolution read,
+/// so the ordering decision and the resolution agree on one snapshot.
+pub(crate) fn expired_scope_deadline(
+    state: &EngineNifState,
+    pid: u64,
+    history: &[aion_core::Event],
+) -> Option<ExpiredScopeDeadline> {
+    let mut earliest: Option<u64> = None;
+    let mut expired_without_position = false;
+    {
+        let stack = state.timeout_scope_stacks.get(&pid)?;
+        for state_id in stack.iter() {
+            let Some(scope) = state.timeout_scopes.get(state_id) else {
+                continue;
+            };
+            let fired_seq = timer_fired_seq(history, &scope.timer_id);
+            let expired = match scope.replay_timed_out {
+                Some(true) => true,
+                Some(false) => false,
+                None => fired_seq.is_some(),
+            };
+            if !expired {
+                continue;
+            }
+            match fired_seq {
+                Some(seq) => {
+                    earliest = Some(earliest.map_or(seq, |current| current.min(seq)));
+                }
+                None => expired_without_position = true,
+            }
+        }
+    }
+    if expired_without_position {
+        // Conservative and deterministic: an expired scope whose deadline
+        // position is unknown orders before every arrival, on live and on
+        // replay alike.
+        return Some(ExpiredScopeDeadline::Unordered);
+    }
+    earliest.map(ExpiredScopeDeadline::RecordedAt)
+}
+
+/// Envelope sequence of the recorded `TimerFired` for `timer_id`, if any.
+fn timer_fired_seq(history: &[aion_core::Event], timer_id: &TimerId) -> Option<u64> {
+    history.iter().find_map(|event| match event {
+        aion_core::Event::TimerFired {
+            envelope,
+            timer_id: fired,
+            ..
+        } if fired == timer_id => Some(envelope.seq),
+        _ => None,
+    })
 }
 
 /// NIF backing `aion_flow_ffi:with_timeout/2`.
@@ -222,7 +298,7 @@ fn resume_with_timeout(
     };
     if timed_out {
         Ok(ContinuationStep::Done(
-            error_result_term("timeout:deadline expired").unwrap_or(Term::NIL),
+            error_result_term(SCOPE_EXPIRED_MESSAGE).unwrap_or(Term::NIL),
         ))
     } else {
         let wrapped = ctx.alloc_tuple(&[Term::atom(Atom::OK), closure_result])?;

@@ -33,16 +33,24 @@ pub(crate) struct NifContextSource {
     registry: Arc<Registry>,
     tokio_handle: Handle,
     store: Arc<dyn EventStore>,
+    /// Builder-supplied bound for the registry-registration birth wait.
+    birth_wait: crate::runtime::SignalDeliveryConfig,
 }
 
 impl NifContextSource {
     /// Creates an installed deterministic-NIF context source.
     #[must_use]
-    pub fn new(registry: Arc<Registry>, tokio_handle: Handle, store: Arc<dyn EventStore>) -> Self {
+    pub fn new(
+        registry: Arc<Registry>,
+        tokio_handle: Handle,
+        store: Arc<dyn EventStore>,
+        birth_wait: crate::runtime::SignalDeliveryConfig,
+    ) -> Self {
         Self {
             registry,
             tokio_handle,
             store,
+            birth_wait,
         }
     }
 
@@ -52,6 +60,7 @@ impl NifContextSource {
             self.registry.as_ref(),
             self.tokio_handle.clone(),
             Some(Arc::clone(&self.store)),
+            self.birth_wait,
         )
         .map_err(|error| error.to_string())
     }
@@ -425,6 +434,7 @@ mod tests {
             registry.as_ref(),
             runtime.handle().clone(),
             Some(Arc::clone(&store)),
+            crate::runtime::SignalDeliveryConfig::default(),
         )?;
         Ok(ContextFixture {
             registry,
@@ -495,6 +505,7 @@ mod tests {
                 Arc::clone(&first.registry),
                 runtime.handle().clone(),
                 Arc::clone(&first.store),
+                crate::runtime::SignalDeliveryConfig::default(),
             )),
         );
 
@@ -511,6 +522,7 @@ mod tests {
                 Arc::clone(&second.registry),
                 runtime.handle().clone(),
                 Arc::clone(&second.store),
+                crate::runtime::SignalDeliveryConfig::default(),
             )),
         );
 

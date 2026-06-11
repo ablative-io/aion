@@ -51,11 +51,15 @@ pub(super) fn dispatch_activity_impl(
         Ok(runtime) => runtime,
         Err(error) => return Ok(context_error_term(&error)),
     };
-    let context =
-        match NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle.clone()) {
-            Ok(context) => context,
-            Err(error) => return Ok(context_error_term(&error)),
-        };
+    let context = match NifContext::new(
+        pid,
+        runtime.registry.as_ref(),
+        runtime.tokio_handle.clone(),
+        runtime.runtime.signal_delivery(),
+    ) {
+        Ok(context) => context,
+        Err(error) => return Ok(context_error_term(&error)),
+    };
     let dispatcher = state.activity_dispatcher();
     dispatch_activity_with_context(
         context,
@@ -106,7 +110,12 @@ pub(super) fn await_activity_result_impl(
         Ok(runtime) => runtime,
         Err(error) => return Ok(context_error_term(&error)),
     };
-    let context = match NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle) {
+    let context = match NifContext::new(
+        pid,
+        runtime.registry.as_ref(),
+        runtime.tokio_handle,
+        runtime.runtime.signal_delivery(),
+    ) {
         Ok(context) => context,
         Err(error) => return Ok(context_error_term(&error)),
     };

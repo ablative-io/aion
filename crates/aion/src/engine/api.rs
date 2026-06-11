@@ -1,23 +1,17 @@
 //! `Engine` start, cancel, result, list, and shutdown support.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 use aion_core::{
-    Event, EventEnvelope, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeSchema,
-    SearchAttributeValue, WorkflowError, WorkflowFilter, WorkflowId, WorkflowSummary,
+    Event, Payload, RunId, SearchAttributeSchema, SearchAttributeValue, WorkflowError,
+    WorkflowFilter, WorkflowId, WorkflowSummary,
 };
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
 use crate::durability::Recorder;
-use crate::schedule::{
-    NoopScheduleCanceller, ScheduleEvaluator, ScheduleEvaluatorError, ScheduleEventSink,
-    ScheduleEventSource, ScheduleExecution, ScheduleState, ScheduleTimer, ScheduleWorkflowStarter,
-    StoreScheduleTimer, TimerEvaluationOutcome,
-};
+use crate::schedule::ScheduleEvaluator;
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 
@@ -28,22 +22,22 @@ use crate::lifecycle::transition;
 use crate::registry::{TerminalOutcome, WorkflowHandle};
 use crate::{
     EngineError, LoadedWorkflows, Registry, RuntimeHandle, SupervisionTree,
-    engine_seam::{
-        EngineHandle, EngineSeamError, WorkflowMailboxMessage, WorkflowProcessHandle,
-        WorkflowResidency,
-    },
     signal::SignalResumeHandoff,
 };
 
+use super::api_schedule::{
+    ScheduleRuntimeDeps, default_schedule_evaluator, schedule_coordinator_workflow_id,
+};
 use super::delegated::DelegatedSeams;
+use super::shutdown_gate::ShutdownGate;
 
 /// Live embedded workflow engine assembled by [`crate::EngineBuilder`].
 pub struct Engine {
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
-    schedule_recorder: Arc<AsyncMutex<Recorder>>,
-    schedule_evaluator: Arc<AsyncMutex<ScheduleEvaluator>>,
-    schedule_coordinator_workflow_id: WorkflowId,
+    pub(super) schedule_recorder: Arc<AsyncMutex<Recorder>>,
+    pub(super) schedule_evaluator: Arc<AsyncMutex<ScheduleEvaluator>>,
+    pub(super) schedule_coordinator_workflow_id: WorkflowId,
     runtime: Arc<RuntimeHandle>,
     loaded_workflows: LoadedWorkflows,
     registry: Arc<Registry>,
@@ -51,7 +45,7 @@ pub struct Engine {
     delegated: DelegatedSeams,
     signal_handoff: Arc<SignalResumeHandoff>,
     search_attribute_schema: Arc<SearchAttributeSchema>,
-    shutdown_gate: ShutdownGate,
+    pub(super) shutdown_gate: ShutdownGate,
     visibility_reconciliation_task: Option<JoinHandle<()>>,
 }
 
@@ -194,289 +188,6 @@ impl Engine {
     #[must_use]
     pub fn signal_handoff(&self) -> Arc<SignalResumeHandoff> {
         Arc::clone(&self.signal_handoff)
-    }
-
-    /// Workflow history used for durable schedule events and timer ownership.
-    #[must_use]
-    pub const fn schedule_coordinator_workflow_id(&self) -> &WorkflowId {
-        &self.schedule_coordinator_workflow_id
-    }
-
-    /// Create a durable schedule and arm its first timer.
-    ///
-    /// # Errors
-    ///
-    /// Returns shutdown, durability, schedule projection, or timer arming errors.
-    pub async fn create_schedule(&self, config: ScheduleConfig) -> Result<ScheduleId, EngineError> {
-        let operation = self.shutdown_gate.begin_start()?;
-        let recorded_at = Utc::now();
-        let schedule_id = ScheduleId::new_v4();
-        let result = self
-            .create_schedule_inner(schedule_id, config, recorded_at)
-            .await;
-        drop(operation);
-        result
-    }
-
-    /// Update an existing schedule's configuration and re-arm it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
-    /// projection, and timer errors.
-    pub async fn update_schedule(
-        &self,
-        schedule_id: &ScheduleId,
-        config: ScheduleConfig,
-    ) -> Result<(), EngineError> {
-        let operation = self.shutdown_gate.begin_operation()?;
-        let result = self.update_schedule_inner(schedule_id, config).await;
-        drop(operation);
-        result
-    }
-
-    /// Pause an existing schedule.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
-    /// and projection errors.
-    pub async fn pause_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        let operation = self.shutdown_gate.begin_operation()?;
-        let result = self.pause_schedule_inner(schedule_id).await;
-        drop(operation);
-        result
-    }
-
-    /// Resume an existing schedule and re-arm it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
-    /// projection, and timer errors.
-    pub async fn resume_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        let operation = self.shutdown_gate.begin_operation()?;
-        let result = self.resume_schedule_inner(schedule_id).await;
-        drop(operation);
-        result
-    }
-
-    /// Delete an existing schedule so it is no longer listed or armed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
-    /// and projection errors.
-    pub async fn delete_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        let operation = self.shutdown_gate.begin_operation()?;
-        let result = self.delete_schedule_inner(schedule_id).await;
-        drop(operation);
-        result
-    }
-
-    /// List all non-deleted schedules from projected state.
-    ///
-    /// # Errors
-    ///
-    /// Currently returns only infallible projected state, wrapped for API consistency.
-    pub async fn list_schedules(&self) -> Result<Vec<ScheduleState>, EngineError> {
-        let evaluator = self.schedule_evaluator.lock().await;
-        let mut schedules = evaluator
-            .states()
-            .filter(|state| !state.is_deleted)
-            .cloned()
-            .collect::<Vec<_>>();
-        schedules.sort_by(|left, right| {
-            left.next_trigger_at
-                .cmp(&right.next_trigger_at)
-                .then_with(|| {
-                    left.schedule_id
-                        .to_string()
-                        .cmp(&right.schedule_id.to_string())
-                })
-        });
-        Ok(schedules)
-    }
-
-    /// Describe one non-deleted schedule.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent or deleted schedules.
-    pub async fn describe_schedule(
-        &self,
-        schedule_id: &ScheduleId,
-    ) -> Result<ScheduleState, EngineError> {
-        self.schedule_evaluator
-            .lock()
-            .await
-            .state(schedule_id)
-            .filter(|state| !state.is_deleted)
-            .cloned()
-            .ok_or_else(|| EngineError::ScheduleNotFound {
-                schedule_id: schedule_id.clone(),
-            })
-    }
-
-    async fn create_schedule_inner(
-        &self,
-        schedule_id: ScheduleId,
-        config: ScheduleConfig,
-        recorded_at: DateTime<Utc>,
-    ) -> Result<ScheduleId, EngineError> {
-        self.schedule_recorder
-            .lock()
-            .await
-            .record_schedule_created(recorded_at, schedule_id.clone(), config.clone())
-            .await?;
-
-        let state = ScheduleState::created(schedule_id.clone(), config, recorded_at)?;
-        let mut evaluator = self.schedule_evaluator.lock().await;
-        evaluator.upsert_state(state);
-        evaluator.arm_active_schedule(&schedule_id).await?;
-        Ok(schedule_id)
-    }
-
-    async fn update_schedule_inner(
-        &self,
-        schedule_id: &ScheduleId,
-        config: ScheduleConfig,
-    ) -> Result<(), EngineError> {
-        self.ensure_schedule_exists(schedule_id).await?;
-        let recorded_at = Utc::now();
-        self.schedule_recorder
-            .lock()
-            .await
-            .record_schedule_updated(recorded_at, schedule_id.clone(), config.clone())
-            .await?;
-        let event = Event::ScheduleUpdated {
-            envelope: schedule_event_envelope(recorded_at),
-            schedule_id: schedule_id.clone(),
-            config,
-        };
-        self.apply_schedule_event(schedule_id, &event, true).await
-    }
-
-    async fn pause_schedule_inner(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        self.ensure_schedule_exists(schedule_id).await?;
-        let recorded_at = Utc::now();
-        self.schedule_recorder
-            .lock()
-            .await
-            .record_schedule_paused(recorded_at, schedule_id.clone())
-            .await?;
-        let event = Event::SchedulePaused {
-            envelope: schedule_event_envelope(recorded_at),
-            schedule_id: schedule_id.clone(),
-        };
-        self.apply_schedule_event(schedule_id, &event, false).await
-    }
-
-    async fn resume_schedule_inner(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        self.ensure_schedule_exists(schedule_id).await?;
-        let recorded_at = Utc::now();
-        self.schedule_recorder
-            .lock()
-            .await
-            .record_schedule_resumed(recorded_at, schedule_id.clone())
-            .await?;
-        let event = Event::ScheduleResumed {
-            envelope: schedule_event_envelope(recorded_at),
-            schedule_id: schedule_id.clone(),
-        };
-        self.apply_schedule_event(schedule_id, &event, true).await
-    }
-
-    async fn delete_schedule_inner(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        self.ensure_schedule_exists(schedule_id).await?;
-        let recorded_at = Utc::now();
-        self.schedule_recorder
-            .lock()
-            .await
-            .record_schedule_deleted(recorded_at, schedule_id.clone())
-            .await?;
-        let event = Event::ScheduleDeleted {
-            envelope: schedule_event_envelope(recorded_at),
-            schedule_id: schedule_id.clone(),
-        };
-        self.apply_schedule_event(schedule_id, &event, false).await
-    }
-
-    async fn ensure_schedule_exists(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
-        self.schedule_evaluator
-            .lock()
-            .await
-            .state(schedule_id)
-            .filter(|state| !state.is_deleted)
-            .map(|_| ())
-            .ok_or_else(|| EngineError::ScheduleNotFound {
-                schedule_id: schedule_id.clone(),
-            })
-    }
-
-    async fn apply_schedule_event(
-        &self,
-        schedule_id: &ScheduleId,
-        event: &Event,
-        should_arm: bool,
-    ) -> Result<(), EngineError> {
-        let mut evaluator = self.schedule_evaluator.lock().await;
-        let mut state = evaluator
-            .state(schedule_id)
-            .filter(|state| !state.is_deleted)
-            .cloned()
-            .ok_or_else(|| EngineError::ScheduleNotFound {
-                schedule_id: schedule_id.clone(),
-            })?;
-        state.apply(event)?;
-        evaluator.upsert_state(state);
-        if should_arm {
-            evaluator.arm_active_schedule(schedule_id).await?;
-        }
-        Ok(())
-    }
-
-    /// Handles a fired durable schedule timer through the schedule evaluator.
-    ///
-    /// # Errors
-    ///
-    /// Returns schedule evaluator or shutdown errors.
-    pub async fn handle_schedule_timer_fired(
-        &self,
-        schedule_id: &ScheduleId,
-        fire_at: DateTime<Utc>,
-    ) -> Result<TimerEvaluationOutcome, EngineError> {
-        let operation = self.shutdown_gate.begin_operation()?;
-        let result = self
-            .schedule_evaluator
-            .lock()
-            .await
-            .handle_timer_fired(schedule_id, fire_at)
-            .await
-            .map_err(EngineError::from);
-        drop(operation);
-        result
-    }
-
-    /// Rebuilds schedule state from durable coordinator history and re-arms active schedules.
-    ///
-    /// # Errors
-    ///
-    /// Returns schedule projection, catch-up, timer, or workflow-start errors.
-    pub async fn recover_schedules_on_startup(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<(), EngineError> {
-        let source = StoreScheduleEventSource {
-            store: self.store(),
-            coordinator_workflow_id: self.schedule_coordinator_workflow_id.clone(),
-        };
-        self.schedule_evaluator
-            .lock()
-            .await
-            .recover_on_startup(&source, now)
-            .await
-            .map_err(EngineError::from)
     }
 
     /// Start a loaded workflow type as a new BEAM process.
@@ -626,14 +337,21 @@ impl Engine {
         id: &WorkflowId,
         run: &RunId,
     ) -> Result<Result<Payload, WorkflowError>, EngineError> {
-        if let Some(outcome) = terminal_outcome_from_history(&self.store.read_history(id).await?) {
+        let history = self.store.read_history(id).await?;
+        if let Some(outcome) = terminal_outcome_from_history(&history) {
             return Ok(outcome_to_result(outcome));
         }
 
-        let handle = self
-            .registry
-            .get(id, run)?
-            .ok_or_else(|| workflow_not_found(id, run))?;
+        let handle = match self.registry.get(id, run)? {
+            Some(handle) => handle,
+            // Registration birth window: the run is durably started but its
+            // handle insert has not landed yet (see
+            // `Engine::handle_after_birth_window`).
+            None => self
+                .handle_after_birth_window(id, run, &history)
+                .await?
+                .ok_or_else(|| workflow_not_found(id, run))?,
+        };
         let mut receiver = handle.completion().subscribe();
         loop {
             if let Some(outcome) = receiver.borrow().clone() {
@@ -706,189 +424,16 @@ impl Engine {
             task.abort();
         }
         self.shutdown_gate.close_and_wait()?;
-        // Child-terminal watcher tasks live on the host Tokio runtime, not
-        // the beamr scheduler: abort them here so none outlives this engine
-        // and double-writes a parent history a successor engine over the
-        // same store records into.
-        self.runtime.nif_state().shutdown_child_terminal_watches();
-        self.runtime.shutdown()
-    }
-}
-
-#[derive(Clone, Default)]
-struct ShutdownGate {
-    inner: Arc<ShutdownGateInner>,
-}
-
-#[derive(Default)]
-struct ShutdownGateInner {
-    state: Mutex<ShutdownState>,
-    idle: Condvar,
-}
-
-#[derive(Default)]
-struct ShutdownState {
-    shutting_down: bool,
-    active_operations: usize,
-}
-
-impl ShutdownGate {
-    fn begin_start(&self) -> Result<LifecycleOperation, EngineError> {
-        let mut state = self.state()?;
-        if state.shutting_down {
-            return Err(EngineError::ShuttingDown);
-        }
-        state.active_operations += 1;
-        Ok(LifecycleOperation {
-            inner: Arc::clone(&self.inner),
-        })
-    }
-
-    fn begin_operation(&self) -> Result<LifecycleOperation, EngineError> {
-        let mut state = self.state()?;
-        state.active_operations += 1;
-        Ok(LifecycleOperation {
-            inner: Arc::clone(&self.inner),
-        })
-    }
-
-    fn close_and_wait(&self) -> Result<(), EngineError> {
-        let mut state = self.state()?;
-        state.shutting_down = true;
-        while state.active_operations > 0 {
-            state = self
-                .inner
-                .idle
-                .wait(state)
-                .map_err(|_| EngineError::RegistryPoisoned)?;
-        }
+        // Epoch close for engine-side child tasks (F4): the scheduler stops
+        // first (so no NIF can arm a new watcher mid-shutdown), then every
+        // watcher and spawn-recovery task is aborted AND awaited to
+        // quiescence — a task still mid-record after shutdown could
+        // double-write a parent history a successor engine over the same
+        // store also records into. Arming is additionally gated inside the
+        // task registry the moment shutdown begins.
+        self.runtime.shutdown()?;
+        self.runtime.nif_state().shutdown_child_tasks();
         Ok(())
-    }
-
-    fn state(&self) -> Result<std::sync::MutexGuard<'_, ShutdownState>, EngineError> {
-        self.inner
-            .state
-            .lock()
-            .map_err(|_| EngineError::RegistryPoisoned)
-    }
-}
-
-struct LifecycleOperation {
-    inner: Arc<ShutdownGateInner>,
-}
-
-impl Drop for LifecycleOperation {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.inner.state.lock() {
-            state.active_operations = state.active_operations.saturating_sub(1);
-            if state.active_operations == 0 {
-                self.inner.idle.notify_all();
-            }
-        }
-    }
-}
-
-impl EngineHandle for Engine {
-    fn resolve_workflow(
-        &self,
-        workflow_id: &WorkflowId,
-    ) -> Result<WorkflowResidency, EngineSeamError> {
-        let handle = self
-            .registry()
-            .list()
-            .map_err(|error| EngineSeamError::Delivery {
-                reason: error.to_string(),
-            })?
-            .into_iter()
-            .find(|handle| handle.workflow_id() == workflow_id);
-        match handle {
-            Some(handle) if handle.residency() == crate::HandleResidency::Resident => Ok(
-                WorkflowResidency::Resident(WorkflowProcessHandle::new(handle.pid())),
-            ),
-            Some(_) => Ok(WorkflowResidency::NonResident),
-            None => Ok(WorkflowResidency::Unknown),
-        }
-    }
-
-    fn deliver_workflow_message(
-        &self,
-        process: WorkflowProcessHandle,
-        message: WorkflowMailboxMessage,
-    ) -> Result<(), EngineSeamError> {
-        match message {
-            WorkflowMailboxMessage::SignalReceived { .. } => self
-                .runtime()
-                .deliver_signal_received(process.pid())
-                .map_err(|error| EngineSeamError::Delivery {
-                    reason: error.to_string(),
-                }),
-            other => Err(EngineSeamError::Delivery {
-                reason: format!("unsupported workflow mailbox message: {other:?}"),
-            }),
-        }
-    }
-
-    fn spawn_child_workflow(
-        &self,
-        request: crate::engine_seam::ChildWorkflowSpawnRequest,
-    ) -> Result<crate::engine_seam::ChildWorkflowSpawnResult, EngineSeamError> {
-        let _ = request;
-        Err(EngineSeamError::ChildSpawn {
-            reason: "engine handle child spawning is not wired here".to_owned(),
-        })
-    }
-
-    fn terminate_linked_child_workflow(
-        &self,
-        parent_workflow_id: &WorkflowId,
-        child_process: WorkflowProcessHandle,
-        correlation: u64,
-    ) -> Result<(), EngineSeamError> {
-        let _ = (parent_workflow_id, child_process, correlation);
-        Err(EngineSeamError::ChildTermination {
-            reason: "engine handle child termination is not wired here".to_owned(),
-        })
-    }
-
-    fn terminate_linked_activity(
-        &self,
-        parent_workflow_id: &WorkflowId,
-        activity_process: crate::Pid,
-        correlation: u64,
-    ) -> Result<(), EngineSeamError> {
-        let _ = (parent_workflow_id, activity_process, correlation);
-        Err(EngineSeamError::ChildTermination {
-            reason: "engine handle activity termination is not wired here".to_owned(),
-        })
-    }
-
-    fn arm_timer(&self, entry: crate::engine_seam::TimerWheelEntry) -> Result<(), EngineSeamError> {
-        let _ = entry;
-        Err(EngineSeamError::TimerWheel {
-            reason: "engine handle timer arming is not wired here".to_owned(),
-        })
-    }
-
-    fn disarm_timer(
-        &self,
-        process: WorkflowProcessHandle,
-        timer_id: &aion_core::TimerId,
-    ) -> Result<(), EngineSeamError> {
-        let _ = (process, timer_id);
-        Err(EngineSeamError::TimerWheel {
-            reason: "engine handle timer disarming is not wired here".to_owned(),
-        })
-    }
-
-    fn record_workflow_event(
-        &self,
-        workflow_id: &WorkflowId,
-        event: Event,
-    ) -> Result<(), EngineSeamError> {
-        let _ = (workflow_id, event);
-        Err(EngineSeamError::Recorder {
-            reason: "engine handle event recording is not wired here".to_owned(),
-        })
     }
 }
 
@@ -969,131 +514,6 @@ fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError>
 pub(crate) fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
     EngineError::WorkflowNotFound {
         workflow_type: format!("{id}/{run}"),
-    }
-}
-
-pub(crate) fn schedule_coordinator_workflow_id() -> WorkflowId {
-    WorkflowId::new(uuid::Uuid::from_u128(
-        0x0000_0000_a10a_0000_0000_0000_0000_0004,
-    ))
-}
-
-pub(crate) fn schedule_coordinator_run_id() -> RunId {
-    RunId::new(uuid::Uuid::from_u128(
-        0x0000_0000_a10a_0000_0000_0000_0000_0005,
-    ))
-}
-
-pub(crate) const fn schedule_coordinator_workflow_type() -> &'static str {
-    "aion.schedule_coordinator"
-}
-
-fn schedule_event_envelope(recorded_at: DateTime<Utc>) -> EventEnvelope {
-    EventEnvelope {
-        seq: 0,
-        recorded_at,
-        workflow_id: schedule_coordinator_workflow_id(),
-    }
-}
-
-fn default_schedule_evaluator(
-    coordinator_workflow_id: WorkflowId,
-    recorder: Arc<AsyncMutex<Recorder>>,
-    deps: ScheduleRuntimeDeps,
-) -> ScheduleEvaluator {
-    let timer: Arc<dyn ScheduleTimer> = Arc::new(StoreScheduleTimer::new(
-        Arc::clone(&deps.store),
-        coordinator_workflow_id,
-    ));
-    let starter: Arc<dyn ScheduleWorkflowStarter> = Arc::new(EngineScheduleStarter { deps });
-    let canceller: Arc<dyn crate::schedule::ScheduleWorkflowCanceller> =
-        Arc::new(NoopScheduleCanceller);
-    let events: Arc<dyn ScheduleEventSink> = recorder;
-    ScheduleEvaluator::new(timer, starter, canceller, events)
-}
-
-struct ScheduleRuntimeDeps {
-    store: Arc<dyn EventStore>,
-    visibility_store: Arc<dyn VisibilityStore>,
-    runtime: Arc<RuntimeHandle>,
-    loaded_workflows: LoadedWorkflows,
-    registry: Arc<Registry>,
-    supervision: Arc<SupervisionTree>,
-    search_attribute_schema: Arc<SearchAttributeSchema>,
-}
-
-struct EngineScheduleStarter {
-    deps: ScheduleRuntimeDeps,
-}
-
-#[async_trait]
-impl ScheduleWorkflowStarter for EngineScheduleStarter {
-    async fn start_scheduled_workflow(
-        &self,
-        workflow_type: &str,
-        input: Payload,
-        search_attributes: HashMap<String, SearchAttributeValue>,
-    ) -> Result<ScheduleExecution, ScheduleEvaluatorError> {
-        let handle = start::start_workflow_with_options(
-            StartWorkflowContext {
-                store: Arc::clone(&self.deps.store),
-                visibility_store: Arc::clone(&self.deps.visibility_store),
-                loaded_workflows: &self.deps.loaded_workflows,
-                runtime: Arc::clone(&self.deps.runtime),
-                supervision: Arc::clone(&self.deps.supervision),
-                registry: Arc::clone(&self.deps.registry),
-                signal_handoff: None,
-                search_attribute_schema: Arc::clone(&self.deps.search_attribute_schema),
-            },
-            workflow_type,
-            input,
-            start::StartWorkflowOptions {
-                search_attributes,
-                ..start::StartWorkflowOptions::default()
-            },
-        )
-        .await
-        .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))?;
-        Ok(ScheduleExecution::new(
-            handle.workflow_id().clone(),
-            handle.run_id().clone(),
-        ))
-    }
-}
-
-struct StoreScheduleEventSource {
-    store: Arc<dyn EventStore>,
-    coordinator_workflow_id: WorkflowId,
-}
-
-#[async_trait]
-impl ScheduleEventSource for StoreScheduleEventSource {
-    async fn schedule_events(&self) -> Result<Vec<Event>, ScheduleEvaluatorError> {
-        self.store
-            .read_history(&self.coordinator_workflow_id)
-            .await
-            .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))
-    }
-}
-
-#[async_trait]
-impl ScheduleEventSink for AsyncMutex<Recorder> {
-    async fn record_schedule_triggered(
-        &self,
-        schedule_id: &ScheduleId,
-        execution: &ScheduleExecution,
-        recorded_at: DateTime<Utc>,
-    ) -> Result<(), ScheduleEvaluatorError> {
-        self.lock()
-            .await
-            .record_schedule_triggered(
-                recorded_at,
-                schedule_id.clone(),
-                execution.workflow_id.clone(),
-                execution.run_id.clone(),
-            )
-            .await
-            .map_err(|error| ScheduleEvaluatorError::side_effect(error.to_string()))
     }
 }
 

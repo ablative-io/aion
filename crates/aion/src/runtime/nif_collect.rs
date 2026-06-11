@@ -119,8 +119,13 @@ pub(super) fn collect_step(
     }
     let count =
         u64::try_from(specs.len()).map_err(|_| "activity list length overflows u64".to_owned())?;
-    let context = NifContext::new(pid, deps.registry.as_ref(), deps.tokio_handle.clone())
-        .map_err(|error| error.to_string())?;
+    let context = NifContext::new(
+        pid,
+        deps.registry.as_ref(),
+        deps.tokio_handle.clone(),
+        deps.runtime.signal_delivery(),
+    )
+    .map_err(|error| error.to_string())?;
     let base_ordinal = pin_or_allocate(state, &context, pid, kind, count)?;
     dispatch_unscheduled(deps, &context, specs, base_ordinal, label)?;
     match kind {

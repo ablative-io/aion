@@ -61,27 +61,46 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
         }
 
         match target.residency() {
-            HandleResidency::Resident => self
-                .runtime
-                .deliver_signal_received(target.pid())
-                .map_err(|error| {
-                    let reason = error.to_string();
-                    tracing::warn!(
+            HandleResidency::Resident => {
+                let Err(error) = self.runtime.deliver_signal_received(target.pid()) else {
+                    return Ok(());
+                };
+                // The signal is already durable; the marker is only a wake.
+                // A process that exited between the record and this delivery
+                // (completion racing the signal — including a surplus wake
+                // letting the workflow resolve the just-recorded signal from
+                // history and return before the marker lands) has accepted
+                // the signal: its terminal is recorded by the exit monitor,
+                // and a crashed run replays with the signal in history. Only
+                // a *live* process the marker cannot reach is a delivery
+                // failure.
+                if !self.runtime.is_live(target.pid()) {
+                    tracing::debug!(
                         workflow_id = %target.workflow_id(),
                         run_id = %target.run_id(),
                         signal_name = %name,
                         process = target.pid(),
-                        error = %reason,
-                        "durably recorded signal could not be delivered to resident workflow mailbox"
+                        "recorded signal raced process exit; durable record stands"
                     );
-                    EngineError::from(SignalRouterError::DeliveryFailed {
-                        workflow_id: target.workflow_id().clone(),
-                        run_id: target.run_id().clone(),
-                        process_id: target.pid(),
-                        signal_name: name,
-                        reason,
-                    })
-                }),
+                    return Ok(());
+                }
+                let reason = error.to_string();
+                tracing::warn!(
+                    workflow_id = %target.workflow_id(),
+                    run_id = %target.run_id(),
+                    signal_name = %name,
+                    process = target.pid(),
+                    error = %reason,
+                    "durably recorded signal could not be delivered to resident workflow mailbox"
+                );
+                Err(EngineError::from(SignalRouterError::DeliveryFailed {
+                    workflow_id: target.workflow_id().clone(),
+                    run_id: target.run_id().clone(),
+                    process_id: target.pid(),
+                    signal_name: name,
+                    reason,
+                }))
+            }
             HandleResidency::Suspended => self
                 .handoff
                 .defer(target.workflow_id().clone(), name, payload)
@@ -155,25 +174,26 @@ mod tests {
         ))
     }
 
+    /// A resident process that exited between the durable record and the
+    /// marker delivery has accepted the signal: the record is the contract,
+    /// the marker is only a wake. Before the fix this returned
+    /// `DeliveryFailed` for an already-accepted signal, which surfaced as a
+    /// flaky engine error whenever a completion (or a surplus wake letting
+    /// the workflow resolve the just-recorded signal from history) raced the
+    /// delivery.
     #[tokio::test]
-    async fn dead_resident_pid_records_signal_then_returns_delivery_failed() -> TestResult {
+    async fn dead_resident_pid_records_signal_and_resolves_as_accepted() -> TestResult {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         // No process with this pid exists in the runtime: this is the
-        // transient window where a resident process died but the exit monitor
-        // has not recorded a terminal event yet.
+        // window where a resident process exited but the exit monitor has
+        // not reconciled the registry yet.
         let handle = started_workflow_handle(&store, 424_242).await?;
         let sent = payload("recorded")?;
 
-        let error = router()?
+        router()?
             .route(&handle, "wake".to_owned(), sent.clone())
-            .await
-            .err()
-            .ok_or("dead resident delivery unexpectedly succeeded")?;
+            .await?;
 
-        assert!(matches!(
-            error,
-            EngineError::SignalRouter(SignalRouterError::DeliveryFailed { .. })
-        ));
         let history = store.read_history(handle.workflow_id()).await?;
         let recorded = history
             .iter()
@@ -181,7 +201,7 @@ mod tests {
                 Event::SignalReceived { name, payload, .. } => Some((name, payload)),
                 _ => None,
             })
-            .ok_or("SignalReceived was not recorded before the delivery failure")?;
+            .ok_or("SignalReceived was not recorded")?;
         assert_eq!(recorded.0, "wake");
         assert_eq!(recorded.1, &sent);
         Ok(())

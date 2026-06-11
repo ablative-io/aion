@@ -145,11 +145,17 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "register_query", 2),
             super::nif_query::register_query,
         ),
-        NifEntry::dirty(
+        // The reply NIFs are non-blocking (registry check, map removal, a
+        // oneshot send) and run on the normal schedulers. Running them dirty
+        // routed every query reply through beamr's dirty-result resume,
+        // which deep-copies the result onto the workflow heap *without GC*:
+        // on a full heap the copy fails and the VM kills the workflow with
+        // `Badarg`, surfacing as `ReplyDropped` to the caller (F8).
+        NifEntry::new(
             Mfa::new(FFI_MODULE, "reply_query", 2),
             super::nif_query::reply_query,
         ),
-        NifEntry::dirty(
+        NifEntry::new(
             Mfa::new(FFI_MODULE, "reply_query_error", 2),
             super::nif_query::reply_query_error,
         ),
@@ -157,9 +163,18 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "dispatch_query", 2),
             super::nif_query::dispatch_query,
         ),
-        // spawn_child stays dirty: it does recorder appends plus a child
-        // start round trip — short, bounded blocking work, no suspension.
-        NifEntry::dirty(
+        // spawn_child runs on the normal schedulers: its blocking work (one
+        // recorder append plus the child start round trip) is short and
+        // bounded, and its replay fast-path does no blocking work at all.
+        // Running it dirty rode beamr's dirty completion bridge on every
+        // workflow's spawn — and on replay of every recovered parent — where
+        // a lost dirty resume parks the process forever *before* its
+        // await_child can arm the child-terminal watcher, stranding the run
+        // for the epoch. `wake_process` deliberately refuses dirty-in-flight
+        // pids, so no engine-side wake (including the wake-confirmation
+        // ladder) can heal that park; the only robust embedder-side remedy
+        // is to keep this call off the dirty bridge entirely.
+        NifEntry::new(
             Mfa::new(FFI_MODULE, "spawn_child", 3),
             nif_child::spawn_child_impl,
         ),
@@ -254,6 +269,9 @@ mod tests {
             "receive_signal",
             "with_timeout",
             "register_query",
+            "reply_query",
+            "reply_query_error",
+            "spawn_child",
             "await_child",
             "collect_all",
             "collect_race",
@@ -278,6 +296,9 @@ mod tests {
                         | "receive_signal"
                         | "with_timeout"
                         | "register_query"
+                        | "reply_query"
+                        | "reply_query_error"
+                        | "spawn_child"
                         | "await_child"
                         | "collect_all"
                         | "collect_race"

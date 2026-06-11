@@ -78,6 +78,9 @@ pub struct RuntimeHandle {
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
     signal_delivery: SignalDeliveryConfig,
+    /// Bounded follow-up wakes for delivered mailbox markers, healing
+    /// beamr 0.4.9's lost-wakeup window (see [`super::wake_confirm`]).
+    pub(super) wake_confirmer: super::wake_confirm::WakeConfirmer,
     /// Highest process identifier this runtime has spawned.
     ///
     /// beamr allocates pids from a monotonic counter, so any pid at or below
@@ -126,6 +129,7 @@ impl RuntimeHandle {
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
+            wake_confirmer: super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?,
             spawned_pid_watermark: AtomicU64::new(0),
         })
     }
@@ -133,6 +137,11 @@ impl RuntimeHandle {
     /// This runtime instance's engine-scoped NIF state.
     pub(crate) fn nif_state(&self) -> &Arc<super::nif_state::EngineNifState> {
         &self.nif_state
+    }
+
+    /// Builder-supplied delivery/readiness policy for spawn-window waits.
+    pub(crate) fn signal_delivery(&self) -> SignalDeliveryConfig {
+        self.signal_delivery
     }
 
     /// Install collected NIF entries into beamr's native registry.
@@ -337,6 +346,10 @@ impl RuntimeHandle {
     ///
     /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
+        // Stop the wake-confirmation worker first: its only job is healing
+        // lost wakeups for a running scheduler, and pending follow-ups are
+        // moot once the scheduler stops.
+        self.wake_confirmer.shutdown();
         self.scheduler.shutdown();
         self.spawn_heaps.clear();
         Ok(())

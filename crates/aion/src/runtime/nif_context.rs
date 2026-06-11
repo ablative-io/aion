@@ -109,6 +109,9 @@ pub struct NifContext {
 impl NifContext {
     /// Resolves `pid` against the active registry and builds a replay resolver from recorded history.
     ///
+    /// `birth_wait` bounds the registry-registration wait for a just-spawned
+    /// process (see [`resolve_handle_with_birth_wait`]).
+    ///
     /// # Errors
     ///
     /// Returns [`NifContextError::UnknownProcess`] when the registry has no matching active handle,
@@ -117,8 +120,9 @@ impl NifContext {
         pid: u64,
         registry: &Registry,
         tokio_handle: Handle,
+        birth_wait: crate::runtime::SignalDeliveryConfig,
     ) -> Result<Self, NifContextError> {
-        Self::new_with_history_store(pid, registry, tokio_handle, None)
+        Self::new_with_history_store(pid, registry, tokio_handle, None, birth_wait)
     }
 
     /// Resolves `pid` and reads recorded history from an explicit store when supplied.
@@ -136,13 +140,9 @@ impl NifContext {
         registry: &Registry,
         tokio_handle: Handle,
         store: Option<Arc<dyn EventStore>>,
+        birth_wait: crate::runtime::SignalDeliveryConfig,
     ) -> Result<Self, NifContextError> {
-        let handle = registry
-            .list()
-            .map_err(|error| registry_error_to_context(&error))?
-            .into_iter()
-            .find(|handle| handle.pid() == pid)
-            .ok_or(NifContextError::UnknownProcess { pid })?;
+        let handle = resolve_handle_with_birth_wait(registry, pid, birth_wait)?;
         let recorder = handle.recorder();
         let workflow_id = handle.workflow_id().clone();
         let history = match store {
@@ -415,6 +415,61 @@ fn registry_error_to_context(error: &EngineError) -> NifContextError {
     }
 }
 
+/// Resolve the workflow handle for `pid`, waiting out the registration birth
+/// window.
+///
+/// The start path spawns the workflow process and only then inserts its
+/// handle into the registry, so a workflow whose first instructions call a
+/// NIF can legitimately execute before its handle exists. Failing typed in
+/// that window kills the workflow at startup: the SDK and fixtures treat a
+/// context failure from `receive_signal`/`sleep`/`register_query` as fatal
+/// (`{badmatch, {error, ...}}`). The wait is bounded by the engine's
+/// builder-supplied delivery policy and converges as soon as the start
+/// thread's insert lands. The budget is the policy's full persistence —
+/// `ready_timeout × max_enqueue_attempts`, the same product the enqueue
+/// retry path expresses — not a single `ready_timeout`: the caller is a
+/// live process already executing on this engine's scheduler, so a missing
+/// entry is virtually always the in-flight insert, and the cost of giving
+/// up early is a workflow killed at birth (`ready_timeout` alone lost to
+/// OS-level preemption of the start thread roughly once per few thousand
+/// births under heavy host oversubscription). A pid that never appears
+/// (a non-workflow process misusing a workflow NIF, or a start rolled back
+/// with the pid cancelled) still fails typed after the budget.
+fn resolve_handle_with_birth_wait(
+    registry: &Registry,
+    pid: u64,
+    birth_wait: crate::runtime::SignalDeliveryConfig,
+) -> Result<WorkflowHandle, NifContextError> {
+    let lookup = |registry: &Registry| -> Result<Option<WorkflowHandle>, NifContextError> {
+        Ok(registry
+            .list()
+            .map_err(|error| registry_error_to_context(&error))?
+            .into_iter()
+            .find(|handle| handle.pid() == pid))
+    };
+    if let Some(handle) = lookup(registry)? {
+        return Ok(handle);
+    }
+    let budget = birth_wait
+        .ready_timeout
+        .saturating_mul(birth_wait.max_enqueue_attempts.max(1));
+    let deadline = std::time::Instant::now() + budget;
+    let mut backoff = birth_wait.initial_backoff;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(backoff);
+        let doubled = backoff.saturating_mul(2);
+        backoff = if doubled > birth_wait.max_backoff {
+            birth_wait.max_backoff
+        } else {
+            doubled
+        };
+        if let Some(handle) = lookup(registry)? {
+            return Ok(handle);
+        }
+    }
+    Err(NifContextError::UnknownProcess { pid })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -435,6 +490,16 @@ mod tests {
 
     fn hash() -> ContentHash {
         ContentHash::from_bytes([7; 32])
+    }
+
+    /// Fast birth-wait policy for tests: small budget, tight polls.
+    fn birth_wait() -> crate::runtime::SignalDeliveryConfig {
+        crate::runtime::SignalDeliveryConfig::new(
+            std::time::Duration::from_millis(200),
+            1,
+            std::time::Duration::from_millis(2),
+            std::time::Duration::from_millis(8),
+        )
     }
 
     fn payload(label: &str) -> Result<Payload, Box<dyn std::error::Error>> {
@@ -539,7 +604,7 @@ mod tests {
         let handle = handle(44, Arc::clone(&store), workflow_id.clone(), run_id.clone());
         registry.insert((workflow_id.clone(), run_id), handle)?;
 
-        let context = NifContext::new(44, &registry, runtime.handle().clone())?;
+        let context = NifContext::new(44, &registry, runtime.handle().clone(), birth_wait())?;
 
         assert_eq!(context.workflow_id(), &workflow_id);
         assert_eq!(context.pid(), 44);
@@ -551,11 +616,50 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let registry = Registry::default();
 
-        let error = NifContext::new(77, &registry, runtime.handle().clone())
+        let error = NifContext::new(77, &registry, runtime.handle().clone(), birth_wait())
             .err()
             .ok_or("expected unknown process error")?;
 
         assert!(matches!(error, NifContextError::UnknownProcess { pid: 77 }));
+        Ok(())
+    }
+
+    /// F8 registration race: the start path spawns the workflow process and
+    /// only then inserts its registry handle, so a workflow's first NIF call
+    /// can run before the handle exists. Context resolution must wait out
+    /// that birth window instead of failing typed — the SDK and fixtures
+    /// treat a context failure as fatal, so before the fix the workflow died
+    /// at startup with `{badmatch, {error, <<"unknown_process:N">>}}` (this
+    /// test then failed with `UnknownProcess`).
+    #[test]
+    fn birth_window_registration_resolves_instead_of_failing() -> TestResult {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let registry = Arc::new(Registry::default());
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        runtime.block_on(store.append(
+            WriteToken::recorder(),
+            &workflow_id,
+            &[started_event(&workflow_id, &run_id)?],
+            0,
+        ))?;
+        let handle = handle(91, Arc::clone(&store), workflow_id.clone(), run_id.clone());
+
+        // The "start thread": inserts the registry handle a beat after the
+        // workflow's first NIF call began resolving its context.
+        let late_registry = Arc::clone(&registry);
+        let inserter = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            late_registry.insert((workflow_id.clone(), run_id), handle)
+        });
+
+        let context = NifContext::new(91, &registry, runtime.handle().clone(), birth_wait())?;
+
+        assert_eq!(context.pid(), 91);
+        inserter
+            .join()
+            .map_err(|_| "registry insert thread panicked")??;
         Ok(())
     }
 
@@ -585,7 +689,7 @@ mod tests {
             completion: CompletionNotifier::new(),
         });
         registry.insert((workflow_id, run_id), handle)?;
-        let context = NifContext::new(55, &registry, runtime.handle().clone())?;
+        let context = NifContext::new(55, &registry, runtime.handle().clone(), birth_wait())?;
 
         let head = context
             .block_on_recorder(|recorder| Box::pin(async move { Ok(recorder.current_head()) }))?;
@@ -618,6 +722,7 @@ mod tests {
             &registry,
             runtime.handle().clone(),
             Some(store),
+            birth_wait(),
         )?;
 
         assert_eq!(context.workflow_id(), handle.workflow_id());
@@ -695,6 +800,7 @@ mod tests {
             &registry,
             runtime.handle().clone(),
             Some(store),
+            birth_wait(),
         )?;
 
         assert_eq!(
@@ -721,6 +827,7 @@ mod tests {
             &registry,
             runtime.handle().clone(),
             Some(store),
+            birth_wait(),
         )?;
 
         assert_eq!(

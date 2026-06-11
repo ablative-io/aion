@@ -103,29 +103,35 @@ async fn handle_process_exit_async(
         }
     };
 
+    // Notify as soon as the durable terminal is decided: subscribers
+    // (result waiters, child-terminal watchers) resolve from the recorded
+    // store truth, so the doorbell must never be muted by a failure in the
+    // post-record bookkeeping below — a watcher parked on a doorbell that
+    // never rings strands the awaiting parent for the whole epoch.
     let terminal = match recorded {
         Err(existing) => {
+            handle.completion().notify(existing.clone());
             reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
             if let TerminalOutcome::ContinuedAsNew {
                 input,
                 workflow_type,
                 parent_run_id,
-            } = &existing
+            } = existing
             {
                 start_continuation_replacement(
                     &context,
                     &handle,
-                    input.clone(),
-                    workflow_type.clone(),
-                    parent_run_id.clone(),
+                    input,
+                    workflow_type,
+                    parent_run_id,
                 )
                 .await?;
             }
-            handle.completion().notify(existing);
             return Ok(());
         }
         Ok(terminal) => terminal,
     };
+    handle.completion().notify(terminal);
 
     upsert_workflow_visibility(
         Arc::clone(&context.store),
@@ -135,7 +141,6 @@ async fn handle_process_exit_async(
     )
     .await?;
     reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
-    handle.completion().notify(terminal);
     Ok(())
 }
 

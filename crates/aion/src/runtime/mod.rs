@@ -15,6 +15,8 @@ mod nif_activity;
 mod nif_activity_dispatch;
 mod nif_child;
 mod nif_child_engine;
+mod nif_child_spawn_retry;
+mod nif_child_tasks;
 mod nif_child_watch;
 mod nif_collect;
 mod nif_concurrency;
@@ -35,6 +37,7 @@ mod nif_wake;
 pub mod outcome;
 /// Payload conversion helpers used at the runtime boundary.
 pub mod payload;
+mod wake_confirm;
 /// Workflow module and entrypoint execution helpers.
 pub mod workflow;
 

@@ -72,7 +72,19 @@ pub(crate) struct EngineNifState {
     /// query-handler misuse surfaces as a typed error instead of a silent
     /// history write.
     pub(super) servicing_queries: DashMap<u64, String>,
+    /// Per-pid suspending-native entry counter consumed by the wake
+    /// confirmation ladder (see [`super::wake_confirm`]): every suspending
+    /// await bumps its caller's epoch on entry, and process exit stamps the
+    /// [`WAKE_EPOCH_EXITED`] tombstone, so an armed ladder can observe "this
+    /// process ran (or died) after my marker was delivered" and stop.
+    /// Entries are never removed — beamr never reuses pids within a
+    /// scheduler, and a removed tombstone would make a late ladder re-wake a
+    /// dead pid forever.
+    wake_observation_epochs: DashMap<u64, u64>,
 }
+
+/// Epoch tombstone recorded for an exited workflow pid.
+const WAKE_EPOCH_EXITED: u64 = u64::MAX;
 
 /// One query delivered to a workflow pid, awaiting pump pickup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,6 +180,9 @@ impl EngineNifState {
     /// here too: a dead parent can never consume the wake, and an orphaned
     /// watcher must not keep a recorder path alive past the process.
     pub(crate) fn cleanup_process(&self, pid: u64) {
+        // Terminal stamp first: any armed wake-confirmation ladder for this
+        // pid observes the epoch change and stops.
+        self.wake_observation_epochs.insert(pid, WAKE_EPOCH_EXITED);
         self.pending_awaits.remove(&pid);
         self.timeout_scope_stacks.remove(&pid);
         self.timeout_scopes.retain(|_, scope| scope.pid != pid);
@@ -179,15 +194,51 @@ impl EngineNifState {
         }
     }
 
-    /// Abort every armed child-terminal watcher task across the engine.
+    /// Record one suspending-native entry for `pid`.
     ///
-    /// Called from engine shutdown: watcher tasks live on the host Tokio
-    /// runtime (not the beamr scheduler), so they would otherwise outlive
-    /// the engine and could double-write a parent history a successor
-    /// engine instance over the same store also records into.
-    pub(crate) fn shutdown_child_terminal_watches(&self) {
+    /// Called on every suspending-await invocation (fresh entry and wake
+    /// re-entry alike): each call proves the process was scheduled and
+    /// merged its mailbox after any previously delivered marker, which is
+    /// the stop condition for that marker's wake-confirmation ladder.
+    pub(crate) fn observe_native_entry(&self, pid: u64) {
+        self.wake_observation_epochs
+            .entry(pid)
+            .and_modify(|epoch| {
+                if *epoch != WAKE_EPOCH_EXITED {
+                    *epoch += 1;
+                }
+            })
+            .or_insert(1);
+    }
+
+    /// Current wake-observation epoch for `pid` (0 when never observed).
+    pub(crate) fn wake_observation_epoch(&self, pid: u64) -> u64 {
+        self.wake_observation_epochs
+            .get(&pid)
+            .map_or(0, |epoch| *epoch)
+    }
+
+    /// Whether a wake ladder armed at `snapshot` may stop for `pid`.
+    ///
+    /// True once the epoch moved past the snapshot (a suspending-native
+    /// entry after the delivery) or the pid carries the exit tombstone —
+    /// including a tombstone already present at arming time, so a ladder is
+    /// never armed against (or kept alive by) a process that finished before
+    /// its delivery was confirmed.
+    pub(crate) fn wake_ladder_done(&self, pid: u64, snapshot: u64) -> bool {
+        let now = self.wake_observation_epoch(pid);
+        now != snapshot || now == WAKE_EPOCH_EXITED
+    }
+
+    /// Close the engine's child-task epoch: gate new arms, abort every
+    /// watcher and spawn-recovery task, and await each to quiescence (F4).
+    ///
+    /// Called from engine shutdown after the scheduler stops: a child task
+    /// still running past this point could double-write a parent history a
+    /// successor engine instance over the same store also records into.
+    pub(crate) fn shutdown_child_tasks(&self) {
         if let Some(bridge) = self.installed_child_bridge() {
-            bridge.abort_all_child_terminal_watches();
+            bridge.shutdown_child_tasks();
         }
     }
 

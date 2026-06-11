@@ -46,8 +46,13 @@ fn continue_as_new(args: &[Term], process_context: &ProcessContext) -> Result<()
     // read-only.
     crate::runtime::nif_query_pump::ensure_not_servicing_query(&state, pid, "continue_as_new")
         .map_err(|error| error_result_term(&error).unwrap_or(Term::NIL))?;
-    let context = NifContext::new(pid, runtime.registry.as_ref(), runtime.tokio_handle.clone())
-        .map_err(|error| context_error_term(&error))?;
+    let context = NifContext::new(
+        pid,
+        runtime.registry.as_ref(),
+        runtime.tokio_handle.clone(),
+        runtime.runtime.signal_delivery(),
+    )
+    .map_err(|error| context_error_term(&error))?;
     let input_text = decode_string_arg(args[0]).map_err(|error| {
         error_result_term(&format!("continue_as_new input: {error}")).unwrap_or(Term::NIL)
     })?;

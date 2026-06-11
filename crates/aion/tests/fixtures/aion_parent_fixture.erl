@@ -1,5 +1,5 @@
 -module(aion_parent_fixture).
--export([child_round_trip/1, child_then_signal/1, two_children/1]).
+-export([child_round_trip/1, child_then_signal/1, two_children/1, spawn_unloaded/1]).
 
 %% Spawn one child workflow through the engine NIF bridge, await its
 %% terminal result, and return both identifiers so tests can assert the
@@ -21,6 +21,17 @@ child_then_signal(_Input) ->
     {ok, <<"ok:", ChildResult/binary>>} = aion_flow_ffi:await_child(ChildId),
     {ok, _Release} = aion_flow_ffi:receive_signal(<<"release">>, <<"{}">>),
     {ChildId, ChildResult}.
+
+%% Spawn a child whose workflow type is never loaded by the test engine.
+%% The engine records ChildWorkflowStarted before starting the child, so the
+%% start failure is an engine-internal obligation (F3): spawn_child must
+%% still return {ok, ChildId} and the parent must complete normally. A
+%% workflow-visible error here would diverge from replay, which resolves the
+%% spawn from the recorded event as success.
+spawn_unloaded(_Input) ->
+    {ok, ChildId} = aion_flow_ffi:spawn_child(
+        <<"aion_never_loaded_child">>, <<"\"child-input\"">>, <<"{}">>),
+    ChildId.
 
 %% Spawn two children with a "mid" signal consumed between the spawns, so an
 %% asynchronous SignalReceived event lands between the two recorded

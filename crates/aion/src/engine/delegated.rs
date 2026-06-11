@@ -241,7 +241,9 @@ impl Engine {
         name: impl Into<String>,
         payload: Payload,
     ) -> Result<(), EngineError> {
-        let Some(handle) = self.registry().get(id, run)? else {
+        let handle = if let Some(handle) = self.registry().get(id, run)? {
+            handle
+        } else {
             let history = self.store().read_history(id).await?;
             if run_has_terminal_history(&history, run) {
                 return Err(SignalRouterError::Terminal {
@@ -250,7 +252,9 @@ impl Engine {
                 }
                 .into());
             }
-            return Err(workflow_not_found(id, run));
+            self.handle_after_birth_window(id, run, &history)
+                .await?
+                .ok_or_else(|| workflow_not_found(id, run))?
         };
         self.delegated()
             .signal_router()
@@ -272,7 +276,9 @@ impl Engine {
         run: &RunId,
         name: impl Into<String>,
     ) -> Result<Payload, EngineError> {
-        let Some(handle) = self.registry().get(id, run)? else {
+        let handle = if let Some(handle) = self.registry().get(id, run)? {
+            handle
+        } else {
             // Mirror Engine::signal's registry-miss handling: a completed
             // workflow is NotRunning per the query contract, never NotFound.
             let history = self.store().read_history(id).await?;
@@ -281,12 +287,39 @@ impl Engine {
                     id.clone(),
                 )));
             }
-            return Err(workflow_not_found(id, run));
+            self.handle_after_birth_window(id, run, &history)
+                .await?
+                .ok_or_else(|| workflow_not_found(id, run))?
         };
         self.delegated()
             .query_service()
             .query(&handle, name.into())
             .await
+    }
+
+    /// Resolve a registry miss against the registration birth window.
+    ///
+    /// The start path records `WorkflowStarted` durably *before* it inserts
+    /// the registry handle, so an embedder acting on observed history (or on
+    /// a `start_workflow` racing on another task) can legitimately arrive
+    /// here after the record and before the insert. When the requested run
+    /// is durably started and non-terminal, the registry is re-polled within
+    /// the builder-supplied delivery policy budget; `None` after the budget
+    /// means the run truly has no live handle (its start failed or its
+    /// engine is gone) and the caller fails typed.
+    pub(crate) async fn handle_after_birth_window(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+        history: &[Event],
+    ) -> Result<Option<WorkflowHandle>, EngineError> {
+        let started = history
+            .iter()
+            .any(|event| matches!(event, Event::WorkflowStarted { run_id, .. } if run_id == run));
+        if !started {
+            return Ok(None);
+        }
+        wait_for_registered_handle(self.registry(), id, run, self.runtime().signal_delivery()).await
     }
 
     /// Subscribe to the live event stream through the AD/AT publisher seam.
@@ -351,6 +384,43 @@ pub(crate) fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
         }
     }
     false
+}
+
+/// Poll the registry for `(id, run)` until the handle appears or the
+/// builder-supplied delivery budget is spent.
+///
+/// The budget is the policy's full persistence — `ready_timeout ×
+/// max_enqueue_attempts`, the same product the runtime's enqueue retry
+/// expresses — polled with the policy's backoff ladder. A single
+/// `ready_timeout` is the typical insert latency, but the start thread can
+/// be preempted past it under host oversubscription, and the cost of giving
+/// up early is a typed not-found for a workflow that is durably started.
+pub(crate) async fn wait_for_registered_handle(
+    registry: &crate::registry::Registry,
+    id: &WorkflowId,
+    run: &RunId,
+    policy: crate::runtime::SignalDeliveryConfig,
+) -> Result<Option<WorkflowHandle>, EngineError> {
+    let budget = policy
+        .ready_timeout
+        .saturating_mul(policy.max_enqueue_attempts.max(1));
+    let deadline = std::time::Instant::now() + budget;
+    let mut backoff = policy.initial_backoff;
+    loop {
+        if let Some(handle) = registry.get(id, run)? {
+            return Ok(Some(handle));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(backoff).await;
+        let doubled = backoff.saturating_mul(2);
+        backoff = if doubled > policy.max_backoff {
+            policy.max_backoff
+        } else {
+            doubled
+        };
+    }
 }
 
 const fn event_family(event: &Event) -> EventFamily {
@@ -494,7 +564,10 @@ mod tests {
         }))
     }
 
-    async fn insert_active_handle(
+    /// Record `WorkflowStarted` durably and build the matching handle
+    /// without inserting it into the registry — the exact state of the
+    /// registration birth window.
+    async fn recorded_active_handle(
         engine: &Engine,
     ) -> Result<WorkflowHandle, Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
@@ -506,12 +579,12 @@ mod tests {
                 chrono::Utc::now(),
                 "checkout".to_owned(),
                 payload("input")?,
-                aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                run_id.clone(),
             )
             .await?;
-        let handle = WorkflowHandle::new(WorkflowHandleParts {
-            workflow_id: workflow_id.clone(),
-            run_id: run_id.clone(),
+        Ok(WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id,
+            run_id,
             pid: engine.runtime().spawn_test_process_with_trap_exit(true)?,
             workflow_type: "checkout".to_owned(),
             loaded_version: ContentHash::from_bytes([1; 32]),
@@ -519,10 +592,17 @@ mod tests {
             residency: HandleResidency::Resident,
             recorder,
             completion: CompletionNotifier::new(),
-        });
-        engine
-            .registry()
-            .insert((workflow_id, run_id), handle.clone())?;
+        }))
+    }
+
+    async fn insert_active_handle(
+        engine: &Engine,
+    ) -> Result<WorkflowHandle, Box<dyn std::error::Error>> {
+        let handle = recorded_active_handle(engine).await?;
+        engine.registry().insert(
+            (handle.workflow_id().clone(), handle.run_id().clone()),
+            handle.clone(),
+        )?;
         Ok(handle)
     }
 
@@ -532,6 +612,84 @@ mod tests {
             recorded_at: chrono::Utc::now(),
             workflow_id: workflow_id.clone(),
         }
+    }
+
+    /// Registration birth window (the 1/300 release-signal flake): the start
+    /// path records `WorkflowStarted` durably before it inserts the registry
+    /// handle, so a caller acting on observed history can signal before the
+    /// insert lands. The signal must wait the handle out within the delivery
+    /// policy budget — before the fix it returned `WorkflowNotFound`
+    /// immediately.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signal_inside_the_registration_birth_window_waits_for_the_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let signal = Arc::new(SignalCapture::default());
+        let engine = Arc::new(engine_with_seams(
+            signal.clone(),
+            Arc::new(DeferredQueryService),
+            Arc::new(DeferredEventPublisher),
+        )?);
+        let handle = recorded_active_handle(&engine).await?;
+
+        // The insert lands mid-wait, exactly as the start thread's does.
+        let late_engine = Arc::clone(&engine);
+        let late_handle = handle.clone();
+        let inserter = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+            late_engine.registry().insert(
+                (
+                    late_handle.workflow_id().clone(),
+                    late_handle.run_id().clone(),
+                ),
+                late_handle,
+            )
+        });
+
+        engine
+            .signal(
+                handle.workflow_id(),
+                handle.run_id(),
+                "approve",
+                payload("birth")?,
+            )
+            .await?;
+        inserter.await??;
+
+        let calls = signal
+            .calls
+            .lock()
+            .map_err(|_| EngineError::RegistryPoisoned)?;
+        assert_eq!(calls.len(), 1, "the signal must reach the routed handle");
+        drop(calls);
+        engine.shutdown()?;
+        Ok(())
+    }
+
+    /// The birth wait is bounded: a durably started run whose handle never
+    /// appears (its start failed, or its engine is gone) still fails typed
+    /// after the policy budget.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signal_for_a_started_run_with_no_handle_fails_typed_after_the_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = engine_with_seams(
+            Arc::new(SignalCapture::default()),
+            Arc::new(DeferredQueryService),
+            Arc::new(DeferredEventPublisher),
+        )?;
+        let handle = recorded_active_handle(&engine).await?;
+
+        let outcome = engine
+            .signal(
+                handle.workflow_id(),
+                handle.run_id(),
+                "approve",
+                payload("never")?,
+            )
+            .await;
+
+        assert!(matches!(outcome, Err(EngineError::WorkflowNotFound { .. })));
+        engine.shutdown()?;
+        Ok(())
     }
 
     #[tokio::test]

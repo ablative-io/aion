@@ -225,6 +225,7 @@ fn install_with_timeout(
             runtime: std::sync::Weak::new(),
             tokio_handle: runtime.handle().clone(),
             query_timeout,
+            birth_wait: crate::runtime::SignalDeliveryConfig::default(),
         },
     );
     Ok((state, store, engine, workflow_id))
@@ -248,6 +249,50 @@ fn register_query_stores_names_only_and_is_idempotent() -> TestResult {
         "registered"
     );
     assert!(is_query_registered(&state, 42, "state")?);
+    Ok(())
+}
+
+/// F8 registration race: the start path inserts the registry handle only
+/// after the workflow process is spawned, so a workflow whose first
+/// instructions register a handler (or service a query) can execute these
+/// NIFs before its registry entry exists. The calling pid is authoritative;
+/// requiring a registry entry made the birth window a typed failure the SDK
+/// treats as fatal — before the fix this test failed with
+/// `unknown_workflow_process:77`, and live workflows intermittently died at
+/// startup with `{badmatch, {error, <<"unknown_workflow_process:N">>}}`.
+#[test]
+fn query_nifs_accept_a_pid_the_registry_has_not_inserted_yet() -> TestResult {
+    let runtime = tokio::runtime::Runtime::new()?;
+    // Pid 77 is deliberately never seeded into the registry.
+    let (state, _store, _engine, _workflow_id) = install(&runtime)?;
+
+    assert_eq!(
+        register_query_impl(&state, "state", "{}", Some(77))?,
+        "registered"
+    );
+    assert!(is_query_registered(&state, 77, "state")?);
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    insert_pending_reply(&state, "q-birth".to_owned(), 77, sender)?;
+    assert_eq!(
+        reply_query_impl(&state, "q-birth", "{\"answer\":1}", Some(77))?,
+        "replied"
+    );
+    let reply = runtime
+        .block_on(receiver)?
+        .map_err(|error| format!("expected payload, got {error:?}"))?;
+    assert_eq!(reply.bytes(), b"{\"answer\":1}");
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    insert_pending_reply(&state, "q-birth-err".to_owned(), 77, sender)?;
+    assert_eq!(
+        reply_query_error_impl(&state, "q-birth-err", "boom", Some(77))?,
+        "replied"
+    );
+    match runtime.block_on(receiver)? {
+        Err(QueryError::HandlerFailed { message }) => assert_eq!(message, "boom"),
+        other => return Err(format!("expected HandlerFailed, got {other:?}").into()),
+    }
     Ok(())
 }
 

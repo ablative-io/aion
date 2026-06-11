@@ -31,6 +31,12 @@ use crate::RuntimeHandle;
 /// on every invocation — not just wakes — so the queued query is still
 /// drained at the next yield point regardless of which await ate its marker.
 pub(super) fn consume_wake_marker(process_context: &mut ProcessContext, runtime: &RuntimeHandle) {
+    if let Some(pid) = process_context.pid() {
+        // Entry proof for the wake-confirmation ladder: this invocation
+        // demonstrates the process was scheduled and merged its mailbox
+        // after any previously delivered marker (see `wake_confirm`).
+        runtime.nif_state().observe_native_entry(pid);
+    }
     let markers = [
         runtime.activity_complete_atom(),
         runtime.activity_failed_atom(),

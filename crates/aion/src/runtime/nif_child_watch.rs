@@ -4,71 +4,30 @@
 //! discipline to the parent's history.
 //!
 //! One watcher task is armed per `(parent pid, child workflow id)` await;
-//! arming is idempotent. The loop treats the store as truth and each
-//! child-run `CompletionNotifier` as a doorbell: on every iteration it
-//! re-reads the child's durable history, follows the continue-as-new run
-//! chain to the first non-CAN terminal, and only then records the parent's
+//! arming is idempotent and registered in the engine's [`ChildTaskRuntime`]
+//! (which gates arming during shutdown and aborts-then-awaits every task at
+//! epoch close). The loop treats the store as truth and each child-run
+//! `CompletionNotifier` as a doorbell: on every iteration it re-reads the
+//! child's durable history, follows the continue-as-new run chain to the
+//! first non-CAN terminal, and only then records the parent's
 //! `ChildWorkflowCompleted`/`ChildWorkflowFailed` — idempotently, under the
 //! parent recorder lock, behind the same atomic parent-terminal guard the
-//! signal router uses. Marker delivery failure after the durable record is
-//! non-fatal: recovery resolves the await from the recorded event.
+//! signal router uses, retrying transient record failures with the engine's
+//! backoff policy until the record lands or the parent run is terminal.
+//! Marker delivery failure after the durable record is non-fatal: recovery
+//! resolves the await from the recorded event.
 
 use std::sync::Arc;
 
 use aion_core::{Event, RunId, WorkflowError, WorkflowId};
 use aion_store::EventStore;
-use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
-use tokio::task::AbortHandle;
 
 use crate::durability::current_run_segment;
 use crate::engine::delegated::run_has_terminal_history;
 use crate::lifecycle::completion::terminal_outcome_from_history;
 use crate::registry::{Registry, TerminalOutcome, WorkflowHandle};
+use crate::runtime::nif_child_tasks::ChildTaskRuntime;
 use crate::runtime::{RuntimeHandle, SignalDeliveryConfig};
-
-/// Keyed dedup table of armed child-terminal watcher tasks.
-///
-/// Keys are `(parent pid, child workflow id)`: beamr never reuses pids
-/// within a scheduler, so a removed key can never collide with a later
-/// process. Entries are removed by the task itself on completion and
-/// aborted by process cleanup / engine shutdown.
-#[derive(Default)]
-pub(crate) struct ChildTerminalWatches {
-    watches: DashMap<(u64, WorkflowId), AbortHandle>,
-}
-
-impl ChildTerminalWatches {
-    /// Abort and drop every watcher armed by `parent_pid`.
-    pub(crate) fn abort_for_parent(&self, parent_pid: u64) {
-        self.watches.retain(|(pid, _), abort| {
-            if *pid == parent_pid {
-                abort.abort();
-                false
-            } else {
-                true
-            }
-        });
-    }
-
-    /// Abort and drop every armed watcher (engine shutdown).
-    pub(crate) fn abort_all(&self) {
-        self.watches.retain(|_, abort| {
-            abort.abort();
-            false
-        });
-    }
-
-    /// Number of currently armed watcher tasks.
-    #[cfg(test)]
-    pub(crate) fn armed_count(&self) -> usize {
-        self.watches.len()
-    }
-
-    fn remove(&self, key: &(u64, WorkflowId)) {
-        self.watches.remove(key);
-    }
-}
 
 /// Everything one watcher task needs; cheap clones of engine-owned seams.
 #[derive(Clone)]
@@ -79,9 +38,10 @@ pub(super) struct ChildWatchContext {
     pub(super) registry: Arc<Registry>,
     /// Runtime boundary used to deliver the wake marker.
     pub(super) runtime: Arc<RuntimeHandle>,
-    /// Dedup table this watcher registers in.
-    pub(super) watches: Arc<ChildTerminalWatches>,
-    /// Builder-supplied backoff policy for registry-miss windows.
+    /// Task registry and executor this watcher is armed in.
+    pub(super) tasks: Arc<ChildTaskRuntime>,
+    /// Builder-supplied backoff policy for registry-miss windows and
+    /// transient record failures.
     pub(super) backoff: SignalDeliveryConfig,
     /// Awaiting parent's live handle (recorder, pid, run id).
     pub(super) parent: WorkflowHandle,
@@ -92,50 +52,74 @@ pub(super) struct ChildWatchContext {
 /// Arm a child-terminal watcher for one `(parent pid, child id)` await.
 ///
 /// Idempotent: a second arm while a watcher for the same key is running is
-/// a no-op. Returns whether a new watcher task was spawned.
-pub(super) fn arm_child_terminal_watch(
-    tokio_handle: &tokio::runtime::Handle,
-    context: ChildWatchContext,
-) -> bool {
-    let key = (context.parent.pid(), context.child_workflow_id.clone());
-    let watches = Arc::clone(&context.watches);
-    match watches.watches.entry(key.clone()) {
-        Entry::Occupied(_) => false,
-        Entry::Vacant(slot) => {
-            let task = tokio_handle.spawn(async move {
-                run_watch(&context).await;
-                context.watches.remove(&key);
-            });
-            slot.insert(task.abort_handle());
-            true
+/// a no-op, and arming is refused once engine shutdown began. Returns
+/// whether a new watcher task was spawned.
+pub(super) fn arm_child_terminal_watch(context: ChildWatchContext) -> bool {
+    let parent_pid = context.parent.pid();
+    let child_id = context.child_workflow_id.clone();
+    let tasks = Arc::clone(&context.tasks);
+    tasks.arm_watch(parent_pid, child_id.clone(), async move {
+        run_watch(&context).await;
+        context.tasks.remove_watch(parent_pid, &child_id);
+    })
+}
+
+/// One failed parent-side terminal record attempt.
+#[derive(Debug)]
+pub(super) enum RecordFailure {
+    /// Transient store or recorder trouble; the watcher retries with the
+    /// engine's backoff policy (F5) — a parked parent must never be
+    /// abandoned over a transient append failure.
+    Retryable(String),
+    /// A logic violation that retrying can never repair.
+    Invariant(String),
+}
+
+impl std::fmt::Display for RecordFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Retryable(reason) | Self::Invariant(reason) => formatter.write_str(reason),
         }
     }
 }
 
+impl std::error::Error for RecordFailure {}
+
 /// Drive one watcher to completion: store-truth loop, then record + wake.
+///
+/// The record is the durable handoff; without it the parent stays parked,
+/// so a transient record failure is retried with backoff until it lands or
+/// the parent run is observed terminal — never silently dropped (F5).
 async fn run_watch(context: &ChildWatchContext) {
     let outcome = wait_for_child_terminal(context).await;
-    let disposition =
+    let mut backoff = context.backoff.initial_backoff;
+    let disposition = loop {
         match record_parent_child_terminal(&context.parent, &context.child_workflow_id, &outcome)
             .await
         {
-            Ok(disposition) => disposition,
-            Err(reason) => {
-                // The record is the durable handoff; without it the parent must
-                // not be woken into resolving nothing. The await re-arms on its
-                // next entry (replay or a surplus wake), so this is retried by
-                // construction rather than looped here against a recorder that
-                // already refused.
+            Ok(disposition) => break disposition,
+            Err(RecordFailure::Retryable(reason)) => {
+                tracing::warn!(
+                    parent_workflow_id = %context.parent.workflow_id(),
+                    parent_run_id = %context.parent.run_id(),
+                    child_workflow_id = %context.child_workflow_id,
+                    reason = %reason,
+                    "child-terminal watcher record failed transiently; retrying with backoff"
+                );
+                sleep_backoff(&mut backoff, &context.backoff).await;
+            }
+            Err(RecordFailure::Invariant(reason)) => {
                 tracing::error!(
                     parent_workflow_id = %context.parent.workflow_id(),
                     parent_run_id = %context.parent.run_id(),
                     child_workflow_id = %context.child_workflow_id,
                     reason = %reason,
-                    "child-terminal watcher could not record the parent-side terminal"
+                    "child-terminal watcher hit an unretryable record invariant violation"
                 );
                 return;
             }
-        };
+        }
+    };
 
     match disposition {
         RecordDisposition::ParentTerminal => {
@@ -204,10 +188,19 @@ async fn wait_for_child_terminal(context: &ChildWatchContext) -> TerminalOutcome
                         let mut receiver = handle.completion().subscribe();
                         let published = receiver.borrow().clone();
                         if published.is_none() {
-                            // Doorbell: the run's exit monitor publishes after
-                            // recording; a closed channel just re-reads store.
-                            backoff = context.backoff.initial_backoff;
-                            let _ = receiver.changed().await;
+                            // Doorbell: the run's exit monitor publishes
+                            // after recording. The wait is bounded — the
+                            // store is the truth and the doorbell only an
+                            // accelerator, so a missed ring (a notify path
+                            // failure, an exit racing the subscription)
+                            // degrades to the polling cadence instead of
+                            // stranding the parked parent for the epoch.
+                            let wait = doorbell_wait(&mut backoff, &context.backoff);
+                            if tokio::time::timeout(wait, receiver.changed()).await.is_ok() {
+                                // Rang (or closed): converge immediately and
+                                // restart the polling ladder.
+                                backoff = context.backoff.initial_backoff;
+                            }
                             continue;
                         }
                         // The handle already published (mid-CAN window where
@@ -245,24 +238,25 @@ pub(super) enum RecordDisposition {
 ///
 /// # Errors
 ///
-/// Returns a human-readable reason when the parent history cannot be read
-/// or the recorder rejects the append.
+/// Returns [`RecordFailure::Retryable`] when the parent history cannot be
+/// read or the recorder rejects the append, and
+/// [`RecordFailure::Invariant`] for outcomes that are not recordable.
 pub(super) async fn record_parent_child_terminal(
     parent: &WorkflowHandle,
     child_workflow_id: &WorkflowId,
     outcome: &TerminalOutcome,
-) -> Result<RecordDisposition, String> {
+) -> Result<RecordDisposition, RecordFailure> {
     let recorder = parent.recorder();
     let mut recorder = recorder.lock().await;
-    let history = recorder
-        .read_history()
-        .await
-        .map_err(|error| format!("parent history read failed: {error}"))?;
+    let history = recorder.read_history().await.map_err(|error| {
+        RecordFailure::Retryable(format!("parent history read failed: {error}"))
+    })?;
     if run_has_terminal_history(&history, parent.run_id()) {
         return Ok(RecordDisposition::ParentTerminal);
     }
-    let segment = current_run_segment(history, parent.run_id())
-        .map_err(|error| format!("parent run segment unavailable: {error}"))?;
+    let segment = current_run_segment(history, parent.run_id()).map_err(|error| {
+        RecordFailure::Retryable(format!("parent run segment unavailable: {error}"))
+    })?;
     if segment
         .iter()
         .any(|event| is_child_terminal_for(event, child_workflow_id))
@@ -271,15 +265,17 @@ pub(super) async fn record_parent_child_terminal(
     }
 
     let recorded_at = chrono::Utc::now();
+    let retryable =
+        |error: crate::durability::DurabilityError| RecordFailure::Retryable(error.to_string());
     match outcome {
         TerminalOutcome::Completed(result) => recorder
             .record_child_workflow_completed(recorded_at, child_workflow_id.clone(), result.clone())
             .await
-            .map_err(|error| format!("record_child_workflow_completed failed: {error}"))?,
+            .map_err(retryable)?,
         TerminalOutcome::Failed(error) => recorder
             .record_child_workflow_failed(recorded_at, child_workflow_id.clone(), error.clone())
             .await
-            .map_err(|error| format!("record_child_workflow_failed failed: {error}"))?,
+            .map_err(retryable)?,
         // Cancelled/TimedOut keep today's Failed mapping with message
         // prefixes; a distinct recorded taxonomy is out of scope (D-4).
         TerminalOutcome::Cancelled(reason) => recorder
@@ -292,7 +288,7 @@ pub(super) async fn record_parent_child_terminal(
                 },
             )
             .await
-            .map_err(|error| format!("record_child_workflow_failed failed: {error}"))?,
+            .map_err(retryable)?,
         TerminalOutcome::TimedOut(timeout) => recorder
             .record_child_workflow_failed(
                 recorded_at,
@@ -303,15 +299,16 @@ pub(super) async fn record_parent_child_terminal(
                 },
             )
             .await
-            .map_err(|error| format!("record_child_workflow_failed failed: {error}"))?,
+            .map_err(retryable)?,
         TerminalOutcome::ContinuedAsNew { .. } => {
             // The watch loop only surfaces real terminals; reaching here is
-            // a logic error that must not silently corrupt parent history.
-            return Err(
+            // a logic error that must not silently corrupt parent history
+            // and that no amount of retrying can repair.
+            return Err(RecordFailure::Invariant(
                 "continue-as-new is not a recordable child terminal; the run chain must be \
                  followed to a real terminal"
                     .to_owned(),
-            );
+            ));
         }
     }
     Ok(RecordDisposition::Recorded)
@@ -376,6 +373,23 @@ async fn sleep_backoff(current: &mut std::time::Duration, policy: &SignalDeliver
     };
 }
 
+/// Bound for one doorbell wait, advancing the polling ladder.
+///
+/// Mirrors [`sleep_backoff`]'s progression but caps at the policy's
+/// readiness horizon (`ready_timeout`, floored by `max_backoff`): the
+/// doorbell stays the fast path, while a missed ring degrades to this
+/// polling cadence against the store instead of an unbounded park.
+fn doorbell_wait(
+    current: &mut std::time::Duration,
+    policy: &SignalDeliveryConfig,
+) -> std::time::Duration {
+    let cap = policy.ready_timeout.max(policy.max_backoff);
+    let wait = *current;
+    let doubled = wait.saturating_mul(2);
+    *current = if doubled > cap { cap } else { doubled };
+    wait
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -387,14 +401,15 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ChildTerminalWatches, ChildWatchContext, RecordDisposition, arm_child_terminal_watch,
-        current_run_handle, latest_run_id, record_parent_child_terminal,
+        ChildWatchContext, RecordDisposition, arm_child_terminal_watch, current_run_handle,
+        latest_run_id, record_parent_child_terminal,
     };
     use crate::durability::Recorder;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
         WorkflowHandleParts,
     };
+    use crate::runtime::nif_child_tasks::ChildTaskRuntime;
     use crate::runtime::{RuntimeConfig, RuntimeHandle, SignalDeliveryConfig};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -453,16 +468,16 @@ mod tests {
         runtime: Arc<RuntimeHandle>,
         parent: WorkflowHandle,
         child_workflow_id: WorkflowId,
-    ) -> ChildWatchContext {
-        ChildWatchContext {
+    ) -> Result<ChildWatchContext, Box<dyn std::error::Error>> {
+        Ok(ChildWatchContext {
             store,
             registry,
             runtime,
-            watches: Arc::new(ChildTerminalWatches::default()),
+            tasks: Arc::new(ChildTaskRuntime::new()?),
             backoff: fast_backoff(),
             parent,
             child_workflow_id,
-        }
+        })
     }
 
     async fn child_terminal_count(
@@ -491,26 +506,23 @@ mod tests {
             Arc::clone(&runtime),
             parent,
             child.clone(),
-        );
-        let watches = Arc::clone(&context.watches);
+        )?;
+        let tasks = Arc::clone(&context.tasks);
 
-        let first = arm_child_terminal_watch(&tokio::runtime::Handle::current(), context.clone());
-        let second = arm_child_terminal_watch(&tokio::runtime::Handle::current(), context.clone());
+        let first = arm_child_terminal_watch(context.clone());
+        let second = arm_child_terminal_watch(context.clone());
 
         assert!(first, "first arm must spawn a watcher");
         assert!(!second, "second arm for the same key must be a no-op");
-        assert_eq!(watches.armed_count(), 1);
+        assert_eq!(tasks.armed_watch_count(), 1);
 
         // A different child id under the same parent is its own watcher.
         context.child_workflow_id = WorkflowId::new_v4();
-        assert!(arm_child_terminal_watch(
-            &tokio::runtime::Handle::current(),
-            context
-        ));
-        assert_eq!(watches.armed_count(), 2);
+        assert!(arm_child_terminal_watch(context));
+        assert_eq!(tasks.armed_watch_count(), 2);
 
-        watches.abort_all();
-        assert_eq!(watches.armed_count(), 0);
+        tasks.shutdown();
+        assert_eq!(tasks.armed_watch_count(), 0);
         runtime.shutdown()?;
         Ok(())
     }
@@ -522,28 +534,25 @@ mod tests {
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         let parent_a = started_handle(&store, WorkflowId::new_v4(), RunId::new_v4(), 31).await?;
         let parent_b = started_handle(&store, WorkflowId::new_v4(), RunId::new_v4(), 32).await?;
-        let watches = Arc::new(ChildTerminalWatches::default());
+        let tasks = Arc::new(ChildTaskRuntime::new()?);
         for parent in [parent_a, parent_b] {
             let context = ChildWatchContext {
                 store: Arc::clone(&store),
                 registry: Arc::clone(&registry),
                 runtime: Arc::clone(&runtime),
-                watches: Arc::clone(&watches),
+                tasks: Arc::clone(&tasks),
                 backoff: fast_backoff(),
                 parent,
                 child_workflow_id: WorkflowId::new_v4(),
             };
-            assert!(arm_child_terminal_watch(
-                &tokio::runtime::Handle::current(),
-                context
-            ));
+            assert!(arm_child_terminal_watch(context));
         }
-        assert_eq!(watches.armed_count(), 2);
+        assert_eq!(tasks.armed_watch_count(), 2);
 
-        watches.abort_for_parent(31);
+        tasks.abort_watches_for_parent(31);
 
-        assert_eq!(watches.armed_count(), 1);
-        watches.abort_all();
+        assert_eq!(tasks.armed_watch_count(), 1);
+        tasks.shutdown();
         runtime.shutdown()?;
         Ok(())
     }
@@ -648,7 +657,11 @@ mod tests {
         .err()
         .ok_or("continue-as-new was accepted as a recordable terminal")?;
 
-        assert!(error.contains("not a recordable child terminal"));
+        assert!(
+            matches!(&error, super::RecordFailure::Invariant(reason)
+                if reason.contains("not a recordable child terminal")),
+            "expected an invariant refusal, got: {error}"
+        );
         assert_eq!(store.read_history(parent.workflow_id()).await?, before);
         Ok(())
     }
@@ -692,11 +705,8 @@ mod tests {
             Arc::clone(&runtime),
             parent.clone(),
             child_id.clone(),
-        );
-        assert!(arm_child_terminal_watch(
-            &tokio::runtime::Handle::current(),
-            context.clone()
-        ));
+        )?;
+        assert!(arm_child_terminal_watch(context.clone()));
 
         // The watcher must wait through the CAN window (replacement not yet
         // registered) without recording anything.
@@ -748,9 +758,66 @@ mod tests {
         }
         // The dedup entry is removed once the watcher finishes.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while context.watches.armed_count() != 0 {
+        while context.tasks.armed_watch_count() != 0 {
             if std::time::Instant::now() > deadline {
                 return Err("watcher entry was not removed after completion".into());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    /// The store is the truth and the completion doorbell only an
+    /// accelerator: a child terminal recorded without its notify ever firing
+    /// (a notify path failure, an exit racing the subscription) must still
+    /// be observed through the bounded doorbell wait. Before the fix the
+    /// watcher parked on `receiver.changed()` forever and the awaiting
+    /// parent was stranded for the epoch — the ~1/350 restart-family flake.
+    #[tokio::test]
+    async fn missed_doorbell_degrades_to_store_polling_not_a_permanent_park() -> TestResult {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let registry = Arc::new(Registry::default());
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+        let parent = started_handle(&store, WorkflowId::new_v4(), RunId::new_v4(), 71).await?;
+        let child_id = WorkflowId::new_v4();
+        let child_run = RunId::new_v4();
+        let child_handle = started_handle(&store, child_id.clone(), child_run.clone(), 72).await?;
+        registry.insert((child_id.clone(), child_run), child_handle.clone())?;
+
+        // The watcher arms against a live, non-terminal child and parks on
+        // the doorbell.
+        let context = watch_context(
+            Arc::clone(&store),
+            registry,
+            Arc::clone(&runtime),
+            parent.clone(),
+            child_id.clone(),
+        )?;
+        let tasks = Arc::clone(&context.tasks);
+        assert!(arm_child_terminal_watch(context));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            child_terminal_count(&store, parent.workflow_id(), &child_id).await?,
+            0
+        );
+
+        // The child terminal lands durably but the doorbell NEVER rings
+        // (no `completion().notify(..)` call).
+        {
+            let recorder = child_handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_workflow_completed(chrono::Utc::now(), payload("muted-doorbell")?)
+                .await?;
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while child_terminal_count(&store, parent.workflow_id(), &child_id).await? != 1
+            || tasks.armed_watch_count() != 0
+        {
+            if std::time::Instant::now() > deadline {
+                return Err("watcher stayed parked on a muted doorbell despite store truth".into());
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -774,11 +841,8 @@ mod tests {
             Arc::clone(&runtime),
             parent.clone(),
             child_id.clone(),
-        );
-        assert!(arm_child_terminal_watch(
-            &tokio::runtime::Handle::current(),
-            context
-        ));
+        )?;
+        assert!(arm_child_terminal_watch(context));
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(
             child_terminal_count(&store, parent.workflow_id(), &child_id).await?,
@@ -840,18 +904,15 @@ mod tests {
             Arc::clone(&runtime),
             parent.clone(),
             child_id.clone(),
-        );
-        let watches = Arc::clone(&context.watches);
-        assert!(arm_child_terminal_watch(
-            &tokio::runtime::Handle::current(),
-            context
-        ));
+        )?;
+        let tasks = Arc::clone(&context.tasks);
+        assert!(arm_child_terminal_watch(context));
 
         // The record lands durably and the watcher exits cleanly despite the
         // undeliverable marker.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while child_terminal_count(&store, parent.workflow_id(), &child_id).await? != 1
-            || watches.armed_count() != 0
+            || tasks.armed_watch_count() != 0
         {
             if std::time::Instant::now() > deadline {
                 return Err("watcher did not record and exit after marker failure".into());
@@ -897,6 +958,163 @@ mod tests {
 
         assert_eq!(latest_run_id(&history), Some(second));
         assert_eq!(latest_run_id(&[]), None);
+        Ok(())
+    }
+
+    /// Delegating store whose `append` fails while a failure budget remains.
+    struct FlakyAppendStore {
+        inner: InMemoryStore,
+        remaining_failures: std::sync::atomic::AtomicU32,
+    }
+
+    impl FlakyAppendStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryStore::default(),
+                remaining_failures: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+
+        fn fail_next_appends(&self, count: u32) {
+            self.remaining_failures
+                .store(count, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl aion_store::ReadableEventStore for FlakyAppendStore {
+        async fn read_history(
+            &self,
+            workflow_id: &WorkflowId,
+        ) -> Result<Vec<Event>, aion_store::StoreError> {
+            self.inner.read_history(workflow_id).await
+        }
+
+        async fn read_run_chain(
+            &self,
+            workflow_id: &WorkflowId,
+        ) -> Result<Vec<aion_store::RunSummary>, aion_store::StoreError> {
+            self.inner.read_run_chain(workflow_id).await
+        }
+
+        async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, aion_store::StoreError> {
+            self.inner.list_workflow_ids().await
+        }
+
+        async fn list_active(&self) -> Result<Vec<WorkflowId>, aion_store::StoreError> {
+            self.inner.list_active().await
+        }
+
+        async fn query(
+            &self,
+            filter: &aion_core::WorkflowFilter,
+        ) -> Result<Vec<aion_core::WorkflowSummary>, aion_store::StoreError> {
+            self.inner.query(filter).await
+        }
+
+        async fn schedule_timer(
+            &self,
+            workflow_id: &WorkflowId,
+            timer_id: &aion_core::TimerId,
+            fire_at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<(), aion_store::StoreError> {
+            self.inner
+                .schedule_timer(workflow_id, timer_id, fire_at)
+                .await
+        }
+
+        async fn expired_timers(
+            &self,
+            as_of: chrono::DateTime<chrono::Utc>,
+        ) -> Result<Vec<aion_store::TimerEntry>, aion_store::StoreError> {
+            self.inner.expired_timers(as_of).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl aion_store::WritableEventStore for FlakyAppendStore {
+        async fn append(
+            &self,
+            token: aion_store::WriteToken,
+            workflow_id: &WorkflowId,
+            events: &[Event],
+            expected_seq: u64,
+        ) -> Result<(), aion_store::StoreError> {
+            let failing = self
+                .remaining_failures
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |current| current.checked_sub(1),
+                )
+                .is_ok();
+            if failing {
+                return Err(aion_store::StoreError::Backend(
+                    "transient append failure injected by FlakyAppendStore".to_owned(),
+                ));
+            }
+            self.inner
+                .append(token, workflow_id, events, expected_seq)
+                .await
+        }
+    }
+
+    /// F5: a transient record failure must be retried with backoff until the
+    /// record lands — the parked parent is never abandoned for the epoch.
+    /// Before the fix the watcher logged once and exited, leaving the parent
+    /// parked forever; this test then failed its convergence deadline.
+    #[tokio::test]
+    async fn transient_record_failure_is_retried_until_the_terminal_lands() -> TestResult {
+        let flaky = Arc::new(FlakyAppendStore::new());
+        let store: Arc<dyn EventStore> = Arc::clone(&flaky) as Arc<dyn EventStore>;
+        let registry = Arc::new(Registry::default());
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+        let parent = started_handle(&store, WorkflowId::new_v4(), RunId::new_v4(), 81).await?;
+        let child_id = WorkflowId::new_v4();
+        let child_run = RunId::new_v4();
+        let child_handle = started_handle(&store, child_id.clone(), child_run.clone(), 82).await?;
+        registry.insert((child_id.clone(), child_run), child_handle.clone())?;
+        {
+            let recorder = child_handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_workflow_completed(chrono::Utc::now(), payload("flaky-result")?)
+                .await?;
+        }
+        child_handle
+            .completion()
+            .notify(TerminalOutcome::Completed(payload("flaky-result")?));
+
+        // Every store write from here fails three times before succeeding:
+        // the watcher's parent-side record must survive all of them.
+        flaky.fail_next_appends(3);
+        let context = watch_context(
+            Arc::clone(&store),
+            registry,
+            Arc::clone(&runtime),
+            parent.clone(),
+            child_id.clone(),
+        )?;
+        let tasks = Arc::clone(&context.tasks);
+        assert!(arm_child_terminal_watch(context));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while child_terminal_count(&store, parent.workflow_id(), &child_id).await? != 1
+            || tasks.armed_watch_count() != 0
+        {
+            if std::time::Instant::now() > deadline {
+                return Err(
+                    "watcher abandoned the record after transient failures (F5 regression)".into(),
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            child_terminal_count(&store, parent.workflow_id(), &child_id).await?,
+            1,
+            "the retried record must land exactly once"
+        );
+        runtime.shutdown()?;
         Ok(())
     }
 

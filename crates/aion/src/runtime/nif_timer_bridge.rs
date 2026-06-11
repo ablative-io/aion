@@ -28,6 +28,8 @@ pub(super) struct TimerNifBridge {
     pub(super) registry: Arc<Registry>,
     store: Arc<dyn ReadableEventStore>,
     pub(super) tokio_handle: Handle,
+    /// Builder-supplied bound for the registry-registration birth wait.
+    pub(super) birth_wait: crate::runtime::SignalDeliveryConfig,
     pending_timers: DashMap<(WorkflowProcessHandle, TimerId), PendingTimerTask>,
     next_timer_generation: AtomicU64,
     // Weak: the engine state owns this bridge through its timer slot.
@@ -314,12 +316,14 @@ pub(crate) fn install_timer_nif_bridge(
     registry: Arc<Registry>,
     store: Arc<dyn EventStore>,
     tokio_handle: Handle,
+    birth_wait: crate::runtime::SignalDeliveryConfig,
 ) {
     let store: Arc<dyn ReadableEventStore> = Arc::new(ReadableEventStoreAdapter { store });
     let bridge = Arc::new(TimerNifBridge {
         registry,
         store,
         tokio_handle,
+        birth_wait,
         pending_timers: DashMap::new(),
         next_timer_generation: AtomicU64::new(0),
         nif_state: Arc::downgrade(state),

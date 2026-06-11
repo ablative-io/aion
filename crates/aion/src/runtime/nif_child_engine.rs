@@ -7,6 +7,7 @@ use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use tokio::runtime::Handle;
 
+use crate::EngineError;
 use crate::durability::DurabilityError;
 use crate::engine_seam::{
     ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
@@ -17,7 +18,7 @@ use crate::lifecycle::start::{
 };
 use crate::loader::LoadedWorkflows;
 use crate::registry::{HandleResidency, Registry, WorkflowHandle};
-use crate::runtime::nif_child_watch::ChildTerminalWatches;
+use crate::runtime::nif_child_tasks::ChildTaskRuntime;
 use crate::runtime::{RuntimeHandle, SignalDeliveryConfig};
 use crate::signal::SignalResumeHandoff;
 use crate::supervision::SupervisionTree;
@@ -33,9 +34,11 @@ pub(crate) struct ChildNifBridge {
     signal_handoff: Arc<SignalResumeHandoff>,
     search_attribute_schema: Arc<aion_core::SearchAttributeSchema>,
     tokio_handle: Handle,
-    /// Armed child-terminal watcher tasks keyed by `(parent pid, child id)`.
-    child_terminal_watches: Arc<ChildTerminalWatches>,
-    /// Builder-supplied backoff policy for watcher registry-miss windows.
+    /// Engine-owned executor and registry for child-terminal watchers and
+    /// spawn-recovery tasks; gated and abort-awaited at epoch close (F4).
+    child_tasks: Arc<ChildTaskRuntime>,
+    /// Builder-supplied backoff policy for watcher registry-miss windows,
+    /// transient record retries, and spawn-recovery retries.
     watch_backoff: SignalDeliveryConfig,
 }
 
@@ -55,8 +58,12 @@ pub(crate) struct ChildNifBridgeParts {
 
 impl ChildNifBridge {
     /// Creates a bridge from engine components.
-    #[must_use]
-    pub(crate) fn new(parts: ChildNifBridgeParts) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the child-task runtime's worker
+    /// thread cannot be started.
+    pub(crate) fn new(parts: ChildNifBridgeParts) -> Result<Self, EngineError> {
         let ChildNifBridgeParts {
             store,
             visibility_store,
@@ -69,7 +76,7 @@ impl ChildNifBridge {
             tokio_handle,
             watch_backoff,
         } = parts;
-        Self {
+        Ok(Self {
             store,
             visibility_store,
             runtime,
@@ -79,9 +86,9 @@ impl ChildNifBridge {
             signal_handoff,
             search_attribute_schema,
             tokio_handle,
-            child_terminal_watches: Arc::new(ChildTerminalWatches::default()),
+            child_tasks: Arc::new(ChildTaskRuntime::new()?),
             watch_backoff,
-        }
+        })
     }
 
     pub(crate) fn registry(&self) -> &Registry {
@@ -104,8 +111,8 @@ impl ChildNifBridge {
         self.tokio_handle.clone()
     }
 
-    pub(crate) fn child_terminal_watches(&self) -> Arc<ChildTerminalWatches> {
-        Arc::clone(&self.child_terminal_watches)
+    pub(crate) fn child_tasks(&self) -> Arc<ChildTaskRuntime> {
+        Arc::clone(&self.child_tasks)
     }
 
     pub(crate) fn watch_backoff(&self) -> SignalDeliveryConfig {
@@ -114,12 +121,60 @@ impl ChildNifBridge {
 
     /// Abort every child-terminal watcher armed by an exited parent pid.
     pub(crate) fn abort_child_terminal_watches_for_parent(&self, parent_pid: u64) {
-        self.child_terminal_watches.abort_for_parent(parent_pid);
+        self.child_tasks.abort_watches_for_parent(parent_pid);
     }
 
-    /// Abort every armed child-terminal watcher (engine shutdown).
-    pub(crate) fn abort_all_child_terminal_watches(&self) {
-        self.child_terminal_watches.abort_all();
+    /// Close the epoch for engine-side child tasks: gate new arms, abort
+    /// every task, and await each to quiescence (F4).
+    pub(crate) fn shutdown_child_tasks(&self) {
+        self.child_tasks.shutdown();
+    }
+
+    /// Start the child under its parent-recorded identity, inheriting the
+    /// parent's current search attributes.
+    ///
+    /// Shared by the synchronous spawn path and the background
+    /// spawn-recovery retry (F3): both must start exactly the recorded
+    /// identity, and both inherit visibility metadata from the parent's
+    /// recorded history at start time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the parent history cannot be read or the
+    /// start path fails.
+    pub(super) async fn start_child_under_recorded_id(
+        &self,
+        parent_workflow_id: &WorkflowId,
+        request: ChildWorkflowSpawnRequest,
+    ) -> Result<WorkflowHandle, EngineError> {
+        // Children inherit the parent's current search attributes so
+        // visibility metadata (such as a server-assigned tenancy attribute)
+        // follows the execution tree.
+        let parent_history = self.store.read_history(parent_workflow_id).await?;
+        let inherited = aion_core::search_attributes_from_events(&parent_history);
+        start_workflow_with_options(
+            StartWorkflowContext {
+                store: Arc::clone(&self.store),
+                visibility_store: Arc::clone(&self.visibility_store),
+                loaded_workflows: &self.loaded_workflows,
+                runtime: Arc::clone(&self.runtime),
+                supervision: Arc::clone(&self.supervision),
+                registry: Arc::clone(&self.registry),
+                signal_handoff: Some(Arc::clone(&self.signal_handoff)),
+                search_attribute_schema: Arc::clone(&self.search_attribute_schema),
+            },
+            &request.workflow_type,
+            request.input,
+            StartWorkflowOptions {
+                // Record-then-spawn (#56): the parent already recorded
+                // ChildWorkflowStarted under this pre-allocated id, so the
+                // child must start under exactly this identity.
+                workflow_id: Some(request.child_workflow_id),
+                search_attributes: inherited,
+                ..StartWorkflowOptions::default()
+            },
+        )
+        .await
     }
 }
 
@@ -181,45 +236,14 @@ impl EngineHandle for NifChildEngine {
         &self,
         request: ChildWorkflowSpawnRequest,
     ) -> Result<ChildWorkflowSpawnResult, EngineSeamError> {
+        let parent_workflow_id = self.parent.workflow_id().clone();
         let child = self
             .bridge
             .tokio_handle
-            .block_on(async {
-                // Children inherit the parent's current search attributes so
-                // visibility metadata (such as a server-assigned tenancy
-                // attribute) follows the execution tree. The snapshot is taken
-                // from the parent's recorded history at spawn time.
-                let parent_history = self
-                    .bridge
-                    .store
-                    .read_history(self.parent.workflow_id())
-                    .await
-                    .map_err(crate::EngineError::from)?;
-                let inherited = aion_core::search_attributes_from_events(&parent_history);
-                start_workflow_with_options(
-                    StartWorkflowContext {
-                        store: Arc::clone(&self.bridge.store),
-                        visibility_store: Arc::clone(&self.bridge.visibility_store),
-                        loaded_workflows: &self.bridge.loaded_workflows,
-                        runtime: Arc::clone(&self.bridge.runtime),
-                        supervision: Arc::clone(&self.bridge.supervision),
-                        registry: Arc::clone(&self.bridge.registry),
-                        signal_handoff: Some(Arc::clone(&self.bridge.signal_handoff)),
-                        search_attribute_schema: Arc::clone(&self.bridge.search_attribute_schema),
-                    },
-                    &request.workflow_type,
-                    request.input,
-                    StartWorkflowOptions {
-                        // Record-then-spawn (#56): the parent already recorded
-                        // ChildWorkflowStarted under this pre-allocated id, so
-                        // the child must start under exactly this identity.
-                        workflow_id: Some(request.child_workflow_id),
-                        search_attributes: inherited,
-                        ..StartWorkflowOptions::default()
-                    },
-                )
-                .await
-            })
+            .block_on(
+                self.bridge
+                    .start_child_under_recorded_id(&parent_workflow_id, request),
+            )
             .map_err(|error| EngineSeamError::ChildSpawn {
                 reason: error.to_string(),
             })?;

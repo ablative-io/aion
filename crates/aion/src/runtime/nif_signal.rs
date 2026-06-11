@@ -199,6 +199,7 @@ fn receive_signal_impl(
         pid,
         bridge.registry.as_ref(),
         bridge.tokio_handle.clone(),
+        bridge.runtime.signal_delivery(),
     )
     .map_err(signal_error)?;
     let pinned = match state.pending_awaits.get(&pid).map(|entry| entry.clone()) {
@@ -269,6 +270,7 @@ fn send_signal_impl(
         pid,
         bridge.registry.as_ref(),
         bridge.tokio_handle.clone(),
+        bridge.runtime.signal_delivery(),
     )
     .map_err(signal_error)?;
     let index = signal_occurrence_index(context.history(), name);

@@ -37,22 +37,35 @@ pub(super) fn workflow_process_outcome(
 ) -> Result<WorkflowProcessOutcome, EngineError> {
     let (reason, owned_result) = scheduler.run_until_exit(pid);
     if reason != ExitReason::Normal {
-        if let Some(exception) = scheduler.take_exit_exception(pid) {
+        // The VM execution error, when present, is the authoritative exit
+        // cause and must be checked first: beamr leaves `current_exception`
+        // set after a *caught* raise until the next try_end/catch_end, so a
+        // later unrelated VM error exits with that stale exception attached
+        // and reporting the exception first would blame workflow code for an
+        // engine-level failure. The residue is appended as context.
+        let exception = scheduler.take_exit_exception(pid);
+        if let Some(error) = scheduler.take_exit_error(pid) {
+            let formatted = error.format_with_atoms(atoms);
+            let residue = exception.map_or_else(String::new, |exception| {
+                format!(
+                    " (residual exception: {})",
+                    exception.format_with_atoms(atoms)
+                )
+            });
+            return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
+                message: format!(
+                    "workflow process {pid} exited: {reason:?}: VM execution error: {formatted}{residue}"
+                ),
+                details: None,
+            }));
+        }
+        if let Some(exception) = exception {
             let formatted = exception.format_with_atoms(atoms);
             let view = exception.view();
             let details = term_to_payload(view.reason, atoms).ok();
             return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
                 message: format!("workflow process {pid} exited: {formatted}"),
                 details,
-            }));
-        }
-        if let Some(error) = scheduler.take_exit_error(pid) {
-            let formatted = error.format_with_atoms(atoms);
-            return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
-                message: format!(
-                    "workflow process {pid} exited: {reason:?}: VM execution error: {formatted}"
-                ),
-                details: None,
             }));
         }
     }

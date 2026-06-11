@@ -260,6 +260,7 @@ async fn release_child(
 /// `register_query` call (registration is workflow code, racing the caller).
 async fn query_when_registered(
     engine: &Engine,
+    store: &Arc<dyn EventStore>,
     workflow_id: &WorkflowId,
     run_id: &RunId,
     name: &str,
@@ -273,7 +274,16 @@ async fn query_when_registered(
             {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            other => return other,
+            Err(error) => {
+                // A non-registration error here usually means the workflow
+                // process died under the engine; the recorded terminal (if
+                // any) carries the death cause, so surface durable history
+                // with the error.
+                let history = store.read_history(workflow_id).await;
+                eprintln!("query_when_registered({name}) failed: {error:?}; history: {history:#?}");
+                return Err(error);
+            }
+            ok => return ok,
         }
     }
 }
@@ -347,7 +357,7 @@ async fn query_answers_while_parent_is_parked_in_await_child() -> TestResult {
 
     // The engine answers the query through the pump at the await_child
     // yield point.
-    let reply = query_when_registered(&engine, &workflow_id, &run_id, "state").await?;
+    let reply = query_when_registered(&engine, &store, &workflow_id, &run_id, "state").await?;
     let (answer, query_id) = state_reply(&reply)?;
     assert_eq!(answer, 1);
     assert!(!query_id.is_empty(), "handler must observe a query id");
@@ -404,13 +414,19 @@ async fn crash_mid_await_child_recovers_and_matches_uncrashed_control() -> TestR
     // watcher; releasing the child completes the chain.
     let recovered = engine_over(&store, "await_gated", "gated").await?;
     release_child(&recovered, &store, &child_id).await?;
-    wait_for_history(
+    if let Err(error) = wait_for_history(
         &store,
         &workflow_id,
         "child terminal recorded into recovered parent history",
         |events| count_child_completed(events) == 1,
     )
-    .await?;
+    .await
+    {
+        // Distinguish a child that never completed from a watcher that never
+        // recorded the completed child's terminal.
+        let child_history = store.read_history(&child_id).await?;
+        return Err(format!("{error}; child history: {child_history:#?}").into());
+    }
     recovered
         .signal(&workflow_id, &run_id, "release", signal_payload("release")?)
         .await?;
@@ -462,7 +478,7 @@ async fn queried_crash_recovery_matches_unqueried_uncrashed_control() -> TestRes
 
     // Query the parent while it is parked in await_child, then crash.
     let (answer, _) =
-        state_reply(&query_when_registered(&first, &workflow_id, &run_id, "state").await?)?;
+        state_reply(&query_when_registered(&first, &store, &workflow_id, &run_id, "state").await?)?;
     assert_eq!(answer, 1);
     assert_eq!(
         store.read_history(&workflow_id).await?,
@@ -474,8 +490,9 @@ async fn queried_crash_recovery_matches_unqueried_uncrashed_control() -> TestRes
     // Query again after recovery (replay re-registered the handler), then
     // complete the run.
     let recovered = engine_over(&store, "queryable_await", "gated").await?;
-    let (answer, _) =
-        state_reply(&query_when_registered(&recovered, &workflow_id, &run_id, "state").await?)?;
+    let (answer, _) = state_reply(
+        &query_when_registered(&recovered, &store, &workflow_id, &run_id, "state").await?,
+    )?;
     assert_eq!(answer, 1);
     assert_eq!(
         store.read_history(&workflow_id).await?,
@@ -483,13 +500,19 @@ async fn queried_crash_recovery_matches_unqueried_uncrashed_control() -> TestRes
         "neither recovery replay nor queries may append or rewrite events"
     );
     release_child(&recovered, &store, &child_id).await?;
-    wait_for_history(
+    if let Err(error) = wait_for_history(
         &store,
         &workflow_id,
         "child terminal recorded into recovered parent history",
         |events| count_child_completed(events) == 1,
     )
-    .await?;
+    .await
+    {
+        // Distinguish a child that never completed from a watcher that never
+        // recorded the completed child's terminal.
+        let child_history = store.read_history(&child_id).await?;
+        return Err(format!("{error}; child history: {child_history:#?}").into());
+    }
     recovered
         .signal(&workflow_id, &run_id, "release", signal_payload("release")?)
         .await?;
@@ -689,13 +712,19 @@ async fn recovery_sweep_starts_recorded_but_never_spawned_child_exactly_once() -
     // Startup recovery sweeps the recovered parent's run segment and starts
     // the child under the recorded id; the parent's await then completes.
     let engine = engine_over(&store, "await_gated", "complete").await?;
-    wait_for_history(
+    if let Err(error) = wait_for_history(
         &store,
         &parent_workflow_id,
         "swept child terminal recorded into parent history",
         |events| count_child_completed(events) == 1,
     )
-    .await?;
+    .await
+    {
+        // Distinguish a sweep that never started the child from a watcher
+        // that never recorded the started child's terminal.
+        let child_history = store.read_history(&child_workflow_id).await?;
+        return Err(format!("{error}; child history: {child_history:#?}").into());
+    }
     engine
         .signal(
             &parent_workflow_id,
@@ -820,5 +849,196 @@ async fn await_child_follows_continue_as_new_chain_and_survives_restart() -> Tes
         "restart replay must not start any new child run"
     );
     recovered.shutdown()?;
+    Ok(())
+}
+
+// --- F2: continue-as-new recorded, successor never started -------------------
+
+/// Synthesize the continue-as-new crash window: the child's first run
+/// recorded `WorkflowContinuedAsNew` but the engine died before the
+/// successor run's `WorkflowStarted` was appended. The projection is the
+/// terminal `ContinuedAsNew`, so `list_active` never surfaces the workflow.
+async fn synthesize_child_mid_continue_as_new(
+    store: &Arc<dyn EventStore>,
+    child_workflow_id: &WorkflowId,
+) -> Result<RunId, Box<dyn std::error::Error>> {
+    let recorded_at = chrono::Utc::now();
+    let first_run = RunId::new_v4();
+    store
+        .append(
+            WriteToken::recorder(),
+            child_workflow_id,
+            &[
+                Event::WorkflowStarted {
+                    envelope: EventEnvelope {
+                        seq: 1,
+                        recorded_at,
+                        workflow_id: child_workflow_id.clone(),
+                    },
+                    workflow_type: CHILD_MODULE.to_owned(),
+                    input: Payload::new(ContentType::Json, br#""child-input""#.to_vec()),
+                    run_id: first_run.clone(),
+                    parent_run_id: None,
+                },
+                Event::WorkflowContinuedAsNew {
+                    envelope: EventEnvelope {
+                        seq: 2,
+                        recorded_at,
+                        workflow_id: child_workflow_id.clone(),
+                    },
+                    input: Payload::new(ContentType::Json, br#""second""#.to_vec()),
+                    workflow_type: None,
+                    parent_run_id: first_run.clone(),
+                },
+            ],
+            0,
+        )
+        .await?;
+    Ok(first_run)
+}
+
+/// F2 (dual of the recorded-but-never-spawned sweep): a child that recorded
+/// `WorkflowContinuedAsNew` but crashed before its successor run started
+/// must get the successor started at engine startup, and the awaiting
+/// parent must resolve through the watcher's run-chain follow. Before the
+/// fix nothing enumerated the wedged chain — `list_active` excludes the
+/// terminal `ContinuedAsNew` projection — so the successor never started
+/// and this test timed out waiting for the second `WorkflowStarted`.
+#[tokio::test]
+async fn can_replacement_sweep_starts_the_successor_run_at_startup() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let parent_workflow_id = WorkflowId::new_v4();
+    let parent_run_id = RunId::new_v4();
+    let child_workflow_id = WorkflowId::new_v4();
+    synthesize_parent_with_recorded_spawn(
+        &store,
+        &parent_workflow_id,
+        &parent_run_id,
+        &child_workflow_id,
+    )
+    .await?;
+    let continued_run = synthesize_child_mid_continue_as_new(&store, &child_workflow_id).await?;
+
+    let engine = engine_over(&store, "await_gated", "can_once").await?;
+    // The startup sweep starts the successor run under the recorded
+    // identity and run chain.
+    let child_history = wait_for_history(
+        &store,
+        &child_workflow_id,
+        "successor run started by the CAN-replacement sweep",
+        |events| count_workflow_started(events) == 2,
+    )
+    .await?;
+    let successor_parent_run = child_history
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::WorkflowStarted { parent_run_id, .. } => Some(parent_run_id.clone()),
+            _ => None,
+        })
+        .ok_or("missing successor WorkflowStarted")?;
+    assert_eq!(
+        successor_parent_run,
+        Some(continued_run),
+        "the successor run must chain to the continued run"
+    );
+
+    // The recovered parent's watcher follows the run chain to the
+    // successor's terminal and records it parent-side.
+    wait_for_history(
+        &store,
+        &parent_workflow_id,
+        "successor terminal recorded into parent history",
+        |events| count_child_completed(events) == 1,
+    )
+    .await?;
+    engine
+        .signal(
+            &parent_workflow_id,
+            &parent_run_id,
+            "release",
+            signal_payload("release")?,
+        )
+        .await?;
+    let result = engine
+        .result(&parent_workflow_id, &parent_run_id)
+        .await?
+        .map_err(|error| format!("recovered parent failed: {error:?}"))?;
+    assert_eq!(
+        result_json(&result)?,
+        json!([child_workflow_id.to_string(), 42]),
+        "the await must resolve with the successor run's result"
+    );
+    engine.shutdown()?;
+
+    // Idempotent: a repaired chain projects Running/Completed, never
+    // ContinuedAsNew, so a second startup starts nothing.
+    let again = engine_over(&store, "await_gated", "can_once").await?;
+    assert_eq!(
+        count_workflow_started(&store.read_history(&child_workflow_id).await?),
+        2,
+        "an idempotent sweep must not start a third run"
+    );
+    again.shutdown()?;
+    Ok(())
+}
+
+// --- F3: post-record spawn failure is never workflow-visible ------------------
+
+/// F3: `spawn_child` records `ChildWorkflowStarted` and only then starts the
+/// child, so a start failure after the record (here: the child type is never
+/// loaded) must stay an engine-internal obligation. The NIF returns the
+/// recorded child id and the parent completes; the failed start is retried in
+/// the background until the epoch ends. Before the fix `spawn_child` returned
+/// `{error, <<"child_spawn:...">>}` and the fixture's badmatch failed the
+/// workflow — the exact live-vs-replay branch divergence F3 forbids (replay
+/// resolves the spawn from the recorded event as success).
+#[tokio::test]
+async fn post_record_spawn_failure_is_not_workflow_visible() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .query_timeout(QUERY_TIMEOUT)
+        .load_workflows(fixture_package(
+            PLAIN_PARENT_MODULE,
+            PLAIN_PARENT_BEAM,
+            PLAIN_PARENT_SOURCE,
+            "spawn_unloaded",
+        )?)
+        .build()
+        .await?;
+    let (parent_workflow_id, parent_run_id) = start_parent(&engine, PLAIN_PARENT_MODULE).await?;
+
+    // The parent completes normally with the recorded child id — the start
+    // failure never reached workflow code.
+    let result = engine
+        .result(&parent_workflow_id, &parent_run_id)
+        .await?
+        .map_err(|error| format!("post-record spawn failure was workflow-visible: {error:?}"))?;
+    let parent_history = store.read_history(&parent_workflow_id).await?;
+    let recorded_children = child_started_ids(&parent_history);
+    assert_eq!(
+        recorded_children.len(),
+        1,
+        "exactly one ChildWorkflowStarted must be recorded: {parent_history:#?}"
+    );
+    assert_eq!(
+        result_json(&result)?,
+        json!(recorded_children[0].to_string()),
+        "the NIF must return the recorded child id"
+    );
+
+    // The unloadable child was never started, and shutdown closes the epoch
+    // with the spawn-recovery task still armed (abort + await, F4).
+    assert!(
+        store.read_history(&recorded_children[0]).await?.is_empty(),
+        "an unloadable child type must not produce child history"
+    );
+    engine.shutdown()?;
     Ok(())
 }
