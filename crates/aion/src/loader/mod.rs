@@ -9,9 +9,12 @@ use crate::error::EngineError;
 pub mod catalog;
 /// Package staging and workflow entry discovery.
 pub mod load;
+/// Serde-ready listing record for loaded workflow versions.
+pub mod version_info;
 
-pub use catalog::{PinnedWorkflow, WorkflowCatalog, WorkflowVersionInfo};
+pub use catalog::{PinnedWorkflow, WorkflowCatalog};
 pub use load::LoadedWorkflow;
+pub use version_info::WorkflowVersionInfo;
 
 /// Canonical durable form of a loaded package version.
 #[must_use]

@@ -18,6 +18,8 @@ mod seams;
 mod shutdown_gate;
 /// Startup recovery wiring used by `EngineBuilder::build()`.
 mod startup;
+/// Crash-window repair sweeps run by startup recovery.
+mod startup_sweeps;
 
 pub use api::Engine;
 pub use builder::EngineBuilder;
