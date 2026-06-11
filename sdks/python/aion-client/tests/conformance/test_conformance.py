@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import os
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -17,10 +19,25 @@ import pytest
 from aion_client import Client
 from aion_client.errors import AionClientError, InvalidArgument, Unavailable
 from aion_client.stream import EventStream
-from aion_client.transport import default_events_endpoint
 
 SERVER_URL_ENV = "AION_SERVER_URL"
+STREAM_URL_ENV = "AION_STREAM_URL"
 AUTH_TOKEN_ENV = "AION_AUTH_TOKEN"
+
+# Caller identity presented to the server's development-header extraction:
+# the conformance credential holds a grant for `conformance` only — never
+# `conformance-denied` — which is exactly the grant shape the
+# namespace-denied and not-found-anti-leak scenarios pin.
+HARNESS_SUBJECT = "conformance-harness"
+HARNESS_NAMESPACES = ("conformance",)
+
+# The harness attaches every stream from the workflow's beginning
+# (from_seq=1, the wire's documented full-history replay): the scenarios
+# assert on events recorded before the subscribe step ran (WorkflowStarted),
+# which a live-tail attach can never deliver. This mirrors the Rust and
+# TypeScript harnesses' initial-attach mapping. Reconnect cursors
+# (last delivered + 1) are the SDK's own resume loop, untouched.
+HARNESS_ATTACH_FROM = 1
 JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 Observable = dict[str, JSONValue]
 
@@ -349,13 +366,16 @@ async def _execute(
 ) -> Observable:
     if operation == "connect":
         tls = server_url.startswith("https://")
-        events_endpoint = await _relayed_events_endpoint(context, server_url, tls)
+        stream_url = os.environ.get(STREAM_URL_ENV) or None
+        stream_endpoint = await _relayed_stream_endpoint(context, stream_url) if stream_url else None
         context.client = await Client.connect(
             server_url,
             auth=os.environ.get(AUTH_TOKEN_ENV) or None,
             tls=tls,
             namespace=str(input_value.get("namespace", "conformance")),
-            events_endpoint=events_endpoint,
+            stream_endpoint=stream_endpoint,
+            subject=HARNESS_SUBJECT,
+            namespaces=HARNESS_NAMESPACES,
         )
         return {"kind": "client"}
     if operation == "start":
@@ -375,12 +395,7 @@ async def _execute(
         )
         return {"kind": "accepted"}
     if operation == "query":
-        result = await context.require_client().query(
-            str(input_value["workflowId"]),
-            str(input_value["queryName"]),
-            run_id=_optional_str(input_value.get("runId")),
-            timeout=float(input_value.get("deadlineMs", 5000)) / 1000.0,
-        )
+        result = await _query_when_registered(context, input_value)
         return {"kind": "payload", "value": normalize_json(result)}
     if operation == "cancel":
         await context.require_client().cancel(
@@ -411,7 +426,11 @@ async def _execute(
             # ONE background collector; its stream object and accumulated
             # delivery list live in the scenario context so the later
             # harness steps act on the same stream across the disconnect.
-            stream: EventStream[Any] = context.require_client().handle(_selector_workflow_id(input_value)).subscribe()
+            stream: EventStream[Any] = (
+                context.require_client()
+                .handle(_selector_workflow_id(input_value))
+                .subscribe(from_seq=HARNESS_ATTACH_FROM)
+            )
             context.collector = StreamCollector(stream)
             context.collect_plan = _collect_plan(input_value)
             return {"kind": "eventStreamStarted"}
@@ -424,22 +443,66 @@ async def _execute(
     raise InvalidArgument(f"unsupported conformance operation {operation}")
 
 
-async def _relayed_events_endpoint(context: ScenarioContext, server_url: str, tls: bool) -> str | None:
+# Deadline for the fixture workflow to finish registering its query
+# handlers: registration is workflow code racing the caller after start
+# returns, so the harness retries unknown-query outcomes within this window
+# (the same fixture-readiness convention as the committed server e2e matrix
+# in crates/aion-server/tests/query_workflow.rs and the Rust harness).
+QUERY_REGISTRATION_DEADLINE_S = 10.0
+
+
+async def _query_when_registered(context: ScenarioContext, input_value: Mapping[str, Any]) -> Any:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + QUERY_REGISTRATION_DEADLINE_S
+    while True:
+        try:
+            return await context.require_client().query(
+                str(input_value["workflowId"]),
+                str(input_value["queryName"]),
+                run_id=_optional_str(input_value.get("runId")),
+                timeout=float(input_value.get("deadlineMs", 5000)) / 1000.0,
+            )
+        except InvalidArgument as exc:
+            if "unknown" in str(exc).lower() and loop.time() < deadline:
+                await asyncio.sleep(0.025)
+                continue
+            raise
+
+
+def _ws_stream_endpoint(stream_url: str) -> str:
+    """Map the harness ``AION_STREAM_URL`` onto the ws(s) /events/stream URL.
+
+    Accepts ``http(s)://`` (protocol-mapped — the same listener serves
+    ``/events/stream``) and ``ws(s)://`` URLs, appending the route path when
+    the URL names only the listener.
+    """
+    parsed = urlparse(stream_url)
+    scheme = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}.get(parsed.scheme)
+    if scheme is None or not parsed.netloc:
+        raise InvalidArgument(f"{STREAM_URL_ENV} must be an absolute http(s):// or ws(s):// URL, got {stream_url!r}")
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/events/stream"):
+        path = f"{path}/events/stream"
+    return f"{scheme}://{parsed.netloc}{path}"
+
+
+async def _relayed_stream_endpoint(context: ScenarioContext, stream_url: str) -> str:
     """Start the scenario's TCP relay and return the relayed ws endpoint.
 
     The SDK's stream endpoint is pointed at a local relay that pipes bytes to
     the real server, so ``harness.forceDisconnect`` can sever live stream
     connections without touching the server. TLS stream endpoints are not
     relayed (a raw byte pipe cannot satisfy certificate validation for the
-    original host); forceDisconnect then refuses with a precise error
-    instead of pretending to disconnect.
+    original host); they connect directly and forceDisconnect refuses with a
+    precise error instead of pretending to disconnect.
     """
     if context.relay is not None:
         await context.relay.close()
         context.relay = None
-    direct = urlparse(default_events_endpoint(server_url, tls))
+    endpoint = _ws_stream_endpoint(stream_url)
+    direct = urlparse(endpoint)
     if direct.scheme != "ws" or direct.hostname is None:
-        return None
+        return endpoint
     relay = StreamRelay(direct.hostname, direct.port if direct.port is not None else 80)
     await relay.start()
     context.relay = relay
@@ -510,7 +573,9 @@ async def _collect_stream(input_value: Mapping[str, Any], context: ScenarioConte
     timeout_ms = _timeout_ms(input_value)
     wanted = [str(item) for item in _list(_mapping(input_value.get("collectUntil", {})).get("eventTypes", []))]
     events: list[Observable] = []
-    stream: EventStream[Any] = handle.subscribe()
+    # Full-history attach: the expected events were recorded before this
+    # subscribe step ran (see HARNESS_ATTACH_FROM).
+    stream: EventStream[Any] = handle.subscribe(from_seq=HARNESS_ATTACH_FROM)
 
     async def _collect() -> None:
         async for event in stream:
@@ -597,10 +662,18 @@ def _assert_matches(
     if "payloadEquals" in expected_ok:
         assert ok.get("value") == expected_ok["payloadEquals"], detail
     if "sameHandleAs" in expected_ok:
-        ref = context.results.get(str(expected_ok["sameHandleAs"])[1:])
-        assert ref is not None
-        assert ok.get("workflowId") == _mapping(ref["ok"]).get("workflowId")
-        assert ok.get("runId") == _mapping(ref["ok"]).get("runId")
+        # The resolver may already have replaced the `$scenario.step`
+        # reference with the recorded step's ok payload; both shapes pin the
+        # same handle identity.
+        reference_value = expected_ok["sameHandleAs"]
+        if isinstance(reference_value, Mapping):
+            reference_ok: Mapping[str, Any] = reference_value
+        else:
+            ref = context.results.get(str(reference_value)[1:])
+            assert ref is not None, detail
+            reference_ok = _mapping(ref.get("ok"))
+        assert ok.get("workflowId") == reference_ok.get("workflowId"), detail
+        assert ok.get("runId") == reference_ok.get("runId"), detail
     if "containsWorkflowRef" in expected_ok:
         workflow_ref = _mapping(expected_ok["containsWorkflowRef"])
         assert any(
@@ -641,12 +714,48 @@ def _payload_json(value: Any) -> JSONValue:
     return normalize_json(payload.get("json"))
 
 
+def _wire_envelope_json(value: Any) -> Any:
+    """Decode a WireEnvelope's opaque payload into its carried JSON value.
+
+    AW list/describe responses and StreamedEvent frames all carry their
+    domain values (`WorkflowSummary`, `Event`) as JSON bytes inside
+    `WireEnvelope.payload`. gRPC `MessageToDict` renders those bytes as a
+    base64 string; the WebSocket JSON wire renders them as an integer array.
+    Anything without a decodable payload passes through unchanged.
+    """
+    mapped = _proto_to_dict(value)
+    if not isinstance(mapped, Mapping):
+        return mapped
+    payload = _mapping(mapped.get("payload"))
+    raw = payload.get("bytes")
+    decoded: bytes | None = None
+    if isinstance(raw, str):
+        try:
+            decoded = base64.b64decode(raw)
+        except (ValueError, binascii.Error):
+            decoded = None
+    elif isinstance(raw, list):
+        try:
+            decoded = bytes(int(byte) for byte in raw)
+        except (TypeError, ValueError):
+            decoded = None
+    elif isinstance(raw, bytes | bytearray):
+        decoded = bytes(raw)
+    if decoded is None:
+        return mapped
+    try:
+        return json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return mapped
+
+
 def _normalize_summary(summary: Any) -> Observable:
-    value = _mapping(normalize_json(_proto_to_dict(summary)))
+    value = _mapping(normalize_json(_wire_envelope_json(summary)))
     workflow_id = (
-        _id_value(value.get("workflow_id"))
+        _optional_str(value.get("workflow_id"))
+        or _id_value(value.get("workflow_id"))
         or _id_value(value.get("workflowId"))
-        or _optional_str(value.get("workflow_id"))
+        or _optional_str(value.get("workflowId"))
     )
     return {
         "workflowId": workflow_id,
@@ -656,15 +765,23 @@ def _normalize_summary(summary: Any) -> Observable:
 
 
 def _normalize_event(event: Any) -> Observable:
-    value = _mapping(normalize_json(_proto_to_dict(event)))
+    value = _mapping(normalize_json(_wire_envelope_json(event)))
     event_type = str(value.get("type") or value.get("event_type") or value.get("kind") or "Event")
     if event_type == "SignalReceived":
         event_type = "WorkflowSignalled"
-    envelope = _mapping(
-        value.get("envelope") or value.get("data", {}).get("envelope") if isinstance(value.get("data"), dict) else {}
-    )
-    workflow_id = _id_value(envelope.get("workflow_id")) or _optional_str(envelope.get("workflowId"))
-    payload = value.get("payload") or _mapping(value.get("data")).get("payload")
+    if event_type == "WorkflowCancelled":
+        event_type = "WorkflowCancellationRequested"
+    data = _mapping(value.get("data"))
+    envelope = _mapping(value.get("envelope") or data.get("envelope"))
+    workflow_id = _optional_str(envelope.get("workflow_id")) or _id_value(envelope.get("workflow_id"))
+    # The user-visible payload field depends on the event kind: `payload`
+    # for signals, `input` for starts, `result` for completions.
+    payload = None
+    for key in ("payload", "input", "result"):
+        candidate = value.get(key) or data.get(key)
+        if candidate is not None:
+            payload = candidate
+            break
     return {
         "type": event_type,
         "workflowId": workflow_id,
@@ -674,8 +791,15 @@ def _normalize_event(event: Any) -> Observable:
 
 
 def _decode_payload(payload: Any) -> JSONValue:
+    if payload is None:
+        return None
     value = _mapping(normalize_json(_proto_to_dict(payload)))
     raw = value.get("bytes") or value.get("data")
+    if isinstance(raw, list):
+        try:
+            raw = bytes(int(byte) for byte in raw).decode("utf-8")
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return normalize_json(value)
     if isinstance(raw, str):
         try:
             return normalize_json(json.loads(raw))
@@ -722,10 +846,20 @@ def _id_value(value: Any) -> str | None:
 
 def _status_name(value: Any) -> JSONValue:
     if isinstance(value, str):
-        return value
+        # serde renders aion-core WorkflowStatus in PascalCase; the scenario
+        # document uses the language-neutral SCREAMING_SNAKE spelling.
+        names = {
+            "Running": "RUNNING",
+            "Completed": "COMPLETED",
+            "Failed": "FAILED",
+            "Cancelled": "CANCELLED",
+            "TimedOut": "TIMED_OUT",
+            "ContinuedAsNew": "CONTINUED_AS_NEW",
+        }
+        return names.get(value, value)
     if isinstance(value, int):
-        names = {0: "UNKNOWN", 1: "RUNNING", 2: "COMPLETED", 3: "FAILED", 4: "CANCELLED", 5: "TIMED_OUT"}
-        return names.get(value, str(value))
+        names_by_index = {0: "UNKNOWN", 1: "RUNNING", 2: "COMPLETED", 3: "FAILED", 4: "CANCELLED", 5: "TIMED_OUT"}
+        return names_by_index.get(value, str(value))
     return normalize_json(value)
 
 
@@ -840,13 +974,13 @@ def test_relay_port_before_start_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relayed_events_endpoint_points_sdk_at_local_relay() -> None:
+async def test_relayed_stream_endpoint_points_sdk_at_local_relay() -> None:
     """connect rewires the SDK's stream endpoint through the local relay,
     preserving the /events/stream path."""
 
     context = ScenarioContext()
     try:
-        endpoint = await _relayed_events_endpoint(context, "http://127.0.0.1:9", False)
+        endpoint = await _relayed_stream_endpoint(context, "http://127.0.0.1:9")
         assert context.relay is not None
         assert endpoint == f"ws://127.0.0.1:{context.relay.port}/events/stream"
     finally:
@@ -854,15 +988,24 @@ async def test_relayed_events_endpoint_points_sdk_at_local_relay() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relayed_events_endpoint_refuses_tls() -> None:
-    """wss endpoints are not byte-relayed: no relay, default endpoint kept."""
+async def test_relayed_stream_endpoint_passes_tls_through_directly() -> None:
+    """wss endpoints are not byte-relayed: no relay, direct wss endpoint."""
 
     context = ScenarioContext()
     try:
-        assert await _relayed_events_endpoint(context, "https://aion.example", True) is None
+        endpoint = await _relayed_stream_endpoint(context, "https://aion.example")
+        assert endpoint == "wss://aion.example/events/stream"
         assert context.relay is None
     finally:
         await _teardown(context)
+
+
+def test_ws_stream_endpoint_appends_route_and_maps_schemes() -> None:
+    assert _ws_stream_endpoint("http://127.0.0.1:8080") == "ws://127.0.0.1:8080/events/stream"
+    assert _ws_stream_endpoint("ws://127.0.0.1:8080/events/stream") == "ws://127.0.0.1:8080/events/stream"
+    assert _ws_stream_endpoint("wss://aion.example/") == "wss://aion.example/events/stream"
+    with pytest.raises(InvalidArgument):
+        _ws_stream_endpoint("ftp://aion.example")
 
 
 def test_collect_plan_reads_minimums_and_timeout() -> None:

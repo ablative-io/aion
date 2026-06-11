@@ -1,0 +1,4 @@
+name = "conformance_fixture"
+version = "0.1.0"
+target = "erlang"
+description = "Live-server fixture workflows for the shared aion client conformance scenarios."

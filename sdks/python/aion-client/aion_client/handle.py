@@ -120,25 +120,49 @@ class WorkflowHandle:
             namespace=self.namespace,
         )
 
-    def subscribe(self, *, decoder: type[T] | None = None, raw: bool = False) -> EventStream[T]:
+    def subscribe(
+        self,
+        *,
+        decoder: type[T] | None = None,
+        raw: bool = False,
+        from_seq: int | None = None,
+    ) -> EventStream[T]:
         """Return an async iterator of workflow events.
 
-        Transient disconnects reconnect transparently and resume from the
-        last delivered per-workflow sequence number via the wire cursor
-        (``resume_from_seq`` = last delivered + 1), so delivery stays
-        gap-free and duplicate-free across reconnects.
+        The initial attach is a live tail (events recorded from now on)
+        unless ``from_seq`` supplies an explicit starting cursor:
+        ``from_seq=1`` replays the full recorded history before splicing
+        into the live stream. Transient disconnects reconnect transparently
+        and resume from the last delivered per-workflow sequence number via
+        the wire cursor (``resume_from_seq`` = last delivered + 1), so
+        delivery stays gap-free and duplicate-free across reconnects.
+
+        Raises:
+            InvalidArgument: no ``stream_endpoint`` was configured on the
+                client, or ``from_seq`` is below 1.
 
         Raises from iteration:
             NotFound, Unauthenticated, NamespaceDenied, Unavailable,
             InvalidArgument, ServerError, Cancelled.
         """
 
+        stream_endpoint = self.client.stream_endpoint
+        if stream_endpoint is None:
+            raise InvalidArgument(
+                "no stream endpoint is configured; event subscriptions require "
+                "Client(stream_endpoint=...) pointing at the server's "
+                "/events/stream WebSocket URL (the HTTP/WebSocket listener is "
+                "a separate address from the gRPC endpoint)"
+            )
         return EventStream(
-            endpoint=self.client.events_endpoint,
+            endpoint=stream_endpoint,
             namespace=self.namespace,
             workflow_id=self.workflow_id,
             run_id=self.run_id,
             auth=self.client.auth,
+            subject=self.client.subject,
+            namespaces=self.client.namespaces,
             decoder=decoder,
             raw=raw,
+            from_seq=from_seq,
         )

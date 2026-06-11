@@ -349,19 +349,20 @@ async def test_aclose_before_any_iteration_is_safe() -> None:
 
 
 @pytest.mark.asyncio
-async def test_aclose_after_exhaustion_is_noop() -> None:
-    """aclose after the transport exhausted must not raise; the stream is
-    still marked closed."""
+async def test_clean_transport_end_ends_iteration_and_closes_once() -> None:
+    """A graceful server close (WebSocket close-1000) ends the transport
+    iterator cleanly; the stream ends iteration normally — never a synthetic
+    Unavailable — closes the exhausted transport deterministically, and a
+    later aclose is a no-op."""
 
     transport = _RecordingTransport([{"seq": 1}])
     stream = _stream_over(transport)
 
     assert await stream.__anext__() == {"seq": 1}
-    with pytest.raises(Unavailable):
+    with pytest.raises(StopAsyncIteration):
         await stream.__anext__()
-
-    await stream.aclose()
     assert transport.aclose_calls == 1
+
     await stream.aclose()
     assert transport.aclose_calls == 1
     with pytest.raises(StopAsyncIteration):
@@ -737,3 +738,41 @@ async def test_stream_namespace_denied_is_terminal_not_retried() -> None:
     with pytest.raises(NamespaceDenied):
         await stream.__anext__()
     assert connect_attempts == [None]
+
+
+@pytest.mark.asyncio
+async def test_from_seq_carries_the_cursor_on_the_initial_attach() -> None:
+    """An explicit starting cursor (from_seq=1 replays full history) rides the
+    FIRST attach, and reconnects continue from last delivered + 1."""
+
+    resume_requests: list[int | None] = []
+
+    async def factory(resume_from: int | None) -> AsyncIterator[dict[str, int]]:
+        resume_requests.append(resume_from)
+        return _iter_events([{"seq": 1}, {"seq": 2}])
+
+    stream: EventStream[dict[str, int]] = EventStream(
+        endpoint="ws://example/events",
+        namespace="default",
+        workflow_id="wf",
+        run_id=None,
+        auth=None,
+        from_seq=1,
+        transport_factory=factory,
+    )
+
+    assert await stream.__anext__() == {"seq": 1}
+    assert await stream.__anext__() == {"seq": 2}
+    assert resume_requests == [1], "the initial attach must carry the explicit cursor"
+
+
+def test_from_seq_below_one_is_rejected() -> None:
+    with pytest.raises(InvalidArgument, match="from_seq"):
+        EventStream(
+            endpoint="ws://example/events",
+            namespace="default",
+            workflow_id="wf",
+            run_id=None,
+            auth=None,
+            from_seq=0,
+        )

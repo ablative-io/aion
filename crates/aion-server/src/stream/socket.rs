@@ -175,7 +175,13 @@ where
                             return deliver_terminal(socket_tx, error).await;
                         }
                     }
-                    return Ok(());
+                    // Graceful subscription end (per-workflow terminal event
+                    // delivered, or the engine stream ended cleanly): finish
+                    // the WebSocket close handshake with a normal-closure
+                    // (1000) frame instead of dropping the socket — every SDK
+                    // treats close-1000 as "stream complete" and anything
+                    // else as a transient drop it would reconnect against.
+                    return send_normal_close(socket_tx).await;
                 };
                 if socket_tx.send(Message::Text(frame.into())).await.is_err() {
                     return Ok(());
@@ -207,6 +213,27 @@ where
         }
     }
     deliver_terminal(socket_tx, error).await
+}
+
+/// Reason carried by the graceful-end close-1000 frame.
+const SUBSCRIPTION_COMPLETE_REASON: &str = "subscription complete";
+
+/// Finish a graceful subscription end with a WebSocket close-1000 frame.
+///
+/// A send failure means the client is already gone, which is still a clean
+/// end — there is no one left to close against.
+async fn send_normal_close<Tx>(socket_tx: &mut Tx) -> Result<(), ServerError>
+where
+    Tx: futures::Sink<Message> + Unpin,
+    <Tx as futures::Sink<Message>>::Error: std::fmt::Debug,
+{
+    let close = CloseFrame {
+        code: close_code::NORMAL,
+        reason: SUBSCRIPTION_COMPLETE_REASON.into(),
+    };
+    let close_result = socket_tx.send(Message::Close(Some(close))).await;
+    drop(close_result);
+    Ok(())
 }
 
 /// Send the terminal error frame + close, then surface the failure typed.
@@ -1167,10 +1194,11 @@ mod tests {
         Ok(())
     }
 
-    /// A clean reader end (no terminal error) delivers the buffered frames and
+    /// A clean reader end (no terminal error) delivers the buffered frames,
+    /// finishes the close handshake with a normal-closure (1000) frame, and
     /// returns Ok without inventing an error frame.
     #[tokio::test]
-    async fn clean_stream_end_delivers_frames_without_error_frame()
+    async fn clean_stream_end_delivers_frames_then_close_1000_without_error_frame()
     -> Result<(), Box<dyn std::error::Error>> {
         let (frames_tx, frames_rx) = tokio::sync::mpsc::channel::<String>(8);
         let (lag_tx, lag_rx) = tokio::sync::oneshot::channel::<WireError>();
@@ -1187,16 +1215,25 @@ mod tests {
         assert!(outcome.is_ok(), "clean end must not surface an error");
         assert_eq!(
             messages.len(),
-            2,
-            "exactly the event frames, no error/close"
+            3,
+            "exactly the event frames plus the close-1000 handshake frame"
         );
-        for message in &messages {
+        for message in &messages[..2] {
             let Message::Text(text) = message else {
                 return Err(format!("expected a text frame, got {message:?}").into());
             };
             let value: serde_json::Value = serde_json::from_str(text.as_str())?;
             assert!(value.get("error").is_none());
         }
+        let Message::Close(Some(close)) = &messages[2] else {
+            return Err(format!(
+                "graceful end must finish with a close frame, got {:?}",
+                messages[2]
+            )
+            .into());
+        };
+        assert_eq!(close.code, axum::extract::ws::close_code::NORMAL);
+        assert_eq!(close.reason.as_str(), super::SUBSCRIPTION_COMPLETE_REASON);
         Ok(())
     }
 

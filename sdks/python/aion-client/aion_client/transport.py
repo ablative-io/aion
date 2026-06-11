@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Sequence
 from types import ModuleType
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -30,10 +31,10 @@ class GrpcWorkflowTransport:
     def __init__(self, endpoint: str, *, tls: Any) -> None:
         try:
             grpc = importlib.import_module("grpc")
-            workflow_pb2_grpc = importlib.import_module("aion.workflow_pb2_grpc")
+            workflow_pb2_grpc = importlib.import_module("aion_client.proto.workflow_pb2_grpc")
         except ImportError as exc:
             raise InvalidArgument(
-                "generated aion protobuf Python modules are required for the default transport"
+                "grpcio and the packaged aion_client.proto stubs are required for the default transport"
             ) from exc
         self._grpc: ModuleType = grpc
         self._workflow_pb2_grpc: ModuleType = workflow_pb2_grpc
@@ -45,9 +46,9 @@ class GrpcWorkflowTransport:
         """Create a generated AW workflow protobuf message by name."""
 
         try:
-            workflow_pb2 = importlib.import_module("aion.workflow_pb2")
+            workflow_pb2 = importlib.import_module("aion_client.proto.workflow_pb2")
         except ImportError as exc:
-            raise InvalidArgument("generated aion.workflow_pb2 module is required") from exc
+            raise InvalidArgument("packaged aion_client.proto.workflow_pb2 module is required") from exc
         try:
             cls = getattr(workflow_pb2, name)
         except AttributeError as exc:
@@ -97,13 +98,25 @@ class GrpcWorkflowTransport:
         return self._grpc.aio.insecure_channel(target)
 
 
-def metadata(auth: str | None) -> MappingMetadata:
-    """Build AW auth metadata using the server's bearer-token convention."""
+def metadata(
+    auth: str | None,
+    *,
+    subject: str | None = None,
+    namespaces: Sequence[str] | None = None,
+) -> MappingMetadata:
+    """Build AW caller-identity metadata: the bearer credential plus the
+    development-mode identity headers (``x-aion-subject``,
+    ``x-aion-namespaces``) the server's caller extraction reads."""
 
-    if auth is None:
-        return ()
-    token = auth.removeprefix("Bearer ")
-    return (("authorization", f"Bearer {token}"),)
+    entries: list[tuple[str, str]] = []
+    if auth is not None:
+        token = auth.removeprefix("Bearer ")
+        entries.append(("authorization", f"Bearer {token}"))
+    if subject is not None:
+        entries.append(("x-aion-subject", subject))
+    if namespaces is not None:
+        entries.append(("x-aion-namespaces", ",".join(namespaces)))
+    return tuple(entries)
 
 
 def grpc_target(endpoint: str) -> str:
@@ -113,17 +126,6 @@ def grpc_target(endpoint: str) -> str:
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         return parsed.netloc
     return endpoint.removeprefix("grpc://").removeprefix("grpcs://")
-
-
-def default_events_endpoint(endpoint: str, tls_enabled: bool) -> str:
-    """Derive the WebSocket event endpoint from the reusable client endpoint."""
-
-    parsed = urlparse(endpoint)
-    if parsed.scheme in {"http", "https"} and parsed.netloc:
-        scheme = "wss" if parsed.scheme == "https" or tls_enabled else "ws"
-        return f"{scheme}://{parsed.netloc}/events/stream"
-    scheme = "wss" if tls_enabled else "ws"
-    return f"{scheme}://{grpc_target(endpoint)}/events/stream"
 
 
 def read_optional(path: str | None) -> bytes | None:

@@ -20,6 +20,8 @@
 //!   failure surfaces one `Err(`[`ClientError::Unavailable`]`)` item so the
 //!   resume loop reconnects.
 
+use std::sync::Arc;
+
 use aion_core::Event;
 use aion_proto::{StreamedEvent, SubscriptionRequest, WireError, subscription_request};
 use futures::stream::BoxStream;
@@ -28,9 +30,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::{self, Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
-use crate::client::ClientConfig;
+use crate::client::{ClientConfig, TlsOptions};
 use crate::error::ClientError;
 use crate::transport::contract::SubscriptionAttempt;
 
@@ -68,10 +70,12 @@ pub async fn open_subscription(
         ))
     })?;
     apply_headers(&mut upgrade, config)?;
+    let connector = tls_connector(config.tls.as_ref())?;
 
-    let (mut socket, _response) = tokio_tungstenite::connect_async(upgrade)
-        .await
-        .map_err(map_connect_error)?;
+    let (mut socket, _response) =
+        tokio_tungstenite::connect_async_tls_with_config(upgrade, None, false, connector)
+            .await
+            .map_err(map_connect_error)?;
     socket
         .send(Message::Text(frame.into()))
         .await
@@ -115,6 +119,56 @@ fn stream_url(config: &ClientConfig) -> Result<String, ClientError> {
              expected ws://, wss://, http://, or https://"
         ))),
     }
+}
+
+/// Builds the `wss://` TLS connector from the client's [`TlsOptions`]: the
+/// webpki trust roots plus every caller-supplied CA certificate from
+/// `ca_certificate_pem` — the same custom-CA material the gRPC channel
+/// trusts, so a deployment behind a private CA streams events over the same
+/// trust configuration it uses for unary calls.
+///
+/// Returns `None` when the client has no TLS options, so tokio-tungstenite's
+/// built-in webpki-roots default applies unchanged. The TLS server name is
+/// always the stream URL's host; `TlsOptions::with_domain_name` overrides
+/// verification for the gRPC channel only.
+///
+/// # Errors
+///
+/// Returns [`ClientError::InvalidArgument`] when `ca_certificate_pem` is not
+/// parseable PEM, contains no certificate, or holds a certificate the trust
+/// store rejects.
+pub(crate) fn tls_connector(tls: Option<&TlsOptions>) -> Result<Option<Connector>, ClientError> {
+    let Some(tls) = tls else {
+        return Ok(None);
+    };
+    let mut roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    if let Some(pem) = &tls.ca_certificate_pem {
+        let mut added = 0_usize;
+        for certificate in rustls_pemfile::certs(&mut pem.as_slice()) {
+            let certificate = certificate.map_err(|source| {
+                ClientError::invalid_argument(format!(
+                    "TLS ca_certificate_pem is not parseable PEM: {source}"
+                ))
+            })?;
+            roots.add(certificate).map_err(|source| {
+                ClientError::invalid_argument(format!(
+                    "TLS ca_certificate_pem holds a certificate the trust store rejects: {source}"
+                ))
+            })?;
+            added += 1;
+        }
+        if added == 0 {
+            return Err(ClientError::invalid_argument(
+                "TLS ca_certificate_pem contains no CA certificate",
+            ));
+        }
+    }
+    let tls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Some(Connector::Rustls(Arc::new(tls_config))))
 }
 
 /// Builds the first client frame: the JSON `SubscriptionRequest` in the
@@ -364,6 +418,74 @@ mod tests {
             assert!(
                 matches!(error, Some(ClientError::InvalidArgument { .. })),
                 "{endpoint} must be rejected, got {error:?}"
+            );
+        }
+    }
+
+    /// A PEM-encoded self-signed CA fixture (no key material), used to prove
+    /// the custom-CA plumbing into the WebSocket TLS connector.
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBnTCCAUOgAwIBAgIUZeF05kLNKnZTC4xSV0RxC7fQ+DgwCgYIKoZIzj0EAwIw
+IzEhMB8GA1UEAwwYYWlvbi1jb25mb3JtYW5jZS10ZXN0LWNhMCAXDTI2MDYxMTE5
+MDgwM1oYDzIxMjYwNTE4MTkwODAzWjAjMSEwHwYDVQQDDBhhaW9uLWNvbmZvcm1h
+bmNlLXRlc3QtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQNxfK/cvPDW0ue
+a6AjlScsSdO+U+H53YG50Fn4HULhmu2Wu8JfcmEo4Rgao+SciqnpqRFiU4X0FTuh
+yoKxsO+uo1MwUTAdBgNVHQ4EFgQUwkbSaaXC/W1IxAkg+3Jl7jz+wckwHwYDVR0j
+BBgwFoAUwkbSaaXC/W1IxAkg+3Jl7jz+wckwDwYDVR0TAQH/BAUwAwEB/zAKBggq
+hkjOPQQDAgNIADBFAiEAtalplxZn9gozJpWUrMO4ddjy/IuKXwO1b7AwSvwtO8EC
+ICo9Vooy83Vq0mVVYmWRSVMZ4AtTrLY+7h3pIVrGLLl/
+-----END CERTIFICATE-----
+";
+
+    #[test]
+    fn no_tls_options_means_no_custom_connector() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(super::tls_connector(None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn tls_options_without_custom_ca_build_a_webpki_connector()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let connector = super::tls_connector(Some(&crate::client::TlsOptions::new()))?;
+        assert!(
+            matches!(connector, Some(tokio_tungstenite::Connector::Rustls(_))),
+            "TLS options must produce a rustls connector"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn custom_ca_certificate_is_added_to_the_websocket_trust_roots()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let options = crate::client::TlsOptions::new().with_ca_certificate_pem(TEST_CA_PEM);
+        let connector = super::tls_connector(Some(&options))?;
+        let Some(tokio_tungstenite::Connector::Rustls(config)) = connector else {
+            return Err("custom CA must produce a rustls connector".into());
+        };
+        // The webpki bundle plus exactly one extra caller-supplied root.
+        let baseline = webpki_roots::TLS_SERVER_ROOTS.len();
+        // rustls exposes no public root iterator on ClientConfig; the
+        // RootCertStore is rebuilt identically here to pin the count.
+        let mut roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        for certificate in rustls_pemfile::certs(&mut TEST_CA_PEM.as_bytes()) {
+            roots.add(certificate?)?;
+        }
+        assert_eq!(roots.roots.len(), baseline + 1);
+        drop(config);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_custom_ca_pem_is_invalid_argument() {
+        for pem in ["not pem at all", ""] {
+            let options =
+                crate::client::TlsOptions::new().with_ca_certificate_pem(pem.as_bytes().to_vec());
+            let error = super::tls_connector(Some(&options)).err();
+            assert!(
+                matches!(error, Some(ClientError::InvalidArgument { .. })),
+                "{pem:?} must be rejected as InvalidArgument, got {error:?}"
             );
         }
     }

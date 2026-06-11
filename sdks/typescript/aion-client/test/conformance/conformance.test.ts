@@ -172,18 +172,38 @@ async function execute(
 ): Promise<JsonRecord> {
 	switch (operation) {
 		case "connect": {
-			const auth =
-				process.env[authTokenEnv] === undefined
-					? undefined
-					: { bearerToken: process.env[authTokenEnv] };
+			// Caller identity for the server's development-header extraction:
+			// the conformance credential holds a grant for `conformance` only
+			// — never `conformance-denied` — which is exactly the grant shape
+			// the namespace-denied and not-found-anti-leak scenarios pin.
+			const bearerToken = process.env[authTokenEnv];
+			const auth = {
+				...(bearerToken === undefined ? {} : { bearerToken }),
+				subject: "conformance-harness",
+				namespaces: ["conformance"],
+			};
 			// Workflow subscriptions ride the built-in WebSocket transport
 			// through a local TCP relay so harness.forceDisconnect can sever
 			// live stream sockets (and only stream sockets) without touching
 			// the server. The relay is transparent TCP, so it only fronts
 			// plaintext http endpoints; against https the stream connects
-			// directly and forced disconnects are unsupported.
-			const target = new URL(serverUrl);
-			let streamEndpoint = serverUrl;
+			// directly and forced disconnects are unsupported. The TypeScript
+			// client's HTTP endpoint and the WebSocket stream share one
+			// listener, so AION_STREAM_URL is an optional override here
+			// (required for the gRPC-transport SDKs whose server URL is a
+			// different listener).
+			const streamUrl = process.env.AION_STREAM_URL ?? serverUrl;
+			const target = new URL(streamUrl);
+			let streamEndpoint = streamUrl;
+			// A repeated connect step (e.g. namespace-denied's connect-denied)
+			// replaces the per-scenario stream transport and relay; the
+			// previous relay listener must be closed here or its socket
+			// outlives the scenario and keeps the test process alive.
+			context.streamTransport?.stop();
+			if (context.relay !== undefined) {
+				await context.relay.close();
+				context.relay = undefined;
+			}
 			if (target.protocol === "http:") {
 				const relay = await TcpRelay.start(
 					target.hostname,
@@ -227,13 +247,7 @@ async function execute(
 			});
 			return { kind: "accepted" };
 		case "query": {
-			const value = await context.requireClient().query<Json, Json>({
-				workflowId: String(input.workflowId),
-				runId: optionalString(input.runId),
-				queryName: String(input.queryName),
-				timeoutMs:
-					typeof input.deadlineMs === "number" ? input.deadlineMs : 5000,
-			});
+			const value = await queryWhenRegistered(context, input);
 			return { kind: "payload", value };
 		}
 		case "cancel":
@@ -339,6 +353,44 @@ async function execute(
 	}
 }
 
+/**
+ * Deadline for the fixture workflow to finish registering its query
+ * handlers: registration is workflow code racing the caller after start
+ * returns, so the harness retries unknown-query outcomes within this window
+ * (the same fixture-readiness convention as the committed server e2e matrix
+ * in crates/aion-server/tests/query_workflow.rs and the other harnesses).
+ */
+const QUERY_REGISTRATION_DEADLINE_MS = 10_000;
+
+async function queryWhenRegistered(
+	context: ScenarioContext,
+	input: JsonRecord,
+): Promise<Json> {
+	const deadline = Date.now() + QUERY_REGISTRATION_DEADLINE_MS;
+	while (true) {
+		try {
+			return await context.requireClient().query<Json, Json>({
+				workflowId: String(input.workflowId),
+				runId: optionalString(input.runId),
+				queryName: String(input.queryName),
+				timeoutMs:
+					typeof input.deadlineMs === "number" ? input.deadlineMs : 5000,
+			});
+		} catch (error) {
+			const isUnknownQuery =
+				error instanceof AionClientError &&
+				error.kind === "InvalidArgument" &&
+				(String(error.detail?.code ?? "").includes("unknown_query") ||
+					error.message.toLowerCase().includes("unknown"));
+			if (isUnknownQuery && Date.now() < deadline) {
+				await delay(25);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
 async function collectStream(
 	input: JsonRecord,
 	context: ScenarioContext,
@@ -434,18 +486,30 @@ function assertMatches(
 			`scenario=${scenario} step=${step}`,
 		);
 	if ("sameHandleAs" in expectedOk) {
-		const reference = context.results.get(
-			String(expectedOk.sameHandleAs).slice(1),
-		);
-		assert(reference !== undefined, `scenario=${scenario} step=${step}`);
+		// The resolver may already have replaced the `$scenario.step`
+		// reference with the recorded step's ok payload; both shapes pin the
+		// same handle identity, and a dangling reference is a hard failure.
+		const referenceValue = expectedOk.sameHandleAs;
+		let referencedOk: JsonRecord;
+		if (typeof referenceValue === "string") {
+			const reference = context.results.get(referenceValue.slice(1));
+			assert(reference !== undefined, `scenario=${scenario} step=${step}`);
+			referencedOk = asRecord(reference.ok);
+		} else {
+			referencedOk = asRecord(referenceValue);
+			assert(
+				Object.keys(referencedOk).length > 0,
+				`scenario=${scenario} step=${step} sameHandleAs reference is unresolvable`,
+			);
+		}
 		assert.equal(
 			ok.workflowId,
-			asRecord(reference.ok).workflowId,
+			referencedOk.workflowId,
 			`scenario=${scenario} step=${step}`,
 		);
 		assert.equal(
 			ok.runId,
-			asRecord(reference.ok).runId,
+			referencedOk.runId,
 			`scenario=${scenario} step=${step}`,
 		);
 	}
@@ -531,11 +595,47 @@ function resolveValue(
 	return value ?? null;
 }
 
+/**
+ * Decodes a WireEnvelope's opaque payload into its carried JSON value. AW
+ * list/describe responses carry their domain values (`WorkflowSummary`,
+ * `Event`) as JSON bytes inside `WireEnvelope.payload`; anything without a
+ * decodable payload passes through unchanged.
+ */
+function wireEnvelopeJson(value: unknown): JsonRecord {
+	const record = asRecord(value);
+	const payload = asRecord(record.payload);
+	// HTTP routes may render the payload pre-decoded as `data`; the raw wire
+	// form carries JSON `bytes`.
+	if (payload.data !== undefined && typeof payload.data === "object") {
+		return asRecord(payload.data);
+	}
+	if (
+		typeof payload.content_type === "string" &&
+		Array.isArray(payload.bytes)
+	) {
+		try {
+			return asRecord(
+				JSON.parse(
+					new TextDecoder().decode(
+						Uint8Array.from(payload.bytes as number[]),
+					),
+				),
+			);
+		} catch {
+			return record;
+		}
+	}
+	return record;
+}
+
 function normalizeSummary(summary: WireEnvelope | undefined): JsonRecord {
-	const record = asRecord(summary);
+	const record = wireEnvelopeJson(summary);
 	return {
 		workflowId:
-			idValue(record.workflow_id) ?? optionalString(record.workflowId) ?? null,
+			optionalString(record.workflow_id) ??
+			idValue(record.workflow_id) ??
+			optionalString(record.workflowId) ??
+			null,
 		workflowType: record.workflow_type ?? record.workflowType ?? null,
 		status: statusName(record.status),
 	};
@@ -569,7 +669,9 @@ function normalizeStreamEvent(event: WorkflowEvent): JsonRecord {
 }
 
 function renameEventType(type: string): string {
-	return type.replace("SignalReceived", "WorkflowSignalled");
+	return type
+		.replace("SignalReceived", "WorkflowSignalled")
+		.replace("WorkflowCancelled", "WorkflowCancellationRequested");
 }
 
 /**
@@ -606,6 +708,10 @@ function decodeCoreEvent(raw: JsonRecord): JsonRecord | null {
 function coreUserPayload(data: JsonRecord): Json {
 	for (const key of ["payload", "input", "result"]) {
 		const candidate = asRecord(data[key]);
+		// HTTP routes may render the user payload pre-decoded as `data`.
+		if (typeof candidate.content_type === "string" && "data" in candidate) {
+			return candidate.data ?? null;
+		}
 		if (
 			typeof candidate.content_type === "string" &&
 			Array.isArray(candidate.bytes)
@@ -625,12 +731,21 @@ function coreUserPayload(data: JsonRecord): Json {
 }
 
 function normalizeEnvelopeEvent(envelope: WireEnvelope): JsonRecord {
-	const record = asRecord(envelope);
+	const record = wireEnvelopeJson(envelope);
+	// Decoded aion-core event shape: {"type": ..., "data": {"envelope":
+	// {"seq", "workflow_id"}, <payload|input|result>}}.
+	if (typeof record.type === "string" && "data" in record) {
+		const data = asRecord(record.data);
+		const eventEnvelope = asRecord(data.envelope);
+		return {
+			type: renameEventType(String(record.type)),
+			workflowId: optionalString(eventEnvelope.workflow_id) ?? null,
+			seq: Number(eventEnvelope.seq ?? 0),
+			payload: coreUserPayload(data),
+		};
+	}
 	return {
-		type: String(record.type ?? "Event").replace(
-			"SignalReceived",
-			"WorkflowSignalled",
-		),
+		type: renameEventType(String(record.type ?? "Event")),
 		workflowId:
 			optionalString(asRecord(record.envelope).workflowId) ??
 			idValue(asRecord(record.envelope).workflow_id) ??
@@ -710,6 +825,19 @@ function statusName(value: Json): Json {
 				value
 			] ?? String(value)
 		);
+	if (typeof value === "string") {
+		// serde renders aion-core WorkflowStatus in PascalCase; the scenario
+		// document uses the language-neutral SCREAMING_SNAKE spelling.
+		const names: Record<string, string> = {
+			Running: "RUNNING",
+			Completed: "COMPLETED",
+			Failed: "FAILED",
+			Cancelled: "CANCELLED",
+			TimedOut: "TIMED_OUT",
+			ContinuedAsNew: "CONTINUED_AS_NEW",
+		};
+		return names[value] ?? value;
+	}
 	return value;
 }
 
@@ -912,12 +1040,6 @@ class StoppableSubscribeTransport implements SubscribeTransport {
 			yield frame;
 		}
 	}
-}
-
-interface CollectConfig {
-	readonly minimumEventsBeforeDisconnect: number;
-	readonly minimumEventsAfterReconnect: number;
-	readonly timeoutMs: number;
 }
 
 /**

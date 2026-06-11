@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { connect } from "./client.js";
 import {
   InvalidArgumentError,
   NamespaceDeniedError,
   QueryFailedError,
+  QueryTimeoutError,
   ServerError,
   UnauthenticatedError,
   mapHttpResponseError,
@@ -319,6 +321,60 @@ test("invalid stream frames fail terminally instead of reconnecting forever", as
   })[Symbol.asyncIterator]();
 
   await assert.rejects(async () => iterator.next(), ServerError);
+});
+
+test("query is bounded by the caller deadline and surfaces QueryTimeoutError", async () => {
+  const transport = {
+    start: () => Promise.reject(new Error("unused")),
+    signal: () => Promise.reject(new Error("unused")),
+    cancel: () => Promise.reject(new Error("unused")),
+    list: () => Promise.reject(new Error("unused")),
+    describe: () => Promise.reject(new Error("unused")),
+    // A query that never resolves: only the caller deadline can end it.
+    query: () => new Promise<never>(() => undefined),
+  };
+  const client = await connect({
+    endpoint: "http://127.0.0.1:1",
+    transport,
+    streamTransport: new StubSubscribeTransport(),
+  });
+
+  await assert.rejects(
+    client.query({ workflowId: "wf", queryName: "state", timeoutMs: 20 }),
+    (error: unknown) => {
+      assert.ok(error instanceof QueryTimeoutError, String(error));
+      assert.match(error.message, /20ms/);
+      return true;
+    },
+  );
+});
+
+test("non-positive query deadlines are InvalidArgumentError before any transport call", async () => {
+  let called = 0;
+  const transport = {
+    start: () => Promise.reject(new Error("unused")),
+    signal: () => Promise.reject(new Error("unused")),
+    cancel: () => Promise.reject(new Error("unused")),
+    list: () => Promise.reject(new Error("unused")),
+    describe: () => Promise.reject(new Error("unused")),
+    query: () => {
+      called += 1;
+      return Promise.reject(new Error("must not be called"));
+    },
+  };
+  const client = await connect({
+    endpoint: "http://127.0.0.1:1",
+    transport,
+    streamTransport: new StubSubscribeTransport(),
+  });
+
+  for (const timeoutMs of [0, -5, Number.NaN]) {
+    await assert.rejects(
+      client.query({ workflowId: "wf", queryName: "state", timeoutMs }),
+      (error: unknown) => error instanceof InvalidArgumentError,
+    );
+  }
+  assert.equal(called, 0);
 });
 
 class StubSubscribeTransport {

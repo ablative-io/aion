@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from inspect import isawaitable
 from types import ModuleType
@@ -60,8 +60,11 @@ class EventStream(Generic[T]):
         workflow_id: str,
         run_id: str | None,
         auth: str | None,
+        subject: str | None = None,
+        namespaces: Sequence[str] | None = None,
         decoder: type[T] | None = None,
         raw: bool = False,
+        from_seq: int | None = None,
         transport_factory: TransportFactory | None = None,
         transport_supports_resume: bool | None = None,
     ) -> None:
@@ -70,8 +73,12 @@ class EventStream(Generic[T]):
         self.workflow_id = workflow_id
         self.run_id = run_id
         self.auth = auth
+        self.subject = subject
+        self.namespaces = tuple(namespaces) if namespaces is not None else None
         self.decoder = decoder
         self.raw = raw
+        if from_seq is not None and from_seq < 1:
+            raise InvalidArgument("from_seq must be >= 1 (the first sequence number wanted; 1 replays the full recorded history)")
         self._transport_factory = transport_factory or self._websocket_transport
         # Whether the transport can honour a non-None resume_from cursor on
         # reconnect. The built-in websocket transport can: the per-workflow
@@ -85,7 +92,11 @@ class EventStream(Generic[T]):
         if transport_supports_resume is None:
             transport_supports_resume = True
         self._transport_supports_resume = transport_supports_resume
-        self._last_seq: int | None = None
+        # The cursor sent on (re)attach is always last_seq + 1, so seeding
+        # last_seq = from_seq - 1 makes the initial attach request exactly
+        # from_seq. Without from_seq the initial attach carries no cursor and
+        # is a live tail (the cross-SDK initial-attach contract).
+        self._last_seq: int | None = None if from_seq is None else from_seq - 1
         self._current: AsyncIterator[Any] | None = None
         self._closed = False
 
@@ -111,8 +122,12 @@ class EventStream(Generic[T]):
                 self._current = await self._open(resume_from)
             try:
                 raw_frame = await self._current.__anext__()
-            except StopAsyncIteration as exc:
-                raise Unavailable("event stream ended before a terminal event") from exc
+            except StopAsyncIteration:
+                # Graceful server close (WebSocket close-1000, "subscription
+                # complete"): the stream ends normally. The exhausted
+                # transport is still closed deterministically, mirroring
+                # aclose, before iteration ends.
+                await self._finish_cleanly()
             except TransientStreamDisconnect as exc:
                 await self._prepare_reconnect(exc)
                 continue
@@ -162,6 +177,24 @@ class EventStream(Generic[T]):
         closer = getattr(current, "aclose", None)
         if closer is not None:
             await closer()
+
+    async def _finish_cleanly(self) -> None:
+        """End iteration after a graceful server close (close-1000).
+
+        Marks the stream closed first (so a retried ``__anext__`` or
+        ``aclose`` is a no-op), deterministically closes the exhausted
+        transport when it exposes ``aclose``, and ends iteration by raising
+        :class:`StopAsyncIteration`. A transport close failure propagates to
+        the caller (never swallowed); the stream is already marked closed.
+        """
+
+        self._closed = True
+        current, self._current = self._current, None
+        if current is not None:
+            closer = getattr(current, "aclose", None)
+            if closer is not None:
+                await closer()
+        raise StopAsyncIteration
 
     def _resume_from(self) -> int | None:
         if self._last_seq is None:
@@ -226,6 +259,10 @@ class EventStream(Generic[T]):
         headers: dict[str, str] = {}
         if self.auth is not None:
             headers["authorization"] = f"Bearer {self.auth.removeprefix('Bearer ')}"
+        if self.subject is not None:
+            headers["x-aion-subject"] = self.subject
+        if self.namespaces is not None:
+            headers["x-aion-namespaces"] = ",".join(self.namespaces)
         request = _subscription_request(self.namespace, self.workflow_id, resume_from)
         try:
             async with websockets.connect(self.endpoint, additional_headers=headers) as websocket:
@@ -291,6 +328,10 @@ def _event_payload(event: Any) -> Payload:
             raw = payload.get("bytes")
             if isinstance(raw, str):
                 raw = raw.encode("utf-8")
+            elif isinstance(raw, list):
+                # serde serializes Payload bytes (Vec<u8>) as a JSON array of
+                # integers; this is the shape every server frame carries.
+                raw = bytes(int(byte) for byte in raw)
             if isinstance(content_type, str) and isinstance(raw, bytes):
                 return Payload(content_type=content_type, bytes=raw)
         if "seq" in event:
@@ -305,6 +346,14 @@ def _event_payload(event: Any) -> Payload:
 def _extract_seq(value: Any) -> int:
     if isinstance(value, dict):
         raw_seq = value.get("seq", value.get("sequence", value.get("sequence_number")))
+        if raw_seq is None:
+            # A serde-encoded aion-core event carries its authoritative
+            # per-workflow seq inside the recording envelope:
+            # {"type": ..., "data": {"envelope": {"seq": ...}, ...}}.
+            for nested in (value.get("envelope"), _nested_envelope(value)):
+                if isinstance(nested, dict) and isinstance(nested.get("seq"), int):
+                    raw_seq = nested["seq"]
+                    break
     else:
         raw_seq = getattr(value, "seq", None)
         if raw_seq is None:
@@ -314,3 +363,10 @@ def _extract_seq(value: Any) -> int:
     if isinstance(raw_seq, int) and raw_seq >= 0:
         return raw_seq
     raise InvalidArgument("stream event is missing non-negative seq")
+
+
+def _nested_envelope(value: dict[str, Any]) -> Any:
+    data = value.get("data")
+    if isinstance(data, dict):
+        return data.get("envelope")
+    return None

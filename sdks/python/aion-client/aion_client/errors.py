@@ -301,4 +301,10 @@ def _map_grpc_status(name: str, details: str, *, operation: str | None) -> AionC
         return AlreadyExists(details)
     if operation == "query" and name == "DEADLINE_EXCEEDED":
         return QueryTimeout(details)
+    if operation == "query" and name == "CANCELLED" and details == "Timeout expired":
+        # grpc.aio surfaces a caller-supplied per-call `timeout=` expiry as a
+        # locally cancelled RPC with this exact detail string, not as
+        # DEADLINE_EXCEEDED. The caller's query deadline elapsing is the
+        # contract's QueryTimeout, never a caller-intent Cancelled.
+        return QueryTimeout(details)
     return error_from_code(_GRPC_CODE_MAP.get(name, ErrorCode.SERVER), details, detail=details)

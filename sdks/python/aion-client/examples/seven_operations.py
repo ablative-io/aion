@@ -34,9 +34,12 @@ async def run() -> None:
         auth=os.environ.get("AION_AUTH_TOKEN"),
         tls=TLSConfig(enabled=_tls_enabled(endpoint)),
         namespace="conformance",
+        # The WebSocket event stream rides the server's HTTP listener — a
+        # separate address from the gRPC endpoint; there is no default.
+        stream_endpoint=os.environ.get("AION_STREAM_URL"),
     ) as client:
         handle = await client.start(
-            "conformance.echo",
+            "conformance_echo",
             {"message": "hello", "counter": 1},
             idempotency_key=f"aion-client-python-seven-operations-{os.getpid()}",
         )

@@ -17,7 +17,15 @@ use uuid::Uuid;
 
 const SCENARIOS_PATH: &str = "conformance/aion-clients/scenarios.json";
 const SERVER_URL_ENV: &str = "AION_SERVER_URL";
+const STREAM_URL_ENV: &str = "AION_STREAM_URL";
 const AUTH_TOKEN_ENV: &str = "AION_AUTH_TOKEN";
+
+/// Caller identity presented to the server's development-header extraction:
+/// the conformance credential holds a grant for `conformance` only — never
+/// `conformance-denied` — which is exactly the grant shape the
+/// namespace-denied and not-found-anti-leak scenarios pin.
+const HARNESS_SUBJECT: &str = "conformance-harness";
+const HARNESS_NAMESPACES: [&str; 1] = ["conformance"];
 
 /// The harness attaches every stream from the workflow's beginning
 /// (`resume_from_seq = 1`, the wire's documented full-history replay): the
@@ -191,7 +199,9 @@ async fn execute_connect(
     server_url: &str,
 ) -> Result<Value, ClientError> {
     let mut builder = Client::builder(server_url)
-        .with_namespace(input_str(input, "namespace").unwrap_or("conformance"));
+        .with_namespace(input_str(input, "namespace").unwrap_or("conformance"))
+        .with_subject(HARNESS_SUBJECT)
+        .with_authorized_namespaces(HARNESS_NAMESPACES);
     if let Ok(token) = env::var(AUTH_TOKEN_ENV) {
         if !token.is_empty() {
             builder = builder.with_auth(ClientAuth::bearer(token));
@@ -202,37 +212,75 @@ async fn execute_connect(
     {
         builder = builder.with_tls(TlsOptions::new());
     }
-    // Event subscriptions ride the server's WebSocket listener, derived from
-    // the shared AION_CONFORMANCE/AION_SERVER_URL by protocol mapping (the
-    // same harness convention as the Python and TypeScript relays). For
-    // plaintext http the stream is pointed through a local TCP relay so
-    // `harness.forceDisconnect` can sever live stream sockets — and only
-    // stream sockets — without touching the server; the relay is a raw byte
-    // pipe, so https/wss endpoints connect directly and forced disconnects
-    // are refused with a precise error.
+    // Event subscriptions ride the server's HTTP/WebSocket listener — a
+    // SEPARATE address from the gRPC endpoint — named explicitly by
+    // AION_STREAM_URL (the same convention as the Python harness; nothing is
+    // derived from the gRPC URL). For plaintext ws the stream is pointed
+    // through a local TCP relay so `harness.forceDisconnect` can sever live
+    // stream sockets — and only stream sockets — without touching the
+    // server; the relay is a raw byte pipe, so wss endpoints connect
+    // directly and forced disconnects are refused with a precise error.
     context.close_relay();
-    if let Some(rest) = server_url.strip_prefix("http://") {
-        let authority = rest.split('/').next().unwrap_or(rest);
-        let (host, port) = match authority.split_once(':') {
-            Some((host, port)) => (
-                host.to_owned(),
-                port.parse::<u16>().map_err(|_| {
-                    ClientError::server(format!("{SERVER_URL_ENV} port {port} is not a u16"))
-                })?,
-            ),
-            None => (authority.to_owned(), 80),
-        };
-        let relay = TcpRelay::start(host, port).await?;
-        builder = builder
-            .with_stream_endpoint(format!("ws://127.0.0.1:{}{EVENT_STREAM_PATH}", relay.port));
-        context.relay = Some(relay);
-    } else if let Some(rest) = server_url.strip_prefix("https://") {
-        let authority = rest.split('/').next().unwrap_or(rest);
-        builder = builder.with_stream_endpoint(format!("wss://{authority}{EVENT_STREAM_PATH}"));
+    if let Ok(stream_url) = env::var(STREAM_URL_ENV) {
+        if !stream_url.is_empty() {
+            let endpoint = ws_stream_endpoint(&stream_url)?;
+            if let Some(authority) = endpoint
+                .strip_prefix("ws://")
+                .and_then(|rest| rest.split('/').next())
+            {
+                let (host, port) = match authority.split_once(':') {
+                    Some((host, port)) => (
+                        host.to_owned(),
+                        port.parse::<u16>().map_err(|_| {
+                            ClientError::server(format!(
+                                "{STREAM_URL_ENV} port {port} is not a u16"
+                            ))
+                        })?,
+                    ),
+                    None => (authority.to_owned(), 80),
+                };
+                let relay = TcpRelay::start(host, port).await?;
+                builder = builder.with_stream_endpoint(format!(
+                    "ws://127.0.0.1:{}{EVENT_STREAM_PATH}",
+                    relay.port
+                ));
+                context.relay = Some(relay);
+            } else {
+                // wss endpoints cannot be byte-relayed; connect directly.
+                builder = builder.with_stream_endpoint(endpoint);
+            }
+        }
     }
     let client = builder.build().await?;
     context.client = Some(client);
     Ok(json!({ "kind": "client" }))
+}
+
+/// Maps the harness `AION_STREAM_URL` onto the ws(s) `/events/stream` URL:
+/// `http(s)` schemes are protocol-mapped (the same listener serves the
+/// route), `ws(s)` pass through, and the route path is appended when the URL
+/// names only the listener.
+fn ws_stream_endpoint(stream_url: &str) -> Result<String, ClientError> {
+    let (scheme, rest) = stream_url.split_once("://").ok_or_else(|| {
+        ClientError::server(format!(
+            "{STREAM_URL_ENV} must be an absolute http(s):// or ws(s):// URL, got {stream_url}"
+        ))
+    })?;
+    let scheme = match scheme {
+        "http" | "ws" => "ws",
+        "https" | "wss" => "wss",
+        other => {
+            return Err(ClientError::server(format!(
+                "{STREAM_URL_ENV} scheme {other}:// is not http(s) or ws(s)"
+            )));
+        }
+    };
+    let rest = rest.trim_end_matches('/');
+    if rest.ends_with("/events/stream") {
+        Ok(format!("{scheme}://{rest}"))
+    } else {
+        Ok(format!("{scheme}://{rest}{EVENT_STREAM_PATH}"))
+    }
 }
 
 /// The disconnect-resume choreography's subscribe step: start the SINGLE
@@ -368,6 +416,13 @@ async fn execute_signal(
     Ok(json!({ "kind": "accepted" }))
 }
 
+/// Deadline for the fixture workflow to finish registering its query
+/// handlers: registration is workflow code racing the caller after `start`
+/// returns, so the harness retries `UnknownQuery` outcomes within this
+/// window (the same fixture-readiness convention as the committed server
+/// e2e matrix in `crates/aion-server/tests/query_workflow.rs`).
+const QUERY_REGISTRATION_DEADLINE: Duration = Duration::from_secs(10);
+
 async fn execute_query(input: &Value, context: &mut ScenarioContext) -> Result<Value, ClientError> {
     let client = context.client()?;
     let wf_id = workflow_id(input_str(input, "workflowId").unwrap_or_default())?;
@@ -376,15 +431,26 @@ async fn execute_query(input: &Value, context: &mut ScenarioContext) -> Result<V
         .get("deadlineMs")
         .and_then(Value::as_u64)
         .unwrap_or(5000);
-    let payload = client
-        .query(
-            &wf_id,
-            run_id.as_ref(),
-            input_str(input, "queryName").unwrap_or_default(),
-            Payload::new(ContentType::Json, Vec::new()),
-            Duration::from_millis(deadline_ms),
-        )
-        .await?;
+    let registration_deadline = tokio::time::Instant::now() + QUERY_REGISTRATION_DEADLINE;
+    let payload = loop {
+        let attempt = client
+            .query(
+                &wf_id,
+                run_id.as_ref(),
+                input_str(input, "queryName").unwrap_or_default(),
+                Payload::new(ContentType::Json, Vec::new()),
+                Duration::from_millis(deadline_ms),
+            )
+            .await;
+        match attempt {
+            Err(ClientError::UnknownQuery { .. })
+                if tokio::time::Instant::now() < registration_deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            other => break other?,
+        }
+    };
     let decoded = payload
         .to_json()
         .map_err(|error| ClientError::server(error.to_string()))?;
@@ -429,7 +495,7 @@ async fn execute_list(input: &Value, context: &mut ScenarioContext) -> Result<Va
             json!({
                 "workflowId": summary.workflow_id.to_string(),
                 "workflowType": summary.workflow_type,
-                "status": format!("{:?}", summary.status)
+                "status": status_name(summary.status)
             })
         })
         .collect::<Vec<_>>();
@@ -448,7 +514,7 @@ async fn execute_describe(
         "kind": "workflowDescription",
         "workflowId": description.summary.workflow_id.to_string(),
         "runId": input_str(input, "runId"),
-        "status": format!("{:?}", description.summary.status),
+        "status": status_name(description.summary.status),
         "history": description.history.iter().map(normalize_event).collect::<Vec<_>>()
     }))
 }
@@ -581,19 +647,8 @@ fn assert_matches(
             "scenario={scenario} step={step}"
         );
     }
-    if let Some(reference) = expected_ok.get("sameHandleAs").and_then(Value::as_str) {
-        if let Some(referenced) = context.by_reference(reference) {
-            assert_eq!(
-                actual_ok.get("workflowId"),
-                referenced.pointer("/ok/workflowId"),
-                "scenario={scenario} step={step}"
-            );
-            assert_eq!(
-                actual_ok.get("runId"),
-                referenced.pointer("/ok/runId"),
-                "scenario={scenario} step={step}"
-            );
-        }
+    if let Some(reference) = expected_ok.get("sameHandleAs") {
+        assert_same_handle(scenario, step, actual_ok, reference, context);
     }
     if let Some(reference) = expected_ok.get("containsWorkflowRef") {
         let workflow_id_expected = reference.get("workflowId").and_then(Value::as_str);
@@ -636,6 +691,43 @@ fn assert_matches(
             "scenario={scenario} step={step}"
         );
     }
+}
+
+/// Pins a `sameHandleAs` expectation: the step's handle identity equals the
+/// referenced step's. The resolver may already have replaced the
+/// `$scenario.step` reference with the recorded step's ok payload; both
+/// shapes pin the same handle identity, and a dangling reference is a hard
+/// failure.
+fn assert_same_handle(
+    scenario: &str,
+    step: &str,
+    actual_ok: &Value,
+    reference: &Value,
+    context: &ScenarioContext,
+) {
+    let referenced_ok = match reference {
+        Value::String(reference) => context
+            .by_reference(reference)
+            .and_then(|referenced| referenced.get("ok"))
+            .cloned(),
+        Value::Object(_) => Some(reference.clone()),
+        _ => None,
+    };
+    assert!(
+        referenced_ok.is_some(),
+        "scenario={scenario} step={step} sameHandleAs reference is unresolvable"
+    );
+    let referenced_ok = referenced_ok.unwrap_or(Value::Null);
+    assert_eq!(
+        actual_ok.get("workflowId"),
+        referenced_ok.get("workflowId"),
+        "scenario={scenario} step={step}"
+    );
+    assert_eq!(
+        actual_ok.get("runId"),
+        referenced_ok.get("runId"),
+        "scenario={scenario} step={step}"
+    );
 }
 
 /// Asserts the `errorSameAs` expectation: the current step's SDK-observable
@@ -822,6 +914,19 @@ fn datetime(value: Option<&str>) -> Option<DateTime<Utc>> {
     value
         .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
         .map(DateTime::from)
+}
+
+/// Renders a workflow status in the scenario document's language-neutral
+/// spelling (`RUNNING`, `TIMED_OUT`, ...).
+fn status_name(status: WorkflowStatus) -> &'static str {
+    match status {
+        WorkflowStatus::Running => "RUNNING",
+        WorkflowStatus::Completed => "COMPLETED",
+        WorkflowStatus::Failed => "FAILED",
+        WorkflowStatus::Cancelled => "CANCELLED",
+        WorkflowStatus::TimedOut => "TIMED_OUT",
+        WorkflowStatus::ContinuedAsNew => "CONTINUED_AS_NEW",
+    }
 }
 
 fn status(value: Option<&str>) -> Option<WorkflowStatus> {

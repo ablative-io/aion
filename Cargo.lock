@@ -82,6 +82,8 @@ dependencies = [
  "futures",
  "http 1.4.1",
  "prost 0.14.3",
+ "rustls 0.23.40",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -89,6 +91,7 @@ dependencies = [
  "tokio-tungstenite",
  "tonic 0.14.6",
  "uuid",
+ "webpki-roots 1.0.7",
 ]
 
 [[package]]

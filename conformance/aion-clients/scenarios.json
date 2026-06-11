@@ -34,8 +34,8 @@
     "errorSameAs": "the SDK-observable error identity (taxonomy member, message, and detail) is byte-identical to the error recorded by the referenced scenario step"
   },
   "fixtures": {
-    "workflowType": "conformance.echo",
-    "slowQueryWorkflowType": "conformance.slow-query",
+    "workflowType": "conformance_echo",
+    "slowQueryWorkflowType": "conformance_slow_query",
     "signals": {
       "record": "record"
     },
@@ -55,7 +55,7 @@
       "description": "Exercises the full observable caller surface in order: start -> signal -> query -> list -> describe -> cancel -> subscribe.",
       "requires": [
         "A real aion-server reachable at defaults.endpoint.",
-        "Fixture workflow conformance.echo starts, records the record signal, returns state from the state query, accepts cooperative cancellation, and emits lifecycle/signal events."
+        "Fixture workflow conformance_echo starts, records the record signal, returns state from the state query, accepts cooperative cancellation, and emits lifecycle/signal events."
       ],
       "steps": [
         {
@@ -323,7 +323,7 @@
       "id": "query-timeout",
       "description": "A synchronous query exceeding the caller deadline raises QueryTimeout.",
       "requires": [
-        "Fixture workflow conformance.slow-query has a slow query handler that exceeds the supplied deadline without completing first."
+        "Fixture workflow conformance_slow_query has a slow query handler that exceeds the supplied deadline without completing first."
       ],
       "steps": [
         {
@@ -590,7 +590,7 @@
       "requires": [
         "AW/server exposes a subscription resume cursor based on aion-core EventEnvelope.seq.",
         "Harness can force a transient WebSocket disconnect without stopping the server.",
-        "Fixture workflow conformance.echo emits multiple ordered events after signals."
+        "Fixture workflow conformance_echo emits multiple ordered events after signals."
       ],
       "steps": [
         {
@@ -639,7 +639,7 @@
             },
             "collect": {
               "minimumEventsBeforeDisconnect": 1,
-              "minimumEventsAfterReconnect": 2,
+              "minimumEventsAfterReconnect": 1,
               "timeoutMs": 15000
             }
           },

@@ -257,14 +257,19 @@ impl TlsOptions {
         Self::default()
     }
 
-    /// Overrides the TLS domain name checked during handshake.
+    /// Overrides the TLS domain name checked during the gRPC channel
+    /// handshake. The WebSocket event stream always verifies against its own
+    /// stream-endpoint host (`ClientBuilder::with_stream_endpoint`), so no
+    /// override is needed there: point the stream endpoint at the name the
+    /// server's certificate carries.
     #[must_use]
     pub fn with_domain_name(mut self, domain_name: impl Into<String>) -> Self {
         self.domain_name = Some(domain_name.into());
         self
     }
 
-    /// Adds a PEM-encoded CA certificate trusted for this connection.
+    /// Adds a PEM-encoded CA certificate trusted by BOTH transports: the
+    /// tonic gRPC channel and the `wss://` WebSocket event stream.
     #[must_use]
     pub fn with_ca_certificate_pem(mut self, ca_certificate_pem: impl Into<Vec<u8>>) -> Self {
         self.ca_certificate_pem = Some(ca_certificate_pem.into());

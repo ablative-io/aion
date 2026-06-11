@@ -1,6 +1,8 @@
 import { type AuthOptions, authHeaders } from "./auth.js";
 import {
+  AlreadyExistsError,
   InvalidArgumentError,
+  QueryTimeoutError,
   mapHttpResponseError,
   mapTransportError,
   mapWireError,
@@ -189,6 +191,17 @@ export class Client {
   private readonly namespace: string;
   private readonly transport: WorkflowTransport;
   readonly streamTransport: SubscribeTransport;
+  /**
+   * SDK-boundary start idempotency (the contract's hard case): the same key
+   * retried with an identical request returns the original handle;
+   * conflicting reuse throws {@link AlreadyExistsError}. Keyed by
+   * idempotency key, fingerprinted over namespace, workflow type, and the
+   * encoded input payload.
+   */
+  private readonly idempotentStarts = new Map<
+    string,
+    { readonly fingerprint: string; readonly handle: WorkflowHandle }
+  >();
 
   constructor(options: ClientOptions) {
     this.endpoint = normalizeEndpoint(options.endpoint, options.tls);
@@ -218,8 +231,27 @@ export class Client {
   }
 
   async startRaw(options: StartRawOptions): Promise<WorkflowHandle> {
+    const namespace = this.resolveNamespace(options.namespace);
+    const fingerprint =
+      options.idempotencyKey === undefined
+        ? undefined
+        : JSON.stringify([
+            namespace,
+            options.workflowType,
+            options.input.content_type,
+            options.input.bytes,
+          ]);
+    if (options.idempotencyKey !== undefined && fingerprint !== undefined) {
+      const cached = this.idempotentStarts.get(options.idempotencyKey);
+      if (cached !== undefined) {
+        if (cached.fingerprint === fingerprint) {
+          return cached.handle;
+        }
+        throw idempotencyConflict();
+      }
+    }
     const response = await this.transport.start({
-      namespace: this.resolveNamespace(options.namespace),
+      namespace,
       workflow_type: options.workflowType,
       input: options.input,
     });
@@ -231,12 +263,20 @@ export class Client {
         message: "Start response omitted workflow_id or run_id",
       });
     }
-    return new WorkflowHandle(
-      this,
-      workflowId,
-      runId,
-      this.resolveNamespace(options.namespace),
-    );
+    const handle = new WorkflowHandle(this, workflowId, runId, namespace);
+    if (options.idempotencyKey !== undefined && fingerprint !== undefined) {
+      const recorded = this.idempotentStarts.get(options.idempotencyKey);
+      if (recorded !== undefined && recorded.fingerprint !== fingerprint) {
+        throw idempotencyConflict();
+      }
+      if (recorded === undefined) {
+        this.idempotentStarts.set(options.idempotencyKey, {
+          fingerprint,
+          handle,
+        });
+      }
+    }
+    return handle;
   }
 
   async signal<I>(options: SignalOptions<I>): Promise<void> {
@@ -262,12 +302,15 @@ export class Client {
   }
 
   async queryRaw(options: QueryRawOptions): Promise<Payload> {
-    const response = await this.transport.query({
-      namespace: this.resolveNamespace(options.namespace),
-      workflow_id: { uuid: options.workflowId },
-      run_id: runId(options.runId),
-      query_name: options.queryName,
-    });
+    const response = await this.queryWithDeadline(
+      {
+        namespace: this.resolveNamespace(options.namespace),
+        workflow_id: { uuid: options.workflowId },
+        run_id: runId(options.runId),
+        query_name: options.queryName,
+      },
+      options.timeoutMs,
+    );
     if (response.error !== undefined) {
       throw mapWireError(response.error);
     }
@@ -278,6 +321,47 @@ export class Client {
       });
     }
     return response.result;
+  }
+
+  /**
+   * Bounds one query round-trip by the caller's deadline. Query is a
+   * synchronous deadline-bounded round-trip per the client contract:
+   * deadline expiry surfaces {@link QueryTimeoutError} (the in-flight
+   * transport call's eventual result is discarded).
+   */
+  private async queryWithDeadline(
+    request: ProtoQueryRequest,
+    timeoutMs?: number,
+  ): Promise<ProtoQueryResponse> {
+    if (timeoutMs === undefined) {
+      return this.transport.query(request);
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new InvalidArgumentError(
+        `timeoutMs must be a positive number of milliseconds; got ${String(timeoutMs)}`,
+      );
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new QueryTimeoutError(
+            `Query deadline of ${String(timeoutMs)}ms elapsed before a result was available`,
+          ),
+        );
+      }, timeoutMs);
+    });
+    const call = this.transport.query(request);
+    // Once the deadline wins the race, the losing call's eventual rejection
+    // must never surface as an unhandled rejection.
+    void call.catch(() => undefined);
+    try {
+      return await Promise.race([call, deadline]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   async cancel(options: CancelOptions): Promise<void> {
@@ -354,7 +438,17 @@ class HttpWorkflowTransport implements WorkflowTransport {
   }
 
   async query(request: ProtoQueryRequest): Promise<ProtoQueryResponse> {
-    return this.post<ProtoQueryResponse>("/workflows/query", request);
+    // The HTTP route carries the QueryResponse outcome oneof as
+    // `{"outcome":{"Result": <Payload>}}` or `{"outcome":{"Error":
+    // <WireError>}}`; normalize it onto the transport-level result/error
+    // shape the client decodes.
+    const response = await this.post<{
+      readonly outcome?: { readonly Result?: Payload; readonly Error?: unknown };
+    }>("/workflows/query", request);
+    if (response.outcome?.Error !== undefined) {
+      return { error: response.outcome.Error };
+    }
+    return { result: response.outcome?.Result };
   }
 
   async cancel(request: ProtoCancelRequest): Promise<void> {
@@ -422,6 +516,17 @@ class HttpWorkflowTransport implements WorkflowTransport {
       ...authHeaders(this.auth),
     };
   }
+}
+
+/**
+ * The SDK-boundary idempotency conflict: the same key was reused with a
+ * different start request.
+ */
+function idempotencyConflict(): AlreadyExistsError {
+  return new AlreadyExistsError(
+    "idempotency key was already used by a different start request " +
+      "(namespace, workflow type, or input differ)",
+  );
 }
 
 function normalizeEndpoint(endpoint: string, tls?: TlsOptions): string {

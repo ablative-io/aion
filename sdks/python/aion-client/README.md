@@ -32,6 +32,10 @@ client = await Client.connect(
     auth=os.environ.get("AION_AUTH_TOKEN"),
     tls=TLSConfig(enabled=endpoint.startswith(("https://", "grpcs://"))),
     namespace="conformance",
+    # The WebSocket event stream rides the server's HTTP listener — a
+    # separate address from the gRPC endpoint. There is no default and
+    # nothing is derived; subscribe without it raises InvalidArgument.
+    stream_endpoint=os.environ.get("AION_STREAM_URL"),
 )
 ```
 
@@ -86,7 +90,7 @@ await handle.cancel(reason="caller requested cancellation")
 
 ## subscribe
 
-`handle.subscribe()` returns an async iterator. It reconnects after transient disconnects using the last delivered per-workflow sequence number; terminal failures are raised from iteration rather than ending silently.
+`handle.subscribe()` returns an async iterator over the client's configured `stream_endpoint` (the server's `/events/stream` WebSocket URL — required, never derived). The initial attach is a live tail; pass `from_seq=1` to replay the full recorded history first. It reconnects after transient disconnects using the last delivered per-workflow sequence number; a graceful server close (WebSocket close-1000) ends iteration normally, and terminal failures are raised from iteration rather than ending silently.
 
 ```python
 async for event in handle.subscribe(raw=True):

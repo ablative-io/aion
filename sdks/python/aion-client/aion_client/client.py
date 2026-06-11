@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, TypeVar, cast
 
-from .errors import AionClientError, InvalidArgument, QueryFailed, map_query_error, raise_mapped
+from .errors import AionClientError, AlreadyExists, InvalidArgument, QueryFailed, map_query_error, raise_mapped
 from .handle import WorkflowHandle
 from .payload import JSONValue, Payload, assign_payload, decode_payload, ensure_payload, payload_from_wire
-from .transport import GrpcWorkflowTransport, MappingMetadata, WorkflowTransport, default_events_endpoint, metadata
+from .transport import GrpcWorkflowTransport, MappingMetadata, WorkflowTransport, metadata
 
 T = TypeVar("T")
 
@@ -50,9 +51,18 @@ class Client:
         tls: TLSConfig | bool | None = None,
         namespace: str = "default",
         transport: WorkflowTransport | None = None,
-        events_endpoint: str | None = None,
+        stream_endpoint: str | None = None,
+        subject: str | None = None,
+        namespaces: Sequence[str] | None = None,
     ) -> None:
         """Create a reusable client connection.
+
+        ``stream_endpoint`` is the full URL of the server's
+        ``/events/stream`` WebSocket route (for example
+        ``ws://127.0.0.1:8080/events/stream``). There is no default and
+        nothing is derived: the gRPC endpoint and the HTTP/WebSocket
+        listener are separate addresses, so ``subscribe`` without this
+        option raises :class:`InvalidArgument` with a precise message.
 
         Raises:
             InvalidArgument, Unavailable, Unauthenticated, ServerError,
@@ -66,10 +76,17 @@ class Client:
         self.endpoint = endpoint.rstrip("/")
         self.namespace = namespace
         self.auth = auth
+        self.subject = subject
+        self.namespaces = tuple(namespaces) if namespaces is not None else None
         self.tls = _normalize_tls(tls)
         self._transport = transport or GrpcWorkflowTransport(self.endpoint, tls=self.tls)
-        self.events_endpoint = events_endpoint or default_events_endpoint(self.endpoint, self.tls.enabled)
-        self._metadata = metadata(auth)
+        self.stream_endpoint = stream_endpoint
+        self._metadata = metadata(auth, subject=subject, namespaces=self.namespaces)
+        # SDK-boundary start idempotency (the contract's hard case): the same
+        # key retried with an identical request returns the original handle;
+        # conflicting reuse raises AlreadyExists. Keyed by idempotency key,
+        # fingerprinted over namespace, workflow type, and encoded input.
+        self._idempotent_starts: dict[str, tuple[tuple[str, str, str, bytes], WorkflowHandle]] = {}
 
     @classmethod
     async def connect(
@@ -80,7 +97,9 @@ class Client:
         tls: TLSConfig | bool | None = None,
         namespace: str = "default",
         transport: WorkflowTransport | None = None,
-        events_endpoint: str | None = None,
+        stream_endpoint: str | None = None,
+        subject: str | None = None,
+        namespaces: Sequence[str] | None = None,
     ) -> Client:
         """Create a client and validate the reusable connection if supported.
 
@@ -95,7 +114,9 @@ class Client:
             tls=tls,
             namespace=namespace,
             transport=transport,
-            events_endpoint=events_endpoint,
+            stream_endpoint=stream_endpoint,
+            subject=subject,
+            namespaces=namespaces,
         )
         connect = getattr(client._transport, "connect", None)
         if callable(connect):
@@ -151,10 +172,20 @@ class Client:
 
         if not workflow_type:
             raise InvalidArgument("workflow_type must not be empty")
+        payload = ensure_payload(input, raw=raw, content_type=content_type)
+        fingerprint: tuple[str, str, str, bytes] | None = None
+        if idempotency_key is not None:
+            fingerprint = (namespace or self.namespace, workflow_type, payload.content_type, bytes(payload.bytes))
+            cached = self._idempotent_starts.get(idempotency_key)
+            if cached is not None:
+                cached_fingerprint, cached_handle = cached
+                if cached_fingerprint == fingerprint:
+                    return cached_handle
+                raise _idempotency_conflict()
         request = self._message("StartWorkflowRequest")
         request.namespace = namespace or self.namespace
         request.workflow_type = workflow_type
-        assign_payload(request.input, ensure_payload(input, raw=raw, content_type=content_type))
+        assign_payload(request.input, payload)
         try:
             response = await self._transport.start_workflow(
                 request,
@@ -166,12 +197,18 @@ class Client:
             if isinstance(exc, AionClientError):
                 raise
             raise_mapped(exc, operation="start")
-        return WorkflowHandle(
+        handle = WorkflowHandle(
             client=self,
             workflow_id=workflow_id,
             run_id=run_id,
             namespace=namespace or self.namespace,
         )
+        if idempotency_key is not None and fingerprint is not None:
+            recorded = self._idempotent_starts.get(idempotency_key)
+            if recorded is not None and recorded[0] != fingerprint:
+                raise _idempotency_conflict()
+            self._idempotent_starts.setdefault(idempotency_key, (fingerprint, handle))
+        return handle
 
     async def signal(
         self,
@@ -339,6 +376,15 @@ class Client:
             if isinstance(exc, AionClientError):
                 raise
             raise_mapped(exc, operation=operation)
+
+
+def _idempotency_conflict() -> AlreadyExists:
+    """The SDK-boundary idempotency conflict: the same key was reused with a
+    different start request."""
+
+    return AlreadyExists(
+        "idempotency key was already used by a different start request (namespace, workflow type, or input differ)"
+    )
 
 
 def _normalize_tls(tls: TLSConfig | bool | None) -> TLSConfig:

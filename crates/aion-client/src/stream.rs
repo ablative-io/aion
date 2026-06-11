@@ -82,6 +82,14 @@ impl SubscribeTarget {
 /// with an honest [`ClientError::Unavailable`] instead of silently
 /// reattaching a gapped stream; reconnect-live-only is allowed only while
 /// nothing has been delivered yet.
+///
+/// Connect-failure contract (cross-SDK): a failed subscription attach is
+/// classified exactly like a mid-stream drop. [`ClientError::Unavailable`]
+/// (transport-level connect failure, DNS/TLS/socket failure, abnormal close)
+/// is retryable and the stream re-attaches — on the initial attach as well as
+/// after delivered events — until the caller drops the stream; every other
+/// taxonomy error (`Unauthenticated`, `NamespaceDenied`, `NotFound`,
+/// `InvalidArgument`, `Server`, ...) is terminal immediately.
 pub struct ResumingEventStream {
     transport: Arc<dyn WorkflowTransport>,
     namespace: String,
@@ -188,7 +196,16 @@ impl Stream for ResumingEventStream {
                         this.current = Some(attempt.events);
                     }
                     Poll::Ready(Err(error)) => {
+                        // Cross-SDK connect-failure contract: an attach
+                        // failure is classified exactly like a mid-stream
+                        // drop. `Unavailable` is retryable — per-workflow
+                        // streams reconnect with their cursor, live-only
+                        // streams reconnect only while nothing has been
+                        // delivered. Every other taxonomy error is terminal.
                         this.pending_subscribe = None;
+                        if is_retryable(&error) && (this.is_per_workflow() || !this.delivered_any) {
+                            continue;
+                        }
                         this.finished = true;
                         return Poll::Ready(Some(Err(error)));
                     }
@@ -291,6 +308,9 @@ mod tests {
 
     #[derive(Default)]
     struct SubscribeStub {
+        /// Attach failures consumed before any queued attempt: each entry is
+        /// one subscribe call that fails before a stream exists.
+        attach_failures: Mutex<VecDeque<ClientError>>,
         attempts: Mutex<VecDeque<SubscriptionAttempt>>,
         resume_points: Mutex<Vec<Option<u64>>>,
     }
@@ -345,6 +365,9 @@ mod tests {
             resume_from_sequence: Option<u64>,
         ) -> Result<SubscriptionAttempt, ClientError> {
             self.resume_points.lock().await.push(resume_from_sequence);
+            if let Some(failure) = self.attach_failures.lock().await.pop_front() {
+                return Err(failure);
+            }
             self.attempts
                 .lock()
                 .await
@@ -628,5 +651,157 @@ mod tests {
         );
         assert_eq!(events.next().await, None);
         assert_eq!(stub.resume_points.lock().await.len(), 1);
+    }
+
+    /// Connect-failure contract: an `Unavailable` initial attach failure is
+    /// retryable exactly like a mid-stream drop — the stream re-attaches and
+    /// delivers, never surfacing the transient error as terminal.
+    #[tokio::test]
+    async fn unavailable_attach_failure_is_retried_until_attach_succeeds() -> Result<(), ClientError>
+    {
+        let workflow_id = WorkflowId::new_v4();
+        let stub = Arc::new(SubscribeStub::default());
+        stub.attach_failures
+            .lock()
+            .await
+            .push_back(ClientError::unavailable("connection refused"));
+        stub.attach_failures
+            .lock()
+            .await
+            .push_back(ClientError::unavailable("connection refused"));
+        stub.attempts
+            .lock()
+            .await
+            .push_back(SubscriptionAttempt::new(
+                stream::iter(vec![Ok(event(1, &workflow_id)), Ok(event(2, &workflow_id))]).boxed(),
+            ));
+        let mut events = ResumingEventStream::new(
+            stub.clone(),
+            "tenant-a",
+            SubscribeTarget::Workflow { workflow_id },
+        );
+
+        let mut seqs = Vec::new();
+        while let Some(item) = events.next().await {
+            // A transient attach failure must not surface; `?` fails the test
+            // with the offending error if it does.
+            seqs.push(item?.seq());
+        }
+
+        assert_eq!(seqs, vec![1, 2]);
+        assert_eq!(
+            *stub.resume_points.lock().await,
+            vec![None, None, None],
+            "every retried initial attach is still a live tail (no cursor)"
+        );
+        Ok(())
+    }
+
+    /// A mid-stream drop followed by an `Unavailable` reconnect failure keeps
+    /// retrying with the SAME cursor until the reconnect succeeds.
+    #[tokio::test]
+    async fn unavailable_reconnect_failure_retries_with_the_same_cursor() -> Result<(), ClientError>
+    {
+        let workflow_id = WorkflowId::new_v4();
+        let stub = Arc::new(SubscribeStub::default());
+        stub.attempts
+            .lock()
+            .await
+            .push_back(SubscriptionAttempt::new(
+                stream::iter(vec![
+                    Ok(event(1, &workflow_id)),
+                    Err(ClientError::unavailable("transient disconnect")),
+                ])
+                .boxed(),
+            ));
+        let mut events = ResumingEventStream::new(
+            stub.clone(),
+            "tenant-a",
+            SubscribeTarget::Workflow {
+                workflow_id: workflow_id.clone(),
+            },
+        );
+        let first = events.next().await;
+        assert!(matches!(first, Some(Ok(_))), "got {first:?}");
+        // The reconnect attempt fails transiently, then succeeds.
+        stub.attach_failures
+            .lock()
+            .await
+            .push_back(ClientError::unavailable("connection refused"));
+        stub.attempts
+            .lock()
+            .await
+            .push_back(SubscriptionAttempt::new(
+                stream::iter(vec![Ok(event(2, &workflow_id))]).boxed(),
+            ));
+
+        let mut seqs = vec![1];
+        while let Some(item) = events.next().await {
+            // A transient reconnect failure must not surface; `?` fails the
+            // test with the offending error if it does.
+            seqs.push(item?.seq());
+        }
+
+        assert_eq!(seqs, vec![1, 2]);
+        assert_eq!(
+            *stub.resume_points.lock().await,
+            vec![None, Some(2), Some(2)],
+            "the failed reconnect and the successful retry carry the same cursor"
+        );
+        Ok(())
+    }
+
+    /// Non-`Unavailable` attach failures are terminal immediately: an
+    /// `Unauthenticated` connect rejection must never be retried.
+    #[tokio::test]
+    async fn non_retryable_attach_failure_is_terminal() {
+        let workflow_id = WorkflowId::new_v4();
+        let stub = Arc::new(SubscribeStub::default());
+        stub.attach_failures
+            .lock()
+            .await
+            .push_back(ClientError::unauthenticated("bad token"));
+        let mut events = ResumingEventStream::new(
+            stub.clone(),
+            "tenant-a",
+            SubscribeTarget::Workflow { workflow_id },
+        );
+
+        assert_eq!(
+            events.next().await,
+            Some(Err(ClientError::unauthenticated("bad token")))
+        );
+        assert_eq!(events.next().await, None);
+        assert_eq!(stub.resume_points.lock().await.len(), 1);
+    }
+
+    /// Live-only streams also retry `Unavailable` attach failures while
+    /// nothing has been delivered (a live-only reattach cannot gap yet).
+    #[tokio::test]
+    async fn live_only_unavailable_attach_failure_is_retried_before_any_delivery() {
+        let workflow_id = WorkflowId::new_v4();
+        let stub = Arc::new(SubscribeStub::default());
+        stub.attach_failures
+            .lock()
+            .await
+            .push_back(ClientError::unavailable("connection refused"));
+        stub.attempts
+            .lock()
+            .await
+            .push_back(SubscriptionAttempt::new(
+                stream::iter(vec![Ok(event(1, &workflow_id))]).boxed(),
+            ));
+        let mut events =
+            ResumingEventStream::new(stub.clone(), "tenant-a", SubscribeTarget::Firehose);
+
+        let mut seqs = Vec::new();
+        while let Some(item) = events.next().await {
+            if let Ok(event) = item {
+                seqs.push(event.seq());
+            }
+        }
+
+        assert_eq!(seqs, vec![1]);
+        assert_eq!(*stub.resume_points.lock().await, vec![None, None]);
     }
 }
