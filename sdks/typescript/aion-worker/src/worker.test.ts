@@ -1,3 +1,4 @@
+import { status } from "@grpc/grpc-js";
 import { describe, expect, it } from "vitest";
 import { defineActivity } from "./activity.js";
 import { Worker } from "./worker.js";
@@ -10,13 +11,28 @@ import type {
 	WorkerSessionEvent,
 } from "./session.js";
 
-class QueueSession implements WorkerSession {
+type SessionScriptEvent =
+	| WorkerSessionEvent
+	| { readonly kind: "throw"; readonly error: Error };
+
+/**
+ * In-memory session for Worker.run tests: tasks and stream failures are
+ * pushed while the run is live, registrations / reports / heartbeats are
+ * recorded, and close() ends the receive stream the way a real transport
+ * close does.
+ */
+class FakeWorkerSession implements WorkerSession {
 	public readonly completed: Payload[] = [];
 	public readonly failures: ActivityFailure[] = [];
 	public readonly registrations: string[][] = [];
-	private readonly events: WorkerSessionEvent[] = [];
+	public readonly heartbeats: Array<{
+		readonly workflowId: string;
+		readonly activityId: string;
+	}> = [];
+	public heartbeatError?: Error;
+	public closed = false;
+	private readonly events: SessionScriptEvent[] = [];
 	private resolver?: () => void;
-	private closed = false;
 
 	public handshake(): Promise<void> {
 		return Promise.resolve();
@@ -30,6 +46,9 @@ class QueueSession implements WorkerSession {
 		for (;;) {
 			const event = this.events.shift();
 			if (event !== undefined) {
+				if (event.kind === "throw") {
+					throw event.error;
+				}
 				yield event;
 				continue;
 			}
@@ -59,8 +78,14 @@ class QueueSession implements WorkerSession {
 		this.failures.push(failure);
 	}
 
-	public sendHeartbeat(): Promise<void> {
-		return Promise.resolve();
+	public async sendHeartbeat(
+		workflowId: string,
+		activityId: string,
+	): Promise<void> {
+		if (this.heartbeatError !== undefined) {
+			throw this.heartbeatError;
+		}
+		this.heartbeats.push({ workflowId, activityId });
 	}
 
 	public async close(): Promise<void> {
@@ -73,6 +98,11 @@ class QueueSession implements WorkerSession {
 		this.wake();
 	}
 
+	public failStream(error: Error): void {
+		this.events.push({ kind: "throw", error });
+		this.wake();
+	}
+
 	private wake(): void {
 		const resolver = this.resolver;
 		this.resolver = undefined;
@@ -82,7 +112,7 @@ class QueueSession implements WorkerSession {
 
 describe("Worker", () => {
 	it("drains in-flight activities before run returns on shutdown", async () => {
-		const session = new QueueSession();
+		const session = new FakeWorkerSession();
 		let handlerStarted: (() => void) | undefined;
 		const started = new Promise<void>((resolve) => {
 			handlerStarted = resolve;
@@ -134,7 +164,7 @@ describe("Worker", () => {
 	});
 
 	it("serves a fake-session task end to end", async () => {
-		const session = new QueueSession();
+		const session = new FakeWorkerSession();
 		const worker = new Worker(
 			config(),
 			[
@@ -145,15 +175,233 @@ describe("Worker", () => {
 			],
 			{ sessionFactory: async () => session },
 		);
-		const run = worker.run();
+		const controller = new AbortController();
+		const run = worker.run({ signal: controller.signal });
 
 		session.push({ kind: "task", task: task("increment", { value: 6 }) });
-		session.push({ kind: "closed" });
+		await waitFor(() => session.completed.length === 1);
+		controller.abort();
 		await run;
 
 		expect(session.registrations).toEqual([["increment"]]);
 		expect(session.failures).toEqual([]);
 		expect(decode(session.completed[0] as Payload)).toEqual({ value: 7 });
+	});
+
+	it("reconnects after a transient stream drop, re-registers, and keeps serving", async () => {
+		const first = new FakeWorkerSession();
+		const second = new FakeWorkerSession();
+		const sessions = [first, second];
+		let factoryCalls = 0;
+		const worker = new Worker(
+			config(),
+			[
+				defineActivity<{ readonly value: number }, { readonly value: number }>(
+					"increment",
+					async (input) => ({ value: input.value + 1 }),
+				),
+			],
+			{
+				sessionFactory: async () => {
+					const session = sessions[factoryCalls];
+					factoryCalls += 1;
+					if (session === undefined) {
+						throw new Error("session factory exhausted");
+					}
+					return session;
+				},
+			},
+		);
+		const controller = new AbortController();
+		const run = worker.run({ signal: controller.signal });
+
+		first.push({ kind: "task", task: task("increment", { value: 1 }, "t1") });
+		await waitFor(() => first.completed.length === 1);
+		first.failStream(
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset"),
+		);
+		await waitFor(() => second.registrations.length === 1);
+
+		second.push({ kind: "task", task: task("increment", { value: 5 }, "t2") });
+		// The first session's result was never acknowledged, so it is
+		// re-reported on the new session before the new task's result lands.
+		await waitFor(() => second.completed.length === 2);
+		controller.abort();
+		await run;
+
+		expect(factoryCalls).toBe(2);
+		expect(first.closed).toBe(true);
+		expect(first.registrations).toEqual([["increment"]]);
+		expect(second.registrations).toEqual([["increment"]]);
+		expect(decode(second.completed[0] as Payload)).toEqual({ value: 2 });
+		expect(decode(second.completed[1] as Payload)).toEqual({ value: 6 });
+		expect(second.failures).toEqual([]);
+	});
+
+	it("fails fast on a server denial after exactly one connection attempt", async () => {
+		const session = new FakeWorkerSession();
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
+		);
+		let factoryCalls = 0;
+		const worker = new Worker(
+			config(),
+			[defineActivity("increment", async () => ({}))],
+			{
+				sessionFactory: async () => {
+					factoryCalls += 1;
+					return session;
+				},
+			},
+		);
+		const run = worker.run();
+
+		session.failStream(denial);
+
+		await expect(run).rejects.toBe(denial);
+		expect(factoryCalls).toBe(1);
+		expect(session.closed).toBe(true);
+	});
+
+	it("routes an activity heartbeat to the new session after a reconnect", async () => {
+		const first = new FakeWorkerSession();
+		const second = new FakeWorkerSession();
+		const sessions = [first, second];
+		let factoryCalls = 0;
+		const worker = new Worker(
+			config(),
+			[
+				defineActivity("beat", async (_input, ctx) => {
+					await ctx.heartbeat();
+					return { ok: true };
+				}),
+			],
+			{
+				sessionFactory: async () => {
+					const session = sessions[factoryCalls];
+					factoryCalls += 1;
+					if (session === undefined) {
+						throw new Error("session factory exhausted");
+					}
+					return session;
+				},
+			},
+		);
+		const controller = new AbortController();
+		const run = worker.run({ signal: controller.signal });
+
+		first.failStream(
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset"),
+		);
+		await waitFor(() => second.registrations.length === 1);
+		second.push({ kind: "task", task: task("beat", {}, "h2") });
+		await waitFor(() => second.heartbeats.length === 1);
+		controller.abort();
+		await run;
+
+		expect(first.heartbeats).toEqual([]);
+		expect(second.heartbeats).toEqual([
+			{ workflowId: "workflow", activityId: "h2" },
+		]);
+		expect(second.completed).toHaveLength(1);
+	});
+
+	it("logs and swallows a heartbeat into the dead session during the reconnect window", async () => {
+		const first = new FakeWorkerSession();
+		const second = new FakeWorkerSession();
+		const sessions = [first, second];
+		let factoryCalls = 0;
+		let handlerStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			handlerStarted = resolve;
+		});
+		let releaseHandler: (() => void) | undefined;
+		const gate = new Promise<void>((resolve) => {
+			releaseHandler = resolve;
+		});
+		const warnings: Array<{
+			readonly message: string;
+			readonly fields?: Record<string, unknown>;
+		}> = [];
+		const worker = new Worker(
+			config(),
+			[
+				defineActivity("patient", async (_input, ctx) => {
+					handlerStarted?.();
+					await gate;
+					// The stream has already failed by now; this heartbeat hits
+					// the dead session and must not throw into the handler.
+					await ctx.heartbeat({ stage: "late" });
+					return { ok: true };
+				}),
+			],
+			{
+				sessionFactory: async () => {
+					const session = sessions[factoryCalls];
+					factoryCalls += 1;
+					if (session === undefined) {
+						throw new Error("session factory exhausted");
+					}
+					return session;
+				},
+				logger: {
+					info: () => undefined,
+					warn: (message, fields) => {
+						warnings.push({ message, fields });
+					},
+					error: () => undefined,
+				},
+			},
+		);
+		const controller = new AbortController();
+		const run = worker.run({ signal: controller.signal });
+
+		first.push({ kind: "task", task: task("patient", {}, "p1") });
+		await started;
+		first.heartbeatError = new Error("stream is dead");
+		first.failStream(
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset"),
+		);
+		releaseHandler?.();
+		// The activity result is re-reported on the replacement session once
+		// the reconnect completes, proving the handler survived the failed
+		// heartbeat and finished normally.
+		await waitFor(() => second.completed.length === 1);
+		controller.abort();
+		await run;
+
+		expect(first.heartbeats).toEqual([]);
+		expect(second.failures).toEqual([]);
+		const heartbeatWarnings = warnings.filter(
+			(warning) =>
+				warning.message ===
+				"activity heartbeat failed; session may be reconnecting",
+		);
+		expect(heartbeatWarnings).toHaveLength(1);
+		expect(heartbeatWarnings[0]?.fields).toEqual({
+			workflowId: "workflow",
+			activityId: "p1",
+			message: "stream is dead",
+		});
+	});
+
+	it("rejects run when reconnect settings are missing from the config", async () => {
+		const session = new FakeWorkerSession();
+		const worker = new Worker(
+			{
+				endpoint: "127.0.0.1:50051",
+				taskQueue: "queue",
+				identity: "identity",
+				maxConcurrency: 1,
+			},
+			[defineActivity("increment", async () => ({}))],
+			{ sessionFactory: async () => session },
+		);
+
+		await expect(worker.run()).rejects.toThrow(
+			"worker reconnect config is required",
+		);
 	});
 });
 
@@ -165,10 +413,35 @@ async function macrotaskTurns(turns: number): Promise<void> {
 	}
 }
 
-function task(activityType: string, input: unknown): ActivityTask {
+async function waitFor(
+	condition: () => boolean,
+	timeoutMs = 1_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) {
+			throw new Error("waitFor condition not met within timeout");
+		}
+		await macrotaskTurns(1);
+	}
+}
+
+function serviceError(code: number, message: string): Error {
+	return Object.assign(new Error(message), {
+		code,
+		details: message,
+		metadata: {},
+	});
+}
+
+function task(
+	activityType: string,
+	input: unknown,
+	activityId = "activity",
+): ActivityTask {
 	return {
 		workflowId: "workflow",
-		activityId: "activity",
+		activityId,
 		activityType,
 		input: {
 			contentType: "application/json",
@@ -188,5 +461,10 @@ function config(): WorkerConfig {
 		taskQueue: "queue",
 		identity: "identity",
 		maxConcurrency: 1,
+		reconnect: {
+			initialDelayMs: 1,
+			maxDelayMs: 2,
+			maxAttempts: 2,
+		},
 	};
 }

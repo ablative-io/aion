@@ -238,6 +238,16 @@ function validateActivityTypes(
 	return normalizedTypes;
 }
 
+/**
+ * Attempt number reported on decoded tasks. The worker wire shape
+ * (`aion-proto` `ActivityTask`) carries no attempt field, so the SDK keeps an
+ * attempt property on its worker-side API and reports the first-attempt value
+ * until the protocol grows an owned wire field — mirroring the Rust worker
+ * (`protocol/task.rs` `WIRE_DEFAULT_ATTEMPT`) and the Python worker
+ * (`aion_worker.context.WIRE_DEFAULT_ATTEMPT`).
+ */
+export const WIRE_DEFAULT_ATTEMPT = 1;
+
 export function decodeTask(task: WireActivityTask): ActivityTask {
 	if (task.workflowId === undefined || task.workflowId.uuid.length === 0) {
 		throw new Error("activity task is missing workflow_id");
@@ -256,7 +266,7 @@ export function decodeTask(task: WireActivityTask): ActivityTask {
 		activityId: activityIdToKey(task.activityId),
 		activityType: task.activityType,
 		input: decodePayload(task.input),
-		attempt: 1,
+		attempt: WIRE_DEFAULT_ATTEMPT,
 	};
 }
 

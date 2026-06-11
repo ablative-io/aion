@@ -117,13 +117,20 @@ export class ActivityRegistry implements ActivityDispatcher {
 		});
 	}
 
+	/**
+	 * Rebuilds this registry with heartbeats routed to `target`. The target
+	 * only needs `sendHeartbeat`, so callers can pass either a raw session or
+	 * a live-session router that always resolves the current transport (the
+	 * public `Worker` does the latter, keeping heartbeats valid across
+	 * reconnects).
+	 */
 	public withSession(
-		session: WorkerSession,
+		target: Pick<WorkerSession, "sendHeartbeat">,
 		options: Omit<ActivityRegistryOptions, "heartbeatSender"> = {},
 	): ActivityRegistry {
 		return new ActivityRegistry(this.definitions(), {
 			...options,
-			heartbeatSender: session.sendHeartbeat.bind(session),
+			heartbeatSender: target.sendHeartbeat.bind(target),
 		});
 	}
 

@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
 	decodePayload,
+	decodeTask,
 	encodePayload,
 	GrpcWorkerSession,
+	WIRE_DEFAULT_ATTEMPT,
 	type WorkerConfig,
 	type WorkerSession,
 	type WorkerSessionEvent,
 } from "./index.js";
-import type { ServerToWorker, WorkerToServer } from "./proto/index.js";
+import type {
+	ActivityTask as WireActivityTask,
+	ServerToWorker,
+	WorkerToServer,
+} from "./proto/index.js";
 
 class FakeSession implements WorkerSession {
 	public handshakes: WorkerConfig[] = [];
@@ -71,6 +77,33 @@ describe("WorkerSession", () => {
 			contentType: "application/json",
 			bytes: new Uint8Array([123, 125]),
 		});
+	});
+
+	it("decodes a wire task with the documented wire-default attempt", () => {
+		// The aion-proto ActivityTask carries no attempt field; the decoded
+		// task must report the documented WIRE_DEFAULT_ATTEMPT constant
+		// (parity with the Rust and Python workers), never an ad-hoc literal.
+		const wire: WireActivityTask = {
+			workflowId: { uuid: "wf-1" },
+			activityId: { sequencePosition: 7n },
+			activityType: "charge",
+			input: {
+				contentType: "application/json",
+				bytes: new Uint8Array([123, 125]),
+			},
+		};
+
+		const task = decodeTask(wire);
+
+		expect(task.workflowId).toBe("wf-1");
+		expect(task.activityId).toBe("7");
+		expect(task.activityType).toBe("charge");
+		expect(task.input).toEqual({
+			contentType: "application/json",
+			bytes: new Uint8Array([123, 125]),
+		});
+		expect(WIRE_DEFAULT_ATTEMPT).toBe(1);
+		expect(task.attempt).toBe(WIRE_DEFAULT_ATTEMPT);
 	});
 
 	it("rejects empty activity registrations", async () => {

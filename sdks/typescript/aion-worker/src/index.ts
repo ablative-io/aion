@@ -26,6 +26,9 @@ export type {
 	WorkerLogger,
 } from "./reconnect.js";
 export {
+	closeFailedSession,
+	grpcStatusCode,
+	isRetryableSessionError,
 	reconnectWithBackoff,
 	requireReconnectConfig,
 	reReportUnacked,
@@ -53,6 +56,7 @@ export {
 	decodeTask,
 	encodePayload,
 	GrpcWorkerSession,
+	WIRE_DEFAULT_ATTEMPT,
 } from "./session.js";
 export type { WorkerActivities, WorkerOptions, WorkerRunOptions } from "./worker.js";
 export { Worker } from "./worker.js";

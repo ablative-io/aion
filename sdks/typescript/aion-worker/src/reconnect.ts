@@ -22,8 +22,14 @@ export const NON_RETRYABLE_GRPC_STATUS_CODES: ReadonlySet<number> = new Set([
 
 /**
  * Extracts the numeric gRPC status code carried by an error or its `cause`
- * chain. `@grpc/grpc-js` surfaces server denials as `ServiceError`s with a
- * numeric `code`; Node transport errors carry string codes and are ignored.
+ * chain. Only gRPC-shaped errors are trusted: `@grpc/grpc-js` surfaces
+ * server denials as `ServiceError`s (`StatusObject & Error`), so a numeric
+ * `code` counts only when it sits on an `Error` that also carries the
+ * `StatusObject` `details` string. A bare numeric `code` on an unrelated
+ * error is never treated as a gRPC status (Node transport errors carry
+ * string codes; arbitrary application errors may carry numeric ones), and
+ * the walk continues through `cause` in case a real `ServiceError` sits
+ * deeper in the chain.
  */
 export function grpcStatusCode(error: unknown): number | undefined {
 	const seen = new Set<object>();
@@ -34,13 +40,42 @@ export function grpcStatusCode(error: unknown): number | undefined {
 		!seen.has(current)
 	) {
 		seen.add(current);
-		const code = (current as { readonly code?: unknown }).code;
-		if (typeof code === "number") {
+		const code = serviceErrorCode(current);
+		if (code !== undefined) {
 			return code;
 		}
 		current = (current as { readonly cause?: unknown }).cause;
 	}
 	return undefined;
+}
+
+/**
+ * Returns the status code when `candidate` matches the `@grpc/grpc-js`
+ * `ServiceError` shape: an `Error` instance whose `code` is a number and
+ * whose `details` is a string, with `metadata` (when present) an object —
+ * `callErrorFromStatus` assigns the full `StatusObject` onto an `Error`,
+ * and `PartialStatusObject` permits `metadata` to be absent or null.
+ */
+function serviceErrorCode(candidate: object): number | undefined {
+	if (!(candidate instanceof Error)) {
+		return undefined;
+	}
+	const shaped = candidate as Error & {
+		readonly code?: unknown;
+		readonly details?: unknown;
+		readonly metadata?: unknown;
+	};
+	if (typeof shaped.code !== "number" || typeof shaped.details !== "string") {
+		return undefined;
+	}
+	if (
+		shaped.metadata !== undefined &&
+		shaped.metadata !== null &&
+		typeof shaped.metadata !== "object"
+	) {
+		return undefined;
+	}
+	return shaped.code;
 }
 
 /**
@@ -157,13 +192,13 @@ export async function reconnectWithBackoff(
 }
 
 /**
- * Closes a session whose handshake or registration failed so its transport
- * resources are released before the next attempt (or before the failure is
- * surfaced on the fail-fast path). A close failure is secondary: it is
- * logged and never allowed to mask the original connection error, matching
- * the Rust and Python workers' semantics.
+ * Closes a session whose handshake, registration, or receive stream failed
+ * so its transport resources are released before the next attempt (or
+ * before the failure is surfaced on the fail-fast path). A close failure is
+ * secondary: it is logged and never allowed to mask the original error,
+ * matching the Rust and Python workers' semantics.
  */
-async function closeFailedSession(
+export async function closeFailedSession(
 	session: WorkerSession | undefined,
 	logger: WorkerLogger | undefined,
 ): Promise<void> {

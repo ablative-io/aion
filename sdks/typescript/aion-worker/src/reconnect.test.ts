@@ -252,6 +252,58 @@ describe("reconnect", () => {
 		]);
 	});
 
+	it("ignores numeric codes on errors that are not gRPC-shaped", () => {
+		const bareCode = Object.assign(new Error("application failure"), {
+			code: status.PERMISSION_DENIED,
+		});
+		expect(grpcStatusCode(bareCode)).toBeUndefined();
+		expect(isRetryableSessionError(bareCode)).toBe(true);
+
+		const bareUnauthenticatedCode = Object.assign(
+			new Error("another application failure"),
+			{ code: status.UNAUTHENTICATED },
+		);
+		expect(grpcStatusCode(bareUnauthenticatedCode)).toBeUndefined();
+		expect(isRetryableSessionError(bareUnauthenticatedCode)).toBe(true);
+
+		const numericDetails = Object.assign(new Error("wrong details type"), {
+			code: status.PERMISSION_DENIED,
+			details: 7,
+		});
+		expect(grpcStatusCode(numericDetails)).toBeUndefined();
+		expect(isRetryableSessionError(numericDetails)).toBe(true);
+
+		const notAnError = {
+			code: status.PERMISSION_DENIED,
+			details: "shaped but not an Error instance",
+			metadata: {},
+		};
+		expect(grpcStatusCode(notAnError)).toBeUndefined();
+		expect(isRetryableSessionError(notAnError)).toBe(true);
+	});
+
+	it("classifies a real ServiceError shape as a deterministic denial", () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
+		);
+		expect(grpcStatusCode(denial)).toBe(status.PERMISSION_DENIED);
+		expect(isRetryableSessionError(denial)).toBe(false);
+	});
+
+	it("skips a non-gRPC numeric code and finds the real ServiceError deeper in the cause chain", () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
+		);
+		const wrapper = Object.assign(
+			new Error("wrapper with unrelated numeric code", { cause: denial }),
+			{ code: 999 },
+		);
+		expect(grpcStatusCode(wrapper)).toBe(status.PERMISSION_DENIED);
+		expect(isRetryableSessionError(wrapper)).toBe(false);
+	});
+
 	it("finds the gRPC status code through an error cause chain", () => {
 		const denial = serviceError(
 			status.PERMISSION_DENIED,

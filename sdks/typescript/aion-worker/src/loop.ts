@@ -1,4 +1,7 @@
 import {
+	closeFailedSession,
+	grpcStatusCode,
+	isRetryableSessionError,
 	type PendingActivityReport,
 	reconnectWithBackoff,
 	reReportUnacked,
@@ -11,7 +14,6 @@ import type {
 	Payload,
 	WorkerConfig,
 	WorkerSession,
-	WorkerSessionEvent,
 	WorkerSessionFactory,
 } from "./session.js";
 
@@ -33,6 +35,22 @@ export interface RunWorkerLoopOptions {
 	readonly sessionFactory?: WorkerSessionFactory;
 	readonly sleep?: (delayMs: number) => Promise<void>;
 	readonly logger?: WorkerLogger;
+	/**
+	 * Graceful-shutdown signal. Once aborted, the loop stops reconnecting:
+	 * a clean close or a handled retryable stream failure observed after the
+	 * abort returns instead of dialling a replacement session the caller no
+	 * longer wants, and a reconnect already in flight closes its fresh
+	 * session and returns. Without a `sessionFactory` the signal is unused —
+	 * no-factory mode already returns on clean close.
+	 */
+	readonly signal?: AbortSignal;
+	/**
+	 * Invoked with each replacement session the loop establishes after a
+	 * reconnect, before any unacknowledged results are re-reported. Lets the
+	 * caller repoint live-session consumers — activity heartbeats in
+	 * particular — at the current transport instead of the dead one.
+	 */
+	readonly onSessionChange?: (session: WorkerSession) => void;
 }
 
 export async function runWorkerLoop(
@@ -49,19 +67,97 @@ export async function runWorkerLoop(
 	const loopOptions = { ...options, tracker };
 
 	for (;;) {
-		await receiveUntilClosed(session, running, loopOptions);
-		if (options.sessionFactory === undefined) {
-			await Promise.all(running);
-			return;
+		let streamFailure: StreamFailure | undefined;
+		try {
+			await receiveUntilClosed(session, running, loopOptions);
+		} catch (error) {
+			streamFailure = { error };
 		}
 		await Promise.all(running);
+		if (streamFailure !== undefined) {
+			await handleStreamFailure(streamFailure.error, session, options);
+		}
+		if (options.sessionFactory === undefined) {
+			return;
+		}
+		if (shutdownRequested(options.signal)) {
+			options.logger?.info("worker shutdown requested; not reconnecting");
+			return;
+		}
 		session = await reconnectWithBackoff(options.config, activityTypes, {
 			createSession: options.sessionFactory,
 			sleep: options.sleep,
 			logger: options.logger,
 		});
+		// Publish the replacement session before the post-reconnect abort
+		// check: from here on an abort closes the new session through the
+		// caller's live-session holder, so no shutdown window leaves it open.
+		options.onSessionChange?.(session);
+		if (shutdownRequested(options.signal)) {
+			options.logger?.info(
+				"worker shutdown requested during reconnect; closing replacement session",
+			);
+			await closeFailedSession(session, options.logger);
+			return;
+		}
 		await reReportUnacked(session, tracker, options.logger);
 	}
+}
+
+/**
+ * Reads the abort flag through a function call so TypeScript's control-flow
+ * narrowing never assumes the readonly `aborted` property is still false
+ * after an `await` — abort listeners can fire at any suspension point.
+ */
+function shutdownRequested(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true;
+}
+
+/**
+ * Wraps a thrown receive-stream error so a clean end-of-stream (the
+ * iterator completing, or the session yielding its `closed` event) is never
+ * confused with a stream failure — even one whose thrown value is itself
+ * `undefined`.
+ */
+interface StreamFailure {
+	readonly error: unknown;
+}
+
+/**
+ * Classifies an error thrown by the receive stream. Deterministic server
+ * denials (PERMISSION_DENIED / UNAUTHENTICATED) close the session and
+ * propagate immediately — reconnecting can never fix them and would spin
+ * forever because handshake/register succeed locally. Retryable failures
+ * with no session factory also propagate (there is nothing to reconnect
+ * with); otherwise the dead session is closed and control returns to the
+ * bounded reconnect path. No stream error is ever logged-and-dropped.
+ */
+async function handleStreamFailure(
+	error: unknown,
+	session: WorkerSession,
+	options: RunWorkerLoopOptions,
+): Promise<void> {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!isRetryableSessionError(error)) {
+		options.logger?.error("worker stream denied by server; not reconnecting", {
+			code: grpcStatusCode(error),
+			message,
+		});
+		await closeFailedSession(session, options.logger);
+		throw error;
+	}
+	if (options.sessionFactory === undefined) {
+		options.logger?.error(
+			"worker receive stream failed with no session factory to reconnect",
+			{ message },
+		);
+		await closeFailedSession(session, options.logger);
+		throw error;
+	}
+	options.logger?.warn("worker receive stream failed; reconnecting", {
+		message,
+	});
+	await closeFailedSession(session, options.logger);
 }
 
 async function receiveUntilClosed(
@@ -72,10 +168,11 @@ async function receiveUntilClosed(
 	const iterator = session.receiveTasks()[Symbol.asyncIterator]();
 	for (;;) {
 		await waitForSlot(running, options.config.maxConcurrency);
-		const next = await readNext(iterator, options.logger);
-		if (next === undefined) {
-			return;
-		}
+		// A clean close is the iterator completing (`done: true`) or the
+		// session yielding its `closed` event. A rejection from `next()` is a
+		// stream error and must propagate to the caller for retryable /
+		// fail-fast classification — never be converted into a silent close.
+		const next = await iterator.next();
 		if (next.done === true) {
 			return;
 		}
@@ -186,20 +283,6 @@ async function reportSafely(
 				message: error instanceof Error ? error.message : String(error),
 			},
 		);
-	}
-}
-
-async function readNext(
-	iterator: AsyncIterator<WorkerSessionEvent>,
-	logger: WorkerLogger | undefined,
-): Promise<IteratorResult<WorkerSessionEvent> | undefined> {
-	try {
-		return await iterator.next();
-	} catch (error) {
-		logger?.warn("worker receive stream dropped", {
-			message: error instanceof Error ? error.message : String(error),
-		});
-		return undefined;
 	}
 }
 

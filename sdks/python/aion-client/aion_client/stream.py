@@ -16,6 +16,11 @@ from .payload import Payload, decode_payload, payload_from_wire
 T = TypeVar("T")
 TransportFactory: TypeAlias = Callable[[int | None], AsyncIterator[Any] | Awaitable[AsyncIterator[Any]]]
 
+_RESUME_UNSUPPORTED_MESSAGE = (
+    "stream disconnected after delivering events and the server does not yet "
+    "support resumption; restart the subscription"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StreamEvent(Generic[T]):
@@ -35,7 +40,13 @@ class TerminalStreamFailure(Exception):
 
 
 class EventStream(Generic[T]):
-    """Async iterator that reconnects and resumes from the last delivered seq."""
+    """Async iterator that reconnects and resumes from the last delivered seq.
+
+    Resumption requires a transport that can honour a resume cursor. When the
+    transport cannot (the server wire protocol does not yet expose one), a
+    disconnect after at least one delivered event raises :class:`Unavailable`
+    rather than silently reopening a gapped stream.
+    """
 
     def __init__(
         self,
@@ -48,6 +59,7 @@ class EventStream(Generic[T]):
         decoder: type[T] | None = None,
         raw: bool = False,
         transport_factory: TransportFactory | None = None,
+        transport_supports_resume: bool | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.namespace = namespace
@@ -57,6 +69,16 @@ class EventStream(Generic[T]):
         self.decoder = decoder
         self.raw = raw
         self._transport_factory = transport_factory or self._websocket_transport
+        # Whether the transport can honour a non-None resume_from cursor on
+        # reconnect. The built-in websocket transport cannot: the server wire
+        # protocol exposes no resume cursor yet, and per-workflow
+        # subscriptions do not replay history, so reopening without a cursor
+        # after events were delivered would silently gap the stream. Injected
+        # factories receive resume_from per the TransportFactory contract and
+        # are presumed to honour it unless explicitly declared otherwise.
+        if transport_supports_resume is None:
+            transport_supports_resume = transport_factory is not None
+        self._transport_supports_resume = transport_supports_resume
         self._last_seq: int | None = None
         self._current: AsyncIterator[Any] | None = None
         self._closed = False
@@ -75,13 +97,18 @@ class EventStream(Generic[T]):
             raise StopAsyncIteration
         while True:
             if self._current is None:
-                self._current = await self._open(self._resume_from())
+                resume_from = self._resume_from()
+                if resume_from is not None and not self._transport_supports_resume:
+                    # A retried __anext__ after the honest Unavailable below:
+                    # reopening would silently gap the stream, so refuse again.
+                    raise Unavailable(_RESUME_UNSUPPORTED_MESSAGE)
+                self._current = await self._open(resume_from)
             try:
                 raw_frame = await self._current.__anext__()
             except StopAsyncIteration as exc:
                 raise Unavailable("event stream ended before a terminal event") from exc
-            except TransientStreamDisconnect:
-                self._current = None
+            except TransientStreamDisconnect as exc:
+                await self._prepare_reconnect(exc)
                 continue
             except TerminalStreamFailure as exc:
                 raise Unavailable(str(exc) or "event stream failed terminally") from exc
@@ -90,18 +117,18 @@ class EventStream(Generic[T]):
                     raise
                 mapped = map_error(exc, operation="subscribe")
                 if isinstance(mapped, Unavailable):
-                    self._current = None
+                    await self._prepare_reconnect(exc)
                     continue
                 raise mapped from exc
 
             try:
                 decoded = self._decode_frame(raw_frame)
-            except Unavailable:
+            except Unavailable as exc:
                 # A retryable server error frame (e.g. "lagged"): reconnect and
                 # resume rather than surfacing a transient condition.
-                self._current = None
+                await self._prepare_reconnect(exc)
                 continue
-            if decoded.seq <= (self._last_seq or 0):
+            if self._last_seq is not None and decoded.seq <= self._last_seq:
                 continue
             self._last_seq = decoded.seq
             if self.raw:
@@ -109,14 +136,66 @@ class EventStream(Generic[T]):
             return decoded.value
 
     async def aclose(self) -> None:
-        """Close iteration normally at the caller's request."""
+        """Close iteration normally at the caller's request.
 
+        Deterministically closes the live transport iterator instead of
+        leaving it to garbage-collector finalization. Idempotent: only the
+        first call tears down the transport, and closing after exhaustion is
+        a no-op. A failure raised by the transport's own ``aclose`` is
+        propagated to the caller (never swallowed); the stream is still
+        marked closed first, so a retried ``aclose`` does not re-raise and
+        iteration cannot resume on a half-closed transport.
+        """
+
+        if self._closed:
+            return
         self._closed = True
+        current, self._current = self._current, None
+        if current is None:
+            return
+        closer = getattr(current, "aclose", None)
+        if closer is not None:
+            await closer()
 
     def _resume_from(self) -> int | None:
         if self._last_seq is None:
             return None
         return self._last_seq + 1
+
+    async def _prepare_reconnect(self, cause: BaseException) -> None:
+        """Tear down the current transport ahead of a reconnect attempt.
+
+        The dead transport's own ``aclose`` (when it exposes one) is awaited
+        before reconnecting, mirroring :meth:`aclose`: non-generator
+        transports must not be abandoned to garbage-collector finalization. A
+        failure from that close is never swallowed — it surfaces as
+        :class:`Unavailable` (retryable in principle) with the close error
+        chained via ``__cause__``, and no reconnect is attempted.
+
+        When events have already been delivered the reconnect must resume from
+        the last sequence number, otherwise the reopened stream would silently
+        gap (per-workflow subscriptions do not replay history). If the
+        transport cannot honour a resume cursor, raise an honest
+        :class:`Unavailable` instead of reconnecting; when the close also
+        failed, this resume-needed error wins, with the close error as its
+        ``__cause__``.
+        """
+
+        current, self._current = self._current, None
+        close_error: Exception | None = None
+        if current is not None:
+            closer = getattr(current, "aclose", None)
+            if closer is not None:
+                try:
+                    await closer()
+                except Exception as exc:
+                    close_error = exc
+        if self._resume_from() is not None and not self._transport_supports_resume:
+            raise Unavailable(_RESUME_UNSUPPORTED_MESSAGE) from (cause if close_error is None else close_error)
+        if close_error is not None:
+            raise Unavailable(
+                f"transport failed to close during reconnection: {close_error}"
+            ) from close_error
 
     async def _open(self, resume_from: int | None) -> AsyncIterator[Any]:
         try:
@@ -157,9 +236,10 @@ class EventStream(Generic[T]):
 
 def _subscription_request(namespace: str, workflow_id: str, resume_from: int | None) -> dict[str, object]:
     if resume_from is not None:
-        raise InvalidArgument(
-            "resume_from is not yet supported by the server wire protocol"
-        )
+        # Defence in depth: the reconnect logic in EventStream never reopens
+        # the websocket transport with a resume cursor (it raises Unavailable
+        # first), so reaching here means an unresumable reopen was attempted.
+        raise Unavailable(_RESUME_UNSUPPORTED_MESSAGE)
     return {
         "per_workflow": {
             "namespace": namespace,
