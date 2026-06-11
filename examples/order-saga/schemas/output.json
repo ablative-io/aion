@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["order_id", "shipment_id"],
+      "additionalProperties": false,
+      "properties": {
+        "order_id": { "type": "string" },
+        "shipment_id": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "failed_step", "reason", "completed_steps", "compensations"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "saga_failed" },
+        "failed_step": { "type": "string" },
+        "reason": { "type": "string" },
+        "completed_steps": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "compensations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["step", "status", "detail"],
+            "additionalProperties": false,
+            "properties": {
+              "step": { "type": "string" },
+              "status": { "type": "string" },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

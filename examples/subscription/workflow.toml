@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion-cli package`.
+# Reference: docs/packaging.md.
+# `output` is omitted: the derived name `subscription.aion` already matches.
+
+[[workflow]]
+entry_module = "subscription"
+entry_function = "run"
+timeout_seconds = 31536000
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["bill_subscriber"]

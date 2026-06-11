@@ -26,10 +26,10 @@ If you already have the repository, start from its root directory.
 cd examples/hello-world
 gleam build
 cd ../..
-cargo run --manifest-path examples/hello-world/packager/Cargo.toml
+cargo run -p aion-cli -- package examples/hello-world
 ```
 
-This writes `examples/hello-world/hello-world.aion`.
+`aion-cli package` reads the example's `workflow.toml` and writes `examples/hello-world/hello-world.aion`, printing a JSON result document with the archive path and content-hash version. To compile and package in one step, run `cargo run -p aion-cli -- package examples/hello-world --build` instead of invoking `gleam build` yourself. The full packaging reference is in [`docs/packaging.md`](docs/packaging.md).
 
 ## 3. Start the Aion dev server
 
@@ -185,6 +185,7 @@ rm -f aion.toml aion-dev.db
 
 - [`examples/`](examples/) — working examples, including hello-world.
 - [`examples/hello-world/README.md`](examples/hello-world/README.md) — detailed end-to-end walkthrough.
+- [`docs/packaging.md`](docs/packaging.md) — packaging any Gleam workflow project into a `.aion` archive.
 - [`docs/API.md`](docs/API.md) — API and transport overview.
 - [`gleam/aion_flow/README.md`](gleam/aion_flow/README.md) — Gleam workflow authoring SDK guide.
 - [`gleam/aion_client/README.md`](gleam/aion_client/README.md) — Gleam caller SDK guide.

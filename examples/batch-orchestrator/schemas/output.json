@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["total_processed", "success_count", "failure_count", "items"],
+  "properties": {
+    "total_processed": { "type": "integer", "minimum": 0 },
+    "success_count": { "type": "integer", "minimum": 0 },
+    "failure_count": { "type": "integer", "minimum": 0 },
+    "items": { "type": "array" }
+  }
+}

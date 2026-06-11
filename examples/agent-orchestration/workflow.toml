@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion-cli package`.
+# Reference: docs/packaging.md.
+# `output` is omitted: the derived name `orchestrator.aion` already matches.
+
+[[workflow]]
+entry_module = "orchestrator"
+entry_function = "run"
+timeout_seconds = 3600
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["develop", "review"]

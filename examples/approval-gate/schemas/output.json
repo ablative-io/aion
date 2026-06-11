@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["decision", "action_taken", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "decision": { "type": "string" },
+    "action_taken": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

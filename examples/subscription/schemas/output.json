@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["subscriber_id", "plan", "next_cycle", "cycles_in_run", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "subscriber_id": { "type": "string" },
+    "plan": { "type": "string" },
+    "next_cycle": { "type": "integer" },
+    "cycles_in_run": { "type": "integer" },
+    "status": { "type": "string" }
+  }
+}

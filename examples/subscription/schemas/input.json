@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "subscriber_id",
+    "subscriber_email",
+    "plan",
+    "current_cycle",
+    "billing_period_seconds",
+    "max_cycles",
+    "cycles_in_run"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "subscriber_id": { "type": "string", "minLength": 1 },
+    "subscriber_email": { "type": "string", "minLength": 1 },
+    "plan": { "type": "string", "minLength": 1 },
+    "current_cycle": { "type": "integer", "minimum": 0 },
+    "billing_period_seconds": { "type": "integer", "minimum": 1 },
+    "max_cycles": { "type": "integer", "minimum": 1 },
+    "cycles_in_run": { "type": "integer", "minimum": 0 }
+  }
+}

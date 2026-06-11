@@ -50,15 +50,18 @@ Rejected and timed-out runs complete successfully too; they return `"decision": 
 
 ## 2. Package or load the workflow
 
-This brief creates the standalone Gleam workflow source and manifest. To run it against the Aion server, package the compiled BEAM modules the same way the other examples do: create an `.aion` package whose manifest uses:
+```sh
+cargo run -p aion-cli -- package examples/approval-gate
+```
+
+This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference) and writes `examples/approval-gate/approval-gate.aion` with a manifest that uses:
 
 - entry module: `approval_gate`
 - entry function: `run`
-- workflow name: `approval-gate`
 - input schema: object with required `document_id` string and `timeout_minutes` integer fields
 - output schema: object with `decision`, `action_taken`, and `reason` string fields
 - activities: `publish_document` and `archive_document`
-- signals: `approval_decision` with payload `{ "decision": "approved" }` or `{ "decision": "rejected" }`
+- signals: `approval_decision` with payload `{ "decision": "approved" }` or `{ "decision": "rejected" }` (signals are workflow code, not manifest fields)
 
 If you add the package to `dev-config.toml`, make sure `workflow_packages` includes the produced `examples/approval-gate/approval-gate.aion` path before starting the server.
 

@@ -40,7 +40,7 @@ async fn interrupted_workflow_recovers_and_completes() -> Result<(), Box<dyn std
     if !std::path::Path::new(archive_path).exists() {
         eprintln!(
             "skipping interrupted_workflow_recovers_and_completes: {archive_path} not built \
-             (run `gleam build` then the packager in examples/hello-world)"
+             (run `cargo run -p aion-cli -- package examples/hello-world --build`)"
         );
         return Ok(());
     }

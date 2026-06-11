@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion-cli package`.
+# Reference: docs/packaging.md.
+
+[[workflow]]
+entry_module = "data_pipeline"
+entry_function = "run"
+timeout_seconds = 3600
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["fetch_url", "process_item", "aggregate_results"]
+output = "data-pipeline.aion"

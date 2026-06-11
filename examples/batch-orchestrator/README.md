@@ -37,9 +37,13 @@ The source lives in `examples/batch-orchestrator/src/batch_orchestrator.gleam` a
 
 ## 2. Package and load the workflow
 
-This example currently provides the standalone Gleam project and source requested by DX-025. It does not include a Rust packager subcrate. To run it against `aion-server`, package the compiled module using the same manifest shape as the sibling examples and load the resulting `.aion` archive in `dev-config.toml`. The generated `manifest.toml` is committed so dependency resolution is reproducible, matching the other Gleam examples.
+```sh
+cargo run -p aion-cli -- package examples/batch-orchestrator
+```
 
-A package for this example should expose:
+This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference) and writes `examples/batch-orchestrator/batch-orchestrator.aion`. Load it with `--workflow-package` or a `workflow_packages` entry in `dev-config.toml`. The generated `manifest.toml` is committed so dependency resolution is reproducible, matching the other Gleam examples.
+
+The package exposes:
 
 - parent workflow type: `batch_orchestrator`
 - entry module: `batch_orchestrator`

@@ -33,10 +33,10 @@ The workflow source lives in `examples/hello-world/src/hello_world.gleam`. It im
 ## 2. Package `hello-world.aion`
 
 ```sh
-cargo run --manifest-path examples/hello-world/packager/Cargo.toml
+cargo run -p aion-cli -- package examples/hello-world
 ```
 
-This reads the BEAM files produced by `gleam build`, builds a manifest with:
+This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference), and builds a manifest with:
 
 - entry module: `hello_world`
 - entry function: `run`

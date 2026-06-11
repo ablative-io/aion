@@ -80,6 +80,18 @@ JSON helpers. The durable phases are deliberately separated in code as
 `fetch_all`, `process_all`, and `aggregate` so the event history shows distinct
 fetch, process, and aggregation stages.
 
+Package the compiled workflow into an archive the server can load:
+
+```sh
+cargo run -p aion-cli -- package examples/data-pipeline
+```
+
+This reads the example's [`workflow.toml`](workflow.toml) and writes
+`examples/data-pipeline/data-pipeline.aion` (pass `--build` to compile and
+package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the
+full reference). Load it with `--workflow-package` or a `workflow_packages`
+entry in `dev-config.toml`.
+
 ## 2. Start the Aion dev server
 
 The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP

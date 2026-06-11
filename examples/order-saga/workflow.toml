@@ -1,0 +1,18 @@
+# Workflow packaging descriptor consumed by `aion-cli package`.
+# Reference: docs/packaging.md.
+
+[[workflow]]
+entry_module = "order_saga"
+entry_function = "run"
+timeout_seconds = 60
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = [
+    "reserve_inventory",
+    "charge_payment",
+    "ship_order",
+    "release_inventory",
+    "refund_payment",
+    "cancel_shipment",
+]
+output = "order-saga.aion"

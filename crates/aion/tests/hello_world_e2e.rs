@@ -38,7 +38,7 @@ async fn hello_world_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>>
     if !std::path::Path::new(archive_path).exists() {
         eprintln!(
             "skipping hello_world_runs_end_to_end: {archive_path} not built \
-             (run `gleam build` then the packager in examples/hello-world)"
+             (run `cargo run -p aion-cli -- package examples/hello-world --build`)"
         );
         return Ok(());
     }

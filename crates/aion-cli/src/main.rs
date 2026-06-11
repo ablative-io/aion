@@ -1,5 +1,6 @@
 //! Command-line workflow operations for Aion.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use aion_client::{Client, ClientBuilder, ListPage, StartOptions};
@@ -17,6 +18,7 @@ use crate::payload::{
 };
 
 mod output;
+mod package;
 mod payload;
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:50051";
@@ -46,6 +48,29 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Package an already-built Gleam workflow project into `.aion` archives.
+    ///
+    /// Runs entirely locally: reads `workflow.toml` in the project root and
+    /// never connects to a server. Pass `--build` to run `gleam build` first.
+    Package {
+        /// Workflow project root containing `workflow.toml`.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Archive output path, resolved against the current directory.
+        /// Only valid when the project declares exactly one workflow.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Run `gleam build` in the project before packaging.
+        #[arg(long)]
+        build: bool,
+    },
+    /// Operate workflows on a running Aion server.
+    #[command(flatten)]
+    Remote(RemoteCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum RemoteCommand {
     /// Start a workflow execution.
     Start {
         /// Workflow type registered with the server.
@@ -110,10 +135,21 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = build_client(&cli).await?;
-    let value = execute(&client, &cli.command).await?;
+    let value = run(&cli).await?;
     print_json(&value, cli.pretty)?;
     Ok(())
+}
+
+/// Dispatches the parsed command, connecting to the server only for remote
+/// commands. `package` is local-only and never constructs a client.
+async fn run(cli: &Cli) -> Result<Value> {
+    match &cli.command {
+        Command::Package { path, out, build } => package::run(path, out.as_deref(), *build),
+        Command::Remote(command) => {
+            let client = build_client(cli).await?;
+            execute(&client, command).await
+        }
+    }
 }
 
 async fn build_client(cli: &Cli) -> Result<Client> {
@@ -126,30 +162,30 @@ async fn build_client(cli: &Cli) -> Result<Client> {
         .context("failed to connect to Aion server")
 }
 
-async fn execute(client: &Client, command: &Command) -> Result<Value> {
+async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
     match command {
-        Command::Start {
+        RemoteCommand::Start {
             workflow_type,
             input,
         } => start_workflow(client, workflow_type, input).await,
-        Command::Signal {
+        RemoteCommand::Signal {
             workflow_id,
             signal_name,
             run_id,
             payload,
         } => signal_workflow(client, workflow_id, signal_name, run_id.as_deref(), payload).await,
-        Command::Query {
+        RemoteCommand::Query {
             workflow_id,
             query_name,
             run_id,
         } => query_workflow(client, workflow_id, query_name, run_id.as_deref()).await,
-        Command::Cancel {
+        RemoteCommand::Cancel {
             workflow_id,
             reason,
             run_id,
         } => cancel_workflow(client, workflow_id, reason, run_id.as_deref()).await,
-        Command::List { status } => list_workflows(client, *status).await,
-        Command::Describe {
+        RemoteCommand::List { status } => list_workflows(client, *status).await,
+        RemoteCommand::Describe {
             workflow_id,
             run_id,
             raw,
@@ -269,9 +305,11 @@ fn normalize_endpoint(endpoint: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, normalize_endpoint};
+    use super::{Cli, Command, RemoteCommand, normalize_endpoint};
 
     const WORKFLOW_ID: &str = "00000000-0000-0000-0000-000000000001";
     const RUN_ID: &str = "00000000-0000-0000-0000-000000000002";
@@ -280,11 +318,11 @@ mod tests {
     fn describe_accepts_optional_run_id() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--run-id", RUN_ID])?;
 
-        let Command::Describe {
+        let Command::Remote(RemoteCommand::Describe {
             workflow_id,
             run_id,
             raw,
-        } = cli.command
+        }) = cli.command
         else {
             anyhow::bail!("expected describe command");
         };
@@ -298,10 +336,57 @@ mod tests {
     fn describe_accepts_raw_payload_flag() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--raw"])?;
 
-        let Command::Describe { raw, .. } = cli.command else {
+        let Command::Remote(RemoteCommand::Describe { raw, .. }) = cli.command else {
             anyhow::bail!("expected describe command");
         };
         assert!(raw);
+        Ok(())
+    }
+
+    #[test]
+    fn package_defaults_to_current_directory_without_build_or_out() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion-cli", "package"])?;
+
+        let Command::Package { path, out, build } = cli.command else {
+            anyhow::bail!("expected package command");
+        };
+        assert_eq!(path, Path::new("."));
+        assert!(out.is_none());
+        assert!(!build);
+        Ok(())
+    }
+
+    #[test]
+    fn package_accepts_path_out_and_build() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion-cli",
+            "package",
+            "examples/hello-world",
+            "--out",
+            "dist/hello.aion",
+            "--build",
+        ])?;
+
+        let Command::Package { path, out, build } = cli.command else {
+            anyhow::bail!("expected package command");
+        };
+        assert_eq!(path, Path::new("examples/hello-world"));
+        assert_eq!(out.as_deref(), Some(Path::new("dist/hello.aion")));
+        assert!(build);
+        Ok(())
+    }
+
+    #[test]
+    fn package_help_documents_local_only_behaviour() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(package) = command.find_subcommand_mut("package") else {
+            anyhow::bail!("package subcommand should be registered");
+        };
+        let help = package.render_long_help().to_string();
+
+        assert!(help.contains("--build"));
+        assert!(help.contains("--out"));
+        assert!(help.contains("never connects to a server"));
         Ok(())
     }
 
@@ -330,11 +415,14 @@ mod tests {
         for args in commands {
             let cli = Cli::try_parse_from(args)?;
             match cli.command {
-                Command::Describe { run_id, .. }
-                | Command::Signal { run_id, .. }
-                | Command::Cancel { run_id, .. }
-                | Command::Query { run_id, .. } => assert!(run_id.is_none()),
-                Command::Start { .. } | Command::List { .. } => {
+                Command::Remote(
+                    RemoteCommand::Describe { run_id, .. }
+                    | RemoteCommand::Signal { run_id, .. }
+                    | RemoteCommand::Cancel { run_id, .. }
+                    | RemoteCommand::Query { run_id, .. },
+                ) => assert!(run_id.is_none()),
+                Command::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
+                | Command::Package { .. } => {
                     anyhow::bail!("expected workflow operation command")
                 }
             }
@@ -369,10 +457,17 @@ mod tests {
         for args in commands {
             let cli = Cli::try_parse_from(args)?;
             match cli.command {
-                Command::Signal { run_id, .. }
-                | Command::Cancel { run_id, .. }
-                | Command::Query { run_id, .. } => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
-                Command::Start { .. } | Command::List { .. } | Command::Describe { .. } => {
+                Command::Remote(
+                    RemoteCommand::Signal { run_id, .. }
+                    | RemoteCommand::Cancel { run_id, .. }
+                    | RemoteCommand::Query { run_id, .. },
+                ) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
+                Command::Remote(
+                    RemoteCommand::Start { .. }
+                    | RemoteCommand::List { .. }
+                    | RemoteCommand::Describe { .. },
+                )
+                | Command::Package { .. } => {
                     anyhow::bail!("expected run-targeted workflow operation command")
                 }
             }

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["code_diff", "commit_message"],
+  "additionalProperties": false,
+  "properties": {
+    "code_diff": { "type": "string" },
+    "commit_message": { "type": "string", "minLength": 1 }
+  }
+}

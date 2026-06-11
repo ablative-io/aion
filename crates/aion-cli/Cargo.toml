@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 aion-client = { version = "0.1.0", path = "../aion-client" }
 aion-core = { version = "0.1.0", path = "../aion-core" }
+aion-package = { version = "0.1.0", path = "../aion-package" }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }

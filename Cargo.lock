@@ -57,6 +57,7 @@ version = "0.1.0"
 dependencies = [
  "aion-client",
  "aion-core",
+ "aion-package",
  "anyhow",
  "clap",
  "serde",

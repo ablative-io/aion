@@ -66,7 +66,7 @@ Use short periods for local runs. This sample bills every 10 seconds and rotates
 
 ## Running and signaling
 
-Package and worker wiring varies by example in this repository. Once this example is packaged as an `.aion` archive and registered with a worker exposing the `subscription` workflow, start it with the JSON input above using the same CLI flow as the other examples.
+Package the example with `cargo run -p aion-cli -- package examples/subscription` (after `gleam build`, or pass `--build`; see [`docs/packaging.md`](../../docs/packaging.md)), which reads the example's [`workflow.toml`](workflow.toml) and writes `examples/subscription/subscription.aion`. Once the archive is loaded by the server and a worker exposing the `bill_subscriber` activity is registered, start the `subscription` workflow with the JSON input above using the same CLI flow as the other examples.
 
 Send an upgrade signal during a billing period:
 
