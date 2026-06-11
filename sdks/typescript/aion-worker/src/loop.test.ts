@@ -466,6 +466,65 @@ describe("runWorkerLoop", () => {
 		expect(third.closed).toBe(true);
 	});
 
+	it("re-reports both workflows' outcomes after a drop when their sequence positions collide", async () => {
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		// Two concurrent workflows whose activities share sequence position
+		// "7": activity ids are per-workflow positions, so the tracker must
+		// key by (workflowId, activityId) — keyed by activity id alone, the
+		// second record overwrites the first and one computed outcome is
+		// silently never replayed.
+		const tracker = new UnackedResultTracker();
+		const first = new WorkflowQualifiedSession([
+			{ kind: "task", task: workflowTask("workflow-a", "7") },
+			{ kind: "task", task: workflowTask("workflow-b", "7") },
+			{ kind: "throw", error: drop },
+		]);
+		const second = new WorkflowQualifiedSession([{ kind: "closed" }]);
+		const dispatcher: ActivityDispatcher = {
+			activityTypes: () => ["slow"],
+			dispatch: async (activityTask) =>
+				activityTask.workflowId === "workflow-a"
+					? { kind: "completed", output: payload }
+					: {
+							kind: "failed",
+							failure: { retryable: false, message: "card declined" },
+						},
+		};
+
+		const failure = await runWorkerLoop({
+			config: { ...config(2), reconnect: reconnectingConfig().reconnect },
+			session: first,
+			dispatcher,
+			tracker,
+			sessionFactory: async () => second,
+			sleep: () => Promise.resolve(),
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		// The run itself ends by exhausting the drop budget on the second
+		// session's clean close — the assertions that matter are the replay's.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		// Both outcomes were recorded and stayed tracked across the drop:
+		// neither workflow's report overwrote the other's.
+		expect(tracker.len()).toBe(2);
+		expect(tracker.get("workflow-a", "7")?.kind).toBe("completed");
+		expect(tracker.get("workflow-b", "7")?.kind).toBe("failed");
+		// Both were re-reported on the replacement session. Under
+		// activity-id-only keying, workflow-b's record replaces workflow-a's,
+		// so the new session would see exactly one replayed report.
+		expect([...second.qualifiedReports].sort()).toEqual([
+			"failure:workflow-b:7",
+			"result:workflow-a:7",
+		]);
+	});
+
 	it("propagates a non-retryable result-replay failure after closing the replacement session", async () => {
 		const drop = serviceError(
 			status.UNAVAILABLE,
@@ -539,6 +598,88 @@ describe("runWorkerLoop", () => {
 		// The unacked result stays tracked for the caller; it was never
 		// acknowledged by the server.
 		expect(tracker.len()).toBe(1);
+	});
+
+	it("rejects with the denial when a server denial races an abort during registration", async () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'queue' is not granted",
+		);
+		const controller = new AbortController();
+		const errors: Array<Record<string, unknown> | undefined> = [];
+		// The abort lands while the genuine denial is in flight: the denial is
+		// deterministic and must reject the run so the supervisor learns of it
+		// now — not after restarting a worker that exited cleanly.
+		const session = new (class extends ScriptedSession {
+			public override async register(): Promise<void> {
+				controller.abort();
+				throw denial;
+			}
+		})([]);
+
+		await expect(
+			runWorkerLoop({
+				config: reconnectingConfig(),
+				session,
+				dispatcher: new SlowDispatcher(),
+				sessionFactory: async () => session,
+				sleep: () => Promise.resolve(),
+				signal: controller.signal,
+				logger: {
+					info: () => undefined,
+					warn: () => undefined,
+					error: (_message, fields) => {
+						errors.push(fields);
+					},
+				},
+			}),
+		).rejects.toBe(denial);
+
+		expect(session.closed).toBe(true);
+		expect(errors).toEqual([
+			{ code: status.PERMISSION_DENIED, message: denial.message },
+		]);
+	});
+
+	it("rejects with the denial when a server denial races an abort during result replay", async () => {
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'queue' was revoked",
+		);
+		const controller = new AbortController();
+		const tracker = new UnackedResultTracker();
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow",
+			activityId: "unacked-1",
+			result: payload,
+		});
+		const first = new ScriptedSession([{ kind: "throw", error: drop }]);
+		const second = new (class extends ScriptedSession {
+			public override async reportResult(): Promise<void> {
+				controller.abort();
+				throw denial;
+			}
+		})([]);
+
+		await expect(
+			runWorkerLoop({
+				config: reconnectingConfig(3),
+				session: first,
+				dispatcher: new SlowDispatcher(),
+				tracker,
+				sessionFactory: async () => second,
+				sleep: () => Promise.resolve(),
+				signal: controller.signal,
+			}),
+		).rejects.toBe(denial);
+
+		expect(first.closed).toBe(true);
+		expect(second.closed).toBe(true);
 	});
 
 	it("returns without serving when the signal is already aborted", async () => {
@@ -723,6 +864,29 @@ class ScriptedSession implements WorkerSession {
 }
 
 /**
+ * Session that records reports qualified by workflow id, for the
+ * multi-workflow replay paths where the bare activity id is ambiguous.
+ */
+class WorkflowQualifiedSession extends ScriptedSession {
+	public readonly qualifiedReports: string[] = [];
+
+	public override async reportResult(
+		workflowId: string,
+		activityId: string,
+	): Promise<void> {
+		this.qualifiedReports.push(`result:${workflowId}:${activityId}`);
+	}
+
+	public override async reportFailure(
+		workflowId: string,
+		activityId: string,
+		_failure: ActivityFailure,
+	): Promise<void> {
+		this.qualifiedReports.push(`failure:${workflowId}:${activityId}`);
+	}
+}
+
+/**
  * Session whose report writes fail the way a dead transport's do, for the
  * post-reconnect result-replay failure paths.
  */
@@ -763,8 +927,12 @@ function reconnectingConfig(maxAttempts = 2): WorkerConfig {
 }
 
 function task(activityId: string): ActivityTask {
+	return workflowTask("workflow", activityId);
+}
+
+function workflowTask(workflowId: string, activityId: string): ActivityTask {
 	return {
-		workflowId: "workflow",
+		workflowId,
 		activityId,
 		activityType: "slow",
 		input: payload,

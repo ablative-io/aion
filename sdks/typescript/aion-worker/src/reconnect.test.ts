@@ -68,6 +68,49 @@ class RecordingSession implements WorkerSession {
 }
 
 describe("reconnect", () => {
+	it("keeps reports from distinct workflows that share a sequence position", () => {
+		const tracker = new UnackedResultTracker();
+		const failure: ActivityFailure = {
+			retryable: false,
+			message: "card declined",
+		};
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow-a",
+			activityId: "3",
+			result: payload,
+		});
+		tracker.record({
+			kind: "failed",
+			workflowId: "workflow-b",
+			activityId: "3",
+			failure,
+		});
+
+		// Same sequence position, different workflows: both entries coexist.
+		expect(tracker.len()).toBe(2);
+		expect(tracker.isEmpty()).toBe(false);
+		expect(tracker.get("workflow-a", "3")?.kind).toBe("completed");
+		expect(tracker.get("workflow-b", "3")?.kind).toBe("failed");
+		expect(
+			tracker.snapshot().map((report) => `${report.workflowId}:${report.activityId}`),
+		).toEqual(["workflow-a:3", "workflow-b:3"]);
+
+		// Acknowledging one workflow's report never touches the other's.
+		tracker.acknowledge("workflow-a", "3");
+		expect(tracker.get("workflow-a", "3")).toBeUndefined();
+		expect(tracker.get("workflow-b", "3")?.kind).toBe("failed");
+		expect(tracker.len()).toBe(1);
+
+		// Acknowledging an absent pair is a no-op, not an error.
+		tracker.acknowledge("workflow-a", "3");
+		tracker.acknowledge("workflow-missing", "3");
+		expect(tracker.len()).toBe(1);
+
+		tracker.acknowledge("workflow-b", "3");
+		expect(tracker.isEmpty()).toBe(true);
+	});
+
 	it("re-reports unacknowledged completion before receiving new tasks", async () => {
 		const events: string[] = [];
 		const tracker = new UnackedResultTracker();

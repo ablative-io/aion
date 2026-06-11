@@ -79,6 +79,19 @@ export async function runWorkerLoop(
 		await session.register(activityTypes);
 	} catch (error) {
 		await closeFailedSession(session, options.logger);
+		if (!isRetryableSessionError(error)) {
+			// A deterministic server denial (PERMISSION_DENIED /
+			// UNAUTHENTICATED) outranks a racing abort: downgrading it to a
+			// graceful return would hand the supervisor a clean exit and only
+			// surface the denial after the restart. Classify first — an
+			// abort-induced local close error ("write after end") is not
+			// gRPC-shaped, so it still reaches the graceful path below.
+			options.logger?.error(
+				"worker registration denied by server; not serving",
+				{ code: grpcStatusCode(error), message: describeError(error) },
+			);
+			throw error;
+		}
 		if (shutdownRequested(options.signal)) {
 			// An abort raced the initial registration: the abort handler closes
 			// the session, so the in-flight register write fails (write after
@@ -195,6 +208,17 @@ export async function runWorkerLoop(
 				break;
 			} catch (error) {
 				await closeFailedSession(session, options.logger);
+				if (!isRetryableSessionError(error)) {
+					// A deterministic server denial outranks a racing abort —
+					// see the registration catch above for the rationale. An
+					// abort-induced "write after end" is not gRPC-shaped and
+					// still takes the graceful return below.
+					options.logger?.error(
+						"worker result replay denied by server; not reconnecting",
+						{ code: grpcStatusCode(error), message: describeError(error) },
+					);
+					throw error;
+				}
 				if (shutdownRequested(options.signal)) {
 					// An abort landed between the post-reconnect shutdown check
 					// and the replay write, closing the just-published session
@@ -206,13 +230,6 @@ export async function runWorkerLoop(
 						{ message: describeError(error) },
 					);
 					return;
-				}
-				if (!isRetryableSessionError(error)) {
-					options.logger?.error(
-						"worker result replay denied by server; not reconnecting",
-						{ code: grpcStatusCode(error), message: describeError(error) },
-					);
-					throw error;
 				}
 				options.logger?.warn(
 					"worker result replay failed; counting against drop budget",

@@ -114,23 +114,57 @@ export type PendingActivityReport =
 			readonly failure: ActivityFailure;
 	  };
 
+/**
+ * Tracks reported activity outcomes until the engine acknowledges them.
+ *
+ * Entries are keyed by workflow id and then activity id: activity ids are
+ * sequence positions scoped to a single workflow, so reports from distinct
+ * workflows legitimately share a bare position and must never replace one
+ * another (parity with the Rust worker's `pending_report_key` tuple and the
+ * Python worker's `(workflow uuid, sequence position)` key). The composite
+ * key is a nested map — each level is keyed by the exact identifier value,
+ * so no string-encoding of the pair exists that two distinct
+ * (workflowId, activityId) pairs could collide on.
+ */
 export class UnackedResultTracker {
-	private readonly reports = new Map<ActivityIdKey, PendingActivityReport>();
+	private readonly reports = new Map<
+		WorkflowId,
+		Map<ActivityIdKey, PendingActivityReport>
+	>();
 
 	public record(report: PendingActivityReport): void {
-		this.reports.set(report.activityId, report);
+		let workflowReports = this.reports.get(report.workflowId);
+		if (workflowReports === undefined) {
+			workflowReports = new Map<ActivityIdKey, PendingActivityReport>();
+			this.reports.set(report.workflowId, workflowReports);
+		}
+		workflowReports.set(report.activityId, report);
 	}
 
-	public acknowledge(activityId: ActivityIdKey): void {
-		this.reports.delete(activityId);
+	public acknowledge(workflowId: WorkflowId, activityId: ActivityIdKey): void {
+		const workflowReports = this.reports.get(workflowId);
+		if (workflowReports === undefined) {
+			return;
+		}
+		workflowReports.delete(activityId);
+		if (workflowReports.size === 0) {
+			this.reports.delete(workflowId);
+		}
 	}
 
-	public get(activityId: ActivityIdKey): PendingActivityReport | undefined {
-		return this.reports.get(activityId);
+	public get(
+		workflowId: WorkflowId,
+		activityId: ActivityIdKey,
+	): PendingActivityReport | undefined {
+		return this.reports.get(workflowId)?.get(activityId);
 	}
 
 	public len(): number {
-		return this.reports.size;
+		let total = 0;
+		for (const workflowReports of this.reports.values()) {
+			total += workflowReports.size;
+		}
+		return total;
 	}
 
 	public isEmpty(): boolean {
@@ -138,7 +172,11 @@ export class UnackedResultTracker {
 	}
 
 	public snapshot(): readonly PendingActivityReport[] {
-		return [...this.reports.values()];
+		const reports: PendingActivityReport[] = [];
+		for (const workflowReports of this.reports.values()) {
+			reports.push(...workflowReports.values());
+		}
+		return reports;
 	}
 }
 
@@ -249,6 +287,7 @@ export async function reReportUnacked(
 ): Promise<void> {
 	for (const report of tracker.snapshot()) {
 		logger?.info("worker re-reporting unacknowledged activity", {
+			workflowId: report.workflowId,
 			activityId: report.activityId,
 			kind: report.kind,
 		});
