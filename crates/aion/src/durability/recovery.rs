@@ -12,7 +12,7 @@ use crate::durability::{
     Resolution, fail_on_violation,
 };
 use crate::supervision::spawn_workflow_with_policy;
-use crate::{EngineError, LoadedWorkflows, Pid, RuntimeHandle, RuntimeInput};
+use crate::{EngineError, Pid, RuntimeHandle, RuntimeInput, WorkflowCatalog};
 
 /// AE-provided replay inputs for one active workflow.
 #[derive(Clone, Debug)]
@@ -248,7 +248,7 @@ pub trait ActiveWorkflowRecoverySeam: Send + Sync {
         workflow_id: &WorkflowId,
         workflow_type: &str,
         history: &[Event],
-        loaded_workflows: &LoadedWorkflows,
+        catalog: &WorkflowCatalog,
     ) -> Result<ActiveWorkflowRecovery, EngineError>;
 }
 
@@ -279,12 +279,12 @@ impl ActiveWorkflowRecoverySeam for ActiveWorkflowRecoverySeamImpl {
         workflow_id: &WorkflowId,
         workflow_type: &str,
         history: &[Event],
-        loaded_workflows: &LoadedWorkflows,
+        catalog: &WorkflowCatalog,
     ) -> Result<ActiveWorkflowRecovery, EngineError> {
         let started = started_metadata(workflow_id, workflow_type, history)?;
         let version = crate::loader::parse_package_version(workflow_type, started.package_version)?;
-        let loaded = loaded_workflows
-            .get(workflow_type, &version)
+        let loaded = catalog
+            .get(workflow_type, &version)?
             .ok_or_else(|| EngineError::Load {
                 reason: format!(
                     "active workflow `{workflow_id}` is pinned to package version `{version}` of `{workflow_type}`, which is not loaded"

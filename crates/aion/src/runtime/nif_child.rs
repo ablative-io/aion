@@ -109,7 +109,8 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             // type — and recorded durably so the spawn, the background
             // retry, and the crash-repair sweep all start exactly it.
             let package_version = bridge
-                .latest_package_version(&workflow_type)
+                .routed_package_version(&workflow_type)
+                .map_err(|error| format!("child_version_resolution:{error}"))?
                 .ok_or_else(|| format!("child_workflow_type_not_loaded:{workflow_type}"))?;
             // Record-then-spawn (#56): the id is recorded nondeterminism —
             // drawn once here, durably recorded before any observable use,
@@ -621,7 +622,7 @@ mod tests {
 
     use super::{AwaitChildStep, await_child_step, next_child_key};
     use crate::durability::{CorrelationKey, Recorder};
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
     };
@@ -699,7 +700,7 @@ mod tests {
                 store: Arc::clone(&store),
                 visibility_store,
                 runtime: Arc::clone(&runtime),
-                loaded_workflows: LoadedWorkflows::new(),
+                catalog: Arc::new(WorkflowCatalog::new()),
                 registry,
                 supervision: Arc::new(SupervisionTree::new()),
                 signal_handoff: Arc::new(SignalResumeHandoff::new()),

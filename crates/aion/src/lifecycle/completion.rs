@@ -9,7 +9,7 @@ use chrono::Utc;
 use tokio::runtime::Handle;
 
 use crate::EngineError;
-use crate::loader::LoadedWorkflows;
+use crate::loader::WorkflowCatalog;
 use crate::registry::{Registry, Residency, TerminalOutcome, WorkflowHandle};
 use crate::runtime::{RuntimeHandle, WorkflowProcessOutcome};
 use crate::supervision::SupervisionTree;
@@ -26,8 +26,8 @@ pub struct ProcessExitContext {
     pub visibility_store: Arc<dyn VisibilityStore>,
     /// Active execution registry to reconcile status and residency.
     pub registry: Arc<Registry>,
-    /// Loaded workflow records used to start continue-as-new replacements.
-    pub loaded_workflows: Arc<LoadedWorkflows>,
+    /// Shared workflow catalog used to start continue-as-new replacements.
+    pub catalog: Arc<WorkflowCatalog>,
     /// Runtime boundary used to spawn continue-as-new replacements.
     pub runtime: Arc<RuntimeHandle>,
     /// Structural supervision tree for replacement workflow placement.
@@ -187,7 +187,7 @@ async fn start_continuation_replacement(
         StartWorkflowContext {
             store: Arc::clone(&context.store),
             visibility_store: Arc::clone(&context.visibility_store),
-            loaded_workflows: context.loaded_workflows.as_ref(),
+            catalog: Arc::clone(&context.catalog),
             runtime: Arc::clone(&context.runtime),
             supervision: Arc::clone(&context.supervision),
             registry: Arc::clone(&context.registry),
@@ -292,7 +292,7 @@ mod tests {
 
     use super::{ProcessExitContext, handle_process_exit_async, terminal_outcome_from_history};
     use crate::durability::Recorder;
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
         WorkflowHandleParts,
@@ -353,7 +353,7 @@ mod tests {
                 store,
                 visibility_store,
                 registry,
-                loaded_workflows: Arc::new(LoadedWorkflows::new()),
+                catalog: Arc::new(WorkflowCatalog::new()),
                 runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
                 supervision: Arc::new(SupervisionTree::new()),
                 tokio_handle: tokio::runtime::Handle::current(),

@@ -58,7 +58,7 @@ async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std
             .await
             .map_err(|error| format!("{name} failed to load: {error}"))?;
         assert!(
-            engine.loaded_workflows().iter().count() > 0,
+            !engine.workflow_catalog().workflows()?.is_empty(),
             "{name} loaded no workflow versions"
         );
         engine.shutdown()?;

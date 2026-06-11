@@ -21,7 +21,7 @@ use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
 use crate::lifecycle::transition;
 use crate::registry::{TerminalOutcome, WorkflowHandle};
 use crate::{
-    EngineError, LoadedWorkflows, Registry, RuntimeHandle, SupervisionTree,
+    EngineError, Registry, RuntimeHandle, SupervisionTree, WorkflowCatalog,
     signal::SignalResumeHandoff,
 };
 
@@ -39,7 +39,7 @@ pub struct Engine {
     pub(super) schedule_evaluator: Arc<AsyncMutex<ScheduleEvaluator>>,
     pub(super) schedule_coordinator_workflow_id: WorkflowId,
     runtime: Arc<RuntimeHandle>,
-    loaded_workflows: LoadedWorkflows,
+    catalog: Arc<WorkflowCatalog>,
     registry: Arc<Registry>,
     supervision: Arc<SupervisionTree>,
     delegated: DelegatedSeams,
@@ -54,7 +54,7 @@ pub(crate) struct EngineComponents {
     pub(crate) store: Arc<dyn EventStore>,
     pub(crate) visibility_store: Arc<dyn VisibilityStore>,
     pub(crate) runtime: Arc<RuntimeHandle>,
-    pub(crate) loaded_workflows: LoadedWorkflows,
+    pub(crate) catalog: Arc<WorkflowCatalog>,
     pub(crate) registry: Arc<Registry>,
     pub(crate) supervision: Arc<SupervisionTree>,
     pub(crate) delegated: DelegatedSeams,
@@ -71,7 +71,7 @@ impl Engine {
             store,
             visibility_store,
             runtime,
-            loaded_workflows,
+            catalog,
             registry,
             supervision,
             delegated,
@@ -94,7 +94,7 @@ impl Engine {
                 store: Arc::clone(&store),
                 visibility_store: Arc::clone(&visibility_store),
                 runtime: Arc::clone(&runtime_arc),
-                loaded_workflows: loaded_workflows.clone(),
+                catalog: Arc::clone(&catalog),
                 registry: Arc::clone(&registry_arc),
                 supervision: Arc::clone(&supervision_arc),
                 search_attribute_schema: Arc::clone(&search_attribute_schema),
@@ -107,7 +107,7 @@ impl Engine {
             schedule_evaluator,
             schedule_coordinator_workflow_id,
             runtime: runtime_arc,
-            loaded_workflows,
+            catalog,
             registry: registry_arc,
             supervision: supervision_arc,
             delegated,
@@ -160,10 +160,10 @@ impl Engine {
         &self.runtime
     }
 
-    /// Loaded workflow package registry.
+    /// Shared workflow package catalog: loaded versions and routing.
     #[must_use]
-    pub const fn loaded_workflows(&self) -> &LoadedWorkflows {
-        &self.loaded_workflows
+    pub fn workflow_catalog(&self) -> &Arc<WorkflowCatalog> {
+        &self.catalog
     }
 
     /// Active execution registry.
@@ -214,7 +214,7 @@ impl Engine {
             StartWorkflowContext {
                 store: self.store(),
                 visibility_store: self.visibility_store(),
-                loaded_workflows: &self.loaded_workflows,
+                catalog: Arc::clone(&self.catalog),
                 runtime: Arc::clone(&self.runtime),
                 supervision: Arc::clone(&self.supervision),
                 registry: Arc::clone(&self.registry),
@@ -307,7 +307,7 @@ impl Engine {
             ContinueAsNewContext {
                 store: self.store(),
                 visibility_store: Arc::clone(&self.visibility_store),
-                loaded_workflows: &self.loaded_workflows,
+                catalog: Arc::clone(&self.catalog),
                 runtime: &self.runtime,
                 supervision: Arc::clone(&self.supervision),
                 registry: &self.registry,
@@ -536,7 +536,7 @@ mod tests {
     use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
     use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandleParts};
     use crate::{
-        EngineError, LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SupervisionTree,
+        EngineError, Registry, RuntimeConfig, RuntimeHandle, SupervisionTree, WorkflowCatalog,
         WorkflowHandle,
     };
 
@@ -551,15 +551,15 @@ mod tests {
         }
     }
 
-    fn loaded_workflows(workflow_type: &str, deployed_module: &str) -> LoadedWorkflows {
-        let mut loaded = LoadedWorkflows::new();
-        loaded.note_loaded_workflow_for_test(
+    fn workflow_catalog(workflow_type: &str, deployed_module: &str) -> Arc<WorkflowCatalog> {
+        let catalog = Arc::new(WorkflowCatalog::new());
+        catalog.note_loaded_workflow_for_test(
             workflow_type,
             deployed_module,
             "run",
             ContentHash::from_bytes([5; 32]),
         );
-        loaded
+        catalog
     }
 
     fn engine_with_loaded_workflow(
@@ -574,7 +574,7 @@ mod tests {
             store,
             visibility_store,
             runtime: Arc::new(runtime),
-            loaded_workflows: loaded_workflows(workflow_type, deployed_module),
+            catalog: workflow_catalog(workflow_type, deployed_module),
             registry: Arc::new(Registry::default()),
             supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::default(),

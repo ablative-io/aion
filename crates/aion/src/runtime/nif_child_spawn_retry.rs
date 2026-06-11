@@ -146,7 +146,7 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
 
     use super::{RecordedChildSpawn, ensure_child_started_in_background};
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::Registry;
     use crate::runtime::nif_child_engine::{ChildNifBridge, ChildNifBridgeParts};
     use crate::runtime::{RuntimeConfig, RuntimeHandle, SignalDeliveryConfig};
@@ -175,7 +175,7 @@ mod tests {
             store,
             visibility_store: backing,
             runtime: Arc::clone(&runtime),
-            loaded_workflows: LoadedWorkflows::new(),
+            catalog: Arc::new(WorkflowCatalog::new()),
             registry: Arc::new(Registry::default()),
             supervision: Arc::new(SupervisionTree::new()),
             signal_handoff: Arc::new(SignalResumeHandoff::new()),
@@ -318,7 +318,7 @@ mod tests {
             store,
             visibility_store: Arc::new(InMemoryStore::default()),
             runtime: Arc::clone(&runtime),
-            loaded_workflows: LoadedWorkflows::new(),
+            catalog: Arc::new(WorkflowCatalog::new()),
             registry: Arc::new(Registry::default()),
             supervision: Arc::new(SupervisionTree::new()),
             signal_handoff: Arc::new(SignalResumeHandoff::new()),

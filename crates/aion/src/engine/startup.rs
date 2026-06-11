@@ -13,8 +13,8 @@ use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 
 use crate::{
-    CompletionNotifier, EngineError, HandleResidency, LoadedWorkflows, Registry, RuntimeHandle,
-    SupervisionTree, WorkflowHandle, WorkflowHandleParts,
+    CompletionNotifier, EngineError, HandleResidency, Registry, RuntimeHandle, SupervisionTree,
+    WorkflowCatalog, WorkflowHandle, WorkflowHandleParts,
     durability::{
         ActiveWorkflowRecovery, ActiveWorkflowRecoverySeam, ActiveWorkflowRecoverySeamImpl,
         Recorder, current_run_segment,
@@ -47,11 +47,11 @@ pub(super) async fn recover_timers_on_startup(
         })
 }
 
-pub(super) struct StartupRecoveryContext<'a> {
+pub(super) struct StartupRecoveryContext {
     pub(super) store: Arc<dyn EventStore>,
     pub(super) visibility_store: Arc<dyn VisibilityStore>,
     pub(super) runtime: Arc<RuntimeHandle>,
-    pub(super) loaded_workflows: &'a LoadedWorkflows,
+    pub(super) catalog: Arc<WorkflowCatalog>,
     pub(super) registry: Arc<Registry>,
     pub(super) supervision: Arc<SupervisionTree>,
     pub(super) recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
@@ -59,7 +59,7 @@ pub(super) struct StartupRecoveryContext<'a> {
 }
 
 pub(super) async fn recover_active_workflows_on_startup(
-    context: StartupRecoveryContext<'_>,
+    context: StartupRecoveryContext,
 ) -> Result<(), EngineError> {
     bootstrap_schedule_coordinator(Arc::clone(&context.store)).await?;
     crate::lifecycle::visibility::reconcile_visibility(
@@ -104,11 +104,11 @@ async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<()
 }
 
 async fn repopulate_active_workflows(
-    context: &StartupRecoveryContext<'_>,
+    context: &StartupRecoveryContext,
     recovery: &dyn ActiveWorkflowRecoverySeam,
 ) -> Result<(), EngineError> {
     let store = &context.store;
-    let loaded_workflows = context.loaded_workflows;
+    let catalog = &context.catalog;
     let registry = &context.registry;
     let supervision = &context.supervision;
     for workflow_id in store.as_ref().list_active().await? {
@@ -134,7 +134,7 @@ async fn repopulate_active_workflows(
             &workflow_id,
             &workflow_type,
             &history,
-            loaded_workflows,
+            catalog,
         ) {
             Ok(recovered) => recovered,
             Err(error) => {
@@ -193,7 +193,7 @@ struct RecoveredResident<'a> {
 /// Register one recovered resident process: recorder, registry, supervision,
 /// completion monitor, and the recorded-children crash-window sweep.
 async fn register_recovered_resident(
-    context: &StartupRecoveryContext<'_>,
+    context: &StartupRecoveryContext,
     resident: RecoveredResident<'_>,
 ) -> Result<(), EngineError> {
     let RecoveredResident {
@@ -241,7 +241,7 @@ async fn register_recovered_resident(
                     visibility_store: Arc::clone(&context.visibility_store),
                     runtime: Arc::clone(&context.runtime),
                     registry: Arc::clone(&context.registry),
-                    loaded_workflows: Arc::new(context.loaded_workflows.clone()),
+                    catalog: Arc::clone(&context.catalog),
                     supervision: Arc::clone(&context.supervision),
                     search_attribute_schema: Arc::clone(&context.search_attribute_schema),
                 },
@@ -276,7 +276,7 @@ async fn register_recovered_resident(
 /// The sweep also covers fire-and-forget children, which no await would
 /// ever lazily repair.
 async fn sweep_recorded_children(
-    context: &StartupRecoveryContext<'_>,
+    context: &StartupRecoveryContext,
     parent_workflow_id: &aion_core::WorkflowId,
     parent_run_id: &RunId,
     parent_history: &[Event],
@@ -322,7 +322,7 @@ async fn sweep_recorded_children(
             StartWorkflowContext {
                 store: Arc::clone(&context.store),
                 visibility_store: Arc::clone(&context.visibility_store),
-                loaded_workflows: context.loaded_workflows,
+                catalog: Arc::clone(&context.catalog),
                 runtime: Arc::clone(&context.runtime),
                 supervision: Arc::clone(&context.supervision),
                 registry: Arc::clone(&context.registry),
@@ -367,7 +367,7 @@ async fn sweep_recorded_children(
 /// the enumeration again, and the in-history `parent_run_id` guard mirrors
 /// `start_continuation_replacement`'s own duplicate check.
 async fn sweep_continued_as_new_replacements(
-    context: &StartupRecoveryContext<'_>,
+    context: &StartupRecoveryContext,
 ) -> Result<(), EngineError> {
     let stranded = context
         .store
@@ -424,7 +424,7 @@ async fn sweep_continued_as_new_replacements(
             StartWorkflowContext {
                 store: Arc::clone(&context.store),
                 visibility_store: Arc::clone(&context.visibility_store),
-                loaded_workflows: context.loaded_workflows,
+                catalog: Arc::clone(&context.catalog),
                 runtime: Arc::clone(&context.runtime),
                 supervision: Arc::clone(&context.supervision),
                 registry: Arc::clone(&context.registry),
@@ -470,7 +470,7 @@ async fn sweep_continued_as_new_replacements(
 /// Whether a successor `WorkflowStarted` continuing `continued_run_id` is
 /// durable for `workflow_id`.
 async fn successor_started(
-    context: &StartupRecoveryContext<'_>,
+    context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,
     continued_run_id: &RunId,
 ) -> Result<bool, EngineError> {
@@ -519,7 +519,7 @@ struct RecoveredMonitorParts {
     visibility_store: Arc<dyn VisibilityStore>,
     runtime: Arc<RuntimeHandle>,
     registry: Arc<Registry>,
-    loaded_workflows: Arc<LoadedWorkflows>,
+    catalog: Arc<WorkflowCatalog>,
     supervision: Arc<SupervisionTree>,
     search_attribute_schema: Arc<SearchAttributeSchema>,
 }
@@ -534,7 +534,7 @@ fn install_recovered_completion_monitor(
         store: parts.store,
         visibility_store: parts.visibility_store,
         registry: parts.registry,
-        loaded_workflows: parts.loaded_workflows,
+        catalog: parts.catalog,
         runtime: parts.runtime,
         supervision: parts.supervision,
         tokio_handle: tokio::runtime::Handle::current(),
@@ -570,7 +570,7 @@ fn recover_active_workflow(
     workflow_id: &aion_core::WorkflowId,
     workflow_type: &str,
     history: &[Event],
-    loaded_workflows: &LoadedWorkflows,
+    catalog: &WorkflowCatalog,
 ) -> Result<ActiveWorkflowRecovery, EngineError> {
     if workflow_id == &schedule_coordinator_workflow_id()
         && workflow_type == schedule_coordinator_workflow_type()
@@ -579,7 +579,7 @@ fn recover_active_workflow(
         return Ok(ActiveWorkflowRecovery::ScheduleCoordinator { run_id });
     }
 
-    recovery.recover_active_workflow(workflow_id, workflow_type, history, loaded_workflows)
+    recovery.recover_active_workflow(workflow_id, workflow_type, history, catalog)
 }
 
 fn started_workflow_type(
@@ -640,7 +640,7 @@ mod tests {
 
     use super::{StartupRecoveryContext, sweep_continued_as_new_replacements};
     use crate::EngineError;
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::Registry;
     use crate::runtime::{RuntimeConfig, RuntimeHandle};
     use crate::supervision::SupervisionTree;
@@ -806,13 +806,13 @@ mod tests {
     fn recovery_context(
         store: Arc<dyn EventStore>,
         runtime: Arc<RuntimeHandle>,
-        loaded_workflows: &LoadedWorkflows,
-    ) -> StartupRecoveryContext<'_> {
+        catalog: Arc<WorkflowCatalog>,
+    ) -> StartupRecoveryContext {
         StartupRecoveryContext {
             store,
             visibility_store: Arc::new(InMemoryStore::default()),
             runtime,
-            loaded_workflows,
+            catalog,
             registry: Arc::new(Registry::default()),
             supervision: Arc::new(SupervisionTree::new()),
             recovery: None,
@@ -842,8 +842,8 @@ mod tests {
             appears: true,
         });
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-        let loaded = LoadedWorkflows::new();
-        let context = recovery_context(store as Arc<dyn EventStore>, Arc::clone(&runtime), &loaded);
+        let catalog = Arc::new(WorkflowCatalog::new());
+        let context = recovery_context(store as Arc<dyn EventStore>, Arc::clone(&runtime), catalog);
 
         sweep_continued_as_new_replacements(&context)
             .await
@@ -867,8 +867,8 @@ mod tests {
             appears: false,
         });
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-        let loaded = LoadedWorkflows::new();
-        let context = recovery_context(store as Arc<dyn EventStore>, Arc::clone(&runtime), &loaded);
+        let catalog = Arc::new(WorkflowCatalog::new());
+        let context = recovery_context(store as Arc<dyn EventStore>, Arc::clone(&runtime), catalog);
 
         let result = sweep_continued_as_new_replacements(&context).await;
         assert!(

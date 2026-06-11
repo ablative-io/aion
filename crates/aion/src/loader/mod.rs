@@ -5,10 +5,13 @@ use aion_package::ContentHash;
 
 use crate::error::EngineError;
 
-/// Package loading and workflow entry discovery.
+/// Shared, atomically-swappable workflow package catalog.
+pub mod catalog;
+/// Package staging and workflow entry discovery.
 pub mod load;
 
-pub use load::{LoadedWorkflow, LoadedWorkflows, load_package};
+pub use catalog::{PinnedWorkflow, WorkflowCatalog, WorkflowVersionInfo};
+pub use load::LoadedWorkflow;
 
 /// Canonical durable form of a loaded package version.
 #[must_use]

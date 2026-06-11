@@ -16,7 +16,7 @@ use crate::engine_seam::{
 use crate::lifecycle::start::{
     StartWorkflowContext, StartWorkflowOptions, start_workflow_with_options,
 };
-use crate::loader::LoadedWorkflows;
+use crate::loader::WorkflowCatalog;
 use crate::registry::{HandleResidency, Registry, WorkflowHandle};
 use crate::runtime::nif_child_tasks::ChildTaskRuntime;
 use crate::runtime::{RuntimeHandle, SignalDeliveryConfig};
@@ -28,7 +28,7 @@ pub(crate) struct ChildNifBridge {
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
     runtime: Arc<RuntimeHandle>,
-    loaded_workflows: LoadedWorkflows,
+    catalog: Arc<WorkflowCatalog>,
     registry: Arc<Registry>,
     supervision: Arc<SupervisionTree>,
     signal_handoff: Arc<SignalResumeHandoff>,
@@ -47,7 +47,7 @@ pub(crate) struct ChildNifBridgeParts {
     pub(crate) store: Arc<dyn EventStore>,
     pub(crate) visibility_store: Arc<dyn VisibilityStore>,
     pub(crate) runtime: Arc<RuntimeHandle>,
-    pub(crate) loaded_workflows: LoadedWorkflows,
+    pub(crate) catalog: Arc<WorkflowCatalog>,
     pub(crate) registry: Arc<Registry>,
     pub(crate) supervision: Arc<SupervisionTree>,
     pub(crate) signal_handoff: Arc<SignalResumeHandoff>,
@@ -68,7 +68,7 @@ impl ChildNifBridge {
             store,
             visibility_store,
             runtime,
-            loaded_workflows,
+            catalog,
             registry,
             supervision,
             signal_handoff,
@@ -80,7 +80,7 @@ impl ChildNifBridge {
             store,
             visibility_store,
             runtime,
-            loaded_workflows,
+            catalog,
             registry,
             supervision,
             signal_handoff,
@@ -119,15 +119,13 @@ impl ChildNifBridge {
         self.watch_backoff
     }
 
-    /// Latest loaded package version for a child workflow type, in its
-    /// durable textual form, resolved at child-record time (D1).
-    pub(crate) fn latest_package_version(
+    /// Routed package version for a child workflow type, in its durable
+    /// textual form, resolved at child-record time (D1: latest-at-record).
+    pub(crate) fn routed_package_version(
         &self,
         workflow_type: &str,
-    ) -> Option<aion_core::PackageVersion> {
-        self.loaded_workflows
-            .latest(workflow_type)
-            .map(|loaded| crate::loader::package_version_of(loaded.version()))
+    ) -> Result<Option<aion_core::PackageVersion>, EngineError> {
+        self.catalog.routed_version(workflow_type)
     }
 
     /// Abort every child-terminal watcher armed by an exited parent pid.
@@ -169,7 +167,7 @@ impl ChildNifBridge {
             StartWorkflowContext {
                 store: Arc::clone(&self.store),
                 visibility_store: Arc::clone(&self.visibility_store),
-                loaded_workflows: &self.loaded_workflows,
+                catalog: Arc::clone(&self.catalog),
                 runtime: Arc::clone(&self.runtime),
                 supervision: Arc::clone(&self.supervision),
                 registry: Arc::clone(&self.registry),

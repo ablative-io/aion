@@ -10,7 +10,7 @@ use chrono::Utc;
 
 use crate::EngineError;
 use crate::lifecycle::start::{self, StartWorkflowContext, StartWorkflowOptions};
-use crate::loader::LoadedWorkflows;
+use crate::loader::WorkflowCatalog;
 use crate::registry::{Registry, TerminalOutcome, WorkflowHandle};
 use crate::runtime::RuntimeHandle;
 use crate::supervision::SupervisionTree;
@@ -21,8 +21,8 @@ pub struct ContinueAsNewContext<'a> {
     pub store: Arc<dyn EventStore>,
     /// Visibility store for workflow visibility projections.
     pub visibility_store: Arc<dyn VisibilityStore>,
-    /// Loader-owned workflow records keyed by logical workflow type and version.
-    pub loaded_workflows: &'a LoadedWorkflows,
+    /// Shared workflow catalog resolving types to loaded package versions.
+    pub catalog: Arc<WorkflowCatalog>,
     /// Runtime boundary used to spawn the replacement workflow process.
     pub runtime: &'a Arc<RuntimeHandle>,
     /// Structural supervision tree recording the per-type supervisor placement.
@@ -70,7 +70,7 @@ pub async fn continue_as_new(
             ),
         });
     }
-    validate_replacement_workflow_type(context.loaded_workflows, workflow_type)?;
+    validate_replacement_workflow_type(&context.catalog, workflow_type)?;
 
     {
         let recorder = handle.recorder();
@@ -103,7 +103,7 @@ pub async fn continue_as_new(
         StartWorkflowContext {
             store: context.store,
             visibility_store: context.visibility_store,
-            loaded_workflows: context.loaded_workflows,
+            catalog: Arc::clone(&context.catalog),
             runtime: Arc::clone(context.runtime),
             supervision: context.supervision,
             registry: Arc::clone(context.registry),
@@ -218,11 +218,11 @@ fn registered_handle(
 }
 
 fn validate_replacement_workflow_type(
-    loaded_workflows: &LoadedWorkflows,
+    catalog: &WorkflowCatalog,
     workflow_type: &str,
 ) -> Result<(), EngineError> {
-    loaded_workflows
-        .latest(workflow_type)
+    catalog
+        .routed(workflow_type)?
         .ok_or_else(|| EngineError::WorkflowNotFound {
             workflow_type: workflow_type.to_owned(),
         })
@@ -242,7 +242,7 @@ mod tests {
     use super::{ContinueAsNewContext, ContinueAsNewRequest, continue_as_new};
     use crate::EngineError;
     use crate::durability::Recorder;
-    use crate::loader::LoadedWorkflows;
+    use crate::loader::WorkflowCatalog;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
         WorkflowHandleParts,
@@ -253,7 +253,7 @@ mod tests {
     struct ActiveWorkflow {
         store: Arc<dyn EventStore>,
         visibility_store: Arc<dyn VisibilityStore>,
-        loaded: LoadedWorkflows,
+        catalog: Arc<WorkflowCatalog>,
         runtime: Arc<RuntimeHandle>,
         supervision: Arc<SupervisionTree>,
         registry: Arc<Registry>,
@@ -264,34 +264,34 @@ mod tests {
         Payload::from_json(&json!({ "label": label }))
     }
 
-    fn loaded_workflows() -> LoadedWorkflows {
-        let mut loaded = LoadedWorkflows::new();
-        loaded.note_loaded_workflow_for_test(
+    fn workflow_catalog() -> Arc<WorkflowCatalog> {
+        let catalog = Arc::new(WorkflowCatalog::new());
+        catalog.note_loaded_workflow_for_test(
             "checkout",
             "checkout_deployed_v1",
             "run",
             ContentHash::from_bytes([3; 32]),
         );
-        loaded.note_loaded_workflow_for_test(
+        catalog.note_loaded_workflow_for_test(
             "checkout",
             "checkout_deployed_v2",
             "run",
             ContentHash::from_bytes([4; 32]),
         );
-        loaded.note_loaded_workflow_for_test(
+        catalog.note_loaded_workflow_for_test(
             "fulfillment",
             "fulfillment_deployed",
             "run",
             ContentHash::from_bytes([5; 32]),
         );
-        loaded
+        catalog
     }
 
     async fn active_workflow() -> Result<ActiveWorkflow, Box<dyn std::error::Error>> {
         let backing = Arc::new(InMemoryStore::default());
         let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
         let visibility_store: Arc<dyn VisibilityStore> = backing;
-        let loaded = loaded_workflows();
+        let catalog = workflow_catalog();
         let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
         runtime.register_waiting_test_module("checkout_deployed_v1", "run");
         runtime.register_waiting_test_module("checkout_deployed_v2", "run");
@@ -330,7 +330,7 @@ mod tests {
         Ok(ActiveWorkflow {
             store,
             visibility_store,
-            loaded,
+            catalog,
             runtime,
             supervision,
             registry,
@@ -342,7 +342,7 @@ mod tests {
         ContinueAsNewContext {
             store: Arc::clone(&active.store),
             visibility_store: Arc::clone(&active.visibility_store),
-            loaded_workflows: &active.loaded,
+            catalog: Arc::clone(&active.catalog),
             runtime: &active.runtime,
             supervision: Arc::clone(&active.supervision),
             registry: &active.registry,

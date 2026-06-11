@@ -12,7 +12,7 @@ use super::{
     StartWorkflowContext, StartWorkflowOptions, start_workflow, start_workflow_with_options,
 };
 use crate::EngineError;
-use crate::loader::LoadedWorkflows;
+use crate::loader::WorkflowCatalog;
 use crate::registry::{HandleResidency, Registry};
 use crate::runtime::{RuntimeConfig, RuntimeHandle};
 use crate::supervision::SupervisionTree;
@@ -21,29 +21,29 @@ fn payload(label: &str) -> Result<Payload, aion_core::PayloadError> {
     Payload::from_json(&json!({ "label": label }))
 }
 
-fn load_without_runtime_registration(workflow_type: &str) -> LoadedWorkflows {
-    let mut loaded = LoadedWorkflows::new();
-    loaded.note_loaded_workflow_for_test(
+fn load_without_runtime_registration(workflow_type: &str) -> Arc<WorkflowCatalog> {
+    let catalog = Arc::new(WorkflowCatalog::new());
+    catalog.note_loaded_workflow_for_test(
         workflow_type,
         format!("{workflow_type}__deployed"),
         "run",
         ContentHash::from_bytes([3; 32]),
     );
-    loaded
+    catalog
 }
 
 fn context(
     store: Arc<dyn EventStore>,
     visibility_store: Arc<dyn VisibilityStore>,
-    loaded_workflows: &LoadedWorkflows,
+    catalog: Arc<WorkflowCatalog>,
     runtime: Arc<RuntimeHandle>,
     supervision: Arc<SupervisionTree>,
     registry: Arc<Registry>,
-) -> StartWorkflowContext<'_> {
+) -> StartWorkflowContext {
     StartWorkflowContext {
         store,
         visibility_store,
-        loaded_workflows,
+        catalog,
         runtime,
         supervision,
         registry,
@@ -57,7 +57,7 @@ fn context(
 async fn unknown_workflow_type_returns_not_found_and_appends_nothing()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::default());
-    let loaded = LoadedWorkflows::new();
+    let catalog = Arc::new(WorkflowCatalog::new());
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
@@ -67,7 +67,7 @@ async fn unknown_workflow_type_returns_not_found_and_appends_nothing()
         context(
             store.clone(),
             store.clone(),
-            &loaded,
+            Arc::clone(&catalog),
             Arc::clone(&runtime),
             Arc::clone(&supervision),
             Arc::clone(&registry),
@@ -90,7 +90,7 @@ async fn unknown_workflow_type_returns_not_found_and_appends_nothing()
 #[tokio::test]
 async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::default());
-    let loaded = load_without_runtime_registration("checkout");
+    let catalog = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
@@ -100,7 +100,7 @@ async fn recorder_append_happens_before_spawn_failure() -> Result<(), Box<dyn st
         context(
             store.clone(),
             store.clone(),
-            &loaded,
+            Arc::clone(&catalog),
             Arc::clone(&runtime),
             Arc::clone(&supervision),
             Arc::clone(&registry),
@@ -141,7 +141,7 @@ async fn start_with_attributes_records_started_then_attributes_before_spawn()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::default());
     let deployed_module = "checkout__deployed";
-    let loaded = load_without_runtime_registration("checkout");
+    let catalog = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     runtime.register_waiting_test_module(deployed_module, "run");
     let supervision = Arc::new(SupervisionTree::new());
@@ -157,7 +157,7 @@ async fn start_with_attributes_records_started_then_attributes_before_spawn()
         StartWorkflowContext {
             store: store.clone(),
             visibility_store: store.clone(),
-            loaded_workflows: &loaded,
+            catalog: Arc::clone(&catalog),
             runtime: Arc::clone(&runtime),
             supervision: Arc::clone(&supervision),
             registry: Arc::clone(&registry),
@@ -201,7 +201,7 @@ async fn start_with_unregistered_attribute_fails_without_append_or_spawn()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::default());
     let deployed_module = "checkout__deployed";
-    let loaded = load_without_runtime_registration("checkout");
+    let catalog = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     runtime.register_waiting_test_module(deployed_module, "run");
     let supervision = Arc::new(SupervisionTree::new());
@@ -211,7 +211,7 @@ async fn start_with_unregistered_attribute_fails_without_append_or_spawn()
         context(
             store.clone(),
             store.clone(),
-            &loaded,
+            Arc::clone(&catalog),
             Arc::clone(&runtime),
             Arc::clone(&supervision),
             Arc::clone(&registry),
@@ -240,7 +240,7 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::default());
     let deployed_module = "checkout__deployed";
-    let loaded = load_without_runtime_registration("checkout");
+    let catalog = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     runtime.register_waiting_test_module(deployed_module, "run");
     let supervision = Arc::new(SupervisionTree::new());
@@ -251,7 +251,7 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
         context(
             store.clone(),
             store.clone(),
-            &loaded,
+            Arc::clone(&catalog),
             Arc::clone(&runtime),
             Arc::clone(&supervision),
             Arc::clone(&registry),
@@ -307,7 +307,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::default());
     let deployed_module = "checkout__deployed";
-    let loaded = load_without_runtime_registration("checkout");
+    let catalog = load_without_runtime_registration("checkout");
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     runtime.register_waiting_test_module(deployed_module, "run");
     let supervision = Arc::new(SupervisionTree::new());
@@ -341,7 +341,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
         context(
             store.clone(),
             store.clone(),
-            &loaded,
+            Arc::clone(&catalog),
             Arc::clone(&runtime),
             Arc::clone(&supervision),
             Arc::clone(&registry),

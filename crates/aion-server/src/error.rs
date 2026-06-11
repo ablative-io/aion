@@ -260,6 +260,7 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
         EngineError::Runtime { .. } => simple_engine_fields("Runtime", source),
         EngineError::RegistryPoisoned => simple_engine_fields("RegistryPoisoned", source),
+        EngineError::CatalogPoisoned => simple_engine_fields("CatalogPoisoned", source),
         EngineError::NifRegistration { .. } => simple_engine_fields("NifRegistration", source),
         EngineError::SignalRouter(_) => simple_engine_fields("SignalRouter", source),
         EngineError::Query(query) => simple_engine_fields(query_error_type(query), source),
@@ -345,6 +346,9 @@ fn wire_from_engine(source: &EngineError) -> WireError {
             WireError::backend_with_type("Schedule", source.to_string())
         }
         EngineError::Runtime { .. } => WireError::backend_with_type("Runtime", source.to_string()),
+        EngineError::CatalogPoisoned => {
+            WireError::backend_with_type("CatalogPoisoned", source.to_string())
+        }
         EngineError::RegistryPoisoned => {
             WireError::backend_with_type("RegistryPoisoned", source.to_string())
         }

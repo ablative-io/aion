@@ -470,7 +470,7 @@ mod tests {
     use crate::engine::api::EngineComponents;
     use crate::registry::{CompletionNotifier, HandleResidency, WorkflowHandleParts};
     use crate::{
-        LoadedWorkflows, Registry, RuntimeConfig, RuntimeHandle, SupervisionTree, WorkflowHandle,
+        Registry, RuntimeConfig, RuntimeHandle, SupervisionTree, WorkflowCatalog, WorkflowHandle,
     };
 
     use super::*;
@@ -554,7 +554,7 @@ mod tests {
             store,
             visibility_store,
             runtime: Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?),
-            loaded_workflows: LoadedWorkflows::new(),
+            catalog: Arc::new(WorkflowCatalog::new()),
             registry: Arc::new(Registry::default()),
             supervision: Arc::new(SupervisionTree::new()),
             delegated: DelegatedSeams::new(signal_router, query_service, event_publisher),
