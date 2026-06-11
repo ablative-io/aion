@@ -75,7 +75,11 @@ pub async fn open_subscription(
     socket
         .send(Message::Text(frame.into()))
         .await
-        .map_err(|_| ClientError::Unavailable)?;
+        .map_err(|source| {
+            ClientError::unavailable(format!(
+                "websocket subscription frame send failed: {source}"
+            ))
+        })?;
 
     Ok(SubscriptionAttempt::new(socket_events(socket)))
 }
@@ -202,9 +206,9 @@ fn map_connect_error(error: tungstenite::Error) -> ClientError {
         tungstenite::Error::Http(response)
             if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED =>
         {
-            ClientError::Unauthenticated
+            ClientError::unauthenticated("websocket upgrade was rejected with HTTP 401")
         }
-        _ => ClientError::Unavailable,
+        other => ClientError::unavailable(format!("websocket connect failed: {other}")),
     }
 }
 
@@ -231,10 +235,27 @@ fn socket_events(socket: WsStream) -> BoxStream<'static, Result<Event, ClientErr
                     // A normal closure ends the stream; anything else is a
                     // transient drop the resume loop recovers from.
                     Some(frame) if frame.code == CloseCode::Normal => None,
-                    _ => Some((Err(ClientError::Unavailable), None)),
+                    Some(frame) => Some((
+                        Err(ClientError::unavailable(format!(
+                            "websocket closed abnormally ({} {})",
+                            frame.code, frame.reason
+                        ))),
+                        None,
+                    )),
+                    None => Some((
+                        Err(ClientError::unavailable(
+                            "websocket closed without a close frame",
+                        )),
+                        None,
+                    )),
                 },
                 Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => continue,
-                Some(Err(_)) => Some((Err(ClientError::Unavailable), None)),
+                Some(Err(source)) => Some((
+                    Err(ClientError::unavailable(format!(
+                        "websocket transport failed: {source}"
+                    ))),
+                    None,
+                )),
             };
         }
     })
@@ -271,7 +292,7 @@ mod tests {
 
     use super::{decode_frame, stream_url, subscription_frame};
     use crate::client::{ClientBuilder, ClientConfig};
-    use crate::error::ClientError;
+    use crate::error::{ClientError, ErrorDetail};
 
     fn config(stream_endpoint: Option<&str>) -> ClientConfig {
         let mut builder = ClientBuilder::new("http://127.0.0.1:50051");
@@ -303,8 +324,14 @@ mod tests {
         let Some(ClientError::InvalidArgument { detail }) = error else {
             return Err(format!("must be InvalidArgument, got {error:?}").into());
         };
-        assert!(detail.contains("with_stream_endpoint"), "detail: {detail}");
-        assert!(detail.contains("/events/stream"), "detail: {detail}");
+        assert!(
+            detail.message.contains("with_stream_endpoint"),
+            "detail: {detail}"
+        );
+        assert!(
+            detail.message.contains("/events/stream"),
+            "detail: {detail}"
+        );
         Ok(())
     }
 
@@ -373,7 +400,7 @@ mod tests {
         let Some(ClientError::InvalidArgument { detail }) = error else {
             return Err(format!("cursor 0 must be InvalidArgument, got {error:?}").into());
         };
-        assert!(detail.contains(">= 1"), "detail: {detail}");
+        assert!(detail.message.contains(">= 1"), "detail: {detail}");
         Ok(())
     }
 
@@ -404,7 +431,7 @@ mod tests {
                     format!("live-only cursor must be InvalidArgument, got {error:?}").into(),
                 );
             };
-            assert!(detail.contains("live-only"), "detail: {detail}");
+            assert!(detail.message.contains("live-only"), "detail: {detail}");
         }
         Ok(())
     }
@@ -437,7 +464,7 @@ mod tests {
         }))?;
         assert_eq!(
             decode_frame(lagged.as_bytes()).err(),
-            Some(ClientError::Unavailable)
+            Some(ClientError::unavailable("subscriber lagged behind"))
         );
 
         // The per-workflow contiguity tripwire rides the `lagged` code with
@@ -452,7 +479,10 @@ mod tests {
         }))?;
         assert_eq!(
             decode_frame(violation.as_bytes()).err(),
-            Some(ClientError::Unavailable)
+            Some(ClientError::unavailable(ErrorDetail::with_type(
+                "per-workflow stream contiguity violated",
+                "SequenceContiguityViolation",
+            )))
         );
         Ok(())
     }
@@ -465,7 +495,9 @@ mod tests {
         }))?;
         assert_eq!(
             decode_frame(not_found.as_bytes()).err(),
-            Some(ClientError::NotFound)
+            Some(ClientError::not_found(
+                "workflow not found in namespace tenant-a"
+            ))
         );
 
         let denied = serde_json::to_string(&json!({
@@ -473,9 +505,9 @@ mod tests {
         }))?;
         assert_eq!(
             decode_frame(denied.as_bytes()).err(),
-            Some(ClientError::NamespaceDenied {
-                detail: String::from("namespace tenant-b is not granted"),
-            })
+            Some(ClientError::namespace_denied(
+                "namespace tenant-b is not granted"
+            ))
         );
 
         let invalid = serde_json::to_string(&json!({
@@ -487,9 +519,10 @@ mod tests {
         }))?;
         assert_eq!(
             decode_frame(invalid.as_bytes()).err(),
-            Some(ClientError::InvalidArgument {
-                detail: String::from("resume_from_seq 9 is ahead of recorded history"),
-            })
+            Some(ClientError::invalid_argument(ErrorDetail::with_type(
+                "resume_from_seq 9 is ahead of recorded history",
+                "ResumeCursorAheadOfHistory",
+            )))
         );
         Ok(())
     }
@@ -698,10 +731,13 @@ mod tests {
 
         assert_eq!(delivered.len(), 2, "one event then the transient error");
         assert!(matches!(&delivered[0], Ok(event) if event.seq() == 1));
-        assert_eq!(
-            delivered[1].as_ref().err(),
-            Some(&ClientError::Unavailable),
-            "an abrupt drop must surface retryable Unavailable"
+        assert!(
+            matches!(
+                delivered[1].as_ref().err(),
+                Some(ClientError::Unavailable { .. })
+            ),
+            "an abrupt drop must surface retryable Unavailable, got {:?}",
+            delivered[1]
         );
         Ok(())
     }
@@ -732,7 +768,12 @@ mod tests {
             .await??
             .map_err(|error| format!("server side failed: {error}"))?;
 
-        assert_eq!(delivered, vec![Err(ClientError::NotFound)]);
+        assert_eq!(
+            delivered,
+            vec![Err(ClientError::not_found(
+                "workflow not found in namespace tenant-a"
+            ))]
+        );
         Ok(())
     }
 

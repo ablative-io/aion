@@ -158,15 +158,17 @@ handle.signal("record", raw).await?;
 ## Branching on errors
 
 Every operation returns the shared branchable taxonomy via `ClientError`.
+Each variant carries an `ErrorDetail` with the server's human detail message
+and, when the wire supplied one, the structured `error_type` discriminator.
 
 ```rust
 use aion_client::ClientError;
 
 match handle.query_typed::<_, serde_json::Value>("state", &(), Duration::from_millis(10)).await {
     Ok(value) => println!("state: {value}"),
-    Err(ClientError::QueryTimeout) => eprintln!("query timed out; try a longer deadline"),
-    Err(ClientError::AlreadyExists) => eprintln!("idempotency key was reused for a different start"),
-    Err(ClientError::Unavailable) => eprintln!("server is unavailable"),
+    Err(ClientError::QueryTimeout { detail }) => eprintln!("query timed out: {detail}"),
+    Err(ClientError::UnknownQuery { detail }) => eprintln!("unknown query: {detail}"),
+    Err(ClientError::Unavailable { detail }) => eprintln!("server is unavailable: {detail}"),
     Err(error) => return Err(error),
 }
 ```

@@ -89,7 +89,7 @@ impl Client {
         if cached_fingerprint == fingerprint {
             Ok(Some(handle.clone()))
         } else {
-            Err(ClientError::AlreadyExists)
+            Err(idempotency_conflict())
         }
     }
 
@@ -101,13 +101,22 @@ impl Client {
         let mut cache = self.idempotent_starts.lock().await;
         match cache.get(fingerprint.key()) {
             Some((cached_fingerprint, _)) if cached_fingerprint == &fingerprint => Ok(()),
-            Some(_) => Err(ClientError::AlreadyExists),
+            Some(_) => Err(idempotency_conflict()),
             None => {
                 cache.insert(fingerprint.key().to_owned(), (fingerprint, handle));
                 Ok(())
             }
         }
     }
+}
+
+/// The SDK-boundary idempotency conflict: the same key was reused with a
+/// different start request.
+fn idempotency_conflict() -> ClientError {
+    ClientError::already_exists(
+        "idempotency key was already used by a different start request \
+         (namespace, workflow type, or input differ)",
+    )
 }
 
 /// Builder for [`Client`] connection, authentication, and TLS options.

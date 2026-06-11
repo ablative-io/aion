@@ -1,33 +1,137 @@
 //! `ClientError` taxonomy and transport/proto error mapping.
+//!
+//! Every variant carries an [`ErrorDetail`]: the server's human detail
+//! message plus, when the wire carried one, the structured `error_type`
+//! discriminator. Nothing the server sends is dropped on the client side —
+//! callers branch on the variant, render `detail.message`, and may surface
+//! `detail.error_type` for diagnostics.
 
 use aion_proto::{ProtoWireError, WireError, WireErrorCode};
 use prost::Message;
 use tonic::Code;
 
+/// Diagnostic payload carried by every [`ClientError`] variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorDetail {
+    /// Human-readable detail: the server's wire `message` when the error
+    /// crossed the wire, a precise local description otherwise.
+    pub message: String,
+    /// Concrete typed server error variant (the wire `error_type` field),
+    /// when the server exposed one.
+    pub error_type: Option<String>,
+}
+
+impl ErrorDetail {
+    /// Creates a detail with a message and no typed discriminator.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            error_type: None,
+        }
+    }
+
+    /// Creates a detail carrying a typed `error_type` discriminator.
+    #[must_use]
+    pub fn with_type(message: impl Into<String>, error_type: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            error_type: Some(error_type.into()),
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorDetail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.error_type {
+            Some(error_type) => write!(formatter, "{} [{error_type}]", self.message),
+            None => formatter.write_str(&self.message),
+        }
+    }
+}
+
+impl From<String> for ErrorDetail {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for ErrorDetail {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<WireError> for ErrorDetail {
+    fn from(error: WireError) -> Self {
+        Self {
+            message: error.message,
+            error_type: error.error_type,
+        }
+    }
+}
+
 /// Branchable caller-side error taxonomy shared by every aion client SDK.
+///
+/// Display renders `<class>: <detail>` where `<class>` is the stable string
+/// returned by [`ClientError::class`], aligned with the wire error codes
+/// (`not_found`, `namespace_denied`, `invalid_input`, `backend`, ...).
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum ClientError {
     /// The requested workflow or run does not exist.
-    #[error("not found")]
-    NotFound,
+    #[error("not_found: {detail}")]
+    NotFound {
+        /// Server-supplied detail message.
+        detail: ErrorDetail,
+    },
     /// A caller-supplied idempotency key conflicts with a different request.
-    #[error("already exists")]
-    AlreadyExists,
-    /// The workflow query handler failed.
-    #[error("query failed")]
-    QueryFailed,
+    #[error("already_exists: {detail}")]
+    AlreadyExists {
+        /// Conflict detail message.
+        detail: ErrorDetail,
+    },
+    /// The workflow query handler ran and reported an application failure.
+    #[error("query_failed: {detail}")]
+    QueryFailed {
+        /// Handler failure detail reported by the workflow.
+        detail: ErrorDetail,
+    },
     /// The workflow query exceeded its deadline.
-    #[error("query timed out")]
-    QueryTimeout,
+    #[error("query_timeout: {detail}")]
+    QueryTimeout {
+        /// Deadline detail (server window or local deadline).
+        detail: ErrorDetail,
+    },
+    /// The requested workflow query name is not registered.
+    #[error("unknown_query: {detail}")]
+    UnknownQuery {
+        /// Server-supplied detail naming the unknown query.
+        detail: ErrorDetail,
+    },
+    /// The target workflow is terminal or otherwise not running.
+    #[error("not_running: {detail}")]
+    NotRunning {
+        /// Server-supplied detail about the non-running target.
+        detail: ErrorDetail,
+    },
     /// The call or target workflow was cancelled.
-    #[error("cancelled")]
-    Cancelled,
+    #[error("cancelled: {detail}")]
+    Cancelled {
+        /// Cancellation detail message.
+        detail: ErrorDetail,
+    },
     /// The server or network transport is unavailable.
-    #[error("unavailable")]
-    Unavailable,
+    #[error("unavailable: {detail}")]
+    Unavailable {
+        /// Transport/connection failure detail.
+        detail: ErrorDetail,
+    },
     /// Authentication credentials were rejected.
-    #[error("unauthenticated")]
-    Unauthenticated,
+    #[error("unauthenticated: {detail}")]
+    Unauthenticated {
+        /// Credential rejection detail.
+        detail: ErrorDetail,
+    },
     /// The caller's credential was accepted, but the caller has no grant for
     /// the requested namespace.
     ///
@@ -41,30 +145,146 @@ pub enum ClientError {
     /// (credential rejected or unvalidatable) and from
     /// [`ClientError::InvalidArgument`] (malformed or invalid request). Not
     /// retryable until the caller's grants change.
-    #[error("namespace denied: {detail}")]
+    #[error("namespace_denied: {detail}")]
     NamespaceDenied {
         /// Server-supplied denial detail message.
-        detail: String,
+        detail: ErrorDetail,
     },
     /// The request was malformed or targets an unsupported operation state.
-    #[error("invalid argument: {detail}")]
+    #[error("invalid_input: {detail}")]
     InvalidArgument {
         /// Precise description of what was invalid and how to fix it.
-        detail: String,
+        detail: ErrorDetail,
     },
     /// The server reported an unexpected internal failure.
-    #[error("server error: {detail}")]
+    #[error("backend: {detail}")]
     Server {
         /// Informational server detail.
-        detail: String,
+        detail: ErrorDetail,
     },
 }
 
+macro_rules! detail_constructors {
+    ($(($constructor:ident, $variant:ident, $doc:literal)),+ $(,)?) => {
+        $(
+            #[doc = $doc]
+            #[must_use]
+            pub fn $constructor(detail: impl Into<ErrorDetail>) -> Self {
+                Self::$variant {
+                    detail: detail.into(),
+                }
+            }
+        )+
+    };
+}
+
 impl ClientError {
-    /// Converts an AW wire error into the client SDK taxonomy.
+    detail_constructors!(
+        (not_found, NotFound, "Creates a not-found error."),
+        (
+            already_exists,
+            AlreadyExists,
+            "Creates an idempotency-conflict error."
+        ),
+        (
+            query_failed,
+            QueryFailed,
+            "Creates a query-handler failure."
+        ),
+        (query_timeout, QueryTimeout, "Creates a query timeout."),
+        (
+            unknown_query,
+            UnknownQuery,
+            "Creates an unknown-query error."
+        ),
+        (not_running, NotRunning, "Creates a not-running error."),
+        (cancelled, Cancelled, "Creates a cancellation error."),
+        (
+            unavailable,
+            Unavailable,
+            "Creates a transport-unavailable error."
+        ),
+        (
+            unauthenticated,
+            Unauthenticated,
+            "Creates a credential-rejection error."
+        ),
+        (
+            namespace_denied,
+            NamespaceDenied,
+            "Creates a namespace-grant denial."
+        ),
+        (
+            invalid_argument,
+            InvalidArgument,
+            "Creates an [`ClientError::InvalidArgument`] carrying a precise message."
+        ),
+        (
+            server,
+            Server,
+            "Creates an unexpected-server-failure error from a local conversion or server detail."
+        ),
+    );
+
+    /// Stable taxonomy class string, aligned with the wire error codes.
+    #[must_use]
+    pub const fn class(&self) -> &'static str {
+        match self {
+            Self::NotFound { .. } => "not_found",
+            Self::AlreadyExists { .. } => "already_exists",
+            Self::QueryFailed { .. } => "query_failed",
+            Self::QueryTimeout { .. } => "query_timeout",
+            Self::UnknownQuery { .. } => "unknown_query",
+            Self::NotRunning { .. } => "not_running",
+            Self::Cancelled { .. } => "cancelled",
+            Self::Unavailable { .. } => "unavailable",
+            Self::Unauthenticated { .. } => "unauthenticated",
+            Self::NamespaceDenied { .. } => "namespace_denied",
+            Self::InvalidArgument { .. } => "invalid_input",
+            Self::Server { .. } => "backend",
+        }
+    }
+
+    /// The diagnostic detail carried by this error.
+    #[must_use]
+    pub const fn detail(&self) -> &ErrorDetail {
+        match self {
+            Self::NotFound { detail }
+            | Self::AlreadyExists { detail }
+            | Self::QueryFailed { detail }
+            | Self::QueryTimeout { detail }
+            | Self::UnknownQuery { detail }
+            | Self::NotRunning { detail }
+            | Self::Cancelled { detail }
+            | Self::Unavailable { detail }
+            | Self::Unauthenticated { detail }
+            | Self::NamespaceDenied { detail }
+            | Self::InvalidArgument { detail }
+            | Self::Server { detail } => detail,
+        }
+    }
+
+    /// Converts an AW wire error into the client SDK taxonomy, preserving the
+    /// server's message and `error_type` in the carried [`ErrorDetail`].
     #[must_use]
     pub fn from_wire_error(error: WireError) -> Self {
-        map_wire_parts(error.code, error.message)
+        let code = error.code;
+        let detail = ErrorDetail::from(error);
+        match code {
+            WireErrorCode::NotFound => Self::NotFound { detail },
+            WireErrorCode::NamespaceDenied => Self::NamespaceDenied { detail },
+            WireErrorCode::UnknownQuery => Self::UnknownQuery { detail },
+            WireErrorCode::NotRunning => Self::NotRunning { detail },
+            WireErrorCode::InvalidInput => Self::InvalidArgument { detail },
+            // `sequence_conflict` is emitted solely for the server's internal
+            // single-writer invariant violation (a double-writer bug). The
+            // server has no idempotency-key feature, so this is never
+            // AlreadyExists; it is an unexpected server failure.
+            WireErrorCode::SequenceConflict | WireErrorCode::Backend => Self::Server { detail },
+            WireErrorCode::QueryFailed => Self::QueryFailed { detail },
+            WireErrorCode::QueryTimeout => Self::QueryTimeout { detail },
+            WireErrorCode::Lagged => Self::Unavailable { detail },
+        }
     }
 
     /// Converts a proto-encoded wire error into the client SDK taxonomy.
@@ -76,56 +296,61 @@ impl ClientError {
     }
 
     /// Converts a tonic status into the client SDK taxonomy.
+    ///
+    /// The server encodes the full typed `WireError` (code, message,
+    /// `error_type`) into the status details; when present it is
+    /// authoritative. Without decodable details the gRPC code is mapped and
+    /// the status message becomes the detail, so the server's human detail is
+    /// never dropped.
     #[must_use]
     pub fn from_status(status: &tonic::Status) -> Self {
         if let Some(error) = decode_status_details(status) {
             return Self::from_proto_wire_error(error);
         }
 
+        let detail = ErrorDetail::new(status.message());
         match status.code() {
-            Code::NotFound => Self::NotFound,
-            Code::AlreadyExists => Self::AlreadyExists,
-            Code::DeadlineExceeded => Self::QueryTimeout,
-            Code::Cancelled => Self::Cancelled,
-            Code::Unavailable | Code::ResourceExhausted => Self::Unavailable,
-            Code::Unauthenticated => Self::Unauthenticated,
-            Code::PermissionDenied => Self::NamespaceDenied {
-                detail: status.message().to_owned(),
-            },
-            Code::InvalidArgument | Code::FailedPrecondition => Self::InvalidArgument {
-                detail: status.message().to_owned(),
-            },
+            Code::NotFound => Self::NotFound { detail },
+            Code::AlreadyExists => Self::AlreadyExists { detail },
+            Code::DeadlineExceeded => Self::QueryTimeout { detail },
+            Code::Cancelled => Self::Cancelled { detail },
+            Code::Unavailable | Code::ResourceExhausted => Self::Unavailable { detail },
+            Code::Unauthenticated => Self::Unauthenticated { detail },
+            Code::PermissionDenied => Self::NamespaceDenied { detail },
+            Code::InvalidArgument => Self::InvalidArgument { detail },
+            // The server sends FAILED_PRECONDITION only for the `not_running`
+            // wire code, so the bare gRPC code is still unambiguous.
+            Code::FailedPrecondition => Self::NotRunning { detail },
             // ABORTED deliberately falls through to Server: the server sends
             // it only for `sequence_conflict`, an internal single-writer
             // invariant violation (a double-writer bug), never an
             // idempotency conflict — so it must not map to AlreadyExists.
-            _ => Self::Server {
-                detail: status.message().to_owned(),
-            },
+            _ => Self::Server { detail },
         }
     }
 
-    /// Converts a tonic transport failure into the client SDK taxonomy.
+    /// Converts a tonic transport failure into the client SDK taxonomy,
+    /// preserving the full transport error chain as the detail message.
     #[must_use]
-    pub fn from_transport_error(_: tonic::transport::Error) -> Self {
-        Self::Unavailable
-    }
-
-    /// Converts a local conversion/detail failure into an unexpected server error.
-    #[must_use]
-    pub fn server(detail: impl Into<String>) -> Self {
-        Self::Server {
-            detail: detail.into(),
+    pub fn from_transport_error(error: &tonic::transport::Error) -> Self {
+        Self::Unavailable {
+            detail: ErrorDetail::new(source_chain(error)),
         }
     }
+}
 
-    /// Creates an [`ClientError::InvalidArgument`] carrying a precise message.
-    #[must_use]
-    pub fn invalid_argument(detail: impl Into<String>) -> Self {
-        Self::InvalidArgument {
-            detail: detail.into(),
-        }
+/// Joins an error's Display with every `source()` cause, so transport errors
+/// like tonic's bare "transport error" keep their underlying connect/DNS/TLS
+/// detail.
+fn source_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
     }
+    message
 }
 
 fn decode_status_details(status: &tonic::Status) -> Option<ProtoWireError> {
@@ -136,30 +361,9 @@ fn decode_status_details(status: &tonic::Status) -> Option<ProtoWireError> {
     ProtoWireError::decode(details).ok()
 }
 
-fn map_wire_parts(code: WireErrorCode, detail: String) -> ClientError {
-    match code {
-        WireErrorCode::NotFound => ClientError::NotFound,
-        WireErrorCode::NamespaceDenied => ClientError::NamespaceDenied { detail },
-        WireErrorCode::UnknownQuery | WireErrorCode::NotRunning | WireErrorCode::InvalidInput => {
-            ClientError::InvalidArgument { detail }
-        }
-        // `sequence_conflict` is emitted solely for the server's internal
-        // single-writer invariant violation (a double-writer bug). The server
-        // has no idempotency-key feature, so this is never AlreadyExists; it
-        // is an unexpected server failure.
-        WireErrorCode::SequenceConflict | WireErrorCode::Backend => ClientError::Server { detail },
-        WireErrorCode::QueryFailed => ClientError::QueryFailed,
-        WireErrorCode::QueryTimeout => ClientError::QueryTimeout,
-        WireErrorCode::Lagged => ClientError::Unavailable,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ClientError;
-    use aion_proto::WireError;
-    use prost::Message;
-    use tonic::{Code, Status};
+    use super::{ClientError, ErrorDetail};
 
     fn assert_send_sync_static<T: Send + Sync + 'static>() {}
 
@@ -168,141 +372,68 @@ mod tests {
         assert_send_sync_static::<ClientError>();
     }
 
-    #[test]
-    fn maps_known_wire_errors_without_collapsing_to_server() {
-        assert_eq!(
-            ClientError::from_wire_error(WireError::not_found("missing")),
-            ClientError::NotFound
-        );
-        assert_eq!(
-            ClientError::from_wire_error(WireError::query_timeout("slow")),
-            ClientError::QueryTimeout
-        );
-        assert_eq!(
-            ClientError::from_wire_error(WireError::query_failed("handler raised")),
-            ClientError::QueryFailed
-        );
-        assert_eq!(
-            ClientError::from_wire_error(WireError::lagged("behind")),
-            ClientError::Unavailable
-        );
+    /// Every variant of the taxonomy, exercised so adding a variant breaks
+    /// this list until its class/Display contract is pinned.
+    fn all_variants() -> Vec<ClientError> {
+        vec![
+            ClientError::not_found("d"),
+            ClientError::already_exists("d"),
+            ClientError::query_failed("d"),
+            ClientError::query_timeout("d"),
+            ClientError::unknown_query("d"),
+            ClientError::not_running("d"),
+            ClientError::cancelled("d"),
+            ClientError::unavailable("d"),
+            ClientError::unauthenticated("d"),
+            ClientError::namespace_denied("d"),
+            ClientError::invalid_argument("d"),
+            ClientError::server("d"),
+        ]
     }
 
     #[test]
-    fn invalid_input_preserves_the_precise_detail() {
-        assert_eq!(
-            ClientError::from_wire_error(WireError::invalid_input("resume_from_seq must be >= 1")),
-            ClientError::InvalidArgument {
-                detail: String::from("resume_from_seq must be >= 1"),
-            }
-        );
-        assert_eq!(
-            ClientError::from_status(&Status::new(Code::InvalidArgument, "bad cursor")),
-            ClientError::InvalidArgument {
-                detail: String::from("bad cursor"),
-            }
-        );
-        assert_eq!(
-            ClientError::invalid_argument("no stream endpoint").to_string(),
-            "invalid argument: no stream endpoint"
-        );
+    fn display_is_class_colon_detail_for_every_variant() {
+        let mut classes = Vec::new();
+        for error in all_variants() {
+            assert_eq!(
+                error.to_string(),
+                format!("{}: d", error.class()),
+                "{error:?} Display must be `<class>: <detail>`",
+            );
+            assert_eq!(error.detail().message, "d");
+            classes.push(error.class());
+        }
+        let expected = [
+            "not_found",
+            "already_exists",
+            "query_failed",
+            "query_timeout",
+            "unknown_query",
+            "not_running",
+            "cancelled",
+            "unavailable",
+            "unauthenticated",
+            "namespace_denied",
+            "invalid_input",
+            "backend",
+        ];
+        assert_eq!(classes, expected, "class strings are a pinned contract");
     }
 
     #[test]
-    fn sequence_conflict_is_a_server_bug_not_already_exists() {
-        // The server has no idempotency-key feature; sequence_conflict is its
-        // internal double-writer invariant violation.
+    fn detail_display_appends_the_typed_discriminator() {
+        assert_eq!(ErrorDetail::new("plain").to_string(), "plain");
         assert_eq!(
-            ClientError::from_wire_error(WireError::sequence_conflict("conflict")),
-            ClientError::Server {
-                detail: String::from("conflict"),
-            }
-        );
-
-        let aborted = Status::new(Code::Aborted, "sequence position conflicted");
-        assert_eq!(
-            ClientError::from_status(&aborted),
-            ClientError::Server {
-                detail: String::from("sequence position conflicted"),
-            }
-        );
-
-        let already_exists = Status::new(Code::AlreadyExists, "duplicate");
-        assert_eq!(
-            ClientError::from_status(&already_exists),
-            ClientError::AlreadyExists
-        );
-    }
-
-    #[test]
-    fn maps_namespace_denied_wire_error_preserving_detail() {
-        assert_eq!(
-            ClientError::from_wire_error(WireError::namespace_denied(
-                "namespace tenant-b is not granted to this caller"
-            )),
-            ClientError::NamespaceDenied {
-                detail: String::from("namespace tenant-b is not granted to this caller"),
-            }
-        );
-    }
-
-    #[test]
-    fn permission_denied_status_without_details_falls_back_to_namespace_denied() {
-        let status = Status::new(Code::PermissionDenied, "namespace tenant-b denied");
-
-        assert_eq!(
-            ClientError::from_status(&status),
-            ClientError::NamespaceDenied {
-                detail: String::from("namespace tenant-b denied"),
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_namespace_denied_proto_wire_error_from_tonic_status_details() {
-        let proto =
-            aion_proto::ProtoWireError::from(WireError::namespace_denied("tenant-b not visible"));
-        let mut details = Vec::new();
-        let encode_result = proto.encode(&mut details);
-        assert!(encode_result.is_ok());
-        let status = Status::with_details(Code::PermissionDenied, "denied", details.into());
-
-        assert_eq!(
-            ClientError::from_status(&status),
-            ClientError::NamespaceDenied {
-                detail: String::from("tenant-b not visible"),
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_proto_wire_error_from_tonic_status_details() {
-        let proto = aion_proto::ProtoWireError::from(WireError::not_found("missing"));
-        let mut details = Vec::new();
-        let encode_result = proto.encode(&mut details);
-        assert!(encode_result.is_ok());
-        let status = Status::with_details(Code::NotFound, "missing", details.into());
-
-        assert_eq!(ClientError::from_status(&status), ClientError::NotFound);
-    }
-
-    #[test]
-    fn maps_tonic_status_fallbacks() {
-        let unavailable = Status::new(Code::Unavailable, "down");
-        let unauthenticated = Status::new(Code::Unauthenticated, "bad token");
-        let deadline = Status::new(Code::DeadlineExceeded, "slow");
-
-        assert_eq!(
-            ClientError::from_status(&unavailable),
-            ClientError::Unavailable
+            ErrorDetail::with_type("store unavailable", "Durability").to_string(),
+            "store unavailable [Durability]"
         );
         assert_eq!(
-            ClientError::from_status(&unauthenticated),
-            ClientError::Unauthenticated
-        );
-        assert_eq!(
-            ClientError::from_status(&deadline),
-            ClientError::QueryTimeout
+            ClientError::not_found(ErrorDetail::with_type(
+                "workflow was not found",
+                "WorkflowNotFound"
+            ))
+            .to_string(),
+            "not_found: workflow was not found [WorkflowNotFound]"
         );
     }
 }

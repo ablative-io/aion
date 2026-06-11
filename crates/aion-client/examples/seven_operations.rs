@@ -23,14 +23,18 @@ struct SignalInput<'a> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     if let Err(error) = run().await {
-        match error {
-            ClientError::Unavailable => {
-                eprintln!("aion-server is unavailable; check AION_SERVER_URL and the fixture");
+        match &error {
+            ClientError::Unavailable { detail } => {
+                eprintln!(
+                    "aion-server is unavailable ({detail}); check AION_SERVER_URL and the fixture"
+                );
             }
-            ClientError::AlreadyExists => {
-                eprintln!("idempotency key was reused for a different start request");
+            ClientError::AlreadyExists { detail } => {
+                eprintln!("idempotency key was reused for a different start request: {detail}");
             }
-            ClientError::QueryTimeout => eprintln!("query timed out before the fixture replied"),
+            ClientError::QueryTimeout { detail } => {
+                eprintln!("query timed out before the fixture replied: {detail}");
+            }
             other => eprintln!("aion-client example failed: {other}"),
         }
         std::process::exit(1);
@@ -109,7 +113,11 @@ async fn run() -> Result<(), ClientError> {
         Ok(Some(Ok(event))) => println!("subscribed event seq={}", event.seq()),
         Ok(Some(Err(error))) => return Err(error),
         Ok(None) => println!("subscription ended without events"),
-        Err(_) => return Err(ClientError::QueryTimeout),
+        Err(_) => {
+            return Err(ClientError::query_timeout(
+                "subscription produced no event within 5s",
+            ));
+        }
     }
 
     Ok(())

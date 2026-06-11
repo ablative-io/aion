@@ -39,7 +39,7 @@ impl GrpcWorkflowTransport {
         let channel = endpoint
             .connect()
             .await
-            .map_err(ClientError::from_transport_error)?;
+            .map_err(|error| ClientError::from_transport_error(&error))?;
         Ok(Self { channel, config })
     }
 
@@ -147,10 +147,12 @@ impl WorkflowTransport for GrpcWorkflowTransport {
 }
 
 fn endpoint_from_config(config: &ClientConfig) -> Result<Endpoint, ClientError> {
-    let uri = config
-        .endpoint
-        .parse::<http::Uri>()
-        .map_err(|_| ClientError::Unavailable)?;
+    let uri = config.endpoint.parse::<http::Uri>().map_err(|source| {
+        ClientError::unavailable(format!(
+            "endpoint {} is not a valid URI: {source}",
+            config.endpoint
+        ))
+    })?;
     let endpoint = Endpoint::from(uri);
     if let Some(tls) = &config.tls {
         let mut tls_config = ClientTlsConfig::new();
@@ -163,7 +165,7 @@ fn endpoint_from_config(config: &ClientConfig) -> Result<Endpoint, ClientError> 
         }
         endpoint
             .tls_config(tls_config)
-            .map_err(ClientError::from_transport_error)
+            .map_err(|error| ClientError::from_transport_error(&error))
     } else {
         Ok(endpoint)
     }

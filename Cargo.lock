@@ -58,11 +58,14 @@ dependencies = [
  "aion-client",
  "aion-core",
  "aion-package",
+ "aion-proto",
  "anyhow",
  "clap",
+ "prost 0.14.3",
  "serde",
  "serde_json",
  "tokio",
+ "tonic 0.14.6",
  "uuid",
 ]
 

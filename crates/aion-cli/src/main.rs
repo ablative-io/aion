@@ -1,6 +1,7 @@
 //! Command-line workflow operations for Aion.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::time::Duration;
 
 use aion_client::{Client, ClientBuilder, ListPage, StartOptions};
@@ -20,6 +21,7 @@ use crate::payload::{
 mod output;
 mod package;
 mod payload;
+mod render;
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:50051";
 const DEFAULT_NAMESPACE: &str = "default";
@@ -133,11 +135,21 @@ enum RemoteCommand {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let value = run(&cli).await?;
-    print_json(&value, cli.pretty)?;
-    Ok(())
+    let result = run(&cli)
+        .await
+        .and_then(|value| print_json(&value, cli.pretty));
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        // The single rendering contract for every subcommand: the taxonomy
+        // class, server detail, error type, and hint go to stderr; the
+        // process exits 1.
+        Err(error) => {
+            eprintln!("{}", render::render_error(&error));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Dispatches the parsed command, connecting to the server only for remote

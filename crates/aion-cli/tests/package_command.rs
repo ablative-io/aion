@@ -116,7 +116,10 @@ fn package_without_descriptor_fails_with_error_chain_and_no_dial() -> TestResult
     let stderr = String::from_utf8(output.stderr)?;
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "error runs must not write stdout");
-    assert!(stderr.contains("Error"), "missing error prefix: {stderr}");
+    assert!(
+        stderr.starts_with("error: failed to package workflow project"),
+        "missing error prefix: {stderr}"
+    );
     assert!(
         stderr.contains("no workflow.toml found"),
         "error chain does not name the missing descriptor: {stderr}"
