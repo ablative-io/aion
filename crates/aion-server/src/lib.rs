@@ -42,7 +42,8 @@ pub use error::{ServerError, StreamFailure};
 pub use namespace::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceOperation, NamespaceResolver,
     ScheduleNamespaceSource, ScheduleTarget, ScopedEngine, StaticScheduleNamespaces,
-    StaticWorkflowNamespaces, SubscriptionScope, WorkflowNamespaceSource, WorkflowTarget,
+    StaticWorkflowNamespaces, SubscriptionScope, WorkflowAttribution, WorkflowNamespaceSource,
+    WorkflowTarget,
 };
 pub use state::ServerState;
 pub use worker::{

@@ -129,6 +129,16 @@ Supported subscription messages:
 
 The same shapes may also be wrapped as `{ "subscription": { ... } }`. `filtered` accepts optional `workflow_type`, optional `status` (status name or numeric value), and optional `namespace_selector`. `firehose` accepts `namespace` or `namespace_selector`.
 
+### Filtered-subscription selector semantics
+
+`filtered` selectors are enforced server-side, before any frame is encoded:
+
+- **`workflow_type`** delivers only events of workflows whose recorded type equals the selector. A workflow's type is its most recent recorded `WorkflowStarted` type (continue-as-new chains record each run's type on that run's `WorkflowStarted`, so the type follows the chain). The type is resolved from durable history via the same per-workflow read that verifies namespace ownership; a workflow whose history records no started run never matches a `workflow_type` selector — absence is not a wildcard.
+- **`status`** matches per event kind: each terminal lifecycle event matches exactly its projected status (`WorkflowCompleted` → `Completed`, `WorkflowFailed` → `Failed`, `WorkflowCancelled` → `Cancelled`, `WorkflowTimedOut` → `TimedOut`, `WorkflowContinuedAsNew` → `ContinuedAsNew`), and every non-terminal event — including `WorkflowStarted` — matches `Running`. So `status: "Completed"` is a stream of completion events, and `status: "Running"` is the stream of in-flight activity (activities, timers, signals, starts) without terminal events.
+- When both selectors are present they **AND** together: an event is delivered only when its workflow has the selected type *and* the event kind matches the selected status.
+
+Filtered streams remain live-only (see resumption below): selectors choose which live events are delivered, they do not replay history.
+
 The server requires `websocket.event_broadcast_capacity` in its configuration (env: `AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY`) — startup fails without it. It sizes the engine-global live-event broadcast channel; lag is filter-blind, so size it for global event volume across all namespaces.
 
 ### Subscription resumption (`resume_from_seq`)
@@ -152,7 +162,7 @@ Cursor error semantics (the namespace guard verdict always comes first — an un
 | `resume_from_seq > head + 1` | `invalid_input`, `error_type: "ResumeCursorAheadOfHistory"` |
 | Cursor older than earliest retained event (compaction; cannot occur yet) | reserved: `not_found`, `error_type: "HistoryCompacted"` — restart without a cursor |
 
-All stream errors are one terminal `{"error": {"code": ..., "message": ..., "error_type": ...}}` text frame followed by a close frame. A consumer that falls behind the live stream receives a terminal `lagged` error frame; reconnect with `resume_from_seq = last delivered seq + 1` to continue gap-free.
+All stream errors are one terminal `{"error": {"code": ..., "message": ..., "error_type": ...}}` text frame followed by a close frame; any event frames already queued for the connection are delivered before the terminal error frame. A consumer that falls behind the live stream receives a terminal `lagged` error frame; reconnect with `resume_from_seq = last delivered seq + 1` to continue gap-free. Per-workflow streams additionally carry a server-side contiguity tripwire: if a delivered-sequence gap or regression is ever observed (unreachable under normal operation), the stream ends with a terminal `lagged` error frame carrying `error_type: "SequenceContiguityViolation"` instead of silently delivering a gapped stream — recover the same way, by reconnecting with `resume_from_seq = last delivered seq + 1`.
 
 ## Recovery and durable timers
 

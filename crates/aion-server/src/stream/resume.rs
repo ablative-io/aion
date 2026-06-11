@@ -146,7 +146,12 @@ mod tests {
             ownership,
             crate::namespace::StaticScheduleNamespaces::default(),
         );
-        Ok(NamespaceEventGate::new(resolver, "tenant-a".to_owned()))
+        let capacity = std::num::NonZeroUsize::new(8).ok_or("verdict capacity must be non-zero")?;
+        Ok(NamespaceEventGate::new(
+            resolver,
+            "tenant-a".to_owned(),
+            capacity,
+        ))
     }
 
     fn delivered_seqs(events: &[Event]) -> Vec<u64> {
@@ -259,6 +264,7 @@ mod tests {
         let subscription = crate::stream::EventSubscription {
             namespace: "tenant-a".to_owned(),
             filter: aion::EventFilter::default(),
+            selector: crate::stream::selector::SubscriptionSelector::unrestricted(),
             workflow_target: Some(workflow_id()),
             replay,
             events: tail,
@@ -291,6 +297,7 @@ mod tests {
         let subscription = crate::stream::EventSubscription {
             namespace: "tenant-a".to_owned(),
             filter: aion::EventFilter::default(),
+            selector: crate::stream::selector::SubscriptionSelector::unrestricted(),
             workflow_target: Some(workflow_id()),
             replay,
             events: tail,

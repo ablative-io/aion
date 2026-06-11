@@ -424,3 +424,162 @@ fn event_for(seq: u64, workflow_id: &WorkflowId) -> Result<Event, TestError> {
         signal(seq, workflow_id)
     }
 }
+
+fn typed_started(
+    seq: u64,
+    workflow_id: &WorkflowId,
+    workflow_type: &str,
+) -> Result<Event, TestError> {
+    Ok(Event::WorkflowStarted {
+        envelope: envelope(seq, workflow_id),
+        workflow_type: workflow_type.to_owned(),
+        input: Payload::from_json(&json!({ "seq": seq }))?,
+        run_id: aion_core::RunId::new(uuid::Uuid::new_v4()),
+        parent_run_id: None,
+    })
+}
+
+fn completed(seq: u64, workflow_id: &WorkflowId) -> Result<Event, TestError> {
+    Ok(Event::WorkflowCompleted {
+        envelope: envelope(seq, workflow_id),
+        result: Payload::from_json(&json!({ "seq": seq }))?,
+    })
+}
+
+/// Append `[started, completed]` batches to fresh checkout workflows until
+/// the filtered subscriber delivers its first frame, proving the live
+/// subscription is attached. Returns the frames received so far.
+async fn attach_completed_checkouts(
+    server: &StreamServer,
+    socket: &mut ClientSocket,
+    attach_workflows: &[WorkflowId],
+) -> Result<Vec<String>, TestError> {
+    let mut received = Vec::new();
+    for workflow_id in attach_workflows {
+        server
+            .append(
+                workflow_id,
+                &[
+                    typed_started(1, workflow_id, "checkout")?,
+                    completed(2, workflow_id)?,
+                ],
+            )
+            .await?;
+        loop {
+            let frame = match tokio::time::timeout(Duration::from_millis(100), socket.next()).await
+            {
+                Ok(frame) => frame,
+                Err(_elapsed) => break,
+            };
+            match frame {
+                Some(Ok(Message::Text(text))) => {
+                    received.push(text.to_string());
+                    return Ok(received);
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                other => return Err(format!("unexpected filtered frame: {other:?}").into()),
+            }
+        }
+    }
+    Ok(received)
+}
+
+/// FINDING M2 (end to end): `filtered` subscription selectors are enforced
+/// server-side through the full wire path — a `workflow_type` + `status`
+/// subscriber receives exactly the matching workflows' matching events, never
+/// the whole namespace stream.
+#[tokio::test]
+async fn filtered_subscription_enforces_type_and_status_selectors() -> Result<(), TestError> {
+    let fulfillment = WorkflowId::new(uuid::Uuid::from_u128(64));
+    let ownership = StaticWorkflowNamespaces::default();
+    ownership.record_with_type(fulfillment.clone(), TENANT_A, "fulfillment")?;
+    // Fresh checkout-typed workflows minted on demand for attach + assertion.
+    let mut next_checkout = 100_u128;
+    let mut mint_checkout = || -> Result<WorkflowId, TestError> {
+        let workflow_id = WorkflowId::new(uuid::Uuid::from_u128(next_checkout));
+        next_checkout += 1;
+        ownership.record_with_type(workflow_id.clone(), TENANT_A, "checkout")?;
+        Ok(workflow_id)
+    };
+    let mut attach_workflows = Vec::new();
+    for _ in 0..100 {
+        attach_workflows.push(mint_checkout()?);
+    }
+    let final_checkout = mint_checkout()?;
+    let server = StreamServer::start(ownership).await?;
+
+    let mut socket = connect(server.address, TENANT_A).await?;
+    socket
+        .send(Message::Text(
+            json!({
+                "filtered": {
+                    "namespace": TENANT_A,
+                    "workflow_type": "checkout",
+                    "status": "Completed",
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await?;
+
+    // Establish that the live subscription is attached: complete fresh
+    // checkout workflows until one Completed frame arrives (events appended
+    // before attach are live-only misses).
+    let mut received = attach_completed_checkouts(&server, &mut socket, &attach_workflows).await?;
+    assert!(
+        !received.is_empty(),
+        "filtered subscription never delivered a matching event"
+    );
+
+    // Interleave non-matching traffic before the matching terminal event:
+    // a fulfillment workflow completing (wrong type) and the checkout
+    // workflow's non-terminal events (wrong status). Broadcast order is
+    // preserved, so receiving the final completed frame proves the
+    // non-matching events were filtered, not still in flight.
+    server
+        .append(
+            &fulfillment,
+            &[
+                typed_started(1, &fulfillment, "fulfillment")?,
+                completed(2, &fulfillment)?,
+            ],
+        )
+        .await?;
+    server
+        .append(
+            &final_checkout,
+            &[
+                typed_started(1, &final_checkout, "checkout")?,
+                signal(2, &final_checkout)?,
+                completed(3, &final_checkout)?,
+            ],
+        )
+        .await?;
+    let text = next_text_frame(&mut socket)
+        .await?
+        .ok_or("filtered stream closed before the final matching event")?;
+    let streamed: StreamedEvent = serde_json::from_str(&text)?;
+    let event = streamed.decode_event()?;
+    assert_eq!(event.workflow_id(), &final_checkout);
+    assert_eq!(event.seq(), 3, "only the Completed event may be delivered");
+    received.push(text);
+
+    // Every frame ever delivered is a checkout workflow's Completed event.
+    for text in &received {
+        let streamed: StreamedEvent = serde_json::from_str(text)?;
+        assert_eq!(streamed.namespace, TENANT_A);
+        let event = streamed.decode_event()?;
+        assert!(
+            matches!(event, Event::WorkflowCompleted { .. }),
+            "status selector must filter non-Completed events, got {event:?}"
+        );
+        assert_ne!(
+            event.workflow_id(),
+            &fulfillment,
+            "type selector must filter foreign-typed workflows"
+        );
+    }
+    server.stop()?;
+    Ok(())
+}

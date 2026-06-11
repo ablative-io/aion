@@ -9,6 +9,7 @@ use crate::error::ServerError;
 use crate::namespace::{
     CallerIdentity, NamespaceGuard, NamespaceOperation, SubscriptionScope, WorkflowTarget,
 };
+use crate::stream::selector::SubscriptionSelector;
 
 /// Authorized subscription returned by the adapter boundary.
 pub struct EventSubscription {
@@ -16,6 +17,8 @@ pub struct EventSubscription {
     pub namespace: String,
     /// Engine-side filter used for the subscription.
     pub filter: EventFilter,
+    /// Workflow-type/status selectors applied server-side before encoding.
+    pub selector: SubscriptionSelector,
     /// Per-workflow target, when the subscription is tied to one workflow.
     pub workflow_target: Option<WorkflowId>,
     /// Recorded history slice replayed before the live tail. Empty unless the
@@ -75,6 +78,7 @@ pub async fn subscribe_events(
     Ok(EventSubscription {
         namespace: scoped.namespace().to_owned(),
         filter: mapped.filter,
+        selector: mapped.selector,
         workflow_target: mapped.workflow_target,
         replay,
         events,
@@ -86,6 +90,9 @@ pub async fn subscribe_events(
 pub struct MappedSubscription {
     /// Filter passed directly to `Engine::subscribe`.
     pub filter: EventFilter,
+    /// Workflow-type/status selectors enforced server-side at the socket seam
+    /// (the engine filter has no type or status dimension).
+    pub selector: SubscriptionSelector,
     /// Per-workflow target, when supplied by the request.
     pub workflow_target: Option<WorkflowId>,
     /// Resume cursor ("first seq wanted"); carried by per-workflow
@@ -95,10 +102,11 @@ pub struct MappedSubscription {
 
 /// Map a wire subscription request onto the engine's event filter surface.
 ///
-/// The current engine filter supports workflow/run/family constraints only. The
-/// namespace, workflow-type, and status selectors remain guard-scoped adapter
-/// metadata; they are validated before subscribe but are not reimplemented as a
-/// server-side broadcast filter.
+/// The current engine filter supports workflow/run/family constraints only.
+/// The namespace dimension is enforced by the guard plus the per-event
+/// namespace gate; the workflow-type and status selectors are carried as a
+/// [`SubscriptionSelector`] and enforced server-side at the socket seam before
+/// any frame is encoded.
 ///
 /// # Errors
 ///
@@ -115,14 +123,19 @@ pub fn map_subscription_request(
                     workflow_id: Some(workflow_id.clone()),
                     ..EventFilter::default()
                 },
+                selector: SubscriptionSelector::unrestricted(),
                 workflow_target: Some(workflow_id),
                 resume_from: subscription.resume_from_seq,
             })
         }
         Some(subscription_request::Subscription::Filtered(subscription)) => {
-            decode_status(subscription.status)?;
+            let status = decode_status(subscription.status)?;
             Ok(MappedSubscription {
                 filter: EventFilter::default(),
+                selector: SubscriptionSelector {
+                    workflow_type: subscription.workflow_type.clone(),
+                    status,
+                },
                 workflow_target: None,
                 resume_from: None,
             })
@@ -130,6 +143,7 @@ pub fn map_subscription_request(
         Some(subscription_request::Subscription::Firehose(_subscription)) => {
             Ok(MappedSubscription {
                 filter: EventFilter::default(),
+                selector: SubscriptionSelector::unrestricted(),
                 workflow_target: None,
                 resume_from: None,
             })
@@ -149,17 +163,16 @@ fn decode_workflow_id(workflow_id: Option<ProtoWorkflowId>) -> Result<WorkflowId
         .map_err(|wire| ServerError::Wire { wire })
 }
 
-fn decode_status(status: Option<i32>) -> Result<(), ServerError> {
+fn decode_status(status: Option<i32>) -> Result<Option<aion_core::WorkflowStatus>, ServerError> {
     let Some(status) = status else {
-        return Ok(());
+        return Ok(None);
     };
     let proto = ProtoWorkflowStatus::try_from(status).map_err(|_| ServerError::Wire {
         wire: aion_proto::WireError::backend("workflow status is invalid"),
     })?;
     let status =
         aion_core::WorkflowStatus::try_from(proto).map_err(|wire| ServerError::Wire { wire })?;
-    let _ = status;
-    Ok(())
+    Ok(Some(status))
 }
 
 #[cfg(test)]
@@ -251,13 +264,23 @@ mod tests {
         Ok(())
     }
 
+    /// FINDING M2: filtered-subscription selectors must be carried into the
+    /// mapped subscription, never validated-then-discarded — a discarded
+    /// selector silently turns a filtered stream into a namespace firehose.
     #[test]
-    fn maps_filtered_subscription_to_engine_firehose_filter()
+    fn maps_filtered_subscription_selectors_into_the_server_side_selector()
     -> Result<(), Box<dyn std::error::Error>> {
         let mapped = map_subscription_request(&filtered_request("tenant-a", Some("tenant-a")))?;
 
         assert_eq!(mapped.filter, aion::EventFilter::default());
         assert!(mapped.workflow_target.is_none());
+        assert_eq!(
+            mapped.selector,
+            crate::stream::selector::SubscriptionSelector {
+                workflow_type: Some("checkout".to_owned()),
+                status: Some(aion_core::WorkflowStatus::Running),
+            }
+        );
         Ok(())
     }
 
@@ -268,6 +291,10 @@ mod tests {
 
         assert_eq!(mapped.filter, aion::EventFilter::default());
         assert!(mapped.workflow_target.is_none());
+        assert_eq!(
+            mapped.selector,
+            crate::stream::selector::SubscriptionSelector::unrestricted()
+        );
         Ok(())
     }
 

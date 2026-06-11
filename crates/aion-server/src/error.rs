@@ -262,6 +262,20 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::RegistryPoisoned => simple_engine_fields("RegistryPoisoned", source),
         EngineError::NifRegistration { .. } => simple_engine_fields("NifRegistration", source),
         EngineError::SignalRouter(_) => simple_engine_fields("SignalRouter", source),
+        EngineError::Query(query) => simple_engine_fields(query_error_type(query), source),
+    }
+}
+
+/// Trace discriminator for live-query dispatch failures.
+fn query_error_type(source: &aion::QueryError) -> &'static str {
+    match source {
+        aion::QueryError::UnknownQuery(_) => "UnknownQuery",
+        aion::QueryError::Timeout => "QueryTimeout",
+        aion::QueryError::NotRunning(_) => "QueryNotRunning",
+        aion::QueryError::Unknown(_) => "QueryUnknownWorkflow",
+        aion::QueryError::ReplyDropped => "QueryReplyDropped",
+        aion::QueryError::HandlerFailed { .. } => "QueryFailed",
+        aion::QueryError::Engine(_) => "QueryEngine",
     }
 }
 
@@ -339,6 +353,28 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         }
         EngineError::SignalRouter(_) => {
             WireError::backend_with_type("SignalRouter", source.to_string())
+        }
+        EngineError::Query(query) => wire_from_query(query, source),
+    }
+}
+
+/// Wire mapping for live-query dispatch failures (per the #45 brief).
+///
+/// `HandlerFailed` rides the `backend` code with `error_type` `"QueryFailed"`
+/// until the dedicated `query_failed` wire code lands with the #45 server
+/// wave (decision Q1b), which replaces this arm.
+fn wire_from_query(query: &aion::QueryError, source: &EngineError) -> WireError {
+    match query {
+        aion::QueryError::UnknownQuery(_) => WireError::unknown_query(source.to_string()),
+        aion::QueryError::Timeout => WireError::query_timeout(source.to_string()),
+        aion::QueryError::NotRunning(_) | aion::QueryError::ReplyDropped => {
+            WireError::not_running_with_type(query_error_type(query), source.to_string())
+        }
+        aion::QueryError::Unknown(_) => {
+            WireError::not_found_with_type(query_error_type(query), source.to_string())
+        }
+        aion::QueryError::HandlerFailed { .. } | aion::QueryError::Engine(_) => {
+            WireError::backend_with_type(query_error_type(query), source.to_string())
         }
     }
 }

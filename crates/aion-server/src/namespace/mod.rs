@@ -12,6 +12,6 @@ pub use guard::{
 };
 pub use resolver::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceResolver, ScopedEngine, StaticWorkflowNamespaces,
-    WorkflowNamespaceSource,
+    WorkflowAttribution, WorkflowNamespaceSource,
 };
 pub use schedule_source::{ScheduleNamespaceSource, StaticScheduleNamespaces};

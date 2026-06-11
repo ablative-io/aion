@@ -94,52 +94,80 @@ impl ScopedEngine {
     }
 }
 
-/// Durable source of workflow→namespace ownership facts.
+/// Durable per-workflow attribution facts projected from recorded history.
 ///
-/// The production implementation projects ownership from recorded workflow
+/// Namespace ownership and workflow type are both immutable projections of the
+/// same durable history (ownership is recorded atomically with the
+/// `WorkflowStarted` batch; the type is the most recent run's recorded
+/// `WorkflowStarted` type), so one read serves both consumers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowAttribution {
+    /// Namespace recorded as the workflow's owner.
+    pub namespace: String,
+    /// Workflow type recorded by the most recent `WorkflowStarted` event, or
+    /// [`None`] when the history records no started run.
+    pub workflow_type: Option<String>,
+}
+
+/// Durable source of workflow→namespace ownership and type attribution facts.
+///
+/// The production implementation projects attribution from recorded workflow
 /// history; tests substitute a static fixture to prove adapter-boundary
 /// denials without an engine.
 #[async_trait]
 pub trait WorkflowNamespaceSource: Send + Sync {
-    /// Returns the namespace recorded for a workflow, or [`None`] when the
+    /// Returns the attribution recorded for a workflow, or [`None`] when the
     /// workflow is unknown or recorded no namespace attribute.
     ///
     /// # Errors
     ///
     /// Returns [`ServerError`] when the underlying ownership data cannot be read.
-    async fn workflow_namespace(
+    async fn workflow_attribution(
         &self,
         workflow_id: &WorkflowId,
-    ) -> Result<Option<String>, ServerError>;
+    ) -> Result<Option<WorkflowAttribution>, ServerError>;
 }
 
-/// Production ownership source: folds the `aion.namespace` search attribute
-/// out of the workflow's durable event history.
+/// Production attribution source: folds the `aion.namespace` search attribute
+/// and the most recent `WorkflowStarted` type out of the workflow's durable
+/// event history in a single read.
 struct HistoryNamespaceSource {
     engine: Arc<Engine>,
 }
 
 #[async_trait]
 impl WorkflowNamespaceSource for HistoryNamespaceSource {
-    async fn workflow_namespace(
+    async fn workflow_attribution(
         &self,
         workflow_id: &WorkflowId,
-    ) -> Result<Option<String>, ServerError> {
+    ) -> Result<Option<WorkflowAttribution>, ServerError> {
         let history = self
             .engine
             .store()
             .read_history(workflow_id)
             .await
             .map_err(ServerError::from)?;
-        match search_attributes_from_events(&history).remove(NAMESPACE_ATTRIBUTE) {
-            Some(SearchAttributeValue::String(namespace)) => Ok(Some(namespace)),
-            Some(other) => Err(ServerError::Config {
-                message: format!(
-                    "workflow {workflow_id} recorded a non-string {NAMESPACE_ATTRIBUTE} search attribute: {other:?}"
-                ),
-            }),
-            None => Ok(None),
-        }
+        let namespace = match search_attributes_from_events(&history).remove(NAMESPACE_ATTRIBUTE) {
+            Some(SearchAttributeValue::String(namespace)) => namespace,
+            Some(other) => {
+                return Err(ServerError::Config {
+                    message: format!(
+                        "workflow {workflow_id} recorded a non-string {NAMESPACE_ATTRIBUTE} search attribute: {other:?}"
+                    ),
+                });
+            }
+            None => return Ok(None),
+        };
+        // Continue-as-new runs share one history; the most recent
+        // `WorkflowStarted` carries the current run's workflow type.
+        let workflow_type = history.iter().rev().find_map(|event| match event {
+            aion_core::Event::WorkflowStarted { workflow_type, .. } => Some(workflow_type.clone()),
+            _ => None,
+        });
+        Ok(Some(WorkflowAttribution {
+            namespace,
+            workflow_type,
+        }))
     }
 }
 
@@ -147,31 +175,68 @@ impl WorkflowNamespaceSource for HistoryNamespaceSource {
 /// wiring that must authorize without an engine handle.
 #[derive(Clone, Default)]
 pub struct StaticWorkflowNamespaces {
-    inner: Arc<RwLock<HashMap<WorkflowId, String>>>,
+    inner: Arc<RwLock<HashMap<WorkflowId, WorkflowAttribution>>>,
 }
 
 impl StaticWorkflowNamespaces {
-    /// Record that a workflow is owned by a namespace.
+    /// Record that a workflow is owned by a namespace, with no recorded
+    /// workflow type (the fixture equivalent of a history without a
+    /// `WorkflowStarted` event).
     ///
     /// # Errors
     ///
     /// Returns [`ServerError::LockPoisoned`] if the fixture lock was poisoned.
     pub fn record(&self, workflow_id: WorkflowId, namespace: &str) -> Result<(), ServerError> {
+        self.insert(
+            workflow_id,
+            WorkflowAttribution {
+                namespace: namespace.to_owned(),
+                workflow_type: None,
+            },
+        )
+    }
+
+    /// Record that a workflow is owned by a namespace and carries a recorded
+    /// workflow type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the fixture lock was poisoned.
+    pub fn record_with_type(
+        &self,
+        workflow_id: WorkflowId,
+        namespace: &str,
+        workflow_type: &str,
+    ) -> Result<(), ServerError> {
+        self.insert(
+            workflow_id,
+            WorkflowAttribution {
+                namespace: namespace.to_owned(),
+                workflow_type: Some(workflow_type.to_owned()),
+            },
+        )
+    }
+
+    fn insert(
+        &self,
+        workflow_id: WorkflowId,
+        attribution: WorkflowAttribution,
+    ) -> Result<(), ServerError> {
         let mut ownership = self
             .inner
             .write()
             .map_err(|_| ServerError::lock_poisoned("namespace workflow ownership"))?;
-        ownership.insert(workflow_id, namespace.to_owned());
+        ownership.insert(workflow_id, attribution);
         Ok(())
     }
 }
 
 #[async_trait]
 impl WorkflowNamespaceSource for StaticWorkflowNamespaces {
-    async fn workflow_namespace(
+    async fn workflow_attribution(
         &self,
         workflow_id: &WorkflowId,
-    ) -> Result<Option<String>, ServerError> {
+    ) -> Result<Option<WorkflowAttribution>, ServerError> {
         let ownership = self
             .inner
             .read()
@@ -317,14 +382,39 @@ impl NamespaceResolver {
         namespace: &str,
         workflow_id: &WorkflowId,
     ) -> Result<(), ServerError> {
-        match self.ownership.workflow_namespace(workflow_id).await? {
-            Some(owner) if owner == namespace => Ok(()),
-            // Anti-existence-leak: absent and foreign ownership must be one
-            // identical NotFound, never a distinguishable denial.
-            Some(_) | None => Err(ServerError::Wire {
+        match self.workflow_attribution(namespace, workflow_id).await? {
+            Some(_) => Ok(()),
+            None => Err(ServerError::Wire {
                 wire: WireError::not_found(format!("workflow not found in namespace {namespace}")),
             }),
         }
+    }
+
+    /// Read a workflow's durable attribution scoped to one namespace.
+    ///
+    /// Returns the recorded attribution only when the workflow's recorded
+    /// owner namespace equals `namespace`. Foreign-owned and unknown workflows
+    /// both yield [`None`] (anti-existence-leak: callers must treat the two
+    /// cases identically and never disclose which one occurred).
+    ///
+    /// This is the single read that serves both the namespace verdict and the
+    /// workflow-type lookup at the streaming seam — one durable history read
+    /// per workflow answers both questions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the underlying ownership data cannot be
+    /// read; callers must fail loudly rather than guessing.
+    pub async fn workflow_attribution(
+        &self,
+        namespace: &str,
+        workflow_id: &WorkflowId,
+    ) -> Result<Option<WorkflowAttribution>, ServerError> {
+        Ok(self
+            .ownership
+            .workflow_attribution(workflow_id)
+            .await?
+            .filter(|attribution| attribution.namespace == namespace))
     }
 
     /// Verify durable schedule ownership against the requested namespace.
@@ -551,8 +641,62 @@ mod tests {
         ownership.record(workflow_id.clone(), "tenant-a")?;
 
         assert_eq!(
-            ownership.workflow_namespace(&workflow_id).await?,
-            Some(String::from("tenant-a"))
+            ownership.workflow_attribution(&workflow_id).await?,
+            Some(super::WorkflowAttribution {
+                namespace: String::from("tenant-a"),
+                workflow_type: None,
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_source_reports_recorded_workflow_type() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let ownership = StaticWorkflowNamespaces::default();
+        let workflow_id = WorkflowId::new(uuid::Uuid::from_u128(4));
+        ownership.record_with_type(workflow_id.clone(), "tenant-a", "checkout")?;
+
+        assert_eq!(
+            ownership.workflow_attribution(&workflow_id).await?,
+            Some(super::WorkflowAttribution {
+                namespace: String::from("tenant-a"),
+                workflow_type: Some(String::from("checkout")),
+            })
+        );
+        Ok(())
+    }
+
+    /// The namespace-scoped attribution read must hide foreign and unknown
+    /// workflows identically (anti-existence-leak) while exposing the recorded
+    /// type for owned workflows.
+    #[tokio::test]
+    async fn scoped_attribution_hides_foreign_and_unknown_identically()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ownership = StaticWorkflowNamespaces::default();
+        let owned = WorkflowId::new(uuid::Uuid::from_u128(5));
+        let foreign = WorkflowId::new(uuid::Uuid::from_u128(6));
+        let unknown = WorkflowId::new(uuid::Uuid::from_u128(7));
+        ownership.record_with_type(owned.clone(), "tenant-a", "checkout")?;
+        ownership.record_with_type(foreign.clone(), "tenant-b", "checkout")?;
+        let resolver = NamespaceResolver::authorization_only(
+            NamespaceMode::SharedEngine,
+            ownership,
+            StaticScheduleNamespaces::default(),
+        );
+
+        let visible = resolver
+            .workflow_attribution("tenant-a", &owned)
+            .await?
+            .ok_or("owned workflow attribution must be visible")?;
+        assert_eq!(visible.workflow_type.as_deref(), Some("checkout"));
+        assert_eq!(
+            resolver.workflow_attribution("tenant-a", &foreign).await?,
+            None
+        );
+        assert_eq!(
+            resolver.workflow_attribution("tenant-a", &unknown).await?,
+            None
         );
         Ok(())
     }
