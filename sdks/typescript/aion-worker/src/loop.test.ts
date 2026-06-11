@@ -5,6 +5,7 @@ import {
 	type DispatchOutcome,
 	runWorkerLoop,
 } from "./loop.js";
+import { ReconnectExhaustedError, UnackedResultTracker } from "./reconnect.js";
 import type {
 	ActivityFailure,
 	ActivityTask,
@@ -250,56 +251,349 @@ describe("runWorkerLoop", () => {
 			}),
 		).rejects.toBe(finalDenial);
 
-		// The UNAVAILABLE stream error fed the bounded reconnect path: one
-		// failed attempt slept and a second attempt produced the working
-		// session whose task was served before its own stream denial ended
-		// the loop fail-fast.
+		// The UNAVAILABLE stream error fed the bounded reconnect path: the
+		// drop itself backed off once (inter-cycle delay), the first
+		// establishment attempt failed and slept once more, and the second
+		// attempt produced the working session whose task was served before
+		// its own stream denial ended the loop fail-fast.
 		expect(factoryCalls).toBe(2);
-		expect(sleeps).toEqual([1]);
+		expect(sleeps).toEqual([1, 1]);
 		expect(first.closed).toBe(true);
 		expect(second.reports).toEqual(["after-reconnect"]);
 		expect(second.closed).toBe(true);
 	});
 
-	it("still reconnects on a clean stream close without surfacing an error", async () => {
-		const denialToEndTest = serviceError(
-			status.PERMISSION_DENIED,
-			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
-		);
+	it("reconnects on clean closes but bounds them with the cumulative drop budget", async () => {
 		const first = new ScriptedSession([{ kind: "closed" }]);
 		// The second session's iterator completes without yielding `closed`,
 		// covering the `done: true` clean-completion path as well.
 		const second = new ScriptedSession([{ kind: "task", task: task("1") }]);
+		const third = new ScriptedSession([{ kind: "closed" }]);
+		const replacements = [second, third];
+		const sleeps: number[] = [];
 		let factoryCalls = 0;
+
+		const failure = await runWorkerLoop({
+			config: reconnectingConfig(3),
+			session: first,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				const session = replacements[factoryCalls];
+				factoryCalls += 1;
+				if (session === undefined) {
+					throw new Error("session factory exhausted");
+				}
+				return session;
+			},
+			sleep: async (delayMs) => {
+				sleeps.push(delayMs);
+			},
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		// Each clean close re-entered the reconnect cycle (the task on the
+		// second session was still served), consumed one unit of the shared
+		// drop budget, and backed off on the config's own schedule; the third
+		// clean close exhausted the budget and surfaced a classified error.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect((failure as Error).message).toContain(
+			"worker session drop budget exhausted after 3 dropped sessions",
+		);
+		expect(((failure as Error).cause as Error).message).toBe(
+			"worker receive stream closed cleanly while a session factory was configured",
+		);
+		expect(factoryCalls).toBe(2);
+		expect(sleeps).toEqual([1, 2]);
+		expect(second.reports).toEqual(["1"]);
+		// Replaced sessions are closed before their replacements are dialled.
+		expect(first.closed).toBe(true);
+		expect(second.closed).toBe(true);
+		expect(third.closed).toBe(true);
+	});
+
+	it("exhausts the cumulative drop budget across cycles and surfaces the last underlying error", async () => {
+		const firstDrop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		// Not grpc-js ServiceError shaped (connect-es style array details):
+		// the shape-gate classifies it retryable, so it must consume the
+		// bounded budget and be preserved as the exhaustion cause.
+		const lastDrop = Object.assign(
+			new Error("connection reset by load balancer"),
+			{ code: status.PERMISSION_DENIED, details: ["denied"] },
+		);
+		const first = new ScriptedSession([{ kind: "throw", error: firstDrop }]);
+		const second = new ScriptedSession([{ kind: "throw", error: lastDrop }]);
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+
+		const failure = await runWorkerLoop({
+			config: reconnectingConfig(2),
+			session: first,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				factoryCalls += 1;
+				return second;
+			},
+			sleep: async (delayMs) => {
+				sleeps.push(delayMs);
+			},
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect((failure as Error).cause).toBe(lastDrop);
+		// The last underlying error keeps its full detail through exhaustion.
+		expect(((failure as Error).cause as { details: unknown }).details).toEqual(
+			["denied"],
+		);
+		expect((failure as Error).message).toContain(
+			"connection reset by load balancer",
+		);
+		expect(factoryCalls).toBe(1);
+		expect(sleeps).toEqual([1]);
+		expect(first.closed).toBe(true);
+		expect(second.closed).toBe(true);
+	});
+
+	it("derives inter-cycle drop backoff from the config's own schedule with the cap applied", async () => {
+		const drop = () =>
+			serviceError(status.UNAVAILABLE, "14 UNAVAILABLE: stream reset");
+		const sessions = [
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+			new ScriptedSession([{ kind: "throw", error: drop() }]),
+		];
+		const scheduleConfig: WorkerConfig = {
+			...reconnectingConfig(),
+			reconnect: { initialDelayMs: 1, maxDelayMs: 4, maxAttempts: 5 },
+		};
+		const sleeps: number[] = [];
+		let factoryCalls = 0;
+
+		const failure = await runWorkerLoop({
+			config: scheduleConfig,
+			session: sessions[0] as ScriptedSession,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => {
+				factoryCalls += 1;
+				const session = sessions[factoryCalls];
+				if (session === undefined) {
+					throw new Error("session factory exhausted");
+				}
+				return session;
+			},
+			sleep: async (delayMs) => {
+				sleeps.push(delayMs);
+			},
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		// Four drops recovered with the doubling schedule capped at
+		// maxDelayMs; the fifth drop exhausted the budget.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect(sleeps).toEqual([1, 2, 4, 4]);
+		expect(factoryCalls).toBe(4);
+	});
+
+	it("counts a retryable result-replay failure against the drop budget", async () => {
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		const replayFailure = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: replay write lost the race with a second reset",
+		);
+		const tracker = new UnackedResultTracker();
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow",
+			activityId: "unacked-1",
+			result: payload,
+		});
+		const first = new ScriptedSession([{ kind: "throw", error: drop }]);
+		const second = new ReportFailingSession([], replayFailure);
+		const third = new ScriptedSession([{ kind: "closed" }]);
+		const replacements = [second, third];
+		let factoryCalls = 0;
+
+		const failure = await runWorkerLoop({
+			config: reconnectingConfig(3),
+			session: first,
+			dispatcher: new SlowDispatcher(),
+			tracker,
+			sessionFactory: async () => {
+				const session = replacements[factoryCalls];
+				factoryCalls += 1;
+				if (session === undefined) {
+					throw new Error("session factory exhausted");
+				}
+				return session;
+			},
+			sleep: () => Promise.resolve(),
+		}).then(
+			() => {
+				throw new Error("expected runWorkerLoop to reject");
+			},
+			(error: unknown) => error,
+		);
+
+		// Drop one: the stream reset. Drop two: the failed replay on the
+		// second session (which was closed before re-entering the cycle).
+		// The third session then received the replayed result before its own
+		// clean close exhausted the budget — proving replay re-entry works
+		// and shares the one cumulative budget.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect(factoryCalls).toBe(2);
+		expect(second.closed).toBe(true);
+		expect(third.reports).toEqual(["unacked-1"]);
+		expect(third.closed).toBe(true);
+	});
+
+	it("propagates a non-retryable result-replay failure after closing the replacement session", async () => {
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' was revoked",
+		);
+		const tracker = new UnackedResultTracker();
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow",
+			activityId: "unacked-1",
+			result: payload,
+		});
+		const first = new ScriptedSession([{ kind: "throw", error: drop }]);
+		const second = new ReportFailingSession([], denial);
 
 		await expect(
 			runWorkerLoop({
-				config: reconnectingConfig(),
+				config: reconnectingConfig(3),
 				session: first,
 				dispatcher: new SlowDispatcher(),
-				sessionFactory: async () => {
-					factoryCalls += 1;
-					if (factoryCalls <= 2) {
-						return factoryCalls === 1 ? second : first;
-					}
-					throw denialToEndTest;
-				},
+				tracker,
+				sessionFactory: async () => second,
 				sleep: () => Promise.resolve(),
 			}),
-		).rejects.toBe(denialToEndTest);
+		).rejects.toBe(denial);
 
-		// Clean closes reconnected (factory reached attempt three) and were
-		// never treated as stream errors: no session was force-closed.
-		expect(factoryCalls).toBe(3);
-		expect(second.reports).toEqual(["1"]);
-		expect(first.closed).toBe(false);
-		expect(second.closed).toBe(false);
+		expect(first.closed).toBe(true);
+		expect(second.closed).toBe(true);
+	});
+
+	it("returns cleanly when an abort races the post-reconnect result replay", async () => {
+		const drop = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: stream reset by transport",
+		);
+		const controller = new AbortController();
+		const tracker = new UnackedResultTracker();
+		tracker.record({
+			kind: "completed",
+			workflowId: "workflow",
+			activityId: "unacked-1",
+			result: payload,
+		});
+		const first = new ScriptedSession([{ kind: "throw", error: drop }]);
+		// The abort lands inside the replay write itself: the shutdown
+		// handler closed the just-published session, so the write fails the
+		// way a real write-after-end does. Graceful shutdown must not turn
+		// that into a rejected run.
+		const second = new (class extends ScriptedSession {
+			public override async reportResult(): Promise<void> {
+				controller.abort();
+				throw new Error("write after end");
+			}
+		})([]);
+
+		await runWorkerLoop({
+			config: reconnectingConfig(3),
+			session: first,
+			dispatcher: new SlowDispatcher(),
+			tracker,
+			sessionFactory: async () => second,
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+		});
+
+		expect(second.closed).toBe(true);
+		// The unacked result stays tracked for the caller; it was never
+		// acknowledged by the server.
+		expect(tracker.len()).toBe(1);
+	});
+
+	it("returns without serving when the signal is already aborted", async () => {
+		const session = new ScriptedSession([{ kind: "task", task: task("1") }]);
+		const controller = new AbortController();
+		controller.abort();
+
+		await runWorkerLoop({
+			config: reconnectingConfig(),
+			session,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => session,
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+		});
+
+		expect(session.handshakes).toBe(0);
+		expect(session.reports).toEqual([]);
+		expect(session.closed).toBe(true);
+	});
+
+	it("returns cleanly when an abort closes the session during initial registration", async () => {
+		const controller = new AbortController();
+		const session = new (class extends ScriptedSession {
+			public override async register(): Promise<void> {
+				controller.abort();
+				throw new Error("write after end");
+			}
+		})([]);
+
+		await runWorkerLoop({
+			config: reconnectingConfig(),
+			session,
+			dispatcher: new SlowDispatcher(),
+			sessionFactory: async () => session,
+			sleep: () => Promise.resolve(),
+			signal: controller.signal,
+		});
+
+		expect(session.handshakes).toBe(1);
+		expect(session.reports).toEqual([]);
+		expect(session.closed).toBe(true);
 	});
 
 	it("stops reconnecting on clean close once the shutdown signal aborts", async () => {
-		const session = new ScriptedSession([{ kind: "closed" }]);
 		const controller = new AbortController();
-		controller.abort();
+		// The abort fires while the stream is being served, immediately before
+		// its clean close — after registration, so the loop reaches the
+		// reconnect decision with the signal already aborted.
+		const session = new (class extends ScriptedSession {
+			public override async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
+				controller.abort();
+				yield { kind: "closed" };
+			}
+		})([]);
 		let factoryCalls = 0;
 
 		await runWorkerLoop({
@@ -315,7 +609,8 @@ describe("runWorkerLoop", () => {
 		});
 
 		// The clean close returned instead of dialling a replacement: the
-		// factory was never invoked and the session was never force-closed.
+		// factory was never invoked, no drop budget was consumed, and the
+		// session was never force-closed.
 		expect(factoryCalls).toBe(0);
 		expect(session.closed).toBe(false);
 	});
@@ -381,10 +676,12 @@ type ScriptedStep =
 class ScriptedSession implements WorkerSession {
 	public readonly reports: string[] = [];
 	public closed = false;
+	public handshakes = 0;
 
 	public constructor(private readonly script: readonly ScriptedStep[]) {}
 
 	public handshake(): Promise<void> {
+		this.handshakes += 1;
 		return Promise.resolve();
 	}
 
@@ -425,6 +722,27 @@ class ScriptedSession implements WorkerSession {
 	}
 }
 
+/**
+ * Session whose report writes fail the way a dead transport's do, for the
+ * post-reconnect result-replay failure paths.
+ */
+class ReportFailingSession extends ScriptedSession {
+	public constructor(
+		script: readonly ScriptedStep[],
+		private readonly failure: Error,
+	) {
+		super(script);
+	}
+
+	public override async reportResult(): Promise<void> {
+		throw this.failure;
+	}
+
+	public override async reportFailure(): Promise<void> {
+		throw this.failure;
+	}
+}
+
 function serviceError(code: number, message: string): Error {
 	return Object.assign(new Error(message), {
 		code,
@@ -433,13 +751,13 @@ function serviceError(code: number, message: string): Error {
 	});
 }
 
-function reconnectingConfig(): WorkerConfig {
+function reconnectingConfig(maxAttempts = 2): WorkerConfig {
 	return {
 		...config(1),
 		reconnect: {
 			initialDelayMs: 1,
 			maxDelayMs: 2,
-			maxAttempts: 2,
+			maxAttempts,
 		},
 	};
 }
@@ -460,5 +778,10 @@ function config(maxConcurrency: number): WorkerConfig {
 		taskQueue: "queue",
 		identity: "identity",
 		maxConcurrency,
+		reconnect: {
+			initialDelayMs: 1,
+			maxDelayMs: 2,
+			maxAttempts: 2,
+		},
 	};
 }

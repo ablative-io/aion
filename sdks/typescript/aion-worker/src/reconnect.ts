@@ -55,6 +55,18 @@ export function grpcStatusCode(error: unknown): number | undefined {
  * whose `details` is a string, with `metadata` (when present) an object —
  * `callErrorFromStatus` assigns the full `StatusObject` onto an `Error`,
  * and `PartialStatusObject` permits `metadata` to be absent or null.
+ *
+ * Trade-off: a denial that is NOT shaped like a grpc-js `ServiceError` — a
+ * connect-es style error whose `details` is an array, or a cross-realm
+ * `Error` that fails the `instanceof` check — is not recognised here and
+ * therefore classifies as retryable. That is deliberate: trusting looser
+ * shapes would let arbitrary application errors carrying a numeric `code`
+ * masquerade as deterministic denials and kill the worker fail-fast. Such
+ * errors instead consume the worker's bounded reconnect/drop budget; when
+ * the budget exhausts, the surfaced {@link ReconnectExhaustedError} carries
+ * the last underlying error (with its full detail) as `cause`, so the
+ * misclassification costs bounded retry time — never an unbounded spin and
+ * never a swallowed error.
  */
 function serviceErrorCode(candidate: object): number | undefined {
 	if (!(candidate instanceof Error)) {
@@ -142,13 +154,25 @@ export interface WorkerLogger {
 	error(message: string, fields?: Record<string, unknown>): void;
 }
 
+/**
+ * Classified failure for an exhausted reconnect budget — establishment
+ * attempts inside {@link reconnectWithBackoff} or the worker loop's
+ * cumulative cross-cycle drop budget. The last underlying failure is always
+ * preserved as `cause` so callers never lose the original error detail.
+ */
+export class ReconnectExhaustedError extends Error {
+	public constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "ReconnectExhaustedError";
+	}
+}
+
 export async function reconnectWithBackoff(
 	config: WorkerConfig,
 	activityTypes: readonly string[],
 	dependencies: ReconnectDependencies,
 ): Promise<WorkerSession> {
 	const reconnect = requireReconnectConfig(config.reconnect);
-	let delayMs = reconnect.initialDelayMs;
 	let attempt = 1;
 	let lastError: unknown;
 
@@ -182,13 +206,16 @@ export async function reconnectWithBackoff(
 			if (attempt === reconnect.maxAttempts) {
 				break;
 			}
-			await (dependencies.sleep ?? defaultSleep)(delayMs);
-			delayMs = nextDelay(delayMs, reconnect.maxDelayMs);
+			await (dependencies.sleep ?? defaultSleep)(
+				delayForAttempt(reconnect, attempt),
+			);
 			attempt += 1;
 		}
 	}
 
-	throw new Error("worker reconnect attempts exhausted", { cause: lastError });
+	throw new ReconnectExhaustedError("worker reconnect attempts exhausted", {
+		cause: lastError,
+	});
 }
 
 /**
@@ -269,11 +296,29 @@ export function requireReconnectConfig(
 	return reconnect;
 }
 
-function nextDelay(delayMs: number, maxDelayMs: number): number {
-	return Math.min(delayMs * 2, maxDelayMs);
+/**
+ * Bounded exponential backoff delay for the given one-based attempt:
+ * `initialDelayMs` doubled once per prior attempt, capped at `maxDelayMs`.
+ * Shared by establishment retries inside {@link reconnectWithBackoff} and
+ * the worker loop's cross-cycle drop recovery, so both follow the
+ * operator-supplied schedule (parity with the Python worker's
+ * `ReconnectBackoff.delay_for_attempt` and the Rust worker's
+ * `ReconnectBackoff::delay_for_attempt`) — no separate invented default.
+ */
+export function delayForAttempt(
+	reconnect: ReconnectConfig,
+	attempt: number,
+): number {
+	if (!Number.isInteger(attempt) || attempt <= 0) {
+		throw new Error("reconnect attempt must be a positive integer");
+	}
+	return Math.min(
+		reconnect.initialDelayMs * 2 ** (attempt - 1),
+		reconnect.maxDelayMs,
+	);
 }
 
-async function defaultSleep(delayMs: number): Promise<void> {
+export async function defaultSleep(delayMs: number): Promise<void> {
 	await new Promise<void>((resolve) => {
 		setTimeout(resolve, delayMs);
 	});

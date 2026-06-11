@@ -27,8 +27,10 @@ export type {
 } from "./reconnect.js";
 export {
 	closeFailedSession,
+	delayForAttempt,
 	grpcStatusCode,
 	isRetryableSessionError,
+	ReconnectExhaustedError,
 	reconnectWithBackoff,
 	requireReconnectConfig,
 	reReportUnacked,

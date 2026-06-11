@@ -56,6 +56,7 @@ describe("WorkerSession", () => {
 			taskQueue: "payments",
 			identity: "worker-a",
 			maxConcurrency: 2,
+			reconnect: { initialDelayMs: 100, maxDelayMs: 1_000, maxAttempts: 5 },
 		};
 
 		await session.handshake(config);
@@ -116,6 +117,7 @@ describe("WorkerSession", () => {
 			taskQueue: "payments",
 			identity: "worker-a",
 			maxConcurrency: 2,
+			reconnect: { initialDelayMs: 100, maxDelayMs: 1_000, maxAttempts: 5 },
 		});
 
 		await expect(session.register([])).rejects.toThrow(
@@ -123,10 +125,27 @@ describe("WorkerSession", () => {
 		);
 		expect(stream.messages).toEqual([]);
 	});
+
+	it("close is idempotent: a double close ends the stream exactly once", async () => {
+		// The worker loop's failure path and the worker's abort handler can
+		// both close the same session in one shutdown race; the contract is
+		// that only the first close ends the stream.
+		const stream = new RecordingStream();
+		const session = new GrpcWorkerSession({
+			streamWorker: () => stream,
+		});
+
+		await session.close();
+		await session.close();
+		await session.close();
+
+		expect(stream.endCalls).toBe(1);
+	});
 });
 
 class RecordingStream implements AsyncIterable<ServerToWorker> {
 	public readonly messages: WorkerToServer[] = [];
+	public endCalls = 0;
 
 	public write(
 		message: WorkerToServer,
@@ -138,6 +157,7 @@ class RecordingStream implements AsyncIterable<ServerToWorker> {
 	}
 
 	public end(): void {
+		this.endCalls += 1;
 		this.messages.push({});
 	}
 

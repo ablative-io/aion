@@ -23,7 +23,13 @@ export interface WorkerConfig {
 	readonly maxConcurrency: number;
 	readonly credentials?: grpc.ChannelCredentials;
 	readonly channelOptions?: grpc.ChannelOptions;
-	readonly reconnect?: ReconnectConfig;
+	/**
+	 * Reconnect/backoff policy. Required: the worker's run loop is
+	 * reconnect-aware and refuses to operate without an operator-supplied
+	 * budget (there are no SDK defaults), so a missing policy is a compile
+	 * error rather than a runtime rejection.
+	 */
+	readonly reconnect: ReconnectConfig;
 }
 
 export interface Payload {
@@ -95,6 +101,7 @@ export interface GrpcClientFactory {
 export class GrpcWorkerSession implements WorkerSession {
 	private readonly stream: ReturnType<WorkerProtocolClient["streamWorker"]>;
 	private registration?: WorkerRegistration;
+	private streamEnded = false;
 
 	public constructor(client: WorkerProtocolClient) {
 		this.stream = client.streamWorker();
@@ -175,7 +182,18 @@ export class GrpcWorkerSession implements WorkerSession {
 		});
 	}
 
+	/**
+	 * Ends the underlying client stream. Explicitly idempotent: the worker
+	 * loop's failure path and the worker's abort handler can both close the
+	 * same session in one shutdown race, so only the first call ends the
+	 * stream and every later call is a no-op — the contract is pinned here
+	 * (and by test) rather than relying on Node tolerating a double `end()`.
+	 */
 	public async close(): Promise<void> {
+		if (this.streamEnded) {
+			return;
+		}
+		this.streamEnded = true;
 		this.stream.end();
 	}
 

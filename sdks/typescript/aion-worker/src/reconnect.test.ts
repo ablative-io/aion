@@ -1,9 +1,12 @@
 import { status } from "@grpc/grpc-js";
 import { describe, expect, it } from "vitest";
 import {
+	delayForAttempt,
 	grpcStatusCode,
 	isRetryableSessionError,
+	ReconnectExhaustedError,
 	reconnectWithBackoff,
+	requireReconnectConfig,
 	reReportUnacked,
 	UnackedResultTracker,
 } from "./reconnect.js";
@@ -158,22 +161,69 @@ describe("reconnect", () => {
 		const sleeps: number[] = [];
 		let attempts = 0;
 
-		const rejection = expect(
-			reconnectWithBackoff(config(), ["charge"], {
-				createSession: async () => {
-					attempts += 1;
-					throw unavailable;
-				},
-				sleep: async (delayMs) => {
-					sleeps.push(delayMs);
-				},
-			}),
-		).rejects;
-		await rejection.toThrowError("worker reconnect attempts exhausted");
+		const failure = await reconnectWithBackoff(config(), ["charge"], {
+			createSession: async () => {
+				attempts += 1;
+				throw unavailable;
+			},
+			sleep: async (delayMs) => {
+				sleeps.push(delayMs);
+			},
+		}).then(
+			() => {
+				throw new Error("expected reconnectWithBackoff to reject");
+			},
+			(error: unknown) => error,
+		);
 
+		// Exhaustion is a classified error preserving the last underlying
+		// failure (with its detail) as `cause`.
+		expect(failure).toBeInstanceOf(ReconnectExhaustedError);
+		expect((failure as Error).message).toBe(
+			"worker reconnect attempts exhausted",
+		);
+		expect((failure as Error).cause).toBe(unavailable);
 		expect(attempts).toBe(2);
 		expect(sleeps).toEqual([1]);
 		expect(isRetryableSessionError(unavailable)).toBe(true);
+	});
+
+	it("requires a reconnect config and rejects non-positive values", () => {
+		expect(() => requireReconnectConfig(undefined)).toThrow(
+			"worker reconnect config is required",
+		);
+		expect(() =>
+			requireReconnectConfig({
+				initialDelayMs: 0,
+				maxDelayMs: 2,
+				maxAttempts: 2,
+			}),
+		).toThrow("worker reconnect initialDelayMs must be a positive integer");
+		expect(() =>
+			requireReconnectConfig({
+				initialDelayMs: 1,
+				maxDelayMs: 2,
+				maxAttempts: 0,
+			}),
+		).toThrow("worker reconnect maxAttempts must be a positive integer");
+		expect(() =>
+			requireReconnectConfig({
+				initialDelayMs: 4,
+				maxDelayMs: 2,
+				maxAttempts: 2,
+			}),
+		).toThrow("worker reconnect initialDelayMs must not exceed maxDelayMs");
+	});
+
+	it("derives the bounded exponential delay schedule from the config", () => {
+		const reconnect = { initialDelayMs: 3, maxDelayMs: 10, maxAttempts: 6 };
+		expect(delayForAttempt(reconnect, 1)).toBe(3);
+		expect(delayForAttempt(reconnect, 2)).toBe(6);
+		expect(delayForAttempt(reconnect, 3)).toBe(10);
+		expect(delayForAttempt(reconnect, 4)).toBe(10);
+		expect(() => delayForAttempt(reconnect, 0)).toThrow(
+			"reconnect attempt must be a positive integer",
+		);
 	});
 
 	it("closes the failed session before the next attempt on retryable failures", async () => {
@@ -272,6 +322,17 @@ describe("reconnect", () => {
 		});
 		expect(grpcStatusCode(numericDetails)).toBeUndefined();
 		expect(isRetryableSessionError(numericDetails)).toBe(true);
+
+		// connect-es style denial: numeric code with array details. Not a
+		// grpc-js ServiceError shape, so it classifies retryable — acceptable
+		// because the worker's bounded drop budget surfaces it (with detail
+		// preserved as the exhaustion cause) instead of spinning forever.
+		const arrayDetails = Object.assign(new Error("connect-es denial"), {
+			code: status.PERMISSION_DENIED,
+			details: [{ type: "namespace", debug: "denied" }],
+		});
+		expect(grpcStatusCode(arrayDetails)).toBeUndefined();
+		expect(isRetryableSessionError(arrayDetails)).toBe(true);
 
 		const notAnError = {
 			code: status.PERMISSION_DENIED,

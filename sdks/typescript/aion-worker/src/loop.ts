@@ -1,9 +1,13 @@
 import {
 	closeFailedSession,
+	defaultSleep,
+	delayForAttempt,
 	grpcStatusCode,
 	isRetryableSessionError,
 	type PendingActivityReport,
+	ReconnectExhaustedError,
 	reconnectWithBackoff,
+	requireReconnectConfig,
 	reReportUnacked,
 	UnackedResultTracker,
 	type WorkerLogger,
@@ -40,8 +44,11 @@ export interface RunWorkerLoopOptions {
 	 * a clean close or a handled retryable stream failure observed after the
 	 * abort returns instead of dialling a replacement session the caller no
 	 * longer wants, and a reconnect already in flight closes its fresh
-	 * session and returns. Without a `sessionFactory` the signal is unused —
-	 * no-factory mode already returns on clean close.
+	 * session and returns. A signal aborted before (or during) the initial
+	 * handshake/register returns cleanly without serving — the abort handler
+	 * closes the session, so the registration write failing is shutdown, not
+	 * an error. Without a `sessionFactory` the loop never reconnects, so the
+	 * signal only gates that initial registration window.
 	 */
 	readonly signal?: AbortSignal;
 	/**
@@ -57,14 +64,48 @@ export async function runWorkerLoop(
 	options: RunWorkerLoopOptions,
 ): Promise<void> {
 	validateMaxConcurrency(options.config.maxConcurrency);
+	const reconnect = requireReconnectConfig(options.config.reconnect);
 	let session = options.session;
 	const activityTypes = options.dispatcher.activityTypes();
-	await session.handshake(options.config);
-	await session.register(activityTypes);
+	if (shutdownRequested(options.signal)) {
+		options.logger?.info(
+			"worker shutdown requested before registration; not serving",
+		);
+		await closeFailedSession(session, options.logger);
+		return;
+	}
+	try {
+		await session.handshake(options.config);
+		await session.register(activityTypes);
+	} catch (error) {
+		await closeFailedSession(session, options.logger);
+		if (shutdownRequested(options.signal)) {
+			// An abort raced the initial registration: the abort handler closes
+			// the session, so the in-flight register write fails (write after
+			// end). A graceful shutdown is not an error — return cleanly
+			// instead of surfacing the write failure as a rejected run.
+			options.logger?.info(
+				"worker shutdown requested during registration; not serving",
+				{ message: describeError(error) },
+			);
+			return;
+		}
+		throw error;
+	}
 
 	const running = new Set<Promise<void>>();
 	const tracker = options.tracker ?? new UnackedResultTracker();
 	const loopOptions = { ...options, tracker };
+	const sleep = options.sleep ?? defaultSleep;
+	// Cumulative cross-cycle drop budget: every dropped session in this run —
+	// a retryable stream failure, a clean close re-entering the cycle, or a
+	// failed result replay — consumes one unit of `reconnect.maxAttempts`,
+	// and the budget never resets. This is parity with the Python worker
+	// (`connect_register_replay_and_serve`) and the Rust worker
+	// (`run_with_connector_until`): without it, a server that accepts the
+	// stream and immediately drops (or cleanly closes) it would spin the
+	// loop forever at full CPU with no delay and no surfaced error.
+	let droppedAttempts = 0;
 
 	for (;;) {
 		let streamFailure: StreamFailure | undefined;
@@ -78,30 +119,113 @@ export async function runWorkerLoop(
 			await handleStreamFailure(streamFailure.error, session, options);
 		}
 		if (options.sessionFactory === undefined) {
+			// Clean close with nothing to reconnect with: stream failures have
+			// already propagated inside handleStreamFailure.
 			return;
 		}
 		if (shutdownRequested(options.signal)) {
 			options.logger?.info("worker shutdown requested; not reconnecting");
 			return;
 		}
-		session = await reconnectWithBackoff(options.config, activityTypes, {
-			createSession: options.sessionFactory,
-			sleep: options.sleep,
-			logger: options.logger,
-		});
-		// Publish the replacement session before the post-reconnect abort
-		// check: from here on an abort closes the new session through the
-		// caller's live-session holder, so no shutdown window leaves it open.
-		options.onSessionChange?.(session);
-		if (shutdownRequested(options.signal)) {
-			options.logger?.info(
-				"worker shutdown requested during reconnect; closing replacement session",
+		let dropError: unknown;
+		if (streamFailure !== undefined) {
+			dropError = streamFailure.error;
+		} else {
+			// A clean close with a factory present re-enters the reconnect
+			// cycle, so an endlessly clean-closing server is the same hazard
+			// as a flapping stream: it must consume the same drop budget. The
+			// replaced session is closed (idempotently) so its write side is
+			// released before the replacement is dialled.
+			dropError = new Error(
+				"worker receive stream closed cleanly while a session factory was configured",
+			);
+			options.logger?.warn(
+				"worker stream closed cleanly; treating as a session drop",
 			);
 			await closeFailedSession(session, options.logger);
-			return;
 		}
-		await reReportUnacked(session, tracker, options.logger);
+
+		// Recovery: consume the drop budget, back off on the configured
+		// schedule, reconnect, and replay unacknowledged results. A retryable
+		// replay failure consumes another drop and re-enters; a non-retryable
+		// one propagates; a shutdown observed anywhere returns cleanly.
+		for (;;) {
+			droppedAttempts += 1;
+			if (droppedAttempts >= reconnect.maxAttempts) {
+				options.logger?.error(
+					"worker session drop budget exhausted; not reconnecting",
+					{ droppedAttempts, message: describeError(dropError) },
+				);
+				throw new ReconnectExhaustedError(
+					`worker session drop budget exhausted after ${String(droppedAttempts)} dropped sessions: ${describeError(dropError)}`,
+					{ cause: dropError },
+				);
+			}
+			const delayMs = delayForAttempt(reconnect, droppedAttempts);
+			options.logger?.warn(
+				"worker session dropped; reconnecting after backoff",
+				{ droppedAttempts, delayMs, message: describeError(dropError) },
+			);
+			await sleep(delayMs);
+			if (shutdownRequested(options.signal)) {
+				options.logger?.info(
+					"worker shutdown requested during drop backoff; not reconnecting",
+				);
+				return;
+			}
+			session = await reconnectWithBackoff(options.config, activityTypes, {
+				createSession: options.sessionFactory,
+				sleep: options.sleep,
+				logger: options.logger,
+			});
+			// Publish the replacement session before the post-reconnect abort
+			// check: from here on an abort closes the new session through the
+			// caller's live-session holder, so no shutdown window leaves it
+			// open.
+			options.onSessionChange?.(session);
+			if (shutdownRequested(options.signal)) {
+				options.logger?.info(
+					"worker shutdown requested during reconnect; closing replacement session",
+				);
+				await closeFailedSession(session, options.logger);
+				return;
+			}
+			try {
+				await reReportUnacked(session, tracker, options.logger);
+				break;
+			} catch (error) {
+				await closeFailedSession(session, options.logger);
+				if (shutdownRequested(options.signal)) {
+					// An abort landed between the post-reconnect shutdown check
+					// and the replay write, closing the just-published session
+					// out from under it. Graceful shutdown must not turn into a
+					// rejected run: the unacked results stay tracked, and the
+					// caller asked us to stop.
+					options.logger?.info(
+						"worker shutdown requested during result replay; not reconnecting",
+						{ message: describeError(error) },
+					);
+					return;
+				}
+				if (!isRetryableSessionError(error)) {
+					options.logger?.error(
+						"worker result replay denied by server; not reconnecting",
+						{ code: grpcStatusCode(error), message: describeError(error) },
+					);
+					throw error;
+				}
+				options.logger?.warn(
+					"worker result replay failed; counting against drop budget",
+					{ message: describeError(error) },
+				);
+				dropError = error;
+			}
+		}
 	}
+}
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /**

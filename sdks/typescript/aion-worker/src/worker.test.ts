@@ -39,6 +39,11 @@ class FakeWorkerSession implements WorkerSession {
 	}
 
 	public async register(activityTypes: readonly string[]): Promise<void> {
+		// Fidelity with the real transport: registering on a closed session
+		// is a write into an ended stream and must fail, never resolve.
+		if (this.closed) {
+			throw new Error("write after end");
+		}
 		this.registrations.push([...activityTypes]);
 	}
 
@@ -386,22 +391,77 @@ describe("Worker", () => {
 		});
 	});
 
-	it("rejects run when reconnect settings are missing from the config", async () => {
+	it("rejects run when the reconnect settings are invalid before connecting", async () => {
 		const session = new FakeWorkerSession();
+		let factoryCalls = 0;
 		const worker = new Worker(
 			{
 				endpoint: "127.0.0.1:50051",
 				taskQueue: "queue",
 				identity: "identity",
 				maxConcurrency: 1,
+				reconnect: { initialDelayMs: 1, maxDelayMs: 2, maxAttempts: 0 },
 			},
+			[defineActivity("increment", async () => ({}))],
+			{
+				sessionFactory: async () => {
+					factoryCalls += 1;
+					return session;
+				},
+			},
+		);
+
+		await expect(worker.run()).rejects.toThrow(
+			"worker reconnect maxAttempts must be a positive integer",
+		);
+		expect(factoryCalls).toBe(0);
+	});
+
+	it("returns without serving when the signal is already aborted before run", async () => {
+		const session = new FakeWorkerSession();
+		let factoryCalls = 0;
+		const worker = new Worker(
+			config(),
+			[defineActivity("increment", async () => ({}))],
+			{
+				sessionFactory: async () => {
+					factoryCalls += 1;
+					return session;
+				},
+			},
+		);
+		const controller = new AbortController();
+		controller.abort();
+
+		await worker.run({ signal: controller.signal });
+
+		expect(factoryCalls).toBe(0);
+		expect(session.registrations).toEqual([]);
+		expect(session.completed).toEqual([]);
+	});
+
+	it("returns gracefully when an abort closes the session before the register write", async () => {
+		const controller = new AbortController();
+		// The abort lands during the handshake, after run()'s pre-abort check:
+		// the abort handler closes the session, so the register write fails
+		// with write-after-end (the fake's register enforces that fidelity).
+		// A graceful shutdown must not become a rejected run.
+		const session = new (class extends FakeWorkerSession {
+			public override async handshake(): Promise<void> {
+				controller.abort();
+			}
+		})();
+		const worker = new Worker(
+			config(),
 			[defineActivity("increment", async () => ({}))],
 			{ sessionFactory: async () => session },
 		);
 
-		await expect(worker.run()).rejects.toThrow(
-			"worker reconnect config is required",
-		);
+		await worker.run({ signal: controller.signal });
+
+		expect(session.closed).toBe(true);
+		expect(session.registrations).toEqual([]);
+		expect(session.completed).toEqual([]);
 	});
 });
 

@@ -114,10 +114,20 @@ export class Worker {
 	public async run(options: WorkerRunOptions = {}): Promise<void> {
 		const sessionFactory = this.sessionFactory();
 		requireReconnectConfig(this.config.reconnect);
+		const signal = options.signal ?? this.options.signal;
+		if (signal?.aborted === true) {
+			// A signal that is already aborted is a shutdown request predating
+			// the run: return without connecting instead of dialling a session
+			// the abort handler would immediately close (which would surface
+			// the register write's write-after-end as a rejected run).
+			this.options.logger?.info(
+				"worker run aborted before connecting; not serving",
+			);
+			return;
+		}
 		const session = await sessionFactory(this.config);
 		const liveSession = new LiveSessionRouter(session, this.options.logger);
 		const dispatcher = this.dispatcher(liveSession);
-		const signal = options.signal ?? this.options.signal;
 		let removeAbortListener: (() => void) | undefined;
 		if (signal !== undefined) {
 			removeAbortListener = this.onAbort(signal, liveSession, dispatcher);
