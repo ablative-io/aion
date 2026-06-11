@@ -678,6 +678,7 @@ mod tests {
         let per_workflow = PerWorkflowSubscription {
             namespace: String::from("tenant-a"),
             workflow_id: None,
+            resume_from_seq: None,
         };
         let cross_namespace_filter = aion::EventFilter {
             workflow_id: Some(workflow_id.clone()),

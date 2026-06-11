@@ -1,13 +1,28 @@
 //! NIF bridge dispatcher that routes `run_activity` calls to connected workers.
 //!
 //! `WorkerActivityDispatcher` implements `aion::ActivityDispatcher` so the
-//! engine's `aion_flow_ffi:run_activity` NIF can synchronously dispatch to a
-//! remote worker and block until the result comes back.
+//! engine's activity NIFs can synchronously dispatch to a remote worker and
+//! block until the result comes back.
 //!
-//! The entire dispatch path is sync — no `Handle::block_on` or tokio context
-//! required. Task send uses `try_send()` (non-blocking channel push), and the
-//! response wait uses `std::sync::mpsc` (blocks the beamr dirty scheduler
-//! thread without touching the tokio runtime).
+//! # Threading contract
+//!
+//! The engine invokes [`aion::ActivityDispatcher::dispatch`] from two kinds of
+//! threads: beamr scheduler threads (concurrency combinators) and spawned
+//! tokio tasks (the two-phase `dispatch_activity` completion task). The task
+//! send uses `try_send()` (non-blocking channel push) and the response wait
+//! blocks on `std::sync::mpsc::Receiver::recv_timeout`.
+//!
+//! Blocking is harmless on a beamr thread, but on a tokio runtime worker it
+//! must be wrapped in `tokio::task::block_in_place`: the `try_send` wakes the
+//! per-worker gRPC stream forwarder task, and tokio schedules a task woken
+//! from task context into the *current* worker's LIFO slot, which no other
+//! runtime worker can steal. Without the `block_in_place` core handoff the
+//! forwarder sits trapped in that slot while this thread blocks, so the queued
+//! `ActivityTask` is only flushed to the worker when the timeout fires — every
+//! remote activity fails with `ActivityTimeout` even though the worker is
+//! healthy. `block_in_place` moves the worker's scheduler core (LIFO slot
+//! included) to another thread before the wait begins, so dispatch-to-delivery
+//! stays in the millisecond range and the runtime keeps full parallelism.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -103,9 +118,11 @@ fn payload_to_string(payload: &Payload) -> Result<Result<String, String>, String
 
 /// Dispatcher that routes `run_activity` NIF calls to connected workers.
 ///
-/// Fully synchronous — uses `try_send` for the task channel and
-/// `std::sync::mpsc::Receiver::recv_timeout` for the response, so no
-/// tokio runtime context is needed on the calling thread.
+/// Synchronous interface — uses `try_send` for the task channel and
+/// `std::sync::mpsc::Receiver::recv_timeout` for the response. Callers on a
+/// multi-thread tokio runtime are detected and moved into
+/// `tokio::task::block_in_place` so the blocking wait never starves the
+/// runtime tasks that flush the worker stream (see the module docs).
 pub struct WorkerActivityDispatcher {
     registry: ConnectedWorkerRegistry,
     namespace: String,
@@ -382,6 +399,43 @@ impl WorkerActivityDispatcher {
 
 impl ActivityDispatcher for WorkerActivityDispatcher {
     fn dispatch(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    // We are inside a tokio runtime (the engine spawns the
+                    // sync dispatch onto its handle). Hand this worker's
+                    // scheduler core to another thread before blocking so the
+                    // stream forwarder woken by our `try_send` can actually
+                    // run — otherwise it is trapped in this worker's
+                    // non-stealable LIFO slot until the timeout fires.
+                    tokio::task::block_in_place(|| self.dispatch_blocking(name, input, config))
+                }
+                flavor => Err(format!(
+                    "activity dispatch blocks the calling thread until the worker responds; \
+                     a {flavor:?} tokio runtime cannot host that wait because the worker \
+                     stream forwarder shares its only executor thread and the task could \
+                     never be delivered — run the engine on a multi-thread tokio runtime"
+                )),
+            },
+            // No tokio context: a beamr scheduler thread or other plain OS
+            // thread. Blocking here is the designed contract and cannot starve
+            // the server runtime.
+            Err(_) => self.dispatch_blocking(name, input, config),
+        }
+    }
+}
+
+impl WorkerActivityDispatcher {
+    /// Dispatch the activity and block the calling thread until the worker
+    /// responds or the timeout elapses.
+    ///
+    /// Must never run while the calling thread still owns a tokio scheduler
+    /// core: the response can only arrive after the runtime's stream
+    /// forwarder flushes the queued [`WorkerMessage::ActivityTask`] to the
+    /// worker, so the thread blocking here must not be the one responsible
+    /// for polling that forwarder. [`ActivityDispatcher::dispatch`] enforces
+    /// this with `tokio::task::block_in_place`.
+    fn dispatch_blocking(&self, name: &str, input: &str, config: &str) -> Result<String, String> {
         let _ = config;
         let started_at = Instant::now();
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -570,5 +624,101 @@ mod tests {
             err.contains("no connected worker"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Regression test for the production stall where every remote activity
+    /// timed out: the engine invokes the sync `dispatch` from inside a
+    /// spawned tokio task (`futures::future::lazy` polled on a runtime
+    /// worker), and the woken stream-consumer task landed in that blocked
+    /// worker's non-stealable LIFO slot, so the queued `ActivityTask` was
+    /// only delivered when the timeout fired.
+    ///
+    /// Mirrors the real wiring minus tonic: the real registry channel that
+    /// the gRPC stream forwarder drains, a worker task awaiting that channel
+    /// on the same runtime, completion through the production
+    /// `ActivityCompletionSink`, and dispatch invoked exactly the way
+    /// `spawn_completion_task` does in the engine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dispatch_inside_runtime_task_delivers_promptly_and_round_trips()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let pending = PendingActivities::default();
+        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::channel(32);
+        let activity_types = [String::from("greet")];
+        let registration = registry.register("default", activity_types.iter(), worker_tx)?;
+
+        let sink = pending.clone();
+        let echo_worker = tokio::spawn(async move {
+            let Some(WorkerMessage::ActivityTask(task)) = worker_rx.recv().await else {
+                return Err("expected an activity task on the worker channel".to_owned());
+            };
+            let workflow_id = task
+                .workflow_id
+                .ok_or("task missing workflow id")
+                .and_then(|id| WorkflowId::try_from(id).map_err(|_| "bad workflow id"))?;
+            let activity_id = task
+                .activity_id
+                .map(ActivityId::from)
+                .ok_or("task missing activity id")?;
+            sink.complete_activity(ActivityCompletion {
+                workflow_id,
+                activity_id,
+                outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
+                    ContentType::Json,
+                    br#"{"greeting":"hello"}"#.to_vec(),
+                )),
+            })
+            .map_err(|error| error.to_string())
+        });
+
+        let dispatcher =
+            Arc::new(WorkerActivityDispatcher::new(registry, "default").with_pending(pending));
+        let started = Instant::now();
+        // Invoke exactly like the engine's spawn_completion_task: the sync
+        // dispatch runs inside the first poll of a spawned task.
+        let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
+            dispatcher.dispatch("greet", "{}", "{}")
+        }));
+        let result = dispatch_task.await.map_err(|error| error.to_string())?;
+        let elapsed = started.elapsed();
+
+        assert_eq!(result, Ok(r#"{"greeting":"hello"}"#.to_owned()));
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "dispatch round trip took {elapsed:?}; task delivery must not be \
+             coupled to the dispatch timeout"
+        );
+        echo_worker.await.map_err(|error| error.to_string())??;
+        registration.deregister()?;
+        Ok(())
+    }
+
+    /// A current-thread runtime cannot host the blocking wait (the stream
+    /// forwarder would share its only executor thread), so dispatch must
+    /// fail fast with a precise error instead of stalling until the timeout.
+    #[tokio::test]
+    async fn dispatch_on_current_thread_runtime_fails_fast()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let (worker_tx, _worker_rx) = tokio::sync::mpsc::channel(32);
+        let activity_types = [String::from("greet")];
+        let registration = registry.register("default", activity_types.iter(), worker_tx)?;
+        let dispatcher = WorkerActivityDispatcher::new(registry, "default");
+
+        let started = Instant::now();
+        let result = dispatcher.dispatch("greet", "{}", "{}");
+        let elapsed = started.elapsed();
+
+        let err = result.err().ok_or("expected dispatch to fail")?;
+        assert!(
+            err.contains("multi-thread tokio runtime"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "fail-fast path took {elapsed:?}"
+        );
+        registration.deregister()?;
+        Ok(())
     }
 }

@@ -46,7 +46,9 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+aion-package = { version = "0.1.0", path = "../aion-package" }
 tempfile = "3.27.0"
+tokio-stream = { version = "0.1", features = ["net"] }
 tokio-tungstenite = "0.29.0"
 
 [features]

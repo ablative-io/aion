@@ -152,6 +152,7 @@ mod tests {
                 PerWorkflowSubscription {
                     namespace: namespace.to_owned(),
                     workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
+                    resume_from_seq: None,
                 },
             )),
         }
