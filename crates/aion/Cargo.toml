@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Transport-agnostic Aion workflow engine with durability, replay, timers, and supervision."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-rs"
 readme = "README.md"

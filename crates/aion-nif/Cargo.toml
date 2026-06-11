@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Native function declaration helpers for Gleam and Elixir Aion workflows."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-nif"
 readme = "README.md"

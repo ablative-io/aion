@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Pure domain model and shared vocabulary for Aion durable workflows."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-core"
 readme = "README.md"

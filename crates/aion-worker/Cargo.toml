@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Rust remote-worker SDK for executing Aion activities over the gRPC worker protocol."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-worker"
 readme = "README.md"

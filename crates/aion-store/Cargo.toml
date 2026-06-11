@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Persistence contracts and in-memory event stores for Aion durable workflows."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-store"
 readme = "README.md"

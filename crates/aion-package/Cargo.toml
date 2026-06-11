@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Archive validation, content hashing, and namespacing for Aion workflow packages."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-package"
 readme = "README.md"

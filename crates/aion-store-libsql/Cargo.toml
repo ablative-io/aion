@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Durable libSQL-backed event store implementation for Aion workflows."
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/aion-store-libsql"
 readme = "README.md"
