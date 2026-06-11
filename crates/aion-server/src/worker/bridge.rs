@@ -43,25 +43,46 @@ use tracing::info_span;
 type SyncSender = std::sync::mpsc::SyncSender<Result<String, String>>;
 type SyncReceiver = std::sync::mpsc::Receiver<Result<String, String>>;
 
+/// Execution-scoped key for an in-flight activity dispatch.
+///
+/// Keying by bare [`ActivityId`] is unsafe across server restarts: the
+/// dispatcher fabricates activity ids from a process-local counter
+/// ([`WorkerActivityDispatcher::dispatch_blocking`]) that resets on restart,
+/// so a stale result re-reported from a worker's previous session would
+/// complete a *different* post-restart dispatch reusing the same sequence
+/// position. The wire (`ActivityResult`) already carries both ids, and the
+/// dispatcher fabricates a fresh `WorkflowId::new_v4()` per dispatch, so the
+/// pair is collision-safe across restarts — a v4 uuid from the old server
+/// life can never equal a fresh one.
+///
+/// Residual ambiguity for the proto train (#39/#47/#59): the wire carries no
+/// attempt discriminator, so once the engine passes *real* workflow ids
+/// (instead of per-dispatch fabricated ones) two attempts of the same
+/// `(workflow_id, activity_id)` will be indistinguishable on the wire. That
+/// gap must be closed by an attempt-scoped key when the protocol gains one.
+type PendingActivityKey = (WorkflowId, ActivityId);
+
 /// Tracks in-flight activity dispatches waiting for worker results.
 ///
 /// When the server's worker stream handler receives an `ActivityResult`, it
 /// calls [`complete_activity`](ActivityCompletionSink::complete_activity) to
-/// deliver the result to the blocked NIF thread.
+/// deliver the result to the blocked NIF thread. Entries are keyed by
+/// [`PendingActivityKey`] so a stale result from a previous server life can
+/// never be matched to a different execution (#59).
 #[derive(Clone, Debug, Default)]
 pub struct PendingActivities {
-    pending: Arc<DashMap<ActivityId, SyncSender>>,
+    pending: Arc<DashMap<PendingActivityKey, SyncSender>>,
 }
 
 impl PendingActivities {
-    fn insert(&self, activity_id: ActivityId) -> SyncReceiver {
+    fn insert(&self, workflow_id: WorkflowId, activity_id: ActivityId) -> SyncReceiver {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        self.pending.insert(activity_id, tx);
+        self.pending.insert((workflow_id, activity_id), tx);
         rx
     }
 
-    fn complete(&self, activity_id: &ActivityId, result: Result<String, String>) -> bool {
-        if let Some((_, sender)) = self.pending.remove(activity_id) {
+    fn complete(&self, key: &PendingActivityKey, result: Result<String, String>) -> bool {
+        if let Some((_, sender)) = self.pending.remove(key) {
             sender.send(result).is_ok()
         } else {
             false
@@ -103,7 +124,7 @@ impl ActivityCompletionSink for PendingActivities {
                 Err(format!("{prefix}:{}", error.message))
             }
         };
-        self.complete(&completion.activity_id, result);
+        self.complete(&(completion.workflow_id, completion.activity_id), result);
         Ok(())
     }
 }
@@ -305,7 +326,9 @@ impl WorkerActivityDispatcher {
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) {
-        self.pending.pending.remove(activity_id);
+        self.pending
+            .pending
+            .remove(&(workflow_id.clone(), activity_id.clone()));
         let _ = self
             .heartbeat_tracker
             .complete_task(worker_id, workflow_id, activity_id);
@@ -347,7 +370,9 @@ impl WorkerActivityDispatcher {
     ) -> Result<String, String> {
         match rx.recv_timeout(self.timeout) {
             Ok(result) => {
-                self.pending.pending.remove(context.activity_id);
+                self.pending
+                    .pending
+                    .remove(&(context.workflow_id.clone(), context.activity_id.clone()));
                 log_activity_completion(context, result.is_ok());
                 result.inspect_err(|reason| {
                     log_worker_error(
@@ -457,7 +482,9 @@ impl WorkerActivityDispatcher {
         self.ensure_accepting(name, &workflow_id, &activity_id, Some(worker_id))?;
 
         let task = activity_task(name, input, &workflow_id, &activity_id);
-        let rx = self.pending.insert(activity_id.clone());
+        let rx = self
+            .pending
+            .insert(workflow_id.clone(), activity_id.clone());
         self.track_worker_task(worker_id, name, &workflow_id, &activity_id)?;
         self.send_activity_task(&worker, task, name, &workflow_id, &activity_id)?;
         let context = ActivityDispatchContext {
@@ -552,10 +579,11 @@ mod tests {
     #[test]
     fn pending_insert_and_complete_delivers_result() {
         let pending = PendingActivities::default();
+        let workflow_id = WorkflowId::new_v4();
         let id = activity_id(1);
-        let rx = pending.insert(id.clone());
+        let rx = pending.insert(workflow_id.clone(), id.clone());
 
-        assert!(pending.complete(&id, Ok("done".to_owned())));
+        assert!(pending.complete(&(workflow_id, id), Ok("done".to_owned())));
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(50)),
             Ok(Ok("done".to_owned()))
@@ -565,18 +593,22 @@ mod tests {
     #[test]
     fn pending_complete_unknown_returns_false() {
         let pending = PendingActivities::default();
-        assert!(!pending.complete(&activity_id(99), Ok("orphan".to_owned())));
+        assert!(!pending.complete(
+            &(WorkflowId::new_v4(), activity_id(99)),
+            Ok("orphan".to_owned())
+        ));
     }
 
     #[test]
     fn completion_sink_routes_success() -> Result<(), ServerError> {
         let pending = PendingActivities::default();
+        let workflow_id = WorkflowId::new_v4();
         let id = activity_id(2);
-        let rx = pending.insert(id.clone());
+        let rx = pending.insert(workflow_id.clone(), id.clone());
         let payload = Payload::new(ContentType::Json, br#"{"greeting":"hi"}"#.to_vec());
 
         pending.complete_activity(ActivityCompletion {
-            workflow_id: WorkflowId::new_v4(),
+            workflow_id,
             activity_id: id,
             outcome: ActivityCompletionOutcome::Succeeded(payload),
         })?;
@@ -591,11 +623,12 @@ mod tests {
     #[test]
     fn completion_sink_routes_retryable_error() -> Result<(), ServerError> {
         let pending = PendingActivities::default();
+        let workflow_id = WorkflowId::new_v4();
         let id = activity_id(3);
-        let rx = pending.insert(id.clone());
+        let rx = pending.insert(workflow_id.clone(), id.clone());
 
         pending.complete_activity(ActivityCompletion {
-            workflow_id: WorkflowId::new_v4(),
+            workflow_id,
             activity_id: id,
             outcome: ActivityCompletionOutcome::Failed(ActivityError {
                 kind: ActivityErrorKind::Retryable,
@@ -608,6 +641,54 @@ mod tests {
             .recv_timeout(Duration::from_millis(50))
             .map_err(|e| ServerError::worker_dispatch("", "", format!("channel: {e}")))?;
         assert_eq!(result, Err("retryable:temporary".to_owned()));
+        Ok(())
+    }
+
+    /// Regression test (#59, brief D12): pending tracking must be keyed by
+    /// the full `(WorkflowId, ActivityId)` pair. The dispatcher fabricates
+    /// activity ids from a process-local counter that resets on server
+    /// restart, so a stale result re-reported from a worker's previous
+    /// session carries the same bare `ActivityId` as a fresh post-restart
+    /// dispatch. Under bare-`ActivityId` keying the stale result completed
+    /// the wrong execution; with pair keying it is dropped and the genuine
+    /// result still completes.
+    #[test]
+    fn stale_result_for_other_workflow_does_not_complete_pending_dispatch()
+    -> Result<(), ServerError> {
+        let pending = PendingActivities::default();
+        let post_restart_workflow = WorkflowId::new_v4();
+        let pre_restart_workflow = WorkflowId::new_v4();
+        // Counter resets to the same sequence position after restart.
+        let id = activity_id(1);
+        let rx = pending.insert(post_restart_workflow.clone(), id.clone());
+
+        // Stale pre-restart result: same activity id, different workflow.
+        pending.complete_activity(ActivityCompletion {
+            workflow_id: pre_restart_workflow,
+            activity_id: id.clone(),
+            outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
+                ContentType::Json,
+                br#""stale""#.to_vec(),
+            )),
+        })?;
+        assert!(
+            rx.try_recv().is_err(),
+            "stale result for a different workflow must not complete this dispatch"
+        );
+
+        // The genuine result for the pending execution still completes.
+        pending.complete_activity(ActivityCompletion {
+            workflow_id: post_restart_workflow,
+            activity_id: id,
+            outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
+                ContentType::Json,
+                br#""fresh""#.to_vec(),
+            )),
+        })?;
+        let result = rx
+            .recv_timeout(Duration::from_millis(50))
+            .map_err(|e| ServerError::worker_dispatch("", "", format!("channel: {e}")))?;
+        assert_eq!(result, Ok(r#""fresh""#.to_owned()));
         Ok(())
     }
 

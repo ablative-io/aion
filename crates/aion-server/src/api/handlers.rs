@@ -255,13 +255,14 @@ pub async fn list(
         scoped.namespace(),
     );
 
-    let summaries = scoped
+    let mut summaries = scoped
         .engine()
         .map_err(|error| error.to_wire_error())?
         .visibility_store()
         .list_workflows(filter)
         .await
         .map_err(|error| ServerError::from(error).to_wire_error())?;
+    crate::internal_workflow::retain_user_workflows(&mut summaries);
 
     let namespace = scoped.namespace().to_owned();
     let summaries = summaries
@@ -292,11 +293,11 @@ pub async fn count(
         scoped.namespace(),
     );
 
-    let count = scoped
+    let visibility_store = scoped
         .engine()
         .map_err(|error| error.to_wire_error())?
-        .visibility_store()
-        .count_workflows(filter)
+        .visibility_store();
+    let count = crate::internal_workflow::count_user_workflows(&visibility_store, filter)
         .await
         .map_err(|error| ServerError::from(error).to_wire_error())?;
 
@@ -712,6 +713,91 @@ mod tests {
             )
         );
         assert!(!error.message.contains("process 0 is not live"));
+        Ok(())
+    }
+
+    /// Regression test (#51): the engine's internal schedule-coordinator
+    /// workflow must never surface through the shared list/count handlers
+    /// (the gRPC list/count RPCs and `POST /workflows/list` ride these).
+    /// The coordinator record carries the tenant namespace attribute here to
+    /// model any path that scopes the coordinator into a tenant — namespace
+    /// scoping must not be the only thing hiding engine internals.
+    #[tokio::test]
+    async fn list_and_count_handlers_hide_engine_internal_workflows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        append_started(context.store.as_ref()).await?;
+        let namespace_attributes = std::collections::HashMap::from([(
+            crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+            aion_core::SearchAttributeValue::String(NAMESPACE.to_owned()),
+        )]);
+        context
+            .visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: workflow_id(),
+                run_id: run_id(),
+                workflow_type: String::from("fixture"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: namespace_attributes.clone(),
+            })
+            .await?;
+        context
+            .visibility_store
+            .record_visibility(VisibilityRecord {
+                workflow_id: WorkflowId::new(uuid::Uuid::from_u128(0xa10a)),
+                run_id: RunId::new(uuid::Uuid::from_u128(0xa10b)),
+                workflow_type: String::from("aion.schedule_coordinator"),
+                status: WorkflowStatus::Running,
+                start_time: Utc::now(),
+                close_time: None,
+                search_attributes: namespace_attributes,
+            })
+            .await?;
+
+        let list_request = ProtoListWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: None,
+        };
+        let response = list(&context.guard, &context.caller, list_request).await?;
+        assert_eq!(
+            response.summaries.len(),
+            1,
+            "list must hide engine-internal workflows"
+        );
+        let summary =
+            decode_core_value::<aion_store::visibility::WorkflowSummary>(&response.summaries[0])?;
+        assert_eq!(summary.workflow_type, "fixture");
+
+        let count_request = ProtoCountWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: None,
+        };
+        let response = count(&context.guard, &context.caller, count_request).await?;
+        assert_eq!(
+            response.count, 1,
+            "count must exclude engine-internal workflows"
+        );
+
+        // Explicitly enumerating the internal type is still an enumeration
+        // surface: it stays hidden.
+        let internal_count_request = ProtoCountWorkflowsRequest {
+            namespace: NAMESPACE.to_owned(),
+            filter: Some(encode_core_value(
+                NAMESPACE,
+                None,
+                &aion_store::visibility::ListWorkflowsFilter {
+                    workflow_type: Some(String::from("aion.schedule_coordinator")),
+                    ..aion_store::visibility::ListWorkflowsFilter::default()
+                },
+            )?),
+        };
+        let response = count(&context.guard, &context.caller, internal_count_request).await?;
+        assert_eq!(
+            response.count, 0,
+            "counting the internal type directly must report nothing"
+        );
         Ok(())
     }
 
