@@ -39,10 +39,12 @@ impl AuthenticatedClaims {
         self.expires_at
     }
 
-    /// Convert validated claims into a single-namespace caller identity.
+    /// Convert validated claims into a single-namespace caller identity whose
+    /// grant is attributed to the token's namespace claim, so namespace
+    /// denials hint at the token grant rather than the development header.
     #[must_use]
     pub fn caller_identity(&self) -> CallerIdentity {
-        CallerIdentity::new(self.subject.clone(), [self.namespace.clone()])
+        CallerIdentity::from_token_claims(self.subject.clone(), [self.namespace.clone()])
     }
 }
 

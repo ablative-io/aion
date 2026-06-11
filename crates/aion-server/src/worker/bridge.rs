@@ -708,7 +708,7 @@ mod tests {
     }
 
     /// Regression test for the production stall where every remote activity
-    /// timed out: the engine invokes the sync `dispatch` from inside a
+    /// timed out: the engine invoked the sync `dispatch` from inside a
     /// spawned tokio task (`futures::future::lazy` polled on a runtime
     /// worker), and the woken stream-consumer task landed in that blocked
     /// worker's non-stealable LIFO slot, so the queued `ActivityTask` was
@@ -717,8 +717,10 @@ mod tests {
     /// Mirrors the real wiring minus tonic: the real registry channel that
     /// the gRPC stream forwarder drains, a worker task awaiting that channel
     /// on the same runtime, completion through the production
-    /// `ActivityCompletionSink`, and dispatch invoked exactly the way
-    /// `spawn_completion_task` does in the engine.
+    /// `ActivityCompletionSink`, and the sync dispatch invoked from a
+    /// runtime worker task — the worst case the `block_in_place` guard in
+    /// `dispatch` defends against (the engine itself now routes through
+    /// `dispatch_async_from_process`, off the async workers).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_inside_runtime_task_delivers_promptly_and_round_trips()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -755,8 +757,8 @@ mod tests {
         let dispatcher =
             Arc::new(WorkerActivityDispatcher::new(registry, "default").with_pending(pending));
         let started = Instant::now();
-        // Invoke exactly like the engine's spawn_completion_task: the sync
-        // dispatch runs inside the first poll of a spawned task.
+        // Invoke the sync dispatch inside the first poll of a spawned task:
+        // the worst-case calling context for the `block_in_place` guard.
         let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
             dispatcher.dispatch("greet", "{}", "{}")
         }));

@@ -205,11 +205,10 @@ pub(super) fn spawn_completion_task(
     correlation_id: String,
     call: ActivityCall,
 ) {
-    let future = futures::future::lazy(move |_| {
-        dispatcher.dispatch_from_process(&call.name, &call.input, &call.config, Some(workflow_pid))
-    })
-    .map(move |result| {
-        match result {
+    let future = dispatcher
+        .dispatch_async_from_process(call.name, call.input, call.config, Some(workflow_pid))
+        .map(move |result| {
+            match result {
             Ok(payload) => {
                 if let Err(error) = runtime.deliver_activity_completion_message(
                     workflow_pid,
@@ -415,7 +414,8 @@ mod tests {
     use aion_store::{EventStore, WriteToken};
     use serde_json::json;
 
-    use super::{ActivityAwaitStep, await_activity_step};
+    use super::{ActivityAwaitStep, ActivityCall, await_activity_step, spawn_completion_task};
+    use crate::activity::bridge::ActivityDispatcher;
     use crate::durability::Recorder;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
@@ -699,5 +699,102 @@ mod tests {
         );
         assert_eq!(replay.history_len().await?, history_len);
         replay.shutdown()
+    }
+
+    /// Synchronous dispatcher that parks its calling thread on a channel
+    /// until the test's release task — running on the same Tokio runtime —
+    /// frees it.
+    struct GatedDispatcher {
+        release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl ActivityDispatcher for GatedDispatcher {
+        fn dispatch(&self, _name: &str, input: &str, _config: &str) -> Result<String, String> {
+            let receiver = self
+                .release
+                .lock()
+                .map_err(|_| "release lock poisoned".to_owned())?
+                .take()
+                .ok_or_else(|| "dispatch invoked more than once".to_owned())?;
+            receiver
+                .recv()
+                .map_err(|error| format!("release channel closed: {error}"))?;
+            Ok(input.to_owned())
+        }
+    }
+
+    /// The whole single-worker scenario, run on a watchdog-guarded thread:
+    /// dispatch a gated blocking activity, prove the runtime's only executor
+    /// thread is still free by releasing the gate from a task spawned on
+    /// that same runtime, then observe the delivered completion payload.
+    fn blocking_dispatch_scenario() -> Result<Vec<u8>, String> {
+        let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        tokio_runtime.block_on(async {
+            let runtime = Arc::new(
+                RuntimeHandle::new(RuntimeConfig::new(Some(1)))
+                    .map_err(|error| error.to_string())?,
+            );
+            let pid = runtime
+                .spawn_test_process()
+                .map_err(|error| error.to_string())?;
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let dispatcher: Arc<dyn ActivityDispatcher> = Arc::new(GatedDispatcher {
+                release: std::sync::Mutex::new(Some(release_rx)),
+            });
+            spawn_completion_task(
+                &tokio::runtime::Handle::current(),
+                Arc::clone(&runtime),
+                dispatcher,
+                pid,
+                super::correlation_id(0),
+                ActivityCall {
+                    name: "gated".to_owned(),
+                    input: r#""r0""#.to_owned(),
+                    config: "{}".to_owned(),
+                },
+            );
+            // The release runs as a task on this same single-threaded
+            // runtime, spawned AFTER the completion task: it can only
+            // execute if the blocking dispatch is not occupying the
+            // executor thread.
+            tokio::spawn(async move { release_tx.send(()) })
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            let mut payload = None;
+            for _ in 0_u32..2_000 {
+                if let Some(delivered) = runtime.take_activity_result(pid, 0) {
+                    payload = Some(delivered.bytes().to_vec());
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            runtime.shutdown().map_err(|error| error.to_string())?;
+            payload.ok_or_else(|| "activity completion was never delivered".to_owned())
+        })
+    }
+
+    /// Regression (closeout rider a): a blocking `ActivityDispatcher` must
+    /// not wedge a single-threaded engine runtime. Before the
+    /// `spawn_blocking` routing in `dispatch_async_from_process`, the
+    /// completion task polled the synchronous dispatch inline on the
+    /// runtime's only worker thread, so the release task never ran and the
+    /// dispatch parked forever — stalling every task on the runtime,
+    /// queries included. The watchdog bounds that wedge to a clean failure
+    /// instead of a hung suite.
+    #[test]
+    fn blocking_dispatcher_completes_on_single_threaded_runtime() -> TestResult {
+        let (verdict_tx, verdict_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || drop(verdict_tx.send(blocking_dispatch_scenario())));
+        let payload = verdict_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(
+                |_| "scenario wedged: the blocking dispatch occupied the only executor thread",
+            )??;
+        assert_eq!(payload, br#""r0""#.to_vec());
+        Ok(())
     }
 }

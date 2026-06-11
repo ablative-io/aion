@@ -364,6 +364,10 @@ fn receive_signal_impl(
     }
 }
 
+/// Routes the signal to the target first, then records `SignalSent`: a crash
+/// between router delivery and the durable record re-routes the send on
+/// recovery, so delivery is at-least-once across that window. Closing it
+/// would require an outbox / two-phase record.
 fn send_signal_impl(
     bridge: &Arc<SignalNifBridge>,
     target: &str,

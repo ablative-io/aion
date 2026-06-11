@@ -23,22 +23,51 @@ use super::schedule_source::{HistoryScheduleNamespaceSource, ScheduleNamespaceSo
 /// started through this server.
 pub const NAMESPACE_ATTRIBUTE: &str = "aion.namespace";
 
+/// Where a caller's namespace grants came from, so a denial message can point
+/// the operator at the knob that actually carries the grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GrantSource {
+    /// Grants parsed from the development `x-aion-namespaces` header.
+    NamespacesHeader,
+    /// Grants carried by a validated token's namespace claim.
+    TokenClaim,
+}
+
 /// Authenticated caller metadata supplied by an adapter boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CallerIdentity {
     subject: String,
     namespaces: BTreeSet<String>,
     denial_reason: Option<String>,
+    grant_source: GrantSource,
 }
 
 impl CallerIdentity {
-    /// Build a caller identity with explicit namespace grants.
+    /// Build a caller identity whose namespace grants came from the
+    /// development `x-aion-namespaces` header.
     #[must_use]
     pub fn new(subject: impl Into<String>, namespaces: impl IntoIterator<Item = String>) -> Self {
         Self {
             subject: subject.into(),
             namespaces: namespaces.into_iter().collect(),
             denial_reason: None,
+            grant_source: GrantSource::NamespacesHeader,
+        }
+    }
+
+    /// Build a caller identity whose namespace grants came from a validated
+    /// token's namespace claim (the real JWT path), so denial messages direct
+    /// the operator to the token grant instead of the development header.
+    #[must_use]
+    pub fn from_token_claims(
+        subject: impl Into<String>,
+        namespaces: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            subject: subject.into(),
+            namespaces: namespaces.into_iter().collect(),
+            denial_reason: None,
+            grant_source: GrantSource::TokenClaim,
         }
     }
 
@@ -49,6 +78,7 @@ impl CallerIdentity {
             subject: subject.into(),
             namespaces: BTreeSet::new(),
             denial_reason: Some(reason.into()),
+            grant_source: GrantSource::NamespacesHeader,
         }
     }
 
@@ -462,9 +492,18 @@ impl NamespaceResolver {
 }
 
 fn namespace_denied(caller: &CallerIdentity, requested_namespace: &str) -> ServerError {
+    let hint = match caller.grant_source {
+        GrantSource::NamespacesHeader => format!(
+            "add {requested_namespace} to x-aion-namespaces for subject `{}` or request a namespace listed in that header",
+            caller.subject()
+        ),
+        GrantSource::TokenClaim => format!(
+            "grant {requested_namespace} in the namespace claim of the token minted for subject `{}` or request a namespace the token grants",
+            caller.subject()
+        ),
+    };
     ServerError::namespace_denied(format!(
-        "subject not authorized for namespace {requested_namespace}; add {requested_namespace} to x-aion-namespaces for subject `{}` or request a namespace listed in that header",
-        caller.subject()
+        "subject not authorized for namespace {requested_namespace}; {hint}"
     ))
 }
 
@@ -519,6 +558,50 @@ mod tests {
 
         assert_eq!(scoped.namespace(), "tenant-a");
         assert!(denied.is_err());
+        Ok(())
+    }
+
+    /// The denial hint must point at the knob that actually carries the
+    /// caller's grants: the development `x-aion-namespaces` header for
+    /// header-sourced identities, the token's namespace claim for identities
+    /// produced by the JWT path.
+    #[test]
+    fn denial_hint_names_the_grant_source() -> Result<(), Box<dyn std::error::Error>> {
+        let resolver = resolver(NamespaceMode::SharedEngine);
+
+        let header_caller = CallerIdentity::new("alice", [String::from("tenant-a")]);
+        let header_denial = resolver
+            .resolve(&header_caller, "tenant-b")
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected header-sourced caller to be denied")?;
+        assert!(
+            header_denial.message.contains("x-aion-namespaces"),
+            "header-path denial must hint the dev header: {}",
+            header_denial.message
+        );
+        assert!(
+            !header_denial.message.contains("namespace claim"),
+            "header-path denial must not hint the token claim: {}",
+            header_denial.message
+        );
+
+        let token_caller = CallerIdentity::from_token_claims("alice", [String::from("tenant-a")]);
+        let token_denial = resolver
+            .resolve(&token_caller, "tenant-b")
+            .err()
+            .map(|error| error.to_wire_error())
+            .ok_or("expected token-sourced caller to be denied")?;
+        assert!(
+            token_denial.message.contains("namespace claim"),
+            "JWT-path denial must hint the token's namespace claim: {}",
+            token_denial.message
+        );
+        assert!(
+            !token_denial.message.contains("x-aion-namespaces"),
+            "JWT-path denial must not hint the dev header: {}",
+            token_denial.message
+        );
         Ok(())
     }
 

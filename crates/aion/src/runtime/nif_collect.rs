@@ -121,7 +121,7 @@ pub(super) fn collect_step(
         deps.tokio_handle.clone(),
         deps.runtime.signal_delivery(),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.error_reason())?;
     let base_ordinal = pin_or_allocate(state, &context, pid, kind, count)?;
     dispatch_unscheduled(deps, &context, specs, base_ordinal, label)?;
     match kind {
@@ -225,7 +225,7 @@ fn dispatch_unscheduled(
                 spec.name.clone(),
                 input,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.error_reason())?;
     }
     for (ordinal, spec) in fresh {
         spawn_completion_task(
@@ -427,13 +427,13 @@ fn take_and_record(
     if let Some(payload) = deps.runtime.take_activity_result(pid, ordinal) {
         context
             .record_activity_completed(Utc::now(), activity_id, payload.clone())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.error_reason())?;
         return Ok(OrdinalState::Completed(payload_text(&payload)?));
     }
     if let Some(error) = deps.runtime.take_activity_error(pid, ordinal) {
         context
             .record_activity_failed(Utc::now(), activity_id, terminal_error(&error.message), 1)
-            .map_err(|inner| inner.to_string())?;
+            .map_err(|inner| inner.error_reason())?;
         return Ok(OrdinalState::Failed(error.message));
     }
     Ok(OrdinalState::Pending)
@@ -442,7 +442,7 @@ fn take_and_record(
 fn record_cancelled(context: &NifContext, ordinal: u64) -> Result<(), String> {
     context
         .record_activity_cancelled(Utc::now(), ActivityId::from_sequence_position(ordinal))
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.error_reason())
 }
 
 /// Drop both retained runtime-map entries for an ordinal (D5 hygiene at

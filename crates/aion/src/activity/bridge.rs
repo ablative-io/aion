@@ -5,7 +5,9 @@
 //! is installed on the engine's NIF state during build; the NIF recovers it
 //! from its calling context's NIF private data.
 
-use futures::future::{BoxFuture, ready};
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
 
 /// Executes an activity request originating from workflow code.
 ///
@@ -50,23 +52,37 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
 
     /// Dispatch the named activity from a Tokio task.
     ///
-    /// The default keeps existing synchronous dispatchers and tests source
-    /// compatible while moving the blocking wait off BEAM scheduler threads.
-    /// Future nonblocking dispatchers can override this method directly.
+    /// The default runs the synchronous [`Self::dispatch_from_process`] on
+    /// the runtime's blocking pool via [`tokio::task::spawn_blocking`], so a
+    /// dispatcher implementation that blocks its calling thread cannot wedge
+    /// the engine's async workers (a single-threaded engine runtime keeps
+    /// servicing queries and completions while the dispatch waits).
+    /// Nonblocking dispatchers can override this method directly.
+    ///
+    /// Must be awaited inside a Tokio runtime context; the engine's
+    /// completion task guarantees that.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::dispatch_from_process`].
-    fn dispatch_async_from_process<'a>(
-        &'a self,
-        name: &'a str,
-        input: &'a str,
-        config: &'a str,
+    /// Returns the same errors as [`Self::dispatch_from_process`], plus a
+    /// dispatch-failure reason when the blocking task itself is cancelled or
+    /// panics.
+    fn dispatch_async_from_process(
+        self: Arc<Self>,
+        name: String,
+        input: String,
+        config: String,
         caller_pid: Option<u64>,
-    ) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(ready(
-            self.dispatch_from_process(name, input, config, caller_pid),
-        ))
+    ) -> BoxFuture<'static, Result<String, String>> {
+        Box::pin(async move {
+            let blocking = tokio::task::spawn_blocking(move || {
+                self.dispatch_from_process(&name, &input, &config, caller_pid)
+            });
+            match blocking.await {
+                Ok(result) => result,
+                Err(join_error) => Err(format!("activity dispatch task failed: {join_error}")),
+            }
+        })
     }
 }
 

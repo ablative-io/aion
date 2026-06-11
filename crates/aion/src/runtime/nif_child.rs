@@ -525,7 +525,7 @@ fn next_child_key(nif: &NifContext) -> CorrelationKey {
 }
 
 fn context_error(error: &NifContextError) -> String {
-    error.to_string()
+    error.error_reason()
 }
 
 fn parse_workflow_id(value: &str) -> Result<WorkflowId, String> {

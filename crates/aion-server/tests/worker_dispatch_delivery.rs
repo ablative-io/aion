@@ -4,9 +4,11 @@
 //! a real tonic `WorkerProtocol` bidirectional stream over TCP loopback, the
 //! real connected-worker registry, the real per-stream forwarder task spawned
 //! inside `stream_worker`, the real pending-activities completion sink, and a
-//! dispatch invoked from inside a spawned tokio task exactly the way the
-//! engine's `spawn_completion_task` does it (`futures::future::lazy` polled
-//! on a runtime worker thread).
+//! dispatch invoked synchronously from inside a spawned tokio task — the
+//! worst-case calling context `dispatch` defends against with
+//! `block_in_place` (the engine itself now routes through
+//! `dispatch_async_from_process`, which runs the sync dispatch on the
+//! blocking pool).
 //!
 //! Guards against the production defect where the queued `ActivityTask` was
 //! only flushed to the worker's gRPC stream when the dispatch timeout fired:
@@ -192,8 +194,9 @@ async fn remote_dispatch_delivers_task_promptly_and_round_trips() -> Result<(), 
     let dispatcher = Arc::new(harness.dispatcher());
 
     let started = Instant::now();
-    // Invoke exactly like the engine's spawn_completion_task: the sync
-    // dispatch runs inside the first poll of a spawned tokio task.
+    // Invoke the sync dispatch inside the first poll of a spawned tokio
+    // task: the worst-case calling context the `block_in_place` guard in
+    // `dispatch` defends against.
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
         dispatcher.dispatch(ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}")
     }));

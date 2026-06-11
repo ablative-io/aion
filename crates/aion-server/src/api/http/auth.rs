@@ -235,6 +235,16 @@ mod tests {
             "denial must name the ungranted namespace: {}",
             error.message
         );
+        assert!(
+            error.message.contains("namespace claim"),
+            "JWT-path denial must hint the token's namespace claim: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("x-aion-namespaces"),
+            "JWT-path denial must not hint the development header: {}",
+            error.message
+        );
 
         Ok(())
     }
