@@ -6,6 +6,7 @@
 **/build
 *.beam
 !crates/aion/tests/fixtures/*.beam
+!crates/aion-server/tests/fixtures/*.beam
 *.ez
 
 # Node / TypeScript
