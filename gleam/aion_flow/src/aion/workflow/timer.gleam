@@ -3,6 +3,7 @@
 import aion/duration
 import aion/error
 import aion/internal/ffi
+import aion/internal/pump
 import gleam/int
 import gleam/string
 
@@ -27,8 +28,11 @@ pub fn timer_id(reference: TimerRef) -> String {
 /// Anonymous sleeps are not separately cancellable; cancelling a sleep means
 /// cancelling the workflow that is blocked on it (AT D3). Use `start_timer` when
 /// workflow code needs a named timer that can be cancelled independently.
+/// The await is a yield point: pending workflow queries are serviced by the
+/// query pump while the timer is parked. `with_timeout` needs no pump of its
+/// own — the awaits running inside its operation are the yield points.
 pub fn sleep(duration: duration.Duration) -> Result(Nil, error.EngineError) {
-  case ffi.sleep(duration_to_boundary(duration)) {
+  case pump.run(fn() { ffi.sleep(duration_to_boundary(duration)) }) {
     Ok(_) -> Ok(Nil)
     Error(raw_error) -> Error(error.EngineFailure(message: raw_error))
   }

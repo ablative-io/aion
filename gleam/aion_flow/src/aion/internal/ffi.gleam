@@ -4,7 +4,9 @@
 //// `@external(erlang, "aion_flow_ffi", ...)` functions. The Erlang module
 //// name is the engine's NIF registry namespace, registered by
 //// `EngineBuilder::register_nifs` (AE-004) and resolved by beamr when a
-//// compiled workflow is loaded inside an Aion engine runtime.
+//// compiled workflow is loaded inside an Aion engine runtime. The query
+//// pump bindings at the bottom target `aion_flow_query_pump`, the plain
+//// Erlang module shipped inside this package.
 ////
 //// `gleam build` type-checks these signatures with no engine present. The
 //// author-facing modules wrap this type-erased string boundary with typed
@@ -60,14 +62,16 @@ pub fn send_signal(
 ) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "register_query")
-pub fn register_query(
-  name: String,
-  handler: fn(String) -> Result(String, String),
-  config: String,
-) -> Result(String, String)
+pub fn register_query(name: String, config: String) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "reply_query")
 pub fn reply_query(query_id: String, payload: String) -> Result(String, String)
+
+@external(erlang, "aion_flow_ffi", "reply_query_error")
+pub fn reply_query_error(
+  query_id: String,
+  message: String,
+) -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "dispatch_query")
 pub fn dispatch_query(name: String, config: String) -> Result(String, String)
@@ -120,3 +124,19 @@ pub fn testing_clear_observations() -> Result(String, String)
 
 @external(erlang, "aion_flow_ffi", "testing_observations")
 pub fn testing_observations() -> Result(String, String)
+
+/// Store a query handler fun in the workflow process dictionary under the
+/// engine-contract key `{aion_query_handler, Name}`. The Erlang helper owns
+/// the raw process-dictionary types; Gleam code never touches them.
+@external(erlang, "aion_flow_query_pump", "register")
+pub fn register_query_handler(
+  name: String,
+  handler: fn(String) -> Result(String, String),
+) -> Nil
+
+/// Service one query sentinel payload (the JSON binary after the
+/// `aion_query:` prefix): run the registered handler under try/catch and
+/// reply, converting a raise or a missing handler into a typed
+/// `reply_query_error`. Never crashes the workflow process.
+@external(erlang, "aion_flow_query_pump", "service")
+pub fn service_query(sentinel_payload: String) -> Nil

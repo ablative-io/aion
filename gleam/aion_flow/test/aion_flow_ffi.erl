@@ -18,8 +18,9 @@
     with_timeout/2,
     receive_signal/2,
     send_signal/3,
-    register_query/3,
+    register_query/2,
     reply_query/2,
+    reply_query_error/2,
     dispatch_query/2,
     query_recorded_observations/0,
     spawn_child/3,
@@ -31,7 +32,8 @@
     testing_advance/1,
     testing_register_activity_mock/2,
     testing_clear_observations/0,
-    testing_observations/0
+    testing_observations/0,
+    testing_query_replies/0
 ]).
 
 -define(DEFAULT_NOW, 1700000000000).
@@ -131,19 +133,43 @@ send_signal(_WorkflowId, Name, Payload) ->
     observe(<<"signal_send:", Name/binary, ":", Payload/binary>>),
     {ok, <<"delivered">>}.
 
-register_query(Name, Handler, _Config) ->
-    Key = {aion_query, self(), Name},
-    erlang:put(Key, Handler),
+%% Mirrors the production register_query/2 NIF: the engine records only the
+%% queryable name; the handler fun lives in the process dictionary under
+%% {aion_query_handler, Name}, written by aion_flow_query_pump:register/2.
+register_query(Name, _Config) ->
+    erlang:put({aion_query_registered, self(), Name}, true),
     {ok, <<"registered">>}.
 
-reply_query(_QueryId, Payload) ->
+%% Query ids beginning with "dropped-" simulate a caller that stopped
+%% waiting (timed-out one-shot sender removed), matching the production
+%% NIF's unknown_query_id error string. Successful replies are recorded so
+%% pump tests can assert the reply channel was used; replies are NOT
+%% observations — queries never touch recorded history.
+reply_query(<<"dropped-", _/binary>> = QueryId, _Payload) ->
+    record_query_reply(<<"failed:", QueryId/binary>>),
+    {error, <<"unknown_query_id:", QueryId/binary>>};
+reply_query(QueryId, Payload) ->
+    record_query_reply(<<"ok:", QueryId/binary, ":", Payload/binary>>),
     {ok, Payload}.
 
+reply_query_error(<<"dropped-", _/binary>> = QueryId, _Message) ->
+    record_query_reply(<<"failed:", QueryId/binary>>),
+    {error, <<"unknown_query_id:", QueryId/binary>>};
+reply_query_error(QueryId, Message) ->
+    record_query_reply(<<"error:", QueryId/binary, ":", Message/binary>>),
+    {ok, <<"replied">>}.
+
 dispatch_query(Name, _Config) ->
-    Key = {aion_query, self(), Name},
-    case erlang:get(Key) of
-        undefined -> {error, <<"unknown:", Name/binary>>};
-        Handler -> Handler(<<"query-1">>)
+    case erlang:get({aion_query_registered, self(), Name}) of
+        undefined ->
+            {error, <<"unknown:", Name/binary>>};
+        true ->
+            case erlang:get({aion_query_handler, Name}) of
+                undefined ->
+                    {error,
+                        <<"handler_failed:no handler registered for query ", Name/binary>>};
+                Handler -> Handler(next_query_id())
+            end
     end.
 
 query_recorded_observations() ->
@@ -208,6 +234,13 @@ testing_clear_observations() ->
 testing_observations() ->
     {ok, json_string_array(observations())}.
 
+%% Test-double diagnostic channel for the query pump: every reply attempt is
+%% recorded as "ok:Id:Payload", "error:Id:Message", or "failed:Id"
+%% (simulated dropped caller). Distinct from observations because query
+%% replies never appear in recorded history.
+testing_query_replies() ->
+    {ok, json_string_array(query_replies())}.
+
 legacy_run_activity(<<"charge-payment">>, Input, _Config) ->
     OrderId = extract_string(Input, <<"order_id">>),
     {ok, <<"{\"id\":\"receipt-", OrderId/binary, "\",\"approved\":true}">>};
@@ -253,6 +286,21 @@ next_activity_correlation() ->
     Current = case erlang:get(Key) of undefined -> 0; Value -> Value end,
     erlang:put(Key, Current + 1),
     <<"activity:", (integer_to_binary(Current))/binary>>.
+
+next_query_id() ->
+    Key = {aion_query_counter, self()},
+    Next = case erlang:get(Key) of undefined -> 1; Existing -> Existing + 1 end,
+    erlang:put(Key, Next),
+    <<"query-", (integer_to_binary(Next))/binary>>.
+
+query_replies() ->
+    case erlang:get({aion_query_replies, self()}) of
+        undefined -> [];
+        Existing -> Existing
+    end.
+
+record_query_reply(Entry) ->
+    erlang:put({aion_query_replies, self()}, query_replies() ++ [Entry]).
 
 earliest_activity([First | Rest]) ->
     lists:foldl(
@@ -360,7 +408,12 @@ clear_process_state() ->
     ).
 
 is_aion_key({aion_signal, Pid, _Name}) -> Pid =:= self();
-is_aion_key({aion_query, Pid, _Name}) -> Pid =:= self();
+is_aion_key({aion_query_registered, Pid, _Name}) -> Pid =:= self();
+is_aion_key({aion_query_replies, Pid}) -> Pid =:= self();
+is_aion_key({aion_query_counter, Pid}) -> Pid =:= self();
+%% The production handler key carries no pid: the process dictionary is
+%% per-process already (engine contract: {aion_query_handler, NameBinary}).
+is_aion_key({aion_query_handler, _Name}) -> true;
 is_aion_key({aion_observations, Pid}) -> Pid =:= self();
 is_aion_key({aion_child_result, Pid, _ChildId}) -> Pid =:= self();
 is_aion_key({aion_child_counter, Pid}) -> Pid =:= self();

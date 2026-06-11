@@ -15,11 +15,21 @@ import gleam/string
 /// engine-provided one-shot reply channel. Query return values never cross the
 /// FFI boundary without a codec.
 ///
+/// Registration stores the encoding handler in the workflow process
+/// dictionary (the engine-contract location the yield-point query pump reads
+/// from) and then registers the name with the engine. Register before the
+/// first yield point — `workflow.sleep`, `workflow.receive`, `workflow.run`
+/// — that should answer the query; awaits reached earlier cannot service it.
+/// Because workflow code re-executes from the top on replay, re-registration
+/// after recovery is automatic: a recovered workflow answers queries without
+/// any extra author code.
+///
 /// Queries bind to AT's read-only query service: they append no workflow `Event`,
 /// are answered at engine yield points, and never block workflow progress. By
 /// type this callback only returns a value; by workflow-author convention it must
 /// not call activity-dispatch primitives such as `workflow.run` or otherwise
-/// mutate workflow state.
+/// mutate workflow state — the engine refuses recording calls made while a
+/// query is being serviced, surfacing them as a typed handler failure.
 pub fn handler(
   name: String,
   value_codec: Codec(value),
@@ -30,7 +40,8 @@ pub fn handler(
     ffi.reply_query(query_id, encoded)
   }
 
-  case ffi.register_query(name, encoded_reply, register_config()) {
+  ffi.register_query_handler(name, encoded_reply)
+  case ffi.register_query(name, register_config()) {
     Ok(_) -> Ok(Nil)
     Error(raw_error) -> Error(query_error(raw_error))
   }

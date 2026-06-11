@@ -4,6 +4,7 @@ import aion/activity.{type Activity}
 import aion/duration
 import aion/error
 import aion/internal/ffi
+import aion/internal/pump
 import gleam/float
 import gleam/int
 import gleam/json
@@ -45,7 +46,9 @@ pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
     )
   {
     Ok(correlation_id) -> {
-      case ffi.await_activity_result(correlation_id) {
+      // The await is a yield point: pending workflow queries are serviced
+      // by the query pump before the activity result resolves.
+      case pump.run(fn() { ffi.await_activity_result(correlation_id) }) {
         Ok(payload) -> {
           case output_codec.decode(payload) {
             Ok(output) -> Ok(output)

@@ -3,6 +3,7 @@
 import aion/codec.{type Codec}
 import aion/error
 import aion/internal/ffi
+import aion/internal/pump
 import gleam/json
 import gleam/string
 
@@ -35,11 +36,14 @@ pub fn codec(reference: SignalRef(payload)) -> Codec(payload) {
 /// The actual selective-receive and replay behavior is owned by AT/AD. This SDK
 /// wrapper binds to that router through `aion/internal/ffi`, then decodes the
 /// recorded payload with the reference codec and returns decode failures as
-/// typed data.
+/// typed data. The await is a yield point: pending workflow queries are
+/// serviced by the query pump before the signal resolves.
 pub fn receive(
   reference: SignalRef(payload),
 ) -> Result(payload, error.ReceiveError) {
-  case ffi.receive_signal(name(reference), receive_config()) {
+  case
+    pump.run(fn() { ffi.receive_signal(name(reference), receive_config()) })
+  {
     Ok(raw_payload) -> {
       let payload_codec = codec(reference)
       case payload_codec.decode(raw_payload) {
