@@ -195,7 +195,11 @@ impl Client {
             }),
         )
         .await
-        .map_err(|_| ClientError::QueryTimeout)??;
+        .map_err(|_| {
+            ClientError::query_timeout(format!(
+                "query deadline of {deadline:?} elapsed before the server replied"
+            ))
+        })??;
 
         match response.outcome {
             Some(proto_query_response::Outcome::Result(payload)) => {
@@ -728,20 +732,26 @@ mod tests {
         let conflict = client.start("checkout", payload("other"), opts).await;
 
         assert_eq!(replayed, original);
-        assert_eq!(conflict, Err(ClientError::AlreadyExists));
+        assert!(
+            matches!(conflict, Err(ClientError::AlreadyExists { .. })),
+            "got {conflict:?}"
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn signal_maps_latest_run_and_error() {
         let stub = Arc::new(StubTransport::default());
-        *stub.signal_error.lock().await = Some(ClientError::NotFound);
+        *stub.signal_error.lock().await = Some(ClientError::not_found("workflow was not found"));
         let client = client_with(Arc::clone(&stub));
         let id = workflow_id();
 
         let result = client.signal(&id, None, "approve", payload("signal")).await;
 
-        assert_eq!(result, Err(ClientError::NotFound));
+        assert_eq!(
+            result,
+            Err(ClientError::not_found("workflow was not found"))
+        );
         let recorded = stub.last_signal.lock().await.clone();
         assert!(recorded.is_some());
         let Some(request) = recorded else {
@@ -774,7 +784,7 @@ mod tests {
             .query(&id, None, "state", payload("args"), Duration::from_secs(1))
             .await;
 
-        assert_eq!(result, Err(ClientError::QueryTimeout));
+        assert_eq!(result, Err(ClientError::query_timeout("slow")));
         assert!(
             matches!(unsupported_args, Err(ClientError::InvalidArgument { .. })),
             "got {unsupported_args:?}"
@@ -806,7 +816,7 @@ mod tests {
             )
             .await;
 
-        assert_eq!(result, Err(ClientError::QueryFailed));
+        assert_eq!(result, Err(ClientError::query_failed("handler raised")));
         Ok(())
     }
 
@@ -832,12 +842,7 @@ mod tests {
             )
             .await;
 
-        assert_eq!(
-            result,
-            Err(ClientError::Server {
-                detail: String::from("store down"),
-            })
-        );
+        assert_eq!(result, Err(ClientError::server("store down")));
         Ok(())
     }
 

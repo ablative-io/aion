@@ -266,7 +266,7 @@ pub fn event_stream_from(
 }
 
 fn is_retryable(error: &ClientError) -> bool {
-    matches!(error, ClientError::Unavailable)
+    matches!(error, ClientError::Unavailable { .. })
 }
 
 #[cfg(test)]
@@ -301,42 +301,42 @@ mod tests {
             &self,
             _: aion_proto::ProtoStartWorkflowRequest,
         ) -> Result<ProtoStartWorkflowResponse, ClientError> {
-            Err(ClientError::Unavailable)
+            Err(ClientError::unavailable("stub transport"))
         }
 
         async fn signal(
             &self,
             _: aion_proto::ProtoSignalRequest,
         ) -> Result<ProtoSignalResponse, ClientError> {
-            Err(ClientError::Unavailable)
+            Err(ClientError::unavailable("stub transport"))
         }
 
         async fn query(
             &self,
             _: aion_proto::ProtoQueryRequest,
         ) -> Result<ProtoQueryResponse, ClientError> {
-            Err(ClientError::Unavailable)
+            Err(ClientError::unavailable("stub transport"))
         }
 
         async fn cancel(
             &self,
             _: aion_proto::ProtoCancelRequest,
         ) -> Result<ProtoCancelResponse, ClientError> {
-            Err(ClientError::Unavailable)
+            Err(ClientError::unavailable("stub transport"))
         }
 
         async fn list_workflows(
             &self,
             _: aion_proto::ProtoListWorkflowsRequest,
         ) -> Result<ProtoListWorkflowsResponse, ClientError> {
-            Err(ClientError::Unavailable)
+            Err(ClientError::unavailable("stub transport"))
         }
 
         async fn describe_workflow(
             &self,
             _: aion_proto::ProtoDescribeWorkflowRequest,
         ) -> Result<ProtoDescribeWorkflowResponse, ClientError> {
-            Err(ClientError::Unavailable)
+            Err(ClientError::unavailable("stub transport"))
         }
 
         async fn subscribe(
@@ -378,7 +378,7 @@ mod tests {
                 stream::iter(vec![
                     Ok(event(1, &workflow_id)),
                     Ok(event(2, &workflow_id)),
-                    Err(ClientError::Unavailable),
+                    Err(ClientError::unavailable("transient disconnect")),
                 ])
                 .boxed(),
             ));
@@ -423,12 +423,15 @@ mod tests {
             .lock()
             .await
             .push_back(SubscriptionAttempt::new(
-                stream::iter(vec![Err(ClientError::Unauthenticated)]).boxed(),
+                stream::iter(vec![Err(ClientError::unauthenticated("bad token"))]).boxed(),
             ));
         let mut events =
             ResumingEventStream::new(stub, "tenant-a", SubscribeTarget::Workflow { workflow_id });
 
-        assert_eq!(events.next().await, Some(Err(ClientError::Unauthenticated)));
+        assert_eq!(
+            events.next().await,
+            Some(Err(ClientError::unauthenticated("bad token")))
+        );
         assert_eq!(events.next().await, None);
     }
 
@@ -436,9 +439,8 @@ mod tests {
     async fn namespace_denied_is_terminal_and_never_retried() {
         let workflow_id = WorkflowId::new_v4();
         let stub = Arc::new(SubscribeStub::default());
-        let denied = ClientError::NamespaceDenied {
-            detail: String::from("namespace tenant-b is not granted to this caller"),
-        };
+        let denied =
+            ClientError::namespace_denied("namespace tenant-b is not granted to this caller");
         stub.attempts
             .lock()
             .await
@@ -501,7 +503,7 @@ mod tests {
             .lock()
             .await
             .push_back(SubscriptionAttempt::new(
-                stream::iter(vec![Err(ClientError::Unavailable)]).boxed(),
+                stream::iter(vec![Err(ClientError::unavailable("transient disconnect"))]).boxed(),
             ));
         stub.attempts
             .lock()
@@ -551,7 +553,7 @@ mod tests {
                 .push_back(SubscriptionAttempt::new(
                     stream::iter(vec![
                         Ok(event(1, &workflow_id)),
-                        Err(ClientError::Unavailable),
+                        Err(ClientError::unavailable("transient disconnect")),
                     ])
                     .boxed(),
                 ));
@@ -559,7 +561,10 @@ mod tests {
 
             let first = events.next().await;
             assert!(matches!(first, Some(Ok(_))), "got {first:?}");
-            assert_eq!(events.next().await, Some(Err(ClientError::Unavailable)));
+            assert_eq!(
+                events.next().await,
+                Some(Err(ClientError::unavailable("transient disconnect")))
+            );
             assert_eq!(events.next().await, None);
             assert_eq!(
                 stub.resume_points.lock().await.len(),
@@ -609,7 +614,7 @@ mod tests {
             .lock()
             .await
             .push_back(SubscriptionAttempt::new(
-                stream::iter(vec![Err(ClientError::NotFound)]).boxed(),
+                stream::iter(vec![Err(ClientError::not_found("workflow was not found"))]).boxed(),
             ));
         let mut events = ResumingEventStream::new(
             stub.clone(),
@@ -617,7 +622,10 @@ mod tests {
             SubscribeTarget::Workflow { workflow_id },
         );
 
-        assert_eq!(events.next().await, Some(Err(ClientError::NotFound)));
+        assert_eq!(
+            events.next().await,
+            Some(Err(ClientError::not_found("workflow was not found")))
+        );
         assert_eq!(events.next().await, None);
         assert_eq!(stub.resume_points.lock().await.len(), 1);
     }

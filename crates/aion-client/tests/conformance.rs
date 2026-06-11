@@ -179,9 +179,9 @@ async fn execute_step(
         }
         "harness.forceDisconnect" => execute_force_disconnect(context).await,
         "harness.assertStream" => execute_assert_stream(input, context).await,
-        other => Err(ClientError::Server {
-            detail: format!("unsupported conformance operation {other}"),
-        }),
+        other => Err(ClientError::server(format!(
+            "unsupported conformance operation {other}"
+        ))),
     }
 }
 
@@ -385,9 +385,9 @@ async fn execute_query(input: &Value, context: &mut ScenarioContext) -> Result<V
             Duration::from_millis(deadline_ms),
         )
         .await?;
-    let decoded = payload.to_json().map_err(|error| ClientError::Server {
-        detail: error.to_string(),
-    })?;
+    let decoded = payload
+        .to_json()
+        .map_err(|error| ClientError::server(error.to_string()))?;
     Ok(json!({ "kind": "payload", "value": decoded }))
 }
 
@@ -788,17 +788,13 @@ fn json_payload(value: Option<&Value>) -> Result<Payload, ClientError> {
         .and_then(|payload| payload.get("json"))
         .cloned()
         .unwrap_or(Value::Null);
-    Payload::from_json(&json_value).map_err(|error| ClientError::Server {
-        detail: error.to_string(),
-    })
+    Payload::from_json(&json_value).map_err(|error| ClientError::server(error.to_string()))
 }
 
 fn workflow_id(value: &str) -> Result<WorkflowId, ClientError> {
     Uuid::parse_str(value)
         .map(WorkflowId::new)
-        .map_err(|error| ClientError::Server {
-            detail: error.to_string(),
-        })
+        .map_err(|error| ClientError::server(error.to_string()))
 }
 
 fn optional_run_id(value: Option<&str>) -> Result<Option<RunId>, ClientError> {
@@ -806,9 +802,7 @@ fn optional_run_id(value: Option<&str>) -> Result<Option<RunId>, ClientError> {
         .map(|id| {
             Uuid::parse_str(id)
                 .map(RunId::new)
-                .map_err(|error| ClientError::Server {
-                    detail: error.to_string(),
-                })
+                .map_err(|error| ClientError::server(error.to_string()))
         })
         .transpose()
 }
@@ -844,13 +838,15 @@ fn status(value: Option<&str>) -> Option<WorkflowStatus> {
 
 fn error_variant(error: &ClientError) -> &'static str {
     match error {
-        ClientError::NotFound => "NotFound",
-        ClientError::AlreadyExists => "AlreadyExists",
-        ClientError::QueryFailed => "QueryFailed",
-        ClientError::QueryTimeout => "QueryTimeout",
-        ClientError::Cancelled => "Cancelled",
-        ClientError::Unavailable => "Unavailable",
-        ClientError::Unauthenticated => "Unauthenticated",
+        ClientError::NotFound { .. } => "NotFound",
+        ClientError::AlreadyExists { .. } => "AlreadyExists",
+        ClientError::QueryFailed { .. } => "QueryFailed",
+        ClientError::QueryTimeout { .. } => "QueryTimeout",
+        ClientError::UnknownQuery { .. } => "UnknownQuery",
+        ClientError::NotRunning { .. } => "NotRunning",
+        ClientError::Cancelled { .. } => "Cancelled",
+        ClientError::Unavailable { .. } => "Unavailable",
+        ClientError::Unauthenticated { .. } => "Unauthenticated",
         ClientError::NamespaceDenied { .. } => "NamespaceDenied",
         ClientError::InvalidArgument { .. } => "InvalidArgument",
         ClientError::Server { .. } => "Server",

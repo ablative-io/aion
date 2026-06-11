@@ -65,7 +65,7 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
                 std::collections::HashMap::new(),
             )
             .await
-            .map_err(map_engine_error)?;
+            .map_err(|error| map_engine_error(&error))?;
         Ok(aion_proto::ProtoStartWorkflowResponse {
             workflow_id: Some(aion_proto::ProtoWorkflowId::from(
                 handle.workflow_id().clone(),
@@ -89,7 +89,7 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
         self.engine
             .signal(&workflow_id, &run_id, request.signal_name, payload)
             .await
-            .map_err(map_engine_error)?;
+            .map_err(|error| map_engine_error(&error))?;
         Ok(aion_proto::ProtoSignalResponse {})
     }
 
@@ -103,7 +103,7 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
             .engine
             .query(&workflow_id, &run_id, request.query_name)
             .await
-            .map_err(map_engine_error)?;
+            .map_err(|error| map_engine_error(&error))?;
         Ok(aion_proto::ProtoQueryResponse {
             outcome: Some(aion_proto::proto_query_response::Outcome::Result(
                 aion_proto::ProtoPayload::from(payload),
@@ -120,7 +120,7 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
         self.engine
             .cancel(&workflow_id, &run_id, request.reason)
             .await
-            .map_err(map_engine_error)?;
+            .map_err(|error| map_engine_error(&error))?;
         Ok(aion_proto::ProtoCancelResponse {})
     }
 
@@ -138,7 +138,7 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
             .engine
             .list_workflows(filter)
             .await
-            .map_err(map_engine_error)?
+            .map_err(|error| map_engine_error(&error))?
             .iter()
             .map(|summary| {
                 aion_proto::encode_workflow_summary(request.namespace.clone(), None, summary)
@@ -160,7 +160,9 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
             .await
             .map_err(|error| ClientError::server(error.to_string()))?;
         let Some(summary) = aion_core::WorkflowSummary::from_history(&history) else {
-            return Err(ClientError::NotFound);
+            return Err(ClientError::not_found(format!(
+                "workflow {workflow_id} has no recorded history"
+            )));
         };
         let summary = Some(
             aion_proto::encode_workflow_summary(request.namespace.clone(), None, &summary)
@@ -350,11 +352,11 @@ fn embedded_subscription_target(
     }
 }
 
-fn map_engine_error(error: aion::EngineError) -> ClientError {
+fn map_engine_error(error: &aion::EngineError) -> ClientError {
     match error {
-        aion::EngineError::WorkflowNotFound { .. } => ClientError::NotFound,
-        aion::EngineError::ShuttingDown => ClientError::Unavailable,
-        other => ClientError::server(other.to_string()),
+        aion::EngineError::WorkflowNotFound { .. } => ClientError::not_found(error.to_string()),
+        aion::EngineError::ShuttingDown => ClientError::unavailable(error.to_string()),
+        _ => ClientError::server(error.to_string()),
     }
 }
 
@@ -426,7 +428,7 @@ mod tests {
         let Some(ClientError::InvalidArgument { detail }) = error else {
             return Err(format!("cursor 0 must be InvalidArgument, got {error:?}").into());
         };
-        assert!(detail.contains(">= 1"), "detail: {detail}");
+        assert!(detail.message.contains(">= 1"), "detail: {detail}");
         Ok(())
     }
 
@@ -438,7 +440,10 @@ mod tests {
         let Some(ClientError::InvalidArgument { detail }) = error else {
             return Err(format!("cursor head+2 must be InvalidArgument, got {error:?}").into());
         };
-        assert!(detail.contains("ahead of recorded history"), "{detail}");
+        assert!(
+            detail.message.contains("ahead of recorded history"),
+            "{detail}"
+        );
 
         let empty = splice_resume(live(Vec::new()), Vec::new(), 2).err();
         assert!(
@@ -496,10 +501,13 @@ mod tests {
 
         assert_eq!(collected.len(), 3, "two replay events then the lag item");
         assert!(collected[0].is_ok() && collected[1].is_ok());
-        assert_eq!(
-            collected[2].as_ref().err(),
-            Some(&ClientError::Unavailable),
-            "lag must surface as retryable Unavailable, never a silent gap"
+        assert!(
+            matches!(
+                collected[2].as_ref().err(),
+                Some(ClientError::Unavailable { .. })
+            ),
+            "lag must surface as retryable Unavailable, never a silent gap, got {:?}",
+            collected[2]
         );
         Ok(())
     }
@@ -531,7 +539,14 @@ mod tests {
         let collected: Vec<_> = events.collect().await;
 
         assert_eq!(collected.len(), 2);
-        assert_eq!(collected[1].as_ref().err(), Some(&ClientError::Unavailable));
+        assert!(
+            matches!(
+                collected[1].as_ref().err(),
+                Some(ClientError::Unavailable { .. })
+            ),
+            "got {:?}",
+            collected[1]
+        );
         Ok(())
     }
 

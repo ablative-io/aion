@@ -23,3 +23,21 @@ aion-cli = "0.1.0"
 aion --endpoint http://127.0.0.1:50051 \
   start examples.echo --payload '{"message":"hello"}'
 ```
+
+## Error reporting
+
+Every operational failure prints one report to stderr and exits with code 1;
+stdout stays reserved for the JSON result document. Failures that carry the
+client taxonomy render as
+
+```text
+error[<class>]: <operation>: <server detail message>
+  server error type: <ErrorType>   # when the wire carried one
+  hint: <actionable next step>     # for classes with a known remedy
+```
+
+where `<class>` is aligned with the wire error codes: `not_found`,
+`already_exists`, `query_failed`, `query_timeout`, `unknown_query`,
+`not_running`, `cancelled`, `unavailable`, `unauthenticated`,
+`namespace_denied`, `invalid_input`, and `backend`. Local failures without a
+taxonomy class render their full cause chain on one `error:` line.
