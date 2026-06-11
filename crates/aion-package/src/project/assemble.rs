@@ -27,6 +27,12 @@ pub struct PackageOptions {
     /// project root when relative. Packaging fails with
     /// [`PackagingError::OutputOverrideAmbiguous`] when the project declares
     /// more than one workflow.
+    ///
+    /// This is the caller's own path and is intentionally exempt from the
+    /// root confinement applied to `workflow.toml`-declared paths: it may
+    /// point anywhere, including outside the project root (the CLI resolves
+    /// `--out` against the invoker's working directory before passing it
+    /// here).
     pub output_override: Option<PathBuf>,
 }
 
@@ -93,13 +99,23 @@ pub enum ExcludedReason {
 /// blocks on synchronous filesystem I/O — async callers should wrap it in a
 /// blocking task.
 ///
+/// The confinement is enforced, not assumed: every `workflow.toml`-declared
+/// path (`output`, `input_schema`, `output_schema`) is lexically normalized
+/// and must resolve inside `root` — absolute paths and `..` traversal that
+/// escapes the root fail with [`PackagingError::PathEscapesRoot`] before any
+/// file is touched. The sole exception is
+/// [`PackageOptions::output_override`]: that path belongs to the caller and
+/// may point anywhere, including outside the root.
+///
 /// # Errors
 ///
 /// Returns [`PackagingError`] variants for missing or invalid `workflow.toml`
-/// descriptors, unreadable or non-JSON schema files, unbuilt projects, broken
-/// Gleam metadata, unresolved dependencies, duplicate or unreadable compiled
+/// descriptors, descriptor paths that are absolute or escape the project
+/// root, unreadable or non-JSON schema files, unbuilt projects, broken Gleam
+/// metadata, unresolved dependencies, duplicate or unreadable compiled
 /// modules, missing entry modules, output conflicts, ambiguous output
-/// overrides, and archive write or verify-after-write failures.
+/// overrides, and archive write (path-carrying) or verify-after-write
+/// failures.
 pub fn package_project(
     root: &Path,
     options: &PackageOptions,
@@ -179,7 +195,11 @@ fn build_workflow_package(
     };
 
     PackageBuilder::with_source(manifest, beams.clone(), source.clone())
-        .write_to_path(&workflow.output_path)?;
+        .write_to_path(&workflow.output_path)
+        .map_err(|source| PackagingError::OutputWrite {
+            path: workflow.output_path.clone(),
+            source,
+        })?;
     let package = Package::load_from_path(&workflow.output_path)?;
 
     Ok(PackagedWorkflow {
@@ -365,6 +385,64 @@ activities = []
                 .file_name()
                 .and_then(|name| name.to_str()),
             Some("override.aion")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn output_write_failure_names_the_output_path() -> TestResult {
+        let root = fixture::synthetic_built_project("assemble-missing-dir")?;
+        let descriptor = format!(
+            "{}output = \"missing-dir/demo.aion\"\n",
+            fixture::DEMO_WORKFLOW_TOML
+        );
+        fixture::write_file(&root, "workflow.toml", descriptor.as_bytes())?;
+        let result = package_project(&root, &PackageOptions::default());
+        fs::remove_dir_all(&root)?;
+
+        let expected = root.join("missing-dir/demo.aion");
+        let Err(error) = result else {
+            return Err("write into a missing directory unexpectedly succeeded".into());
+        };
+        assert!(
+            matches!(
+                &error,
+                PackagingError::OutputWrite { path, .. } if *path == expected
+            ),
+            "error does not carry the output path: {error:?}"
+        );
+        assert!(
+            error.to_string().contains(&expected.display().to_string()),
+            "message does not name the output path: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn output_override_may_point_outside_root_via_dotdot() -> TestResult {
+        // The exemption under test: workflow.toml paths are confined to the
+        // root, but the caller's `output_override` may point anywhere.
+        let root = fixture::synthetic_built_project("assemble-override-outside")?;
+        let outside_name = format!("aion-override-outside-{}.aion", std::process::id());
+        let options = PackageOptions {
+            output_override: Some(PathBuf::from(format!("../{outside_name}"))),
+        };
+        let report = package_project(&root, &options);
+        let outside = std::env::temp_dir().join(&outside_name);
+        let written = outside.is_file();
+        fs::remove_dir_all(&root)?;
+        if written {
+            fs::remove_file(&outside)?;
+        }
+        let report = report?;
+
+        assert!(written, "override outside the root was not written");
+        assert_eq!(
+            report.packages[0]
+                .output_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(outside_name.as_str())
         );
         Ok(())
     }
