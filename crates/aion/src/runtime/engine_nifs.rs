@@ -4,14 +4,10 @@
 //! in the Gleam `aion_flow` SDK. Activity dispatch is split into a normal
 //! dispatch NIF plus a selective-receive await NIF.
 
-use std::cell::RefCell;
-
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary;
 use beamr::term::binary_ref::BinaryRef;
-use beamr::term::boxed;
 
 use super::nif::{Mfa, NifEntry};
 use super::nif_child;
@@ -25,43 +21,28 @@ const FFI_MODULE: &str = "aion_flow_ffi";
 #[cfg(test)]
 const NOT_YET_IMPLEMENTED: &str = "not_yet_implemented";
 
-thread_local! {
-    static NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
+/// Build `{ok, <<value>>}` on the calling process heap.
+///
+/// Result terms are allocated through the [`ProcessContext`] allocators:
+/// attached (normal-scheduler) calls get GC-traced process-heap terms, and
+/// detached (dirty) calls get owned blocks the dirty-result bridge copies
+/// onto the process heap. Nothing is parked in thread-locals — beamr's
+/// moving GC never traces out-of-heap pointers, so a parked heap either
+/// leaks for the scheduler thread's lifetime or dangles once cleared while
+/// workflow code still references the term (N-6).
+///
+/// Allocation may collect on attached calls: decode every argument `Term`
+/// before the first result allocation.
+pub(super) fn ok_result_term(ctx: &mut ProcessContext, value: &str) -> Option<Term> {
+    let value_term = ctx.alloc_binary(value.as_bytes()).ok()?;
+    ctx.alloc_tuple(&[Term::atom(Atom::OK), value_term]).ok()
 }
 
-fn park_heap(heap: Box<[u64]>) {
-    NIF_HEAP.with_borrow_mut(|parked| parked.push(heap));
-}
-
-#[cfg(test)]
-fn clear_parked_heap() {
-    NIF_HEAP.with_borrow_mut(Vec::clear);
-}
-
-pub(super) fn alloc_binary_term(bytes: &[u8]) -> Option<Term> {
-    let word_count = 2 + binary::packed_word_count(bytes.len());
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = binary::write_binary(&mut heap, bytes)?;
-    park_heap(heap);
-    Some(term)
-}
-
-pub(super) fn alloc_tuple_term(elements: &[Term]) -> Option<Term> {
-    let word_count = 1 + elements.len();
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = boxed::write_tuple(&mut heap, elements)?;
-    park_heap(heap);
-    Some(term)
-}
-
-pub(super) fn ok_result_term(value: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(value.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::OK), value_term])
-}
-
-pub(super) fn error_result_term(message: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(message.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::ERROR), value_term])
+/// Build `{error, <<message>>}` on the calling process heap (see
+/// [`ok_result_term`] for the allocation contract).
+pub(super) fn error_result_term(ctx: &mut ProcessContext, message: &str) -> Option<Term> {
+    let value_term = ctx.alloc_binary(message.as_bytes()).ok()?;
+    ctx.alloc_tuple(&[Term::atom(Atom::ERROR), value_term]).ok()
 }
 
 pub(super) fn decode_string_arg(term: Term) -> Result<String, String> {
@@ -96,7 +77,7 @@ fn not_yet_implemented(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, 
         return Err(Term::NIL);
     }
 
-    Ok(error_result_term(NOT_YET_IMPLEMENTED).unwrap_or(Term::NIL))
+    Ok(error_result_term(ctx, NOT_YET_IMPLEMENTED).unwrap_or(Term::NIL))
 }
 
 /// Collect engine-owned NIF entries for `aion_flow_ffi`.
@@ -203,10 +184,7 @@ mod tests {
     use beamr::term::binary_ref::BinaryRef;
     use beamr::term::boxed::Tuple;
 
-    use super::{
-        NOT_YET_IMPLEMENTED, clear_parked_heap, dispatch_activity, engine_nif_entries,
-        not_yet_implemented,
-    };
+    use super::{NOT_YET_IMPLEMENTED, dispatch_activity, engine_nif_entries, not_yet_implemented};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -230,7 +208,6 @@ mod tests {
 
     #[test]
     fn returns_error_on_wrong_arity() -> TestResult {
-        clear_parked_heap();
         let mut ctx = ProcessContext::new();
 
         let result = dispatch_activity(&[], &mut ctx);
@@ -335,7 +312,6 @@ mod tests {
 
     #[test]
     fn unimplemented_stub_returns_standard_error_tuple() -> TestResult {
-        clear_parked_heap();
         let mut ctx = ProcessContext::new();
 
         let result = not_yet_implemented(&[], &mut ctx);

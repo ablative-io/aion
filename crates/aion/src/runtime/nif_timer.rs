@@ -34,11 +34,11 @@ pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term
     {
         if let Err(error) = super::nif_query_pump::ensure_not_servicing_query(&state, pid, "sleep")
         {
-            return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+            return Ok(error_result_term(ctx, &error).unwrap_or(Term::NIL));
         }
         consume_one_wake_marker(ctx);
         if let Some(sentinel) = super::nif_query_pump::take_pending_query_sentinel(&state, pid) {
-            return Ok(error_result_term(&sentinel).unwrap_or(Term::NIL));
+            return Ok(error_result_term(ctx, &sentinel).unwrap_or(Term::NIL));
         }
     } else {
         consume_one_wake_marker(ctx);
@@ -117,6 +117,17 @@ pub(super) fn sleep_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term
 /// Park the calling process on its pinned sleep, unless an enclosing
 /// `with_timeout` deadline already expired — then the sleep is cancelled
 /// durably so replay returns the same error.
+///
+/// The expiry check is a pure function of the caller's resolution snapshot
+/// (`context.history()`): a deadline that fired after the snapshot is not
+/// observed here — the fired marker re-enters the native, whose fresh
+/// snapshot then converges on the recorded truth. The cancel itself is
+/// arbitrated by the timer service's first-recorded-wins terminal guard:
+/// `cancel` is a silent no-op when `TimerFired` already landed, so the
+/// settled branch is re-read from the recorded terminal — never assumed —
+/// exactly as `settle_live_scope` does. Returning `cancelled`
+/// unconditionally here lost that race: live answered `cancelled` while
+/// replay read the recorded `TimerFired` and answered `fired` (N-3).
 fn park_sleep(
     state: &EngineNifState,
     context: &NifContext,
@@ -124,10 +135,19 @@ fn park_sleep(
     timer_id: TimerId,
     fire_at: DateTime<Utc>,
 ) -> Result<NifResult, NifTimerError> {
-    if super::nif_timeout::expired_scope_message(state, pid).is_some() {
-        cancel_live_timer(state, context, timer_id)?;
+    if super::nif_timeout::expired_scope_deadline(state, pid, context.history()).is_some() {
+        cancel_live_timer(state, context, timer_id.clone())?;
         state.pending_awaits.remove(&pid);
-        return Ok(error_result("cancelled"));
+        // Re-read the recorded terminal: the cancel may have lost the race
+        // to a concurrent fire, and history is the truth replay will read.
+        let settled = build_context_for_pid(state, pid)?;
+        return match timer_terminal_recorded(&settled, &timer_id) {
+            Some(true) => Ok(ok_result("fired")),
+            Some(false) => Ok(error_result("cancelled")),
+            None => Err(NifTimerError::Context(format!(
+                "sleep timer {timer_id:?} has no recorded terminal after a durable cancel"
+            ))),
+        };
     }
     state
         .pending_awaits
@@ -201,26 +221,30 @@ where
         return Err(Term::NIL);
     }
     if args.len() != arity {
-        return Ok(error_result_term(&format!(
-            "{name}: expected {arity} arguments, got {}",
-            args.len()
-        ))
+        return Ok(error_result_term(
+            process_context,
+            &format!("{name}: expected {arity} arguments, got {}", args.len()),
+        )
         .unwrap_or(Term::NIL));
     }
     let state = match super::nif_state::engine_nif_state(process_context) {
         Ok(state) => state,
-        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+        Err(error) => return Ok(error_result_term(process_context, &error).unwrap_or(Term::NIL)),
     };
     // Every timer NIF records durable timer events; refuse while the caller
     // is servicing a query so handler misuse never writes history.
     if let Some(pid) = process_context.pid()
         && let Err(error) = super::nif_query_pump::ensure_not_servicing_query(&state, pid, name)
     {
-        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+        return Ok(error_result_term(process_context, &error).unwrap_or(Term::NIL));
     }
     match build_context(&state, process_context).and_then(|context| f(&state, context, args)) {
-        Ok(NifResult::Ok(value)) => Ok(ok_result_term(&value).unwrap_or(Term::NIL)),
-        Ok(NifResult::Error(message)) => Ok(error_result_term(&message).unwrap_or(Term::NIL)),
+        Ok(NifResult::Ok(value)) => {
+            Ok(ok_result_term(process_context, &value).unwrap_or(Term::NIL))
+        }
+        Ok(NifResult::Error(message)) => {
+            Ok(error_result_term(process_context, &message).unwrap_or(Term::NIL))
+        }
         Ok(NifResult::Suspend) => {
             // Park the process; the next mailbox wake re-invokes this
             // native from the top with the await identity pinned in
@@ -229,7 +253,9 @@ where
             process_context.request_suspend(None);
             Ok(Term::NIL)
         }
-        Err(error) => Ok(error_result_term(&error.to_string()).unwrap_or(Term::NIL)),
+        Err(error) => {
+            Ok(error_result_term(process_context, &error.to_string()).unwrap_or(Term::NIL))
+        }
     }
 }
 
@@ -456,5 +482,224 @@ impl From<NifContextError> for NifTimerError {
             NifContextError::Durability(error) => Self::Durability(error),
             other => Self::Context(other.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use aion_core::{Event, EventEnvelope, Payload, RunId, TimerId, WorkflowId, WorkflowStatus};
+    use aion_package::ContentHash;
+    use aion_store::{EventStore, InMemoryStore, WriteToken};
+    use chrono::{DateTime, Utc};
+    use serde_json::json;
+
+    use super::{NifResult, park_sleep};
+    use crate::durability::Recorder;
+    use crate::registry::{
+        CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
+    };
+    use crate::runtime::nif_state::EngineNifState;
+    use crate::runtime::nif_timeout::TimeoutScope;
+    use crate::runtime::{RuntimeConfig, RuntimeHandle, SignalDeliveryConfig};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// One registered sleeper mid-sleep (`TimerStarted` recorded, no
+    /// terminal), with the timer bridge installed and an expired replayed
+    /// scope on the pid.
+    struct SleeperHarness {
+        state: Arc<EngineNifState>,
+        store: Arc<dyn EventStore>,
+        handle: WorkflowHandle,
+        runtime: Arc<RuntimeHandle>,
+        workflow_id: WorkflowId,
+        pid: u64,
+        fire_at: DateTime<Utc>,
+    }
+
+    impl SleeperHarness {
+        async fn mid_sleep(
+            pid: u64,
+            sleep_timer: &TimerId,
+        ) -> Result<Self, Box<dyn std::error::Error>> {
+            let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+            let registry = Arc::new(Registry::default());
+            let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+            let workflow_id = WorkflowId::new_v4();
+            let run_id = RunId::new_v4();
+            let fire_at = Utc::now();
+            let envelope = |seq: u64| EventEnvelope {
+                seq,
+                recorded_at: Utc::now(),
+                workflow_id: workflow_id.clone(),
+            };
+            let events = vec![
+                Event::WorkflowStarted {
+                    envelope: envelope(1),
+                    workflow_type: "sleeper".to_owned(),
+                    input: Payload::from_json(&json!({}))?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                },
+                Event::TimerStarted {
+                    envelope: envelope(2),
+                    timer_id: sleep_timer.clone(),
+                    fire_at,
+                },
+            ];
+            store
+                .append(WriteToken::recorder(), &workflow_id, &events, 0)
+                .await?;
+            let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), 2);
+            let handle = WorkflowHandle::new(WorkflowHandleParts {
+                workflow_id: workflow_id.clone(),
+                run_id: run_id.clone(),
+                pid,
+                workflow_type: "sleeper".to_owned(),
+                loaded_version: ContentHash::from_bytes([6; 32]),
+                cached_status: WorkflowStatus::Running,
+                residency: HandleResidency::Resident,
+                recorder,
+                completion: CompletionNotifier::new(),
+            });
+            registry.insert((workflow_id.clone(), run_id), handle.clone())?;
+            let state = Arc::new(EngineNifState::default());
+            crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
+                &state,
+                registry,
+                Arc::clone(&store),
+                tokio::runtime::Handle::current(),
+                SignalDeliveryConfig::default(),
+            );
+            state
+                .timeout_scopes
+                .insert(1, TimeoutScope::replayed_for_test(pid, true));
+            state.timeout_scope_stacks.insert(pid, vec![1]);
+            Ok(Self {
+                state,
+                store,
+                handle,
+                runtime,
+                workflow_id,
+                pid,
+                fire_at,
+            })
+        }
+
+        /// Resolution snapshot of the current store state.
+        fn snapshot(&self) -> Result<super::NifContext, super::NifTimerError> {
+            tokio::task::block_in_place(|| super::build_context_for_pid(&self.state, self.pid))
+        }
+
+        fn park(
+            &self,
+            context: &super::NifContext,
+            sleep_timer: &TimerId,
+        ) -> Result<NifResult, super::NifTimerError> {
+            tokio::task::block_in_place(|| {
+                park_sleep(
+                    &self.state,
+                    context,
+                    self.pid,
+                    sleep_timer.clone(),
+                    self.fire_at,
+                )
+            })
+        }
+
+        fn shutdown(self) -> TestResult {
+            self.runtime.shutdown()?;
+            Ok(())
+        }
+    }
+
+    /// N-3: `park_sleep`'s expired-scope abort must not assume the cancel
+    /// won. Race modeled: the sleep's resolution snapshot has only
+    /// `TimerStarted`; the timer service records `TimerFired` before the
+    /// abort's cancel runs, making that cancel a silent no-op
+    /// (first-recorded-wins). Before the fix the live path returned
+    /// `cancelled` unconditionally while replay read the recorded
+    /// `TimerFired` and returned `fired` — opposite results. After the fix
+    /// the settled branch is re-read from the recorded terminal: both
+    /// return `fired`, and no `TimerCancelled` is ever appended.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_scope_cancel_losing_to_a_recorded_fire_returns_fired() -> TestResult {
+        let sleep_timer = TimerId::anonymous(3);
+        let harness = SleeperHarness::mid_sleep(521, &sleep_timer).await?;
+
+        // Resolution snapshot: TimerStarted only.
+        let context = harness.snapshot()?;
+
+        // The fire lands durably after the snapshot — the race window.
+        {
+            let recorder = harness.handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_timer_fired(Utc::now(), sleep_timer.clone())
+                .await?;
+        }
+
+        match harness.park(&context, &sleep_timer)? {
+            NifResult::Ok(value) => assert_eq!(value, "fired"),
+            NifResult::Error(message) => {
+                return Err(format!(
+                    "live sleep answered `{message}` where replay reads the recorded \
+                     TimerFired and answers `fired` (N-3)"
+                )
+                .into());
+            }
+            NifResult::Suspend => return Err("the expired-scope abort must settle".into()),
+        }
+
+        // Exactly one terminal exists: the fire. The losing cancel appended
+        // nothing, so replay reads the same single terminal.
+        let history = harness.store.read_history(&harness.workflow_id).await?;
+        let fired = history
+            .iter()
+            .filter(
+                |event| matches!(event, Event::TimerFired { timer_id, .. } if timer_id == &sleep_timer),
+            )
+            .count();
+        let cancelled = history
+            .iter()
+            .filter(|event| {
+                matches!(event, Event::TimerCancelled { timer_id, .. } if timer_id == &sleep_timer)
+            })
+            .count();
+        assert_eq!((fired, cancelled), (1, 0));
+
+        // Replay equivalence: a fresh snapshot over the settled history
+        // resolves the same terminal.
+        let replayed = harness.snapshot()?;
+        assert_eq!(
+            super::timer_terminal_recorded(&replayed, &sleep_timer),
+            Some(true),
+            "replay reads TimerFired for this sleep"
+        );
+        assert!(harness.state.pending_awaits.get(&harness.pid).is_none());
+        harness.shutdown()
+    }
+
+    /// The deterministic abort: no racing fire — the cancel wins, records
+    /// `TimerCancelled`, and the sleep answers `cancelled` on live and
+    /// replay alike.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_scope_cancel_winning_returns_cancelled() -> TestResult {
+        let sleep_timer = TimerId::anonymous(4);
+        let harness = SleeperHarness::mid_sleep(522, &sleep_timer).await?;
+        let context = harness.snapshot()?;
+
+        match harness.park(&context, &sleep_timer)? {
+            NifResult::Error(message) => assert_eq!(message, "cancelled"),
+            NifResult::Ok(value) => return Err(format!("unexpected success: {value}").into()),
+            NifResult::Suspend => return Err("the expired-scope abort must settle".into()),
+        }
+        let history = harness.store.read_history(&harness.workflow_id).await?;
+        assert!(history.iter().any(|event| {
+            matches!(event, Event::TimerCancelled { timer_id, .. } if timer_id == &sleep_timer)
+        }));
+        harness.shutdown()
     }
 }

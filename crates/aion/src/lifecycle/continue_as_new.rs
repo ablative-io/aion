@@ -114,6 +114,7 @@ pub async fn continue_as_new(
             registry: Arc::clone(context.registry),
             signal_handoff: None,
             search_attribute_schema: context.search_attribute_schema,
+            monitor_tokio_handle: tokio::runtime::Handle::current(),
         },
         workflow_type,
         request.input.clone(),

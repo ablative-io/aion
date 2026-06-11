@@ -1042,3 +1042,99 @@ async fn post_record_spawn_failure_is_not_workflow_visible() -> TestResult {
     engine.shutdown()?;
     Ok(())
 }
+
+// --- brief §4 item 10: >10 parents parked in await_child simultaneously ----
+
+/// The headline thread-pinning claim, behaviorally: beamr's dirty IO pool
+/// defaults to 10 threads, and the old blocking `await_child` held one for a
+/// child's entire lifetime — ten parked parents wedged the engine. The
+/// two-phase native parks via `request_suspend`, so 16 parents awaiting 16
+/// gated children must all park concurrently on a single scheduler thread
+/// and all resolve once the children are released, in bounded time.
+#[tokio::test(flavor = "multi_thread")]
+async fn sixteen_parents_parked_in_await_child_all_resolve() -> TestResult {
+    const PARENTS: usize = 16;
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .query_timeout(QUERY_TIMEOUT)
+        .load_workflows(fixture_package(
+            PLAIN_PARENT_MODULE,
+            PLAIN_PARENT_BEAM,
+            PLAIN_PARENT_SOURCE,
+            "child_round_trip",
+        )?)
+        .load_workflows(fixture_package(
+            CHILD_MODULE,
+            CHILD_BEAM,
+            CHILD_SOURCE,
+            "gated",
+        )?)
+        .build()
+        .await?;
+
+    // Phase 1 — park more parents than the dirty pool ever had threads.
+    let mut parents = Vec::with_capacity(PARENTS);
+    for _ in 0..PARENTS {
+        parents.push(start_parent(&engine, PLAIN_PARENT_MODULE).await?);
+    }
+    let mut children = Vec::with_capacity(PARENTS);
+    for (workflow_id, _run_id) in &parents {
+        let with_spawn = wait_for_history(&store, workflow_id, "child spawn recorded", |events| {
+            child_started_ids(events).len() == 1
+        })
+        .await?;
+        let child_id = child_started_ids(&with_spawn)
+            .pop()
+            .ok_or("missing child id")?;
+        // The child exists and is gated; its parent can only be parked in
+        // await_child (no terminal can be recorded yet).
+        wait_for_history(&store, &child_id, "gated child started", |events| {
+            !events.is_empty()
+        })
+        .await?;
+        children.push(child_id);
+    }
+    // All 16 are simultaneously mid-await: every spawn is durable, no parent
+    // observed a child terminal, and none completed.
+    for (workflow_id, _run_id) in &parents {
+        let history = store.read_history(workflow_id).await?;
+        assert_eq!(count_child_completed(&history), 0);
+        assert!(
+            !history
+                .iter()
+                .any(|event| matches!(event, Event::WorkflowCompleted { .. })),
+            "no parent may complete while its child is gated"
+        );
+    }
+
+    // Phase 2 — release every child; all parents must resolve and complete
+    // within a bounded deadline (the old implementation wedged here).
+    for child_id in &children {
+        release_child(&engine, &store, child_id).await?;
+    }
+    let all_results = futures::future::join_all(
+        parents
+            .iter()
+            .map(|(workflow_id, run_id)| engine.result(workflow_id, run_id)),
+    );
+    let outcomes = tokio::time::timeout(Duration::from_secs(60), all_results)
+        .await
+        .map_err(|_| "16 parked parents did not all resolve within the bound")?;
+    let mut completed = 0_usize;
+    for outcome in outcomes {
+        let result = outcome?.map_err(|error| format!("parent workflow failed: {error:?}"))?;
+        // child_round_trip returns {ChildId, ChildResult} — assert the
+        // awaited child result component.
+        assert_eq!(result_json(&result)?[1], json!(42));
+        completed += 1;
+    }
+    assert_eq!(completed, PARENTS);
+    engine.shutdown()?;
+    Ok(())
+}

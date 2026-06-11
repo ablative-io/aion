@@ -49,6 +49,7 @@ fn context(
         registry,
         signal_handoff: None,
         search_attribute_schema: Arc::new(aion_core::SearchAttributeSchema::new()),
+        monitor_tokio_handle: tokio::runtime::Handle::current(),
     }
 }
 
@@ -161,6 +162,7 @@ async fn start_with_attributes_records_started_then_attributes_before_spawn()
             registry: Arc::clone(&registry),
             signal_handoff: None,
             search_attribute_schema: Arc::new(schema),
+            monitor_tokio_handle: tokio::runtime::Handle::current(),
         },
         "checkout",
         payload("input")?,

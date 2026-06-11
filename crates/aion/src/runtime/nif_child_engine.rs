@@ -162,6 +162,9 @@ impl ChildNifBridge {
                 registry: Arc::clone(&self.registry),
                 signal_handoff: Some(Arc::clone(&self.signal_handoff)),
                 search_attribute_schema: Arc::clone(&self.search_attribute_schema),
+                // Epoch-stable: the host runtime's handle, never the
+                // child-task runtime polling a spawn-recovery attempt.
+                monitor_tokio_handle: self.tokio_handle.clone(),
             },
             &request.workflow_type,
             request.input,

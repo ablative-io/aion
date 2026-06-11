@@ -56,6 +56,29 @@ impl TimeoutScope {
             replay_timed_out: Some(timed_out),
         }
     }
+
+    /// Build a live scope (no replay outcome) whose expiry is decided by the
+    /// recorded `TimerFired` of `timer_id`, so determinism tests can model
+    /// the live-vs-replay snapshot races of N-1/N-2/N-3 without arming a
+    /// real timer.
+    pub(super) fn live_for_test(pid: u64, timer_id: TimerId) -> Self {
+        Self {
+            pid,
+            timer_id,
+            replay_timed_out: None,
+        }
+    }
+
+    /// Build a replay-expired scope carrying its real deadline timer id —
+    /// what `arm_scope` derives on replay — so F1b ordering tests read the
+    /// recorded `TimerFired` position exactly as production replay does.
+    pub(super) fn replayed_expired_with_deadline_for_test(pid: u64, timer_id: TimerId) -> Self {
+        Self {
+            pid,
+            timer_id,
+            replay_timed_out: Some(true),
+        }
+    }
 }
 
 /// Return the message for an expired enclosing `with_timeout` scope, if any.
@@ -169,27 +192,28 @@ pub(super) fn with_timeout_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
         return Err(Term::NIL);
     }
     if args.len() != 2 {
-        return Ok(error_result_term(&format!(
-            "with_timeout: expected 2 arguments, got {}",
-            args.len()
-        ))
+        return Ok(error_result_term(
+            ctx,
+            &format!("with_timeout: expected 2 arguments, got {}", args.len()),
+        )
         .unwrap_or(Term::NIL));
     }
     let Some(pid) = ctx.pid() else {
         return Ok(
-            error_result_term("with_timeout: missing calling process pid").unwrap_or(Term::NIL),
+            error_result_term(ctx, "with_timeout: missing calling process pid")
+                .unwrap_or(Term::NIL),
         );
     };
     let state = match super::nif_state::engine_nif_state(ctx) {
         Ok(state) => state,
-        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+        Err(error) => return Ok(error_result_term(ctx, &error).unwrap_or(Term::NIL)),
     };
     // with_timeout records its durable deadline timer; a query handler must
     // stay read-only.
     if let Err(error) =
         super::nif_query_pump::ensure_not_servicing_query(&state, pid, "with_timeout")
     {
-        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+        return Ok(error_result_term(ctx, &error).unwrap_or(Term::NIL));
     }
     match arm_scope(&state, args, pid) {
         Ok((fun, state_id)) => {
@@ -207,7 +231,7 @@ pub(super) fn with_timeout_impl(args: &[Term], ctx: &mut ProcessContext) -> Resu
             );
             Ok(Term::NIL)
         }
-        Err(message) => Ok(error_result_term(&message).unwrap_or(Term::NIL)),
+        Err(message) => Ok(error_result_term(ctx, &message).unwrap_or(Term::NIL)),
     }
 }
 
@@ -273,13 +297,13 @@ fn resume_with_timeout(
         Ok(state) => state,
         Err(error) => {
             return Ok(ContinuationStep::Done(
-                error_result_term(&error).unwrap_or(Term::NIL),
+                error_result_term(ctx, &error).unwrap_or(Term::NIL),
             ));
         }
     };
     let Some((_, scope)) = engine_state.timeout_scopes.remove(&state_id) else {
         return Ok(ContinuationStep::Done(
-            error_result_term("with_timeout: scope state missing").unwrap_or(Term::NIL),
+            error_result_term(ctx, "with_timeout: scope state missing").unwrap_or(Term::NIL),
         ));
     };
     if let Some(mut stack) = engine_state.timeout_scope_stacks.get_mut(&scope.pid) {
@@ -291,14 +315,14 @@ fn resume_with_timeout(
             Ok(timed_out) => timed_out,
             Err(message) => {
                 return Ok(ContinuationStep::Done(
-                    error_result_term(&message).unwrap_or(Term::NIL),
+                    error_result_term(ctx, &message).unwrap_or(Term::NIL),
                 ));
             }
         },
     };
     if timed_out {
         Ok(ContinuationStep::Done(
-            error_result_term(SCOPE_EXPIRED_MESSAGE).unwrap_or(Term::NIL),
+            error_result_term(ctx, SCOPE_EXPIRED_MESSAGE).unwrap_or(Term::NIL),
         ))
     } else {
         let wrapped = ctx.alloc_tuple(&[Term::atom(Atom::OK), closure_result])?;

@@ -133,7 +133,11 @@ async fn run_watch(context: &ChildWatchContext) {
             // Marker failure after the durable record is non-fatal: the
             // parent is gone or crashing, and recovery resolves the await
             // from the recorded event.
-            if let Err(error) = context.runtime.deliver_child_terminal(context.parent.pid()) {
+            if let Err(error) = context
+                .runtime
+                .deliver_child_terminal(context.parent.pid())
+                .await
+            {
                 tracing::warn!(
                     parent_workflow_id = %context.parent.workflow_id(),
                     parent_pid = context.parent.pid(),

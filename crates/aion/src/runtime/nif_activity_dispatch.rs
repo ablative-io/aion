@@ -24,32 +24,35 @@ pub(super) fn dispatch_activity_impl(
         return Err(Term::NIL);
     }
     let Ok((name, input, config)) = decode_dispatch_args(args) else {
-        return Ok(error_result_term(&format!(
-            "dispatch_activity: expected 3 arguments, got {}",
-            args.len()
-        ))
+        return Ok(error_result_term(
+            ctx,
+            &format!(
+                "dispatch_activity: expected 3 arguments, got {}",
+                args.len()
+            ),
+        )
         .unwrap_or(Term::NIL));
     };
     let Some(pid) = ctx.pid() else {
         return Ok(
-            error_result_term("dispatch_activity: missing calling process pid")
+            error_result_term(ctx, "dispatch_activity: missing calling process pid")
                 .unwrap_or(Term::NIL),
         );
     };
     let state = match super::nif_state::engine_nif_state(ctx) {
         Ok(state) => state,
-        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+        Err(error) => return Ok(error_result_term(ctx, &error).unwrap_or(Term::NIL)),
     };
     // dispatch_activity records `ActivityScheduled`; a query handler must
     // stay read-only.
     if let Err(error) =
         super::nif_query_pump::ensure_not_servicing_query(&state, pid, "dispatch_activity")
     {
-        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+        return Ok(error_result_term(ctx, &error).unwrap_or(Term::NIL));
     }
     let runtime = match runtime_context(&state) {
         Ok(runtime) => runtime,
-        Err(error) => return Ok(context_error_term(&error)),
+        Err(error) => return Ok(context_error_term(ctx, &error)),
     };
     let context = match NifContext::new(
         pid,
@@ -58,17 +61,20 @@ pub(super) fn dispatch_activity_impl(
         runtime.runtime.signal_delivery(),
     ) {
         Ok(context) => context,
-        Err(error) => return Ok(context_error_term(&error)),
+        Err(error) => return Ok(context_error_term(ctx, &error)),
     };
     let dispatcher = state.activity_dispatcher();
     dispatch_activity_with_context(
+        ctx,
         context,
         dispatcher,
         runtime.runtime,
         &runtime.tokio_handle,
-        name,
-        input,
-        config,
+        ActivityCall {
+            name,
+            input,
+            config,
+        },
     )
 }
 
@@ -81,34 +87,37 @@ pub(super) fn await_activity_result_impl(
         return Err(Term::NIL);
     }
     if args.len() != 1 {
-        return Ok(error_result_term(&format!(
-            "await_activity_result: expected 1 argument, got {}",
-            args.len()
-        ))
+        return Ok(error_result_term(
+            ctx,
+            &format!(
+                "await_activity_result: expected 1 argument, got {}",
+                args.len()
+            ),
+        )
         .unwrap_or(Term::NIL));
     }
     let correlation = match decode_string_arg(args[0]) {
         Ok(value) => value,
         Err(error) => {
             return Ok(
-                error_result_term(&format!("await_activity_result id: {error}"))
+                error_result_term(ctx, &format!("await_activity_result id: {error}"))
                     .unwrap_or(Term::NIL),
             );
         }
     };
     let Some(pid) = ctx.pid() else {
         return Ok(
-            error_result_term("await_activity_result: missing calling process pid")
+            error_result_term(ctx, "await_activity_result: missing calling process pid")
                 .unwrap_or(Term::NIL),
         );
     };
     let state = match super::nif_state::engine_nif_state(ctx) {
         Ok(state) => state,
-        Err(error) => return Ok(error_result_term(&error).unwrap_or(Term::NIL)),
+        Err(error) => return Ok(error_result_term(ctx, &error).unwrap_or(Term::NIL)),
     };
     let runtime = match runtime_context(&state) {
         Ok(runtime) => runtime,
-        Err(error) => return Ok(context_error_term(&error)),
+        Err(error) => return Ok(context_error_term(ctx, &error)),
     };
     let context = match NifContext::new(
         pid,
@@ -117,7 +126,7 @@ pub(super) fn await_activity_result_impl(
         runtime.runtime.signal_delivery(),
     ) {
         Ok(context) => context,
-        Err(error) => return Ok(context_error_term(&error)),
+        Err(error) => return Ok(context_error_term(ctx, &error)),
     };
     await_activity_result_with_context(&state, context, &runtime.runtime, ctx, &correlation)
 }
@@ -143,15 +152,14 @@ pub(super) struct ActivityCall {
 }
 
 fn dispatch_activity_with_context(
+    ctx: &mut ProcessContext,
     mut context: NifContext,
     dispatcher: Option<Arc<dyn ActivityDispatcher>>,
     runtime: Arc<crate::RuntimeHandle>,
     tokio_handle: &tokio::runtime::Handle,
-    name: String,
-    input_text: String,
-    config: String,
+    call: ActivityCall,
 ) -> Result<Term, Term> {
-    let input_payload = json_payload(&input_text, "dispatch_activity", "input")?;
+    let input_payload = json_payload(ctx, &call.input, "dispatch_activity", "input")?;
     let ordinal = context.next_activity_ordinal();
     let key = CorrelationKey::Activity(ordinal);
     let activity_id = ActivityId::from_sequence_position(ordinal);
@@ -159,27 +167,23 @@ fn dispatch_activity_with_context(
     match context
         .resolve_command(Command::RunActivity {
             key,
-            activity_type: name.clone(),
+            activity_type: call.name.clone(),
             input: input_payload.clone(),
         })
-        .map_err(|error| context_error_term(&error))?
+        .map_err(|error| context_error_term(ctx, &error))?
     {
         ResolveOutcome::Recorded(_) => {
-            Ok(ok_result_term(correlation.as_bytes()).unwrap_or(Term::NIL))
+            Ok(ok_result_term(ctx, correlation.as_bytes()).unwrap_or(Term::NIL))
         }
         ResolveOutcome::ResumeLive => {
             let Some(dispatcher) = dispatcher else {
                 return Ok(error_result_term(
+                    ctx,
                     "no activity dispatcher configured — set one via EngineBuilder::activity_dispatcher",
                 )
                 .unwrap_or(Term::NIL));
             };
-            record_started(&context, activity_id, name.clone(), input_payload)?;
-            let call = ActivityCall {
-                name,
-                input: input_text,
-                config,
-            };
+            record_started(ctx, &context, activity_id, call.name.clone(), input_payload)?;
             spawn_completion_task(
                 tokio_handle,
                 runtime,
@@ -188,7 +192,7 @@ fn dispatch_activity_with_context(
                 correlation.clone(),
                 call,
             );
-            Ok(ok_result_term(correlation.as_bytes()).unwrap_or(Term::NIL))
+            Ok(ok_result_term(ctx, correlation.as_bytes()).unwrap_or(Term::NIL))
         }
     }
 }
@@ -243,7 +247,7 @@ fn await_activity_result_with_context(
         context.pid(),
         "await_activity_result",
     ) {
-        return Ok(error_result_term(&error).unwrap_or(Term::NIL));
+        return Ok(error_result_term(process_context, &error).unwrap_or(Term::NIL));
     }
     // Queries first (Q6), and deliberately BEFORE the recorded-resolution
     // fast path below: a tight replay loop whose awaits all resolve from
@@ -251,66 +255,76 @@ fn await_activity_result_with_context(
     if let Some(sentinel) =
         crate::runtime::nif_query_pump::take_pending_query_sentinel(state, context.pid())
     {
-        return Ok(error_result_term(&sentinel).unwrap_or(Term::NIL));
+        return Ok(error_result_term(process_context, &sentinel).unwrap_or(Term::NIL));
     }
-    let activity_id = activity_id_from_correlation(correlation)?;
-    if let Some(recorded) = recorded_resolution_for(&mut context, &activity_id)? {
-        return Ok(recorded_result_term(recorded));
+    let activity_id = activity_id_from_correlation(process_context, correlation)?;
+    if let Some(recorded) = recorded_resolution_for(process_context, &mut context, &activity_id)? {
+        return Ok(recorded_result_term(process_context, recorded));
     }
     // One wake marker is consumed per invocation — markers are pure wakes
     // and the completion state lives in the runtime's keyed maps, so any
     // marker (even one destined for another await) is safe to take. Leaving
     // it queued would insta-rewake the suspend below into a busy spin.
     super::nif_wake::consume_wake_marker(process_context, runtime);
-    if let Some(term) = take_runtime_completion(&context, runtime, activity_id.clone())? {
+    if let Some(term) =
+        take_runtime_completion(process_context, &context, runtime, activity_id.clone())?
+    {
         return Ok(term);
     }
     // An expired enclosing with_timeout deadline aborts the await instead of
     // re-suspending. The failure is recorded so replay returns it verbatim.
     if let Some(message) = crate::runtime::nif_timeout::expired_scope_message(state, context.pid())
     {
-        record_failed(&context, activity_id, activity_error(message.clone()))?;
-        return Ok(error_result_term(&message).unwrap_or(Term::NIL));
+        record_failed(
+            process_context,
+            &context,
+            activity_id,
+            activity_error(message.clone()),
+        )?;
+        return Ok(error_result_term(process_context, &message).unwrap_or(Term::NIL));
     }
     process_context.request_suspend(None);
     Ok(Term::NIL)
 }
 
 fn recorded_resolution_for(
+    ctx: &mut ProcessContext,
     context: &mut NifContext,
     activity_id: &ActivityId,
 ) -> Result<Option<Resolution>, Term> {
     let ordinal = activity_id.sequence_position();
-    let input = json_payload("null", "await_activity_result", "replay input")?;
+    let input = json_payload(ctx, "null", "await_activity_result", "replay input")?;
     match context
         .resolve_command(Command::RunActivity {
             key: CorrelationKey::Activity(ordinal),
             activity_type: "await_activity_result".to_owned(),
             input,
         })
-        .map_err(|error| context_error_term(&error))?
+        .map_err(|error| context_error_term(ctx, &error))?
     {
         ResolveOutcome::Recorded(resolution) => Ok(Some(resolution)),
         ResolveOutcome::ResumeLive => Ok(None),
     }
 }
 
-fn recorded_result_term(resolution: Resolution) -> Term {
+fn recorded_result_term(ctx: &mut ProcessContext, resolution: Resolution) -> Term {
     match resolution {
         Resolution::ActivityCompleted(payload) => {
-            ok_result_term(payload.bytes()).unwrap_or(Term::NIL)
+            ok_result_term(ctx, payload.bytes()).unwrap_or(Term::NIL)
         }
         Resolution::ActivityFailedTerminal(error) => {
-            error_result_term(&error.message).unwrap_or(Term::NIL)
+            error_result_term(ctx, &error.message).unwrap_or(Term::NIL)
         }
-        other => error_result_term(&format!(
-            "await_activity_result: recorded non-activity resolution {other:?}"
-        ))
+        other => error_result_term(
+            ctx,
+            &format!("await_activity_result: recorded non-activity resolution {other:?}"),
+        )
         .unwrap_or(Term::NIL),
     }
 }
 
 fn take_runtime_completion(
+    ctx: &mut ProcessContext,
     context: &NifContext,
     runtime: &crate::RuntimeHandle,
     activity_id: ActivityId,
@@ -318,13 +332,22 @@ fn take_runtime_completion(
     if let Some(payload) =
         runtime.take_activity_result(context.pid(), activity_id.sequence_position())
     {
-        record_completed(context, activity_id, payload.clone())?;
-        return Ok(Some(ok_result_term(payload.bytes()).unwrap_or(Term::NIL)));
+        record_completed(ctx, context, activity_id, payload.clone())?;
+        return Ok(Some(
+            ok_result_term(ctx, payload.bytes()).unwrap_or(Term::NIL),
+        ));
     }
     if let Some(error) = runtime.take_activity_error(context.pid(), activity_id.sequence_position())
     {
-        record_failed(context, activity_id, activity_error(error.message.clone()))?;
-        return Ok(Some(error_result_term(&error.message).unwrap_or(Term::NIL)));
+        record_failed(
+            ctx,
+            context,
+            activity_id,
+            activity_error(error.message.clone()),
+        )?;
+        return Ok(Some(
+            error_result_term(ctx, &error.message).unwrap_or(Term::NIL),
+        ));
     }
     Ok(None)
 }

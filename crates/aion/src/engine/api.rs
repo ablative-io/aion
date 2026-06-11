@@ -220,6 +220,7 @@ impl Engine {
                 registry: Arc::clone(&self.registry),
                 signal_handoff: Some(self.signal_handoff()),
                 search_attribute_schema: Arc::clone(&self.search_attribute_schema),
+                monitor_tokio_handle: tokio::runtime::Handle::current(),
             },
             workflow_type,
             input,
@@ -261,7 +262,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins, and
+    /// [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
     /// is not live. Other typed errors come from the cancel transition.
     pub async fn cancel(
         &self,
@@ -290,7 +292,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins, and
+    /// [`EngineError::WorkflowNotFound`] when the `(workflow, run)` pair
     /// is not live. Other typed errors come from the continue-as-new transition.
     pub async fn continue_as_new(
         &self,

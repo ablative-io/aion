@@ -47,6 +47,11 @@ pub struct StartWorkflowContext<'a> {
     pub signal_handoff: Option<Arc<SignalResumeHandoff>>,
     /// Schema validating any initial search attributes before they are recorded.
     pub search_attribute_schema: Arc<SearchAttributeSchema>,
+    /// Tokio handle the spawned workflow's exit monitor captures for its
+    /// completion work. Must be epoch-stable — the host runtime's handle,
+    /// never an engine-owned task runtime's — because the monitor outlives
+    /// the start call and blocks on this handle when the process exits.
+    pub monitor_tokio_handle: tokio::runtime::Handle,
 }
 
 /// Optional identifiers used by internal start callers such as continue-as-new.
@@ -210,7 +215,11 @@ fn install_completion_monitor(
         loaded_workflows: Arc::new(context.loaded_workflows.clone()),
         runtime: Arc::clone(&context.runtime),
         supervision: Arc::clone(&context.supervision),
-        tokio_handle: tokio::runtime::Handle::current(),
+        // Epoch-stable by the StartWorkflowContext contract: the monitor
+        // fires whenever the process exits — potentially long after the
+        // start call's own executor is gone — so it must never capture
+        // `Handle::current()` of an engine-owned task runtime.
+        tokio_handle: context.monitor_tokio_handle.clone(),
         search_attribute_schema: Arc::clone(&context.search_attribute_schema),
     };
     let completion_handle = handle.clone();

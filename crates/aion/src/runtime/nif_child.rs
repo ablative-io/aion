@@ -19,9 +19,7 @@ use aion_core::{ContentType, Payload, WorkflowError, WorkflowId};
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary;
 use beamr::term::binary_ref::BinaryRef;
-use beamr::term::boxed;
 use chrono::Utc;
 
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
@@ -31,10 +29,6 @@ use crate::runtime::nif_child_watch::{ChildWatchContext, arm_child_terminal_watc
 use crate::runtime::nif_state::{EngineNifState, PendingAwait};
 
 use super::nif_context::{NifContext, NifContextError};
-
-thread_local! {
-    static CHILD_NIF_HEAP: std::cell::RefCell<Vec<Box<[u64]>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
 
 /// Installs the engine-owned dependencies used by child workflow NIFs.
 pub(crate) fn install_child_nif_bridge(
@@ -52,10 +46,8 @@ pub(super) fn spawn_child_impl(args: &[Term], ctx: &mut ProcessContext) -> Resul
     if args.len() > 255 {
         return Err(Term::NIL);
     }
-    Ok(checked_child_result(
-        run_spawn_child(args, ctx),
-        "spawn_child",
-    ))
+    let result = run_spawn_child(args, ctx);
+    Ok(checked_child_result(ctx, result, "spawn_child"))
 }
 
 /// NIF backing `aion_flow_ffi:await_child/1`.
@@ -76,7 +68,7 @@ pub(super) fn await_child_impl(args: &[Term], ctx: &mut ProcessContext) -> Resul
             Ok(Term::NIL)
         }
         Err(message) => {
-            Ok(error_result_term(&format!("await_child:{message}")).unwrap_or(Term::NIL))
+            Ok(error_result_term(ctx, &format!("await_child:{message}")).unwrap_or(Term::NIL))
         }
     }
 }
@@ -106,7 +98,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
         .map_err(|error| context_error(&error))?
     {
         ResolveOutcome::Recorded(Resolution::ChildStarted(child_id)) => {
-            term_or_encoding_error(ok_result_term(&child_id.to_string()))
+            term_or_encoding_error(ok_result_term(ctx, &child_id.to_string()))
         }
         ResolveOutcome::Recorded(other) => {
             Err(format!("unexpected_child_spawn_resolution:{other:?}"))
@@ -183,7 +175,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
                     );
                 }
             }
-            term_or_encoding_error(ok_result_term(&child_workflow_id.to_string()))
+            term_or_encoding_error(ok_result_term(ctx, &child_workflow_id.to_string()))
         }
     }
 }
@@ -251,13 +243,13 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<AwaitChild
     super::nif_wake::consume_wake_marker(ctx, &bridge.runtime());
     match await_child_step(&state, &bridge, pid, &child_workflow_id)? {
         AwaitChildStep::QuerySentinel(sentinel) => Ok(AwaitChildOutcome::Resolved(
-            error_result_term(&sentinel).unwrap_or(Term::NIL),
+            error_result_term(ctx, &sentinel).unwrap_or(Term::NIL),
         )),
         AwaitChildStep::ChildResolved(envelope) => Ok(AwaitChildOutcome::Resolved(
-            term_or_encoding_error(ok_result_term(&envelope))?,
+            term_or_encoding_error(ok_result_term(ctx, &envelope))?,
         )),
         AwaitChildStep::ScopeExpired(message) => Ok(AwaitChildOutcome::Resolved(
-            error_result_term(&message).unwrap_or(Term::NIL),
+            error_result_term(ctx, &message).unwrap_or(Term::NIL),
         )),
         AwaitChildStep::Suspend => Ok(AwaitChildOutcome::Suspend),
     }
@@ -346,10 +338,24 @@ fn await_child_step(
             // armed watcher is disarmed (F1a — a later child terminal must
             // not be recorded into history the live run already branched
             // away from), and the child is left running (D-1).
-            if let Some(message) = super::nif_timeout::expired_scope_message(state, pid) {
+            //
+            // The expiry decision is a pure function of the RESOLUTION
+            // snapshot (`nif.history()`), never a fresh store read: this
+            // resolution observed neither a child terminal nor the deadline
+            // `TimerFired`, and deciding the branch from a newer snapshot
+            // diverges from replay. The race that breaks the fresh read —
+            // watcher records the child terminal (seq c), the timer service
+            // records the deadline `TimerFired` (seq d), c < d, both after
+            // this snapshot — made live take the timeout branch while replay
+            // (Recorded + F1b, d < c false) took the child branch (N-1). A
+            // snapshot lacking both events suspends instead and converges to
+            // the Recorded path on the next wake.
+            if super::nif_timeout::expired_scope_deadline(state, pid, nif.history()).is_some() {
                 state.pending_awaits.remove(&pid);
                 bridge.child_tasks().abort_watch(pid, child_workflow_id);
-                return Ok(AwaitChildStep::ScopeExpired(message));
+                return Ok(AwaitChildStep::ScopeExpired(
+                    super::nif_timeout::SCOPE_EXPIRED_MESSAGE.to_owned(),
+                ));
             }
             ensure_awaitable_child(bridge, &nif, child_workflow_id)?;
             let context = ChildWatchContext {
@@ -471,10 +477,14 @@ fn ensure_awaitable_child(
     Err(format!("unknown_child_workflow:{child_workflow_id}"))
 }
 
-fn checked_child_result(result: Result<Term, String>, name: &str) -> Term {
+fn checked_child_result(
+    ctx: &mut ProcessContext,
+    result: Result<Term, String>,
+    name: &str,
+) -> Term {
     match result {
         Ok(term) => term,
-        Err(message) => error_result_term(&format!("{name}:{message}")).unwrap_or(Term::NIL),
+        Err(message) => error_result_term(ctx, &format!("{name}:{message}")).unwrap_or(Term::NIL),
     }
 }
 
@@ -559,30 +569,28 @@ fn workflow_error_text(error: &WorkflowError) -> String {
     }
 }
 
-fn ok_result_term(value: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(value.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::OK), value_term])
+/// Build `{ok, <<value>>}` on the calling process heap.
+///
+/// Result terms are allocated through the [`ProcessContext`] allocators:
+/// attached (normal-scheduler) calls get GC-traced process-heap terms, and
+/// detached (dirty) calls get owned blocks the dirty-result bridge copies
+/// onto the process heap. Nothing is parked in thread-locals — beamr's
+/// moving GC never traces out-of-heap pointers, so a parked heap either
+/// leaks for the scheduler thread's lifetime or dangles once cleared while
+/// workflow code still references the term (N-6).
+///
+/// Allocation may collect on attached calls: decode every argument `Term`
+/// before the first result allocation.
+fn ok_result_term(ctx: &mut ProcessContext, value: &str) -> Option<Term> {
+    let value_term = ctx.alloc_binary(value.as_bytes()).ok()?;
+    ctx.alloc_tuple(&[Term::atom(Atom::OK), value_term]).ok()
 }
 
-fn error_result_term(message: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(message.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::ERROR), value_term])
-}
-
-fn alloc_binary_term(bytes: &[u8]) -> Option<Term> {
-    let word_count = 2 + binary::packed_word_count(bytes.len());
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = binary::write_binary(&mut heap, bytes)?;
-    CHILD_NIF_HEAP.with_borrow_mut(|parked| parked.push(heap));
-    Some(term)
-}
-
-fn alloc_tuple_term(elements: &[Term]) -> Option<Term> {
-    let word_count = 1 + elements.len();
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = boxed::write_tuple(&mut heap, elements)?;
-    CHILD_NIF_HEAP.with_borrow_mut(|parked| parked.push(heap));
-    Some(term)
+/// Build `{error, <<message>>}` on the calling process heap (see
+/// [`ok_result_term`] for the allocation contract).
+fn error_result_term(ctx: &mut ProcessContext, message: &str) -> Option<Term> {
+    let value_term = ctx.alloc_binary(message.as_bytes()).ok()?;
+    ctx.alloc_tuple(&[Term::atom(Atom::ERROR), value_term]).ok()
 }
 
 #[cfg(test)]
@@ -624,6 +632,121 @@ mod tests {
         child_workflow_id: WorkflowId,
     }
 
+    /// Delegating store whose first `stale_reads` history reads of one
+    /// workflow return a truncated snapshot — the N-1 race window where the
+    /// watcher's child terminal and the deadline's `TimerFired` land between
+    /// the await's resolution read and any later read.
+    struct StaleParentReadStore {
+        inner: InMemoryStore,
+        stale_workflow_id: std::sync::Mutex<WorkflowId>,
+        stale_len: usize,
+        stale_reads: std::sync::atomic::AtomicU32,
+    }
+
+    impl StaleParentReadStore {
+        fn set_stale_target(&self, workflow_id: &WorkflowId, reads: u32) {
+            match self.stale_workflow_id.lock() {
+                Ok(mut target) => *target = workflow_id.clone(),
+                Err(poisoned) => *poisoned.into_inner() = workflow_id.clone(),
+            }
+            self.stale_reads
+                .store(reads, std::sync::atomic::Ordering::Release);
+        }
+
+        fn is_stale_target(&self, workflow_id: &WorkflowId) -> bool {
+            match self.stale_workflow_id.lock() {
+                Ok(target) => &*target == workflow_id,
+                Err(poisoned) => &*poisoned.into_inner() == workflow_id,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl aion_store::ReadableEventStore for StaleParentReadStore {
+        async fn read_history(
+            &self,
+            workflow_id: &WorkflowId,
+        ) -> Result<Vec<Event>, aion_store::StoreError> {
+            let mut history = self.inner.read_history(workflow_id).await?;
+            if self.is_stale_target(workflow_id)
+                && self
+                    .stale_reads
+                    .fetch_update(
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                        |current| current.checked_sub(1),
+                    )
+                    .is_ok()
+            {
+                history.truncate(self.stale_len);
+            }
+            Ok(history)
+        }
+
+        async fn read_history_from(
+            &self,
+            workflow_id: &WorkflowId,
+            from_seq: u64,
+        ) -> Result<Vec<Event>, aion_store::StoreError> {
+            self.inner.read_history_from(workflow_id, from_seq).await
+        }
+
+        async fn read_run_chain(
+            &self,
+            workflow_id: &WorkflowId,
+        ) -> Result<Vec<aion_store::RunSummary>, aion_store::StoreError> {
+            self.inner.read_run_chain(workflow_id).await
+        }
+
+        async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, aion_store::StoreError> {
+            self.inner.list_workflow_ids().await
+        }
+
+        async fn list_active(&self) -> Result<Vec<WorkflowId>, aion_store::StoreError> {
+            self.inner.list_active().await
+        }
+
+        async fn query(
+            &self,
+            filter: &aion_core::WorkflowFilter,
+        ) -> Result<Vec<aion_core::WorkflowSummary>, aion_store::StoreError> {
+            self.inner.query(filter).await
+        }
+
+        async fn schedule_timer(
+            &self,
+            workflow_id: &WorkflowId,
+            timer_id: &aion_core::TimerId,
+            fire_at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<(), aion_store::StoreError> {
+            self.inner
+                .schedule_timer(workflow_id, timer_id, fire_at)
+                .await
+        }
+
+        async fn expired_timers(
+            &self,
+            as_of: chrono::DateTime<chrono::Utc>,
+        ) -> Result<Vec<aion_store::TimerEntry>, aion_store::StoreError> {
+            self.inner.expired_timers(as_of).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl aion_store::WritableEventStore for StaleParentReadStore {
+        async fn append(
+            &self,
+            token: WriteToken,
+            workflow_id: &WorkflowId,
+            events: &[Event],
+            expected_seq: u64,
+        ) -> Result<(), aion_store::StoreError> {
+            self.inner
+                .append(token, workflow_id, events, expected_seq)
+                .await
+        }
+    }
+
     impl AwaitHarness {
         async fn over_parent_history(
             pid: u64,
@@ -633,6 +756,23 @@ mod tests {
             let backing = Arc::new(InMemoryStore::default());
             let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
             let visibility_store: Arc<dyn VisibilityStore> = backing;
+            Self::with_stores(
+                pid,
+                child_workflow_id,
+                extra_events,
+                store,
+                visibility_store,
+            )
+            .await
+        }
+
+        async fn with_stores(
+            pid: u64,
+            child_workflow_id: &WorkflowId,
+            extra_events: &[Event],
+            store: Arc<dyn EventStore>,
+            visibility_store: Arc<dyn VisibilityStore>,
+        ) -> Result<Self, Box<dyn std::error::Error>> {
             let registry = Arc::new(Registry::default());
             let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
             let workflow_id = WorkflowId::new_v4();
@@ -1106,6 +1246,130 @@ mod tests {
             "a child terminal recorded before the deadline resolves the child"
         );
         assert_eq!(harness.pinned_child(), None);
+        harness.shutdown()
+    }
+
+    /// N-1: the `ResumeLive` expiry decision must be a pure function of the
+    /// resolution snapshot. Race modeled: the await's resolution read (H1)
+    /// has neither the child terminal nor the deadline `TimerFired`; both
+    /// land before any later read — child terminal (seq 3) BEFORE the
+    /// deadline `TimerFired` (seq 4). Before the fix the live path asked
+    /// `expired_scope_message` (a FRESH store read via the timer bridge),
+    /// saw the fired deadline, and took the timeout branch — while replay
+    /// resolved `Recorded(ChildCompleted)` and F1b (4 < 3 is false) took the
+    /// child branch: opposite branches live vs replay. After the fix the
+    /// stale-snapshot step suspends and the next wake converges on the
+    /// child branch, byte-identical to replay.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_snapshot_live_timeout_converges_with_replay_child_branch() -> TestResult {
+        let child = WorkflowId::new_v4();
+        let parent_id = WorkflowId::new_v4();
+        let scope_timer = aion_core::TimerId::anonymous(7);
+        let backing = StaleParentReadStore {
+            inner: InMemoryStore::default(),
+            // Placeholder; the real parent id is set once the harness mints it.
+            stale_workflow_id: std::sync::Mutex::new(WorkflowId::new_v4()),
+            // H1 = WorkflowStarted + ChildWorkflowStarted only.
+            stale_len: 2,
+            stale_reads: std::sync::atomic::AtomicU32::new(0),
+        };
+        let backing = Arc::new(backing);
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let visibility: Arc<dyn VisibilityStore> = Arc::new(InMemoryStore::default());
+        let harness = AwaitHarness::with_stores(
+            311,
+            &child,
+            &[
+                child_started(&parent_id, &child, 2),
+                Event::ChildWorkflowCompleted {
+                    envelope: envelope(&parent_id, 3),
+                    child_workflow_id: child.clone(),
+                    result: Payload::from_json(&json!(42))?,
+                },
+                Event::TimerFired {
+                    envelope: envelope(&parent_id, 4),
+                    timer_id: scope_timer.clone(),
+                },
+            ],
+            store,
+            visibility,
+        )
+        .await?;
+        // The harness minted the parent id; find it through the registry and
+        // arm exactly one stale read for it.
+        let registered_parent = harness
+            .bridge
+            .registry()
+            .list()?
+            .into_iter()
+            .next()
+            .ok_or("no registered parent")?
+            .workflow_id()
+            .clone();
+        backing.set_stale_target(&registered_parent, 1);
+
+        // The timer bridge backs the OLD fresh-read path; installing it
+        // proves this test fails pre-fix instead of accidentally passing
+        // because the fresh read was unavailable.
+        crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
+            &harness.state,
+            harness.bridge.registry_arc(),
+            harness.bridge.store(),
+            tokio::runtime::Handle::current(),
+            SignalDeliveryConfig::default(),
+        );
+        // Live scope whose deadline is the recorded TimerFired(seq 4).
+        harness
+            .state
+            .timeout_scopes
+            .insert(21, TimeoutScope::live_for_test(harness.pid, scope_timer));
+        harness
+            .state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![21]);
+
+        // Step 1 — stale resolution snapshot (neither event): must suspend,
+        // never decide the branch from a fresh read.
+        assert_eq!(
+            harness.step(),
+            Ok(AwaitChildStep::Suspend),
+            "a snapshot lacking both events must park, not branch (N-1)"
+        );
+
+        // Step 2 — fresh snapshot: F1b orders child terminal (3) before the
+        // deadline (4) and resolves the child branch.
+        assert_eq!(
+            harness.step(),
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned()))
+        );
+        assert_eq!(harness.pinned_child(), None);
+
+        // Replay equivalence: a fresh engine state derives the scope outcome
+        // from history (replay-expired) and must take the same child branch.
+        let replay_state = Arc::new(EngineNifState::default());
+        replay_state.timeout_scopes.insert(
+            1,
+            TimeoutScope::replayed_expired_with_deadline_for_test(
+                harness.pid,
+                aion_core::TimerId::anonymous(7),
+            ),
+        );
+        replay_state
+            .timeout_scope_stacks
+            .insert(harness.pid, vec![1]);
+        let replayed = tokio::task::block_in_place(|| {
+            await_child_step(
+                &replay_state,
+                &harness.bridge,
+                harness.pid,
+                &harness.child_workflow_id,
+            )
+        });
+        assert_eq!(
+            replayed,
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned())),
+            "replay must take the same branch as the converged live run"
+        );
         harness.shutdown()
     }
 

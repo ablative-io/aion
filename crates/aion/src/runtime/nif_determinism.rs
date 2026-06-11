@@ -1,6 +1,5 @@
 //! Deterministic workflow-visible time and random NIF implementations.
 
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use aion_core::{RunId, WorkflowId};
@@ -8,9 +7,7 @@ use aion_store::EventStore;
 use beamr::atom::Atom;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use beamr::term::binary;
 use beamr::term::binary_ref::BinaryRef;
-use beamr::term::boxed;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
@@ -23,10 +20,6 @@ use super::nif_state::EngineNifState;
 
 const RANDOM_SEED_DOMAIN: &[u8] = b"aion.runtime.nif.determinism.rng.v1.sha256.chacha20";
 const FLOAT_SCALE: f64 = 9_007_199_254_740_992.0;
-
-thread_local! {
-    static NIF_HEAP: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
-}
 
 /// Inputs required to resolve per-call workflow NIF context from a raw process id.
 pub(crate) struct NifContextSource {
@@ -74,39 +67,28 @@ pub(crate) fn install_nif_context_source(state: &EngineNifState, source: Arc<Nif
     }
 }
 
-fn park_heap(heap: Box<[u64]>) {
-    NIF_HEAP.with_borrow_mut(|parked| parked.push(heap));
+/// Build `{ok, <<value>>}` on the calling process heap.
+///
+/// Result terms are allocated through the [`ProcessContext`] allocators:
+/// attached (normal-scheduler) calls get GC-traced process-heap terms, and
+/// detached (dirty) calls get owned blocks the dirty-result bridge copies
+/// onto the process heap. Nothing is parked in thread-locals — beamr's
+/// moving GC never traces out-of-heap pointers, so a parked heap either
+/// leaks for the scheduler thread's lifetime or dangles once cleared while
+/// workflow code still references the term (N-6).
+///
+/// Allocation may collect on attached calls: decode every argument `Term`
+/// before the first result allocation.
+fn ok_result_term(ctx: &mut ProcessContext, value: &str) -> Option<Term> {
+    let value_term = ctx.alloc_binary(value.as_bytes()).ok()?;
+    ctx.alloc_tuple(&[Term::atom(Atom::OK), value_term]).ok()
 }
 
-#[cfg(test)]
-fn clear_parked_heap() {
-    NIF_HEAP.with_borrow_mut(Vec::clear);
-}
-
-fn alloc_binary_term(bytes: &[u8]) -> Option<Term> {
-    let word_count = 2 + binary::packed_word_count(bytes.len());
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = binary::write_binary(&mut heap, bytes)?;
-    park_heap(heap);
-    Some(term)
-}
-
-fn alloc_tuple_term(elements: &[Term]) -> Option<Term> {
-    let word_count = 1 + elements.len();
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = boxed::write_tuple(&mut heap, elements)?;
-    park_heap(heap);
-    Some(term)
-}
-
-fn ok_result_term(value: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(value.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::OK), value_term])
-}
-
-fn error_result_term(message: &str) -> Option<Term> {
-    let value_term = alloc_binary_term(message.as_bytes())?;
-    alloc_tuple_term(&[Term::atom(Atom::ERROR), value_term])
+/// Build `{error, <<message>>}` on the calling process heap (see
+/// [`ok_result_term`] for the allocation contract).
+fn error_result_term(ctx: &mut ProcessContext, message: &str) -> Option<Term> {
+    let value_term = ctx.alloc_binary(message.as_bytes()).ok()?;
+    ctx.alloc_tuple(&[Term::atom(Atom::ERROR), value_term]).ok()
 }
 
 fn decode_string_arg(term: Term) -> Result<String, String> {
@@ -129,18 +111,12 @@ fn context_from_process(ctx: &ProcessContext) -> Result<NifContext, String> {
     source.context_for_pid(pid)
 }
 
-fn error_term(message: &str) -> Term {
-    match error_result_term(message) {
-        Some(term) => term,
-        None => Term::NIL,
-    }
+fn error_term(ctx: &mut ProcessContext, message: &str) -> Term {
+    error_result_term(ctx, message).unwrap_or(Term::NIL)
 }
 
-fn ok_term_or_nil(value: &str) -> Term {
-    match ok_result_term(value) {
-        Some(term) => term,
-        None => Term::NIL,
-    }
+fn ok_term_or_nil(ctx: &mut ProcessContext, value: &str) -> Term {
+    ok_result_term(ctx, value).unwrap_or(Term::NIL)
 }
 
 /// NIF backing `aion_flow_ffi:now/0`.
@@ -149,15 +125,15 @@ pub(crate) fn now_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, 
         return Err(Term::NIL);
     }
     if !args.is_empty() {
-        return Ok(error_term(&format!(
-            "now: expected 0 arguments, got {}",
-            args.len()
-        )));
+        return Ok(error_term(
+            ctx,
+            &format!("now: expected 0 arguments, got {}", args.len()),
+        ));
     }
 
     match context_from_process(ctx) {
-        Ok(context) => Ok(now_from_context(&context)),
-        Err(error) => Ok(error_term(&error)),
+        Ok(context) => Ok(now_from_context(ctx, &context)),
+        Err(error) => Ok(error_term(ctx, &error)),
     }
 }
 
@@ -167,15 +143,15 @@ pub(crate) fn random_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Ter
         return Err(Term::NIL);
     }
     if !args.is_empty() {
-        return Ok(error_term(&format!(
-            "random: expected 0 arguments, got {}",
-            args.len()
-        )));
+        return Ok(error_term(
+            ctx,
+            &format!("random: expected 0 arguments, got {}", args.len()),
+        ));
     }
 
     match context_from_process(ctx) {
-        Ok(context) => Ok(random_from_context(&context)),
-        Err(error) => Ok(error_term(&error)),
+        Ok(context) => Ok(random_from_context(ctx, &context)),
+        Err(error) => Ok(error_term(ctx, &error)),
     }
 }
 
@@ -185,29 +161,30 @@ pub(crate) fn random_int_impl(args: &[Term], ctx: &mut ProcessContext) -> Result
         return Err(Term::NIL);
     }
     if args.len() != 2 {
-        return Ok(error_term(&format!(
-            "random_int: expected 2 arguments, got {}",
-            args.len()
-        )));
+        return Ok(error_term(
+            ctx,
+            &format!("random_int: expected 2 arguments, got {}", args.len()),
+        ));
     }
 
     let min = match parse_i64_arg(args[0], "random_int min") {
         Ok(value) => value,
-        Err(message) => return Ok(error_term(&message)),
+        Err(message) => return Ok(error_term(ctx, &message)),
     };
     let max = match parse_i64_arg(args[1], "random_int max") {
         Ok(value) => value,
-        Err(message) => return Ok(error_term(&message)),
+        Err(message) => return Ok(error_term(ctx, &message)),
     };
     if min > max {
         return Ok(error_term(
+            ctx,
             "Invalid deterministic random_int range: min is greater than max",
         ));
     }
 
     match context_from_process(ctx) {
-        Ok(context) => Ok(random_int_from_context(&context, min, max)),
-        Err(error) => Ok(error_term(&error)),
+        Ok(context) => Ok(random_int_from_context(ctx, &context, min, max)),
+        Err(error) => Ok(error_term(ctx, &error)),
     }
 }
 
@@ -217,23 +194,28 @@ fn parse_i64_arg(term: Term, label: &str) -> Result<i64, String> {
         .map_err(|_| format!("{label}: argument is not a valid i64"))
 }
 
-fn now_from_context(context: &NifContext) -> Term {
+fn now_from_context(ctx: &mut ProcessContext, context: &NifContext) -> Term {
     let Some(recorded_at) = context.last_recorded_at() else {
-        return error_term("now: workflow history is empty");
+        return error_term(ctx, "now: workflow history is empty");
     };
-    ok_term_or_nil(&recorded_at.timestamp_millis().to_string())
+    ok_term_or_nil(ctx, &recorded_at.timestamp_millis().to_string())
 }
 
-fn random_from_context(context: &NifContext) -> Term {
+fn random_from_context(ctx: &mut ProcessContext, context: &NifContext) -> Term {
     let sequence = context.next_deterministic_sequence();
     let value = deterministic_float(context.workflow_id(), context.run_id(), sequence);
-    ok_term_or_nil(&value.to_string())
+    ok_term_or_nil(ctx, &value.to_string())
 }
 
-fn random_int_from_context(context: &NifContext, min: i64, max: i64) -> Term {
+fn random_int_from_context(
+    ctx: &mut ProcessContext,
+    context: &NifContext,
+    min: i64,
+    max: i64,
+) -> Term {
     let sequence = context.next_deterministic_sequence();
     let value = deterministic_i64(context.workflow_id(), context.run_id(), sequence, min, max);
-    ok_term_or_nil(&value.to_string())
+    ok_term_or_nil(ctx, &value.to_string())
 }
 
 fn deterministic_u64(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> u64 {
@@ -327,9 +309,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        NifContextSource, clear_parked_heap, deterministic_float, deterministic_i64,
-        install_nif_context_source, now_from_context, now_impl, random_from_context,
-        random_int_from_context,
+        NifContextSource, deterministic_float, deterministic_i64, install_nif_context_source,
+        now_from_context, now_impl, random_from_context, random_int_from_context,
     };
     use crate::durability::Recorder;
     use crate::registry::{
@@ -469,7 +450,6 @@ mod tests {
 
     #[test]
     fn now_returns_last_recorded_event_timestamp_millis() -> TestResult {
-        clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
         let workflow_id = workflow_id();
         let history = vec![
@@ -478,7 +458,10 @@ mod tests {
         ];
         let context = context_with_history(&runtime, 41, workflow_id, run_id(), &history)?;
 
-        let (tag, value) = decode_result_tuple(now_from_context(&context))?;
+        // Detached contexts allocate owned blocks that live as long as the
+        // ProcessContext itself.
+        let mut ctx = ProcessContext::new();
+        let (tag, value) = decode_result_tuple(now_from_context(&mut ctx, &context))?;
 
         assert_eq!(tag, "ok");
         assert_eq!(value, "1700000999456");
@@ -487,7 +470,6 @@ mod tests {
 
     #[test]
     fn each_engine_state_resolves_its_own_context_source() -> TestResult {
-        clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
         let workflow_id = workflow_id();
         let first_history = vec![started_event(&workflow_id, 1, 1_700_000_000_123)?];
@@ -579,10 +561,13 @@ mod tests {
 
     #[test]
     fn random_int_context_returns_error_for_invalid_range() -> TestResult {
-        clear_parked_heap();
-        let min = super::alloc_binary_term(b"10").ok_or("failed to allocate min")?;
-        let max = super::alloc_binary_term(b"1").ok_or("failed to allocate max")?;
         let mut ctx = ProcessContext::new();
+        let min = ctx
+            .alloc_binary(b"10")
+            .map_err(|_| "failed to allocate min")?;
+        let max = ctx
+            .alloc_binary(b"1")
+            .map_err(|_| "failed to allocate max")?;
 
         let result = super::random_int_impl(&[min, max], &mut ctx);
         let term = result.map_err(|_| "random_int should return Ok at the beamr level")?;
@@ -595,7 +580,6 @@ mod tests {
 
     #[test]
     fn replay_sequence_matches_recorded_history_and_seeded_positions() -> TestResult {
-        clear_parked_heap();
         let runtime = tokio::runtime::Runtime::new()?;
         let workflow_id = workflow_id();
         let run_id = run_id();
@@ -605,17 +589,18 @@ mod tests {
         ];
         let first =
             context_with_history(&runtime, 43, workflow_id.clone(), run_id.clone(), &history)?;
+        let mut ctx = ProcessContext::new();
         let first_values = vec![
-            decode_result_tuple(now_from_context(&first))?.1,
-            decode_result_tuple(random_from_context(&first))?.1,
-            decode_result_tuple(random_int_from_context(&first, 1, 100))?.1,
+            decode_result_tuple(now_from_context(&mut ctx, &first))?.1,
+            decode_result_tuple(random_from_context(&mut ctx, &first))?.1,
+            decode_result_tuple(random_int_from_context(&mut ctx, &first, 1, 100))?.1,
         ];
 
         let replay = context_with_history(&runtime, 44, workflow_id, run_id, &history)?;
         let replay_values = vec![
-            decode_result_tuple(now_from_context(&replay))?.1,
-            decode_result_tuple(random_from_context(&replay))?.1,
-            decode_result_tuple(random_int_from_context(&replay, 1, 100))?.1,
+            decode_result_tuple(now_from_context(&mut ctx, &replay))?.1,
+            decode_result_tuple(random_from_context(&mut ctx, &replay))?.1,
+            decode_result_tuple(random_int_from_context(&mut ctx, &replay, 1, 100))?.1,
         ];
 
         assert_eq!(first_values, replay_values);

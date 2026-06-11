@@ -5,10 +5,6 @@ use std::sync::Arc;
 
 use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId};
 use aion_store::EventStore;
-use beamr::atom::Atom;
-use beamr::term::Term;
-use beamr::term::binary;
-use beamr::term::boxed;
 use chrono::{DateTime, Utc};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
@@ -18,35 +14,6 @@ use crate::durability::{
     Command, DurabilityError, HistoryCursor, Recorder, ResolveOutcome, Resolver,
 };
 use crate::registry::{Registry, WorkflowHandle};
-
-thread_local! {
-    static ERROR_HEAP: std::cell::RefCell<Vec<Box<[u64]>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn park_heap(heap: Box<[u64]>) {
-    ERROR_HEAP.with_borrow_mut(|parked| parked.push(heap));
-}
-
-fn clear_parked_heap() {
-    ERROR_HEAP.with_borrow_mut(Vec::clear);
-}
-
-fn alloc_binary_term(bytes: &[u8]) -> Option<Term> {
-    let word_count = 2 + binary::packed_word_count(bytes.len());
-    clear_parked_heap();
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = binary::write_binary(&mut heap, bytes)?;
-    park_heap(heap);
-    Some(term)
-}
-
-fn alloc_tuple_term(elements: &[Term]) -> Option<Term> {
-    let word_count = 1 + elements.len();
-    let mut heap = vec![0_u64; word_count].into_boxed_slice();
-    let term = boxed::write_tuple(&mut heap, elements)?;
-    park_heap(heap);
-    Some(term)
-}
 
 /// Errors surfaced while constructing or using a per-call NIF context.
 #[derive(thiserror::Error, Debug)]
@@ -72,22 +39,12 @@ pub enum NifContextError {
 }
 
 impl NifContextError {
-    /// Converts this error into the NIF convention `{error, <<reason>>}` term.
+    /// NIF-convention reason string for `{error, <<reason>>}` results.
     ///
-    /// # Errors
-    ///
-    /// Returns [`NifContextError::TermEncoding`] when the BEAM term heap allocation helpers fail.
-    pub fn to_error_term(&self) -> Result<Term, Self> {
-        let message = self.error_reason();
-        let value = alloc_binary_term(message.as_bytes()).ok_or_else(|| Self::TermEncoding {
-            reason: "failed to allocate error binary term".to_owned(),
-        })?;
-        alloc_tuple_term(&[Term::atom(Atom::ERROR), value]).ok_or_else(|| Self::TermEncoding {
-            reason: "failed to allocate error tuple term".to_owned(),
-        })
-    }
-
-    fn error_reason(&self) -> String {
+    /// Term construction lives with the callers, which allocate on the
+    /// calling process heap through their [`beamr::native::ProcessContext`]
+    /// (N-6); this type only renders the stable reason text.
+    pub(crate) fn error_reason(&self) -> String {
         match self {
             Self::UnknownProcess { pid } => format!("unknown_process:{pid}"),
             Self::RecorderPoisoned => "recorder_poisoned".to_owned(),

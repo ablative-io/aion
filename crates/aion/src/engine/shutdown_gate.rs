@@ -37,6 +37,12 @@ impl ShutdownGate {
 
     pub(super) fn begin_operation(&self) -> Result<LifecycleOperation, EngineError> {
         let mut state = self.state()?;
+        // Refuse like `begin_start`: an operation admitted while
+        // `close_and_wait` is draining would prolong the drain arbitrarily,
+        // and the engine it would act on is already tearing down.
+        if state.shutting_down {
+            return Err(EngineError::ShuttingDown);
+        }
         state.active_operations += 1;
         Ok(LifecycleOperation {
             inner: Arc::clone(&self.inner),
@@ -76,5 +82,46 @@ impl Drop for LifecycleOperation {
                 self.inner.idle.notify_all();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShutdownGate;
+    use crate::EngineError;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn operations_are_refused_once_shutdown_begins() -> TestResult {
+        let gate = ShutdownGate::default();
+        // Admitted while open; the gate drains to idle on drop.
+        drop(gate.begin_operation()?);
+        gate.close_and_wait()?;
+
+        assert!(matches!(
+            gate.begin_operation(),
+            Err(EngineError::ShuttingDown)
+        ));
+        assert!(matches!(gate.begin_start(), Err(EngineError::ShuttingDown)));
+        Ok(())
+    }
+
+    #[test]
+    fn close_waits_for_admitted_operations_to_drain() -> TestResult {
+        let gate = ShutdownGate::default();
+        let operation = gate.begin_operation()?;
+        let closer = {
+            let gate = gate.clone();
+            std::thread::spawn(move || gate.close_and_wait())
+        };
+        // The closer parks until the admitted operation drops.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!closer.is_finished());
+        drop(operation);
+        closer
+            .join()
+            .map_err(|_| "close_and_wait thread panicked")??;
+        Ok(())
     }
 }

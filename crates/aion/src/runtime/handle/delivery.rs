@@ -57,6 +57,11 @@ impl RuntimeHandle {
     /// recorded by the signal router before delivery, and the awaiting NIF
     /// resolves it from recorded history. Nothing is retained here.
     ///
+    /// Blocking variant for synchronous callers (engine-seam trait impls and
+    /// scheduler-thread paths); async tasks use
+    /// [`Self::deliver_signal_received_async`] so their executor threads are
+    /// never parked in `std::thread::sleep`.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::Runtime`] when the workflow is not live or the
@@ -66,6 +71,25 @@ impl RuntimeHandle {
         self.wait_for_process_ready(workflow_pid)?;
         let marker = self.atom_table.intern("aion_signal_received");
         self.enqueue_signal_marker_with_retry(workflow_pid, marker)
+    }
+
+    /// Async variant of [`Self::deliver_signal_received`] for runtime tasks:
+    /// the readiness wait and the enqueue retry yield to the executor
+    /// instead of blocking its worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
+    /// mailbox marker cannot be queued.
+    pub(crate) async fn deliver_signal_received_async(
+        &self,
+        workflow_pid: Pid,
+    ) -> Result<(), EngineError> {
+        self.ensure_live_pid(workflow_pid)?;
+        self.wait_for_process_ready_async(workflow_pid).await?;
+        let marker = self.atom_table.intern("aion_signal_received");
+        self.enqueue_signal_marker_with_retry_async(workflow_pid, marker)
+            .await
     }
 
     /// Deliver a pending-query wake marker to the workflow mailbox surface.
@@ -95,15 +119,24 @@ impl RuntimeHandle {
     /// watcher before delivery, and the awaiting NIF resolves it from
     /// recorded history. Nothing is retained here.
     ///
+    /// Async by contract: the only caller is the child-terminal watcher on
+    /// the single-worker child-task runtime, where a blocking readiness wait
+    /// would serialize every other watcher's delivery behind it (worst case
+    /// N × `ready_timeout` under fan-out).
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::Runtime`] when the workflow is not live or the
     /// mailbox marker cannot be queued.
-    pub(crate) fn deliver_child_terminal(&self, workflow_pid: Pid) -> Result<(), EngineError> {
+    pub(crate) async fn deliver_child_terminal(
+        &self,
+        workflow_pid: Pid,
+    ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
-        self.wait_for_process_ready(workflow_pid)?;
+        self.wait_for_process_ready_async(workflow_pid).await?;
         let marker = self.atom_table.intern("aion_child_terminal");
-        self.enqueue_signal_marker_with_retry(workflow_pid, marker)
+        self.enqueue_signal_marker_with_retry_async(workflow_pid, marker)
+            .await
     }
 
     /// Deliver a two-phase activity completion marker to the workflow mailbox.
@@ -336,6 +369,24 @@ impl RuntimeHandle {
             .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
     }
 
+    /// Async twin of [`Self::wait_for_process_ready`]: identical readiness
+    /// semantics, but the waits yield to the executor (`tokio::time::sleep`)
+    /// so one slow-to-materialize process never parks a worker thread other
+    /// deliveries share.
+    pub(crate) async fn wait_for_process_ready_async(&self, pid: Pid) -> Result<(), EngineError> {
+        let deadline = std::time::Instant::now() + self.signal_delivery.ready_timeout;
+        while std::time::Instant::now() < deadline {
+            if self.scheduler.trap_exit(pid).is_some() {
+                return Ok(());
+            }
+            yield_signal_delivery_backoff(self.signal_delivery.initial_backoff).await;
+        }
+        self.scheduler
+            .trap_exit(pid)
+            .map(|_| ())
+            .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
+    }
+
     fn enqueue_signal_marker_with_retry(
         &self,
         workflow_pid: Pid,
@@ -363,6 +414,40 @@ impl RuntimeHandle {
                 // just-spawned or currently executing process can transiently
                 // return false even after the liveness/ready gate above.
                 sleep_signal_delivery_backoff(backoff);
+                backoff = next_signal_delivery_backoff(backoff, self.signal_delivery.max_backoff);
+            }
+        }
+
+        Err(runtime_error(format!(
+            "failed to deliver signal to workflow process {workflow_pid} after {attempts} attempts"
+        )))
+    }
+
+    /// Async twin of [`Self::enqueue_signal_marker_with_retry`]: identical
+    /// retry policy over the same just-spawned/executing windows, with the
+    /// backoff yielded to the executor instead of blocking its worker.
+    async fn enqueue_signal_marker_with_retry_async(
+        &self,
+        workflow_pid: Pid,
+        marker: Atom,
+    ) -> Result<(), EngineError> {
+        let attempts = self.signal_delivery.max_enqueue_attempts.max(1);
+        let mut backoff = self.signal_delivery.initial_backoff;
+        for attempt in 1..=attempts {
+            if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+                self.confirm_marker_wake(workflow_pid);
+                return Ok(());
+            }
+
+            if self.scheduler.process_table().get(workflow_pid).is_none() {
+                return Err(runtime_error(format!(
+                    "failed to deliver signal to workflow process {workflow_pid}: process is not live"
+                )));
+            }
+
+            if attempt < attempts {
+                // Same transient-window rationale as the blocking variant.
+                yield_signal_delivery_backoff(backoff).await;
                 backoff = next_signal_delivery_backoff(backoff, self.signal_delivery.max_backoff);
             }
         }
@@ -427,5 +512,13 @@ fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
         std::thread::yield_now();
     } else {
         std::thread::sleep(duration);
+    }
+}
+
+async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
+    if duration.is_zero() {
+        tokio::task::yield_now().await;
+    } else {
+        tokio::time::sleep(duration).await;
     }
 }

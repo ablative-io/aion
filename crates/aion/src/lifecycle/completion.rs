@@ -193,6 +193,7 @@ async fn start_continuation_replacement(
             registry: Arc::clone(&context.registry),
             signal_handoff: None,
             search_attribute_schema: Arc::clone(&context.search_attribute_schema),
+            monitor_tokio_handle: context.tokio_handle.clone(),
         },
         replacement_type,
         input,

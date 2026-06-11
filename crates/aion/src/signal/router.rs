@@ -62,7 +62,11 @@ impl delegated::SignalRouter for ConcreteSignalRouter {
 
         match target.residency() {
             HandleResidency::Resident => {
-                let Err(error) = self.runtime.deliver_signal_received(target.pid()) else {
+                let Err(error) = self
+                    .runtime
+                    .deliver_signal_received_async(target.pid())
+                    .await
+                else {
                     return Ok(());
                 };
                 // The signal is already durable; the marker is only a wake.

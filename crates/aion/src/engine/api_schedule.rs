@@ -54,7 +54,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
     /// projection, and timer errors.
     pub async fn update_schedule(
         &self,
@@ -71,7 +72,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
     /// and projection errors.
     pub async fn pause_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
         let operation = self.shutdown_gate.begin_operation()?;
@@ -84,7 +86,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability,
     /// projection, and timer errors.
     pub async fn resume_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
         let operation = self.shutdown_gate.begin_operation()?;
@@ -97,7 +100,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::ScheduleNotFound`] for absent/deleted schedules, or typed durability
     /// and projection errors.
     pub async fn delete_schedule(&self, schedule_id: &ScheduleId) -> Result<(), EngineError> {
         let operation = self.shutdown_gate.begin_operation()?;
@@ -384,6 +388,7 @@ impl ScheduleWorkflowStarter for EngineScheduleStarter {
                 registry: Arc::clone(&self.deps.registry),
                 signal_handoff: None,
                 search_attribute_schema: Arc::clone(&self.deps.search_attribute_schema),
+                monitor_tokio_handle: tokio::runtime::Handle::current(),
             },
             workflow_type,
             input,
