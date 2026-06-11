@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias, runtime_checkable
 
+import grpc
+
 from .session import ActivityError, ActivityId, Payload, WorkerConfig, WorkerSession, WorkflowId
 
 ActivitySequence: TypeAlias = int
@@ -17,6 +19,49 @@ ConnectFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
 logger = logging.getLogger(__name__)
 
 SleepFactory: TypeAlias = Callable[[float], Awaitable[None]]
+
+NON_RETRYABLE_STATUS_CODES = frozenset(
+    {grpc.StatusCode.PERMISSION_DENIED, grpc.StatusCode.UNAUTHENTICATED}
+)
+"""Deterministic server denials that no reconnect attempt can ever fix."""
+
+
+def grpc_status_code(error: BaseException) -> grpc.StatusCode | None:
+    """Return the gRPC status code carried by an exception or its cause chain.
+
+    Session errors raised by :mod:`aion_worker.session` wrap the underlying
+    ``grpc.aio.AioRpcError`` with ``raise ... from``, so the original status is
+    recovered by walking explicit causes rather than matching message strings.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code = _direct_status_code(current)
+        if code is not None:
+            return code
+        current = current.__cause__
+    return None
+
+
+def is_retryable_session_error(error: BaseException) -> bool:
+    """Return False for PERMISSION_DENIED / UNAUTHENTICATED server denials.
+
+    Those statuses are deterministic (ungranted namespace, rejected
+    credentials): retrying only burns the reconnect budget and delays the
+    surfaced error. Everything else keeps the bounded backoff behaviour.
+    """
+
+    return grpc_status_code(error) not in NON_RETRYABLE_STATUS_CODES
+
+
+def _direct_status_code(error: BaseException) -> grpc.StatusCode | None:
+    if isinstance(error, grpc.aio.AioRpcError):
+        return error.code()
+    if isinstance(error, grpc.RpcError) and isinstance(error, grpc.Call):
+        return error.code()
+    return None
 
 
 @runtime_checkable
@@ -124,7 +169,8 @@ async def reconnect_with_backoff(
     Matches the Rust reference: the backoff loop wraps connect AND
     handshake/register so that a server that accepts TCP but rejects
     handshakes backs off exponentially rather than hammering at
-    initial_backoff_seconds.
+    initial_backoff_seconds. Deterministic PERMISSION_DENIED / UNAUTHENTICATED
+    denials are re-raised immediately instead of consuming further attempts.
     """
 
     last_error: BaseException | None = None
@@ -138,6 +184,12 @@ async def reconnect_with_backoff(
         except Exception as exc:
             logger.error("Connection failed to %s: %s", config.endpoint, exc)
             await close_failed_session(session)
+            if not is_retryable_session_error(exc):
+                logger.error(
+                    "Worker was denied by the server (%s); not retrying",
+                    grpc_status_code(exc),
+                )
+                raise
             last_error = exc
             if attempt == backoff.max_attempts:
                 break

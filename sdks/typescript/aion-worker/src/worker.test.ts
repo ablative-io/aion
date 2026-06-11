@@ -83,32 +83,53 @@ class QueueSession implements WorkerSession {
 describe("Worker", () => {
 	it("drains in-flight activities before run returns on shutdown", async () => {
 		const session = new QueueSession();
+		let handlerStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			handlerStarted = resolve;
+		});
 		let finishSlow: (() => void) | undefined;
+		let handlerCompleted = false;
+		let cancellationObserved = false;
 		const worker = new Worker(
 			config(),
 			[
 				defineActivity("slow", async (_input, ctx) => {
-					await ctx.cancelled();
+					handlerStarted?.();
 					await new Promise<void>((resolve) => {
 						finishSlow = resolve;
 					});
+					cancellationObserved = ctx.isCancelled();
+					handlerCompleted = true;
 					return { done: true };
 				}),
 			],
 			{ sessionFactory: async () => session },
 		);
 		const controller = new AbortController();
-		const run = worker.run({ signal: controller.signal });
+		let runSettled = false;
+		const run = worker.run({ signal: controller.signal }).then(() => {
+			runSettled = true;
+		});
 
 		session.push({ kind: "task", task: task("slow", {}) });
-		await eventually(() => finishSlow !== undefined);
+		await started;
 		controller.abort();
-		await Promise.resolve();
+		await macrotaskTurns(5);
 
+		// The abort has propagated (session closed, cancellation signalled)
+		// but the in-flight handler has not finished: run must still be
+		// pending and nothing may have been reported yet.
+		expect(runSettled).toBe(false);
+		expect(handlerCompleted).toBe(false);
 		expect(session.completed).toHaveLength(0);
+
+		expect(finishSlow).toBeDefined();
 		finishSlow?.();
 		await run;
 
+		expect(runSettled).toBe(true);
+		expect(handlerCompleted).toBe(true);
+		expect(cancellationObserved).toBe(true);
 		expect(session.completed).toHaveLength(1);
 	});
 
@@ -136,16 +157,12 @@ describe("Worker", () => {
 	});
 });
 
-async function eventually(predicate: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 20; attempt += 1) {
-		if (predicate()) {
-			return;
-		}
+async function macrotaskTurns(turns: number): Promise<void> {
+	for (let turn = 0; turn < turns; turn += 1) {
 		await new Promise<void>((resolve) => {
-			setTimeout(resolve, 1);
+			setTimeout(resolve, 0);
 		});
 	}
-	throw new Error("condition was not met");
 }
 
 function task(activityType: string, input: unknown): ActivityTask {

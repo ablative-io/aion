@@ -54,6 +54,35 @@ impl WorkerError {
         }
     }
 
+    /// Returns the underlying gRPC status carried by this error, if any.
+    ///
+    /// Handshake and transport failures carry a [`tonic::Status`] directly;
+    /// registration failures preserve the status as their boxed source when the
+    /// server rejected the registration over the wire.
+    #[must_use]
+    pub fn grpc_status(&self) -> Option<&tonic::Status> {
+        match self {
+            Self::Handshake { source } | Self::Transport { source } => Some(source),
+            Self::Registration { source } => source.downcast_ref::<tonic::Status>(),
+            Self::Connect { .. } | Self::Decode { .. } | Self::Encode { .. } => None,
+        }
+    }
+
+    /// Returns whether retrying connection or registration can ever succeed.
+    ///
+    /// `PermissionDenied` and `Unauthenticated` are deterministic server
+    /// denials (ungranted namespace, rejected credentials): retrying them only
+    /// burns the reconnect budget and delays the surfaced error. Every other
+    /// failure (transport unavailability, decode faults, local validation) is
+    /// treated as transient for the bounded backoff loop.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        !matches!(
+            self.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied | tonic::Code::Unauthenticated)
+        )
+    }
+
     /// Creates a decode error from any source error.
     pub fn decode(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Decode {
@@ -98,5 +127,52 @@ mod tests {
             error.to_string(),
             "worker registration failed: activity type `charge-card` has no registered handler"
         );
+    }
+
+    #[test]
+    fn registration_error_exposes_boxed_grpc_status() {
+        let error = WorkerError::registration(tonic::Status::permission_denied(
+            "namespace `payments` is not granted to subject `worker-a`",
+        ));
+
+        let status = error.grpc_status();
+        assert!(matches!(
+            status.map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        assert_eq!(
+            status.map(tonic::Status::message),
+            Some("namespace `payments` is not granted to subject `worker-a`")
+        );
+    }
+
+    #[test]
+    fn permission_denied_and_unauthenticated_are_not_retryable() {
+        let denied = WorkerError::Handshake {
+            source: tonic::Status::permission_denied("namespace not granted"),
+        };
+        let unauthenticated = WorkerError::Transport {
+            source: tonic::Status::unauthenticated("credentials rejected"),
+        };
+        let denied_registration =
+            WorkerError::registration(tonic::Status::permission_denied("namespace not granted"));
+
+        assert!(!denied.is_retryable());
+        assert!(!unauthenticated.is_retryable());
+        assert!(!denied_registration.is_retryable());
+    }
+
+    #[test]
+    fn transient_and_non_grpc_failures_stay_retryable() {
+        let unavailable = WorkerError::Transport {
+            source: tonic::Status::unavailable("engine unreachable"),
+        };
+        let local_registration = WorkerError::registration(MissingActivityHandler {
+            activity_type: String::from("charge-card"),
+        });
+
+        assert!(unavailable.is_retryable());
+        assert!(local_registration.is_retryable());
+        assert!(local_registration.grpc_status().is_none());
     }
 }

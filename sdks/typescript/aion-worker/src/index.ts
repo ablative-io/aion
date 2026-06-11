@@ -2,6 +2,7 @@ export type {
 	ActivityDefinition,
 	ActivityHandler,
 	ActivityRegistryOptions,
+	ErasedActivityRun,
 } from "./activity.js";
 export {
 	ActivityRegistry,

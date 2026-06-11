@@ -20,12 +20,15 @@ from .loop import (
     serve,
 )
 from .reconnect import (
+    NON_RETRYABLE_STATUS_CODES,
     PendingActivityReport,
     PendingCompletedReport,
     PendingFailedReport,
     ReconnectBackoff,
     ReconnectError,
     UnackedResultTracker,
+    grpc_status_code,
+    is_retryable_session_error,
     re_report_unacked,
     reconnect_register_and_replay,
     reconnect_with_backoff,
@@ -48,6 +51,7 @@ from .session import (
 from .worker import Worker
 
 __all__ = [
+    "NON_RETRYABLE_STATUS_CODES",
     "ActivityCancellationHandle",
     "ActivityCancelled",
     "ActivityContext",
@@ -83,6 +87,8 @@ __all__ = [
     "decode_json_payload",
     "default_registry",
     "encode_json_payload",
+    "grpc_status_code",
+    "is_retryable_session_error",
     "re_report_unacked",
     "reconnect_register_and_replay",
     "reconnect_with_backoff",

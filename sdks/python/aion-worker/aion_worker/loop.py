@@ -17,6 +17,8 @@ from .reconnect import (
     ReconnectBackoff,
     ReconnectError,
     UnackedResultTracker,
+    grpc_status_code,
+    is_retryable_session_error,
 )
 from .session import (
     ActivityCancelled,
@@ -147,6 +149,13 @@ async def connect_register_replay_and_serve(
             await serve(config, session, dispatcher, unacked, shutdown)
             return
         except Exception as exc:
+            if not is_retryable_session_error(exc):
+                logger.error(
+                    "Worker was denied by the server (%s); not reconnecting",
+                    grpc_status_code(exc),
+                )
+                await _close_session(session)
+                raise
             logger.exception("worker session dropped; reconnecting before receiving more tasks")
             await _close_session(session)
             dropped_attempt += 1

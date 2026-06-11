@@ -181,8 +181,10 @@ where
 ///
 /// # Errors
 ///
-/// Returns the last [`WorkerError`] after configured attempts are exhausted or if
-/// the config contains invalid zero reconnect settings.
+/// Returns the last [`WorkerError`] after configured attempts are exhausted, or
+/// immediately when the failure is a non-retryable `PermissionDenied` /
+/// `Unauthenticated` denial, or if the config contains invalid zero reconnect
+/// settings.
 pub async fn reconnect_with_backoff<S, F, Fut>(
     config: &WorkerConfig,
     activity_types: Vec<String>,
@@ -208,8 +210,11 @@ where
 ///
 /// # Errors
 ///
-/// Returns the last [`WorkerError`] after configured attempts are exhausted or if
-/// the config contains invalid zero reconnect settings.
+/// Returns the last [`WorkerError`] after configured attempts are exhausted, or
+/// immediately — without consuming further attempts — when a failure is a
+/// non-retryable denial ([`WorkerError::is_retryable`] is false, i.e. the
+/// server answered `PermissionDenied` or `Unauthenticated`), or if the config
+/// contains invalid zero reconnect settings.
 pub async fn reconnect_with_sleep<S, F, Fut, Sleep, SleepFut>(
     config: &WorkerConfig,
     activity_types: Vec<String>,
@@ -225,7 +230,6 @@ where
     SleepFut: Future<Output = ()>,
 {
     let backoff = ReconnectBackoff::from_config(config)?;
-    let mut last_error = None;
 
     for attempt in 1..=backoff.attempts() {
         debug!(attempt, "attempting worker reconnect");
@@ -248,6 +252,14 @@ where
                 return Ok(session);
             }
             Err(error) => {
+                if !error.is_retryable() {
+                    error!(
+                        attempt,
+                        error = %error,
+                        "worker reconnect denied by server; not retrying"
+                    );
+                    return Err(error);
+                }
                 if attempt == backoff.attempts() {
                     error!(attempt, error = %error, "worker reconnect attempts exhausted");
                     return Err(error);
@@ -259,13 +271,11 @@ where
                     error = %error,
                     "worker reconnect failed; backing off"
                 );
-                last_error = Some(error);
                 sleep(delay).await;
             }
         }
     }
 
-    let _ = last_error;
     Err(WorkerError::registration(InvalidReconnectBackoff {
         message: String::from("reconnect_max_attempts must be greater than zero"),
     }))
@@ -415,6 +425,154 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_denied_registration_stops_after_one_attempt() {
+        let config = test_config();
+        let attempts = Rc::new(RefCell::new(0usize));
+        let sleeps = Rc::new(RefCell::new(Vec::new()));
+        let activity_types = vec![String::from("charge-card")];
+        let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
+        let attempts_for_connect = Rc::clone(&attempts);
+        let sleeps_for_sleep = Rc::clone(&sleeps);
+
+        let result = reconnect_with_sleep(
+            &config,
+            activity_types,
+            &handlers,
+            move || {
+                let attempts_for_connect = Rc::clone(&attempts_for_connect);
+                async move {
+                    *attempts_for_connect.borrow_mut() += 1;
+                    Ok(DeniedRegistrationSession {
+                        denial: tonic::Status::permission_denied(
+                            "namespace `payments` is not granted to subject `worker-a`",
+                        ),
+                    })
+                }
+            },
+            move |delay| {
+                let sleeps_for_sleep = Rc::clone(&sleeps_for_sleep);
+                async move {
+                    sleeps_for_sleep.borrow_mut().push(delay);
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        let Err(error) = result else { return };
+        assert_eq!(*attempts.borrow(), 1);
+        assert!(sleeps.borrow().is_empty());
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::PermissionDenied)
+        ));
+        assert_eq!(
+            error.grpc_status().map(tonic::Status::message),
+            Some("namespace `payments` is not granted to subject `worker-a`")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("namespace `payments` is not granted to subject `worker-a`")
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_handshake_stops_after_one_attempt() {
+        let config = test_config();
+        let attempts = Rc::new(RefCell::new(0usize));
+        let sleeps = Rc::new(RefCell::new(Vec::new()));
+        let activity_types = vec![String::from("charge-card")];
+        let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
+        let attempts_for_connect = Rc::clone(&attempts);
+        let sleeps_for_sleep = Rc::clone(&sleeps);
+
+        let result = reconnect_with_sleep(
+            &config,
+            activity_types,
+            &handlers,
+            move || {
+                let attempts_for_connect = Rc::clone(&attempts_for_connect);
+                async move {
+                    *attempts_for_connect.borrow_mut() += 1;
+                    Err::<ReconnectFakeSession, _>(WorkerError::Handshake {
+                        source: tonic::Status::unauthenticated("worker credentials were rejected"),
+                    })
+                }
+            },
+            move |delay| {
+                let sleeps_for_sleep = Rc::clone(&sleeps_for_sleep);
+                async move {
+                    sleeps_for_sleep.borrow_mut().push(delay);
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        let Err(error) = result else { return };
+        assert_eq!(*attempts.borrow(), 1);
+        assert!(sleeps.borrow().is_empty());
+        assert!(!error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unauthenticated)
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("worker credentials were rejected")
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_transport_retries_until_attempts_exhausted() {
+        let config = test_config();
+        let attempts = Rc::new(RefCell::new(0usize));
+        let sleeps = Rc::new(RefCell::new(Vec::new()));
+        let activity_types = vec![String::from("charge-card")];
+        let handlers = activity_types.iter().cloned().collect::<BTreeSet<_>>();
+        let attempts_for_connect = Rc::clone(&attempts);
+        let sleeps_for_sleep = Rc::clone(&sleeps);
+
+        let result = reconnect_with_sleep(
+            &config,
+            activity_types,
+            &handlers,
+            move || {
+                let attempts_for_connect = Rc::clone(&attempts_for_connect);
+                async move {
+                    *attempts_for_connect.borrow_mut() += 1;
+                    Err::<ReconnectFakeSession, _>(WorkerError::Transport {
+                        source: tonic::Status::unavailable("engine unreachable"),
+                    })
+                }
+            },
+            move |delay| {
+                let sleeps_for_sleep = Rc::clone(&sleeps_for_sleep);
+                async move {
+                    sleeps_for_sleep.borrow_mut().push(delay);
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        let Err(error) = result else { return };
+        assert_eq!(*attempts.borrow(), 3);
+        assert_eq!(
+            *sleeps.borrow(),
+            vec![Duration::from_millis(5), Duration::from_millis(10)]
+        );
+        assert!(error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
     async fn re_reports_unacked_reports_without_removing_them() -> Result<(), WorkerError> {
         let workflow_id = WorkflowId::new_v4();
         let activity_id = ActivityId::from_sequence_position(7);
@@ -442,6 +600,71 @@ mod tests {
         handshakes: Vec<String>,
         registrations: Vec<Vec<String>>,
         reports: Vec<RecordedReport>,
+    }
+
+    /// Session whose registration is rejected by the server with a gRPC denial,
+    /// mirroring `aion-server` answering `PermissionDenied` for an ungranted
+    /// namespace.
+    struct DeniedRegistrationSession {
+        denial: tonic::Status,
+    }
+
+    #[async_trait]
+    impl WorkerSession for DeniedRegistrationSession {
+        async fn handshake(&mut self, _config: &WorkerConfig) -> Result<(), WorkerError> {
+            Ok(())
+        }
+
+        async fn register(
+            &mut self,
+            activity_types: Vec<String>,
+            available_handlers: &BTreeSet<String>,
+        ) -> Result<(), WorkerError> {
+            validate_activity_handlers(&activity_types, available_handlers)?;
+            Err(WorkerError::Registration {
+                source: Box::new(self.denial.clone()),
+            })
+        }
+
+        fn receive_tasks(&mut self) -> WorkerTaskStream {
+            Box::pin(stream::empty::<Result<WorkerSessionEvent, WorkerError>>())
+        }
+
+        async fn report_result(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            result: Payload,
+        ) -> Result<(), WorkerError> {
+            drop((workflow_id, activity_id, result));
+            Err(WorkerError::Registration {
+                source: Box::new(self.denial.clone()),
+            })
+        }
+
+        async fn report_failure(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            failure: ActivityError,
+        ) -> Result<(), WorkerError> {
+            drop((workflow_id, activity_id, failure));
+            Err(WorkerError::Registration {
+                source: Box::new(self.denial.clone()),
+            })
+        }
+
+        async fn send_heartbeat(
+            &mut self,
+            workflow_id: WorkflowId,
+            activity_id: ActivityId,
+            progress: Option<Payload>,
+        ) -> Result<(), WorkerError> {
+            drop((workflow_id, activity_id, progress));
+            Err(WorkerError::Registration {
+                source: Box::new(self.denial.clone()),
+            })
+        }
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]

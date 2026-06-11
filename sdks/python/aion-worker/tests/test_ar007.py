@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from typing import Any, NoReturn, cast
 
+import grpc
 import pytest
 from ar007_fakes import (
     FakeGrpcStream,
@@ -20,6 +22,7 @@ from aion_worker import (
     ReconnectConfig,
     ReconnectError,
     TransportCredentials,
+    TransportError,
     UnackedResultTracker,
     WorkerConfig,
     connect_register_replay_and_serve,
@@ -179,6 +182,91 @@ async def test_worker_lifecycle_logs_startup_registration_waiting_receipt_and_co
     assert "Waiting for tasks" in messages
     assert "Received task greet for workflow workflow-1" in messages
     assert "Completed greet in 5ms" in messages
+
+
+def _denial(code: grpc.StatusCode, details: str) -> grpc.aio.AioRpcError:
+    return grpc.aio.AioRpcError(code, grpc.aio.Metadata(), grpc.aio.Metadata(), details=details)
+
+
+class DeniedRegisterSession(FakeSession):
+    """Session whose registration the server rejects with a gRPC denial."""
+
+    def __init__(self, denial: grpc.aio.AioRpcError) -> None:
+        super().__init__()
+        self.denial = denial
+
+    async def register(self, activity_types: Iterable[str], available_handlers: Iterable[str]) -> None:
+        del activity_types, available_handlers
+        self.log.append("register")
+        raise TransportError(f"worker stream connection failed: {self.denial}") from self.denial
+
+
+async def test_permission_denied_connect_stops_after_one_attempt() -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    async def denied_connect() -> NoReturn:
+        nonlocal attempts
+        attempts += 1
+        raise _denial(grpc.StatusCode.PERMISSION_DENIED, "namespace 'payments' is not granted")
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    with pytest.raises(grpc.aio.AioRpcError) as denied:
+        await connect_register_replay_and_serve(config(), denied_connect, RecordingDispatcher(), sleep=record_sleep)
+
+    assert attempts == 1
+    assert sleeps == []
+    assert denied.value.code() is grpc.StatusCode.PERMISSION_DENIED
+    assert denied.value.details() == "namespace 'payments' is not granted"
+
+
+async def test_unauthenticated_register_stops_after_one_attempt_and_closes_session() -> None:
+    denial = _denial(grpc.StatusCode.UNAUTHENTICATED, "worker credentials were rejected")
+    session = DeniedRegisterSession(denial)
+    attempts = 0
+    sleeps: list[float] = []
+
+    async def connect() -> DeniedRegisterSession:
+        nonlocal attempts
+        attempts += 1
+        return session
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    with pytest.raises(TransportError) as denied:
+        await connect_register_replay_and_serve(config(), connect, RecordingDispatcher(), sleep=record_sleep)
+
+    assert attempts == 1
+    assert sleeps == []
+    assert session.closed is True
+    assert denied.value.__cause__ is denial
+    assert "worker credentials were rejected" in str(denied.value)
+    assert aion_worker.grpc_status_code(denied.value) is grpc.StatusCode.UNAUTHENTICATED
+
+
+async def test_unavailable_connect_still_retries_until_attempts_exhausted() -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    async def unavailable_connect() -> NoReturn:
+        nonlocal attempts
+        attempts += 1
+        raise _denial(grpc.StatusCode.UNAVAILABLE, "engine unreachable")
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    worker_config = config()
+    with pytest.raises(ReconnectError, match=worker_config.endpoint):
+        await connect_register_replay_and_serve(
+            worker_config, unavailable_connect, RecordingDispatcher(), sleep=record_sleep
+        )
+
+    assert attempts == 3
+    assert sleeps == [0.01, 0.02]
 
 
 async def test_worker_config_grpc_metadata_includes_namespace_and_subject() -> None:

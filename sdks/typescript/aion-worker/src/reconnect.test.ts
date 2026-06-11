@@ -1,5 +1,8 @@
+import { status } from "@grpc/grpc-js";
 import { describe, expect, it } from "vitest";
 import {
+	grpcStatusCode,
+	isRetryableSessionError,
 	reconnectWithBackoff,
 	reReportUnacked,
 	UnackedResultTracker,
@@ -56,8 +59,8 @@ class RecordingSession implements WorkerSession {
 		return Promise.resolve();
 	}
 
-	public close(): Promise<void> {
-		return Promise.resolve();
+	public async close(): Promise<void> {
+		this.events.push("close");
 	}
 }
 
@@ -89,7 +92,229 @@ describe("reconnect", () => {
 		]);
 		expect(tracker.len()).toBe(1);
 	});
+
+	it("stops after one attempt when registration is permission denied", async () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
+		);
+		const events: string[] = [];
+		const sleeps: number[] = [];
+		let attempts = 0;
+
+		await expect(
+			reconnectWithBackoff(config(), ["charge"], {
+				createSession: async () => {
+					attempts += 1;
+					return new DeniedRegisterSession(events, denial);
+				},
+				sleep: async (delayMs) => {
+					sleeps.push(delayMs);
+				},
+			}),
+		).rejects.toBe(denial);
+
+		expect(attempts).toBe(1);
+		expect(sleeps).toEqual([]);
+		expect(events).toEqual([
+			"handshake:payments:worker-a",
+			"register-denied",
+			"close",
+		]);
+		expect(grpcStatusCode(denial)).toBe(status.PERMISSION_DENIED);
+		expect(isRetryableSessionError(denial)).toBe(false);
+	});
+
+	it("stops after one attempt when the connection is unauthenticated", async () => {
+		const denial = serviceError(
+			status.UNAUTHENTICATED,
+			"16 UNAUTHENTICATED: worker credentials were rejected",
+		);
+		const sleeps: number[] = [];
+		let attempts = 0;
+
+		await expect(
+			reconnectWithBackoff(config(), ["charge"], {
+				createSession: async () => {
+					attempts += 1;
+					throw denial;
+				},
+				sleep: async (delayMs) => {
+					sleeps.push(delayMs);
+				},
+			}),
+		).rejects.toBe(denial);
+
+		expect(attempts).toBe(1);
+		expect(sleeps).toEqual([]);
+		expect(isRetryableSessionError(denial)).toBe(false);
+	});
+
+	it("still retries transport unavailability up to maxAttempts with backoff", async () => {
+		const unavailable = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: engine unreachable",
+		);
+		const sleeps: number[] = [];
+		let attempts = 0;
+
+		const rejection = expect(
+			reconnectWithBackoff(config(), ["charge"], {
+				createSession: async () => {
+					attempts += 1;
+					throw unavailable;
+				},
+				sleep: async (delayMs) => {
+					sleeps.push(delayMs);
+				},
+			}),
+		).rejects;
+		await rejection.toThrowError("worker reconnect attempts exhausted");
+
+		expect(attempts).toBe(2);
+		expect(sleeps).toEqual([1]);
+		expect(isRetryableSessionError(unavailable)).toBe(true);
+	});
+
+	it("closes the failed session before the next attempt on retryable failures", async () => {
+		const unavailable = serviceError(
+			status.UNAVAILABLE,
+			"14 UNAVAILABLE: registration stream reset",
+		);
+		const events: string[] = [];
+		let attempts = 0;
+
+		await reconnectWithBackoff(config(), ["charge"], {
+			createSession: async () => {
+				attempts += 1;
+				events.push(`create:${attempts}`);
+				if (attempts === 1) {
+					return new FailingRegisterSession(events, unavailable);
+				}
+				return new RecordingSession(events);
+			},
+			sleep: async () => {
+				events.push("sleep");
+			},
+		});
+
+		expect(attempts).toBe(2);
+		expect(events).toEqual([
+			"create:1",
+			"handshake:payments:worker-a",
+			"register-unavailable",
+			"close",
+			"sleep",
+			"create:2",
+			"handshake:payments:worker-a",
+			"register:charge",
+		]);
+	});
+
+	it("closes the session on fail-fast denial without masking the denial when close throws", async () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
+		);
+		const closeFailure = new Error("transport already torn down");
+		const events: string[] = [];
+		const warnings: Array<{ message: string; detail?: unknown }> = [];
+		let attempts = 0;
+
+		await expect(
+			reconnectWithBackoff(config(), ["charge"], {
+				createSession: async () => {
+					attempts += 1;
+					return new ThrowingCloseSession(events, denial, closeFailure);
+				},
+				sleep: () => Promise.resolve(),
+				logger: {
+					info: () => undefined,
+					warn: (message, fields) => {
+						warnings.push({ message, detail: fields?.message });
+					},
+					error: () => undefined,
+				},
+			}),
+		).rejects.toBe(denial);
+
+		expect(attempts).toBe(1);
+		expect(events).toEqual([
+			"handshake:payments:worker-a",
+			"register-denied",
+			"close-throws",
+		]);
+		expect(warnings).toEqual([
+			{
+				message: "failed to close unsuccessful worker session",
+				detail: "transport already torn down",
+			},
+		]);
+	});
+
+	it("finds the gRPC status code through an error cause chain", () => {
+		const denial = serviceError(
+			status.PERMISSION_DENIED,
+			"7 PERMISSION_DENIED: namespace 'payments' is not granted",
+		);
+		const wrapped = new Error("worker stream failed", { cause: denial });
+
+		expect(grpcStatusCode(wrapped)).toBe(status.PERMISSION_DENIED);
+		expect(isRetryableSessionError(wrapped)).toBe(false);
+		expect(grpcStatusCode(new Error("plain failure"))).toBeUndefined();
+		expect(isRetryableSessionError(new Error("plain failure"))).toBe(true);
+	});
 });
+
+class DeniedRegisterSession extends RecordingSession {
+	private readonly denial: Error;
+
+	public constructor(events: string[], denial: Error) {
+		super(events);
+		this.denial = denial;
+	}
+
+	public override async register(): Promise<void> {
+		this.events.push("register-denied");
+		throw this.denial;
+	}
+}
+
+class FailingRegisterSession extends RecordingSession {
+	private readonly failure: Error;
+
+	public constructor(events: string[], failure: Error) {
+		super(events);
+		this.failure = failure;
+	}
+
+	public override async register(): Promise<void> {
+		this.events.push("register-unavailable");
+		throw this.failure;
+	}
+}
+
+class ThrowingCloseSession extends DeniedRegisterSession {
+	private readonly closeFailure: Error;
+
+	public constructor(events: string[], denial: Error, closeFailure: Error) {
+		super(events, denial);
+		this.closeFailure = closeFailure;
+	}
+
+	public override async close(): Promise<void> {
+		this.events.push("close-throws");
+		throw this.closeFailure;
+	}
+}
+
+function serviceError(code: number, message: string): Error {
+	return Object.assign(new Error(message), {
+		code,
+		details: message,
+		metadata: undefined,
+	});
+}
 
 function config(): WorkerConfig {
 	return {

@@ -1,3 +1,4 @@
+import { status } from "@grpc/grpc-js";
 import type {
 	ActivityFailure,
 	ActivityIdKey,
@@ -8,6 +9,49 @@ import type {
 	WorkerSessionFactory,
 	WorkflowId,
 } from "./session.js";
+
+/**
+ * Deterministic server denials that no reconnect attempt can ever fix:
+ * PERMISSION_DENIED (ungranted namespace) and UNAUTHENTICATED (rejected
+ * credentials).
+ */
+export const NON_RETRYABLE_GRPC_STATUS_CODES: ReadonlySet<number> = new Set([
+	status.PERMISSION_DENIED,
+	status.UNAUTHENTICATED,
+]);
+
+/**
+ * Extracts the numeric gRPC status code carried by an error or its `cause`
+ * chain. `@grpc/grpc-js` surfaces server denials as `ServiceError`s with a
+ * numeric `code`; Node transport errors carry string codes and are ignored.
+ */
+export function grpcStatusCode(error: unknown): number | undefined {
+	const seen = new Set<object>();
+	let current: unknown = error;
+	while (
+		typeof current === "object" &&
+		current !== null &&
+		!seen.has(current)
+	) {
+		seen.add(current);
+		const code = (current as { readonly code?: unknown }).code;
+		if (typeof code === "number") {
+			return code;
+		}
+		current = (current as { readonly cause?: unknown }).cause;
+	}
+	return undefined;
+}
+
+/**
+ * Returns false for PERMISSION_DENIED / UNAUTHENTICATED denials so the
+ * reconnect loop surfaces them immediately instead of burning its attempt
+ * budget; every other failure keeps the bounded backoff behaviour.
+ */
+export function isRetryableSessionError(error: unknown): boolean {
+	const code = grpcStatusCode(error);
+	return code === undefined || !NON_RETRYABLE_GRPC_STATUS_CODES.has(code);
+}
 
 export type PendingActivityReport =
 	| {
@@ -74,15 +118,28 @@ export async function reconnectWithBackoff(
 	let lastError: unknown;
 
 	while (attempt <= reconnect.maxAttempts) {
+		let session: WorkerSession | undefined;
 		try {
 			dependencies.logger?.info("worker reconnect attempt", { attempt });
-			const session = await dependencies.createSession(config);
+			session = await dependencies.createSession(config);
 			await session.handshake(config);
 			await session.register(activityTypes);
 			dependencies.logger?.info("worker reconnect succeeded", { attempt });
 			return session;
 		} catch (error) {
 			lastError = error;
+			await closeFailedSession(session, dependencies.logger);
+			if (!isRetryableSessionError(error)) {
+				dependencies.logger?.error(
+					"worker reconnect denied by server; not retrying",
+					{
+						attempt,
+						code: grpcStatusCode(error),
+						message: error instanceof Error ? error.message : String(error),
+					},
+				);
+				throw error;
+			}
 			dependencies.logger?.warn("worker reconnect attempt failed", {
 				attempt,
 				message: error instanceof Error ? error.message : String(error),
@@ -97,6 +154,30 @@ export async function reconnectWithBackoff(
 	}
 
 	throw new Error("worker reconnect attempts exhausted", { cause: lastError });
+}
+
+/**
+ * Closes a session whose handshake or registration failed so its transport
+ * resources are released before the next attempt (or before the failure is
+ * surfaced on the fail-fast path). A close failure is secondary: it is
+ * logged and never allowed to mask the original connection error, matching
+ * the Rust and Python workers' semantics.
+ */
+async function closeFailedSession(
+	session: WorkerSession | undefined,
+	logger: WorkerLogger | undefined,
+): Promise<void> {
+	if (session === undefined) {
+		return;
+	}
+	try {
+		await session.close();
+	} catch (closeError) {
+		logger?.warn("failed to close unsuccessful worker session", {
+			message:
+				closeError instanceof Error ? closeError.message : String(closeError),
+		});
+	}
 }
 
 export async function reReportUnacked(

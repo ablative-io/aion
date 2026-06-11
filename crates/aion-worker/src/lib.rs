@@ -11,7 +11,7 @@
 //! use aion_worker::{ActivityContext, HandlerFuture, Worker, WorkerConfig};
 //! use serde::{Deserialize, Serialize};
 //!
-//! #[derive(Deserialize)]
+//! #[derive(Deserialize, Serialize)]
 //! struct Input { name: String }
 //!
 //! #[derive(Serialize)]

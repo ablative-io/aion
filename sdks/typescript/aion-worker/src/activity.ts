@@ -9,9 +9,28 @@ export type ActivityHandler<I, O> = (
 	ctx: ActivityContext,
 ) => Promise<O>;
 
-export interface ActivityDefinition<I = unknown, O = unknown> {
+/**
+ * Type-erased execution form of a registered activity: raw payload in, raw
+ * payload out. Decoding the input and encoding the output happen inside,
+ * which is what lets heterogeneous activities share one registry.
+ */
+export type ErasedActivityRun = (
+	input: Payload,
+	ctx: ActivityContext,
+) => Promise<Payload>;
+
+/**
+ * The registrable form of an activity. Deliberately type-erased — the
+ * registry stores activities of arbitrary input/output types, and a typed
+ * `handler: (input: I) => ...` property would be contravariant in `I` and
+ * unassignable to a common element type. Instead the concrete types live
+ * only inside the closure built by {@link defineActivity}, with the JSON
+ * encode/decode boundary doing the conversion — mirroring how the engine's
+ * events carry an opaque `Payload` rather than a generic parameter.
+ */
+export interface ActivityDefinition {
 	readonly name: string;
-	readonly handler: ActivityHandler<I, O>;
+	readonly run: ErasedActivityRun;
 }
 
 export interface ActivityRegistryOptions {
@@ -20,8 +39,8 @@ export interface ActivityRegistryOptions {
 	readonly cancellationSink?: (handle: ActivityCancellationHandle) => void;
 }
 
-interface RegisteredActivity<I = unknown, O = unknown> {
-	readonly definition: ActivityDefinition<I, O>;
+interface RegisteredActivity {
+	readonly definition: ActivityDefinition;
 	readonly dispatch: (
 		task: ActivityTask,
 		dependencies: DispatchDependencies,
@@ -54,7 +73,7 @@ export class ActivityRegistry implements ActivityDispatcher {
 		}
 	}
 
-	public register<I, O>(definition: ActivityDefinition<I, O>): void {
+	public register(definition: ActivityDefinition): void {
 		if (definition.name.length === 0) {
 			throw new Error("activity name must not be empty");
 		}
@@ -66,7 +85,7 @@ export class ActivityRegistry implements ActivityDispatcher {
 		this.activities.set(definition.name, {
 			definition,
 			dispatch: async (task, dependencies) =>
-				dispatchActivity(task, definition.handler, dependencies),
+				dispatchActivity(task, definition.run, dependencies),
 		});
 	}
 
@@ -121,14 +140,26 @@ export class ActivityRegistry implements ActivityDispatcher {
 	}
 }
 
+/**
+ * Builds a registrable {@link ActivityDefinition} from a fully typed handler.
+ * The generic types exist only here: the returned definition closes over the
+ * handler and erases `I`/`O` behind the JSON payload encode/decode boundary.
+ */
 export function defineActivity<I, O>(
 	name: string,
 	handler: ActivityHandler<I, O>,
-): ActivityDefinition<I, O> {
+): ActivityDefinition {
 	if (name.length === 0) {
 		throw new Error("activity name must not be empty");
 	}
-	return { name, handler };
+	return {
+		name,
+		run: async (input, ctx) => {
+			const decoded = decodeJsonPayload<I>(input);
+			const output = await handler(decoded, ctx);
+			return encodeJsonPayload(output, input.contentType);
+		},
+	};
 }
 
 export function decodeJsonPayload<I>(payload: Payload): I {
@@ -143,9 +174,9 @@ export function encodeJsonPayload<O>(value: O, contentType: string): Payload {
 	};
 }
 
-async function dispatchActivity<I, O>(
+async function dispatchActivity(
 	task: ActivityTask,
-	handler: ActivityHandler<I, O>,
+	run: ErasedActivityRun,
 	dependencies: DispatchDependencies,
 ): Promise<DispatchOutcome> {
 	const cancellation = new ActivityCancellationHandle();
@@ -161,12 +192,8 @@ async function dispatchActivity<I, O>(
 		cancellation,
 	);
 	try {
-		const input = decodeJsonPayload<I>(task.input);
-		const output = await handler(input, ctx);
-		return {
-			kind: "completed",
-			output: encodeJsonPayload(output, task.input.contentType),
-		};
+		const output = await run(task.input, ctx);
+		return { kind: "completed", output };
 	} catch (error) {
 		return {
 			kind: "failed",
