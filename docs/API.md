@@ -9,11 +9,12 @@ Aion exposes the engine through the standalone `aion-server` plus language-speci
 
 ## Authentication and caller metadata
 
-HTTP and WebSocket routes use the same caller extraction path:
+HTTP and WebSocket routes use the same caller extraction path, and the gRPC API reads the same names as request metadata:
 
-- In local development with auth disabled, send `x-aion-subject` to identify the caller. If omitted, the server identifies the caller as `anonymous`.
-- Send `x-aion-namespaces` as a comma-separated allow-list when the server runs in shared-engine namespace mode. The default single-tenant dev config authorizes the configured namespace without this header.
-- When auth is enabled, use the configured bearer-token/JWKS setup; WebSocket upgrades use the same headers as HTTP requests.
+- In local development with auth disabled (`[auth] enabled = false`, the default), send `x-aion-subject` to identify the caller. If omitted, the server identifies the caller as `anonymous`.
+- Send `x-aion-namespaces` as a comma-separated list of namespace grants. The default namespace mode is `SharedEngine`, in which a request is authorized only when its `namespace` value appears in this list — so the dev curl examples below must include the header. Deployments configured with `[namespace] mode = SingleTenant` instead authorize exactly the configured namespace for every caller, without consulting this header.
+- **Trust model:** with auth disabled, both headers are taken at face value. Namespace grants are purely caller-asserted — any caller can self-grant any namespace simply by listing it in `x-aion-namespaces`. This is a development convenience, not tenant isolation. Real tenant isolation requires `[auth] enabled = true` with a JWKS endpoint (`[auth] jwks_url`, refreshed every `jwks_refresh_seconds` seconds): the server then validates the `Authorization: Bearer <token>` header against the JWKS keys and derives the caller identity from validated token claims. (A server binary compiled without the `auth` feature falls back, when `auth.enabled` is true, to comparing the bearer token against the configured `jwks_url` value as a static shared secret — also development-only.) WebSocket upgrades use the same headers as HTTP requests.
+- `aion-cli` follows the same model over gRPC metadata: it asserts exactly its `--namespace` flag value (default `default`) as its single namespace grant and sends `--subject` (default `cli-user`) as the caller.
 
 Most examples use the default `default` namespace.
 
@@ -51,10 +52,62 @@ The `Proto*` JSON field names above are the serde names from `crates/aion-proto`
 curl -sS -X POST http://127.0.0.1:8080/workflows/start \
   -H 'content-type: application/json' \
   -H 'x-aion-subject: docs-user' \
-  -d '{"namespace":"default","workflow_type":"hello-world","input":{"name":"Ada"}}'
+  -H 'x-aion-namespaces: default' \
+  -d '{"namespace":"default","workflow_type":"hello_world","input":{"name":"Ada"}}'
 ```
 
+A successful start returns the assigned identifiers as nested objects:
+
+```json
+{"workflow_id":{"uuid":"<workflow-id>"},"run_id":{"uuid":"<run-id>"}}
+```
+
+(`aion-cli start` flattens this to `{"workflow_id":"<workflow-id>","run_id":"<run-id>"}` in its own output.)
+
 For non-JSON binary payloads, use the envelope form with `bytes` as a JSON array of integers. For the hello-world tutorial, `aion-cli` is the recommended path because it handles payload encoding for you.
+
+### List and describe response shapes
+
+`GET /workflows` returns a plain JSON array of visibility summaries. Each element carries a top-level `status`:
+
+```json
+[
+  {
+    "workflow_id": "<workflow-id>",
+    "run_id": "<run-id>",
+    "workflow_type": "hello_world",
+    "status": "Completed",
+    "start_time": "2026-01-01T00:00:00Z",
+    "close_time": "2026-01-01T00:00:01Z",
+    "search_attributes": { "aion.namespace": { "type": "String", "data": "default" } }
+  }
+]
+```
+
+`POST /workflows/describe` does **not** return a top-level `status`. It returns a `summary` envelope plus a `history` array of event envelopes; the workflow's projected status lives inside the decoded summary at `summary.payload.data.status`:
+
+```json
+{
+  "summary": {
+    "namespace": "default",
+    "request_id": null,
+    "payload": {
+      "content_type": "application/json",
+      "data": {
+        "workflow_id": "<workflow-id>",
+        "workflow_type": "hello_world",
+        "status": "Completed",
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": "2026-01-01T00:00:01Z",
+        "parent": null
+      }
+    }
+  },
+  "history": [ { "namespace": "default", "request_id": null, "payload": { "content_type": "application/json", "data": { "...": "event" } } } ]
+}
+```
+
+`POST /workflows/list` returns the raw wire form — `{"summaries":[...]}` with serde-encoded envelopes whose payload `bytes` are JSON byte arrays. Prefer `GET /workflows` or `aion-cli list` for human-readable output.
 
 ## WebSocket event streaming
 
@@ -67,7 +120,7 @@ Supported subscription messages:
 ```
 
 ```json
-{"filtered":{"namespace":"default","workflow_type":"hello-world","status":"Completed"}}
+{"filtered":{"namespace":"default","workflow_type":"hello_world","status":"Completed"}}
 ```
 
 ```json

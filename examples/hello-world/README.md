@@ -28,7 +28,7 @@ gleam build
 cd ../..
 ```
 
-The workflow source lives in `examples/hello-world/src/hello_world.gleam`. It imports the public `aion/workflow`, `aion/activity`, `aion/codec`, and `aion/error` modules from the `aion_flow` SDK. The source exposes `definition()` for the named `hello-world` workflow and keeps `run` as the packaged entry function. `run` accepts JSON shaped like `{ "name": "Ada" }`, creates a typed `greet` activity with `activity.new()`, executes it with `workflow.run()`, unwraps the worker's typed greeting payload, and returns the greeting string.
+The workflow source lives in `examples/hello-world/src/hello_world.gleam`. It imports the public `aion/workflow`, `aion/activity`, `aion/codec`, and `aion/error` modules from the `aion_flow` SDK. The module's public surface is the packaged entry function `run` plus the `HelloInput`, `GreetingOutput`, and `WorkflowError` types. `run` accepts JSON shaped like `{ "name": "Ada" }`, creates a typed `greet` activity with `activity.new()`, executes it with `workflow.run()`, unwraps the worker's typed greeting payload, and returns the greeting string.
 
 ## 2. Package `hello-world.aion`
 
@@ -110,12 +110,14 @@ Leave this process running.
 
 ## 5. Start a workflow instance
 
+The registered workflow type is `hello_world` — the package manifest's entry module name from step 2, which the server also logs when it loads the package. The archive file is named `hello-world.aion`, but the workflow type uses the underscore module name.
+
 In terminal 3:
 
 ```sh
 START_RESPONSE=$(cargo run -q -p aion-cli -- \
   --subject hello-world-user \
-  start hello-world --input '{"name":"Ada"}')
+  start hello_world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 

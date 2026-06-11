@@ -78,6 +78,35 @@ cargo run -p aion-server -- \
   --workflow-package examples/hello-world/hello-world.aion
 ```
 
+### Durable storage with libSQL
+
+The quickstart uses the in-memory store, which loses all workflow state when the server stops. To make runs durable, switch the `[store]` section to the libSQL backend:
+
+```toml
+[store]
+backend = "libsql"
+url = "aion-dev.db"
+```
+
+`store.backend` accepts `memory` or `libsql`, and `store.url` is the embedded libSQL database file path, created on first start. `store.url` must be non-empty when `backend = "libsql"`. You can apply the same change without editing TOML: set `AION_STORE_BACKEND=libsql` and `AION_STORE_URL=aion-dev.db`, or pass `--store-url`, which also switches the backend from `memory` to `libsql` automatically:
+
+```sh
+cargo run -p aion-server -- --config dev-config.toml \
+  --store-url aion-dev.db \
+  --workflow-package examples/hello-world/hello-world.aion
+```
+
+With the libSQL store, you can stop the server after a workflow completes, start it again, and `list`/`describe` still return the recorded history — the engine replays durable histories on startup.
+
+### Running on alternate ports
+
+`[server].listen_address` (HTTP) and `[server].grpc_address` (gRPC) take `host:port` socket addresses with explicit non-zero ports. Override them in the config file or with the `AION_SERVER_LISTEN_ADDRESS` and `AION_SERVER_GRPC_ADDRESS` environment variables; only the HTTP address has a CLI flag (`--listen-address`), so use the environment variable or config file to move the gRPC listener. When the gRPC port changes, point the worker and CLI at the new endpoint:
+
+```sh
+AION_WORKER_ENDPOINT=127.0.0.1:60051 python examples/hello-world/worker.py
+cargo run -q -p aion-cli -- --endpoint 127.0.0.1:60051 --subject hello-world-user list
+```
+
 ## 4. Start the Python activity worker
 
 In terminal 2, from the repository root:
@@ -94,12 +123,14 @@ The worker connects to `127.0.0.1:50051`, registers the `greet` activity on the 
 
 ## 5. Start a workflow
 
+The registered workflow type is `hello_world` — the package manifest's entry module name, which the server also logs when it loads the package at startup. (The archive file is named `hello-world.aion`, but the workflow type uses the underscore module name.)
+
 In terminal 3, from the repository root:
 
 ```sh
 START_RESPONSE=$(cargo run -q -p aion-cli -- \
   --subject hello-world-user \
-  start hello-world --input '{"name":"Ada"}')
+  start hello_world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
 
@@ -140,7 +171,13 @@ You should see events for workflow start, `greet` scheduling/completion, and wor
 Stop the worker and server with `Ctrl-C`, then remove local artifacts if desired:
 
 ```sh
-rm -rf .venv-aion-hello aion.toml examples/hello-world/hello-world.aion examples/hello-world/build
+rm -rf .venv-aion-hello examples/hello-world/hello-world.aion examples/hello-world/build
+```
+
+If you copied `dev-config.toml` to `aion.toml` for config auto-discovery, or created a libSQL database file for the durable-store option, remove those too:
+
+```sh
+rm -f aion.toml aion-dev.db
 ```
 
 ## Where to go next
