@@ -227,11 +227,11 @@ async fn dispatches_two_tasks_and_reports_corresponding_outcomes() -> Result<(),
     );
     assert_eq!(tracker.len(), 2);
     assert!(matches!(
-        tracker.get(&first_activity),
+        tracker.get(&workflow_id, &first_activity),
         Some(PendingActivityReport::Completed { .. })
     ));
     assert!(matches!(
-        tracker.get(&second_activity),
+        tracker.get(&workflow_id, &second_activity),
         Some(PendingActivityReport::Failed { .. })
     ));
     Ok(())

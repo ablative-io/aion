@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
 use tracing::{debug, error, warn};
+use uuid::Uuid;
 
 use crate::config::WorkerConfig;
 use crate::error::WorkerError;
@@ -42,12 +43,29 @@ impl PendingActivityReport {
             Self::Completed { activity_id, .. } | Self::Failed { activity_id, .. } => activity_id,
         }
     }
+
+    /// Returns the workflow owning the report's activity.
+    #[must_use]
+    pub const fn workflow_id(&self) -> &WorkflowId {
+        match self {
+            Self::Completed { workflow_id, .. } | Self::Failed { workflow_id, .. } => workflow_id,
+        }
+    }
+}
+
+/// Deterministic tracker key: activity ids are sequence positions scoped to
+/// one workflow, so distinct workflows legitimately collide on the bare
+/// position and must be keyed by workflow as well.
+type PendingReportKey = (Uuid, u64);
+
+fn pending_report_key(workflow_id: &WorkflowId, activity_id: &ActivityId) -> PendingReportKey {
+    (workflow_id.as_uuid(), activity_id.sequence_position())
 }
 
 /// In-memory source of truth for locally reported results awaiting engine ack.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UnackedResultTracker {
-    reports: BTreeMap<u64, PendingActivityReport>,
+    reports: BTreeMap<PendingReportKey, PendingActivityReport>,
 }
 
 impl UnackedResultTracker {
@@ -59,15 +77,21 @@ impl UnackedResultTracker {
         }
     }
 
-    /// Records a report, replacing any earlier pending report for the same id.
+    /// Records a report, replacing any earlier pending report for the same
+    /// workflow and activity id.
     pub fn record(&mut self, report: PendingActivityReport) {
-        self.reports
-            .insert(report.activity_id().sequence_position(), report);
+        let key = pending_report_key(report.workflow_id(), report.activity_id());
+        self.reports.insert(key, report);
     }
 
     /// Drops a report once the engine explicitly acknowledges it.
-    pub fn acknowledge(&mut self, activity_id: &ActivityId) -> Option<PendingActivityReport> {
-        self.reports.remove(&activity_id.sequence_position())
+    pub fn acknowledge(
+        &mut self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Option<PendingActivityReport> {
+        self.reports
+            .remove(&pending_report_key(workflow_id, activity_id))
     }
 
     /// Returns the number of unacknowledged reports.
@@ -82,10 +106,15 @@ impl UnackedResultTracker {
         self.reports.is_empty()
     }
 
-    /// Gets a pending report by activity id.
+    /// Gets a pending report by its workflow and activity id.
     #[must_use]
-    pub fn get(&self, activity_id: &ActivityId) -> Option<&PendingActivityReport> {
-        self.reports.get(&activity_id.sequence_position())
+    pub fn get(
+        &self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Option<&PendingActivityReport> {
+        self.reports
+            .get(&pending_report_key(workflow_id, activity_id))
     }
 
     /// Returns a deterministic snapshot for re-reporting without holding a borrow.
@@ -309,6 +338,7 @@ where
                 output,
             } => {
                 debug!(
+                    workflow_id = %workflow_id,
                     activity_id = activity_id.sequence_position(),
                     "re-reporting unacknowledged activity result"
                 );
@@ -322,6 +352,7 @@ where
                 failure,
             } => {
                 debug!(
+                    workflow_id = %workflow_id,
                     activity_id = activity_id.sequence_position(),
                     "re-reporting unacknowledged activity failure"
                 );
@@ -363,7 +394,7 @@ mod tests {
     use crate::{ReconnectConfig, WorkerConfig};
 
     #[test]
-    fn tracker_records_reports_and_acknowledges_by_activity_id() {
+    fn tracker_records_reports_and_acknowledges_by_workflow_and_activity_id() {
         let workflow_id = WorkflowId::new_v4();
         let first_id = ActivityId::from_sequence_position(1);
         let second_id = ActivityId::from_sequence_position(2);
@@ -375,16 +406,45 @@ mod tests {
             output: Payload::new(ContentType::Json, b"{\"first\":true}".to_vec()),
         });
         tracker.record(PendingActivityReport::Completed {
-            workflow_id,
+            workflow_id: workflow_id.clone(),
             activity_id: second_id.clone(),
             output: Payload::new(ContentType::Json, b"{\"second\":true}".to_vec()),
         });
 
         assert_eq!(tracker.len(), 2);
-        assert!(tracker.acknowledge(&first_id).is_some());
+        assert!(tracker.acknowledge(&workflow_id, &first_id).is_some());
         assert_eq!(tracker.len(), 1);
-        assert!(tracker.get(&second_id).is_some());
-        assert!(tracker.get(&first_id).is_none());
+        assert!(tracker.get(&workflow_id, &second_id).is_some());
+        assert!(tracker.get(&workflow_id, &first_id).is_none());
+    }
+
+    #[test]
+    fn tracker_keeps_reports_for_distinct_workflows_at_the_same_sequence_position() {
+        let first_workflow = WorkflowId::new_v4();
+        let second_workflow = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(3);
+        let mut tracker = UnackedResultTracker::new();
+
+        tracker.record(PendingActivityReport::Completed {
+            workflow_id: first_workflow.clone(),
+            activity_id: activity_id.clone(),
+            output: Payload::new(ContentType::Json, b"{\"workflow\":\"a\"}".to_vec()),
+        });
+        tracker.record(PendingActivityReport::Completed {
+            workflow_id: second_workflow.clone(),
+            activity_id: activity_id.clone(),
+            output: Payload::new(ContentType::Json, b"{\"workflow\":\"b\"}".to_vec()),
+        });
+
+        assert_eq!(tracker.len(), 2);
+        assert!(tracker.get(&first_workflow, &activity_id).is_some());
+        assert!(tracker.get(&second_workflow, &activity_id).is_some());
+        assert!(
+            tracker.acknowledge(&first_workflow, &activity_id).is_some(),
+            "acknowledging one workflow's report must not require the other's"
+        );
+        assert_eq!(tracker.len(), 1);
+        assert!(tracker.get(&second_workflow, &activity_id).is_some());
     }
 
     #[tokio::test]
@@ -764,14 +824,14 @@ mod tests {
             output: Payload::new(ContentType::Json, b"{}".to_vec()),
         });
         tracker.record(PendingActivityReport::Failed {
-            workflow_id,
+            workflow_id: workflow_id.clone(),
             activity_id: activity_id.clone(),
             failure: terminal_failure(),
         });
 
         assert_eq!(tracker.len(), 1);
         assert!(matches!(
-            tracker.get(&activity_id),
+            tracker.get(&workflow_id, &activity_id),
             Some(PendingActivityReport::Failed { .. })
         ));
     }

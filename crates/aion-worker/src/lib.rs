@@ -25,6 +25,10 @@
 //!     .endpoint("http://127.0.0.1:50051")
 //!     .task_queue("default")
 //!     .identity("rust-worker-1")
+//!     .max_concurrency(4)
+//!     .reconnect_initial_backoff(std::time::Duration::from_millis(500))
+//!     .reconnect_max_backoff(std::time::Duration::from_secs(5))
+//!     .reconnect_max_attempts(10)
 //!     .build()?;
 //!
 //! Worker::builder(config)

@@ -170,6 +170,7 @@ name = "aion-server"
 version = "0.1.0"
 dependencies = [
  "aion-core",
+ "aion-package",
  "aion-proto",
  "aion-rs",
  "aion-store",
@@ -249,6 +250,7 @@ dependencies = [
  "tokio-stream",
  "tonic 0.14.6",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

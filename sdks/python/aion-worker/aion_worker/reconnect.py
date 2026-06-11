@@ -15,6 +15,10 @@ import grpc
 from .session import ActivityError, ActivityId, Payload, WorkerConfig, WorkerSession, WorkflowId
 
 ActivitySequence: TypeAlias = int
+PendingReportKey: TypeAlias = tuple[str, int]
+"""Tracker key: activity sequence positions are scoped per workflow, so
+distinct workflows legitimately collide on the bare position and must be
+keyed by workflow as well."""
 ConnectFactory: TypeAlias = Callable[[], Awaitable[WorkerSession]]
 logger = logging.getLogger(__name__)
 
@@ -98,19 +102,24 @@ PendingActivityReport: TypeAlias = PendingCompletedReport | PendingFailedReport
 
 
 class UnackedResultTracker:
-    """Tracks reported activity outcomes until AW adds an explicit ack frame."""
+    """Tracks reported activity outcomes until AW adds an explicit ack frame.
+
+    Entries are keyed by (workflow uuid, sequence position): activity ids are
+    per-workflow sequence positions, so reports from distinct workflows that
+    share a position must never replace one another.
+    """
 
     def __init__(self) -> None:
-        self._pending: OrderedDict[ActivitySequence, PendingActivityReport] = OrderedDict()
+        self._pending: OrderedDict[PendingReportKey, PendingActivityReport] = OrderedDict()
 
     def record(self, report: PendingActivityReport) -> None:
-        self._pending[activity_sequence(report.activity_id)] = report
+        self._pending[pending_report_key(report.workflow_id, report.activity_id)] = report
 
-    def acknowledge(self, activity_id: ActivityId) -> None:
-        self._pending.pop(activity_sequence(activity_id), None)
+    def acknowledge(self, workflow_id: WorkflowId, activity_id: ActivityId) -> None:
+        self._pending.pop(pending_report_key(workflow_id, activity_id), None)
 
-    def get(self, activity_id: ActivityId) -> PendingActivityReport | None:
-        return self._pending.get(activity_sequence(activity_id))
+    def get(self, workflow_id: WorkflowId, activity_id: ActivityId) -> PendingActivityReport | None:
+        return self._pending.get(pending_report_key(workflow_id, activity_id))
 
     def snapshot(self) -> tuple[PendingActivityReport, ...]:
         return tuple(self._pending.values())
@@ -250,3 +259,8 @@ async def re_report_unacked(session: WorkerSession, tracker: UnackedResultTracke
 def activity_sequence(activity_id: ActivityId) -> ActivitySequence:
     """Extract the deterministic sequence position from an activity identifier."""
     return int(activity_id.sequence_position)
+
+
+def pending_report_key(workflow_id: WorkflowId, activity_id: ActivityId) -> PendingReportKey:
+    """Build the per-workflow tracker key for an unacknowledged report."""
+    return (str(workflow_id.uuid), activity_sequence(activity_id))

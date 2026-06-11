@@ -407,8 +407,8 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RecordedReport {
-        Completed(ActivityId, Payload),
-        Failed(ActivityId, ActivityError),
+        Completed(WorkflowId, ActivityId, Payload),
+        Failed(WorkflowId, ActivityId, ActivityError),
     }
 
     #[async_trait]
@@ -441,9 +441,8 @@ mod tests {
             activity_id: ActivityId,
             result: Payload,
         ) -> Result<(), WorkerError> {
-            let _ = workflow_id;
             self.reports
-                .push(RecordedReport::Completed(activity_id, result));
+                .push(RecordedReport::Completed(workflow_id, activity_id, result));
             Ok(())
         }
 
@@ -453,9 +452,8 @@ mod tests {
             activity_id: ActivityId,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
-            let _ = workflow_id;
             self.reports
-                .push(RecordedReport::Failed(activity_id, failure));
+                .push(RecordedReport::Failed(workflow_id, activity_id, failure));
             Ok(())
         }
 
@@ -572,7 +570,7 @@ mod tests {
         assert_eq!(session.reports.len(), 1);
         assert!(matches!(
             &session.reports[0],
-            RecordedReport::Completed(reported_id, _) if reported_id == &activity_id
+            RecordedReport::Completed(_, reported_id, _) if reported_id == &activity_id
         ));
         Ok(())
     }
@@ -714,7 +712,6 @@ mod tests {
             activity_id: ActivityId,
             result: Payload,
         ) -> Result<(), WorkerError> {
-            let _ = workflow_id;
             if self.fail_reports {
                 return Err(WorkerError::Transport {
                     source: tonic::Status::unavailable("transport dropped before result ack"),
@@ -723,7 +720,7 @@ mod tests {
             self.log
                 .send(SessionLog::Reported(
                     self.index,
-                    RecordedReport::Completed(activity_id, result),
+                    RecordedReport::Completed(workflow_id, activity_id, result),
                 ))
                 .map_err(WorkerError::decode)
         }
@@ -734,7 +731,6 @@ mod tests {
             activity_id: ActivityId,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
-            let _ = workflow_id;
             if self.fail_reports {
                 return Err(WorkerError::Transport {
                     source: tonic::Status::unavailable("transport dropped before failure ack"),
@@ -743,7 +739,7 @@ mod tests {
             self.log
                 .send(SessionLog::Reported(
                     self.index,
-                    RecordedReport::Failed(activity_id, failure),
+                    RecordedReport::Failed(workflow_id, activity_id, failure),
                 ))
                 .map_err(WorkerError::decode)
         }
@@ -898,13 +894,207 @@ mod tests {
         assert_eq!(reports.len(), 1);
         let (session_index, report) = &reports[0];
         assert_eq!(*session_index, 2);
-        let RecordedReport::Completed(reported_id, payload) = report else {
+        let RecordedReport::Completed(reported_workflow, reported_id, payload) = report else {
             return Err(WorkerError::decode(UnexpectedReportShape));
         };
+        assert_eq!(reported_workflow, &workflow_id);
         assert_eq!(reported_id, &activity_id);
         let output: TestOutput =
             serde_json::from_slice(payload.bytes()).map_err(WorkerError::decode)?;
         assert_eq!(output.value, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mid_run_drop_re_reports_unacked_results_for_all_workflows() -> Result<(), WorkerError>
+    {
+        let first_workflow = WorkflowId::new_v4();
+        let second_workflow = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(3);
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let log_sender = log_sender.clone();
+            let first_workflow = first_workflow.clone();
+            let second_workflow = second_workflow.clone();
+            let activity_id = activity_id.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                let first_task =
+                    proto_task(first_workflow.clone(), activity_id.clone(), "double", 10);
+                let second_task =
+                    proto_task(second_workflow.clone(), activity_id.clone(), "double", 20);
+                async move {
+                    if attempt == 1 {
+                        Ok(ScriptedSession {
+                            index: 1,
+                            log,
+                            events: vec![
+                                Ok(WorkerSessionEvent::Task(first_task)),
+                                Ok(WorkerSessionEvent::Task(second_task)),
+                            ],
+                            fail_reports: true,
+                            register_denial: None,
+                        })
+                    } else {
+                        Ok(ScriptedSession {
+                            index: attempt,
+                            log,
+                            events: Vec::new(),
+                            fail_reports: false,
+                            register_denial: None,
+                        })
+                    }
+                }
+            }
+        };
+
+        worker
+            .run_with_connector_until(connect, std::future::pending::<()>())
+            .await?;
+
+        drop(log_sender);
+        let mut reports = Vec::new();
+        while let Some(entry) = log_receiver.recv().await {
+            if let SessionLog::Reported(index, report) = entry {
+                reports.push((index, report));
+            }
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            reports.len(),
+            2,
+            "both workflows' colliding sequence-position results must be re-reported"
+        );
+        let mut reported_workflows = Vec::new();
+        for (session_index, report) in &reports {
+            assert_eq!(*session_index, 2, "re-reports must land on the new session");
+            let RecordedReport::Completed(reported_workflow, reported_id, _) = report else {
+                return Err(WorkerError::decode(UnexpectedReportShape));
+            };
+            assert_eq!(reported_id, &activity_id);
+            reported_workflows.push(reported_workflow.clone());
+        }
+        assert!(reported_workflows.contains(&first_workflow));
+        assert!(reported_workflows.contains(&second_workflow));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_recovery_establishment_returns_original_drop_error()
+    -> Result<(), WorkerError> {
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let notify = Arc::new(Notify::new());
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            let notify = Arc::clone(&notify);
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let notify = Arc::clone(&notify);
+                let log = log_sender.clone();
+                async move {
+                    if attempt == 1 {
+                        Ok(ScriptedSession {
+                            index: 1,
+                            log,
+                            events: vec![Err(WorkerError::Transport {
+                                source: tonic::Status::unavailable("stream reset by peer"),
+                            })],
+                            fail_reports: false,
+                            register_denial: None,
+                        })
+                    } else {
+                        // Fire shutdown while recovery is still inside the
+                        // reconnect machinery's connect attempt, then hang
+                        // so only the shutdown arm can win the select.
+                        notify.notify_one();
+                        std::future::pending::<()>().await;
+                        Err(WorkerError::Transport {
+                            source: tonic::Status::unavailable("unreachable"),
+                        })
+                    }
+                }
+            }
+        };
+        let shutdown = {
+            let notify = Arc::clone(&notify);
+            async move {
+                notify.notified().await;
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, shutdown);
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+        assert_eq!(
+            error.grpc_status().map(tonic::Status::message),
+            Some("stream reset by peer"),
+            "shutdown during recovery establishment must surface the original drop error"
+        );
+        drop(log_receiver);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mid_run_drop_budget_exhaustion_surfaces_last_drop_error() -> Result<(), WorkerError> {
+        let worker = two_activity_worker()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (log_sender, log_receiver) = mpsc::unbounded_channel();
+        let connect = {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let log = log_sender.clone();
+                async move {
+                    Ok(ScriptedSession {
+                        index: attempt,
+                        log,
+                        events: vec![Err(WorkerError::Transport {
+                            source: tonic::Status::unavailable("stream reset by peer"),
+                        })],
+                        fail_reports: false,
+                        register_denial: None,
+                    })
+                }
+            }
+        };
+
+        let run = worker.run_with_connector_until(connect, std::future::pending::<()>());
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(WorkerError::decode)?;
+
+        // test_config allows 3 reconnect attempts; the third mid-run drop
+        // exhausts the cumulative drop budget without another reconnect.
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let Err(error) = result else {
+            return Err(WorkerError::decode(UnexpectedSuccess));
+        };
+        assert!(error.is_retryable());
+        assert!(matches!(
+            error.grpc_status().map(tonic::Status::code),
+            Some(tonic::Code::Unavailable)
+        ));
+        assert_eq!(
+            error.grpc_status().map(tonic::Status::message),
+            Some("stream reset by peer")
+        );
+        drop(log_receiver);
         Ok(())
     }
 

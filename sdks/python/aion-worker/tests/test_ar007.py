@@ -28,6 +28,7 @@ from aion_worker import (
     connect_register_replay_and_serve,
     serve,
 )
+from aion_worker.proto import common_pb2
 
 
 def test_import_smoke_public_names() -> None:
@@ -91,6 +92,82 @@ async def test_reconnect_re_reports_unacked_before_dispatching_new_task() -> Non
     await connect_register_replay_and_serve(config(), fail_then_connect, dispatcher, tracker)
     assert second.log[:4] == ["handshake", "register", "result:7", "receive"]
     assert dispatcher.dispatched == [8]
+
+
+def test_tracker_keeps_reports_for_distinct_workflows_at_same_sequence_position() -> None:
+    first_workflow = common_pb2.WorkflowId(uuid="workflow-a")
+    second_workflow = common_pb2.WorkflowId(uuid="workflow-b")
+    tracker = UnackedResultTracker()
+
+    tracker.record(
+        aion_worker.PendingCompletedReport(
+            workflow_id=first_workflow,
+            activity_id=activity_id(3),
+            output=payload(),
+        )
+    )
+    tracker.record(
+        aion_worker.PendingCompletedReport(
+            workflow_id=second_workflow,
+            activity_id=activity_id(3),
+            output=payload(),
+        )
+    )
+
+    assert len(tracker) == 2
+    assert tracker.get(first_workflow, activity_id(3)) is not None
+    assert tracker.get(second_workflow, activity_id(3)) is not None
+    tracker.acknowledge(first_workflow, activity_id(3))
+    assert len(tracker) == 1
+    assert tracker.get(first_workflow, activity_id(3)) is None
+    assert tracker.get(second_workflow, activity_id(3)) is not None
+
+
+class WorkflowResultSession(FakeSession):
+    """FakeSession that logs the owning workflow with each result report."""
+
+    async def report_result(
+        self,
+        workflow: common_pb2.WorkflowId,
+        activity: common_pb2.ActivityId,
+        result: common_pb2.Payload,
+    ) -> None:
+        self.log.append(f"result:{workflow.uuid}:{activity.sequence_position}")
+
+
+def _workflow_task(workflow_uuid: str, sequence_position: int) -> aion_worker.TaskReceived:
+    return aion_worker.TaskReceived(
+        aion_worker.ActivityTask(
+            workflow_id=common_pb2.WorkflowId(uuid=workflow_uuid),
+            activity_id=activity_id(sequence_position),
+            activity_type="slow",
+            input=payload(),
+        )
+    )
+
+
+async def test_reconnect_re_reports_unacked_for_all_workflows_with_colliding_positions() -> None:
+    first = WorkflowResultSession(drop_after_events=True)
+    second = WorkflowResultSession()
+    dispatcher = RecordingDispatcher()
+    await first.push(_workflow_task("workflow-a", 3))
+    await first.push(_workflow_task("workflow-b", 3))
+    await first.finish()
+    await second.finish()
+    sessions = [first, second]
+
+    async def connect() -> FakeSession:
+        return sessions.pop(0)
+
+    async def no_sleep(delay: float) -> None:
+        del delay
+
+    await connect_register_replay_and_serve(config(), connect, dispatcher, sleep=no_sleep)
+
+    replayed = [entry for entry in second.log if entry.startswith("result:")]
+    assert sorted(replayed) == ["result:workflow-a:3", "result:workflow-b:3"], (
+        "both workflows' colliding sequence-position results must be re-reported"
+    )
 
 
 async def test_reconnect_after_stream_drop_uses_backoff_and_replays_unacked(

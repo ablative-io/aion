@@ -55,7 +55,7 @@ pub enum WorkerSessionEvent {
 pub trait WorkerSession: Send {
     /// Performs the worker handshake for the configured task queue and identity.
     ///
-    /// Maps to the initial `RegisterWorker` frame on AW's `StreamWorker` RPC.
+    /// Maps to transport/channel establishment for AW's `StreamWorker` RPC.
     /// AW currently names the task-queue scope `namespace` and has no identity
     /// field, so identity is retained at this SDK boundary until the wire adds
     /// a corresponding shape.
@@ -63,9 +63,12 @@ pub trait WorkerSession: Send {
 
     /// Registers activity-type names implemented by this worker.
     ///
-    /// Maps to `RegisterWorker.activity_types` on AW's `StreamWorker` RPC. The
-    /// caller supplies `available_handlers` so registration can be rejected
-    /// before serving if any requested name lacks a handler.
+    /// Maps to opening AW's `StreamWorker` RPC with `RegisterWorker` queued as
+    /// the mandatory first frame: the server reads that frame before it sends
+    /// response headers, and there is no registration-ack frame in the wire
+    /// protocol — header receipt is the registration outcome. The caller
+    /// supplies `available_handlers` so registration can be rejected before
+    /// serving if any requested name lacks a handler.
     async fn register(
         &mut self,
         activity_types: Vec<String>,
@@ -166,26 +169,46 @@ impl GrpcWorkerSession {
         }
     }
 
-    async fn open_stream(&mut self) -> Result<(), WorkerError> {
-        if self.client.is_none() {
-            self.client = Some(
-                GeneratedClient::connect(self.config.endpoint.clone())
-                    .await
-                    .map_err(|source| WorkerError::Connect { source })?,
-            );
-        }
+    /// Opens AW's `StreamWorker` RPC with `RegisterWorker` queued as the first
+    /// outbound frame.
+    ///
+    /// The server reads `RegisterWorker` from the inbound stream *before* it
+    /// returns its response stream (and therefore before tonic receives
+    /// response headers), so the frame must already be queued when the RPC is
+    /// issued. Awaiting `stream_worker` before sending `RegisterWorker`
+    /// deadlocks: the client waits for headers the server withholds until it
+    /// has read the registration. There is no registration-ack frame in the
+    /// wire protocol — receiving response headers *is* the successful
+    /// registration outcome, and a denial surfaces as the RPC's error status.
+    async fn open_registered_stream(
+        &mut self,
+        register: aion_proto::generated::RegisterWorker,
+    ) -> Result<(), WorkerError> {
         let client = self.client.as_mut().ok_or_else(|| {
             WorkerError::registration(SessionStateError {
-                message: String::from("worker client was not available after connect"),
+                message: String::from("worker session has not completed its handshake"),
             })
         })?;
         let (sender, outbound) = mpsc::channel(16);
+        sender
+            .try_send(aion_proto::generated::WorkerToServer {
+                message: Some(aion_proto::generated::worker_to_server::Message::Register(
+                    register,
+                )),
+            })
+            .map_err(|_| {
+                WorkerError::registration(SessionStateError {
+                    message: String::from(
+                        "could not queue RegisterWorker as the first stream frame",
+                    ),
+                })
+            })?;
         let mut request = Request::new(ReceiverStream::new(outbound));
         apply_auth_metadata(request.metadata_mut(), &self.config)?;
         let response = client
             .stream_worker(request)
             .await
-            .map_err(|source| WorkerError::Handshake { source })?;
+            .map_err(registration_denial_error)?;
 
         self.sender = Some(sender);
         self.receiver = Some(response.into_inner());
@@ -212,6 +235,24 @@ impl GrpcWorkerSession {
     }
 }
 
+/// Maps the `StreamWorker` RPC's rejection status to the worker error taxonomy.
+///
+/// The server validates stream metadata (credentials) and the `RegisterWorker`
+/// frame before returning response headers, so both failure classes surface
+/// from the same await: `Unauthenticated` is a credential/handshake rejection,
+/// everything else is a registration outcome (`PermissionDenied` for an
+/// ungranted namespace, `Unavailable` for transient transport faults). Both
+/// shapes preserve the status for `WorkerError::grpc_status` / `is_retryable`.
+fn registration_denial_error(status: tonic::Status) -> WorkerError {
+    if status.code() == tonic::Code::Unauthenticated {
+        WorkerError::Handshake { source: status }
+    } else {
+        WorkerError::Registration {
+            source: Box::new(status),
+        }
+    }
+}
+
 fn apply_auth_metadata(
     metadata: &mut tonic::metadata::MetadataMap,
     config: &WorkerConfig,
@@ -233,7 +274,14 @@ fn apply_auth_metadata(
 impl WorkerSession for GrpcWorkerSession {
     async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
         self.config = config.clone();
-        self.open_stream().await
+        if self.client.is_none() {
+            self.client = Some(
+                GeneratedClient::connect(self.config.endpoint.clone())
+                    .await
+                    .map_err(|source| WorkerError::Connect { source })?,
+            );
+        }
+        Ok(())
     }
 
     async fn register(
@@ -248,16 +296,7 @@ impl WorkerSession for GrpcWorkerSession {
             namespace: self.config.task_queue.clone(),
             activity_types,
         };
-        self.send_to_server(aion_proto::generated::worker_to_server::Message::Register(
-            register,
-        ))
-        .await
-        .map_err(|error| match error {
-            WorkerError::Transport { source } => WorkerError::Registration {
-                source: Box::new(source),
-            },
-            other => other,
-        })
+        self.open_registered_stream(register).await
     }
 
     fn receive_tasks(&mut self) -> WorkerTaskStream {
