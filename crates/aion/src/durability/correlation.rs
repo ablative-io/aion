@@ -78,9 +78,13 @@ pub fn key_for_event(events: &[Event], index: usize) -> Option<CorrelationKey> {
                 .take(index)
                 .filter(|prior| matches!(prior, Event::ChildWorkflowStarted { .. }))
                 .count();
-            // A history slice can never hold more than u64::MAX events; a
-            // failed conversion yields no key, which replay surfaces loudly
-            // as a non-determinism mismatch rather than a silent wrong match.
+            // On the 64-bit targets this engine ships on, usize -> u64 never
+            // fails; the fallible conversion exists only to satisfy the type
+            // signature on hypothetical wider-usize platforms. There, an
+            // overflowing count would leave this start event keyless: strict
+            // replay reports a mismatch when resolution reaches it, but the
+            // live fast-forward path skips keyless events silently — a
+            // missing key is not guaranteed to surface as an error.
             u64::try_from(prior_starts).ok().map(CorrelationKey::Child)
         }
         _ => key_for_positionless_event(event),

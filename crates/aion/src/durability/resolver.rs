@@ -579,6 +579,53 @@ mod tests {
     }
 
     #[test]
+    fn interleaved_async_arrival_inside_activity_range_replays_clean()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let result = payload("activity-result")?;
+        let signal_payload = payload("signal-payload")?;
+        let cursor = HistoryCursor::new(vec![
+            activity_scheduled(1, 0)?,
+            signal_received(2, "mid", signal_payload.clone())?,
+            activity_completed(3, 0, result.clone())?,
+        ])?;
+        let mut resolver = Resolver::new(workflow_id(), cursor);
+
+        assert_eq!(
+            resolver.resolve(run_activity_command(0)?)?,
+            ResolveOutcome::Recorded(Resolution::ActivityCompleted(result))
+        );
+        assert_eq!(
+            resolver.resolve(Command::AwaitSignal {
+                key: CorrelationKey::Signal {
+                    name: "mid".to_owned(),
+                    index: 0,
+                },
+            })?,
+            ResolveOutcome::Recorded(Resolution::SignalDelivered(signal_payload))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn genuinely_reordered_activity_anchors_fail_typed() -> Result<(), Box<dyn std::error::Error>> {
+        let cursor = HistoryCursor::new(vec![
+            activity_scheduled(1, 0)?,
+            activity_scheduled(2, 1)?,
+            activity_completed(3, 1, payload("second-result")?)?,
+            activity_completed(4, 0, payload("first-result")?)?,
+        ])?;
+        let mut resolver = Resolver::new(workflow_id(), cursor);
+
+        let error = resolver.resolve(run_activity_command(1)?).err();
+
+        assert!(matches!(
+            error,
+            Some(crate::durability::DurabilityError::NonDeterminism(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_non_terminal_activity_failure_as_history_shape_error()
     -> Result<(), Box<dyn std::error::Error>> {
         let retryable_error = ActivityError {

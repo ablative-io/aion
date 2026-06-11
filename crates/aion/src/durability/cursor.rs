@@ -105,9 +105,18 @@ pub enum ChildTerminalResolveResult {
 }
 
 /// Ordered cursor over a workflow's recorded history.
+///
+/// Commands consume only their own events. Asynchronous arrivals (signals,
+/// child terminals, a parallel activity's events) can be recorded anywhere
+/// inside another command's event range, so consumption is tracked per
+/// event: a resolved command marks exactly its own events consumed and
+/// skipped interior events stay matchable for their own commands.
+/// `position` is the low-water mark — the first index that is neither
+/// consumed nor already skipped past — and scans resume from it.
 #[derive(Clone, Debug)]
 pub struct HistoryCursor {
     events: Vec<Event>,
+    consumed: Vec<bool>,
     position: usize,
 }
 
@@ -128,8 +137,10 @@ impl HistoryCursor {
             }
         }
 
+        let consumed = vec![false; events.len()];
         Ok(Self {
             events,
+            consumed,
             position: 0,
         })
     }
@@ -259,47 +270,37 @@ impl HistoryCursor {
         }
     }
 
+    /// `resolve_next` only dispatches here once the found event's family is
+    /// `Child` and its derived correlation key equals the expected key.
+    /// Child terminal events carry no correlation key (`key_for_event` keys
+    /// only `ChildWorkflowStarted`), so the position is provably at a
+    /// `ChildWorkflowStarted`; the fallback mismatch arm guards the shape
+    /// rather than encoding unreachable terminal handling.
     fn resolve_child(&mut self, expected_key: CorrelationKey) -> CursorResolveResult {
-        let CorrelationKey::Child(_) = expected_key else {
-            return self.mismatch_at_current(expected_key);
-        };
-
         match self.events.get(self.position) {
             Some(Event::ChildWorkflowStarted { .. }) => self.consume_one(),
-            Some(
-                Event::ChildWorkflowCompleted {
-                    child_workflow_id, ..
-                }
-                | Event::ChildWorkflowFailed {
-                    child_workflow_id, ..
-                },
-            ) if self.child_was_started(child_workflow_id) => self.consume_one(),
-            Some(Event::ChildWorkflowCompleted { .. } | Event::ChildWorkflowFailed { .. }) => {
-                CursorResolveResult::Exhausted
-            }
             _ => self.mismatch_at_current(expected_key),
         }
     }
 
-    fn child_was_started(&self, child_workflow_id: &WorkflowId) -> bool {
-        self.events[..self.position].iter().any(|event| {
-            matches!(
-                event,
-                Event::ChildWorkflowStarted {
-                    child_workflow_id: started_child,
-                    ..
-                } if started_child == child_workflow_id
-            )
-        })
-    }
-
+    /// Consumes the matched activity's `Scheduled -> terminal` events, keyed
+    /// by activity id.
+    ///
+    /// Asynchronous arrivals (signals, child terminals, a parallel
+    /// activity's events) can be recorded between this activity's
+    /// `Scheduled` anchor and its terminal. They belong to other commands:
+    /// the walk skips them in place — neither consuming them nor failing
+    /// replay — leaving them matchable for their own commands. Determinism
+    /// is enforced at the `Scheduled` anchor by `resolve_next`'s family/key
+    /// equality check; a foreign interior event is an interleaving artifact,
+    /// not a command-stream divergence.
     fn resolve_activity(&mut self, expected_key: CorrelationKey) -> CursorResolveResult {
         let Some(Event::ActivityScheduled { activity_id, .. }) = self.events.get(self.position)
         else {
             return self.mismatch_at_current(expected_key);
         };
         let activity_id = activity_id.clone();
-        let start = self.position;
+        let mut matched = vec![self.position];
         let mut index = self.position + 1;
 
         while let Some(event) = self.events.get(index) {
@@ -308,16 +309,15 @@ impl HistoryCursor {
                     activity_id: event_activity_id,
                     ..
                 } if event_activity_id == &activity_id => {
-                    index += 1;
+                    matched.push(index);
                 }
                 Event::ActivityFailed {
                     activity_id: event_activity_id,
                     ..
                 } if event_activity_id == &activity_id => {
-                    if self.has_later_activity_attempt_or_outcome(index + 1, &activity_id) {
-                        index += 1;
-                    } else {
-                        return self.consume_range(start, index + 1);
+                    matched.push(index);
+                    if !self.has_later_activity_attempt_or_outcome(index + 1, &activity_id) {
+                        return self.consume_indices(matched);
                     }
                 }
                 Event::ActivityCompleted {
@@ -328,10 +328,12 @@ impl HistoryCursor {
                     activity_id: event_activity_id,
                     ..
                 } if event_activity_id == &activity_id => {
-                    return self.consume_range(start, index + 1);
+                    matched.push(index);
+                    return self.consume_indices(matched);
                 }
-                _ => return self.mismatch_at_index(index, expected_key),
+                _ => {}
             }
+            index += 1;
         }
 
         CursorResolveResult::Exhausted
@@ -348,43 +350,64 @@ impl HistoryCursor {
             .get(next)
             .is_some_and(|event| self.is_outcome_for_start_key(event, expected_key))
         {
-            self.consume_range(start, next + 1)
+            CursorResolveResult::Matched(self.take_range(start, next + 1))
         } else {
             self.consume_one()
         }
     }
 
     fn consume_one(&mut self) -> CursorResolveResult {
-        self.consume_range(self.position, self.position + 1)
-    }
-
-    fn consume_range(&mut self, start: usize, end: usize) -> CursorResolveResult {
-        CursorResolveResult::Matched(self.take_range(start, end))
+        CursorResolveResult::Matched(self.take_range(self.position, self.position + 1))
     }
 
     fn take_range(&mut self, start: usize, end: usize) -> Vec<Event> {
         let consumed = self.events[start..end].to_vec();
-        self.position = end;
+        for slot in &mut self.consumed[start..end] {
+            *slot = true;
+        }
+        self.advance_past_consumed();
         consumed
     }
 
+    /// Marks exactly `indices` consumed and returns their events in order.
+    ///
+    /// Interior indices left unmarked stay matchable for their own commands;
+    /// the position low-water mark advances only past the consumed prefix.
+    fn consume_indices(&mut self, indices: Vec<usize>) -> CursorResolveResult {
+        let mut events = Vec::with_capacity(indices.len());
+        for index in indices {
+            if let (Some(event), Some(slot)) =
+                (self.events.get(index), self.consumed.get_mut(index))
+            {
+                *slot = true;
+                events.push(event.clone());
+            }
+        }
+        self.advance_past_consumed();
+        CursorResolveResult::Matched(events)
+    }
+
+    fn advance_past_consumed(&mut self) {
+        while self.consumed.get(self.position).copied().unwrap_or(false) {
+            self.position += 1;
+        }
+    }
+
     fn next_matchable_index(&self) -> Option<usize> {
-        self.events
+        let events = self.events.get(self.position..)?;
+        let consumed = self.consumed.get(self.position..)?;
+        events
             .iter()
-            .enumerate()
-            .skip(self.position)
-            .find_map(|(index, event)| family_for_event(event).map(|_| index))
+            .zip(consumed)
+            .position(|(event, consumed)| !consumed && family_for_event(event).is_some())
+            .map(|offset| self.position + offset)
     }
 
     fn mismatch_at_current(&self, expected_key: CorrelationKey) -> CursorResolveResult {
-        self.mismatch_at_index(self.position, expected_key)
-    }
-
-    fn mismatch_at_index(&self, index: usize, expected_key: CorrelationKey) -> CursorResolveResult {
-        match self.events.get(index) {
+        match self.events.get(self.position) {
             Some(event) => CursorResolveResult::Mismatch {
                 expected_key,
-                found: self.descriptor_at(index, event),
+                found: self.descriptor_at(self.position, event),
             },
             None => CursorResolveResult::Exhausted,
         }
@@ -825,6 +848,190 @@ mod tests {
                 return Err("strict replay must not skip an unconsumed recorded command".into());
             }
         }
+        Ok(())
+    }
+
+    fn child_failed(seq: u64, child: u128) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ChildWorkflowFailed {
+            envelope: envelope(seq)?,
+            child_workflow_id: child_id(child),
+            error: aion_core::WorkflowError {
+                message: "child failed".to_owned(),
+                details: None,
+            },
+        })
+    }
+
+    #[test]
+    fn resolve_activity_skips_interleaved_signal_and_leaves_it_matchable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            signal_received(2, "mid")?,
+            completed(3, 0)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 2);
+                assert!(matches!(
+                    events.first(),
+                    Some(Event::ActivityScheduled { .. })
+                ));
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityCompleted { activity_id, .. })
+                        if activity_id.sequence_position() == 0
+                ));
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err(
+                    "an async signal arrival inside the activity range must not fail replay".into(),
+                );
+            }
+        }
+
+        let signal = cursor.resolve_next(
+            RecordedEventFamily::Signal,
+            CorrelationKey::Signal {
+                name: "mid".to_owned(),
+                index: 0,
+            },
+        );
+        match signal {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 1);
+                assert!(matches!(events.first(), Some(Event::SignalReceived { .. })));
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("the skipped signal must stay matchable for its own command".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_activity_resolves_interleaved_parallel_activity_ranges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            scheduled(2, 1)?,
+            completed(3, 1)?,
+            completed(4, 0)?,
+        ])?;
+
+        let first = cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+        match first {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 2);
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityCompleted { activity_id, .. })
+                        if activity_id.sequence_position() == 0
+                ));
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("a parallel activity's events inside the range must be skipped".into());
+            }
+        }
+
+        let second =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(1));
+        match second {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 2);
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityCompleted { activity_id, .. })
+                        if activity_id.sequence_position() == 1
+                ));
+                assert_eq!(cursor.current_sequence(), None);
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("the interleaved activity must remain resolvable afterwards".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_activity_skips_interleaved_child_terminal() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut cursor = HistoryCursor::new(vec![
+            child_started(1, 7)?,
+            scheduled(2, 0)?,
+            child_completed(3, 7)?,
+            child_failed(4, 9)?,
+            completed(5, 0)?,
+        ])?;
+
+        cursor.fast_forward_to_key(&CorrelationKey::Activity(0));
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(events.len(), 2);
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityCompleted { activity_id, .. })
+                        if activity_id.sequence_position() == 0
+                ));
+            }
+            CursorResolveResult::Exhausted | CursorResolveResult::Mismatch { .. } => {
+                return Err("child terminals inside the activity range must be skipped".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_activity_still_mismatches_on_wrong_anchor_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![scheduled(1, 1)?, completed(2, 1)?])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Mismatch {
+                expected_key,
+                found,
+            } => {
+                assert_eq!(expected_key, CorrelationKey::Activity(0));
+                assert_eq!(found.key, Some(CorrelationKey::Activity(1)));
+            }
+            CursorResolveResult::Matched(_) | CursorResolveResult::Exhausted => {
+                return Err("a wrong key at the Scheduled anchor must stay a mismatch".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fast_forward_and_resolution_smoke_over_large_history()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let count: u64 = 5_000;
+        let mut events = Vec::with_capacity(usize::try_from(count * 2)?);
+        for ordinal in 0..count {
+            events.push(scheduled(ordinal * 2 + 1, ordinal)?);
+            events.push(completed(ordinal * 2 + 2, ordinal)?);
+        }
+        let mut cursor = HistoryCursor::new(events)?;
+
+        for ordinal in 0..count {
+            let key = CorrelationKey::Activity(ordinal);
+            cursor.fast_forward_to_key(&key);
+            let result = cursor.resolve_next(RecordedEventFamily::Activity, key);
+            assert!(
+                matches!(result, CursorResolveResult::Matched(ref events) if events.len() == 2),
+                "ordinal {ordinal} failed to resolve in the large-history smoke"
+            );
+        }
+        assert_eq!(cursor.current_sequence(), None);
         Ok(())
     }
 
