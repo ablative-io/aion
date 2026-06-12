@@ -21,7 +21,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn run_cli(args: &[&str], clear_path: bool) -> Result<Output, Box<dyn std::error::Error>> {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_aion-cli"));
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_aion"));
     command.args(["--endpoint", UNROUTABLE_ENDPOINT]).args(args);
     if clear_path {
         command.env("PATH", "");

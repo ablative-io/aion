@@ -18,10 +18,10 @@ readonly MODE_LIVE="live"
 #   aion-nif: aion-core
 #   aion: aion-core, aion-package, aion-store
 #   aion-proto: aion-core, aion-store
-#   aion-server: aion, aion-core, aion-proto, aion-store, aion-store-libsql
+#   aion-server: aion, aion-core, aion-package, aion-proto, aion-store, aion-store-libsql
 #   aion-worker: aion-core, aion-proto
 #   aion-client: aion, aion-core, aion-proto, aion-store
-#   aion-cli: aion-client, aion-core
+#   aion-cli: aion-client, aion-core, aion-package, aion-proto, aion-server
 readonly PUBLISH_ORDER=(
   aion-core
   aion-store

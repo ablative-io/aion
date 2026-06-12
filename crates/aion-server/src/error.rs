@@ -29,6 +29,24 @@ pub enum ServerError {
         message: String,
     },
 
+    /// A running transport task aborted: it panicked or was cancelled.
+    #[error("{transport} transport task failed: {message}")]
+    Transport {
+        /// Transport name.
+        transport: &'static str,
+        /// Redacted, operator-facing failure message.
+        message: String,
+    },
+
+    /// A termination-signal listener could not be installed or failed.
+    #[error("{listener} listener failed: {message}")]
+    SignalListener {
+        /// Listener name (`SIGTERM`, `SIGINT`, or the portable fallback).
+        listener: &'static str,
+        /// Redacted, operator-facing failure message.
+        message: String,
+    },
+
     /// Namespace validation or authorization failed.
     #[error("namespace error: {message}")]
     Namespace {
@@ -113,9 +131,11 @@ impl ServerError {
     #[must_use]
     pub fn to_wire_error(&self) -> WireError {
         match self {
-            Self::Config { .. } | Self::TransportBind { .. } | Self::LockPoisoned { .. } => {
-                WireError::backend("server backend failure")
-            }
+            Self::Config { .. }
+            | Self::TransportBind { .. }
+            | Self::Transport { .. }
+            | Self::SignalListener { .. }
+            | Self::LockPoisoned { .. } => WireError::backend("server backend failure"),
             Self::WorkerDispatch { .. } => WireError::backend("worker dispatch failed"),
             Self::Namespace { message } => WireError::namespace_denied(message.clone()),
             Self::EngineCall { source } => wire_from_engine(source),
@@ -205,6 +225,16 @@ impl ServerError {
             },
             Self::TransportBind { message, .. } => ErrorTraceFields {
                 error_type: Cow::Borrowed("TransportBind"),
+                store_error_type: None,
+                reason: message,
+            },
+            Self::Transport { message, .. } => ErrorTraceFields {
+                error_type: Cow::Borrowed("Transport"),
+                store_error_type: None,
+                reason: message,
+            },
+            Self::SignalListener { message, .. } => ErrorTraceFields {
+                error_type: Cow::Borrowed("SignalListener"),
                 store_error_type: None,
                 reason: message,
             },

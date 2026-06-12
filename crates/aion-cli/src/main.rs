@@ -1,4 +1,5 @@
-//! Command-line workflow operations for Aion.
+//! The `aion` command line: workflow operations over gRPC and the embedded
+//! Aion workflow server (`aion server`).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,15 +24,20 @@ mod output;
 mod package;
 mod payload;
 mod render;
+mod server;
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:50051";
 const DEFAULT_NAMESPACE: &str = "default";
 const DEFAULT_SUBJECT: &str = "cli-user";
 const QUERY_DEADLINE: Duration = Duration::from_secs(5);
 
-/// Aion workflow command-line client.
+/// Aion workflow command line.
 #[derive(Debug, Parser)]
-#[command(name = "aion-cli", version, about = "Operate Aion workflows over gRPC")]
+#[command(
+    name = "aion",
+    version,
+    about = "Operate Aion workflows over gRPC and run the Aion workflow server"
+)]
 struct Cli {
     /// gRPC server endpoint. A missing scheme is interpreted as http://.
     #[arg(long, global = true, default_value = DEFAULT_ENDPOINT)]
@@ -56,6 +62,19 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the Aion workflow server (HTTP, gRPC, WebSocket, remote workers).
+    ///
+    /// Loads configuration from `--config`, the environment, and command-line
+    /// overrides, serves until a termination signal arrives, then drains
+    /// in-flight activities gracefully before exiting.
+    Server(server::ServerArgs),
+    /// Operate a running Aion server or package workflows locally.
+    #[command(flatten)]
+    Client(ClientCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientCommand {
     /// Package an already-built Gleam workflow project into `.aion` archives.
     ///
     /// Runs entirely locally: reads `workflow.toml` in the project root and
@@ -145,7 +164,7 @@ enum RemoteCommand {
         /// Workflow identifier.
         workflow_id: String,
         /// Cancellation reason.
-        #[arg(long, default_value = "cancelled by aion-cli")]
+        #[arg(long, default_value = "cancelled by aion")]
         reason: String,
         /// Specific run identifier. Defaults to the latest run when omitted.
         #[arg(long)]
@@ -173,41 +192,48 @@ enum RemoteCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = run(&cli)
-        .await
-        .and_then(|value| print_json(&value, cli.pretty));
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        // The single rendering contract for every subcommand: the taxonomy
-        // class, server detail, error type, and hint go to stderr; the
-        // process exits 1.
-        Err(error) => {
-            eprintln!("{}", render::render_error(&error));
-            ExitCode::FAILURE
+    match cli.command {
+        // The server owns its own reporting contract: tracing-logged errors
+        // and the operations exit codes (2 = config, 130 = forced).
+        Command::Server(ref args) => aion_server::run(args.clone().into()).await,
+        Command::Client(ref command) => {
+            let result = run(&cli, command)
+                .await
+                .and_then(|value| print_json(&value, cli.pretty));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                // The single rendering contract for every client subcommand:
+                // the taxonomy class, server detail, error type, and hint go
+                // to stderr; the process exits 1.
+                Err(error) => {
+                    eprintln!("{}", render::render_error(&error));
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }
 
-/// Dispatches the parsed command, connecting to the server only for remote
-/// commands. `package` is local-only and never constructs a client; the
-/// deploy subcommands drive the operator `DeployService` directly and never
-/// touch the caller SDK.
-async fn run(cli: &Cli) -> Result<Value> {
-    match &cli.command {
-        Command::Package { path, out, build } => package::run(path, out.as_deref(), *build),
-        Command::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
-        Command::Versions { workflow_type } => {
+/// Dispatches the parsed client command, connecting to the server only for
+/// remote commands. `package` is local-only and never constructs a client;
+/// the deploy subcommands drive the operator `DeployService` directly and
+/// never touch the caller SDK.
+async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
+    match command {
+        ClientCommand::Package { path, out, build } => package::run(path, out.as_deref(), *build),
+        ClientCommand::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
+        ClientCommand::Versions { workflow_type } => {
             deploy::versions(&deploy_target(cli), workflow_type.as_deref()).await
         }
-        Command::Route {
+        ClientCommand::Route {
             workflow_type,
             content_hash,
         } => deploy::route(&deploy_target(cli), workflow_type, content_hash).await,
-        Command::Unload {
+        ClientCommand::Unload {
             workflow_type,
             content_hash,
         } => deploy::unload(&deploy_target(cli), workflow_type, content_hash).await,
-        Command::Remote(command) => {
+        ClientCommand::Remote(command) => {
             let client = build_client(cli).await?;
             execute(&client, command).await
         }
@@ -375,24 +401,25 @@ fn normalize_endpoint(endpoint: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
+    use aion_server::config::CliOverrides;
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, RemoteCommand, normalize_endpoint};
+    use super::{Cli, ClientCommand, Command, RemoteCommand, normalize_endpoint};
 
     const WORKFLOW_ID: &str = "00000000-0000-0000-0000-000000000001";
     const RUN_ID: &str = "00000000-0000-0000-0000-000000000002";
 
     #[test]
     fn describe_accepts_optional_run_id() -> anyhow::Result<()> {
-        let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--run-id", RUN_ID])?;
+        let cli = Cli::try_parse_from(["aion", "describe", WORKFLOW_ID, "--run-id", RUN_ID])?;
 
-        let Command::Remote(RemoteCommand::Describe {
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Describe {
             workflow_id,
             run_id,
             raw,
-        }) = cli.command
+        })) = cli.command
         else {
             anyhow::bail!("expected describe command");
         };
@@ -404,9 +431,11 @@ mod tests {
 
     #[test]
     fn describe_accepts_raw_payload_flag() -> anyhow::Result<()> {
-        let cli = Cli::try_parse_from(["aion-cli", "describe", WORKFLOW_ID, "--raw"])?;
+        let cli = Cli::try_parse_from(["aion", "describe", WORKFLOW_ID, "--raw"])?;
 
-        let Command::Remote(RemoteCommand::Describe { raw, .. }) = cli.command else {
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Describe { raw, .. })) =
+            cli.command
+        else {
             anyhow::bail!("expected describe command");
         };
         assert!(raw);
@@ -415,9 +444,9 @@ mod tests {
 
     #[test]
     fn package_defaults_to_current_directory_without_build_or_out() -> anyhow::Result<()> {
-        let cli = Cli::try_parse_from(["aion-cli", "package"])?;
+        let cli = Cli::try_parse_from(["aion", "package"])?;
 
-        let Command::Package { path, out, build } = cli.command else {
+        let Command::Client(ClientCommand::Package { path, out, build }) = cli.command else {
             anyhow::bail!("expected package command");
         };
         assert_eq!(path, Path::new("."));
@@ -429,7 +458,7 @@ mod tests {
     #[test]
     fn package_accepts_path_out_and_build() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from([
-            "aion-cli",
+            "aion",
             "package",
             "examples/hello-world",
             "--out",
@@ -437,7 +466,7 @@ mod tests {
             "--build",
         ])?;
 
-        let Command::Package { path, out, build } = cli.command else {
+        let Command::Client(ClientCommand::Package { path, out, build }) = cli.command else {
             anyhow::bail!("expected package command");
         };
         assert_eq!(path, Path::new("examples/hello-world"));
@@ -476,27 +505,30 @@ mod tests {
     #[test]
     fn workflow_operations_allow_omitted_run_id() -> anyhow::Result<()> {
         let commands = [
-            vec!["aion-cli", "describe", WORKFLOW_ID],
-            vec!["aion-cli", "signal", WORKFLOW_ID, "poke", "--payload", "{}"],
-            vec!["aion-cli", "cancel", WORKFLOW_ID],
-            vec!["aion-cli", "query", WORKFLOW_ID, "state"],
+            vec!["aion", "describe", WORKFLOW_ID],
+            vec!["aion", "signal", WORKFLOW_ID, "poke", "--payload", "{}"],
+            vec!["aion", "cancel", WORKFLOW_ID],
+            vec!["aion", "query", WORKFLOW_ID, "state"],
         ];
 
         for args in commands {
             let cli = Cli::try_parse_from(args)?;
             match cli.command {
-                Command::Remote(
+                Command::Client(ClientCommand::Remote(
                     RemoteCommand::Describe { run_id, .. }
                     | RemoteCommand::Signal { run_id, .. }
                     | RemoteCommand::Cancel { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
-                ) => assert!(run_id.is_none()),
-                Command::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
-                | Command::Package { .. }
-                | Command::Deploy { .. }
-                | Command::Versions { .. }
-                | Command::Route { .. }
-                | Command::Unload { .. } => {
+                )) => assert!(run_id.is_none()),
+                Command::Server(_)
+                | Command::Client(
+                    ClientCommand::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
+                    | ClientCommand::Package { .. }
+                    | ClientCommand::Deploy { .. }
+                    | ClientCommand::Versions { .. }
+                    | ClientCommand::Route { .. }
+                    | ClientCommand::Unload { .. },
+                ) => {
                     anyhow::bail!("expected workflow operation command")
                 }
             }
@@ -508,7 +540,7 @@ mod tests {
     fn signal_cancel_and_query_accept_optional_run_id() -> anyhow::Result<()> {
         let commands = [
             vec![
-                "aion-cli",
+                "aion",
                 "signal",
                 WORKFLOW_ID,
                 "poke",
@@ -517,35 +549,31 @@ mod tests {
                 "--payload",
                 "{}",
             ],
-            vec!["aion-cli", "cancel", WORKFLOW_ID, "--run-id", RUN_ID],
-            vec![
-                "aion-cli",
-                "query",
-                WORKFLOW_ID,
-                "state",
-                "--run-id",
-                RUN_ID,
-            ],
+            vec!["aion", "cancel", WORKFLOW_ID, "--run-id", RUN_ID],
+            vec!["aion", "query", WORKFLOW_ID, "state", "--run-id", RUN_ID],
         ];
 
         for args in commands {
             let cli = Cli::try_parse_from(args)?;
             match cli.command {
-                Command::Remote(
+                Command::Client(ClientCommand::Remote(
                     RemoteCommand::Signal { run_id, .. }
                     | RemoteCommand::Cancel { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
-                ) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
-                Command::Remote(
-                    RemoteCommand::Start { .. }
-                    | RemoteCommand::List { .. }
-                    | RemoteCommand::Describe { .. },
-                )
-                | Command::Package { .. }
-                | Command::Deploy { .. }
-                | Command::Versions { .. }
-                | Command::Route { .. }
-                | Command::Unload { .. } => {
+                )) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
+                Command::Server(_)
+                | Command::Client(
+                    ClientCommand::Remote(
+                        RemoteCommand::Start { .. }
+                        | RemoteCommand::List { .. }
+                        | RemoteCommand::Describe { .. },
+                    )
+                    | ClientCommand::Package { .. }
+                    | ClientCommand::Deploy { .. }
+                    | ClientCommand::Versions { .. }
+                    | ClientCommand::Route { .. }
+                    | ClientCommand::Unload { .. },
+                ) => {
                     anyhow::bail!("expected run-targeted workflow operation command")
                 }
             }
@@ -556,42 +584,42 @@ mod tests {
     #[test]
     fn deploy_subcommands_parse_with_global_token() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from([
-            "aion-cli",
+            "aion",
             "--token",
             "operator-token",
             "deploy",
             "dist/order.aion",
         ])?;
         assert_eq!(cli.token.as_deref(), Some("operator-token"));
-        let Command::Deploy { archive } = cli.command else {
+        let Command::Client(ClientCommand::Deploy { archive }) = cli.command else {
             anyhow::bail!("expected deploy command");
         };
         assert_eq!(archive, Path::new("dist/order.aion"));
 
-        let cli = Cli::try_parse_from(["aion-cli", "versions", "--workflow-type", "order"])?;
+        let cli = Cli::try_parse_from(["aion", "versions", "--workflow-type", "order"])?;
         assert!(cli.token.is_none());
-        let Command::Versions { workflow_type } = cli.command else {
+        let Command::Client(ClientCommand::Versions { workflow_type }) = cli.command else {
             anyhow::bail!("expected versions command");
         };
         assert_eq!(workflow_type.as_deref(), Some("order"));
 
         let hash = "a".repeat(64);
-        let cli = Cli::try_parse_from(["aion-cli", "route", "order", &hash])?;
-        let Command::Route {
+        let cli = Cli::try_parse_from(["aion", "route", "order", &hash])?;
+        let Command::Client(ClientCommand::Route {
             workflow_type,
             content_hash,
-        } = cli.command
+        }) = cli.command
         else {
             anyhow::bail!("expected route command");
         };
         assert_eq!(workflow_type, "order");
         assert_eq!(content_hash, hash);
 
-        let cli = Cli::try_parse_from(["aion-cli", "unload", "order", &hash])?;
-        let Command::Unload {
+        let cli = Cli::try_parse_from(["aion", "unload", "order", &hash])?;
+        let Command::Client(ClientCommand::Unload {
             workflow_type,
             content_hash,
-        } = cli.command
+        }) = cli.command
         else {
             anyhow::bail!("expected unload command");
         };
@@ -609,6 +637,93 @@ mod tests {
         let help = deploy.render_long_help().to_string();
         assert!(help.contains("operator API"));
         assert!(help.contains("deploy"));
+        Ok(())
+    }
+
+    #[test]
+    fn server_subcommand_converts_all_overrides() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion",
+            "server",
+            "--config",
+            "dev-config.toml",
+            "--listen-address",
+            "127.0.0.1:18080",
+            "--store-url",
+            "aion.db",
+            "--scheduler-threads",
+            "2",
+            "--drain-timeout",
+            "45",
+        ])?;
+        let Command::Server(args) = cli.command else {
+            anyhow::bail!("expected server command");
+        };
+        let overrides = CliOverrides::from(args);
+
+        assert_eq!(
+            overrides.config_path,
+            Some(PathBuf::from("dev-config.toml"))
+        );
+        assert_eq!(
+            overrides.listen_address.map(|address| address.port()),
+            Some(18080)
+        );
+        assert_eq!(overrides.store_url.as_deref(), Some("aion.db"));
+        assert_eq!(overrides.scheduler_threads, Some(2));
+        assert_eq!(overrides.drain_timeout_seconds, Some(45));
+        Ok(())
+    }
+
+    #[test]
+    fn server_workflow_package_flag_is_repeatable() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion",
+            "server",
+            "--workflow-package",
+            "examples/hello-world/hello-world.aion",
+            "--workflow-package",
+            "local.aion",
+        ])?;
+        let Command::Server(args) = cli.command else {
+            anyhow::bail!("expected server command");
+        };
+        let overrides = CliOverrides::from(args);
+
+        assert_eq!(
+            overrides.workflow_packages,
+            vec![
+                PathBuf::from("examples/hello-world/hello-world.aion"),
+                PathBuf::from("local.aion"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn server_help_documents_the_server_surface() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(server) = command.find_subcommand_mut("server") else {
+            anyhow::bail!("server subcommand should be registered");
+        };
+        let help = server.render_long_help().to_string();
+
+        assert!(help.contains("Run the Aion workflow server"));
+        assert!(help.contains("--config"));
+        assert!(help.contains("--workflow-package"));
+        Ok(())
+    }
+
+    #[test]
+    fn top_level_help_lists_the_server_subcommand() -> anyhow::Result<()> {
+        let error = Cli::try_parse_from(["aion", "--help"])
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("help should exit early"))?;
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(help.contains("server"));
+        assert!(help.contains("Run the Aion workflow server"));
         Ok(())
     }
 

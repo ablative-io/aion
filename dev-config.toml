@@ -12,7 +12,7 @@
 # defaults and must then come from the environment:
 #   AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024 \
 #   AION_RUNTIME_QUERY_TIMEOUT_MS=10000 \
-#   cargo run -p aion-server -- \
+#   cargo run -p aion-cli -- server \
 #     --workflow-package examples/hello-world/hello-world.aion
 
 workflow_packages = []

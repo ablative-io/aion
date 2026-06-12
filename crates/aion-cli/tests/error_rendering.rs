@@ -24,7 +24,7 @@ const WORKFLOW_ID: &str = "00000000-0000-0000-0000-000000000001";
 const UNROUTABLE_ENDPOINT: &str = "aion-cli-error-test.invalid:1";
 
 fn run_cli(endpoint: &str, args: &[&str]) -> std::io::Result<Output> {
-    std::process::Command::new(env!("CARGO_BIN_EXE_aion-cli"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_aion"))
         .args(["--endpoint", endpoint])
         .args(args)
         .output()

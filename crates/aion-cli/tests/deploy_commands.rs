@@ -167,7 +167,7 @@ fn run_cli(
     env_token: Option<&str>,
     args: &[&str],
 ) -> Result<CliRun, TestError> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aion-cli"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aion"));
     command
         .args(["--endpoint", &endpoint.to_string()])
         .args(args)
