@@ -140,3 +140,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development workflow.
 ## License
 
 MIT OR Apache-2.0.
+
+Created by [Tom Whiting](https://github.com/tomWhiting). If you build on
+Aion or write about it, a link back here is appreciated.
