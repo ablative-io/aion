@@ -95,12 +95,16 @@ pub fn invocations(shims: Shims, executable: String, prefix: String) -> Int {
 }
 
 /// Install the `meridian` shim: review request acks only — provisioning and
-/// checks belong to `yg`, and landing is `yg branch merge` now.
+/// checks belong to `yg`, and landing is `yg branch merge` now. The canned
+/// response is the REAL `review request` envelope (confirmed live): branch,
+/// per-reviewer notification outcomes, no request id.
 pub fn write_meridian(shims: Shims) -> Nil {
   write_shim(shims, "meridian", [
     "case \"$1\" in",
     "  review)",
-    "    printf '%s' '{\"request_id\":\"rev-1\"}'",
+    "    printf '%s' '{\"branch\":\""
+      <> landed_branch
+      <> "\",\"reviewers\":[{\"name\":\"sample-reviewer\",\"dm_status\":\"sent\"}],\"pending_reviewers_persisted\":true}'",
     "    ;;",
     "  *)",
     "    echo \"unknown meridian subcommand: $1\" >&2",

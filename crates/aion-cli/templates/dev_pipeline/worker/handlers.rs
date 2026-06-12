@@ -377,7 +377,7 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
 /// # Errors
 ///
 /// Terminal [`ActivityFailure`] when `meridian` cannot run, exits non-zero,
-/// or answers without a parseable `request_id`.
+/// or answers without a parseable response envelope.
 pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
     // CONFIRMED against the real CLI (live runs, 2026-06-13):
     // `meridian review request <BRANCH> --reviewer <NAME>... --as Meridian`.
@@ -411,9 +411,25 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
         &workspace.path,
         "meridian review request",
     )?;
-    let acked: RequestIdField = require_json(&command_run, "meridian review request")?;
+    // CONFIRMED against the real CLI (live run, 2026-06-13): the response
+    // envelope is `{"branch": .., "reviewers": [{"name", "dm_status", ..}],
+    // ..}` — there is no request id. The branch IS the request's identity
+    // (meridian persists `pending_reviewers` against the branch lifecycle),
+    // so the recorded ack carries it. Every requested reviewer must have
+    // been notified (`dm_status: "sent"`); anything else fails loudly.
+    let response: ReviewRequestResponse = require_json(&command_run, "meridian review request")?;
+    if let Some(unsent) = response
+        .reviewers
+        .iter()
+        .find(|reviewer| reviewer.dm_status != "sent")
+    {
+        return Err(ActivityFailure::terminal(format!(
+            "meridian review request did not notify reviewer {}: dm_status was {:?}",
+            unsent.name, unsent.dm_status
+        )));
+    }
     Ok(ReviewAck {
-        request_id: acked.request_id,
+        request_id: response.branch,
     })
 }
 
@@ -445,11 +461,19 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
 
 // --- helpers ----------------------------------------------------------------
 
-/// `{"request_id": ..}` field of the review-request output (extra fields
-/// tolerated, like the Gleam field decoder).
+/// The `meridian review request` response envelope — only the fields the
+/// handler consumes (extra fields tolerated, like the Gleam field decoder).
 #[derive(Deserialize)]
-struct RequestIdField {
-    request_id: String,
+struct ReviewRequestResponse {
+    branch: String,
+    reviewers: Vec<ReviewerNotification>,
+}
+
+/// One reviewer's notification outcome inside [`ReviewRequestResponse`].
+#[derive(Deserialize)]
+struct ReviewerNotification {
+    name: String,
+    dm_status: String,
 }
 
 /// Require a command to run AND exit zero; anything else is a terminal

@@ -360,11 +360,35 @@ pub fn request_review(
     ),
     "meridian review request",
   )
-  use request_id <- require_json(command_run, "meridian review request", {
-    use request_id <- decode.field("request_id", decode.string)
-    decode.success(request_id)
+  // CONFIRMED against the real CLI (live run, 2026-06-13): the response
+  // envelope is `{"branch": .., "reviewers": [{"name", "dm_status", ..}]}`
+  // — there is no request id. The branch IS the request's identity
+  // (meridian persists `pending_reviewers` against the branch lifecycle),
+  // so the recorded ack carries it. Every requested reviewer must have
+  // been notified (`dm_status: "sent"`); anything else fails loudly.
+  use response <- require_json(command_run, "meridian review request", {
+    use branch <- decode.field("branch", decode.string)
+    use reviewers <- decode.field(
+      "reviewers",
+      decode.list({
+        use name <- decode.field("name", decode.string)
+        use dm_status <- decode.field("dm_status", decode.string)
+        decode.success(#(name, dm_status))
+      }),
+    )
+    decode.success(#(branch, reviewers))
   })
-  Ok(ReviewAck(request_id: request_id))
+  let #(branch, reviewers) = response
+  case list.find(reviewers, fn(reviewer) { reviewer.1 != "sent" }) {
+    Ok(#(name, dm_status)) ->
+      Error(error.terminal(
+        "meridian review request did not notify reviewer "
+        <> name
+        <> ": dm_status was "
+        <> dm_status,
+      ))
+    Error(Nil) -> Ok(ReviewAck(request_id: branch))
+  }
 }
 
 /// Land the approved work: `yg branch merge` into the tree parent. Never a

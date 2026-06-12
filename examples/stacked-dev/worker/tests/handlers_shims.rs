@@ -543,7 +543,7 @@ fn full_checks_affected_closure_scope_is_a_terminal_seam() -> TestResult {
 /// landing is `yg branch merge` now.
 const MERIDIAN_SHIM: &str = r#"case "$1" in
   review)
-    printf '%s' '{"request_id":"rev-1"}'
+    printf '%s' '{"branch":"stacked-dev-brief-7","reviewers":[{"name":"sample-reviewer","dm_status":"sent"}],"pending_reviewers_persisted":true}'
     ;;
   *)
     echo "unknown meridian subcommand: $1" >&2
@@ -575,7 +575,7 @@ fn request_review_parses_the_request_id() -> TestResult {
     )
     .map_err(|failure| failure.message().to_owned())?;
 
-    assert_eq!(acked.request_id, "rev-1");
+    assert_eq!(acked.request_id, "stacked-dev-brief-7");
     let log = shims.log("meridian");
     assert!(log.contains(&format!(
         "review request {} --reviewer sample-reviewer --as Meridian",

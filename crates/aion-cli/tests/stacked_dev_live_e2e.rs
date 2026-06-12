@@ -288,7 +288,7 @@ esac"#,
         "meridian",
         r#"case "$1" in
   review)
-    printf '%s' '{"request_id":"rev-1"}'
+    printf '%s' '{"branch":"stacked-dev-brief-7","reviewers":[{"name":"sample-reviewer","dm_status":"sent"}],"pending_reviewers_persisted":true}'
     ;;
   *)
     echo "unknown meridian subcommand: $1" >&2
@@ -454,7 +454,8 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
 }
 
 /// Poll the `stacked_dev_status` query until the run parks in the review
-/// wait, then poll `describe` until the review request's ack (`rev-1`) is
+/// wait, then poll `describe` until the review request's ack (the
+/// `request_id` key appears only in that payload) is
 /// durably recorded — the workflow is at or past the signal receive.
 fn wait_for_review_phase(
     project: &Path,
@@ -501,7 +502,7 @@ fn wait_for_review_phase(
         worker.require_alive()?;
         let output = run_cli(project, &["--endpoint", endpoint, "describe", workflow_id])?;
         let described = success_json(&output)?;
-        if described.to_string().contains("rev-1") {
+        if described.to_string().contains("request_id") {
             return Ok(());
         }
         if Instant::now() > deadline {
