@@ -240,7 +240,7 @@ fn write_shim(dir: &Path, name: &str, body: &str) -> Result<(), TestError> {
 
 /// Install the happy-path shim set: yg provisions/passes, norn answers the
 /// structured `DevResult` for dev and resume, cargo warm-builds clean, and
-/// meridian acks the review then submits and lands.
+/// meridian acks the review; landing is `yg branch merge`.
 fn write_shims(dir: &Path) -> Result<(), TestError> {
     write_shim(
         dir,

@@ -131,10 +131,13 @@ pub fn full_pipeline_happy_path_approves_first_round_test() {
   // exactly once, after review approved.
   shims.invocations(shim_set, "yg", "branch merge " <> shims.landed_branch)
   |> should.equal(1)
-  // The review request carried the reviewer flags and the branch.
+  // The review request led with the branch positional (the greedy
+  // `--reviewer` flag would otherwise swallow it) and signed as Meridian.
   shims.log(shim_set, "meridian")
   |> string.contains(
-    "review request --reviewer sample-reviewer " <> shims.landed_branch,
+    "review request "
+    <> shims.landed_branch
+    <> " --reviewer sample-reviewer --as Meridian",
   )
   |> should.be_true
 

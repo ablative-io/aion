@@ -578,7 +578,7 @@ fn request_review_parses_the_request_id() -> TestResult {
     assert_eq!(acked.request_id, "rev-1");
     let log = shims.log("meridian");
     assert!(log.contains(&format!(
-        "review request --reviewer sample-reviewer {}",
+        "review request {} --reviewer sample-reviewer --as Meridian",
         workspace.branch
     )));
     Ok(())
