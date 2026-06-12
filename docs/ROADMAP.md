@@ -163,6 +163,20 @@ Riding in main, unpublished:
   worker heartbeats: `heartbeat(details)` updating queryable live state
   without appending history, which also enables heartbeat timeouts for
   detecting hung activities. CONFIRMED WANTED (Tom, 2026-06-13).
+- **Per-activity timeouts declared by the workflow author.** The engine
+  imposes no activity timeout of its own (the hardcoded 30s dispatch
+  deadline was removed 2026-06-13; agent activities legitimately run for
+  over an hour) — a running activity is bounded only by the workflow's
+  `timeout_seconds` and worker liveness (stream teardown fails in-flight
+  work as retryable lost-worker errors). When authors need a per-activity
+  bound, the natural seam already exists: `ActivityDispatcher::dispatch`
+  carries a per-activity `config` JSON from workflow code all the way to
+  the server's `WorkerActivityDispatcher` (currently unused there), so an
+  author-declared timeout can ride it to the dispatch wait without any
+  wire change. Pairs with the heartbeat-timeout item above for
+  hung-but-connected workers (`HeartbeatTracker::fail_expired_workers`
+  exists but is deliberately not driven by any loop — driving it today
+  would re-cap non-heartbeating long activities at the heartbeat window).
 - **Worker task queues / routing / affinity.** CONFIRMED WANTED (Tom,
   2026-06-13). Today activities dispatch by name to whichever connected
   worker serves that name — fine for one worker, insufficient for fleets:

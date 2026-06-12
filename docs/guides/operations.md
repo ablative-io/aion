@@ -77,7 +77,9 @@ outbound_buffer_bound = 32              # default; per-connection buffer
 event_broadcast_capacity = 1024         # REQUIRED, no default
 
 [worker]
-heartbeat_window = 30000                # default (ms); silent worker = lost
+heartbeat_window = 30000                # default (ms); heartbeat cadence
+                                        # advertised to workers in RegisterAck
+                                        # (see "Workers and activity duration")
 
 [deploy]
 enabled = false                         # default: surface dark — /deploy/*
@@ -206,6 +208,28 @@ Recovery caveats to plan around:
   idempotent.
 - Boot-time-loaded packages must still be present at their configured paths;
   a recovered run pinned to a version the server cannot load cannot resume.
+
+## Workers and activity duration
+
+**The engine imposes no activity timeout.** An activity runs as long as its
+worker is working on it — agent-style activities legitimately run for over
+an hour. A running activity is bounded only by:
+
+1. **The workflow's own `timeout_seconds`** — the deadline the workflow
+   author declared for the whole run.
+2. **Worker liveness.** A worker whose gRPC stream ends — process death,
+   network disconnect, expired token — is declared lost immediately: every
+   activity in flight on it is failed back to the engine as a *retryable*
+   lost-worker error, and the workflow's retry policy decides re-dispatch.
+   Nothing hangs waiting on a dead worker.
+
+`[worker] heartbeat_window` is the heartbeat cadence the server advertises
+to workers in `RegisterAck` (workers report progress with explicit
+`heartbeat(details)` calls), and the grace period an expired-token stream
+gets to re-authenticate. It does **not** cap activity duration: a connected
+worker that simply has not heartbeated is not failed. Window-based expiry
+for hung-but-connected workers is on the roadmap together with engine-level
+heartbeat timeouts (see `docs/ROADMAP.md`).
 
 ## Shutdown and drain
 

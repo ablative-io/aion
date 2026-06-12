@@ -105,9 +105,9 @@ impl ServerState {
         let dispatcher = WorkerActivityDispatcher::new(
             worker_registry.clone(),
             runtime.default_namespace.clone(),
+            heartbeat_tracker.clone(),
         )
         .with_pending(pending_activities.clone())
-        .with_heartbeat_tracker(heartbeat_tracker.clone())
         .with_drain_state(drain_state.clone())
         .with_workflow_registry(active_registry.clone())
         .with_tokio_handle(tokio::runtime::Handle::current());
@@ -161,13 +161,14 @@ impl ServerState {
     /// Build shared state from explicit parts with a default worker registry.
     #[must_use]
     pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
+        let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
                 worker_registry: ConnectedWorkerRegistry::default(),
                 pending_activities: PendingActivities::default(),
-                heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
+                heartbeat_tracker,
                 drain_state: DrainState::default(),
                 metrics: None,
                 health: None,
@@ -189,13 +190,14 @@ impl ServerState {
         runtime: RuntimeConfig,
         jwks_cache: JwksCache,
     ) -> Self {
+        let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
                 worker_registry: ConnectedWorkerRegistry::default(),
                 pending_activities: PendingActivities::default(),
-                heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
+                heartbeat_tracker,
                 drain_state: DrainState::default(),
                 metrics: None,
                 health: None,
@@ -211,13 +213,14 @@ impl ServerState {
         runtime: RuntimeConfig,
         worker_registry: ConnectedWorkerRegistry,
     ) -> Self {
+        let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
                 runtime,
                 worker_registry,
                 pending_activities: PendingActivities::default(),
-                heartbeat_tracker: HeartbeatTracker::new(std::time::Duration::from_secs(30)),
+                heartbeat_tracker,
                 drain_state: DrainState::default(),
                 metrics: None,
                 health: None,

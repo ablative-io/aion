@@ -154,10 +154,13 @@ impl Harness {
     /// Build the production dispatcher over the harness's shared state, the
     /// same wiring `ServerState::build_with_store_arc` hands to the engine.
     fn dispatcher(&self) -> WorkerActivityDispatcher {
-        WorkerActivityDispatcher::new(self.registry.clone(), NAMESPACE)
-            .with_pending(self.state.pending_activities().clone())
-            .with_heartbeat_tracker(self.state.heartbeat_tracker().clone())
-            .with_drain_state(self.state.drain_state().clone())
+        WorkerActivityDispatcher::new(
+            self.registry.clone(),
+            NAMESPACE,
+            self.state.heartbeat_tracker().clone(),
+        )
+        .with_pending(self.state.pending_activities().clone())
+        .with_drain_state(self.state.drain_state().clone())
     }
 
     /// Wait for the next `ActivityTask` pushed down the worker stream.
@@ -217,8 +220,8 @@ impl Harness {
 }
 
 /// Schedules an activity through the real dispatcher/bridge against a real
-/// gRPC worker session and asserts the task is delivered promptly (bounded
-/// well under the 30s dispatch timeout) and the result round-trips.
+/// gRPC worker session and asserts the task is delivered promptly and the
+/// result round-trips.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_dispatch_delivers_task_promptly_and_round_trips() -> Result<(), TestError> {
     let mut harness = Harness::start().await?;
@@ -261,34 +264,109 @@ async fn remote_dispatch_delivers_task_promptly_and_round_trips() -> Result<(), 
     Ok(())
 }
 
-/// The timeout must fire only when the worker genuinely stays silent — and
-/// the task must still have been delivered promptly beforehand, proving the
-/// timeout machinery is independent of task delivery.
+/// The engine imposes no activity timeout of its own: the dispatch wait is
+/// unbounded by construction (there is no `recv_timeout` against any
+/// constant left in the dispatch path — the former hardcoded 30s deadline
+/// killed every activity longer than 30s, and agent activities legitimately
+/// run for over an hour). This test holds the worker's reply back for
+/// longer than a bounded wait would tolerate and proves the dispatch still
+/// returns the genuine result.
+///
+/// Honesty note: the default 2s delay keeps CI sane; it proves a delayed
+/// completion round-trips, while the absence of any deadline constant is
+/// structural (the field, builder, and timeout arm were deleted). Set
+/// `AION_PROVE_LONG_ACTIVITY=1` to run the literal proof that an activity
+/// outlives the deleted 30s deadline (35s wall-clock).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatch_times_out_only_when_worker_stays_silent() -> Result<(), TestError> {
+async fn activity_completing_after_long_delay_round_trips() -> Result<(), TestError> {
+    let delay = if std::env::var_os("AION_PROVE_LONG_ACTIVITY").is_some() {
+        Duration::from_secs(35)
+    } else {
+        Duration::from_secs(2)
+    };
     let mut harness = Harness::start().await?;
-    let dispatcher = Arc::new(harness.dispatcher().with_timeout(Duration::from_secs(2)));
+    let dispatcher = Arc::new(harness.dispatcher());
 
     let started = Instant::now();
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
         dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1)
     }));
 
-    // The worker receives the task well before the timeout but never replies.
+    // The worker receives the task promptly, then "works" for the delay.
     let task = harness.next_task().await?;
-    let delivery_elapsed = started.elapsed();
     assert_eq!(task.activity_type, ACTIVITY_TYPE);
+    tokio::time::sleep(delay).await;
     assert!(
-        delivery_elapsed < Duration::from_secs(1),
-        "task took {delivery_elapsed:?} to reach the worker stream; with the \
-         dispatch stall defect it would only arrive when the 2s timeout fired"
+        !dispatch_task.is_finished(),
+        "dispatch terminated during the {delay:?} work window; nothing but \
+         completion, worker loss, or drain may end the wait"
     );
 
+    harness.complete(task, br#"{"slow":true}"#).await?;
     let result = dispatch_task.await.map_err(|error| error.to_string())?;
-    let error = result.err().ok_or("expected dispatch to time out")?;
+    let elapsed = started.elapsed();
+
+    assert_eq!(result, Ok(r#"{"slow":true}"#.to_owned()));
     assert!(
-        error.contains("timed out after 2s"),
-        "unexpected error: {error}"
+        elapsed >= delay,
+        "result arrived in {elapsed:?}, before the worker finished?"
+    );
+
+    harness.server.abort();
+    Ok(())
+}
+
+/// Worker death mid-activity: the worker receives the task, then its stream
+/// ends without ever reporting a result. Because the dispatch wait is
+/// unbounded, the stream teardown sweep is what must unblock it — promptly,
+/// with the retryable lost-worker classification the engine's retry policy
+/// acts on — rather than the workflow hanging forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_death_mid_activity_fails_dispatch_with_retryable_lost_worker()
+-> Result<(), TestError> {
+    let mut harness = Harness::start().await?;
+    let dispatcher = Arc::new(harness.dispatcher());
+
+    let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
+        dispatcher.dispatch(ACTIVITY_TYPE, "{}", "{}", 1)
+    }));
+    let task = harness.next_task().await?;
+    assert_eq!(task.activity_type, ACTIVITY_TYPE);
+
+    // Kill the worker mid-activity: dropping its request stream ends the
+    // gRPC session exactly as a process crash or network cut does.
+    let died_at = Instant::now();
+    drop(harness.worker_tx);
+    drop(harness.inbound);
+
+    let result = dispatch_task.await.map_err(|error| error.to_string())?;
+    let failure_latency = died_at.elapsed();
+    let error = result.err().ok_or("expected a lost-worker failure")?;
+    assert!(
+        error.starts_with("retryable:"),
+        "worker loss must be retryable so the engine can re-dispatch: {error}"
+    );
+    assert!(
+        error.contains("lost before reporting activity result"),
+        "failure must name worker loss: {error}"
+    );
+    assert!(
+        failure_latency < Duration::from_secs(10),
+        "lost-worker failure took {failure_latency:?}; the unbounded dispatch \
+         wait must terminate on worker loss, not hang"
+    );
+    assert!(
+        harness
+            .state
+            .worker_registry()
+            .workers_for(NAMESPACE, ACTIVITY_TYPE)?
+            .is_empty(),
+        "the dead worker must be deregistered"
+    );
+    assert_eq!(
+        harness.state.heartbeat_tracker().in_flight_count()?,
+        0,
+        "the swept activity must leave in-flight accounting"
     );
 
     harness.server.abort();
