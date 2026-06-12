@@ -46,6 +46,13 @@ pub struct Engine {
     signal_handoff: Arc<SignalResumeHandoff>,
     search_attribute_schema: Arc<SearchAttributeSchema>,
     pub(super) shutdown_gate: ShutdownGate,
+    /// Serializes the deploy mutations (load / route / unload) end-to-end
+    /// across BOTH the catalog commit and its store persistence write, so
+    /// the persisted package set and route pointers can never disagree with
+    /// the catalog through interleaving (for example a concurrent re-deploy
+    /// re-persisting a version an unload just deleted). Workflow dispatch
+    /// never takes this lock.
+    pub(super) deploy_mutations: AsyncMutex<()>,
     visibility_reconciliation_task: Option<JoinHandle<()>>,
 }
 
@@ -114,6 +121,7 @@ impl Engine {
             signal_handoff,
             search_attribute_schema,
             shutdown_gate: ShutdownGate::default(),
+            deploy_mutations: AsyncMutex::new(()),
             visibility_reconciliation_task,
         }
     }

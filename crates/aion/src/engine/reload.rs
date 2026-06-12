@@ -54,6 +54,10 @@ impl Engine {
         // after shutdown begins so modules never register into a dying VM.
         let operation = self.shutdown_gate.begin_start()?;
         let result = async {
+            // Catalog commit and persistence are one deploy mutation: an
+            // interleaved route/unload/deploy between them could persist
+            // state the catalog no longer holds.
+            let _deploy = self.deploy_mutations.lock().await;
             let package = package_from_source(source.into())?;
             let outcome = self
                 .workflow_catalog()
@@ -99,6 +103,10 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let operation = self.shutdown_gate.begin_operation()?;
         let result = async {
+            // One deploy mutation: the catalog re-point and the durable
+            // pointer write must not interleave with another deploy
+            // mutation's persistence.
+            let _deploy = self.deploy_mutations.lock().await;
             self.workflow_catalog()
                 .route_version(workflow_type, version)
                 .await?;
@@ -156,6 +164,10 @@ impl Engine {
         version: &ContentHash,
     ) -> Result<(), EngineError> {
         let catalog = self.workflow_catalog();
+        // Deploy lock first (the engine-wide ordering: deploy_mutations,
+        // then the catalog mutation lock), so the persisted-artifact delete
+        // below cannot interleave with a concurrent re-deploy's persistence.
+        let _deploy = self.deploy_mutations.lock().await;
         let _mutation = catalog.begin_mutation().await;
         // Swap the version out FIRST: from this instant no new resolution can
         // produce it, so the checks below cannot be invalidated by a racing
