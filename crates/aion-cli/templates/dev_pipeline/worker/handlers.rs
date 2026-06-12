@@ -379,21 +379,30 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
 /// Terminal [`ActivityFailure`] when `meridian` cannot run, exits non-zero,
 /// or answers without a parseable `request_id`.
 pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
-    // CONFIRMED against the real CLI (live run, 2026-06-13):
-    // `meridian review request --reviewer <NAME>... <BRANCH>` — reviewers are
-    // member names/UUIDs (a required input field), the branch is positional,
-    // and the meridian workspace resolves from the CLI's own global config.
+    // CONFIRMED against the real CLI (live runs, 2026-06-13):
+    // `meridian review request <BRANCH> --reviewer <NAME>... --as Meridian`.
+    // The branch positional must come FIRST: `--reviewer` is greedy
+    // multi-value and swallows a trailing positional as another reviewer.
+    // `--as` names the requesting identity — always the Meridian system
+    // member (the CLI refuses to guess when the workspace has several
+    // members). The meridian workspace resolves from the CLI's own global
+    // config.
     let ReviewRequest {
         workspace,
         reviewers,
         ..
     } = input;
-    let mut args: Vec<String> = vec!["review".to_owned(), "request".to_owned()];
+    let mut args: Vec<String> = vec![
+        "review".to_owned(),
+        "request".to_owned(),
+        workspace.branch.clone(),
+    ];
     for reviewer in &reviewers {
         args.push("--reviewer".to_owned());
         args.push(reviewer.clone());
     }
-    args.push(workspace.branch.clone());
+    args.push("--as".to_owned());
+    args.push("Meridian".to_owned());
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let command_run = require_run(
         shell,

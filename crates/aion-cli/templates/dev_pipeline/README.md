@@ -156,8 +156,10 @@ The scaffold shells to `yg` (worktree provisioning, affected-set scoping,
 diagnostics checks, and landing via `yg branch merge`), `norn` (the dev
 agent, resumed by deterministic session id `{{name}}-<brief_id>`), `cargo`
 (the advisory warm build), and `meridian` (review requests:
-`meridian review request --reviewer <NAME>... <BRANCH>`, reviewers a
-required input field). Swap any of them for your
+`meridian review request <BRANCH> --reviewer <NAME>... --as Meridian` —
+branch positional first because the greedy `--reviewer` flag swallows a
+trailing positional; reviewers a required input field; requests are
+always signed as the Meridian system member). Swap any of them for your
 own tooling in `src/{{name}}/locals.gleam` (the in-process test seam) and
 `worker/src/handlers.rs` (the deployed worker) — keep the two mirrored, and
 keep the hermetic suites green: they assert the real argv of every step.
