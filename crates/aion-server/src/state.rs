@@ -13,9 +13,8 @@ use crate::{
     error::ServerError,
     namespace::{NamespaceGuard, resolver::NamespaceResolver},
     observability::{
-        Metrics,
-        health::HealthState,
-        metrics::{InstrumentedEventStore, MetricsError},
+        Metrics, health::HealthState, instrumented_store::InstrumentedEventStore,
+        metrics::MetricsError,
     },
     shutdown::DrainState,
     worker::{
