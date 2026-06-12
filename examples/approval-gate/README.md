@@ -22,6 +22,12 @@ Install these tools before starting:
 
 All commands below are copy-pasteable from the repository root unless noted.
 
+Install the CLI once from the checkout (the crate is aion-cli; the binary is `aion`):
+
+```sh
+cargo install --path crates/aion-cli --locked
+```
+
 ## 1. Build the Gleam workflow
 
 ```sh
@@ -51,7 +57,7 @@ Rejected and timed-out runs complete successfully too; they return `"decision": 
 ## 2. Package or load the workflow
 
 ```sh
-cargo run -p aion-cli -- package examples/approval-gate
+aion package examples/approval-gate
 ```
 
 This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference) and writes `examples/approval-gate/approval-gate.aion` with a manifest that uses:
@@ -70,7 +76,7 @@ If you add the package to `dev-config.toml`, make sure `workflow_packages` inclu
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+aion server --config dev-config.toml
 ```
 
 The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0.1:8080`, uses the in-memory store, and defaults to the `default` namespace. The CLI global flags map to client metadata and routing:
@@ -99,14 +105,14 @@ or:
 {"action_taken":"archived doc-123 because approval timed out before a signal arrived"}
 ```
 
-No external approval service is required; a person or script can send the approval signal through `aion-cli`.
+No external approval service is required; a person or script can send the approval signal through the `aion` CLI.
 
 ## 5. Start a workflow instance
 
 In terminal 2:
 
 ```sh
-START_RESPONSE=$(cargo run -q -p aion-cli -- \
+START_RESPONSE=$(aion \
   --subject approval-user \
   start approval_gate --input '{"document_id":"doc-123","timeout_minutes":5}')
 printf '%s\n' "$START_RESPONSE"
@@ -133,7 +139,7 @@ If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JS
 Approve the document before the timeout expires:
 
 ```sh
-cargo run -q -p aion-cli -- --subject approval-user \
+aion --subject approval-user \
   signal "$WORKFLOW_ID" approval_decision --payload '{"decision":"approved"}'
 ```
 
@@ -142,7 +148,7 @@ A successful signal request prints an acknowledgement JSON object. The workflow 
 To observe the rejection branch, start another workflow and send:
 
 ```sh
-cargo run -q -p aion-cli -- --subject approval-user \
+aion --subject approval-user \
   signal "$WORKFLOW_ID" approval_decision --payload '{"decision":"rejected"}'
 ```
 
@@ -163,13 +169,13 @@ handle
 List workflows:
 
 ```sh
-cargo run -q -p aion-cli -- --subject approval-user list --pretty
+aion --subject approval-user list --pretty
 ```
 
 Describe a workflow and include its event history:
 
 ```sh
-cargo run -q -p aion-cli -- --subject approval-user describe "$WORKFLOW_ID" --pretty
+aion --subject approval-user describe "$WORKFLOW_ID" --pretty
 ```
 
 For an approved run, expect history entries for workflow start, timer start, signal receipt, `publish_document` scheduling/completion, and workflow completion. For rejected or timed-out runs, expect `archive_document` instead.
@@ -179,7 +185,7 @@ For an approved run, expect history entries for workflow start, timer start, sig
 Start a short-deadline workflow and do not send a signal:
 
 ```sh
-START_RESPONSE=$(cargo run -q -p aion-cli -- \
+START_RESPONSE=$(aion \
   --subject approval-user \
   start approval_gate --input '{"document_id":"doc-timeout","timeout_minutes":1}')
 WORKFLOW_ID=$(printf '%s' "$START_RESPONSE" | jq -r .workflow_id)
@@ -189,7 +195,7 @@ printf 'workflow_id=%s\n' "$WORKFLOW_ID"
 Wait for the durable deadline to expire, then describe the run:
 
 ```sh
-cargo run -q -p aion-cli -- --subject approval-user describe "$WORKFLOW_ID" --pretty
+aion --subject approval-user describe "$WORKFLOW_ID" --pretty
 ```
 
 The result should include:

@@ -26,7 +26,7 @@ Three cross-SDK contract decisions are pinned by these scenarios (normative text
 
 ## Server fixture
 
-The harnesses consume a live `aion-server`; they do not start one. The fixture workflows live in `fixture/`:
+The harnesses consume a live Aion server; they do not start one. The fixture workflows live in `fixture/`:
 
 - `conformance_echo` (`fixtures.workflowType`) starts, accepts the `record` signal, answers the `state` query, accepts cooperative cancellation, and emits lifecycle/signal events.
 - `conformance_slow_query` (`fixtures.slowQueryWorkflowType`) answers the `slow` query after longer than the scenario deadline.
@@ -34,7 +34,7 @@ The harnesses consume a live `aion-server`; they do not start one. The fixture w
 Build the `.aion` archives:
 
 ```sh
-cargo run -p aion-cli -- package conformance/aion-clients/fixture --build
+aion package conformance/aion-clients/fixture --build
 ```
 
 Bring up the server with both packages loaded. A working config (memory store, `conformance` as the default namespace):
@@ -63,8 +63,7 @@ event_broadcast_capacity = 1024
 ```
 
 ```sh
-cargo build -p aion-server
-./target/debug/aion-server --config /tmp/aion-conformance.toml
+aion server --config /tmp/aion-conformance.toml
 ```
 
 Caller identity rides the server's development-header extraction: each harness presents subject `conformance-harness` with a grant for `conformance` only — never `conformance-denied` — which is exactly the grant shape the `namespace-denied` and `not-found-anti-leak` scenarios pin.

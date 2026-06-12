@@ -1,6 +1,6 @@
 # aion-dashboard
 
-Standalone Vite SPA for human-facing `aion-server` observability.
+Standalone Vite SPA for human-facing Aion server observability.
 
 ## Generated wire types
 

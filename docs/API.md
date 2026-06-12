@@ -1,11 +1,11 @@
 # Aion API overview
 
-Aion exposes the engine through the standalone `aion-server` plus language-specific client and worker SDKs.
+Aion exposes the engine through the server (`aion server --config aion.toml`, built on the `aion-server` library crate) plus language-specific client and worker SDKs.
 
 ## Implementation status
 
 - **Implemented:** engine crash/restart recovery for active workflow histories, durable timer recovery, HTTP/JSON workflow operations (including live workflow queries), gRPC worker/client APIs, and the WebSocket event-stream route described below.
-- **In progress:** dashboard UX and cross-language SDK/conformance hardening. Prefer `aion-cli`, HTTP, gRPC, or the Rust client when you need the most exercised surfaces.
+- **In progress:** dashboard UX and cross-language SDK/conformance hardening. Prefer the `aion` CLI, HTTP, gRPC, or the Rust client when you need the most exercised surfaces.
 
 ## Authentication and caller metadata
 
@@ -14,7 +14,7 @@ HTTP and WebSocket routes use the same caller extraction path, and the gRPC API 
 - In local development with auth disabled (`[auth] enabled = false`, the default), send `x-aion-subject` to identify the caller. If omitted, the server identifies the caller as `anonymous`.
 - Send `x-aion-namespaces` as a comma-separated list of namespace grants. The default namespace mode is `SharedEngine`, in which a request is authorized only when its `namespace` value appears in this list — so the dev curl examples below must include the header. Deployments configured with `[namespace] mode = SingleTenant` instead authorize exactly the configured namespace for every caller, without consulting this header.
 - **Trust model:** with auth disabled, both headers are taken at face value. Namespace grants are purely caller-asserted — any caller can self-grant any namespace simply by listing it in `x-aion-namespaces`. This is a development convenience, not tenant isolation. Real tenant isolation requires `[auth] enabled = true` with a JWKS endpoint (`[auth] jwks_url`, refreshed every `jwks_refresh_seconds` seconds): the server then validates the `Authorization: Bearer <token>` header against the JWKS keys and derives the caller identity from validated token claims. (A server binary compiled without the `auth` feature falls back, when `auth.enabled` is true, to comparing the bearer token against the configured `jwks_url` value as a static shared secret — also development-only.) WebSocket upgrades use the same headers as HTTP requests.
-- `aion-cli` follows the same model over gRPC metadata: it asserts exactly its `--namespace` flag value (default `default`) as its single namespace grant and sends `--subject` (default `cli-user`) as the caller.
+- The `aion` CLI follows the same model over gRPC metadata: it asserts exactly its `--namespace` flag value (default `default`) as its single namespace grant and sends `--subject` (default `cli-user`) as the caller.
 
 Most examples use the default `default` namespace.
 
@@ -62,9 +62,9 @@ A successful start returns the assigned identifiers as nested objects:
 {"workflow_id":{"uuid":"<workflow-id>"},"run_id":{"uuid":"<run-id>"}}
 ```
 
-(`aion-cli start` flattens this to `{"workflow_id":"<workflow-id>","run_id":"<run-id>"}` in its own output.)
+(`aion start` flattens this to `{"workflow_id":"<workflow-id>","run_id":"<run-id>"}` in its own output.)
 
-For non-JSON binary payloads, use the envelope form with `bytes` as a JSON array of integers. For the hello-world tutorial, `aion-cli` is the recommended path because it handles payload encoding for you.
+For non-JSON binary payloads, use the envelope form with `bytes` as a JSON array of integers. For the hello-world tutorial, the `aion` CLI is the recommended path because it handles payload encoding for you.
 
 ### List and describe response shapes
 
@@ -107,7 +107,7 @@ For non-JSON binary payloads, use the envelope form with `bytes` as a JSON array
 }
 ```
 
-`POST /workflows/list` returns the raw wire form — `{"summaries":[...]}` with serde-encoded envelopes whose payload `bytes` are JSON byte arrays. Prefer `GET /workflows` or `aion-cli list` for human-readable output.
+`POST /workflows/list` returns the raw wire form — `{"summaries":[...]}` with serde-encoded envelopes whose payload `bytes` are JSON byte arrays. Prefer `GET /workflows` or `aion list` for human-readable output.
 
 ### Query semantics
 
@@ -126,7 +126,7 @@ Namespace denial, unknown workflow ids, and backend faults remain transport-leve
 
 ## Operator deploy API
 
-> **Operator surface, not a caller operation.** Deploy is deliberately outside the caller SDK contract (`CLIENT-CONTRACT.md`): client SDKs SHALL NOT expose it. The wire surface is a separate gRPC `DeployService` (`crates/aion-proto/proto/deploy.proto`) plus the `/deploy/*` HTTP routes below, driven by `aion-cli deploy/versions/route/unload`.
+> **Operator surface, not a caller operation.** Deploy is deliberately outside the caller SDK contract (`CLIENT-CONTRACT.md`): client SDKs SHALL NOT expose it. The wire surface is a separate gRPC `DeployService` (`crates/aion-proto/proto/deploy.proto`) plus the `/deploy/*` HTTP routes below, driven by `aion deploy`/`versions`/`route`/`unload`.
 
 The deploy surface is **dark by default**. It mounts only when commissioned in server config:
 
@@ -144,7 +144,7 @@ max_inflated_bytes = 67108864  # REQUIRED when enabled; no default — must be >
 **Authorization** is a deployment-wide `deploy` grant, decided before any handler logic runs:
 
 - JWT path (`[auth] enabled = true` with the `auth` feature): a boolean `deploy` claim in the same bearer token. Absent claim = no grant; existing data-operation tokens keep working unchanged.
-- Development paths: the `x-aion-deploy: true` header/metadata entry, the dev analog of the claim (`aion-cli` sends it automatically). The dev-token fallback checks the shared secret first, then the header.
+- Development paths: the `x-aion-deploy: true` header/metadata entry, the dev analog of the claim (the `aion` CLI sends it automatically). The dev-token fallback checks the shared secret first, then the header.
 - Denials are `403` / `PermissionDenied` with the dedicated `deploy_denied` wire code, and the message names the knob that carries the grant (header vs token claim).
 
 The grant is engine-global on purpose: **a package load is engine-global**. Loading registers code into the shared VM and re-points routing for a workflow *type* that is startable from every namespace — there is no namespace field anywhere on the deploy surface, and no per-namespace isolation is implied.
@@ -174,10 +174,10 @@ Every mutation emits one structured audit log line (`operation`, `subject`, `gra
 CLI (`--token` overrides the `AION_TOKEN` environment variable; without either, the development headers apply):
 
 ```bash
-aion-cli --endpoint 127.0.0.1:50051 --token "$TOKEN" deploy dist/order.aion
-aion-cli versions --workflow-type order
-aion-cli route order <content-hash>     # rollback / roll-forward
-aion-cli unload order <content-hash>
+aion --endpoint 127.0.0.1:50051 --token "$TOKEN" deploy dist/order.aion
+aion versions --workflow-type order
+aion route order <content-hash>     # rollback / roll-forward
+aion unload order <content-hash>
 ```
 
 See [docs/packaging.md](packaging.md) for building the `.aion` archives this API consumes.

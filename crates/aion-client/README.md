@@ -1,6 +1,6 @@
 # aion-client
 
-Rust caller SDK for connecting to an `aion-server` deployment and operating Aion workflows. The crate exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
+Rust caller SDK for connecting to an Aion server deployment and operating Aion workflows. The crate exposes connect plus the seven workflow operations: `start`, `signal`, `query`, `cancel`, `list`, `describe`, and `subscribe`.
 
 ## Key public types
 
@@ -19,7 +19,7 @@ aion-client = "0.4.0"
 
 ## Server prerequisite
 
-Run an `aion-server` that implements the AW workflow API. The runnable example uses the AL-007 server fixture defaults:
+Run an Aion server (`aion server --config <file>`) that implements the AW workflow API. The runnable example uses the AL-007 server fixture defaults:
 
 ```sh
 export AION_SERVER_URL=http://127.0.0.1:50051

@@ -2,7 +2,7 @@
 
 **Repo:** `/Users/tom/Developer/ablative/aion`, main @ `3a18cf5f` ("Bump all publishable crates and Gleam packages to 0.2.0"), clean tree.
 **Parent brief:** [`runtime-package-reload.md`](runtime-package-reload.md) (#62). D3 adopted **(a)**: embedded-engine API now, serde-ready types, *"the aion-server endpoint is deferred to its own follow-up brief with a deploy-authz design."* This is that brief.
-**Status:** decisions D1–D10 ADOPTED (Tom, 2026-06-12, recommendation (a) in every case); IMPLEMENTED — engine riders (typed refusals, `LoadOutcome`, manifest-digest tripwire), `DeployService` + `/deploy/*` over shared handlers, `deploy` claim / `x-aion-deploy` authz, `deploy_denied`/`version_pinned` wire codes, audit + metrics, `aion-cli deploy/versions/route/unload`, docs.
+**Status:** decisions D1–D10 ADOPTED (Tom, 2026-06-12, recommendation (a) in every case); IMPLEMENTED — engine riders (typed refusals, `LoadOutcome`, manifest-digest tripwire), `DeployService` + `/deploy/*` over shared handlers, `deploy` claim / `x-aion-deploy` authz, `deploy_denied`/`version_pinned` wire codes, audit + metrics, `aion deploy/versions/route/unload`, docs.
 **Scope:** expose the landed `Engine` reload seam (`load_package`, `route_workflow_version`, `list_workflow_versions`, `unload_workflow_version`) over the server's public transports as an **operator deploy API**, with a real authorization design. Plus the `aion-cli` remote subcommands that drive it. This brief is design-only; no implementation accompanies it.
 **Why deploy is not a data operation:** loading a package registers code into the shared BEAM VM and re-points routing for a workflow *type*. In `SharedEngine` mode that type is startable from **every** namespace — there is no namespace→package binding anywhere in the engine (verified, §1.4). Namespace grants therefore authorize the wrong thing; deploy needs its own grant.
 
@@ -162,10 +162,10 @@ New remote subcommands in `aion-cli` (the local `package` subcommand is untouche
 
 | Command | Endpoint |
 |---|---|
-| `aion-cli deploy <archive.aion>` | `LoadPackage`; prints type, hash, `freshly_loaded`, `route_changed` |
-| `aion-cli versions [--workflow-type T]` | `ListVersions` (client-side type filter) |
-| `aion-cli route <workflow-type> <content-hash>` | `RouteVersion` (rollback / roll-forward) |
-| `aion-cli unload <workflow-type> <content-hash>` | `UnloadVersion` |
+| `aion deploy <archive.aion>` | `LoadPackage`; prints type, hash, `freshly_loaded`, `route_changed` |
+| `aion versions [--workflow-type T]` | `ListVersions` (client-side type filter) |
+| `aion route <workflow-type> <content-hash>` | `RouteVersion` (rollback / roll-forward) |
+| `aion unload <workflow-type> <content-hash>` | `UnloadVersion` |
 
 - The deploy stub is generated from `deploy.proto` and lives **in `aion-cli`**, not in `aion-client` — the caller SDK surface is contract-bound (§1.7) and must not grow operator operations.
 - Token sourcing: global `--token` flag overriding `AION_TOKEN` env; when absent, dev mode applies and the CLI sends `x-aion-deploy: true` alongside the existing `x-aion-subject` metadata. (The same `--token`/env plumbing becomes available to the data commands for free, but wiring those is out of scope here.)
@@ -216,7 +216,7 @@ New remote subcommands in `aion-cli` (the local `package` subcommand is untouche
 
 ### D6 — Validate-only / dry-run load mode
 
-- **(a) No dry-run in v1** — archive integrity is already proven locally at packaging time (`aion-cli package` builds it; `Package` parsing re-proves it at load); load is failure-atomic (catalog untouched on any failure) and idempotent, so a failed or repeated real deploy is harmless; collisions are the only thing a dry-run would add and they are rare and loudly typed.
+- **(a) No dry-run in v1** — archive integrity is already proven locally at packaging time (`aion package` builds it; `Package` parsing re-proves it at load); load is failure-atomic (catalog untouched on any failure) and idempotent, so a failed or repeated real deploy is harmless; collisions are the only thing a dry-run would add and they are rare and loudly typed.
 - **(b) `validate_only` flag** performing parse + preflight without registering — needs a new engine seam to preflight under the catalog lock without mutating, for a check whose answer can be stale by the time the real load runs.
 
 **Recommendation: (a).** Add later as a pure extension if a deploy pipeline demonstrates the need.
@@ -289,7 +289,7 @@ Server e2e (both transports, real engine, two compiled fixture versions from the
 
 CLI:
 
-12. `aion-cli deploy/versions/route/unload` against a live server (dev mode + token mode): exit codes, JSON output shapes, `AION_TOKEN` vs `--token` precedence, actionable rendering of `deploy_denied` and `version_pinned`.
+12. `aion deploy/versions/route/unload` against a live server (dev mode + token mode): exit codes, JSON output shapes, `AION_TOKEN` vs `--token` precedence, actionable rendering of `deploy_denied` and `version_pinned`.
 
 Gates: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, full suite green, conformance green on both stores (must be untouched).
 

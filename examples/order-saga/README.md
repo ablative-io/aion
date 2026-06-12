@@ -71,6 +71,12 @@ Install these tools before starting:
 
 All commands below are copy-pasteable from the repository root unless noted.
 
+Install the CLI once from the checkout (the crate is aion-cli; the binary is `aion`):
+
+```sh
+cargo install --path crates/aion-cli --locked
+```
+
 ## 1. Build the Gleam workflow
 
 ```sh
@@ -90,7 +96,7 @@ The `amount` field is an integer amount in cents. The workflow dispatches forwar
 ## 2. Package `order-saga.aion`
 
 ```sh
-cargo run -p aion-cli -- package examples/order-saga
+aion package examples/order-saga
 ```
 
 This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference), and builds a manifest with:
@@ -116,7 +122,7 @@ The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+aion server --config dev-config.toml
 ```
 
 Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the HTTP API observe commands below (or Aion CLI commands where available) to inspect workflows for now.

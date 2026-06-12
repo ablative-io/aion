@@ -6,8 +6,14 @@ This example takes you from a fresh checkout to a running Aion workflow. You wil
 2. package the compiled BEAM modules into `hello-world.aion`,
 3. start the Aion dev server with the repo-root `dev-config.toml` and the built package preloaded,
 4. start a Python activity worker for the `greet` activity,
-5. start a workflow instance with `aion-cli`, and
-6. inspect and operate the run from `aion-cli` while the dashboard UI is under development.
+5. start a workflow instance with the `aion` CLI, and
+6. inspect and operate the run with the `aion` CLI while the dashboard UI is under development.
+
+Install the CLI once from the checkout (the crate is `aion-cli`; the binary is `aion`):
+
+```sh
+cargo install --path crates/aion-cli --locked
+```
 
 ## Prerequisites
 
@@ -33,7 +39,7 @@ The workflow source lives in `examples/hello-world/src/hello_world.gleam`. It im
 ## 2. Package `hello-world.aion`
 
 ```sh
-cargo run -p aion-cli -- package examples/hello-world
+aion package examples/hello-world
 ```
 
 This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference), and builds a manifest with:
@@ -57,11 +63,11 @@ The repo-root `dev-config.toml` listens on gRPC `127.0.0.1:50051`, HTTP `127.0.0
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml \
+aion server --config dev-config.toml \
   --workflow-package examples/hello-world/hello-world.aion
 ```
 
-Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use `aion-cli` over the gRPC endpoint (`127.0.0.1:50051`) to inspect workflows for now. The CLI global flags map to client metadata and routing:
+Leave this process running. The dashboard/static UI at `http://127.0.0.1:8080/` is under development; use the `aion` CLI over the gRPC endpoint (`127.0.0.1:50051`) to inspect workflows for now. The CLI global flags map to client metadata and routing:
 
 - `--endpoint` selects the gRPC server endpoint and defaults to `127.0.0.1:50051`.
 - `--namespace` selects the workflow namespace and defaults to `default`.
@@ -115,8 +121,7 @@ The registered workflow type is `hello_world` — the package manifest's entry m
 In terminal 3:
 
 ```sh
-START_RESPONSE=$(cargo run -q -p aion-cli -- \
-  --subject hello-world-user \
+START_RESPONSE=$(aion --subject hello-world-user \
   start hello_world --input '{"name":"Ada"}')
 printf '%s\n' "$START_RESPONSE"
 ```
@@ -142,13 +147,13 @@ If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JS
 List workflows:
 
 ```sh
-cargo run -q -p aion-cli -- --subject hello-world-user list --pretty
+aion --subject hello-world-user list --pretty
 ```
 
 Describe the workflow and include history:
 
 ```sh
-cargo run -q -p aion-cli -- --subject hello-world-user describe "$WORKFLOW_ID" --pretty
+aion --subject hello-world-user describe "$WORKFLOW_ID" --pretty
 ```
 
 You should see workflow events for start, `greet` scheduling/completion, and workflow completion. For machine-readable output, omit `--pretty`; the compact JSON is parseable by `jq`.
@@ -158,14 +163,14 @@ You should see workflow events for start, `greet` scheduling/completion, and wor
 The hello-world workflow normally completes quickly and does not define a meaningful signal handler, so the required hello-world path is complete after `describe`. For workflows that are still running and listen for signals, send JSON payloads with the same CLI:
 
 ```sh
-cargo run -q -p aion-cli -- --subject hello-world-user \
+aion --subject hello-world-user \
   signal "$WORKFLOW_ID" example_signal --payload '{"note":"hello from the CLI"}'
 ```
 
 A successful signal request prints an acknowledgement JSON object. Workflows that need cooperative shutdown can also be cancelled while they are still running:
 
 ```sh
-cargo run -q -p aion-cli -- --subject hello-world-user \
+aion --subject hello-world-user \
   cancel "$WORKFLOW_ID" --reason 'tutorial cleanup'
 ```
 

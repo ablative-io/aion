@@ -2,7 +2,7 @@
 
 This directory contains the shared scenario source for the Rust, Python, and TypeScript worker SDK conformance harnesses. `scenarios.json` is the source of truth for scenario ids, fixture activity names, harness control signals, and expected normalized observations. Do not copy or hardcode those scenarios into a language-specific worker test.
 
-The suite is fake-endpoint-only. It never connects to `aion-server`, never exercises a live engine, and speaks only the AW-owned `WorkerProtocol.StreamWorker` contract from `crates/aion-proto/proto/worker.proto`.
+The suite is fake-endpoint-only. It never connects to an Aion server, never exercises a live engine, and speaks only the AW-owned `WorkerProtocol.StreamWorker` contract from `crates/aion-proto/proto/worker.proto`.
 
 ## Scenario catalogue
 
