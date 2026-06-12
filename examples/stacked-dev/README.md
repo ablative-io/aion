@@ -107,6 +107,9 @@ loud missing-CLI failure.
 
 ## Running it live
 
+A live run needs three processes: the server, the **worker** that serves the
+eight activities, and the CLI driving the run.
+
 ```bash
 # Build the three archives.
 aion package examples/stacked-dev --build
@@ -116,6 +119,14 @@ aion server --config dev-config.toml
 aion deploy examples/stacked-dev/stacked-dev.aion
 aion deploy examples/stacked-dev/onatopp-dev.aion
 aion deploy examples/stacked-dev/gate.aion
+
+# Build and run the standalone activity worker (worker/ — its own crate
+# against the published aion-worker SDK, NOT a workspace member). It serves
+# all eight activity names by shelling to the real CLIs (yg, norn, cargo,
+# meridian), so those must be on its PATH — or fake-CLI shims, exactly like
+# the test suites use.
+cd examples/stacked-dev/worker && cargo build
+./target/debug/stacked-dev-worker --endpoint http://127.0.0.1:50051   # [server] grpc_address
 
 # Start a run with the full required input.
 aion start stacked_dev --input '{
@@ -145,13 +156,18 @@ aion signal <workflow-id> review_verdict --payload \
   '{"decision":"reject","reason":"wrong architecture"}'
 ```
 
-Deployed, the activity names (`provision_workspace`, `warm_build`, `dev`,
-`scoped_checks`, `dev_resume`, `full_checks`, `request_review`, `land`)
-are served by Meridian workers; the local implementations in
-`src/stacked_dev/locals.gleam` document the exact CLI contract each worker
-mirrors. Note the `warm_build`/`dev` workers exchange the tagged
+The worker registers the eight activity names (`provision_workspace`,
+`warm_build`, `dev`, `scoped_checks`, `dev_resume`, `full_checks`,
+`request_review`, `land` — `await_verdict` is a signal, not an activity)
+and mirrors the local implementations in `src/stacked_dev/locals.gleam`
+invocation for invocation; its serde types in `worker/src/types.rs` are
+pinned byte-compatible with the Gleam codecs by `worker/tests/wire_compat.rs`.
+Note the `warm_build`/`dev` handlers exchange the tagged
 `StartupTask`/`StartupResult` envelope because the two activities run
-through one homogeneous `workflow.all` fan-out.
+through one homogeneous `workflow.all` fan-out. The whole live loop —
+archives from source, real server, this worker with shims on PATH, the
+review signal, landed completion — is proven end-to-end by
+`crates/aion-cli/tests/stacked_dev_live_e2e.rs`.
 
 ## How the section-7 open questions were resolved
 
@@ -201,4 +217,7 @@ src/stacked_dev/locals.gleam   CLI-shelling local impls (the test seam)
 src/stacked_dev/cli.gleam      typed process-runner boundary
 src/stacked_dev_cli_ffi.erl    Erlang port runner
 test/                          hermetic shim-driven behavioral suite
+worker/                        standalone Rust activity worker (own crate,
+                               published aion-worker SDK; wire-compat +
+                               shim-driven handler tests)
 ```

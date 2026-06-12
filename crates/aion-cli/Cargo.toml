@@ -39,6 +39,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 aion-store = { version = "0.5.0", path = "../aion-store" }
+fs4 = { workspace = true }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features = ["net"] }
