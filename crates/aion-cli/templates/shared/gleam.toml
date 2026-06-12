@@ -1,0 +1,9 @@
+name = "{{name}}"
+version = "0.1.0"
+target = "erlang"
+description = "Aion durable workflow scaffolded by `aion new`."
+
+[dependencies]
+aion_flow = ">= 0.3.0 and < 0.4.0"
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"

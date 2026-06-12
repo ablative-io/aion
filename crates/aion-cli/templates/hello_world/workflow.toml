@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: https://github.com/ablative-io/aion/blob/main/docs/packaging.md
+
+[[workflow]]
+entry_module = "{{name}}"
+entry_function = "run"
+timeout_seconds = 3600
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = []
+output = "{{name}}.aion"
