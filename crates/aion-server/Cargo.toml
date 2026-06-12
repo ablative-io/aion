@@ -16,18 +16,18 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion = { package = "aion-rs", version = "0.5.0", path = "../aion" }
-aion-proto = { version = "0.5.0", path = "../aion-proto", features = ["generated"] }
-aion-store-libsql = { version = "0.5.0", path = "../aion-store-libsql" }
-aion-store = { version = "0.5.0", path = "../aion-store" }
-aion-package = { version = "0.5.0", path = "../aion-package" }
+aion = { package = "aion-rs", version = "0.6.0", path = "../aion" }
+aion-proto = { version = "0.6.0", path = "../aion-proto", features = ["generated"] }
+aion-store-libsql = { version = "0.6.0", path = "../aion-store-libsql" }
+aion-store = { version = "0.6.0", path = "../aion-store" }
+aion-package = { version = "0.6.0", path = "../aion-package" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-aion-core = { version = "0.5.0", path = "../aion-core" }
+aion-core = { version = "0.6.0", path = "../aion-core" }
 dashmap = { workspace = true }
 uuid.workspace = true
 futures.workspace = true

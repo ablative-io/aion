@@ -20,14 +20,14 @@ name = "aion"
 path = "src/main.rs"
 
 [dependencies]
-aion-client = { version = "0.5.0", path = "../aion-client" }
-aion-core = { version = "0.5.0", path = "../aion-core" }
-aion-package = { version = "0.5.0", path = "../aion-package" }
-aion-server = { version = "0.5.0", path = "../aion-server" }
+aion-client = { version = "0.6.0", path = "../aion-client" }
+aion-core = { version = "0.6.0", path = "../aion-core" }
+aion-package = { version = "0.6.0", path = "../aion-package" }
+aion-server = { version = "0.6.0", path = "../aion-server" }
 # Deploy is an operator API: its gRPC stub comes from aion-proto's generated
 # module, never from aion-client (the caller SDK is contract-bound and must
 # not grow operator operations).
-aion-proto = { version = "0.5.0", path = "../aion-proto", features = ["generated"] }
+aion-proto = { version = "0.6.0", path = "../aion-proto", features = ["generated"] }
 prost = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 anyhow = { workspace = true }
@@ -38,7 +38,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
-aion-store = { version = "0.5.0", path = "../aion-store" }
+aion-store = { version = "0.6.0", path = "../aion-store" }
 fs4 = { workspace = true }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

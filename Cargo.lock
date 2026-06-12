@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "aion-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-client",
  "aion-core",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "aion-client"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "serde",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aion-nif"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "beamr",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "aion-package"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "serde",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "aion-rs"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "aion-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-libsql"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aion-core",
  "aion-proto",

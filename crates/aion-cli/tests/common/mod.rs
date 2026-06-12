@@ -55,7 +55,7 @@ pub fn scaffold_project(
 pub fn patch_aion_flow_to_workspace(project: &Path) -> Result<(), TestError> {
     let manifest_path = project.join("gleam.toml");
     let manifest = std::fs::read_to_string(&manifest_path)?;
-    let published = "aion_flow = \">= 0.3.0 and < 0.4.0\"";
+    let published = "aion_flow = \">= 0.4.0 and < 0.5.0\"";
     if !manifest.contains(published) {
         return Err(format!(
             "emitted gleam.toml must require the published aion_flow range; got:\n{manifest}"

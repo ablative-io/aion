@@ -1,9 +1,11 @@
-# Roadmap — open work as of 2026-06-12 (main `d8d3b35c`)
+# Roadmap — open work as of 2026-06-13
 
 Everything below is queued, not in flight. Items are dependency-ordered
-within each section. Status of the released stack: aion 0.5.0 on crates.io
-(unified `aion` binary), `aion_flow` 0.3.0 on hex, beamr 0.6.0 underneath;
-outside-in validated end to end.
+within each section. Status of the released stack: aion 0.6.0 on crates.io
+(unified `aion` binary; no default activity timeouts, `aion new` +
+templates, `aion codegen`), `aion_flow` 0.4.0 on hex, beamr 0.6.0
+underneath; outside-in validated end to end including a live stacked-dev
+run against real yg/norn/cargo/meridian CLIs.
 
 ## 1. Pending design decision: parent-close policy (cancellation cascade)
 
@@ -96,17 +98,13 @@ internal test suites. Agreed plan, in credibility-per-effort order:
 8. **WASM workflow runtime** — long-term polyglot path (beamr-wasm exists;
    banked beamr items below are prerequisites).
 
-## 4. Next publish bundle (whenever Tom is ready)
+## 4. Publish bundle — SHIPPED as 0.6.0 (2026-06-13)
 
-Riding in main, unpublished:
-- `aion-cli` → `aion` hint-string fix in `crates/aion-cli/src/render.rs`
-  (published 0.5.0 binary still prints old hints).
-- `aion new` scaffold subcommand (+ templates).
-- `testing.mock_child` typed child doubles in the Gleam SDK → **hex
-  `aion_flow` 0.4.0** (Tom publishes hex; scaffold templates pin
-  `aion_flow >= 0.3.0 and < 0.4.0` — bump the template pin in the same
-  wave).
-- Crates publish order: aion-server **before** aion-cli.
+All eleven crates published at 0.6.0 (timeout removal, `aion new` +
+templates, `aion codegen`, hint-string fix, worker SDK reconnect +
+session log); `aion_flow` 0.4.0 on hex (`testing.mock_child`); template
+pins bumped to `>= 0.4.0 and < 0.5.0`. CHANGELOG.md added at the repo
+root — keep it current with every release from here.
 
 ## 5. Meridian integration (Tom's current focus)
 
