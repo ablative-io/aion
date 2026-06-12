@@ -9,6 +9,8 @@ use crate::error::EngineError;
 pub mod catalog;
 /// Package staging and workflow entry discovery.
 pub mod load;
+/// Durable persistence and startup reload for runtime-deployed packages.
+pub mod persistence;
 /// Serde-ready listing record for loaded workflow versions.
 pub mod version_info;
 

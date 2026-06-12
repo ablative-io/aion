@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{
-    EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore,
-    WriteToken,
+    EventStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
+    StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use axum::http::header::CONTENT_TYPE;
@@ -543,5 +543,54 @@ impl ReadableEventStore for InstrumentedEventStore {
 
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
         self.inner.expired_timers(as_of).await
+    }
+}
+
+#[async_trait]
+impl PackageStore for InstrumentedEventStore {
+    async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        let started = Instant::now();
+        let result = self.inner.put_package(record).await;
+        self.observe_since("put_package", started);
+        result
+    }
+
+    async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
+        let started = Instant::now();
+        let result = self.inner.list_packages().await;
+        self.observe_since("list_packages", started);
+        result
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        let started = Instant::now();
+        let result = self.inner.delete_package(workflow_type, content_hash).await;
+        self.observe_since("delete_package", started);
+        result
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        let started = Instant::now();
+        let result = self
+            .inner
+            .put_package_route(workflow_type, content_hash)
+            .await;
+        self.observe_since("put_package_route", started);
+        result
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
+        let started = Instant::now();
+        let result = self.inner.list_package_routes().await;
+        self.observe_since("list_package_routes", started);
+        result
     }
 }

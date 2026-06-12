@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{EventStore, RunSummary, StoreError, TimerEntry};
 
+mod package;
 mod range_read;
 
 /// Runs the shared behavioural suite for an [`EventStore`] implementation.
@@ -45,6 +46,12 @@ where
     read_run_chain_single_and_multi_continuations(make_store().await).await?;
     expired_timers_include_due_boundary_and_exclude_future(make_store().await).await?;
     rescheduling_same_timer_replaces_prior_fire_at(make_store().await).await?;
+    package::put_and_list_packages_round_trip_in_deploy_order(make_store().await).await?;
+    package::put_package_replaces_existing_row(make_store().await).await?;
+    package::put_package_points_route_at_persisted_version(make_store().await).await?;
+    package::put_package_route_repoints_without_touching_archives(make_store().await).await?;
+    package::delete_package_removes_only_target_and_is_idempotent(make_store().await).await?;
+    package::routes_list_in_workflow_type_order(make_store().await).await?;
     Ok(())
 }
 

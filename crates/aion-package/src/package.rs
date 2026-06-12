@@ -163,6 +163,30 @@ impl Package {
         deployed_name(&self.manifest.entry_module, &self.content_hash)
     }
 
+    /// Re-serialises this validated package into canonical `.aion` archive
+    /// bytes.
+    ///
+    /// The deterministic [`crate::PackageBuilder`] write path is used, so the
+    /// output round-trips through [`Self::load_from_bytes`] to a package with
+    /// the same content hash (the hash covers the beam set only), the same
+    /// canonical manifest digest, and the same source set. This is the
+    /// persistence form for runtime-deployed packages: the engine stores
+    /// these bytes so a deploy survives restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackageError`] variants for manifest serialisation or ZIP
+    /// writer failures; the entry module is already proven present by load
+    /// validation.
+    pub fn to_archive_bytes(&self) -> Result<Vec<u8>, PackageError> {
+        crate::PackageBuilder::with_source(
+            self.manifest.clone(),
+            self.beams.clone(),
+            self.source.clone(),
+        )
+        .write_to_bytes()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     #[must_use]
@@ -577,6 +601,32 @@ mod tests {
         assert_eq!(
             package.content_hash().to_string(),
             package.manifest().version.as_str()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn to_archive_bytes_round_trips_to_an_identical_package() -> Result<(), PackageError> {
+        let bytes = PackageBuilder::with_source(
+            sample_manifest(),
+            sample_beams()?,
+            BTreeMap::from([(
+                "workflow/order".to_owned(),
+                b"pub fn run() { Nil }".to_vec(),
+            )]),
+        )
+        .write_to_bytes()?;
+        let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
+
+        let reloaded = Package::load_from_bytes(
+            package.to_archive_bytes()?,
+            ExtractionLimits::unbounded(),
+        )?;
+
+        assert_eq!(reloaded, package);
+        assert_eq!(
+            reloaded.manifest().canonical_digest()?,
+            package.manifest().canonical_digest()?
         );
         Ok(())
     }

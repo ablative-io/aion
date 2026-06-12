@@ -24,6 +24,8 @@ pub mod conformance;
 pub mod error;
 /// In-memory reference implementation of the store contracts.
 pub mod memory;
+/// Deployed-package persistence records and contract.
+pub mod package;
 /// Run-chain summaries used for workflow execution lineage.
 pub mod run_chain;
 /// Core readable and writable event-store traits.
@@ -39,6 +41,7 @@ pub use aion_core::{
 };
 pub use error::StoreError;
 pub use memory::InMemoryStore;
+pub use package::{PackageRecord, PackageRouteRecord, PackageStore};
 pub use store::{EventStore, ReadableEventStore, RunSummary, WritableEventStore, WriteToken};
 pub use timer::TimerEntry;
 pub use visibility::{

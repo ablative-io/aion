@@ -141,10 +141,19 @@ pub trait WritableEventStore: Send + Sync + 'static {
     ) -> Result<(), StoreError>;
 }
 
-/// Convenience trait for concrete stores that support both reads/timers and recorder writes.
-pub trait EventStore: ReadableEventStore + WritableEventStore {}
+/// Convenience trait for concrete stores that support reads/timers, recorder
+/// writes, and deployed-package persistence.
+///
+/// [`crate::PackageStore`] is part of the contract, not an optional add-on:
+/// runtime-deployed packages share the durability promise of event history
+/// (a recovered run is pinned to a recorded package version, and a backend
+/// that dropped the archive would strand it).
+pub trait EventStore: ReadableEventStore + WritableEventStore + crate::PackageStore {}
 
-impl<T> EventStore for T where T: ReadableEventStore + WritableEventStore + ?Sized {}
+impl<T> EventStore for T where
+    T: ReadableEventStore + WritableEventStore + crate::PackageStore + ?Sized
+{
+}
 
 pub(crate) fn conformance_write_token() -> WriteToken {
     write_capability::conformance()

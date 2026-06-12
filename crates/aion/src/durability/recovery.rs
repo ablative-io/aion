@@ -452,6 +452,50 @@ mod tests {
         }
     }
 
+    /// Recovery never touches deployed packages: reads are legitimately
+    /// empty, mutations are unexpected.
+    #[async_trait]
+    impl aion_store::PackageStore for CountingStore {
+        async fn put_package(&self, record: aion_store::PackageRecord) -> Result<(), StoreError> {
+            let _ = record;
+            Err(StoreError::Backend(
+                "unexpected put_package in the recovery test".to_owned(),
+            ))
+        }
+
+        async fn list_packages(&self) -> Result<Vec<aion_store::PackageRecord>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_package(
+            &self,
+            workflow_type: &str,
+            content_hash: &str,
+        ) -> Result<(), StoreError> {
+            let _ = (workflow_type, content_hash);
+            Err(StoreError::Backend(
+                "unexpected delete_package in the recovery test".to_owned(),
+            ))
+        }
+
+        async fn put_package_route(
+            &self,
+            workflow_type: &str,
+            content_hash: &str,
+        ) -> Result<(), StoreError> {
+            let _ = (workflow_type, content_hash);
+            Err(StoreError::Backend(
+                "unexpected put_package_route in the recovery test".to_owned(),
+            ))
+        }
+
+        async fn list_package_routes(
+            &self,
+        ) -> Result<Vec<aion_store::PackageRouteRecord>, StoreError> {
+            Ok(Vec::new())
+        }
+    }
+
     struct StaticDriver;
 
     impl RecoveryDriver for StaticDriver {

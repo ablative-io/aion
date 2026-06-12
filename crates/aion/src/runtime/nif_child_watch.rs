@@ -1077,6 +1077,48 @@ mod tests {
         }
     }
 
+    /// Package persistence is untouched by the injected append failures:
+    /// forward to the wrapped in-memory store.
+    #[async_trait::async_trait]
+    impl aion_store::PackageStore for FlakyAppendStore {
+        async fn put_package(
+            &self,
+            record: aion_store::PackageRecord,
+        ) -> Result<(), aion_store::StoreError> {
+            self.inner.put_package(record).await
+        }
+
+        async fn list_packages(
+            &self,
+        ) -> Result<Vec<aion_store::PackageRecord>, aion_store::StoreError> {
+            self.inner.list_packages().await
+        }
+
+        async fn delete_package(
+            &self,
+            workflow_type: &str,
+            content_hash: &str,
+        ) -> Result<(), aion_store::StoreError> {
+            self.inner.delete_package(workflow_type, content_hash).await
+        }
+
+        async fn put_package_route(
+            &self,
+            workflow_type: &str,
+            content_hash: &str,
+        ) -> Result<(), aion_store::StoreError> {
+            self.inner
+                .put_package_route(workflow_type, content_hash)
+                .await
+        }
+
+        async fn list_package_routes(
+            &self,
+        ) -> Result<Vec<aion_store::PackageRouteRecord>, aion_store::StoreError> {
+            self.inner.list_package_routes().await
+        }
+    }
+
     /// F5: a transient record failure must be retried with backoff until the
     /// record lands — the parked parent is never abandoned for the epoch.
     /// Before the fix the watcher logged once and exited, leaving the parent

@@ -35,6 +35,23 @@ pub const CREATE_TIMERS_FIRE_AT_INDEX: &str = "
 CREATE INDEX IF NOT EXISTS idx_timers_fire_at
 ON timers (fire_at)";
 
+/// Runtime-deployed package archives keyed by `(workflow_type, content_hash)`.
+pub const CREATE_PACKAGES_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS packages (
+    workflow_type TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    archive BLOB NOT NULL,
+    deployed_at TEXT NOT NULL,
+    PRIMARY KEY (workflow_type, content_hash)
+)";
+
+/// Per-workflow-type route pointer for new workflow starts.
+pub const CREATE_PACKAGE_ROUTES_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS package_routes (
+    workflow_type TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL
+)";
+
 /// Workflow visibility projection table.
 pub const CREATE_VISIBILITY_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS visibility (
@@ -67,11 +84,13 @@ pub const CREATE_VISIBILITY_CLOSE_TIME_INDEX: &str = "
 CREATE INDEX IF NOT EXISTS idx_visibility_close_time
 ON visibility (close_time)";
 
-const DDL_STATEMENTS: [&str; 9] = [
+const DDL_STATEMENTS: [&str; 11] = [
     CREATE_EVENTS_TABLE,
     CREATE_EVENTS_PROJECTION_INDEX,
     CREATE_TIMERS_TABLE,
     CREATE_TIMERS_FIRE_AT_INDEX,
+    CREATE_PACKAGES_TABLE,
+    CREATE_PACKAGE_ROUTES_TABLE,
     CREATE_VISIBILITY_TABLE,
     CREATE_VISIBILITY_WORKFLOW_TYPE_INDEX,
     CREATE_VISIBILITY_STATUS_INDEX,
@@ -127,6 +146,10 @@ mod tests {
         assert_schema_object(&conn, "table", "timers").await?;
         assert_schema_object(&conn, "index", "sqlite_autoindex_timers_1").await?;
         assert_schema_object(&conn, "index", "idx_timers_fire_at").await?;
+        assert_schema_object(&conn, "table", "packages").await?;
+        assert_schema_object(&conn, "index", "sqlite_autoindex_packages_1").await?;
+        assert_schema_object(&conn, "table", "package_routes").await?;
+        assert_schema_object(&conn, "index", "sqlite_autoindex_package_routes_1").await?;
         assert_schema_object(&conn, "table", "visibility").await?;
         assert_schema_object(&conn, "index", "sqlite_autoindex_visibility_1").await?;
         assert_schema_object(&conn, "index", "idx_visibility_workflow_type").await?;
