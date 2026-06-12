@@ -34,3 +34,4 @@ __pycache__
 *.swp
 .idea
 .vscode
+.meridian/worksites/

@@ -32,16 +32,14 @@ use serde_json::{Value, json};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const PARENT_TYPE: &str = "order_fulfillment";
-/// KNOWN DEFECT BUDGET (beamr VM, observed on 0.4.6/0.4.9/0.5.0): any
-/// activity result or failure payload the engine delivers to a
-/// **Gleam-compiled** workflow at an await dies with
-/// `VM execution error: bad argument` once it exceeds 64 bytes (63- and
-/// 64-byte payloads work; 65 bytes kills the process; Erlang-coded
-/// workflows are unaffected, as is the workflow *start* input path).
-/// Every payload this test's dispatcher returns is kept inside that budget
-/// and checked loudly here, so a future edit fails with a clear message
-/// instead of an opaque VM crash. Remove this cap when the beamr fix lands.
-const ENGINE_TO_GLEAM_PAYLOAD_BUDGET: usize = 64;
+/// A deliberately large (~300-byte) field attached to activity results:
+/// beamr < 0.6.0 killed any workflow receiving a >64-byte payload
+/// (refc-binary BIF defect, fixed in 0.6.0) — this keeps that path
+/// honestly exercised end-to-end.
+const AUDIT_NOTE: &str = "audit: charge authorized via primary gateway after one transient \
+retry; risk score nominal; settlement batch pending; idempotency key honored; \
+receipt archived to compliance store; notification queued for customer contact; \
+ledger entry posted with double-entry balancing verified end-to-end";
 const CHILD_TYPE: &str = "order_shipping";
 const STATUS_QUERY: &str = "order_status";
 const APPROVAL_SIGNAL: &str = "approval_decision";
@@ -155,19 +153,6 @@ impl SagaDispatcher {
     }
 }
 
-/// Refuse to return a payload that would trip the beamr >64-byte
-/// engine-to-Gleam delivery defect (see [`ENGINE_TO_GLEAM_PAYLOAD_BUDGET`]).
-fn budgeted(payload: String) -> Result<String, String> {
-    if payload.len() > ENGINE_TO_GLEAM_PAYLOAD_BUDGET {
-        return Err(format!(
-            "terminal:test payload {} bytes exceeds the {ENGINE_TO_GLEAM_PAYLOAD_BUDGET}-byte \
-             beamr engine-to-Gleam delivery budget: {payload}",
-            payload.len()
-        ));
-    }
-    Ok(payload)
-}
-
 impl ActivityDispatcher for SagaDispatcher {
     fn dispatch(
         &self,
@@ -198,42 +183,37 @@ impl ActivityDispatcher for SagaDispatcher {
                     .as_i64()
                     .ok_or_else(|| "terminal:charge input missing attempt".to_owned())?;
                 if business_attempt == 1 {
-                    // The full message (prefix included) must stay inside the
-                    // 64-byte engine-to-Gleam delivery budget.
                     return Err("retryable:payment gateway unavailable (transient)".to_owned());
                 }
                 if let Some(gate) = &self.charge_gate {
                     gate.wait().map_err(|reason| format!("terminal:{reason}"))?;
                 }
-                budgeted(
-                    json!({
-                        "order_id": order_id,
-                        "payment_id": format!("pay-{order_id}"),
-                        "amount_cents": input_value["amount_cents"],
-                    })
-                    .to_string(),
-                )
+                Ok(json!({
+                    "order_id": order_id,
+                    "payment_id": format!("pay-{order_id}"),
+                    "amount_cents": input_value["amount_cents"],
+                    "audit_note": AUDIT_NOTE,
+                })
+                .to_string())
             }
             "ship_order" => {
                 if let Some(gate) = &self.ship_gate {
                     gate.wait().map_err(|reason| format!("terminal:{reason}"))?;
                 }
-                budgeted(
-                    json!({
-                        "order_id": order_id,
-                        "shipment_id": format!("ship-{order_id}"),
-                        "carrier": "ae",
-                    })
-                    .to_string(),
-                )
-            }
-            "refund_payment" => budgeted(
-                json!({
+                Ok(json!({
                     "order_id": order_id,
-                    "refund_id": format!("re-{order_id}"),
+                    "shipment_id": format!("ship-{order_id}"),
+                    "carrier": "ae",
+                    "audit_note": AUDIT_NOTE,
                 })
-                .to_string(),
-            ),
+                .to_string())
+            }
+            "refund_payment" => Ok(json!({
+                "order_id": order_id,
+                "refund_id": format!("re-{order_id}"),
+                "audit_note": AUDIT_NOTE,
+            })
+            .to_string()),
             other => Err(format!("terminal:unknown activity {other}")),
         }
     }
