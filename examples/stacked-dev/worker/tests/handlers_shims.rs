@@ -539,18 +539,11 @@ fn full_checks_affected_closure_scope_is_a_terminal_seam() -> TestResult {
 
 // --- request_review / land -------------------------------------------------------
 
-/// The meridian shim from the Gleam suite: review acks, the stack submits
-/// then lands.
+/// The meridian shim from the Gleam suite: review request acks only —
+/// landing is `yg branch merge` now.
 const MERIDIAN_SHIM: &str = r#"case "$1" in
   review)
     printf '%s' '{"request_id":"rev-1"}'
-    ;;
-  stack)
-    case "$2" in
-      submit) printf '%s' '{"pr_url":"https://example.test/pr/41"}' ;;
-      land) printf '%s' '{"merge_commit":"deadbeefcafe"}' ;;
-      *) echo "unknown stack subcommand: $2" >&2; exit 64 ;;
-    esac
     ;;
   *)
     echo "unknown meridian subcommand: $1" >&2
@@ -569,6 +562,7 @@ fn request_review_parses_the_request_id() -> TestResult {
         ReviewRequest {
             workspace: workspace.clone(),
             brief_id: "brief-7".to_owned(),
+            reviewers: vec!["sample-reviewer".to_owned()],
             dev_result: stacked_dev_worker::types::DevResult {
                 session_id: "stacked-dev-brief-7".to_owned(),
                 files_touched: Vec::new(),
@@ -584,21 +578,22 @@ fn request_review_parses_the_request_id() -> TestResult {
     assert_eq!(acked.request_id, "rev-1");
     let log = shims.log("meridian");
     assert!(log.contains(&format!(
-        "review request --workspace {} --brief-id brief-7 --summary implemented the brief",
-        workspace.path
+        "review request --reviewer sample-reviewer {}",
+        workspace.branch
     )));
     Ok(())
 }
 
 #[test]
-fn land_submits_then_lands_and_parses_both_outputs() -> TestResult {
+fn land_merges_the_branch_into_its_parent_via_yg() -> TestResult {
     let shims = Shims::new()?;
-    shims.write("meridian", MERIDIAN_SHIM)?;
+    shims.write("yg", "exit 0")?;
 
     let landed = handlers::land(
         &shims.shell(),
         LandInput {
             workspace: workspace(shims.root_string()),
+            base_ref: "main".to_owned(),
             dev_result: stacked_dev_worker::types::DevResult {
                 session_id: "stacked-dev-brief-7".to_owned(),
                 files_touched: Vec::new(),
@@ -608,24 +603,23 @@ fn land_submits_then_lands_and_parses_both_outputs() -> TestResult {
     )
     .map_err(|failure| failure.message().to_owned())?;
 
-    assert_eq!(landed.pr_url, "https://example.test/pr/41");
-    assert_eq!(landed.merge_commit, "deadbeefcafe");
-    let log = shims.log("meridian");
-    let submit_at = log.find("stack submit").ok_or("stack submit must run")?;
-    let land_at = log.find("stack land").ok_or("stack land must run")?;
-    assert!(submit_at < land_at, "submit must precede land");
+    assert_eq!(landed.branch, "stacked-dev-brief-7");
+    assert_eq!(landed.merged_into, "main");
+    let log = shims.log("yg");
+    assert!(log.contains("branch merge stacked-dev-brief-7 --yes"));
     Ok(())
 }
 
 #[test]
-fn land_with_unparseable_submit_output_is_terminal() -> TestResult {
+fn land_with_failing_merge_is_terminal() -> TestResult {
     let shims = Shims::new()?;
-    shims.write("meridian", "printf '%s' 'not json'")?;
+    shims.write("yg", "echo 'merge conflict in crates/x' >&2; exit 1")?;
 
     let failure = handlers::land(
         &shims.shell(),
         LandInput {
             workspace: workspace(shims.root_string()),
+            base_ref: "main".to_owned(),
             dev_result: stacked_dev_worker::types::DevResult {
                 session_id: "s".to_owned(),
                 files_touched: Vec::new(),
@@ -634,10 +628,10 @@ fn land_with_unparseable_submit_output_is_terminal() -> TestResult {
         },
     )
     .err()
-    .ok_or("unparseable submit output must fail the activity")?;
+    .ok_or("a failing merge must fail the activity")?;
     assert_terminal(
         &failure,
-        "meridian stack submit produced unparseable output: not json",
+        "yg branch merge failed — exit status 1: merge conflict in crates/x",
     );
     Ok(())
 }

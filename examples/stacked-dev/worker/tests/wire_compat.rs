@@ -311,11 +311,12 @@ fn review_request_wire_shape() -> TestResult {
     let (dev_result_literal, dev_result) = dev_result();
     assert_wire(
         &format!(
-            r#"{{"workspace":{workspace_literal},"brief_id":"brief-7","dev_result":{dev_result_literal},"gate_result":{{"verdict":{{"outcome":"pass"}}}}}}"#
+            r#"{{"workspace":{workspace_literal},"brief_id":"brief-7","reviewers":["sample-reviewer"],"dev_result":{dev_result_literal},"gate_result":{{"verdict":{{"outcome":"pass"}}}}}}"#
         ),
         &ReviewRequest {
             workspace,
             brief_id: "brief-7".to_owned(),
+            reviewers: vec!["sample-reviewer".to_owned()],
             dev_result,
             gate_result: GateResult {
                 verdict: GateVerdict::Pass,
@@ -341,9 +342,12 @@ fn land_input_wire_shape() -> TestResult {
     let (workspace_literal, workspace) = workspace();
     let (dev_result_literal, dev_result) = dev_result();
     assert_wire(
-        &format!(r#"{{"workspace":{workspace_literal},"dev_result":{dev_result_literal}}}"#),
+        &format!(
+            r#"{{"workspace":{workspace_literal},"base_ref":"main","dev_result":{dev_result_literal}}}"#
+        ),
         &LandInput {
             workspace,
+            base_ref: "main".to_owned(),
             dev_result,
         },
     )
@@ -353,10 +357,10 @@ fn land_input_wire_shape() -> TestResult {
 #[test]
 fn landed_wire_shape() -> TestResult {
     assert_wire(
-        r#"{"pr_url":"https://example.test/pr/41","merge_commit":"deadbeefcafe"}"#,
+        r#"{"branch":"stacked-dev-brief-7","merged_into":"main"}"#,
         &Landed {
-            pr_url: "https://example.test/pr/41".to_owned(),
-            merge_commit: "deadbeefcafe".to_owned(),
+            branch: "stacked-dev-brief-7".to_owned(),
+            merged_into: "main".to_owned(),
         },
     )
 }

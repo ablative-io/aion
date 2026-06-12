@@ -271,6 +271,8 @@ pub struct ReviewRequest {
     pub workspace: Workspace,
     /// The brief being reviewed.
     pub brief_id: String,
+    /// Member names or UUIDs to request review from.
+    pub reviewers: Vec<String>,
     /// The dev result whose work is reviewed.
     pub dev_result: DevResult,
     /// The gate result accompanying the request.
@@ -289,6 +291,8 @@ pub struct ReviewAck {
 pub struct LandInput {
     /// The approved workspace.
     pub workspace: Workspace,
+    /// The tree parent the branch merges into.
+    pub base_ref: String,
     /// The dev result being landed.
     pub dev_result: DevResult,
 }
@@ -296,8 +300,8 @@ pub struct LandInput {
 /// Output of the `land` activity (`codecs_flow.landed_codec`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Landed {
-    /// URL of the submitted PR.
-    pub pr_url: String,
-    /// The merge commit of the landed stack.
-    pub merge_commit: String,
+    /// The branch that was merged.
+    pub branch: String,
+    /// The tree parent it merged into.
+    pub merged_into: String,
 }

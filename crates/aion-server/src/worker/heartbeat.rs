@@ -279,8 +279,15 @@ impl HeartbeatTracker {
         registry: &ConnectedWorkerRegistry,
         sink: &impl ActivityCompletionSink,
     ) -> Result<LostWorkerReport, ServerError> {
-        let tasks = self.remove_worker_tasks(worker_id)?;
+        // Deregister BEFORE collecting tasks: the dispatch path tracks its
+        // task, sends, and then checks `registry.is_registered`. With this
+        // ordering, a dispatch that still sees the worker registered is
+        // guaranteed its tracked task is visible to any later sweep, so the
+        // unbounded completion wait always gets a lost-worker failure. (The
+        // reverse order leaves a window where a task tracked between the
+        // collection and the deregistration is never failed by anyone.)
         registry.deregister(worker_id)?;
+        let tasks = self.remove_worker_tasks(worker_id)?;
         for task in &tasks {
             sink.complete_activity(ActivityCompletion {
                 workflow_id: task.workflow_id.clone(),

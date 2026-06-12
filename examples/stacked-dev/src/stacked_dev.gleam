@@ -264,7 +264,14 @@ fn review_loop(
         )
       {
         Ok(ReviewVerdict(decision: Approve)) ->
-          land(workspace, dev_result, build_warm, verify_rounds, round)
+          land(
+            workspace,
+            input.base_ref,
+            dev_result,
+            build_warm,
+            verify_rounds,
+            round,
+          )
         Ok(ReviewVerdict(decision: RequestChanges(notes: notes))) ->
           fix_and_regate(
             input,
@@ -302,6 +309,7 @@ fn request_review(
       activities.request_review(ReviewRequest(
         workspace: workspace,
         brief_id: input.brief_id,
+        reviewers: input.reviewers,
         dev_result: dev_result,
         gate_result: gate_result,
       )),
@@ -373,6 +381,7 @@ fn fix_and_regate(
 /// caller).
 fn land(
   workspace: Workspace,
+  base_ref: String,
   dev_result: DevResult,
   build_warm: BuildWarm,
   verify_rounds: Int,
@@ -381,14 +390,18 @@ fn land(
   use _ <- result_try(set_status("landing", round))
   case
     workflow.run(
-      activities.land(LandInput(workspace: workspace, dev_result: dev_result)),
+      activities.land(LandInput(
+        workspace: workspace,
+        base_ref: base_ref,
+        dev_result: dev_result,
+      )),
     )
   {
     Ok(landed) -> {
       use _ <- result_try(set_status("landed", round))
       Ok(StackedDevResult(
-        pr_url: landed.pr_url,
-        merge_commit: landed.merge_commit,
+        branch: landed.branch,
+        merged_into: landed.merged_into,
         session_id: dev_result.session_id,
         build_warm: build_warm,
         verify_rounds: verify_rounds,

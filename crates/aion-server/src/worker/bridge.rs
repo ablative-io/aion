@@ -10,7 +10,7 @@
 //! threads: beamr scheduler threads (concurrency combinators) and spawned
 //! tokio tasks (the two-phase `dispatch_activity` completion task). The task
 //! send uses `try_send()` (non-blocking channel push) and the response wait
-//! blocks on `std::sync::mpsc::Receiver::recv_timeout`.
+//! blocks on `std::sync::mpsc::Receiver::recv`.
 //!
 //! Blocking is harmless on a beamr thread, but on a tokio runtime worker it
 //! must be wrapped in `tokio::task::block_in_place`: the `try_send` wakes the
@@ -18,11 +18,32 @@
 //! from task context into the *current* worker's LIFO slot, which no other
 //! runtime worker can steal. Without the `block_in_place` core handoff the
 //! forwarder sits trapped in that slot while this thread blocks, so the queued
-//! `ActivityTask` is only flushed to the worker when the timeout fires — every
-//! remote activity fails with `ActivityTimeout` even though the worker is
+//! `ActivityTask` is never flushed to the worker even though the worker is
 //! healthy. `block_in_place` moves the worker's scheduler core (LIFO slot
 //! included) to another thread before the wait begins, so dispatch-to-delivery
 //! stays in the millisecond range and the runtime keeps full parallelism.
+//!
+//! # Wait termination
+//!
+//! The engine imposes no activity timeout of its own: agent-style activities
+//! legitimately run for over an hour, so the completion wait is unbounded.
+//! The blocking `recv` terminates on exactly one of:
+//!
+//! - **Completion** — the worker reports a result and the stream handler
+//!   delivers it through [`ActivityCompletionSink::complete_activity`].
+//! - **Worker loss** — the worker's gRPC stream ends (process death,
+//!   disconnect, expired token); the stream teardown sweeps the worker's
+//!   in-flight tasks through the same sink as retryable lost-worker
+//!   failures ([`HeartbeatTracker::fail_disconnected_worker`]).
+//! - **Drain timeout at shutdown** — the shutdown coordinator fails all
+//!   remaining in-flight tasks through the sink
+//!   (`HeartbeatTracker::fail_all_in_flight_workers`).
+//! - **Channel teardown** — every sender for the pending entry is dropped
+//!   (a cleanup path removed the entry without completing it); surfaced as
+//!   a channel-closed dispatch error, never a hang.
+//!
+//! An activity's duration is bounded only by the workflow's own
+//! `timeout_seconds` and by worker liveness — never by an engine constant.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -142,7 +163,7 @@ fn payload_to_string(payload: &Payload) -> Result<Result<String, String>, String
 /// Dispatcher that routes `run_activity` NIF calls to connected workers.
 ///
 /// Synchronous interface — uses `try_send` for the task channel and
-/// `std::sync::mpsc::Receiver::recv_timeout` for the response. Callers on a
+/// `std::sync::mpsc::Receiver::recv` for the response. Callers on a
 /// multi-thread tokio runtime are detected and moved into
 /// `tokio::task::block_in_place` so the blocking wait never starves the
 /// runtime tasks that flush the worker stream (see the module docs).
@@ -153,7 +174,6 @@ pub struct WorkerActivityDispatcher {
     heartbeat_tracker: HeartbeatTracker,
     drain_state: DrainState,
     next_id: AtomicU64,
-    timeout: Duration,
     workflow_registry: Option<Arc<aion::Registry>>,
     tokio_handle: Option<tokio::runtime::Handle>,
 }
@@ -162,23 +182,31 @@ impl std::fmt::Debug for WorkerActivityDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerActivityDispatcher")
             .field("namespace", &self.namespace)
-            .field("timeout", &self.timeout)
             .finish_non_exhaustive()
     }
 }
 
 impl WorkerActivityDispatcher {
-    /// Build a dispatcher for the given namespace and worker registry.
+    /// Build a dispatcher for the given namespace, worker registry, and
+    /// liveness tracker.
+    ///
+    /// The tracker must be the same instance the worker stream handler and
+    /// shutdown coordinator share: the unbounded completion wait relies on
+    /// stream teardown sweeping this tracker's in-flight entries to fail
+    /// dispatches whose worker was lost.
     #[must_use]
-    pub fn new(registry: ConnectedWorkerRegistry, namespace: impl Into<String>) -> Self {
+    pub fn new(
+        registry: ConnectedWorkerRegistry,
+        namespace: impl Into<String>,
+        heartbeat_tracker: HeartbeatTracker,
+    ) -> Self {
         Self {
             registry,
             namespace: namespace.into(),
             pending: PendingActivities::default(),
-            heartbeat_tracker: HeartbeatTracker::new(Duration::from_secs(30)),
+            heartbeat_tracker,
             drain_state: DrainState::default(),
             next_id: AtomicU64::new(1),
-            timeout: Duration::from_secs(30),
             workflow_registry: None,
             tokio_handle: None,
         }
@@ -188,13 +216,6 @@ impl WorkerActivityDispatcher {
     #[must_use]
     pub fn with_pending(mut self, pending: PendingActivities) -> Self {
         self.pending = pending;
-        self
-    }
-
-    /// Share a caller-supplied heartbeat/liveness tracker.
-    #[must_use]
-    pub fn with_heartbeat_tracker(mut self, heartbeat_tracker: HeartbeatTracker) -> Self {
-        self.heartbeat_tracker = heartbeat_tracker;
         self
     }
 
@@ -216,13 +237,6 @@ impl WorkerActivityDispatcher {
     #[must_use]
     pub fn with_tokio_handle(mut self, tokio_handle: tokio::runtime::Handle) -> Self {
         self.tokio_handle = Some(tokio_handle);
-        self
-    }
-
-    /// Override the per-activity dispatch timeout.
-    #[must_use]
-    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
         self
     }
 }
@@ -365,38 +379,37 @@ impl WorkerActivityDispatcher {
         }
     }
 
+    /// Block until the dispatch terminates (see the module docs for the
+    /// exhaustive termination list). The wait is deliberately unbounded:
+    /// the engine imposes no activity timeout of its own.
     fn await_activity_result(
         &self,
         context: &ActivityDispatchContext<'_>,
         rx: &SyncReceiver,
     ) -> Result<String, String> {
-        match rx.recv_timeout(self.timeout) {
-            Ok(result) => {
-                self.pending
-                    .pending
-                    .remove(&(context.workflow_id.clone(), context.activity_id.clone()));
-                log_activity_completion(context, result.is_ok());
-                result.inspect_err(|reason| {
-                    log_worker_error(
-                        "ActivityFailed",
-                        &self.namespace,
-                        context.activity_type,
-                        context.workflow_id,
-                        context.activity_id,
-                        Some(context.worker_id),
-                        reason,
-                    );
-                })
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        // Close the dispatch/disconnect race before blocking. A worker whose
+        // stream tore down *before* this dispatch tracked its task was swept
+        // without this entry, so nothing would ever deliver through `rx`.
+        // `fail_lost_worker` deregisters before it collects tasks, and this
+        // dispatch tracked its task before sending, so: if the worker is
+        // still registered here, any later sweep is guaranteed to include
+        // this task and unblock the `recv` below.
+        match self.registry.is_registered(context.worker_id) {
+            Ok(true) => {}
+            Ok(false) => {
+                // A sweep that did include this task may have delivered
+                // already; prefer its verdict (or a genuine result that
+                // raced the disconnect) over fabricating one.
+                if let Ok(result) = rx.try_recv() {
+                    return self.deliver_result(context, result);
+                }
                 self.cleanup_activity(context.worker_id, context.workflow_id, context.activity_id);
                 let reason = format!(
-                    "activity '{}' timed out after {}s",
-                    context.activity_type,
-                    self.timeout.as_secs()
+                    "retryable:{}",
+                    super::dispatch::lost_worker_error(context.worker_id).message
                 );
                 log_worker_error(
-                    "ActivityTimeout",
+                    "WorkerLost",
                     &self.namespace,
                     context.activity_type,
                     context.workflow_id,
@@ -404,13 +417,13 @@ impl WorkerActivityDispatcher {
                     Some(context.worker_id),
                     &reason,
                 );
-                Err(reason)
+                return Err(reason);
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(error) => {
                 self.cleanup_activity(context.worker_id, context.workflow_id, context.activity_id);
-                let reason = "activity response channel dropped".to_owned();
+                let reason = format!("worker registry inspection failed: {error}");
                 log_worker_error(
-                    "WorkerChannelClosed",
+                    "WorkerRegistry",
                     &self.namespace,
                     context.activity_type,
                     context.workflow_id,
@@ -418,9 +431,48 @@ impl WorkerActivityDispatcher {
                     Some(context.worker_id),
                     &reason,
                 );
-                Err(reason)
+                return Err(reason);
             }
         }
+        if let Ok(result) = rx.recv() {
+            return self.deliver_result(context, result);
+        }
+        // Every sender was dropped without completing: a cleanup path
+        // removed the pending entry. Surface it instead of hanging.
+        self.cleanup_activity(context.worker_id, context.workflow_id, context.activity_id);
+        let reason = "activity response channel dropped".to_owned();
+        log_worker_error(
+            "WorkerChannelClosed",
+            &self.namespace,
+            context.activity_type,
+            context.workflow_id,
+            context.activity_id,
+            Some(context.worker_id),
+            &reason,
+        );
+        Err(reason)
+    }
+
+    fn deliver_result(
+        &self,
+        context: &ActivityDispatchContext<'_>,
+        result: Result<String, String>,
+    ) -> Result<String, String> {
+        self.pending
+            .pending
+            .remove(&(context.workflow_id.clone(), context.activity_id.clone()));
+        log_activity_completion(context, result.is_ok());
+        result.inspect_err(|reason| {
+            log_worker_error(
+                "ActivityFailed",
+                &self.namespace,
+                context.activity_type,
+                context.workflow_id,
+                context.activity_id,
+                Some(context.worker_id),
+                reason,
+            );
+        })
     }
 }
 
@@ -440,7 +492,7 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
                     // scheduler core to another thread before blocking so the
                     // stream forwarder woken by our `try_send` can actually
                     // run — otherwise it is trapped in this worker's
-                    // non-stealable LIFO slot until the timeout fires.
+                    // non-stealable LIFO slot for as long as we block.
                     tokio::task::block_in_place(|| {
                         self.dispatch_blocking(name, input, config, attempt)
                     })
@@ -462,7 +514,8 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
 
 impl WorkerActivityDispatcher {
     /// Dispatch the activity and block the calling thread until the worker
-    /// responds or the timeout elapses.
+    /// responds, the worker is declared lost, or the server drains (see the
+    /// module docs for the exhaustive termination list).
     ///
     /// Must never run while the calling thread still owns a tokio scheduler
     /// core: the response can only arrive after the runtime's stream
@@ -710,10 +763,16 @@ mod tests {
         Ok(())
     }
 
+    /// Liveness tracker for dispatcher unit tests; the window only matters
+    /// to expiry checks, which nothing in these tests drives.
+    fn test_tracker() -> HeartbeatTracker {
+        HeartbeatTracker::new(Duration::from_secs(5))
+    }
+
     #[test]
     fn dispatcher_returns_error_when_no_worker_registered() {
         let registry = ConnectedWorkerRegistry::default();
-        let dispatcher = WorkerActivityDispatcher::new(registry, "default");
+        let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker());
 
         let result = dispatcher.dispatch("greet", "{}", "{}", 1);
 
@@ -730,7 +789,8 @@ mod tests {
     /// spawned tokio task (`futures::future::lazy` polled on a runtime
     /// worker), and the woken stream-consumer task landed in that blocked
     /// worker's non-stealable LIFO slot, so the queued `ActivityTask` was
-    /// only delivered when the timeout fired.
+    /// only delivered when the then-extant 30s dispatch timeout fired (the
+    /// dispatch wait is unbounded today; the stall would now be a hang).
     ///
     /// Mirrors the real wiring minus tonic: the real registry channel that
     /// the gRPC stream forwarder drains, a worker task awaiting that channel
@@ -772,8 +832,10 @@ mod tests {
             .map_err(|error| error.to_string())
         });
 
-        let dispatcher =
-            Arc::new(WorkerActivityDispatcher::new(registry, "default").with_pending(pending));
+        let dispatcher = Arc::new(
+            WorkerActivityDispatcher::new(registry, "default", test_tracker())
+                .with_pending(pending),
+        );
         let started = Instant::now();
         // Invoke the sync dispatch inside the first poll of a spawned task:
         // the worst-case calling context for the `block_in_place` guard.
@@ -786,8 +848,8 @@ mod tests {
         assert_eq!(result, Ok(r#"{"greeting":"hello"}"#.to_owned()));
         assert!(
             elapsed < Duration::from_secs(5),
-            "dispatch round trip took {elapsed:?}; task delivery must not be \
-             coupled to the dispatch timeout"
+            "dispatch round trip took {elapsed:?}; task delivery must not \
+             depend on the blocked dispatch thread"
         );
         echo_worker.await.map_err(|error| error.to_string())??;
         registration.deregister()?;
@@ -796,7 +858,7 @@ mod tests {
 
     /// A current-thread runtime cannot host the blocking wait (the stream
     /// forwarder would share its only executor thread), so dispatch must
-    /// fail fast with a precise error instead of stalling until the timeout.
+    /// fail fast with a precise error instead of blocking forever.
     #[tokio::test]
     async fn dispatch_on_current_thread_runtime_fails_fast()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -804,7 +866,7 @@ mod tests {
         let (worker_tx, _worker_rx) = tokio::sync::mpsc::channel(32);
         let activity_types = [String::from("greet")];
         let registration = registry.register("default", activity_types.iter(), worker_tx)?;
-        let dispatcher = WorkerActivityDispatcher::new(registry, "default");
+        let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker());
 
         let started = Instant::now();
         let result = dispatcher.dispatch("greet", "{}", "{}", 1);

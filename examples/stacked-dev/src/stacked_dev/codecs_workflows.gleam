@@ -148,6 +148,7 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
       json.object([
         #("repo_root", json.string(input.repo_root)),
         #("brief_id", json.string(input.brief_id)),
+        #("reviewers", json.array(input.reviewers, json.string)),
         #("base_ref", json.string(input.base_ref)),
         #(
           "placement",
@@ -169,6 +170,7 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
     },
     {
       use provision <- decode.then(codecs_core.provision_input_decoder())
+      use reviewers <- decode.field("reviewers", decode.list(decode.string))
       use brief <- decode.field("brief", decode.string)
       use design <- decode.field("design", decode.string)
       use checklist <- decode.field("checklist", decode.string)
@@ -180,6 +182,7 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
       decode.success(StackedDevInput(
         repo_root: provision.repo_root,
         brief_id: provision.brief_id,
+        reviewers: reviewers,
         base_ref: provision.base_ref,
         placement: provision.placement,
         isolation: provision.isolation,
@@ -201,8 +204,8 @@ pub fn stacked_dev_result_codec() -> codec.Codec(StackedDevResult) {
   codec.json_codec(
     fn(result: StackedDevResult) {
       json.object([
-        #("pr_url", json.string(result.pr_url)),
-        #("merge_commit", json.string(result.merge_commit)),
+        #("branch", json.string(result.branch)),
+        #("merged_into", json.string(result.merged_into)),
         #("session_id", json.string(result.session_id)),
         #("build_warm", codecs_core.build_warm_to_json(result.build_warm)),
         #("verify_rounds", json.int(result.verify_rounds)),
@@ -210,8 +213,8 @@ pub fn stacked_dev_result_codec() -> codec.Codec(StackedDevResult) {
       ])
     },
     {
-      use pr_url <- decode.field("pr_url", decode.string)
-      use merge_commit <- decode.field("merge_commit", decode.string)
+      use branch <- decode.field("branch", decode.string)
+      use merged_into <- decode.field("merged_into", decode.string)
       use session_id <- decode.field("session_id", decode.string)
       use build_warm <- decode.field(
         "build_warm",
@@ -220,8 +223,8 @@ pub fn stacked_dev_result_codec() -> codec.Codec(StackedDevResult) {
       use verify_rounds <- decode.field("verify_rounds", decode.int)
       use review_rounds <- decode.field("review_rounds", decode.int)
       decode.success(StackedDevResult(
-        pr_url: pr_url,
-        merge_commit: merge_commit,
+        branch: branch,
+        merged_into: merged_into,
         session_id: session_id,
         build_warm: build_warm,
         verify_rounds: verify_rounds,

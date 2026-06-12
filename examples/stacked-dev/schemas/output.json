@@ -3,8 +3,8 @@
   "title": "stacked_dev output",
   "type": "object",
   "required": [
-    "pr_url",
-    "merge_commit",
+    "branch",
+    "merged_into",
     "session_id",
     "build_warm",
     "verify_rounds",
@@ -12,19 +12,42 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "pr_url": { "type": "string", "minLength": 1 },
-    "merge_commit": { "type": "string", "minLength": 1 },
-    "session_id": { "type": "string", "minLength": 1 },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "merged_into": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "build_warm": {
       "type": "object",
-      "required": ["ok", "duration_ms"],
+      "required": [
+        "ok",
+        "duration_ms"
+      ],
       "additionalProperties": false,
       "properties": {
-        "ok": { "type": "boolean" },
-        "duration_ms": { "type": "integer", "minimum": 0 }
+        "ok": {
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
-    "verify_rounds": { "type": "integer", "minimum": 1 },
-    "review_rounds": { "type": "integer", "minimum": 1 }
+    "verify_rounds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_rounds": {
+      "type": "integer",
+      "minimum": 1
+    }
   }
 }

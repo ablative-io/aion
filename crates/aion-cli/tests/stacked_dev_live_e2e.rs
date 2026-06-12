@@ -47,11 +47,11 @@ const PHASE_DEADLINE: Duration = Duration::from_secs(120);
 const COMPLETION_DEADLINE: Duration = Duration::from_secs(120);
 const EXIT_DEADLINE: Duration = Duration::from_secs(60);
 
-/// The canned PR URL the meridian stack-submit shim reports (the same value
+/// The branch the land step merges (the same value
 /// the Gleam suite's shim uses).
-const PR_URL: &str = "https://example.test/pr/41";
-/// The canned merge commit the meridian stack-land shim reports.
-const MERGE_COMMIT: &str = "deadbeefcafe";
+const LANDED_BRANCH: &str = "stacked-dev-brief-7";
+/// The tree parent the land step merges into.
+const MERGED_INTO: &str = "main";
 
 fn repo_root() -> Result<PathBuf, TestError> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -250,6 +250,7 @@ fn write_shims(dir: &Path) -> Result<(), TestError> {
     case "$2" in
       add) exit 0 ;;
       provision) mkdir -p "$5"; exit 0 ;;
+      merge) exit 0 ;;
       *) echo "unknown yg branch: $2" >&2; exit 64 ;;
     esac
     ;;
@@ -285,24 +286,15 @@ esac"#,
     write_shim(
         dir,
         "meridian",
-        &format!(
-            r#"case "$1" in
+        r#"case "$1" in
   review)
-    printf '%s' '{{"request_id":"rev-1"}}'
-    ;;
-  stack)
-    case "$2" in
-      submit) printf '%s' '{{"pr_url":"{PR_URL}"}}' ;;
-      land) printf '%s' '{{"merge_commit":"{MERGE_COMMIT}"}}' ;;
-      *) echo "unknown stack subcommand: $2" >&2; exit 64 ;;
-    esac
+    printf '%s' '{"request_id":"rev-1"}'
     ;;
   *)
     echo "unknown meridian subcommand: $1" >&2
     exit 64
     ;;
-esac"#
-        ),
+esac"#,
     )?;
     Ok(())
 }
@@ -412,7 +404,7 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
         let mut worker = ChildGuard::new(worker_child, "stacked-dev-worker");
 
         let input = format!(
-            r#"{{"repo_root":"{}","brief_id":"brief-7","base_ref":"main","placement":"local","isolation":"worktree","brief":"Implement the widget","design":"docs/design.md","checklist":"docs/checklist.md","stories":["story-1"],"verify_fix_cap":3,"review_cap":3,"round_backoff_ms":100,"review_deadline_ms":86400000}}"#,
+            r#"{{"repo_root":"{}","brief_id":"brief-7","reviewers":["sample-reviewer"],"base_ref":"main","placement":"local","isolation":"worktree","brief":"Implement the widget","design":"docs/design.md","checklist":"docs/checklist.md","stories":["story-1"],"verify_fix_cap":3,"review_cap":3,"round_backoff_ms":100,"review_deadline_ms":86400000}}"#,
             workflow_repo.display()
         );
         let workflow_id =
@@ -614,9 +606,9 @@ fn wait_for_landed_completion(
             .to_owned();
         if status == "Completed" {
             let rendered = described.to_string();
-            if !rendered.contains(PR_URL) || !rendered.contains(MERGE_COMMIT) {
+            if !rendered.contains(LANDED_BRANCH) || !rendered.contains(MERGED_INTO) {
                 return Err(format!(
-                    "completed history must carry the landed output ({PR_URL}, {MERGE_COMMIT}): {rendered}"
+                    "completed history must carry the landed output ({LANDED_BRANCH}, {MERGED_INTO}): {rendered}"
                 )
                 .into());
             }

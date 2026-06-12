@@ -247,6 +247,20 @@ impl ConnectedWorkerRegistry {
             .and_then(|workers| workers.values().min_by_key(|worker| worker.id).cloned()))
     }
 
+    /// Return whether a worker stream is currently registered.
+    ///
+    /// The activity dispatch path uses this after queuing a task to detect a
+    /// worker whose stream tore down concurrently: a sweep that ran before
+    /// the dispatch tracked its task can never complete it, so the dispatch
+    /// must fail the activity itself instead of waiting forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn is_registered(&self, worker_id: WorkerId) -> Result<bool, ServerError> {
+        Ok(self.state()?.workers.contains_key(&worker_id))
+    }
+
     /// Remove a worker by id from every namespace/activity index it advertised.
     ///
     /// # Errors

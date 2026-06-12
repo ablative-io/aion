@@ -38,6 +38,7 @@ fn base_input(shim_set: shims.Shims) -> StackedDevInput {
   StackedDevInput(
     repo_root: shim_set.root,
     brief_id: "brief-7",
+    reviewers: ["sample-reviewer"],
     base_ref: "main",
     placement: Local,
     isolation: Worktree,
@@ -115,8 +116,8 @@ pub fn full_pipeline_happy_path_approves_first_round_test() {
 
   let assert Ok(result) = stacked_dev.execute(base_input(shim_set))
 
-  result.pr_url |> should.equal(shims.pr_url)
-  result.merge_commit |> should.equal(shims.merge_commit)
+  result.branch |> should.equal(shims.landed_branch)
+  result.merged_into |> should.equal(shims.merged_into)
   result.session_id |> should.equal(shims.session_id)
   result.build_warm.ok |> should.be_true
   result.verify_rounds |> should.equal(1)
@@ -126,14 +127,16 @@ pub fn full_pipeline_happy_path_approves_first_round_test() {
   shims.invocations(shim_set, "yg", "branch add") |> should.equal(1)
   shims.invocations(shim_set, "yg", "branch provision") |> should.equal(1)
 
-  // Land really means stack submit THEN stack land, exactly once each.
-  shims.invocations(shim_set, "meridian", "stack submit")
+  // Land is the yg-level stack operation: merge the branch into its parent,
+  // exactly once, after review approved.
+  shims.invocations(shim_set, "yg", "branch merge " <> shims.landed_branch)
   |> should.equal(1)
-  shims.invocations(shim_set, "meridian", "stack land")
-  |> should.equal(1)
-  let assert Ok(#(_, after_submit)) =
-    string.split_once(shims.log(shim_set, "meridian"), "stack submit")
-  after_submit |> string.contains("stack land") |> should.be_true
+  // The review request carried the reviewer flags and the branch.
+  shims.log(shim_set, "meridian")
+  |> string.contains(
+    "review request --reviewer sample-reviewer " <> shims.landed_branch,
+  )
+  |> should.be_true
 
   // The startup fan-out really warmed the cache concurrently with dev.
   shims.invocations(shim_set, "cargo", "build") |> should.equal(1)
@@ -179,7 +182,7 @@ pub fn verify_fix_exhaustion_surfaces_typed_diagnostics_test() {
   |> should.equal(0)
   shims.invocations(shim_set, "meridian", "review request")
   |> should.equal(0)
-  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 
   // The child's status query reports where it stopped: still verifying at
   // the capped round.
@@ -226,7 +229,7 @@ pub fn review_request_changes_notes_reach_dev_resume_and_regate_test() {
   |> should.equal(2)
   shims.invocations(shim_set, "meridian", "review request")
   |> should.equal(2)
-  shims.invocations(shim_set, "meridian", "stack land")
+  shims.invocations(shim_set, "yg", "branch merge")
   |> should.equal(1)
 }
 
@@ -242,7 +245,7 @@ pub fn gate_failure_after_convergence_is_typed_gate_rejected_test() {
   report |> string.contains(shims.workspace_report) |> should.be_true
   shims.invocations(shim_set, "meridian", "review request")
   |> should.equal(0)
-  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 }
 
 pub fn review_cap_exhaustion_fails_the_run_with_typed_rounds_test() {
@@ -271,7 +274,7 @@ pub fn review_cap_exhaustion_fails_the_run_with_typed_rounds_test() {
   |> should.equal(1)
   shims.invocations(shim_set, "yg", "diagnostics check --workspace")
   |> should.equal(2)
-  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 }
 
 pub fn review_reject_fails_the_run_with_typed_reason_test() {
@@ -282,8 +285,8 @@ pub fn review_reject_fails_the_run_with_typed_reason_test() {
   |> should.equal(Error(ReviewRejected(reason: "wrong architecture")))
 
   // A rejected run never submits or lands.
-  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
-  shims.invocations(shim_set, "meridian", "stack land") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 }
 
 pub fn review_timeout_fails_the_run_with_typed_deadline_test() {
@@ -297,8 +300,8 @@ pub fn review_timeout_fails_the_run_with_typed_deadline_test() {
   // The review was requested, but nothing was submitted or landed.
   shims.invocations(shim_set, "meridian", "review request")
   |> should.equal(1)
-  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
-  shims.invocations(shim_set, "meridian", "stack land") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
+  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 }
 
 pub fn warm_build_failure_is_advisory_and_never_fails_the_run_test() {
@@ -309,7 +312,7 @@ pub fn warm_build_failure_is_advisory_and_never_fails_the_run_test() {
 
   // The forfeited cache is recorded as advisory data; the run still landed.
   result.build_warm.ok |> should.be_false
-  result.pr_url |> should.equal(shims.pr_url)
+  result.branch |> should.equal(shims.landed_branch)
   result.review_rounds |> should.equal(1)
   shims.invocations(shim_set, "cargo", "build") |> should.equal(1)
 }

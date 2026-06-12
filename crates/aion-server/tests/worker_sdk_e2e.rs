@@ -151,10 +151,13 @@ async fn rust_worker_sdk_handshakes_serves_and_rides_through_drain() -> Result<(
     let first_worker_id = wait_for_worker(&registry, None).await?;
 
     let dispatcher = Arc::new(
-        WorkerActivityDispatcher::new(registry.clone(), NAMESPACE)
-            .with_pending(state.pending_activities().clone())
-            .with_heartbeat_tracker(state.heartbeat_tracker().clone())
-            .with_drain_state(state.drain_state().clone()),
+        WorkerActivityDispatcher::new(
+            registry.clone(),
+            NAMESPACE,
+            state.heartbeat_tracker().clone(),
+        )
+        .with_pending(state.pending_activities().clone())
+        .with_drain_state(state.drain_state().clone()),
     );
 
     // Dispatch with a non-default attempt: the worker's handler context must
