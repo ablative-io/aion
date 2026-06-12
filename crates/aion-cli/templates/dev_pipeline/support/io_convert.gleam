@@ -31,6 +31,7 @@ pub fn input_to_domain(input: generated.Input) -> PipelineInput {
   PipelineInput(
     repo_root: input.repo_root,
     brief_id: input.brief_id,
+    reviewers: input.reviewers,
     base_ref: input.base_ref,
     placement: placement_from_input(input.placement),
     isolation: isolation_from_input(input.isolation),
@@ -50,6 +51,7 @@ pub fn input_from_domain(input: PipelineInput) -> generated.Input {
   generated.Input(
     repo_root: input.repo_root,
     brief_id: input.brief_id,
+    reviewers: input.reviewers,
     base_ref: input.base_ref,
     placement: placement_to_input(input.placement),
     isolation: isolation_to_input(input.isolation),
@@ -101,8 +103,8 @@ fn isolation_to_input(isolation: Isolation) -> generated.InputIsolation {
 /// Domain view of a decoded top-level workflow output.
 pub fn output_to_domain(output: generated.Output) -> PipelineResult {
   PipelineResult(
-    pr_url: output.pr_url,
-    merge_commit: output.merge_commit,
+    branch: output.branch,
+    merged_into: output.merged_into,
     session_id: output.session_id,
     build_warm: BuildWarm(
       ok: output.build_warm.ok,
@@ -116,8 +118,8 @@ pub fn output_to_domain(output: generated.Output) -> PipelineResult {
 /// Wire view of a top-level workflow output.
 pub fn output_from_domain(result: PipelineResult) -> generated.Output {
   generated.Output(
-    pr_url: result.pr_url,
-    merge_commit: result.merge_commit,
+    branch: result.branch,
+    merged_into: result.merged_into,
     session_id: result.session_id,
     build_warm: generated.OutputBuildWarm(
       ok: result.build_warm.ok,

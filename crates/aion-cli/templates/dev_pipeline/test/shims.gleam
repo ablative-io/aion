@@ -60,11 +60,11 @@ pub const affected_package = "aion-core"
 /// (`<project>-<brief_id>`), so for `brief-7` it is exactly this.
 pub const session_id = "{{name}}-brief-7"
 
-/// The PR URL the meridian stack-submit shim reports.
-pub const pr_url = "https://example.test/pr/41"
+/// The branch the land step merges (deterministic: <project>-<brief_id>).
+pub const landed_branch = "{{name}}-brief-7"
 
-/// The merge commit the meridian stack-land shim reports.
-pub const merge_commit = "deadbeefcafe"
+/// The tree parent the land step merges into (the base ref).
+pub const merged_into = "main"
 
 /// Create a fresh shim directory and point `PATH` at it exclusively.
 ///
@@ -93,20 +93,13 @@ pub fn invocations(shims: Shims, executable: String, prefix: String) -> Int {
   |> list.length
 }
 
-/// Install the `meridian` shim: review acks, the stack submits then lands.
-/// Provisioning and checks belong to `yg` now.
+/// Install the `meridian` shim: review request acks only — provisioning and
+/// checks belong to `yg`, and landing is `yg branch merge` now.
 pub fn write_meridian(shims: Shims) -> Nil {
   write_shim(shims, "meridian", [
     "case \"$1\" in",
     "  review)",
     "    printf '%s' '{\"request_id\":\"rev-1\"}'",
-    "    ;;",
-    "  stack)",
-    "    case \"$2\" in",
-    "      submit) printf '%s' '{\"pr_url\":\"" <> pr_url <> "\"}' ;;",
-    "      land) printf '%s' '{\"merge_commit\":\"" <> merge_commit <> "\"}' ;;",
-    "      *) echo \"unknown stack subcommand: $2\" >&2; exit 64 ;;",
-    "    esac",
     "    ;;",
     "  *)",
     "    echo \"unknown meridian subcommand: $1\" >&2",
@@ -215,6 +208,7 @@ fn yg_script(diagnostics_body: List(String)) -> List(String) {
       "    case \"$2\" in",
       "      add) exit 0 ;;",
       "      provision) mkdir -p \"$5\"; exit 0 ;;",
+      "      merge) exit 0 ;;",
       "      *) echo \"unknown yg branch: $2\" >&2; exit 64 ;;",
       "    esac",
       "    ;;",
@@ -291,13 +285,18 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
     activities.request_review(ReviewRequest(
       workspace: workspace,
       brief_id: "sample",
+      reviewers: ["sample-reviewer"],
       dev_result: dev_result,
       gate_result: GateResult(verdict: GatePass),
     )),
   )
   register_activity(
     env,
-    activities.land(LandInput(workspace: workspace, dev_result: dev_result)),
+    activities.land(LandInput(
+      workspace: workspace,
+      base_ref: "main",
+      dev_result: dev_result,
+    )),
   )
 
   let assert Ok(_) =

@@ -165,6 +165,7 @@ pub type ReviewRequest {
   ReviewRequest(
     workspace: Workspace,
     brief_id: String,
+    reviewers: List(String),
     dev_result: DevResult,
     gate_result: GateResult,
   )
@@ -198,12 +199,12 @@ pub type ReviewVerdict {
 /// Input to the `land` activity: an approved workspace and the dev result
 /// whose work is being landed.
 pub type LandInput {
-  LandInput(workspace: Workspace, dev_result: DevResult)
+  LandInput(workspace: Workspace, base_ref: String, dev_result: DevResult)
 }
 
 /// Output of the `land` activity.
 pub type Landed {
-  Landed(pr_url: String, merge_commit: String)
+  Landed(branch: String, merged_into: String)
 }
 
 /// Input to the `{{name}}_dev` child workflow (also independently
@@ -254,6 +255,7 @@ pub type PipelineInput {
   PipelineInput(
     repo_root: String,
     brief_id: String,
+    reviewers: List(String),
     base_ref: String,
     placement: Placement,
     isolation: Isolation,
@@ -271,8 +273,8 @@ pub type PipelineInput {
 /// Output of a landed pipeline run.
 pub type PipelineResult {
   PipelineResult(
-    pr_url: String,
-    merge_commit: String,
+    branch: String,
+    merged_into: String,
     session_id: String,
     build_warm: BuildWarm,
     verify_rounds: Int,
@@ -298,7 +300,7 @@ pub type PipelineError {
   ReviewTimedOut(deadline_ms: Int)
   /// The bounded review loop spent its round budget.
   ReviewCapExhausted(rounds: Int)
-  /// Submitting or landing the approved stack failed.
+  /// Landing (merging the approved branch into its tree parent) failed.
   LandFailed(message: String)
   /// Any other stage failure, tagged with the stage that raised it.
   StageFailed(stage: String, message: String)

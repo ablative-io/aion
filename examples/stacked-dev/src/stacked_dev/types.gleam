@@ -300,7 +300,7 @@ pub type StackedDevError {
   ReviewTimedOut(deadline_ms: Int)
   /// The bounded review loop spent its round budget.
   ReviewCapExhausted(rounds: Int)
-  /// Submitting or landing the approved stack failed.
+  /// Landing (merging the approved branch into its tree parent) failed.
   LandFailed(message: String)
   /// Any other stage failure, tagged with the stage that raised it.
   StageFailed(stage: String, message: String)

@@ -25,6 +25,7 @@ pub fn review_request_codec() -> codec.Codec(ReviewRequest) {
       json.object([
         #("workspace", codecs_core.workspace_to_json(request.workspace)),
         #("brief_id", json.string(request.brief_id)),
+        #("reviewers", json.array(request.reviewers, json.string)),
         #("dev_result", codecs_core.dev_result_to_json(request.dev_result)),
         #(
           "gate_result",
@@ -38,6 +39,7 @@ pub fn review_request_codec() -> codec.Codec(ReviewRequest) {
         codecs_core.workspace_decoder(),
       )
       use brief_id <- decode.field("brief_id", decode.string)
+      use reviewers <- decode.field("reviewers", decode.list(decode.string))
       use dev_result <- decode.field(
         "dev_result",
         codecs_core.dev_result_decoder(),
@@ -49,6 +51,7 @@ pub fn review_request_codec() -> codec.Codec(ReviewRequest) {
       decode.success(ReviewRequest(
         workspace: workspace,
         brief_id: brief_id,
+        reviewers: reviewers,
         dev_result: dev_result,
         gate_result: gate_result,
       ))
@@ -143,6 +146,7 @@ pub fn land_input_codec() -> codec.Codec(LandInput) {
     fn(input: LandInput) {
       json.object([
         #("workspace", codecs_core.workspace_to_json(input.workspace)),
+        #("base_ref", json.string(input.base_ref)),
         #("dev_result", codecs_core.dev_result_to_json(input.dev_result)),
       ])
     },
@@ -151,11 +155,16 @@ pub fn land_input_codec() -> codec.Codec(LandInput) {
         "workspace",
         codecs_core.workspace_decoder(),
       )
+      use base_ref <- decode.field("base_ref", decode.string)
       use dev_result <- decode.field(
         "dev_result",
         codecs_core.dev_result_decoder(),
       )
-      decode.success(LandInput(workspace: workspace, dev_result: dev_result))
+      decode.success(LandInput(
+        workspace: workspace,
+        base_ref: base_ref,
+        dev_result: dev_result,
+      ))
     },
   )
 }
@@ -165,14 +174,14 @@ pub fn landed_codec() -> codec.Codec(Landed) {
   codec.json_codec(
     fn(landed: Landed) {
       json.object([
-        #("pr_url", json.string(landed.pr_url)),
-        #("merge_commit", json.string(landed.merge_commit)),
+        #("branch", json.string(landed.branch)),
+        #("merged_into", json.string(landed.merged_into)),
       ])
     },
     {
-      use pr_url <- decode.field("pr_url", decode.string)
-      use merge_commit <- decode.field("merge_commit", decode.string)
-      decode.success(Landed(pr_url: pr_url, merge_commit: merge_commit))
+      use branch <- decode.field("branch", decode.string)
+      use merged_into <- decode.field("merged_into", decode.string)
+      decode.success(Landed(branch: branch, merged_into: merged_into))
     },
   )
 }

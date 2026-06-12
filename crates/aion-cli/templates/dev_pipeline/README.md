@@ -12,7 +12,7 @@ template — brief in, landed on main out:
    signal raced against a durable deadline (`workflow.with_timeout`) —
    approve lands, structured change requests resume the same agent session
    and re-gate, reject and timeout are typed failures,
-5. `land` — stack submit, then stack land.
+5. `land` — `yg branch merge` into the base ref.
 
 Every loop cap, backoff, and deadline is a **required** input field: the
 caller decides, the workflow bakes nothing in. Live `{phase, round}` status
@@ -104,7 +104,8 @@ cargo run --manifest-path worker/Cargo.toml -- --endpoint http://127.0.0.1:50051
 # Terminal 3 — start a run. Every cap, backoff, and deadline is required.
 aion start {{name}} --input '{
   "repo_root": "/abs/path/to/repo",
-  "brief_id": "brief-7", "base_ref": "main",
+  "brief_id": "brief-7", "reviewers": ["your-member-name"],
+  "base_ref": "main",
   "placement": "local", "isolation": "worktree",
   "brief": "Implement the widget",
   "design": "docs/design.md", "checklist": "docs/checklist.md",
@@ -152,9 +153,11 @@ cargo test --manifest-path worker/Cargo.toml
 ## Adapting the pipeline
 
 The scaffold shells to `yg` (worktree provisioning, affected-set scoping,
-diagnostics checks), `norn` (the dev agent, resumed by deterministic
-session id `{{name}}-<brief_id>`), `cargo` (the advisory warm build), and
-`meridian` (review requests, stack submit/land). Swap any of them for your
+diagnostics checks, and landing via `yg branch merge`), `norn` (the dev
+agent, resumed by deterministic session id `{{name}}-<brief_id>`), `cargo`
+(the advisory warm build), and `meridian` (review requests:
+`meridian review request --reviewer <NAME>... <BRANCH>`, reviewers a
+required input field). Swap any of them for your
 own tooling in `src/{{name}}/locals.gleam` (the in-process test seam) and
 `worker/src/handlers.rs` (the deployed worker) — keep the two mirrored, and
 keep the hermetic suites green: they assert the real argv of every step.

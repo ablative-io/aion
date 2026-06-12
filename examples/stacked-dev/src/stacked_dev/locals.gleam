@@ -3,8 +3,8 @@
 //// Under the `aion/testing` harness each activity executes one of these
 //// functions in-process; each shells to the real CLI that owns the step
 //// (`norn` for the dev agent, `yg` for worktree provisioning, affected-module
-//// scoping, and diagnostics checks, `cargo` for the advisory warm build,
-//// `meridian` for review requests and landing) through `stacked_dev/cli`.
+//// scoping, diagnostics checks, and landing, `cargo` for the advisory warm
+//// build, `meridian` for review requests) through `stacked_dev/cli`.
 //// The hermetic test suite intercepts at the process boundary with fake-CLI
 //// shims placed first on `PATH` — the most realistic seam — while these
 //// implementations stay honest: they really shell out, and a missing CLI with
@@ -363,8 +363,8 @@ pub fn request_review(
   Ok(ReviewAck(request_id: request_id))
 }
 
-/// Land the approved work: stack submit, then stack land. Never a manual
-/// cherry-pick or merge.
+/// Land the approved work: `yg branch merge` into the tree parent. Never a
+/// manual cherry-pick or merge.
 pub fn land(input: LandInput) -> Result(Landed, error.ActivityError) {
   // Landing is a yg-level stack operation (confirmed direction, 2026-06-13):
   // `yg branch merge <branch>` merges the branch into its tree parent — the

@@ -6,6 +6,7 @@
   "required": [
     "repo_root",
     "brief_id",
+    "reviewers",
     "base_ref",
     "placement",
     "isolation",
@@ -28,6 +29,15 @@
     "brief_id": {
       "type": "string",
       "minLength": 1
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "description": "Member names or UUIDs to request review from."
     },
     "base_ref": {
       "type": "string",

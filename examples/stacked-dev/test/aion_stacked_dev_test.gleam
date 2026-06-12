@@ -224,7 +224,7 @@ pub fn review_request_changes_notes_reach_dev_resume_and_regate_test() {
   norn_log |> string.contains("tighten the error taxonomy") |> should.be_true
 
   // Each fix round re-gates: the workspace gate ran twice, the review was
-  // requested twice, and the stack landed once.
+  // requested twice, and the branch merged once.
   shims.invocations(shim_set, "yg", "diagnostics check --workspace")
   |> should.equal(2)
   shims.invocations(shim_set, "meridian", "review request")
@@ -284,8 +284,7 @@ pub fn review_reject_fails_the_run_with_typed_reason_test() {
   stacked_dev.execute(base_input(shim_set))
   |> should.equal(Error(ReviewRejected(reason: "wrong architecture")))
 
-  // A rejected run never submits or lands.
-  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
+  // A rejected run never lands.
   shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 }
 
@@ -297,10 +296,9 @@ pub fn review_timeout_fails_the_run_with_typed_deadline_test() {
   stacked_dev.execute(input)
   |> should.equal(Error(ReviewTimedOut(deadline_ms: 0)))
 
-  // The review was requested, but nothing was submitted or landed.
+  // The review was requested, but nothing was landed.
   shims.invocations(shim_set, "meridian", "review request")
   |> should.equal(1)
-  shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
   shims.invocations(shim_set, "yg", "branch merge") |> should.equal(0)
 }
 

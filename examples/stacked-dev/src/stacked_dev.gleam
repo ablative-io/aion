@@ -13,8 +13,8 @@
 ////    `workflow.with_timeout`. Approve proceeds; RequestChanges resumes the
 ////    dev session with the structured notes, re-gates, and re-requests;
 ////    Reject or a deadline expiry is a typed `Failed`.
-//// 5. `land` — stack submit + stack land, only on Approve and a passing
-////    gate.
+//// 5. `land` — `yg branch merge` into the tree parent, only on Approve
+////    and a passing gate.
 ////
 //// A `stacked_dev_status` query answers `{phase, round}` live state; the
 //// handler is re-registered at every stage transition, so replay re-arms it

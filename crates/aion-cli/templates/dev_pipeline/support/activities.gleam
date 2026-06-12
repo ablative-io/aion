@@ -38,7 +38,7 @@ pub const full_checks_name = "full_checks"
 /// Activity name served by the review-request worker.
 pub const request_review_name = "request_review"
 
-/// Activity name served by the stack submit/land worker.
+/// Activity name served by the landing (`yg branch merge`) worker.
 pub const land_name = "land"
 
 /// `provision_workspace`: provision an isolated workspace off the base ref.
@@ -135,7 +135,7 @@ pub fn request_review(
   )
 }
 
-/// `land`: stack submit then stack land.
+/// `land`: `yg branch merge` into the tree parent.
 pub fn land(input: LandInput) -> activity.Activity(LandInput, types.Landed) {
   activity.new(
     land_name,
