@@ -19,6 +19,9 @@ use std::time::Duration;
 
 use aion_worker::{ActivityContext, ActivityFailure, HandlerFuture, Worker, WorkerConfig};
 use anyhow::{Context, bail};
+
+// The scaffolded crate's own library, in its own import group so the
+// statement order holds for any project name.
 use {{name}}_worker::handlers;
 use {{name}}_worker::shell::Shell;
 
@@ -35,7 +38,11 @@ fn endpoint_from_args() -> anyhow::Result<String> {
                 endpoint = Some(value);
             }
             other => {
-                bail!("unknown argument `{other}`\nusage: {{name}}_worker --endpoint <grpc-url>")
+                // The usage line is a standalone binding so the rendered
+                // source stays inside rustfmt's line width for typical
+                // project-name lengths.
+                let usage = "usage: {{name}}_worker --endpoint <grpc-url>";
+                bail!("unknown argument `{other}`\n{usage}")
             }
         }
     }
@@ -122,15 +129,30 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
 
     Worker::builder(config)
-        .register_activity("provision_workspace", blocking(shell.clone(), handlers::provision_workspace))?
+        .register_activity(
+            "provision_workspace",
+            blocking(shell.clone(), handlers::provision_workspace),
+        )?
         // warm_build and dev BOTH serve the tagged StartupTask envelope; the
         // engine routes each name only its own variant.
-        .register_activity("warm_build", blocking(shell.clone(), handlers::startup_task))?
+        .register_activity(
+            "warm_build",
+            blocking(shell.clone(), handlers::startup_task),
+        )?
         .register_activity("dev", blocking(shell.clone(), handlers::startup_task))?
-        .register_activity("scoped_checks", blocking(shell.clone(), handlers::scoped_checks))?
+        .register_activity(
+            "scoped_checks",
+            blocking(shell.clone(), handlers::scoped_checks),
+        )?
         .register_activity("dev_resume", blocking(shell.clone(), handlers::dev_resume))?
-        .register_activity("full_checks", blocking(shell.clone(), handlers::full_checks))?
-        .register_activity("request_review", blocking(shell.clone(), handlers::request_review))?
+        .register_activity(
+            "full_checks",
+            blocking(shell.clone(), handlers::full_checks),
+        )?
+        .register_activity(
+            "request_review",
+            blocking(shell.clone(), handlers::request_review),
+        )?
         .register_activity("land", blocking(shell, handlers::land))?
         .build()?
         .run()

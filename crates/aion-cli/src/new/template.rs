@@ -565,9 +565,12 @@ mod tests {
                     .find(|(path, _)| *path == "worker/src/main.rs")
                     .map(|(_, contents)| *contents)
                     .unwrap_or_default();
+                // Whitespace-insensitive: registrations may be wrapped
+                // across lines by rustfmt.
+                let condensed: String = main.split_whitespace().collect();
                 for activity in template.activities() {
                     assert!(
-                        main.contains(&format!("register_activity(\"{activity}\"")),
+                        condensed.contains(&format!("register_activity(\"{activity}\"")),
                         "template {} worker must register {activity}",
                         template.id()
                     );

@@ -70,7 +70,7 @@ pub fn provision_input_codec() -> codec.Codec(ProvisionInput) {
   )
 }
 
-/// Decoder for the provisioning fields. Shared with the the parent workflow input
+/// Decoder for the provisioning fields. Shared with the top-level pipeline input
 /// codec, whose top-level object carries the same four fields.
 pub fn provision_input_decoder() -> decode.Decoder(ProvisionInput) {
   use repo_root <- decode.field("repo_root", decode.string)

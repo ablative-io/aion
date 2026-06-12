@@ -15,6 +15,9 @@ use std::error::Error;
 use std::path::Path;
 
 use aion_worker::{ActivityFailure, Classification};
+
+// The scaffolded crate's own library, in its own import group so the
+// statement order holds for any project name.
 use {{name}}_worker::handlers;
 use {{name}}_worker::shell::Shell;
 use {{name}}_worker::types::{

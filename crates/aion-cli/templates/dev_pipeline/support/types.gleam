@@ -206,7 +206,7 @@ pub type Landed {
   Landed(pr_url: String, merge_commit: String)
 }
 
-/// Input to the the dev child child workflow (also independently
+/// Input to the `{{name}}_dev` child workflow (also independently
 /// dispatchable as a top-level run — open question Q6).
 ///
 /// `verify_fix_cap` and `round_backoff_ms` are required inputs, never baked
@@ -223,7 +223,7 @@ pub type DevFlowInput {
   )
 }
 
-/// Output of the the dev child child workflow: the converged dev result,
+/// Output of the `{{name}}_dev` child workflow: the converged dev result,
 /// the advisory warm-build outcome, and how many verify rounds it took.
 pub type DevFlowResult {
   DevFlowResult(
@@ -233,7 +233,7 @@ pub type DevFlowResult {
   )
 }
 
-/// Typed errors of the the dev child child workflow.
+/// Typed errors of the `{{name}}_dev` child workflow.
 pub type DevFlowError {
   /// The concurrent warm-build/dev startup fan-out failed.
   StartupFailed(message: String)
@@ -244,7 +244,7 @@ pub type DevFlowError {
   DevFlowStageFailed(stage: String, message: String)
 }
 
-/// Input to the the parent workflow top-level workflow.
+/// Input to the top-level pipeline workflow.
 ///
 /// Resolves open question Q5 (loop caps and backoff): `verify_fix_cap`,
 /// `review_cap`, `round_backoff_ms`, and `review_deadline_ms` are REQUIRED
@@ -268,7 +268,7 @@ pub type PipelineInput {
   )
 }
 
-/// Output of a landed the parent workflow run.
+/// Output of a landed pipeline run.
 pub type PipelineResult {
   PipelineResult(
     pr_url: String,
@@ -280,11 +280,11 @@ pub type PipelineResult {
   )
 }
 
-/// Typed errors of the the parent workflow top-level workflow.
+/// Typed errors of the top-level pipeline workflow.
 pub type PipelineError {
   /// Workspace provisioning failed.
   ProvisionFailed(message: String)
-  /// The the dev child child failed outside its verify-fix budget.
+  /// The `{{name}}_dev` child failed outside its verify-fix budget.
   DevFailed(message: String)
   /// The child's verify-fix loop spent its budget; lifted from
   /// `VerifyFixExhausted` with the last diagnostics attached.

@@ -128,9 +128,9 @@ fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
   // norn takes the prompt positionally; --print is headless, --session-id mints
   // exactly this id, --output-schema constrains the structured result, and
   // --output-format json emits the final envelope we decode.
-  // TODO(meridian): add --profile <dev profile> and port the richer prompt
-  // assembly (design-context extraction, per-R# rendering) from
-  // .meridian/workflows/dev-child-norn/workflow.rhai.
+  // TODO: add --profile <dev profile> and richer prompt assembly
+  // (design-context extraction, per-requirement rendering) as your
+  // pipeline matures.
   use command_run <- require_run(
     cli.run(
       "norn",

@@ -3,7 +3,7 @@
 //// Control flow (brief section 5):
 ////
 //// 1. `provision_workspace` — everything downstream needs the `Workspace`.
-//// 2. the dev child child (`workflow.spawn_and_wait`): concurrent
+//// 2. the dev child `{{name}}_dev` (`workflow.spawn_and_wait`): concurrent
 ////    warm-build + dev via `workflow.all`, then the bounded scoped
 ////    verify-fix loop.
 //// 3. `gate` child (`workflow.spawn_and_wait`): the authoritative
@@ -159,7 +159,7 @@ fn provision(input: PipelineInput) -> Result(Workspace, PipelineError) {
   }
 }
 
-/// Spawn the the dev child child and lift its typed errors into this
+/// Spawn the `{{name}}_dev` child and lift its typed errors into this
 /// workflow's error union — exhaustion keeps its rounds and diagnostics.
 fn run_dev_flow(
   input: PipelineInput,

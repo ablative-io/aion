@@ -167,11 +167,12 @@ fn dev_pipeline_template_builds_packages_and_passes_its_tests() -> Result<(), Te
 }
 
 /// The dev-pipeline worker crate must reference the published `aion-worker`
-/// version and compile, exactly like the saga worker gate: the emitted
-/// manifest is asserted to pin the published version BEFORE the test appends
-/// a `[patch.crates-io]` pointing at the workspace crate.
+/// version, be `cargo fmt --check` clean as rendered, and compile — exactly
+/// like the saga worker gate plus the fmt gate: the emitted manifest is
+/// asserted to pin the published version BEFORE the test appends a
+/// `[patch.crates-io]` pointing at the workspace crate.
 #[test]
-fn dev_pipeline_worker_crate_passes_cargo_check() -> Result<(), TestError> {
+fn dev_pipeline_worker_crate_is_formatted_and_passes_cargo_check() -> Result<(), TestError> {
     let temp_dir = tempfile::tempdir()?;
     let (project, report) = common::scaffold_project(
         temp_dir.path(),
@@ -179,6 +180,21 @@ fn dev_pipeline_worker_crate_passes_cargo_check() -> Result<(), TestError> {
         &["--template", "dev-pipeline", "--worker", "rust"],
     )?;
     assert_eq!(report["worker"], "rust");
+
+    // The rendered worker must satisfy the same fmt bar as the repo: a
+    // scaffold that ships unformatted code fails its user's first
+    // `cargo fmt --check`. The gate renders a representative project name;
+    // extreme name lengths can still push name-bearing string literals
+    // past rustfmt's line width, which is inherent to substitution.
+    let fmt = Command::new("cargo")
+        .args(["fmt", "--check"])
+        .current_dir(project.join("worker"))
+        .status()
+        .map_err(|error| format!("failed to spawn `cargo fmt --check`: {error}"))?;
+    assert!(
+        fmt.success(),
+        "the scaffolded worker must be rustfmt-clean; `cargo fmt --check` exited with {fmt}"
+    );
 
     let manifest_path = project.join("worker/Cargo.toml");
     let manifest = std::fs::read_to_string(&manifest_path)?;

@@ -1,4 +1,4 @@
-//// The dev-child child workflow: concurrent warm-build + dev start-up,
+//// The dev child workflow: concurrent warm-build + dev start-up,
 //// then the bounded scoped verify-fix loop.
 ////
 //// Stage shape (brief sections 2 and 5):
@@ -80,7 +80,7 @@ pub fn run(raw_input: Dynamic) -> Result(String, String) {
           Error(
             codecs_workflows.dev_flow_error_codec().encode(DevFlowStageFailed(
               stage: "decode_input",
-              message: "failed to decode dev-child input: " <> reason,
+              message: "failed to decode dev child input: " <> reason,
             )),
           )
       }
@@ -88,7 +88,7 @@ pub fn run(raw_input: Dynamic) -> Result(String, String) {
       Error(
         codecs_workflows.dev_flow_error_codec().encode(DevFlowStageFailed(
           stage: "decode_input",
-          message: "dev-child input payload was not a string",
+          message: "dev child input payload was not a string",
         )),
       )
   }

@@ -130,7 +130,7 @@ pub fn output_from_domain(result: PipelineResult) -> generated.Output {
 
 // --- dev child input (schemas/dev_input.json) --------------------------------
 
-/// Domain view of a decoded dev-child input.
+/// Domain view of a decoded dev child input.
 pub fn dev_input_to_domain(input: generated.DevInput) -> DevFlowInput {
   DevFlowInput(
     workspace: workspace_from_dev(input.workspace),
@@ -143,7 +143,7 @@ pub fn dev_input_to_domain(input: generated.DevInput) -> DevFlowInput {
   )
 }
 
-/// Wire view of a dev-child input.
+/// Wire view of a dev child input.
 pub fn dev_input_from_domain(input: DevFlowInput) -> generated.DevInput {
   generated.DevInput(
     workspace: workspace_to_dev(input.workspace),
@@ -192,7 +192,7 @@ fn workspace_to_dev(workspace: Workspace) -> generated.DevInputWorkspace {
 
 // --- dev child output (schemas/dev_output.json) ------------------------------
 
-/// Domain view of a decoded dev-child output.
+/// Domain view of a decoded dev child output.
 pub fn dev_output_to_domain(output: generated.DevOutput) -> DevFlowResult {
   DevFlowResult(
     dev_result: DevResult(
@@ -208,7 +208,7 @@ pub fn dev_output_to_domain(output: generated.DevOutput) -> DevFlowResult {
   )
 }
 
-/// Wire view of a dev-child output.
+/// Wire view of a dev child output.
 pub fn dev_output_from_domain(result: DevFlowResult) -> generated.DevOutput {
   generated.DevOutput(
     dev_result: generated.DevOutputDevResult(

@@ -11,13 +11,16 @@
 use std::error::Error;
 use std::fmt::Debug;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+// The scaffolded crate's own library, in its own import group so the
+// statement order holds for any project name.
 use {{name}}_worker::types::{
     BuildWarm, CheckResult, CheckVerdict, DevInput, DevResult, GateInput, GateResult, GateScope,
     GateVerdict, Isolation, LandInput, Landed, Placement, ProvisionInput, ResumeInput, ReviewAck,
     ReviewRequest, ScopedInput, StartupResult, StartupTask, Workspace,
 };
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -144,7 +147,9 @@ fn dev_result_wire_shape() -> TestResult {
 fn startup_task_warm_build_wire_shape() -> TestResult {
     let (workspace_literal, workspace) = workspace();
     assert_wire(
-        &json_object(&format!(r#""task":"warm_build","workspace":{workspace_literal}"#)),
+        &json_object(&format!(
+            r#""task":"warm_build","workspace":{workspace_literal}"#
+        )),
         &StartupTask::WarmBuild { workspace },
     )
 }
@@ -190,7 +195,9 @@ fn startup_result_warmed_wire_shape() -> TestResult {
 fn startup_result_developed_wire_shape() -> TestResult {
     let (dev_result_literal, dev_result) = dev_result();
     assert_wire(
-        &json_object(&format!(r#""task":"dev","dev_result":{dev_result_literal}"#)),
+        &json_object(&format!(
+            r#""task":"dev","dev_result":{dev_result_literal}"#
+        )),
         &StartupResult::Developed { dev_result },
     )
 }
