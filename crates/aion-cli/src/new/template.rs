@@ -24,14 +24,34 @@ pub enum Template {
     /// Worker-served payment activity with workflow-driven retries, an
     /// approval race, a status query, and refund compensation.
     Saga,
+    /// The durable dev pipeline: an agent develops a brief, a scoped
+    /// verify-fix loop, a workspace gate, human review by signal, land —
+    /// three composed workflows plus a CLI-shelling worker. Workflow-level
+    /// I/O codecs are generated from the schemas by `aion codegen`.
+    /// Requires `--worker rust`.
+    DevPipeline,
 }
 
-/// Files every template emits.
+/// Files every template emits. The dev-pipeline template replaces the
+/// shared `gleam.toml` with its own (it needs a `gleeunit` dev-dependency
+/// for the scaffolded hermetic test suite).
 const SHARED_FILES: &[ManifestFile] = &[
     (
         "gleam.toml",
         include_str!("../../templates/shared/gleam.toml"),
     ),
+    (
+        ".gitignore",
+        include_str!("../../templates/shared/gitignore"),
+    ),
+    (
+        "aion.toml",
+        include_str!("../../templates/shared/aion.toml"),
+    ),
+];
+
+/// Shared files minus `gleam.toml`, for templates carrying their own.
+const SHARED_FILES_WITHOUT_GLEAM_TOML: &[ManifestFile] = &[
     (
         ".gitignore",
         include_str!("../../templates/shared/gitignore"),
@@ -124,6 +144,146 @@ const SAGA_WORKER_FILES: &[ManifestFile] = &[
     ),
 ];
 
+const DEV_PIPELINE_FILES: &[ManifestFile] = &[
+    (
+        "gleam.toml",
+        include_str!("../../templates/dev_pipeline/gleam.toml"),
+    ),
+    (
+        "workflow.toml",
+        include_str!("../../templates/dev_pipeline/workflow.toml"),
+    ),
+    (
+        "schemas/input.json",
+        include_str!("../../templates/dev_pipeline/schemas/input.json"),
+    ),
+    (
+        "schemas/output.json",
+        include_str!("../../templates/dev_pipeline/schemas/output.json"),
+    ),
+    (
+        "schemas/dev_input.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_input.json"),
+    ),
+    (
+        "schemas/dev_output.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_output.json"),
+    ),
+    (
+        "schemas/gate_input.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_input.json"),
+    ),
+    (
+        "schemas/gate_output.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_output.json"),
+    ),
+    (
+        "src/{{name}}.gleam",
+        include_str!("../../templates/dev_pipeline/project.gleam"),
+    ),
+    (
+        "src/{{name}}_dev.gleam",
+        include_str!("../../templates/dev_pipeline/project_dev.gleam"),
+    ),
+    (
+        "src/{{name}}_gate.gleam",
+        include_str!("../../templates/dev_pipeline/project_gate.gleam"),
+    ),
+    (
+        "src/{{name}}_cli_ffi.erl",
+        include_str!("../../templates/dev_pipeline/cli_ffi.erl"),
+    ),
+    (
+        "src/{{name}}/types.gleam",
+        include_str!("../../templates/dev_pipeline/support/types.gleam"),
+    ),
+    (
+        "src/{{name}}/codecs_core.gleam",
+        include_str!("../../templates/dev_pipeline/support/codecs_core.gleam"),
+    ),
+    (
+        "src/{{name}}/codecs_flow.gleam",
+        include_str!("../../templates/dev_pipeline/support/codecs_flow.gleam"),
+    ),
+    (
+        "src/{{name}}/codecs_workflows.gleam",
+        include_str!("../../templates/dev_pipeline/support/codecs_workflows.gleam"),
+    ),
+    (
+        "src/{{name}}/io_convert.gleam",
+        include_str!("../../templates/dev_pipeline/support/io_convert.gleam"),
+    ),
+    (
+        "src/{{name}}/activities.gleam",
+        include_str!("../../templates/dev_pipeline/support/activities.gleam"),
+    ),
+    (
+        "src/{{name}}/locals.gleam",
+        include_str!("../../templates/dev_pipeline/support/locals.gleam"),
+    ),
+    (
+        "src/{{name}}/cli.gleam",
+        include_str!("../../templates/dev_pipeline/support/cli.gleam"),
+    ),
+    (
+        "src/{{name}}/errors.gleam",
+        include_str!("../../templates/dev_pipeline/support/errors.gleam"),
+    ),
+    (
+        "test/{{name}}_test.gleam",
+        include_str!("../../templates/dev_pipeline/test/project_test.gleam"),
+    ),
+    (
+        "test/{{name}}_test_ffi.erl",
+        include_str!("../../templates/dev_pipeline/test/test_ffi.erl"),
+    ),
+    (
+        "test/support/shims.gleam",
+        include_str!("../../templates/dev_pipeline/test/shims.gleam"),
+    ),
+    (
+        "README.md",
+        include_str!("../../templates/dev_pipeline/README.md"),
+    ),
+];
+
+/// Rust worker crate serving the dev-pipeline template's eight activities
+/// (required: the pipeline is meaningless without a worker serving them).
+const DEV_PIPELINE_WORKER_FILES: &[ManifestFile] = &[
+    (
+        "worker/Cargo.toml",
+        include_str!("../../templates/dev_pipeline/worker/Cargo.toml.tmpl"),
+    ),
+    (
+        "worker/src/main.rs",
+        include_str!("../../templates/dev_pipeline/worker/main.rs"),
+    ),
+    (
+        "worker/src/lib.rs",
+        include_str!("../../templates/dev_pipeline/worker/lib.rs"),
+    ),
+    (
+        "worker/src/types.rs",
+        include_str!("../../templates/dev_pipeline/worker/types.rs"),
+    ),
+    (
+        "worker/src/handlers.rs",
+        include_str!("../../templates/dev_pipeline/worker/handlers.rs"),
+    ),
+    (
+        "worker/src/shell.rs",
+        include_str!("../../templates/dev_pipeline/worker/shell.rs"),
+    ),
+    (
+        "worker/tests/wire_compat.rs",
+        include_str!("../../templates/dev_pipeline/worker/tests/wire_compat.rs"),
+    ),
+    (
+        "worker/tests/handlers_shims.rs",
+        include_str!("../../templates/dev_pipeline/worker/tests/handlers_shims.rs"),
+    ),
+];
+
 impl Template {
     /// The kebab-case template name used by `--template`, `--help`, and the
     /// JSON output.
@@ -133,27 +293,42 @@ impl Template {
             Self::HelloWorld => "hello-world",
             Self::ApprovalFlow => "approval-flow",
             Self::Saga => "saga",
+            Self::DevPipeline => "dev-pipeline",
         }
     }
 
     /// Every project file this template emits, shared files first.
     #[must_use]
     pub fn files(self) -> Vec<ManifestFile> {
-        let mut files = SHARED_FILES.to_vec();
-        files.extend_from_slice(match self {
-            Self::HelloWorld => HELLO_WORLD_FILES,
-            Self::ApprovalFlow => APPROVAL_FLOW_FILES,
-            Self::Saga => SAGA_FILES,
-        });
+        let (shared, own): (&[ManifestFile], &[ManifestFile]) = match self {
+            Self::HelloWorld => (SHARED_FILES, HELLO_WORLD_FILES),
+            Self::ApprovalFlow => (SHARED_FILES, APPROVAL_FLOW_FILES),
+            Self::Saga => (SHARED_FILES, SAGA_FILES),
+            // The dev pipeline carries its own gleam.toml (gleeunit
+            // dev-dependency for the scaffolded test suite).
+            Self::DevPipeline => (SHARED_FILES_WITHOUT_GLEAM_TOML, DEV_PIPELINE_FILES),
+        };
+        let mut files = shared.to_vec();
+        files.extend_from_slice(own);
         files
     }
 
-    /// The activities this template's workflow dispatches to a worker.
+    /// The activities this template's workflows dispatch to a worker.
     #[must_use]
     pub fn activities(self) -> &'static [&'static str] {
         match self {
             Self::HelloWorld | Self::ApprovalFlow => &[],
             Self::Saga => &["charge_payment", "refund_payment"],
+            Self::DevPipeline => &[
+                "provision_workspace",
+                "warm_build",
+                "dev",
+                "scoped_checks",
+                "dev_resume",
+                "full_checks",
+                "request_review",
+                "land",
+            ],
         }
     }
 
@@ -165,13 +340,43 @@ impl Template {
         match self {
             Self::HelloWorld | Self::ApprovalFlow => &[],
             Self::Saga => SAGA_WORKER_FILES,
+            Self::DevPipeline => DEV_PIPELINE_WORKER_FILES,
+        }
+    }
+
+    /// Whether `--worker` is mandatory. The dev pipeline's eight activities
+    /// are all worker-served in a deployment; scaffolding it without the
+    /// worker would emit a project that cannot run live, so `aion new`
+    /// refuses instead.
+    #[must_use]
+    pub fn requires_worker(self) -> bool {
+        match self {
+            Self::HelloWorld | Self::ApprovalFlow | Self::Saga => false,
+            Self::DevPipeline => true,
+        }
+    }
+
+    /// Whether the scaffold runs `aion codegen` after writing files, to
+    /// generate `src/<name>_io.gleam` from the emitted schemas. The
+    /// template's sources import that module, so scaffolding without it
+    /// would not compile.
+    #[must_use]
+    pub fn generates_codecs(self) -> bool {
+        match self {
+            Self::HelloWorld | Self::ApprovalFlow | Self::Saga => false,
+            Self::DevPipeline => true,
         }
     }
 
     /// All templates, for manifest-completeness tests.
     #[cfg(test)]
     pub fn all() -> &'static [Self] {
-        &[Self::HelloWorld, Self::ApprovalFlow, Self::Saga]
+        &[
+            Self::HelloWorld,
+            Self::ApprovalFlow,
+            Self::Saga,
+            Self::DevPipeline,
+        ]
     }
 }
 
@@ -275,6 +480,71 @@ mod tests {
     }
 
     #[test]
+    fn dev_pipeline_declares_three_workflow_entries_and_its_gates() {
+        let files = Template::DevPipeline.files();
+        let workflow_toml = files
+            .iter()
+            .find(|(path, _)| *path == "workflow.toml")
+            .map(|(_, contents)| *contents)
+            .unwrap_or_default();
+        for entry in [
+            "entry_module = \"{{name}}\"",
+            "entry_module = \"{{name}}_dev\"",
+            "entry_module = \"{{name}}_gate\"",
+        ] {
+            assert!(
+                workflow_toml.contains(entry),
+                "dev-pipeline workflow.toml must declare {entry}"
+            );
+        }
+        for timeout in [
+            "timeout_seconds = 604800",
+            "timeout_seconds = 86400",
+            "timeout_seconds = 21600",
+        ] {
+            assert!(
+                workflow_toml.contains(timeout),
+                "dev-pipeline workflow.toml must keep the documented {timeout}"
+            );
+        }
+        assert!(Template::DevPipeline.requires_worker());
+        assert!(Template::DevPipeline.generates_codecs());
+    }
+
+    #[test]
+    fn only_the_dev_pipeline_requires_a_worker_or_codegen() {
+        for template in [Template::HelloWorld, Template::ApprovalFlow, Template::Saga] {
+            assert!(
+                !template.requires_worker(),
+                "template {} must not require a worker",
+                template.id()
+            );
+            assert!(
+                !template.generates_codecs(),
+                "template {} must not run codegen",
+                template.id()
+            );
+        }
+    }
+
+    #[test]
+    fn dev_pipeline_schemas_avoid_codegen_rejected_constructs() {
+        // `aion codegen` v1 loudly rejects $ref/$defs indirection; the
+        // template's schemas must stay inside the supported subset or the
+        // scaffold itself would fail.
+        for (path, contents) in Template::DevPipeline.files() {
+            if path.starts_with("schemas/") {
+                for forbidden in ["$ref", "$defs", "oneOf", "anyOf", "allOf"] {
+                    assert!(
+                        !contents.contains(forbidden),
+                        "{path} must not use {forbidden}: aion codegen rejects it"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn worker_manifests_exist_exactly_for_templates_with_activities() {
         for template in Template::all() {
             let has_worker = !template.worker_files().is_empty();
@@ -295,9 +565,12 @@ mod tests {
                     .find(|(path, _)| *path == "worker/src/main.rs")
                     .map(|(_, contents)| *contents)
                     .unwrap_or_default();
+                // Whitespace-insensitive: registrations may be wrapped
+                // across lines by rustfmt.
+                let condensed: String = main.split_whitespace().collect();
                 for activity in template.activities() {
                     assert!(
-                        main.contains(&format!("register_activity(\"{activity}\"")),
+                        condensed.contains(&format!("register_activity(\"{activity}\"")),
                         "template {} worker must register {activity}",
                         template.id()
                     );

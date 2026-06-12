@@ -1,9 +1,9 @@
-//// The stacked-dev top-level workflow: brief in, landed on main out.
+//// The top-level pipeline workflow: brief in, landed on main out.
 ////
 //// Control flow (brief section 5):
 ////
 //// 1. `provision_workspace` — everything downstream needs the `Workspace`.
-//// 2. `onatopp_dev` child (`workflow.spawn_and_wait`): concurrent
+//// 2. the dev child `{{name}}_dev` (`workflow.spawn_and_wait`): concurrent
 ////    warm-build + dev via `workflow.all`, then the bounded scoped
 ////    verify-fix loop.
 //// 3. `gate` child (`workflow.spawn_and_wait`): the authoritative
@@ -13,10 +13,10 @@
 ////    `workflow.with_timeout`. Approve proceeds; RequestChanges resumes the
 ////    dev session with the structured notes, re-gates, and re-requests;
 ////    Reject or a deadline expiry is a typed `Failed`.
-//// 5. `land` — `yg branch merge` into the tree parent, only on Approve
-////    and a passing gate.
+//// 5. `land` — `yg branch merge` into the tree parent, only on Approve and
+////    a passing gate.
 ////
-//// A `stacked_dev_status` query answers `{phase, round}` live state; the
+//// A `{{name}}_status` query answers `{phase, round}` live state; the
 //// handler is re-registered at every stage transition, so replay re-arms it
 //// automatically.
 ////
@@ -32,22 +32,22 @@ import aion/error
 import aion/query
 import aion/signal
 import aion/workflow
-import gate
+import {{name}}_gate
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
-import onatopp_dev
-import stacked_dev/activities
-import stacked_dev/codecs_flow
-import stacked_dev/codecs_workflows
-import stacked_dev/errors
-import stacked_dev/types.{
+import {{name}}_dev
+import {{name}}/activities
+import {{name}}/codecs_flow
+import {{name}}/codecs_workflows
+import {{name}}/errors
+import {{name}}/types.{
   type BuildWarm, type DevResult, type GateResult, type ReviewVerdict,
-  type StackedDevError, type StackedDevInput, type StackedDevResult,
+  type PipelineError, type PipelineInput, type PipelineResult,
   type Workspace, Approve, DevFailed, GateFail, GateInput, GatePass,
-  GateRejected, GateResult, LandFailed, LandInput, OnatoppInput,
-  OnatoppStageFailed, ProvisionFailed, ProvisionInput, Reject, RequestChanges,
+  GateRejected, GateResult, LandFailed, LandInput, DevFlowInput,
+  DevFlowStageFailed, ProvisionFailed, ProvisionInput, Reject, RequestChanges,
   ResumeInput, ReviewCapExhausted, ReviewRejected, ReviewRequest, ReviewTimedOut,
-  ReviewVerdict, StackedDevResult, StackedDevStatus, StageFailed, StartupFailed,
+  ReviewVerdict, PipelineResult, PipelineStatus, StageFailed, StartupFailed,
   VerifyExhausted, VerifyFixExhausted, WorkspaceWide,
 }
 
@@ -57,19 +57,19 @@ import stacked_dev/types.{
 pub const review_signal_name = "review_verdict"
 
 /// Name of the live `{phase, round}` status query this workflow answers.
-pub const status_query_name = "stacked_dev_status"
+pub const status_query_name = "{{name}}_status"
 
 /// Typed definition binding the codecs to the execute function.
 pub fn definition() -> workflow.WorkflowDefinition(
-  StackedDevInput,
-  StackedDevResult,
-  StackedDevError,
+  PipelineInput,
+  PipelineResult,
+  PipelineError,
 ) {
   workflow.define(
-    "stacked-dev",
-    codecs_workflows.stacked_dev_input_codec(),
-    codecs_workflows.stacked_dev_result_codec(),
-    codecs_workflows.stacked_dev_error_codec(),
+    "{{name}}",
+    codecs_workflows.pipeline_input_codec(),
+    codecs_workflows.pipeline_result_codec(),
+    codecs_workflows.pipeline_error_codec(),
     execute,
   )
 }
@@ -85,14 +85,14 @@ pub fn review_signal() -> workflow.SignalRef(ReviewVerdict) {
 /// The runtime delivers the start input as a raw JSON string: decode it with
 /// the input codec, run the typed workflow, and encode the success value
 /// back to its JSON string for the recorded result payload.
-pub fn run(raw_input: Dynamic) -> Result(String, StackedDevError) {
+pub fn run(raw_input: Dynamic) -> Result(String, PipelineError) {
   case decode.run(raw_input, decode.string) {
     Ok(raw_json) ->
-      case codecs_workflows.stacked_dev_input_codec().decode(raw_json) {
+      case codecs_workflows.pipeline_input_codec().decode(raw_json) {
         Ok(input) ->
           case execute(input) {
             Ok(output) ->
-              Ok(codecs_workflows.stacked_dev_result_codec().encode(output))
+              Ok(codecs_workflows.pipeline_result_codec().encode(output))
             Error(workflow_error) -> Error(workflow_error)
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
@@ -111,26 +111,26 @@ pub fn run(raw_input: Dynamic) -> Result(String, StackedDevError) {
 
 /// Typed workflow body: provision, dev child, gate child, review loop, land.
 pub fn execute(
-  input: StackedDevInput,
-) -> Result(StackedDevResult, StackedDevError) {
+  input: PipelineInput,
+) -> Result(PipelineResult, PipelineError) {
   use _ <- result_try(set_status("provisioning", 0))
   use workspace <- result_try(provision(input))
   use _ <- result_try(set_status("developing", 0))
-  use onatopp <- result_try(run_onatopp(input, workspace))
+  use dev_flow <- result_try(run_dev_flow(input, workspace))
   use _ <- result_try(set_status("gating", 0))
   use gate_result <- result_try(run_gate(
     workspace,
-    onatopp.dev_result.files_touched,
+    dev_flow.dev_result.files_touched,
   ))
   case gate_result {
     GateResult(verdict: GatePass) ->
       review_loop(
         input,
         workspace,
-        onatopp.dev_result,
+        dev_flow.dev_result,
         gate_result,
-        onatopp.build_warm,
-        onatopp.verify_rounds,
+        dev_flow.build_warm,
+        dev_flow.verify_rounds,
         1,
       )
     GateResult(verdict: GateFail(report: report)) ->
@@ -141,7 +141,7 @@ pub fn execute(
   }
 }
 
-fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
+fn provision(input: PipelineInput) -> Result(Workspace, PipelineError) {
   case
     workflow.run(
       activities.provision_workspace(ProvisionInput(
@@ -159,17 +159,17 @@ fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
   }
 }
 
-/// Spawn the `onatopp_dev` child and lift its typed errors into this
+/// Spawn the `{{name}}_dev` child and lift its typed errors into this
 /// workflow's error union — exhaustion keeps its rounds and diagnostics.
-fn run_onatopp(
-  input: StackedDevInput,
+fn run_dev_flow(
+  input: PipelineInput,
   workspace: Workspace,
-) -> Result(types.OnatoppResult, StackedDevError) {
+) -> Result(types.DevFlowResult, PipelineError) {
   case
     workflow.spawn_and_wait(
-      onatopp_dev.workflow_type,
-      onatopp_dev.execute,
-      OnatoppInput(
+      {{name}}_dev.workflow_type,
+      {{name}}_dev.execute,
+      DevFlowInput(
         workspace: workspace,
         brief: input.brief,
         design: input.design,
@@ -178,9 +178,9 @@ fn run_onatopp(
         verify_fix_cap: input.verify_fix_cap,
         round_backoff_ms: input.round_backoff_ms,
       ),
-      codecs_workflows.onatopp_input_codec(),
-      codecs_workflows.onatopp_result_codec(),
-      codecs_workflows.onatopp_error_codec(),
+      codecs_workflows.dev_flow_input_codec(),
+      codecs_workflows.dev_flow_result_codec(),
+      codecs_workflows.dev_flow_error_codec(),
     )
   {
     Ok(result) -> Ok(result)
@@ -190,13 +190,13 @@ fn run_onatopp(
     ))) -> Error(VerifyExhausted(rounds: rounds, diagnostics: diagnostics))
     Error(error.ChildWorkflowFailed(StartupFailed(message: message))) ->
       Error(DevFailed(message: "startup failed: " <> message))
-    Error(error.ChildWorkflowFailed(OnatoppStageFailed(
+    Error(error.ChildWorkflowFailed(DevFlowStageFailed(
       stage: stage,
       message: message,
     ))) -> Error(DevFailed(message: stage <> ": " <> message))
     Error(child_error) ->
       Error(StageFailed(
-        stage: "onatopp_dev",
+        stage: "{{name}}_dev",
         message: child_engine_message(child_error),
       ))
   }
@@ -208,19 +208,19 @@ fn run_onatopp(
 fn run_gate(
   workspace: Workspace,
   files_touched: List(String),
-) -> Result(GateResult, StackedDevError) {
+) -> Result(GateResult, PipelineError) {
   case
     workflow.spawn_and_wait(
-      gate.workflow_type,
-      gate.execute,
+      {{name}}_gate.workflow_type,
+      {{name}}_gate.execute,
       GateInput(
         workspace: workspace,
         files_touched: files_touched,
         scope: WorkspaceWide,
       ),
-      codecs_flow.gate_input_codec(),
-      codecs_flow.gate_result_codec(),
-      codecs_flow.gate_error_codec(),
+      codecs_workflows.gate_input_codec(),
+      codecs_workflows.gate_result_codec(),
+      codecs_workflows.gate_error_codec(),
     )
   {
     Ok(result) -> Ok(result)
@@ -239,14 +239,14 @@ fn run_gate(
 /// One bounded review round: request review, race the verdict signal
 /// against the durable deadline, and act on the typed decision.
 fn review_loop(
-  input: StackedDevInput,
+  input: PipelineInput,
   workspace: Workspace,
   dev_result: DevResult,
   gate_result: GateResult,
   build_warm: BuildWarm,
   verify_rounds: Int,
   round: Int,
-) -> Result(StackedDevResult, StackedDevError) {
+) -> Result(PipelineResult, PipelineError) {
   case round > input.review_cap {
     True -> Error(ReviewCapExhausted(rounds: input.review_cap))
     False -> {
@@ -299,11 +299,11 @@ fn review_loop(
 }
 
 fn request_review(
-  input: StackedDevInput,
+  input: PipelineInput,
   workspace: Workspace,
   dev_result: DevResult,
   gate_result: GateResult,
-) -> Result(Nil, StackedDevError) {
+) -> Result(Nil, PipelineError) {
   case
     workflow.run(
       activities.request_review(ReviewRequest(
@@ -327,14 +327,14 @@ fn request_review(
 /// RequestChanges path: resume the dev session with the structured notes,
 /// re-gate, sleep the durable backoff, and enter the next review round.
 fn fix_and_regate(
-  input: StackedDevInput,
+  input: PipelineInput,
   workspace: Workspace,
   dev_result: DevResult,
   build_warm: BuildWarm,
   verify_rounds: Int,
   round: Int,
   feedback: String,
-) -> Result(StackedDevResult, StackedDevError) {
+) -> Result(PipelineResult, PipelineError) {
   case
     workflow.run(
       activities.dev_resume(ResumeInput(
@@ -386,7 +386,7 @@ fn land(
   build_warm: BuildWarm,
   verify_rounds: Int,
   round: Int,
-) -> Result(StackedDevResult, StackedDevError) {
+) -> Result(PipelineResult, PipelineError) {
   use _ <- result_try(set_status("landing", round))
   case
     workflow.run(
@@ -399,7 +399,7 @@ fn land(
   {
     Ok(landed) -> {
       use _ <- result_try(set_status("landed", round))
-      Ok(StackedDevResult(
+      Ok(PipelineResult(
         branch: landed.branch,
         merged_into: landed.merged_into,
         session_id: dev_result.session_id,
@@ -414,14 +414,14 @@ fn land(
 }
 
 /// Re-register the status handler with the current phase and round, so
-/// `stacked_dev_status` queries answer live state at every yield point
+/// `{{name}}_status` queries answer live state at every yield point
 /// (re-registration per stage, per docs/guides/workflows.md).
-fn set_status(phase: String, round: Int) -> Result(Nil, StackedDevError) {
-  let status = StackedDevStatus(phase: phase, round: round)
+fn set_status(phase: String, round: Int) -> Result(Nil, PipelineError) {
+  let status = PipelineStatus(phase: phase, round: round)
   case
     query.handler(
       status_query_name,
-      codecs_workflows.stacked_dev_status_codec(),
+      codecs_workflows.pipeline_status_codec(),
       fn() { status },
     )
   {
@@ -448,9 +448,9 @@ fn child_engine_message(
 }
 
 fn result_try(
-  result: Result(value, StackedDevError),
-  next: fn(value) -> Result(output, StackedDevError),
-) -> Result(output, StackedDevError) {
+  result: Result(value, PipelineError),
+  next: fn(value) -> Result(output, PipelineError),
+) -> Result(output, PipelineError) {
   case result {
     Ok(value) -> next(value)
     Error(workflow_error) -> Error(workflow_error)

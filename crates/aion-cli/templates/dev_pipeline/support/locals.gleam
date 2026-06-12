@@ -4,7 +4,7 @@
 //// functions in-process; each shells to the real CLI that owns the step
 //// (`norn` for the dev agent, `yg` for worktree provisioning, affected-module
 //// scoping, diagnostics checks, and landing, `cargo` for the advisory warm
-//// build, `meridian` for review requests) through `stacked_dev/cli`.
+//// build, `meridian` for review requests) through `{{name}}/cli`.
 //// The hermetic test suite intercepts at the process boundary with fake-CLI
 //// shims placed first on `PATH` — the most realistic seam — while these
 //// implementations stay honest: they really shell out, and a missing CLI with
@@ -18,9 +18,9 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/string
-import stacked_dev/cli
-import stacked_dev/codecs_core
-import stacked_dev/types.{
+import {{name}}/cli
+import {{name}}/codecs_core
+import {{name}}/types.{
   type CheckResult, type DevInput, type DevResult, type GateInput,
   type GateResult, type LandInput, type Landed, type ProvisionInput,
   type ResumeInput, type ReviewAck, type ReviewRequest, type ScopedInput,
@@ -60,7 +60,7 @@ fn provision_worktree(
   // the base ref in the tree, then provision its worktree at a known path.
   // The worktree path is absolute (built from the repo root), so every
   // downstream activity holds a real directory and never a cwd-relative guess.
-  let branch = "stacked-dev-" <> input.brief_id
+  let branch = "{{name}}-" <> input.brief_id
   let worktree_path = input.repo_root <> "/.yggdrasil-worktrees/" <> branch
 
   use _added <- require_run(
@@ -121,16 +121,16 @@ fn warm_build(
 fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
   // The session id is deterministic (the branch name), so resume rounds target
   // the same session without ever capturing a generated id. norn validates the
-  // charset; "stacked-dev-<brief>" is legal.
+  // charset; "<project>-<brief>" is legal.
   let session_id = input.workspace.branch
   let prompt = dev_prompt(input)
 
   // norn takes the prompt positionally; --print is headless, --session-id mints
   // exactly this id, --output-schema constrains the structured result, and
   // --output-format json emits the final envelope we decode.
-  // TODO(meridian): add --profile <dev profile> and port the richer prompt
-  // assembly (design-context extraction, per-R# rendering) from
-  // .meridian/workflows/onatopp-dev-norn/workflow.rhai.
+  // TODO: add --profile <dev profile> and richer prompt assembly
+  // (design-context extraction, per-requirement rendering) as your
+  // pipeline matures.
   use command_run <- require_run(
     cli.run(
       "norn",

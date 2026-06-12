@@ -1,17 +1,18 @@
-//// Typed activity values for the stacked-dev workflow family.
+//// Typed activity values for the dev-pipeline workflow family.
 ////
 //// Every activity name built here must be declared in the `activities` list
 //// of the `workflow.toml` entry that dispatches it. The final argument to
 //// each `activity.new` is the local implementation from
-//// `stacked_dev/locals` — the test seam that shells to the real CLI under
+//// `{{name}}/locals` — the test seam that shells to the real CLI under
 //// the `aion/testing` harness. Deployed, a Meridian worker registers the
 //// same names.
 
 import aion/activity
-import stacked_dev/codecs_core
-import stacked_dev/codecs_flow
-import stacked_dev/locals
-import stacked_dev/types.{
+import {{name}}/codecs_core
+import {{name}}/codecs_flow
+import {{name}}/codecs_workflows
+import {{name}}/locals
+import {{name}}/types.{
   type DevInput, type GateInput, type LandInput, type ProvisionInput,
   type ResumeInput, type ReviewRequest, type ScopedInput, DevTask, WarmTask,
 }
@@ -115,8 +116,8 @@ pub fn full_checks(
   activity.new(
     full_checks_name,
     input,
-    codecs_flow.gate_input_codec(),
-    codecs_flow.gate_result_codec(),
+    codecs_workflows.gate_input_codec(),
+    codecs_workflows.gate_result_codec(),
     locals.full_checks,
   )
 }

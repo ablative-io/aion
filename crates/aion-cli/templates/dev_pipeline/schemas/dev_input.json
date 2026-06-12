@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dev child input",
+  "description": "Input of the dev child workflow. The workspace object is inlined rather than shared by reference because aion codegen v1 deliberately rejects schema reference indirection.",
+  "type": "object",
+  "required": [
+    "workspace",
+    "brief",
+    "design",
+    "checklist",
+    "stories",
+    "verify_fix_cap",
+    "round_backoff_ms"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "workspace": {
+      "type": "object",
+      "required": ["path", "branch", "placement", "isolation"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "placement": { "type": "string", "enum": ["local", "remote"] },
+        "isolation": { "type": "string", "enum": ["worktree", "copy", "overlay", "vm"] }
+      }
+    },
+    "brief": { "type": "string", "minLength": 1 },
+    "design": { "type": "string" },
+    "checklist": { "type": "string" },
+    "stories": { "type": "array", "items": { "type": "string" } },
+    "verify_fix_cap": { "type": "integer", "minimum": 1 },
+    "round_backoff_ms": { "type": "integer", "minimum": 0 }
+  }
+}

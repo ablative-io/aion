@@ -1,10 +1,10 @@
-//// Shared domain types for the stacked-dev workflow family.
+//// Shared domain types for the dev-pipeline workflow family.
 ////
 //// Every type that crosses the engine boundary (workflow inputs/outputs,
 //// activity inputs/outputs, the review signal payload, and typed workflow
 //// errors) lives here so the three workflow modules and the activity layer
-//// share one vocabulary. Codecs live in `stacked_dev/codecs_core` and
-//// `stacked_dev/codecs_flow`.
+//// share one vocabulary. Codecs live in `{{name}}/codecs_core` and
+//// `{{name}}/codecs_flow`.
 
 /// Where the provisioned workspace runs.
 pub type Placement {
@@ -207,13 +207,13 @@ pub type Landed {
   Landed(branch: String, merged_into: String)
 }
 
-/// Input to the `onatopp_dev` child workflow (also independently
+/// Input to the `{{name}}_dev` child workflow (also independently
 /// dispatchable as a top-level run — open question Q6).
 ///
 /// `verify_fix_cap` and `round_backoff_ms` are required inputs, never baked
 /// defaults (open question Q5).
-pub type OnatoppInput {
-  OnatoppInput(
+pub type DevFlowInput {
+  DevFlowInput(
     workspace: Workspace,
     brief: String,
     design: String,
@@ -224,35 +224,35 @@ pub type OnatoppInput {
   )
 }
 
-/// Output of the `onatopp_dev` child workflow: the converged dev result,
+/// Output of the `{{name}}_dev` child workflow: the converged dev result,
 /// the advisory warm-build outcome, and how many verify rounds it took.
-pub type OnatoppResult {
-  OnatoppResult(
+pub type DevFlowResult {
+  DevFlowResult(
     dev_result: DevResult,
     build_warm: BuildWarm,
     verify_rounds: Int,
   )
 }
 
-/// Typed errors of the `onatopp_dev` child workflow.
-pub type OnatoppError {
+/// Typed errors of the `{{name}}_dev` child workflow.
+pub type DevFlowError {
   /// The concurrent warm-build/dev startup fan-out failed.
   StartupFailed(message: String)
   /// The bounded verify-fix loop spent its attempt budget; carries the last
   /// scoped-check diagnostics so the failure is actionable.
   VerifyFixExhausted(rounds: Int, diagnostics: String)
   /// Any other stage failure, tagged with the stage that raised it.
-  OnatoppStageFailed(stage: String, message: String)
+  DevFlowStageFailed(stage: String, message: String)
 }
 
-/// Input to the `stacked_dev` top-level workflow.
+/// Input to the top-level pipeline workflow.
 ///
 /// Resolves open question Q5 (loop caps and backoff): `verify_fix_cap`,
 /// `review_cap`, `round_backoff_ms`, and `review_deadline_ms` are REQUIRED
 /// input fields. The no-arbitrary-defaults rule applies to workflow inputs:
 /// the caller decides every cap, backoff, and deadline.
-pub type StackedDevInput {
-  StackedDevInput(
+pub type PipelineInput {
+  PipelineInput(
     repo_root: String,
     brief_id: String,
     reviewers: List(String),
@@ -270,9 +270,9 @@ pub type StackedDevInput {
   )
 }
 
-/// Output of a landed `stacked_dev` run.
-pub type StackedDevResult {
-  StackedDevResult(
+/// Output of a landed pipeline run.
+pub type PipelineResult {
+  PipelineResult(
     branch: String,
     merged_into: String,
     session_id: String,
@@ -282,11 +282,11 @@ pub type StackedDevResult {
   )
 }
 
-/// Typed errors of the `stacked_dev` top-level workflow.
-pub type StackedDevError {
+/// Typed errors of the top-level pipeline workflow.
+pub type PipelineError {
   /// Workspace provisioning failed.
   ProvisionFailed(message: String)
-  /// The `onatopp_dev` child failed outside its verify-fix budget.
+  /// The `{{name}}_dev` child failed outside its verify-fix budget.
   DevFailed(message: String)
   /// The child's verify-fix loop spent its budget; lifted from
   /// `VerifyFixExhausted` with the last diagnostics attached.
@@ -306,12 +306,12 @@ pub type StackedDevError {
   StageFailed(stage: String, message: String)
 }
 
-/// Live status answered by the `stacked_dev_status` query.
-pub type StackedDevStatus {
-  StackedDevStatus(phase: String, round: Int)
+/// Live status answered by the `{{name}}_status` query.
+pub type PipelineStatus {
+  PipelineStatus(phase: String, round: Int)
 }
 
-/// Live status answered by the `onatopp_dev_status` query.
-pub type OnatoppStatus {
-  OnatoppStatus(phase: String, round: Int)
+/// Live status answered by the `{{name}}_dev_status` query.
+pub type DevFlowStatus {
+  DevFlowStatus(phase: String, round: Int)
 }
