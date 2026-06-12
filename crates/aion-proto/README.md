@@ -6,7 +6,7 @@ Shared gRPC and serde wire contracts for Aion servers, clients, and workers. Thi
 
 ```toml
 [dependencies]
-aion-proto = "0.1.0"
+aion-proto = "0.4.0"
 ```
 
 ## Key public types

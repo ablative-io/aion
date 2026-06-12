@@ -14,7 +14,7 @@ Rust caller SDK for connecting to an `aion-server` deployment and operating Aion
 
 ```toml
 [dependencies]
-aion-client = "0.1.0"
+aion-client = "0.4.0"
 ```
 
 ## Server prerequisite
