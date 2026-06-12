@@ -92,11 +92,13 @@ a loud typed failure, never a silent skip.
 
 Covered scenarios: the happy path (approve on round one), verify-fix
 convergence on round two (diagnostics reach `norn resume`'s argv),
-verify-fix exhaustion (`VerifyExhausted` with the last diagnostics), the
+verify-fix exhaustion (`VerifyExhausted` with the last diagnostics), a
+converged loop the authoritative gate still fails (`GateRejected`), the
 RequestChanges round-trip (structured notes reach `dev_resume`, the gate
-re-runs, the stack lands once), Reject, review timeout, an advisory
-warm-build failure that does not fail the run, live status queries per
-phase, and the loud missing-CLI failure.
+re-runs, the stack lands once), review-cap exhaustion
+(`ReviewCapExhausted`), Reject, review timeout, an advisory warm-build
+failure that does not fail the run, live status queries per phase, and the
+loud missing-CLI failure.
 
 ## Running it live
 
