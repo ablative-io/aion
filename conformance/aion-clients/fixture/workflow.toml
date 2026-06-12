@@ -1,4 +1,4 @@
-# Workflow packaging descriptor consumed by `aion-cli package`.
+# Workflow packaging descriptor consumed by `aion package`.
 #
 # Builds the two fixture archives the live client-conformance scenarios in
 # ../scenarios.json require: `conformance_echo` (fixtures.workflowType) and

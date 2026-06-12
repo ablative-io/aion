@@ -3,7 +3,7 @@ name = "aion-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Deployable HTTP, gRPC, WebSocket, and worker endpoint for Aion workflows."
+description = "Aion workflow server library: HTTP, gRPC, WebSocket, and worker endpoints. Run it with the `aion` binary from the aion-cli crate."
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -27,7 +27,6 @@ tonic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 aion-core = { version = "0.4.0", path = "../aion-core" }
 dashmap = { workspace = true }
 uuid.workspace = true
@@ -51,7 +50,6 @@ base64 = "0.22.1"
 # feature is selected; rust_crypto is the pure-Rust provider.
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"], optional = true }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"], optional = true }
-clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 aion-worker = { path = "../aion-worker" }

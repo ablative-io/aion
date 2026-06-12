@@ -32,6 +32,8 @@ mod internal_workflow;
 pub mod namespace;
 /// Health, metrics, and tracing support.
 pub mod observability;
+/// Server run loop: configuration load, transports, and graceful shutdown.
+pub mod run;
 /// Cooperative shutdown and drain handling.
 pub mod shutdown;
 /// Shared server state construction and access.
@@ -50,6 +52,7 @@ pub use namespace::{
     StaticWorkflowNamespaces, SubscriptionScope, WorkflowAttribution, WorkflowNamespaceSource,
     WorkflowTarget,
 };
+pub use run::run;
 pub use state::ServerState;
 pub use worker::{
     HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport, TaskLiveness,

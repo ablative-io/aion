@@ -1,4 +1,4 @@
-# Workflow packaging descriptor consumed by `aion-cli package`.
+# Workflow packaging descriptor consumed by `aion package`.
 # Reference: docs/packaging.md.
 # `output` is omitted: the derived name `subscription.aion` already matches.
 

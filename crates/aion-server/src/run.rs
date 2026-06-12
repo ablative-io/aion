@@ -1,67 +1,40 @@
-//! Thin binary entry point; `anyhow` is confined to this file.
+//! Run loop for the Aion workflow server: tracing initialization,
+//! configuration load, transport startup, and signal-driven graceful
+//! shutdown.
+//!
+//! This is the library entry point behind the `aion server` command. It
+//! preserves the operational contract of the former standalone
+//! `aion-server` binary: exit code 2 for configuration errors, the drain
+//! outcome's exit code on shutdown, and 130 when a second termination
+//! signal forces immediate exit.
 
-use std::{
-    net::SocketAddr,
-    num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
-    process::ExitCode,
-};
+use std::{net::SocketAddr, process::ExitCode};
 
-use aion_server::{
+use tokio::net::TcpListener;
+use tonic::transport::Server as TonicServer;
+use tracing::{error, info};
+
+use crate::{
     ServerConfig, ServerError, ServerState, api,
     config::{CliOverrides, NamespaceMode, StoreBackend},
     observability,
     shutdown::{self, ShutdownOutcome},
 };
-use anyhow::{Context, Result};
-use clap::Parser;
-use tokio::net::TcpListener;
-use tonic::transport::Server as TonicServer;
-use tracing::{error, info};
 
-/// Aion workflow server.
-#[derive(Debug, Parser)]
-#[command(name = "aion-server", version, about = "Run the Aion workflow server")]
-struct Cli {
-    /// Path to a TOML server configuration file. Optional when using local defaults.
-    #[arg(long)]
-    config: Option<PathBuf>,
-    /// Override the HTTP/JSON and dashboard listener address.
-    #[arg(long)]
-    listen_address: Option<SocketAddr>,
-    /// Override the event-store URL and select the libSQL backend when the default is memory.
-    #[arg(long)]
-    store_url: Option<String>,
-    /// Number of engine scheduler worker threads.
-    #[arg(long)]
-    scheduler_threads: Option<NonZeroUsize>,
-    /// Maximum graceful drain duration in seconds.
-    #[arg(long = "drain-timeout")]
-    drain_timeout_seconds: Option<NonZeroU64>,
-    /// Workflow package archive to load at startup. Repeat to load multiple packages.
-    #[arg(long = "workflow-package")]
-    workflow_packages: Vec<PathBuf>,
-}
-
-impl From<Cli> for CliOverrides {
-    fn from(cli: Cli) -> Self {
-        Self {
-            config_path: cli.config,
-            listen_address: cli.listen_address,
-            store_url: cli.store_url,
-            scheduler_threads: cli.scheduler_threads.map(NonZeroUsize::get),
-            drain_timeout_seconds: cli.drain_timeout_seconds.map(NonZeroU64::get),
-            workflow_packages: cli.workflow_packages,
-        }
-    }
-}
-
-fn main() -> ExitCode {
-    match run_main() {
+/// Run the Aion workflow server until it shuts down, returning the process
+/// exit code.
+///
+/// Initializes the JSON tracing subscriber, loads and validates the merged
+/// configuration (file, environment, then `overrides`), serves the gRPC and
+/// HTTP transports, and drains gracefully after the first termination
+/// signal. Every failure is logged through tracing and mapped to the exit
+/// code contract above; the caller only has to exit with the returned code.
+pub async fn run(overrides: CliOverrides) -> ExitCode {
+    match run_server(overrides).await {
         Ok(code) => code,
         Err(error) => {
             error!(%error, "aion-server failed");
-            if is_config_error(&error) {
+            if error.is_config() {
                 ExitCode::from(2)
             } else {
                 ExitCode::FAILURE
@@ -70,16 +43,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_main() -> Result<ExitCode> {
-    let cli = Cli::parse();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("failed to build tokio runtime")?;
-    runtime.block_on(run(cli.into()))
-}
-
-async fn run(cli: CliOverrides) -> Result<ExitCode> {
+async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     observability::tracing::init()?;
 
     let config = ServerConfig::load(&cli)?;
@@ -144,18 +108,22 @@ async fn run(cli: CliOverrides) -> Result<ExitCode> {
 
 fn transport_result(
     transport: &'static str,
-    result: std::result::Result<Result<()>, tokio::task::JoinError>,
-) -> Result<()> {
-    result
-        .with_context(|| format!("{transport} transport task failed"))?
-        .with_context(|| format!("{transport} transport stopped"))
+    result: Result<Result<(), ServerError>, tokio::task::JoinError>,
+) -> Result<(), ServerError> {
+    match result {
+        Ok(transport_outcome) => transport_outcome,
+        Err(join_error) => Err(ServerError::Transport {
+            transport,
+            message: join_error.to_string(),
+        }),
+    }
 }
 
 async fn serve_grpc(
     state: ServerState,
     address: SocketAddr,
     shutdown: tokio::sync::watch::Receiver<bool>,
-) -> Result<()> {
+) -> Result<(), ServerError> {
     let workflow = api::grpc::workflow_service(state.clone());
     let worker = api::worker_grpc::worker_service(state.clone());
     let mut router = TonicServer::builder()
@@ -177,7 +145,7 @@ async fn serve_http(
     state: ServerState,
     address: SocketAddr,
     shutdown: tokio::sync::watch::Receiver<bool>,
-) -> Result<()> {
+) -> Result<(), ServerError> {
     let listener = TcpListener::bind(address)
         .await
         .map_err(|source| transport_bind("http", address, source))?;
@@ -196,13 +164,15 @@ async fn shutdown_requested(mut shutdown: tokio::sync::watch::Receiver<bool>) {
     }
 }
 
-async fn shutdown_signal() -> Result<()> {
+async fn shutdown_signal() -> Result<(), ServerError> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let mut terminate = signal(SignalKind::terminate()).context("SIGTERM listener failed")?;
-        let mut interrupt = signal(SignalKind::interrupt()).context("SIGINT listener failed")?;
+        let mut terminate = signal(SignalKind::terminate())
+            .map_err(|source| signal_listener("SIGTERM", &source))?;
+        let mut interrupt =
+            signal(SignalKind::interrupt()).map_err(|source| signal_listener("SIGINT", &source))?;
         tokio::select! {
             _ = terminate.recv() => Ok(()),
             _ = interrupt.recv() => Ok(()),
@@ -213,27 +183,32 @@ async fn shutdown_signal() -> Result<()> {
     {
         tokio::signal::ctrl_c()
             .await
-            .context("shutdown signal listener failed")
+            .map_err(|source| signal_listener("shutdown signal", &source))
     }
 }
 
-fn reject_auth_without_feature(config: &ServerConfig) -> Result<()> {
+fn signal_listener(listener: &'static str, source: &std::io::Error) -> ServerError {
+    ServerError::SignalListener {
+        listener,
+        message: source.to_string(),
+    }
+}
+
+fn reject_auth_without_feature(config: &ServerConfig) -> Result<(), ServerError> {
     if cfg!(not(feature = "auth")) && config.auth.enabled {
         return Err(ServerError::Config {
             message: "auth.enabled=true but binary compiled without auth feature".to_owned(),
-        }
-        .into());
+        });
     }
     Ok(())
 }
 
-fn reject_tls_until_supported(state: &ServerState) -> Result<()> {
+fn reject_tls_until_supported(state: &ServerState) -> Result<(), ServerError> {
     if state.runtime_config().tls.is_some() {
         return Err(ServerError::Config {
             message: "configured TLS material cannot be served until transport TLS is wired"
                 .to_owned(),
-        }
-        .into());
+        });
     }
     Ok(())
 }
@@ -260,87 +235,5 @@ where
         transport,
         address,
         message: source.to_string(),
-    }
-}
-
-fn is_config_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<ServerError>()
-            .is_some_and(ServerError::is_config)
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use clap::Parser;
-
-    use super::{Cli, CliOverrides};
-
-    #[test]
-    fn workflow_package_flag_is_repeatable() -> Result<(), Box<dyn std::error::Error>> {
-        let overrides = CliOverrides::from(Cli::try_parse_from([
-            "aion-server",
-            "--workflow-package",
-            "examples/hello-world/hello-world.aion",
-            "--workflow-package",
-            "local.aion",
-        ])?);
-
-        assert_eq!(
-            overrides.workflow_packages,
-            vec![
-                PathBuf::from("examples/hello-world/hello-world.aion"),
-                PathBuf::from("local.aion"),
-            ]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn help_is_handled_by_clap() -> Result<(), Box<dyn std::error::Error>> {
-        let error = Cli::try_parse_from(["aion-server", "--help"])
-            .err()
-            .ok_or("help should exit early")?;
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-        assert!(help.contains("Run the Aion workflow server"));
-        assert!(help.contains("--workflow-package"));
-        assert!(!help.contains("{\"timestamp\""));
-        assert!(!help.contains("ERROR"));
-        Ok(())
-    }
-
-    #[test]
-    fn cli_converts_all_overrides() -> Result<(), Box<dyn std::error::Error>> {
-        let overrides = CliOverrides::from(Cli::try_parse_from([
-            "aion-server",
-            "--config",
-            "dev-config.toml",
-            "--listen-address",
-            "127.0.0.1:18080",
-            "--store-url",
-            "aion.db",
-            "--scheduler-threads",
-            "2",
-            "--drain-timeout",
-            "45",
-        ])?);
-
-        assert_eq!(
-            overrides.config_path,
-            Some(PathBuf::from("dev-config.toml"))
-        );
-        assert_eq!(
-            overrides.listen_address.map(|address| address.port()),
-            Some(18080)
-        );
-        assert_eq!(overrides.store_url.as_deref(), Some("aion.db"));
-        assert_eq!(overrides.scheduler_threads, Some(2));
-        assert_eq!(overrides.drain_timeout_seconds, Some(45));
-        Ok(())
     }
 }

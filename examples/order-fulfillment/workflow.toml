@@ -1,4 +1,4 @@
-# Workflow packaging descriptor consumed by `aion-cli package`.
+# Workflow packaging descriptor consumed by `aion package`.
 # Reference: docs/packaging.md.
 #
 # Two entries: the order-fulfillment parent saga and the shipping child
