@@ -13,8 +13,8 @@ use super::{
     error::PackagingError,
 };
 use crate::{
-    BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion, Package,
-    PackageBuilder, WorkflowVersion,
+    BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest, ManifestVersion,
+    Package, PackageBuilder, WorkflowVersion,
 };
 
 /// Options for packaging an already-built Gleam workflow project.
@@ -200,7 +200,9 @@ fn build_workflow_package(
             path: workflow.output_path.clone(),
             source,
         })?;
-    let package = Package::load_from_path(&workflow.output_path)?;
+    // Trusted local input: the archive was written by this process moments
+    // ago, so extraction runs unbounded.
+    let package = Package::load_from_path(&workflow.output_path, ExtractionLimits::unbounded())?;
 
     Ok(PackagedWorkflow {
         workflow_type: workflow.entry_module.clone(),
@@ -246,7 +248,7 @@ activities = []
             .as_ref()
             .ok()
             .map(|report| report.packages[0].output_path.clone())
-            .map(crate::Package::load_from_path);
+            .map(|path| crate::Package::load_from_path(path, crate::ExtractionLimits::unbounded()));
         fs::remove_dir_all(&root)?;
         let report = report?;
 

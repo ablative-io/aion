@@ -17,8 +17,8 @@ use aion::{
 };
 use aion_core::{Event, Payload, RunId, WorkflowId};
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder,
 };
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
@@ -52,7 +52,10 @@ fn query_package(entry_function: &str) -> Result<Package, Box<dyn std::error::Er
     let archive =
         PackageBuilder::with_source(manifest, beams, [(QUERY_MODULE, QUERY_SOURCE.to_vec())])
             .write_to_bytes()?;
-    Ok(Package::load_from_bytes(archive)?)
+    Ok(Package::load_from_bytes(
+        archive,
+        ExtractionLimits::unbounded(),
+    )?)
 }
 
 async fn engine_over(

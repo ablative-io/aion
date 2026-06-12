@@ -7,9 +7,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use aion_package::Package;
+//! use aion_package::{ExtractionLimits, Package};
 //!
-//! let package = Package::load_from_path("workflow.aion")?;
+//! // Operator-local file: extraction may run unbounded. Network input must
+//! // use `ExtractionLimits::bounded` instead.
+//! let package = Package::load_from_path("workflow.aion", ExtractionLimits::unbounded())?;
 //! println!("entry module: {}", package.manifest().entry_module);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -20,6 +22,8 @@ pub mod beam;
 pub mod builder;
 /// Package validation and archive-loading errors.
 pub mod error;
+/// Explicit inflate budgets for archive extraction.
+pub mod extraction;
 /// Stable content-hash calculation for package contents.
 pub mod hash;
 /// Manifest structures and format-version constants.
@@ -36,6 +40,7 @@ pub mod version;
 pub use beam::{BeamModule, BeamSet, RESERVED_MODULE_NAMES};
 pub use builder::PackageBuilder;
 pub use error::PackageError;
+pub use extraction::ExtractionLimits;
 pub use hash::{ContentHash, content_hash};
 pub use manifest::{
     CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestDigest, ManifestVersion,

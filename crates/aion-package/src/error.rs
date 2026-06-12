@@ -74,6 +74,15 @@ pub enum PackageError {
         /// Archive entry or logical module name that failed validation.
         entry: String,
     },
+
+    /// The archive's entries inflate past the caller's extraction budget.
+    #[error(
+        "archive contents inflate past the extraction limit of {limit} bytes; refusing to extract further"
+    )]
+    InflatedSizeExceeded {
+        /// The caller-configured inflate ceiling in bytes.
+        limit: u64,
+    },
 }
 
 #[cfg(test)]
@@ -125,6 +134,10 @@ mod tests {
             }
             .to_string(),
             "malformed beam entry `beam/workflow.beam`"
+        );
+        assert_eq!(
+            PackageError::InflatedSizeExceeded { limit: 1024 }.to_string(),
+            "archive contents inflate past the extraction limit of 1024 bytes; refusing to extract further"
         );
     }
 }

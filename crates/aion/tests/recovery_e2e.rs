@@ -12,7 +12,7 @@ use std::sync::Arc;
 use aion::EngineBuilder;
 use aion::activity::bridge::ActivityDispatcher;
 use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
-use aion_package::Package;
+use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore, WriteToken};
 use chrono::Utc;
 use serde_json::json;
@@ -50,7 +50,8 @@ async fn interrupted_workflow_recovers_and_completes() -> Result<(), Box<dyn std
         );
         return Ok(());
     }
-    let package = Package::load_from_bytes(std::fs::read(archive_path)?)?;
+    let package =
+        Package::load_from_bytes(std::fs::read(archive_path)?, ExtractionLimits::unbounded())?;
 
     // Simulate the crash: durable history holds only the start event.
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());

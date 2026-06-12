@@ -14,7 +14,8 @@ use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{Event, PackageVersion, Payload, RunId, WorkflowId};
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, Manifest, ManifestVersion, Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ExtractionLimits, Manifest, ManifestVersion,
+    Package, PackageBuilder,
 };
 use aion_store::EventStore;
 use serde_json::json;
@@ -71,7 +72,10 @@ pub fn reload_package(
         format_version: CURRENT_FORMAT_VERSION,
     };
     let archive = PackageBuilder::new(manifest, beams).write_to_bytes()?;
-    Ok(Package::load_from_bytes(archive)?)
+    Ok(Package::load_from_bytes(
+        archive,
+        ExtractionLimits::unbounded(),
+    )?)
 }
 
 pub async fn engine_with(

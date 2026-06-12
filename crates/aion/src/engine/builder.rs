@@ -5,7 +5,7 @@ use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 use chrono::Utc;
 
 use aion_core::SearchAttributeSchema;
-use aion_package::Package;
+use aion_package::{ExtractionLimits, Package};
 use aion_store::visibility::VisibilityStore;
 use aion_store::{EventStore, InMemoryStore};
 
@@ -621,11 +621,15 @@ fn install_configured_child_nif_bridge(
 pub(super) fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
     match source {
         WorkflowPackageSource::Path(path) => {
-            Package::load_from_path(&path).map_err(|error| EngineError::Load {
-                reason: format!(
-                    "failed to load workflow package `{}`: {error}",
-                    path.display()
-                ),
+            // Operator-local startup packages from config/CLI are trusted
+            // input; only the network deploy path extracts bounded.
+            Package::load_from_path(&path, ExtractionLimits::unbounded()).map_err(|error| {
+                EngineError::Load {
+                    reason: format!(
+                        "failed to load workflow package `{}`: {error}",
+                        path.display()
+                    ),
+                }
             })
         }
         WorkflowPackageSource::Package(package) => Ok(*package),
@@ -638,8 +642,8 @@ mod tests {
 
     use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
     use aion_package::{
-        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-        Package, PackageBuilder,
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+        ManifestVersion, Package, PackageBuilder,
     };
     use aion_store::visibility::{ListWorkflowsFilter, VisibilityStore};
     use aion_store::{InMemoryStore, ReadableEventStore, WritableEventStore, WriteToken};
@@ -732,7 +736,10 @@ mod tests {
     fn fixture_package() -> Result<Package, Box<dyn std::error::Error>> {
         let beams = BeamSet::new(vec![BeamModule::new("counter", compile_counter_beam()?)])?;
         let archive = PackageBuilder::new(package_manifest(), beams).write_to_bytes()?;
-        Ok(Package::load_from_bytes(archive)?)
+        Ok(Package::load_from_bytes(
+            archive,
+            ExtractionLimits::unbounded(),
+        )?)
     }
 
     fn write_fixture_package(package: &Package) -> Result<PathBuf, Box<dyn std::error::Error>> {

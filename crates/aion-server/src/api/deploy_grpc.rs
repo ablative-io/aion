@@ -17,11 +17,14 @@ use crate::{CallerIdentity, ServerState};
 
 const TRANSPORT: &str = "grpc";
 
-/// Proto-framing allowance over the archive ceiling for the unary
+/// Proto-framing slack over the archive ceiling for the unary
 /// `LoadPackageRequest`: the message wraps the archive bytes in one
 /// length-delimited field (tag byte plus a length varint of at most ten
 /// bytes), so a conformant archive of exactly `max_archive_bytes` always
-/// decodes while anything meaningfully larger is refused at the transport.
+/// decodes. This is slack, not enforcement: an archive between the limit
+/// and limit + 64 still decodes here and is then rejected exactly by the
+/// handler's `deploy.max_archive_bytes` check, which is authoritative. The
+/// transport bound only caps buffering at limit + 64.
 const LOAD_PACKAGE_FRAMING_ALLOWANCE: usize = 64;
 
 /// Cloneable tonic implementation of the operator deploy service.
@@ -58,6 +61,8 @@ pub fn deploy_service(
             message: DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED.to_owned(),
         });
     };
+    // Config validation guarantees the ceiling fits in usize on this
+    // platform; saturating is a defensive no-op kept over a panic path.
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     Ok(DeployServiceServer::new(DeployGrpcService::new(state))
         .max_decoding_message_size(limit.saturating_add(LOAD_PACKAGE_FRAMING_ALLOWANCE)))
@@ -245,6 +250,7 @@ mod tests {
         config.deploy = DeployConfig {
             enabled: true,
             max_archive_bytes: Some(1024),
+            max_inflated_bytes: Some(2048),
         };
         Ok(ServerState::from_parts(resolver, config))
     }

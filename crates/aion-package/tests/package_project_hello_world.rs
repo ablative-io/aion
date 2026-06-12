@@ -15,8 +15,9 @@ use std::{
 };
 
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExcludedReason, Manifest,
-    ManifestVersion, Package, PackageBuilder, PackageOptions, package_project,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExcludedReason,
+    ExtractionLimits, Manifest, ManifestVersion, Package, PackageBuilder, PackageOptions,
+    package_project,
 };
 use serde_json::json;
 
@@ -189,7 +190,8 @@ fn assert_report_shape(report: &aion_package::ProjectReport) {
 }
 
 fn assert_round_trip(root: &Path, packaged: &aion_package::PackagedWorkflow) -> TestResult {
-    let reloaded = Package::load_from_path(root.join("hello-world.aion"))?;
+    let reloaded =
+        Package::load_from_path(root.join("hello-world.aion"), ExtractionLimits::unbounded())?;
     assert_eq!(&reloaded, &packaged.package);
 
     let record = reloaded.version_record();

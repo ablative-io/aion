@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder, PackageError, deployed_name,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder, PackageError, deployed_name,
 };
 use serde_json::json;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -119,7 +119,7 @@ fn package_round_trips_manifest_beams_source_and_deployed_names() -> Result<(), 
     let expected_manifest = builder.finalise_manifest()?;
     let bytes = builder.write_to_bytes()?;
 
-    let loaded = Package::load_from_bytes(bytes)?;
+    let loaded = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
     assert_eq!(loaded.manifest(), &expected_manifest);
     assert_eq!(loaded.beams(), &beams);
@@ -150,7 +150,7 @@ fn package_round_trips_without_source() -> Result<(), PackageError> {
     let expected_manifest = builder.finalise_manifest()?;
     let bytes = builder.write_to_bytes()?;
 
-    let loaded = Package::load_from_bytes(bytes)?;
+    let loaded = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
     assert_eq!(loaded.manifest(), &expected_manifest);
     assert_eq!(loaded.beams(), &beams);
@@ -178,7 +178,7 @@ fn altering_packed_beam_contents_is_rejected_as_integrity_mismatch() -> Result<(
             .write_to_bytes()?;
     let corrupted = rewrite_with_corrupted_order_beam(&original)?;
 
-    let result = Package::load_from_bytes(corrupted);
+    let result = Package::load_from_bytes(corrupted, ExtractionLimits::unbounded());
 
     assert!(matches!(
         result,
@@ -196,8 +196,9 @@ fn source_inclusion_does_not_change_loaded_content_hash_or_manifest_version()
         PackageBuilder::with_source(conformance_manifest(), conformance_beams()?, source_files())
             .write_to_bytes()?;
 
-    let loaded_without_source = Package::load_from_bytes(without_source)?;
-    let loaded_with_source = Package::load_from_bytes(with_source)?;
+    let loaded_without_source =
+        Package::load_from_bytes(without_source, ExtractionLimits::unbounded())?;
+    let loaded_with_source = Package::load_from_bytes(with_source, ExtractionLimits::unbounded())?;
 
     assert_eq!(
         loaded_without_source.content_hash(),

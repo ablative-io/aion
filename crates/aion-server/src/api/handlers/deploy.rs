@@ -9,14 +9,14 @@
 //! Mutations emit one structured audit line and the deploy metrics.
 
 use aion::EngineError;
-use aion_package::{ContentHash, Package};
+use aion_package::{ContentHash, ExtractionLimits, Package, PackageError};
 use aion_proto::{
     ProtoListVersionsResponse, ProtoLoadPackageResponse, ProtoRouteVersionRequest,
     ProtoRouteVersionResponse, ProtoUnloadVersionRequest, ProtoUnloadVersionResponse,
     ProtoWorkflowVersion, WireError,
 };
 
-use crate::config::DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED;
+use crate::config::{DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED, DEPLOY_MAX_INFLATED_BYTES_REQUIRED};
 use crate::{CallerIdentity, ServerState};
 
 /// Deploy failure classes the transports must render distinctly: 503 vs 413
@@ -25,7 +25,9 @@ use crate::{CallerIdentity, ServerState};
 pub enum DeployApiError {
     /// The server is draining or the engine is shutting down (503/`Unavailable`).
     Unavailable(WireError),
-    /// The uploaded archive exceeds `deploy.max_archive_bytes` (413/`InvalidArgument`).
+    /// The uploaded archive exceeds `deploy.max_archive_bytes`, or its
+    /// contents inflate past `deploy.max_inflated_bytes`
+    /// (413/`InvalidArgument`).
     ArchiveTooLarge(WireError),
     /// Mapped wire failure rendered through the standard code tables.
     Wire(WireError),
@@ -60,13 +62,40 @@ pub async fn load_package(
 ) -> Result<ProtoLoadPackageResponse, DeployApiError> {
     authorize_mutation(state, caller, transport, "deploy.load")?;
     enforce_archive_ceiling(state, archive.len())?;
+    let inflate_ceiling = inflate_ceiling(state)?;
 
-    let package = match Package::load_from_bytes(&archive) {
+    // Network input: extraction is bounded by the operator's inflate ceiling
+    // so a DEFLATE bomb under the upload ceiling cannot exhaust memory.
+    let package = match Package::load_from_bytes(
+        &archive,
+        ExtractionLimits::bounded(inflate_ceiling),
+    ) {
         Ok(package) => package,
+        Err(PackageError::InflatedSizeExceeded { limit }) => {
+            let wire = WireError::invalid_input(format!(
+                "archive contents inflate past the deploy.max_inflated_bytes limit of {limit} bytes; raise deploy.max_inflated_bytes (or AION_DEPLOY_MAX_INFLATED_BYTES) if this package size is intended"
+            ))
+            .with_error_type("Package");
+            return Err(refused(
+                state,
+                caller,
+                transport,
+                "deploy.load",
+                None,
+                DeployApiError::ArchiveTooLarge(wire),
+            ));
+        }
         Err(error) => {
             let wire = WireError::invalid_input(format!("archive rejected: {error}"))
                 .with_error_type("Package");
-            return Err(refused(state, caller, transport, "deploy.load", None, wire));
+            return Err(refused(
+                state,
+                caller,
+                transport,
+                "deploy.load",
+                None,
+                DeployApiError::Wire(wire),
+            ));
         }
     };
     let engine = engine_handle(state)?;
@@ -315,6 +344,20 @@ fn enforce_archive_ceiling(state: &ServerState, archive_len: usize) -> Result<()
     Ok(())
 }
 
+/// Resolves the operator-configured inflate ceiling for archive extraction.
+fn inflate_ceiling(state: &ServerState) -> Result<u64, DeployApiError> {
+    state
+        .runtime_config()
+        .deploy
+        .max_inflated_bytes
+        .ok_or_else(|| {
+            // The deploy surface is only mounted when validation proved the
+            // ceiling present; reaching this is a wiring bug, never a caller
+            // error, and it must fail loudly rather than extract unbounded.
+            DeployApiError::Wire(WireError::backend(DEPLOY_MAX_INFLATED_BYTES_REQUIRED))
+        })
+}
+
 /// Decodes a `(workflow_type, content_hash)` target, refusing malformed input.
 fn decode_version_target(
     state: &ServerState,
@@ -326,7 +369,14 @@ fn decode_version_target(
 ) -> Result<(String, ContentHash), DeployApiError> {
     if workflow_type.is_empty() {
         let wire = WireError::invalid_input("workflow_type must not be empty");
-        return Err(refused(state, caller, transport, operation, None, wire));
+        return Err(refused(
+            state,
+            caller,
+            transport,
+            operation,
+            None,
+            DeployApiError::Wire(wire),
+        ));
     }
     match content_hash.parse::<ContentHash>() {
         Ok(version) => Ok((workflow_type.to_owned(), version)),
@@ -334,7 +384,14 @@ fn decode_version_target(
             let wire = WireError::invalid_input(format!(
                 "content_hash `{content_hash}` is not a canonical content hash: {error}"
             ));
-            Err(refused(state, caller, transport, operation, None, wire))
+            Err(refused(
+                state,
+                caller,
+                transport,
+                operation,
+                None,
+                DeployApiError::Wire(wire),
+            ))
         }
     }
 }
@@ -385,16 +442,16 @@ fn map_engine_refusal(
     mapped
 }
 
-/// Records, logs, and wraps an adapter-level refusal (malformed input).
+/// Records, logs, and wraps an adapter-level refusal (malformed or
+/// oversized/over-inflating input), pre-mapped onto its wire class.
 fn refused(
     state: &ServerState,
     caller: &CallerIdentity,
     transport: &'static str,
     operation: &'static str,
     target: Option<(&str, &ContentHash)>,
-    wire: WireError,
+    mapped: DeployApiError,
 ) -> DeployApiError {
-    let mapped = DeployApiError::Wire(wire);
     let outcome = refusal_outcome(&mapped);
     tracing::info!(
         operation,

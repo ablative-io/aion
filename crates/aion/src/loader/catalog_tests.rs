@@ -4,8 +4,9 @@
 use std::{cell::RefCell, collections::BTreeMap, time::Duration};
 
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder, PackageError, content_hash, deployed_name, parse_deployed_name,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder, PackageError, content_hash, deployed_name,
+    parse_deployed_name,
 };
 use serde_json::json;
 
@@ -41,13 +42,13 @@ fn package(entry_module: &str, entry_bytes: Vec<u8>) -> Result<Package, PackageE
         BTreeMap::<String, Vec<u8>>::new(),
     )
     .write_to_bytes()?;
-    Package::load_from_bytes(bytes)
+    Package::load_from_bytes(bytes, ExtractionLimits::unbounded())
 }
 
 fn entry_only_package(entry_module: &str, bytes: Vec<u8>) -> Result<Package, PackageError> {
     let beams = BeamSet::new(vec![BeamModule::new(entry_module, bytes)])?;
     let archive = PackageBuilder::new(manifest(entry_module), beams).write_to_bytes()?;
-    Package::load_from_bytes(archive)
+    Package::load_from_bytes(archive, ExtractionLimits::unbounded())
 }
 
 fn fixture_workflow_beam() -> &'static [u8] {
@@ -62,7 +63,7 @@ fn fixture_workflow_package() -> Result<Package, PackageError> {
         fixture_workflow_beam().to_vec(),
     )])?;
     let archive = PackageBuilder::new(manifest, beams).write_to_bytes()?;
-    Package::load_from_bytes(archive)
+    Package::load_from_bytes(archive, ExtractionLimits::unbounded())
 }
 
 async fn load_counting(
@@ -370,7 +371,7 @@ async fn unexported_entry_function_fails_the_runtime_load() -> TestResult {
         fixture_workflow_beam().to_vec(),
     )])?;
     let archive = PackageBuilder::new(manifest, beams).write_to_bytes()?;
-    let package = Package::load_from_bytes(archive)?;
+    let package = Package::load_from_bytes(archive, ExtractionLimits::unbounded())?;
     let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
     let catalog = WorkflowCatalog::new();
 
@@ -528,7 +529,7 @@ async fn same_hash_different_manifest_reload_is_refused_typed() -> TestResult {
         BTreeMap::<String, Vec<u8>>::new(),
     )
     .write_to_bytes()?;
-    let diverged = Package::load_from_bytes(archive)?;
+    let diverged = Package::load_from_bytes(archive, ExtractionLimits::unbounded())?;
     assert_eq!(
         original.content_hash(),
         diverged.content_hash(),

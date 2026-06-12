@@ -15,7 +15,7 @@ use aion::activity::bridge::ActivityDispatcher;
 use aion::signal::ConcreteSignalRouter;
 use aion::{EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload};
-use aion_package::Package;
+use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
@@ -48,7 +48,8 @@ async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std
             eprintln!("skipping {name}: {} not built", path.display());
             continue;
         }
-        let package = Package::load_from_bytes(std::fs::read(&path)?)?;
+        let package =
+            Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
         let engine = EngineBuilder::new()
             .store(InMemoryStore::default())
             .in_memory_visibility()
@@ -130,7 +131,7 @@ async fn data_pipeline_example_runs_end_to_end() -> Result<(), Box<dyn std::erro
         );
         return Ok(());
     }
-    let package = Package::load_from_bytes(std::fs::read(&path)?)?;
+    let package = Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
     let engine = EngineBuilder::new()
         .store(InMemoryStore::default())
         .in_memory_visibility()
@@ -243,7 +244,7 @@ async fn approval_gate_signal_drives_publication() -> Result<(), Box<dyn std::er
         );
         return Ok(());
     }
-    let package = Package::load_from_bytes(std::fs::read(&path)?)?;
+    let package = Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
     let dispatcher = Arc::new(RecordingDispatcher::new());
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
@@ -315,7 +316,7 @@ async fn subscription_bills_after_deadline_with_signaled_plan_and_rotates()
         );
         return Ok(());
     }
-    let package = Package::load_from_bytes(std::fs::read(&path)?)?;
+    let package = Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
     let dispatcher = Arc::new(RecordingDispatcher::new());
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()

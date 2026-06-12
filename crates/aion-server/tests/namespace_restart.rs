@@ -26,8 +26,8 @@ use aion_core::{
     WorkflowStatus, search_attributes_from_events,
 };
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder,
 };
 use aion_proto::convert::{decode_schedule_state, decode_workflow_summary, encode_schedule_config};
 use aion_proto::{
@@ -118,7 +118,10 @@ fn package_from(
     };
     let archive = PackageBuilder::with_source(manifest, beams, [(module, source.to_vec())])
         .write_to_bytes()?;
-    Ok(Package::load_from_bytes(archive)?)
+    Ok(Package::load_from_bytes(
+        archive,
+        ExtractionLimits::unbounded(),
+    )?)
 }
 
 fn fixture_package(entry_function: &str) -> Result<Package, TestError> {

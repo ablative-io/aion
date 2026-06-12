@@ -134,9 +134,12 @@ The deploy surface is **dark by default**. It mounts only when commissioned in s
 [deploy]
 enabled = true                 # default false: routes not mounted (HTTP 404, gRPC Unimplemented)
 max_archive_bytes = 16777216   # REQUIRED when enabled; no default — size for your packages
+max_inflated_bytes = 67108864  # REQUIRED when enabled; no default — must be >= max_archive_bytes
 ```
 
 `max_archive_bytes` (env override `AION_DEPLOY_MAX_ARCHIVE_BYTES`; `AION_DEPLOY_ENABLED` gates the mount) is enforced while reading the upload on both transports; oversized archives are refused with `413` / `InvalidArgument` naming the key.
+
+`max_inflated_bytes` (env override `AION_DEPLOY_MAX_INFLATED_BYTES`) caps the total decompressed size of an uploaded archive's contents: `max_archive_bytes` bounds only the compressed upload, and a DEFLATE bomb under that cap can inflate ~1000:1. Extraction charges every inflated byte (manifest included) against this budget and refuses with the same `413` / `InvalidArgument` class, naming the key. Startup validation rejects a value below `max_archive_bytes` — an inflate ceiling under the upload ceiling would refuse archives the upload ceiling admits even stored uncompressed.
 
 **Authorization** is a deployment-wide `deploy` grant, decided before any handler logic runs:
 
@@ -162,6 +165,7 @@ Failure taxonomy (both transports; messages pass the engine's refusal prose thro
 | Malformed archive / hash mismatch / collision / same-hash-different-manifest | `invalid_input` | 400 | `InvalidArgument` |
 | Unknown `(workflow_type, content_hash)` | `not_found` | 404 | `NotFound` |
 | Archive exceeds `deploy.max_archive_bytes` | `invalid_input` (names the key) | 413 | `InvalidArgument` |
+| Archive contents inflate past `deploy.max_inflated_bytes` | `invalid_input` (names the key) | 413 | `InvalidArgument` |
 | Draining / shutting down (mutations only) | `backend` with explicit message | 503 | `Unavailable` |
 | Deploy surface disabled | — (not mounted) | 404 | `Unimplemented` |
 

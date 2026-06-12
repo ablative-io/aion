@@ -102,6 +102,8 @@ async fn read_archive_body(
             .to_wire_error(),
         )));
     };
+    // Config validation guarantees the ceiling fits in usize on this
+    // platform; saturating is a defensive no-op kept over a panic path.
     let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
     match axum::body::to_bytes(request.into_body(), limit_usize).await {
         Ok(bytes) => Ok(bytes.to_vec()),
@@ -179,6 +181,7 @@ mod tests {
         DeployConfig {
             enabled: true,
             max_archive_bytes: Some(1024),
+            max_inflated_bytes: Some(2048),
         }
     }
 

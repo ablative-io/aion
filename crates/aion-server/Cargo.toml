@@ -58,6 +58,9 @@ aion-worker = { path = "../aion-worker" }
 tempfile = "3.27.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-tungstenite = "0.29.0"
+# Deploy e2e builds hostile DEFLATE-bomb archives; PackageBuilder writes
+# Stored entries only, so it cannot produce one.
+zip = { workspace = true }
 
 [features]
 default = []

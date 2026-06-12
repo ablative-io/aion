@@ -23,8 +23,8 @@ use aion_core::{
     Payload, RunId, SearchAttributeSchema, SearchAttributeType, WorkflowId, WorkflowStatus,
 };
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder,
 };
 use aion_proto::{
     ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoStartWorkflowRequest,
@@ -118,7 +118,10 @@ fn query_package(entry_function: &str) -> Result<Package, TestError> {
     let archive =
         PackageBuilder::with_source(manifest, beams, [(QUERY_MODULE, QUERY_SOURCE.to_vec())])
             .write_to_bytes()?;
-    Ok(Package::load_from_bytes(archive)?)
+    Ok(Package::load_from_bytes(
+        archive,
+        ExtractionLimits::unbounded(),
+    )?)
 }
 
 fn caller_for(subject: &str, namespace: &str) -> CallerIdentity {

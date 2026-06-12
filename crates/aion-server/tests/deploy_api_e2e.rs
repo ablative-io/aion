@@ -11,7 +11,8 @@ use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{Payload, RunId, WorkflowId};
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, Manifest, ManifestVersion, Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ExtractionLimits, Manifest, ManifestVersion,
+    Package, PackageBuilder,
 };
 use aion_proto::{
     ProtoListVersionsResponse, ProtoLoadPackageResponse, ProtoWireError, WireError, WireErrorCode,
@@ -33,6 +34,7 @@ type TestError = Box<dyn std::error::Error>;
 const RELOAD_MODULE: &str = "aion_reload_fixture";
 const NAMESPACE: &str = "default";
 const MAX_ARCHIVE_BYTES: u64 = 1_048_576;
+const MAX_INFLATED_BYTES: u64 = 2_097_152;
 
 /// Compiles the reload fixture returning `version` from both entrypoints.
 fn compile_reload_beam(version: u32) -> Result<Vec<u8>, TestError> {
@@ -81,9 +83,11 @@ fn archive_bytes(beam: &[u8], entry_function: &str) -> Result<Vec<u8>, TestError
 }
 
 fn content_hash_of(archive: &[u8]) -> Result<String, TestError> {
-    Ok(Package::load_from_bytes(archive)?
-        .content_hash()
-        .to_string())
+    Ok(
+        Package::load_from_bytes(archive, ExtractionLimits::unbounded())?
+            .content_hash()
+            .to_string(),
+    )
 }
 
 fn runtime_config(deploy: DeployConfig) -> RuntimeConfig {
@@ -125,6 +129,7 @@ fn enabled_deploy() -> DeployConfig {
     DeployConfig {
         enabled: true,
         max_archive_bytes: Some(MAX_ARCHIVE_BYTES),
+        max_inflated_bytes: Some(MAX_INFLATED_BYTES),
     }
 }
 
@@ -660,5 +665,87 @@ async fn disabled_grpc_deploy_surface_is_unimplemented() -> Result<(), TestError
 
     engine.shutdown()?;
     server.abort();
+    Ok(())
+}
+
+/// A DEFLATE bomb: compressed well under `max_archive_bytes`, inflating past
+/// `max_inflated_bytes`. `PackageBuilder` writes Stored entries only, so the
+/// hostile shape is assembled directly with the zip writer.
+fn bomb_archive() -> Result<Vec<u8>, TestError> {
+    use std::io::Write as _;
+
+    let manifest = Manifest {
+        entry_module: RELOAD_MODULE.to_owned(),
+        entry_function: "run".to_owned(),
+        input_schema: json!({ "type": "object" }),
+        output_schema: json!({ "type": "integer" }),
+        timeout: Duration::from_secs(30),
+        activities: vec![],
+        version: ManifestVersion::new("irrelevant-never-reached"),
+        format_version: CURRENT_FORMAT_VERSION,
+    };
+    let manifest_bytes = serde_json::to_vec(&manifest)?;
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut archive = zip::ZipWriter::new(cursor);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    archive.start_file("manifest.json", options)?;
+    archive.write_all(&manifest_bytes)?;
+    archive.start_file(format!("beam/{RELOAD_MODULE}.beam"), options)?;
+    // 8 MiB of zeros: inflates 4x past MAX_INFLATED_BYTES while compressing
+    // to a few KiB, far under MAX_ARCHIVE_BYTES.
+    archive.write_all(&vec![0_u8; 8 * 1024 * 1024])?;
+    Ok(archive.finish()?.into_inner())
+}
+
+/// A zip bomb under the upload ceiling but inflating past
+/// `deploy.max_inflated_bytes` is refused with the same 413 wire class as an
+/// oversized archive — naming the inflate key — and is recorded as a refused
+/// load (metrics outcome), with nothing registered in the engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_inflate_bomb_is_413_naming_max_inflated_bytes() -> Result<(), TestError> {
+    let config = runtime_config(enabled_deploy());
+    let state = ServerState::build_with_store(aion_store::InMemoryStore::default(), config).await?;
+    let router = http_router(state)?;
+
+    let bomb = bomb_archive()?;
+    assert!(
+        u64::try_from(bomb.len())? < MAX_ARCHIVE_BYTES,
+        "bomb must pass the upload ceiling to exercise the inflate ceiling: {} bytes",
+        bomb.len()
+    );
+
+    let response = router.clone().oneshot(post_archive(bomb)?).await?;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let error: WireError = read_json(response).await?;
+    assert_eq!(error.code, WireErrorCode::InvalidInput);
+    assert!(
+        error.message.contains("deploy.max_inflated_bytes"),
+        "413 must name the inflate config key: {}",
+        error.message
+    );
+
+    // Nothing loaded: the bomb never reached the engine.
+    let listing: ProtoListVersionsResponse =
+        read_json(router.clone().oneshot(get_versions()?).await?).await?;
+    assert!(listing.versions.is_empty());
+
+    // The refusal is recorded like every other refused load.
+    let metrics = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(body::Body::empty())?,
+        )
+        .await?;
+    let bytes = body::to_bytes(metrics.into_body(), usize::MAX).await?;
+    let text = String::from_utf8(bytes.to_vec())?;
+    assert!(
+        text.contains(
+            "aion_deploy_operations_total{operation=\"deploy.load\",outcome=\"invalid_input\"} 1"
+        ),
+        "inflate refusal must be recorded as a refused load: {text}"
+    );
     Ok(())
 }

@@ -254,10 +254,19 @@ pub struct DeployConfig {
     /// `enabled = true`; no default (house rule) — the operator sizes it for
     /// their packages.
     pub max_archive_bytes: Option<u64>,
+    /// Inflate ceiling for uploaded archive contents, in bytes: the total
+    /// decompressed size of all archive entries an upload may extract to
+    /// (DEFLATE bombs inflate ~1000:1 past `max_archive_bytes`). REQUIRED
+    /// when `enabled = true`; no default (house rule); must be at least
+    /// `max_archive_bytes`.
+    pub max_inflated_bytes: Option<u64>,
 }
 
 /// Operator-facing message for an absent or zero `deploy.max_archive_bytes`.
 pub(crate) const DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED: &str = "deploy.max_archive_bytes is required and has no default when deploy.enabled is true: the archive upload ceiling must be an explicit operator decision sized for the deployment's packages; set deploy.max_archive_bytes (or AION_DEPLOY_MAX_ARCHIVE_BYTES) to a positive number of bytes";
+
+/// Operator-facing message for an absent or zero `deploy.max_inflated_bytes`.
+pub(crate) const DEPLOY_MAX_INFLATED_BYTES_REQUIRED: &str = "deploy.max_inflated_bytes is required and has no default when deploy.enabled is true: the decompressed-contents ceiling for uploaded archives must be an explicit operator decision (a compressed upload under deploy.max_archive_bytes can inflate ~1000:1); set deploy.max_inflated_bytes (or AION_DEPLOY_MAX_INFLATED_BYTES) to a positive number of bytes no smaller than deploy.max_archive_bytes";
 
 /// Operator-facing message for an absent or zero `query_timeout_ms`.
 pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms is required and has no default: the server always mounts /workflows/query, so the workflow query reply deadline must be configured explicitly; set runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to a positive number of milliseconds";
@@ -450,13 +459,37 @@ impl ServerConfig {
             Some(_) => {}
         }
         if self.deploy.enabled {
-            match self.deploy.max_archive_bytes {
+            let max_archive_bytes = match self.deploy.max_archive_bytes {
                 None | Some(0) => return config_error(DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED),
-                Some(_) => {}
+                Some(value) => value,
+            };
+            let max_inflated_bytes = match self.deploy.max_inflated_bytes {
+                None | Some(0) => return config_error(DEPLOY_MAX_INFLATED_BYTES_REQUIRED),
+                Some(value) => value,
+            };
+            // Both ceilings size in-memory buffers, so they must be
+            // addressable on this platform (32-bit targets).
+            ensure_fits_usize("deploy.max_archive_bytes", max_archive_bytes)?;
+            ensure_fits_usize("deploy.max_inflated_bytes", max_inflated_bytes)?;
+            if max_inflated_bytes < max_archive_bytes {
+                return config_error(format!(
+                    "deploy.max_inflated_bytes ({max_inflated_bytes}) must be at least deploy.max_archive_bytes ({max_archive_bytes}): an inflate ceiling below the upload ceiling would refuse archives the upload ceiling admits, even stored uncompressed"
+                ));
             }
         }
         Ok(())
     }
+}
+
+/// Refuses byte-ceiling values that cannot index memory on this platform.
+fn ensure_fits_usize(key: &str, value: u64) -> Result<(), ServerError> {
+    if usize::try_from(value).is_err() {
+        return config_error(format!(
+            "{key} ({value}) exceeds this platform's addressable memory; set it to at most {}",
+            usize::MAX
+        ));
+    }
+    Ok(())
 }
 
 impl Default for ServerSection {
@@ -833,8 +866,96 @@ mod tests {
         );
     }
 
+    /// The inflate ceiling is commissioned alongside the upload ceiling:
+    /// enabling deploy without `max_inflated_bytes` must fail startup naming
+    /// the key and the environment override (same pattern as
+    /// `max_archive_bytes`).
+    #[test]
+    fn deploy_enabled_without_max_inflated_bytes_fails_naming_key_and_env() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [deploy]
+                enabled = true
+                max_archive_bytes = 16777216
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("deploy.max_inflated_bytes"),
+            "validation message must name the missing key: {message}"
+        );
+        assert!(
+            message.contains("AION_DEPLOY_MAX_INFLATED_BYTES"),
+            "validation message must name the environment override: {message}"
+        );
+    }
+
+    #[test]
+    fn deploy_zero_max_inflated_bytes_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [deploy]
+                enabled = true
+                max_archive_bytes = 16777216
+                max_inflated_bytes = 0
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("deploy.max_inflated_bytes"),
+            "validation message must name the zero-valued key: {message}"
+        );
+    }
+
+    /// An inflate ceiling below the upload ceiling is incoherent: archives
+    /// the upload ceiling admits would be refused even stored uncompressed.
+    #[test]
+    fn deploy_max_inflated_below_max_archive_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [deploy]
+                enabled = true
+                max_archive_bytes = 16777216
+                max_inflated_bytes = 16777215
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("deploy.max_inflated_bytes")
+                && message.contains("deploy.max_archive_bytes"),
+            "validation message must name both ceilings: {message}"
+        );
+    }
+
     /// An absent `[deploy]` section means the surface stays dark and the
-    /// ceiling is not required.
+    /// ceilings are not required.
     #[test]
     fn deploy_disabled_requires_no_archive_ceiling() -> Result<(), Box<dyn std::error::Error>> {
         let config = ServerConfig::from_slice(
@@ -849,11 +970,12 @@ mod tests {
 
         assert!(!config.deploy.enabled);
         assert_eq!(config.deploy.max_archive_bytes, None);
+        assert_eq!(config.deploy.max_inflated_bytes, None);
         Ok(())
     }
 
     #[test]
-    fn deploy_section_parses_enabled_with_ceiling() -> Result<(), Box<dyn std::error::Error>> {
+    fn deploy_section_parses_enabled_with_ceilings() -> Result<(), Box<dyn std::error::Error>> {
         let config = ServerConfig::from_slice(
             br"
                 [runtime]
@@ -865,11 +987,13 @@ mod tests {
                 [deploy]
                 enabled = true
                 max_archive_bytes = 16777216
+                max_inflated_bytes = 67108864
             ",
         )?;
 
         assert!(config.deploy.enabled);
         assert_eq!(config.deploy.max_archive_bytes, Some(16_777_216));
+        assert_eq!(config.deploy.max_inflated_bytes, Some(67_108_864));
         Ok(())
     }
 

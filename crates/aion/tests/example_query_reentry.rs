@@ -37,7 +37,7 @@ use aion::activity::bridge::ActivityDispatcher;
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, EngineError, QueryError, RuntimeHandle, SignalRouter};
 use aion_core::{Payload, RunId, WorkflowId};
-use aion_package::Package;
+use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
@@ -151,8 +151,8 @@ fn example_packages() -> Result<Option<(Package, Package)>, Box<dyn std::error::
         return Ok(None);
     }
     Ok(Some((
-        Package::load_from_bytes(std::fs::read(&parent_path)?)?,
-        Package::load_from_bytes(std::fs::read(&item_path)?)?,
+        Package::load_from_bytes(std::fs::read(&parent_path)?, ExtractionLimits::unbounded())?,
+        Package::load_from_bytes(std::fs::read(&item_path)?, ExtractionLimits::unbounded())?,
     )))
 }
 

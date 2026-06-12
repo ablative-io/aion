@@ -100,6 +100,7 @@ fn runtime_config() -> RuntimeConfig {
         deploy: DeployConfig {
             enabled: true,
             max_archive_bytes: Some(1_048_576),
+            max_inflated_bytes: Some(2_097_152),
         },
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),

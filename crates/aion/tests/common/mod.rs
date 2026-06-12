@@ -6,8 +6,8 @@ use std::time::Duration;
 use aion::{Engine, EngineBuilder};
 use aion_core::Payload;
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder,
 };
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
@@ -41,7 +41,10 @@ pub fn fixture_package(entry_function: &str) -> Result<Package, Box<dyn std::err
     let archive =
         PackageBuilder::with_source(manifest, beams, [(FIXTURE_MODULE, FIXTURE_SOURCE.to_vec())])
             .write_to_bytes()?;
-    Ok(Package::load_from_bytes(archive)?)
+    Ok(Package::load_from_bytes(
+        archive,
+        ExtractionLimits::unbounded(),
+    )?)
 }
 
 pub async fn engine_with_fixture(

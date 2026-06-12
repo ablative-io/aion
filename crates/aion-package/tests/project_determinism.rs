@@ -10,8 +10,8 @@ use std::{
 };
 
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    PackageBuilder, PackageOptions, package_project,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, PackageBuilder, PackageOptions, package_project,
 };
 use serde_json::json;
 
@@ -116,7 +116,8 @@ fn library_archive_is_byte_identical_to_direct_builder_construction() -> TestRes
     assert!(!library_bytes.is_empty());
     assert_eq!(library_bytes, direct_bytes);
 
-    let direct_package = aion_package::Package::load_from_bytes(&direct_bytes)?;
+    let direct_package =
+        aion_package::Package::load_from_bytes(&direct_bytes, ExtractionLimits::unbounded())?;
     assert_eq!(report.packages[0].version, direct_package.version_record());
     Ok(())
 }

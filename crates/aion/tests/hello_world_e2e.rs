@@ -11,7 +11,7 @@ use std::sync::Arc;
 use aion::EngineBuilder;
 use aion::activity::bridge::ActivityDispatcher;
 use aion_core::{Payload, WorkflowStatus};
-use aion_package::Package;
+use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
@@ -49,7 +49,7 @@ async fn hello_world_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>>
         return Ok(());
     }
     let archive = std::fs::read(archive_path)?;
-    let package = Package::load_from_bytes(archive)?;
+    let package = Package::load_from_bytes(archive, ExtractionLimits::unbounded())?;
 
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()

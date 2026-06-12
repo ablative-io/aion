@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder, PackageError, content_hash, deployed_name,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder, PackageError, content_hash, deployed_name,
 };
 use serde_json::json;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -76,7 +76,7 @@ fn builder_produced_package_loads_successfully() -> Result<(), PackageError> {
     let bytes = PackageBuilder::with_source(sample_manifest(), sample_beams()?, source_files())
         .write_to_bytes()?;
 
-    let package = Package::load_from_bytes(bytes)?;
+    let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
     assert_eq!(package.manifest().entry_module, "workflow/order");
     assert_eq!(package.beams().len(), 2);
@@ -95,7 +95,7 @@ fn builder_produced_package_loads_successfully() -> Result<(), PackageError> {
 fn corrupted_beam_contents_return_integrity_mismatch() -> Result<(), PackageError> {
     let original = PackageBuilder::new(sample_manifest(), sample_beams()?).write_to_bytes()?;
     let corrupted = rewrite_with_corrupted_order_beam(&original)?;
-    let result = Package::load_from_bytes(corrupted);
+    let result = Package::load_from_bytes(corrupted, ExtractionLimits::unbounded());
 
     assert!(matches!(
         result,
@@ -109,7 +109,7 @@ fn corrupted_beam_contents_return_integrity_mismatch() -> Result<(), PackageErro
 fn deployed_modules_match_namespace_transform_for_every_module() -> Result<(), PackageError> {
     let bytes = PackageBuilder::with_source(sample_manifest(), sample_beams()?, source_files())
         .write_to_bytes()?;
-    let package = Package::load_from_bytes(bytes)?;
+    let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
     let deployed = package.deployed_modules();
     let expected: Vec<(String, &[u8])> = package
@@ -134,7 +134,7 @@ fn deployed_modules_match_namespace_transform_for_every_module() -> Result<(), P
 #[test]
 fn loaded_hash_matches_canonical_beam_hash() -> Result<(), PackageError> {
     let bytes = PackageBuilder::new(sample_manifest(), sample_beams()?).write_to_bytes()?;
-    let package = Package::load_from_bytes(bytes)?;
+    let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
     assert_eq!(package.content_hash(), &content_hash(package.beams()));
     Ok(())

@@ -33,8 +33,8 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-        Package, PackageBuilder, PackageError,
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+        ManifestVersion, Package, PackageBuilder, PackageError,
     };
 
     fn sample_manifest() -> Manifest {
@@ -87,7 +87,7 @@ mod tests {
             )]),
         )
         .write_to_bytes()?;
-        let package = Package::load_from_bytes(bytes)?;
+        let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
         let record = package.version_record();
 

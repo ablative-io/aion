@@ -114,6 +114,7 @@ fn enabled_deploy() -> DeployConfig {
     DeployConfig {
         enabled: true,
         max_archive_bytes: Some(1_048_576),
+        max_inflated_bytes: Some(2_097_152),
     }
 }
 

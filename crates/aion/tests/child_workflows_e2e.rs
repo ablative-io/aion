@@ -17,8 +17,8 @@ use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{ContentType, Event, EventEnvelope, Payload, RunId, WorkflowId};
 use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    Package, PackageBuilder,
+    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
+    ManifestVersion, Package, PackageBuilder,
 };
 use aion_store::{EventStore, InMemoryStore, WriteToken};
 use serde_json::json;
@@ -66,7 +66,10 @@ fn fixture_package(
     };
     let archive = PackageBuilder::with_source(manifest, beams, [(module, source.to_vec())])
         .write_to_bytes()?;
-    Ok(Package::load_from_bytes(archive)?)
+    Ok(Package::load_from_bytes(
+        archive,
+        ExtractionLimits::unbounded(),
+    )?)
 }
 
 fn parent_package(entry_function: &str) -> Result<Package, Box<dyn std::error::Error>> {

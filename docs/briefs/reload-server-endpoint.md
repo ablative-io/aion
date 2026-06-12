@@ -251,6 +251,15 @@ New remote subcommands in `aion-cli` (the local `package` subcommand is untouche
 
 **Recommendation: (a)** now; (b) only if/when a package-format revision is scheduled for other reasons.
 
+### D11 — Inflate ceiling for uploaded archives (post-review security rider)
+
+Security review of the landed endpoint found that `max_archive_bytes` caps only the *compressed* upload: ZIP entries declare their own sizes, and a DEFLATE bomb under the upload ceiling inflates ~1000:1 in `Package::load_from_bytes` before the content-hash check — an OOM vector on the deploy surface. **Decision:**
+
+- A second REQUIRED `[deploy]` key, `max_inflated_bytes` (env `AION_DEPLOY_MAX_INFLATED_BYTES`), mirrors `max_archive_bytes`' validation exactly: required when `enabled = true`, startup fails naming the key, zero rejected. Additionally `max_inflated_bytes < max_archive_bytes` is rejected at startup — an inflate ceiling below the upload ceiling would refuse archives the upload ceiling admits even stored uncompressed. Both ceilings must also fit `usize` on the host platform (32-bit targets), checked at startup.
+- Enforcement lives in `aion-package`: every loading entry point takes an explicit `ExtractionLimits` (`bounded(max_inflated_bytes)` / `unbounded()`, no `Default`), and extraction charges a *running* total of inflated bytes across all entries — manifest included — through a `Read::take`-bounded reader, refusing with the typed `PackageError::InflatedSizeExceeded { limit }` the moment the budget would be passed. No truncation; single entries cannot individually buffer past the remaining budget.
+- The deploy upload path maps the refusal onto the existing oversized-archive class: HTTP `413` / gRPC `InvalidArgument`, message naming `deploy.max_inflated_bytes`, recorded as a refused load in the audit line and `aion_deploy_operations_total` like every other adapter-level refusal. No new wire code.
+- Trusted operator-local loads (engine startup `workflow_packages`, packaging tooling re-reading archives it just wrote, test fixtures) pass `ExtractionLimits::unbounded()` explicitly; `unbounded()`'s docs forbid it for network input.
+
 ---
 
 ## 4. Wire/contract impact summary
