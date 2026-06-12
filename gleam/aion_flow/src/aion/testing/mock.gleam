@@ -1,11 +1,14 @@
-//// Typed activity mock registry for `aion/testing`.
+//// Typed activity and child-workflow mock registries for `aion/testing`.
 ////
-//// Tests register mocks against an `Activity(i, o)` value so the handler is
-//// statically checked against the same input and output types that
-//// `workflow.run` will use. The test-only FFI double stores a type-erased
-//// wrapper in process-scoped state and intercepts activity dispatch by name.
+//// Tests register activity mocks against an `Activity(i, o)` value so the
+//// handler is statically checked against the same input and output types that
+//// `workflow.run` will use, and child doubles against the input/output/error
+//// codecs that `workflow.spawn_and_wait` will use. The test-only FFI double
+//// stores a type-erased wrapper in process-scoped state and intercepts
+//// activity dispatch and child spawn by name.
 
 import aion/activity.{type Activity, input_codec, name, output_codec}
+import aion/codec.{type Codec}
 import aion/error
 import aion/internal/ffi
 
@@ -34,6 +37,43 @@ pub fn activity(
   }
 
   case ffi.testing_register_activity_mock(name, raw_handler) {
+    Ok(_) -> Ok(env)
+    Error(raw_error) -> Error(error.EngineFailure(raw_error))
+  }
+}
+
+/// Register a typed child-workflow double for the current test process.
+///
+/// `workflow.spawn_and_wait(name, ...)` calls with the same `name` execute
+/// `handler` synchronously and record its typed result as the child terminal:
+/// `Ok` is decoded by the parent's output codec and a typed `Error` surfaces
+/// as `error.ChildWorkflowFailed`. Registering the child module's real
+/// `execute` function as the handler runs the full child workflow body —
+/// including its own activity dispatches against this process's activity
+/// mocks — inside the parent test.
+pub fn child(
+  env: env,
+  name: String,
+  child_input_codec: Codec(input),
+  child_output_codec: Codec(output),
+  child_error_codec: Codec(workflow_error),
+  handler: fn(input) -> Result(output, workflow_error),
+) -> Result(env, error.EngineError) {
+  let raw_handler = fn(raw_input: String) {
+    case child_input_codec.decode(raw_input) {
+      Ok(typed_input) ->
+        case handler(typed_input) {
+          Ok(typed_output) ->
+            Ok("ok:" <> child_output_codec.encode(typed_output))
+          Error(workflow_error) ->
+            Ok("error:" <> child_error_codec.encode(workflow_error))
+        }
+      Error(decode_error) ->
+        Error("child mock input decode failed: " <> decode_error.reason)
+    }
+  }
+
+  case ffi.testing_register_child_mock(name, raw_handler) {
     Ok(_) -> Ok(env)
     Error(raw_error) -> Error(error.EngineFailure(raw_error))
   }
