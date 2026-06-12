@@ -1,33 +1,19 @@
 //! Batch-orchestrator example e2e: live queries through the production
-//! Gleam SDK pump while the parent is parked in `child.await`, plus a pinned
-//! upstream-beamr defect on the child-terminal decode path.
+//! Gleam SDK pump while the parent is parked in `child.await`, completing
+//! end-to-end (>64-byte child-terminal envelopes included).
 //!
 //! Both example archives are rebuilt from the committed example source on
 //! every run — see `common/example_build.rs` for why this gate must never
 //! skip. The historical `beamr_query_reentry_fixed` cargo feature (an
-//! off-by-default compile gate, i.e. a silent skip) is gone: these tests now
-//! always run and assert the exact current behavior.
+//! off-by-default compile gate, i.e. a silent skip) is gone: these tests
+//! always run and assert full completion.
 //!
-//! # BEAMR-UPSTREAM PIN: `byte_size`/`binary_part` badarg on refc binaries
-//!
-//! On beamr 0.5.0, `erlang:byte_size/1` and `erlang:binary_part/3` only
-//! accept inline heap binaries (`Binary::new`); any binary over beamr's
-//! 64-byte `REFC_BINARY_THRESHOLD` is a `ProcBin` and raises badarg
-//! (`crates/beamr/src/native/gate3_bifs/mod.rs` `binary_size` — standalone
-//! 20-line Erlang repro, no aion involved). The batch parent's child-terminal
-//! envelope (`ok:{...item json...}`) is ~100 bytes, so the SDK's
-//! `string.starts_with` decode in `aion/child.decode_child_result` dies with
-//! `VM execution error: bad argument` at the FIRST child completion — with
-//! or without queries. Everything the suspension protocol owns works and is
-//! asserted here: queries are answered while the parent is parked in
-//! `child.await`, re-enter the await cleanly, and append no history (the
-//! small-payload green path completes end-to-end in
-//! `tests/child_await_query_e2e.rs`).
-//!
-//! The pinned assertions assert the defect's exact signature ON PURPOSE:
-//! the moment a beamr bump fixes `byte_size` on refc binaries, they FAIL
-//! loudly — restore the full `finish_and_assert_summary` completion
-//! assertions from git history to flip the suite to end-to-end completion.
+//! History note: on beamr 0.5.0 these tests pinned an upstream defect
+//! (`byte_size`/`binary_part` badarg on refc binaries over the 64-byte
+//! threshold, killing the run at the first >64-byte child terminal). beamr
+//! 0.6.0 fixed it, the pin tripped loudly as designed, and the suite was
+//! flipped back to the full `finish_and_assert_summary` completion
+//! assertions.
 
 #[path = "common/example_build.rs"]
 mod example_build;
@@ -202,12 +188,9 @@ async fn progress_when_registered(
     }
 }
 
-/// BEAMR-UPSTREAM PIN (see module docs): assert the run fails at the first
-/// child-terminal decode with the exact upstream signature. When a beamr
-/// bump fixes `byte_size`/`binary_part` on refc binaries this assertion
-/// fails — restore the full `finish_and_assert_summary` completion
-/// assertions (summary counts 4/3/1) from git history.
-async fn assert_pinned_upstream_decode_failure(
+/// Await the batch result and assert the recorded summary (4 items, 3
+/// succeeded, 1 deterministic failure).
+async fn finish_and_assert_summary(
     engine: &Engine,
     store: &Arc<dyn EventStore>,
     workflow_id: &WorkflowId,
@@ -215,30 +198,17 @@ async fn assert_pinned_upstream_decode_failure(
 ) -> TestResult {
     let result = engine.result(workflow_id, run_id).await?;
     let history = store.read_history(workflow_id).await?;
-    match result {
-        Err(error) if error.message.contains("VM execution error: bad argument") => Ok(()),
-        Err(error) => Err(format!(
-            "expected the pinned upstream byte_size-on-refc-binary failure, got a \
-             different workflow error: {error:?}\nhistory: {history:#?}"
-        )
-        .into()),
-        Ok(payload) => {
-            // The upstream defect is FIXED: fail loudly so this suite is
-            // flipped to `finish_and_assert_summary` (full e2e completion).
-            let summary: serde_json::Value = serde_json::from_slice(payload.bytes())?;
-            Err(format!(
-                "the batch orchestrator completed ({summary}) — beamr's \
-                 byte_size-on-refc-binary defect is fixed; replace \
-                 assert_pinned_upstream_decode_failure with \
-                 finish_and_assert_summary in tests/example_query_reentry.rs"
-            )
-            .into())
-        }
-    }
+    let payload =
+        result.map_err(|error| format!("batch failed: {error:?}\nhistory: {history:#?}"))?;
+    let summary: serde_json::Value = serde_json::from_slice(payload.bytes())?;
+    assert_eq!(summary["total_processed"], json!(4), "summary: {summary}");
+    assert_eq!(summary["success_count"], json!(3), "summary: {summary}");
+    assert_eq!(summary["failure_count"], json!(1), "summary: {summary}");
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn the_pinned_upstream_decode_defect_fails_the_never_queried_control() -> TestResult {
+async fn control_never_queried_batch_completes() -> TestResult {
     let packages = example_packages()?;
     let gates = GateBoard::new();
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -248,13 +218,13 @@ async fn the_pinned_upstream_decode_defect_fails_the_never_queried_control() -> 
     for id in ITEM_IDS {
         gates.release(id);
     }
-    assert_pinned_upstream_decode_failure(&engine, &store, &workflow_id, &run_id).await?;
+    finish_and_assert_summary(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn live_query_while_parked_in_sdk_child_await() -> TestResult {
+async fn live_query_while_parked_in_sdk_child_await_then_resume() -> TestResult {
     let packages = example_packages()?;
     let gates = GateBoard::new();
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -280,14 +250,19 @@ async fn live_query_while_parked_in_sdk_child_await() -> TestResult {
         "the query path must never append events"
     );
 
-    // Resume: the first released child completes and its >64-byte terminal
-    // envelope hits the pinned upstream decode defect (module docs). Once
-    // beamr fixes it, restore the release-one-by-one query loop and
-    // `finish_and_assert_summary` from git history.
-    for id in ITEM_IDS {
+    // Resume: release the items one by one, querying between releases while
+    // the parent is still parked on a later child (the final release races
+    // workflow completion, so it is not followed by a query).
+    for (index, id) in ITEM_IDS.iter().enumerate() {
         gates.release(id);
+        if index + 1 < ITEM_IDS.len() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let progress = progress_when_registered(&engine, &workflow_id, &run_id).await?;
+            assert_eq!(progress["total"], json!(4));
+        }
     }
-    assert_pinned_upstream_decode_failure(&engine, &store, &workflow_id, &run_id).await?;
+
+    finish_and_assert_summary(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }

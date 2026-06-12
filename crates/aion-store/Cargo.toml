@@ -19,7 +19,7 @@ workspace = true
 recorder-write-token = []
 
 [dependencies]
-aion-core = { version = "0.3.0", path = "../aion-core" }
+aion-core = { version = "0.4.0", path = "../aion-core" }
 serde = { workspace = true, features = ["derive"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

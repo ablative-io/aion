@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "aion-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-client",
  "aion-core",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "aion-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "aion-nif"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "beamr",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "aion-package"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "serde",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "aion-rs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "aion-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-libsql"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -540,9 +540,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beamr"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7bc6066b9f5ee5eac54ac0aea612d8727b24a893e8ef72a500a21cbb60be3f1"
+checksum = "b6859ce6e7b0ef5cbcce01229dccf8f3c012acb1add60bb429deaffb5ef7fe28"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",

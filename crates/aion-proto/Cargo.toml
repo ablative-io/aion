@@ -20,7 +20,7 @@ default = []
 generated = []
 
 [dependencies]
-aion-core = { version = "0.3.0", path = "../aion-core" }
+aion-core = { version = "0.4.0", path = "../aion-core" }
 tonic = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -36,4 +36,4 @@ tonic-build = { workspace = true }
 tonic-prost-build = "=0.14.5"
 
 [dev-dependencies]
-aion-store = { version = "0.3.0", path = "../aion-store" }
+aion-store = { version = "0.4.0", path = "../aion-store" }

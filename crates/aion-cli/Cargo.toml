@@ -16,13 +16,13 @@ categories = ["command-line-utilities", "development-tools"]
 workspace = true
 
 [dependencies]
-aion-client = { version = "0.3.0", path = "../aion-client" }
-aion-core = { version = "0.3.0", path = "../aion-core" }
-aion-package = { version = "0.3.0", path = "../aion-package" }
+aion-client = { version = "0.4.0", path = "../aion-client" }
+aion-core = { version = "0.4.0", path = "../aion-core" }
+aion-package = { version = "0.4.0", path = "../aion-package" }
 # Deploy is an operator API: its gRPC stub comes from aion-proto's generated
 # module, never from aion-client (the caller SDK is contract-bound and must
 # not grow operator operations).
-aion-proto = { version = "0.3.0", path = "../aion-proto", features = ["generated"] }
+aion-proto = { version = "0.4.0", path = "../aion-proto", features = ["generated"] }
 prost = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 anyhow = { workspace = true }
@@ -34,7 +34,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 aion-server = { path = "../aion-server" }
-aion-store = { version = "0.3.0", path = "../aion-store" }
+aion-store = { version = "0.4.0", path = "../aion-store" }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features = ["net"] }
