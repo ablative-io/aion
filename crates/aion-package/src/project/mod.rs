@@ -9,13 +9,13 @@
 //! [`PackagingError`].
 
 mod assemble;
-mod config;
+pub(crate) mod config;
 mod confine;
 mod discover;
 mod error;
 
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 
 pub use assemble::{
     ExcludedModule, ExcludedReason, PackageOptions, PackagedWorkflow, ProjectReport,

@@ -57,6 +57,7 @@ completed durable workflow, with every file you need inline.
 | [Getting started](docs/GETTING-STARTED.md) | Zero to completed workflow on published artifacts |
 | [Workflow authoring guide](docs/guides/workflows.md) | The entry contract, determinism rules, timers, signals, queries, children |
 | [Activities & workers guide](docs/guides/activities-and-workers.md) | Worker scaffolding, failure classification, retry semantics |
+| [Schema codegen guide](docs/guides/codegen.md) | Generate Gleam types + JSON codecs from your schemas; `--check` CI gate; supported subset |
 | [Operations guide](docs/guides/operations.md) | Full config reference, deploy/versioning, persistence & recovery, metrics |
 | [Errors reference](docs/errors.md) | Every error code and what to do about it |
 | [API overview](docs/API.md) | HTTP/JSON, gRPC, WebSocket transports |

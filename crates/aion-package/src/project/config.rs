@@ -66,6 +66,10 @@ pub(crate) struct WorkflowConfig {
     pub(crate) input_schema: serde_json::Value,
     /// Parsed JSON-Schema document for result payloads.
     pub(crate) output_schema: serde_json::Value,
+    /// Input schema path resolved against the project root.
+    pub(crate) input_schema_path: PathBuf,
+    /// Output schema path resolved against the project root.
+    pub(crate) output_schema_path: PathBuf,
     /// Declared activity types, validated non-empty and unique.
     pub(crate) activities: Vec<String>,
     /// Archive output path resolved against the project root.
@@ -240,6 +244,8 @@ fn resolve_workflows(
             Ok(WorkflowConfig {
                 input_schema: load_schema(&input_schema_path)?,
                 output_schema: load_schema(&output_schema_path)?,
+                input_schema_path,
+                output_schema_path,
                 entry_module: entry.entry_module,
                 entry_function: entry.entry_function,
                 timeout: Duration::from_secs(entry.timeout_seconds),

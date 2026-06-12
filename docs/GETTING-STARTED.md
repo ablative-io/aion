@@ -275,6 +275,19 @@ the two JSON Schema files it references:
 }
 ```
 
+The schemas are the source of truth for your payload types. Instead of
+hand-writing Gleam codecs for them (which drift), generate them:
+
+```sh
+aion codegen .
+```
+
+This writes `src/my_flow_io.gleam` — a Gleam type plus a JSON
+encoder/decoder pair per schema, deterministic and marked do-not-edit;
+re-run it after every schema change, and add `aion codegen . --check` to CI
+to fail on drift. The supported schema subset and the full contract are in
+the [schema codegen guide](guides/codegen.md).
+
 Build and package:
 
 ```sh
@@ -525,6 +538,8 @@ model is in the [operations guide](guides/operations.md).
   determinism rules, timers, signals, queries, child workflows.
 - [Activities and workers guide](guides/activities-and-workers.md) — worker
   scaffolding, failure classification, retry semantics as they actually are.
+- [Schema codegen guide](guides/codegen.md) — generate Gleam types and JSON
+  codecs from your schemas; `--check` in CI; the supported subset.
 - [Operations guide](guides/operations.md) — full config reference, deploy
   surface, persistence and recovery, metrics.
 - [Errors reference](errors.md) — every error code, with hints.
