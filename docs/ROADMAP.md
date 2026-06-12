@@ -138,3 +138,14 @@ Riding in main, unpublished:
   the workflow-driven pattern is the permanent answer.
 - Query at a cancelled-but-orphaned child: behavior is whatever the pinned
   cancellation semantics imply today; revisit alongside parent-close.
+- **Activity progress / heartbeats.** Between `ActivityStarted` and its
+  result the engine knows nothing about a running activity. Long activities
+  that stream output (norn emitting JSON events during `dev` in
+  stacked-dev) have no live surface: the CLI runner captures the full
+  stream but only the final typed result is recorded — correct for
+  durability/replay (history carries outcomes, not progress chatter), and
+  workers are free to consume/forward the live stream out-of-band (the
+  Meridian worker answer). The engine-level candidate is Temporal-style
+  worker heartbeats: `heartbeat(details)` updating queryable live state
+  without appending history, which also enables heartbeat timeouts for
+  detecting hung activities.
