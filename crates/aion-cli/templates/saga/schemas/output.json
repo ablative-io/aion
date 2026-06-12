@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["order_id", "status", "payment_id", "refund_id", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "order_id": { "type": "string" },
+    "status": { "enum": ["completed", "cancelled"] },
+    "payment_id": { "type": "string" },
+    "refund_id": { "type": ["string", "null"] },
+    "reason": { "type": "string" }
+  }
+}

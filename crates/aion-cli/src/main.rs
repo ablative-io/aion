@@ -20,6 +20,7 @@ use crate::payload::{
 };
 
 mod deploy;
+mod new;
 mod output;
 mod package;
 mod payload;
@@ -75,6 +76,20 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ClientCommand {
+    /// Scaffold a new Aion workflow project from a template.
+    ///
+    /// Creates `<name>/` in the current directory: a buildable Gleam
+    /// workflow with a typed entry function, `workflow.toml`, JSON Schemas,
+    /// a ready development server config (`aion.toml`), a `.gitignore`, and
+    /// a README with the exact next steps. Runs entirely locally and
+    /// refuses to write into a non-empty directory.
+    ///
+    /// Templates: `hello-world` (default; minimal start → complete),
+    /// `approval-flow` (signal vs durable timeout race plus a status
+    /// query), and `saga` (worker-served activities, workflow-driven
+    /// retries, and refund compensation). `--worker rust` additionally
+    /// scaffolds a `worker/` crate serving the template's activities.
+    New(new::NewArgs),
     /// Package an already-built Gleam workflow project into `.aion` archives.
     ///
     /// Runs entirely locally: reads `workflow.toml` in the project root and
@@ -220,6 +235,7 @@ async fn main() -> ExitCode {
 /// never touch the caller SDK.
 async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
     match command {
+        ClientCommand::New(args) => new::run(args),
         ClientCommand::Package { path, out, build } => package::run(path, out.as_deref(), *build),
         ClientCommand::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
         ClientCommand::Versions { workflow_type } => {
@@ -443,6 +459,50 @@ mod tests {
     }
 
     #[test]
+    fn new_parses_name_template_and_worker() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion",
+            "new",
+            "my_flow",
+            "--template",
+            "saga",
+            "--worker",
+            "rust",
+        ])?;
+        let Command::Client(ClientCommand::New(_)) = cli.command else {
+            anyhow::bail!("expected new command");
+        };
+
+        // The template defaults to hello-world and --worker is optional.
+        let cli = Cli::try_parse_from(["aion", "new", "my_flow"])?;
+        let Command::Client(ClientCommand::New(_)) = cli.command else {
+            anyhow::bail!("expected new command");
+        };
+
+        // Unknown templates and worker languages are parse errors.
+        assert!(Cli::try_parse_from(["aion", "new", "x", "--template", "nope"]).is_err());
+        assert!(Cli::try_parse_from(["aion", "new", "x", "--worker", "cobol"]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn new_help_documents_templates_and_refusal() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(new) = command.find_subcommand_mut("new") else {
+            anyhow::bail!("new subcommand should be registered");
+        };
+        let help = new.render_long_help().to_string();
+
+        assert!(help.contains("--template"));
+        assert!(help.contains("hello-world"));
+        assert!(help.contains("approval-flow"));
+        assert!(help.contains("saga"));
+        assert!(help.contains("--worker"));
+        assert!(help.contains("non-empty directory"));
+        Ok(())
+    }
+
+    #[test]
     fn package_defaults_to_current_directory_without_build_or_out() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "package"])?;
 
@@ -523,6 +583,7 @@ mod tests {
                 Command::Server(_)
                 | Command::Client(
                     ClientCommand::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
+                    | ClientCommand::New(_)
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }
@@ -568,6 +629,7 @@ mod tests {
                         | RemoteCommand::List { .. }
                         | RemoteCommand::Describe { .. },
                     )
+                    | ClientCommand::New(_)
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }

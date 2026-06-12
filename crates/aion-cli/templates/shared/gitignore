@@ -1,0 +1,9 @@
+*.beam
+*.ez
+/build
+erl_crash.dump
+*.aion
+*.db
+*.db-wal
+*.db-shm
+target/

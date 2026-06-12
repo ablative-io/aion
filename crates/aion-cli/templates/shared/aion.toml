@@ -1,0 +1,28 @@
+# Development server configuration for `aion server --config aion.toml`.
+# Reference: https://github.com/ablative-io/aion/blob/main/docs/guides/operations.md
+#
+# Every key can also be set by environment variable as `AION_<SECTION>_<KEY>`
+# (for example `AION_RUNTIME_QUERY_TIMEOUT_MS=10000`).
+
+[server]
+listen_address = "127.0.0.1:8080"   # HTTP/JSON API + dashboard
+grpc_address = "127.0.0.1:50051"    # gRPC API + worker protocol
+
+[store]
+backend = "libsql"                  # durable; "memory" loses state on stop
+url = "aion.db"                     # embedded libSQL file, created on start
+
+[runtime]
+# REQUIRED, no default: reply deadline for workflow queries, in milliseconds.
+query_timeout_ms = 10000
+
+[websocket]
+# REQUIRED, no default: capacity of the global live-event broadcast channel.
+event_broadcast_capacity = 1024
+
+[deploy]
+# Runtime package deploy/route/unload. Dark by default; both ceilings are
+# REQUIRED when enabled, and max_inflated_bytes must be >= max_archive_bytes.
+enabled = true
+max_archive_bytes = 16777216        # 16 MiB upload ceiling
+max_inflated_bytes = 67108864       # 64 MiB decompressed-contents ceiling
