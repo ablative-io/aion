@@ -41,9 +41,18 @@ pub fn codec(reference: SignalRef(payload)) -> Codec(payload) {
 pub fn receive(
   reference: SignalRef(payload),
 ) -> Result(payload, error.ReceiveError) {
-  case
-    pump.run(fn() { ffi.receive_signal(name(reference), receive_config()) })
-  {
+  // Both await arguments are precomputed so the pump closure body is
+  // exactly one native call on captured values. The engine wake protocol
+  // re-enters the suspended native "from the top", and the beamr VM (0.4.6
+  // through 0.5.0) mis-resumes a Gleam closure whose body re-executes a
+  // cross-module call (here `receive_config`'s `gleam/json` encoding)
+  // before the native — the resumed process applies the native's resolved
+  // value as a function and dies with `bad function term`. Precomputed
+  // arguments are also the documented re-execution-safety contract for
+  // await fun bodies.
+  let signal_name = name(reference)
+  let config = receive_config()
+  case pump.run(fn() { ffi.receive_signal(signal_name, config) }) {
     Ok(raw_payload) -> {
       let payload_codec = codec(reference)
       case payload_codec.decode(raw_payload) {

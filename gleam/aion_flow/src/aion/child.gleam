@@ -68,7 +68,13 @@ pub fn await(
   // sentinel that the enclosing scope consumes. Child failure — including
   // engine-side cancellation/timeout terminals — arrives as `{ok, "error:"}`
   // data and is decoded by `decode_child_result` below.
-  case pump.run(fn() { ffi.await_child(child_id(handle)) }) {
+  // The await argument is precomputed so the pump closure body is exactly
+  // one native call on a captured value — the documented re-execution-safety
+  // contract for await fun bodies under the engine's wake re-entry protocol
+  // (see `aion/workflow/timer.sleep` for the beamr resume defect this also
+  // sidesteps).
+  let awaited_child_id = child_id(handle)
+  case pump.run(fn() { ffi.await_child(awaited_child_id) }) {
     Ok(raw_result) -> decode_child_result(raw_result, handle)
     Error(raw_error) -> Error(error.ChildEngineFailure(message: raw_error))
   }

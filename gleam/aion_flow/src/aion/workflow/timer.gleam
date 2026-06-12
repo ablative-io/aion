@@ -32,7 +32,16 @@ pub fn timer_id(reference: TimerRef) -> String {
 /// query pump while the timer is parked. `with_timeout` needs no pump of its
 /// own — the awaits running inside its operation are the yield points.
 pub fn sleep(duration: duration.Duration) -> Result(Nil, error.EngineError) {
-  case pump.run(fn() { ffi.sleep(duration_to_boundary(duration)) }) {
+  // The await argument is precomputed so the pump closure body is exactly
+  // one native call on a captured value. The engine wake protocol re-enters
+  // the suspended native "from the top", and the beamr VM (0.4.6 through
+  // 0.5.0) mis-resumes a Gleam closure whose body re-executes a
+  // cross-module call before the native — the resumed process applies the
+  // native's resolved value as a function and dies with
+  // `bad function term`. Precomputed arguments are also the documented
+  // re-execution-safety contract for await fun bodies.
+  let boundary = duration_to_boundary(duration)
+  case pump.run(fn() { ffi.sleep(boundary) }) {
     Ok(_) -> Ok(Nil)
     Error(raw_error) -> Error(error.EngineFailure(message: raw_error))
   }
