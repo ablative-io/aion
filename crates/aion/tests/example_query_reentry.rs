@@ -1,33 +1,36 @@
 //! Batch-orchestrator example e2e: live queries through the production
-//! Gleam SDK pump while the parent is parked in `child.await`.
+//! Gleam SDK pump while the parent is parked in `child.await`, plus a pinned
+//! upstream-beamr defect on the child-terminal decode path.
 //!
-//! # Runtime gate: `beamr_query_reentry_fixed`
+//! Both example archives are rebuilt from the committed example source on
+//! every run — see `common/example_build.rs` for why this gate must never
+//! skip. The historical `beamr_query_reentry_fixed` cargo feature (an
+//! off-by-default compile gate, i.e. a silent skip) is gone: these tests now
+//! always run and assert the exact current behavior.
 //!
-//! This module is compiled only with the `beamr_query_reentry_fixed` cargo
-//! feature (off by default) because the example workflow cannot currently
-//! run to completion on beamr 0.4.9. Empirical findings at HEAD
-//! (2026-06-12, rebuilt archives, engine query pump in place):
+//! # BEAMR-UPSTREAM PIN: `byte_size`/`binary_part` badarg on refc binaries
 //!
-//! - The query pump protocol itself works end-to-end through the Gleam SDK:
-//!   live `batch_progress` queries ARE answered while the parent is parked
-//!   in the pump-wrapped `child.await`, repeated queries re-enter the same
-//!   await cleanly, and the query path appends no history. The historical
-//!   "invalid operand for instruction pointer" crash on await re-entry
-//!   after a serviced query no longer reproduces.
-//! - The run then dies — with or without queries (a never-queried control
-//!   crashes identically) — when the parent decodes a child terminal
-//!   payload through `gleam_json`/`gleam_stdlib` code paths that hit beamr
-//!   0.4.9 VM gaps: `VM execution error: bad argument` on the success
-//!   decode, and `undefined function erlang:integer_to_list/2` (raising
-//!   `{invalid_byte, 0}` from `gleam_json_ffi:decode/1`) on the error
-//!   decode. Both are upstream beamr stdlib/json defects being fixed on the
-//!   separate beamr track, not query-re-entry bugs and not engine bugs.
+//! On beamr 0.5.0, `erlang:byte_size/1` and `erlang:binary_part/3` only
+//! accept inline heap binaries (`Binary::new`); any binary over beamr's
+//! 64-byte `REFC_BINARY_THRESHOLD` is a `ProcBin` and raises badarg
+//! (`crates/beamr/src/native/gate3_bifs/mod.rs` `binary_size` — standalone
+//! 20-line Erlang repro, no aion involved). The batch parent's child-terminal
+//! envelope (`ok:{...item json...}`) is ~100 bytes, so the SDK's
+//! `string.starts_with` decode in `aion/child.decode_child_result` dies with
+//! `VM execution error: bad argument` at the FIRST child completion — with
+//! or without queries. Everything the suspension protocol owns works and is
+//! asserted here: queries are answered while the parent is parked in
+//! `child.await`, re-enter the await cleanly, and append no history (the
+//! small-payload green path completes end-to-end in
+//! `tests/child_await_query_e2e.rs`).
 //!
-//! When the upstream fixes land and the beamr pin is bumped, build with
-//! `--features beamr_query_reentry_fixed` and these tests prove the example
-//! end-to-end; until then they are compile-checked by
-//! `cargo check -p aion-rs --features beamr_query_reentry_fixed`.
-#![cfg(feature = "beamr_query_reentry_fixed")]
+//! The pinned assertions assert the defect's exact signature ON PURPOSE:
+//! the moment a beamr bump fixes `byte_size` on refc binaries, they FAIL
+//! loudly — restore the full `finish_and_assert_summary` completion
+//! assertions from git history to flip the suite to end-to-end completion.
+
+#[path = "common/example_build.rs"]
+mod example_build;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
@@ -37,7 +40,7 @@ use aion::activity::bridge::ActivityDispatcher;
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, EngineError, QueryError, RuntimeHandle, SignalRouter};
 use aion_core::{Payload, RunId, WorkflowId};
-use aion_package::{ExtractionLimits, Package};
+use aion_package::Package;
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
@@ -135,25 +138,13 @@ fn batch_input() -> Result<Payload, aion_core::PayloadError> {
     }))
 }
 
-/// Both example archives (the parent spawns children by workflow type, so
-/// the child archive must be loaded alongside), or `None` when not built.
-fn example_packages() -> Result<Option<(Package, Package)>, Box<dyn std::error::Error>> {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/batch-orchestrator");
-    let parent_path = root.join("batch-orchestrator.aion");
-    let item_path = root.join("batch-orchestrator-item.aion");
-    if !parent_path.exists() || !item_path.exists() {
-        eprintln!(
-            "skipping: archives not built under {} (run `cargo run -p aion-cli -- package \
-             examples/batch-orchestrator`)",
-            root.display()
-        );
-        return Ok(None);
-    }
-    Ok(Some((
-        Package::load_from_bytes(std::fs::read(&parent_path)?, ExtractionLimits::unbounded())?,
-        Package::load_from_bytes(std::fs::read(&item_path)?, ExtractionLimits::unbounded())?,
-    )))
+/// Both example archives, rebuilt from source (the parent spawns children
+/// by workflow type, so the child archive must be loaded alongside).
+fn example_packages() -> Result<(Package, Package), Box<dyn std::error::Error>> {
+    Ok((
+        example_build::built_package("examples/batch-orchestrator", "batch_orchestrator")?,
+        example_build::built_package("examples/batch-orchestrator", "batch_orchestrator_item")?,
+    ))
 }
 
 async fn engine_over(
@@ -211,7 +202,12 @@ async fn progress_when_registered(
     }
 }
 
-async fn finish_and_assert_summary(
+/// BEAMR-UPSTREAM PIN (see module docs): assert the run fails at the first
+/// child-terminal decode with the exact upstream signature. When a beamr
+/// bump fixes `byte_size`/`binary_part` on refc binaries this assertion
+/// fails — restore the full `finish_and_assert_summary` completion
+/// assertions (summary counts 4/3/1) from git history.
+async fn assert_pinned_upstream_decode_failure(
     engine: &Engine,
     store: &Arc<dyn EventStore>,
     workflow_id: &WorkflowId,
@@ -219,20 +215,31 @@ async fn finish_and_assert_summary(
 ) -> TestResult {
     let result = engine.result(workflow_id, run_id).await?;
     let history = store.read_history(workflow_id).await?;
-    let payload =
-        result.map_err(|error| format!("batch failed: {error:?}\nhistory: {history:#?}"))?;
-    let summary: serde_json::Value = serde_json::from_slice(payload.bytes())?;
-    assert_eq!(summary["total_processed"], json!(4), "summary: {summary}");
-    assert_eq!(summary["success_count"], json!(3), "summary: {summary}");
-    assert_eq!(summary["failure_count"], json!(1), "summary: {summary}");
-    Ok(())
+    match result {
+        Err(error) if error.message.contains("VM execution error: bad argument") => Ok(()),
+        Err(error) => Err(format!(
+            "expected the pinned upstream byte_size-on-refc-binary failure, got a \
+             different workflow error: {error:?}\nhistory: {history:#?}"
+        )
+        .into()),
+        Ok(payload) => {
+            // The upstream defect is FIXED: fail loudly so this suite is
+            // flipped to `finish_and_assert_summary` (full e2e completion).
+            let summary: serde_json::Value = serde_json::from_slice(payload.bytes())?;
+            Err(format!(
+                "the batch orchestrator completed ({summary}) — beamr's \
+                 byte_size-on-refc-binary defect is fixed; replace \
+                 assert_pinned_upstream_decode_failure with \
+                 finish_and_assert_summary in tests/example_query_reentry.rs"
+            )
+            .into())
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn control_never_queried_batch_completes() -> TestResult {
-    let Some(packages) = example_packages()? else {
-        return Ok(());
-    };
+async fn the_pinned_upstream_decode_defect_fails_the_never_queried_control() -> TestResult {
+    let packages = example_packages()?;
     let gates = GateBoard::new();
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_over(&store, &gates, packages).await?;
@@ -241,16 +248,14 @@ async fn control_never_queried_batch_completes() -> TestResult {
     for id in ITEM_IDS {
         gates.release(id);
     }
-    finish_and_assert_summary(&engine, &store, &workflow_id, &run_id).await?;
+    assert_pinned_upstream_decode_failure(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn live_query_while_parked_in_sdk_child_await_then_resume() -> TestResult {
-    let Some(packages) = example_packages()? else {
-        return Ok(());
-    };
+async fn live_query_while_parked_in_sdk_child_await() -> TestResult {
+    let packages = example_packages()?;
     let gates = GateBoard::new();
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_over(&store, &gates, packages).await?;
@@ -275,19 +280,14 @@ async fn live_query_while_parked_in_sdk_child_await_then_resume() -> TestResult 
         "the query path must never append events"
     );
 
-    // Resume: release the items one by one, querying between releases while
-    // the parent is still parked on a later child (the final release races
-    // workflow completion, so it is not followed by a query).
-    for (index, id) in ITEM_IDS.iter().enumerate() {
+    // Resume: the first released child completes and its >64-byte terminal
+    // envelope hits the pinned upstream decode defect (module docs). Once
+    // beamr fixes it, restore the release-one-by-one query loop and
+    // `finish_and_assert_summary` from git history.
+    for id in ITEM_IDS {
         gates.release(id);
-        if index + 1 < ITEM_IDS.len() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let progress = progress_when_registered(&engine, &workflow_id, &run_id).await?;
-            assert_eq!(progress["total"], json!(4));
-        }
     }
-
-    finish_and_assert_summary(&engine, &store, &workflow_id, &run_id).await?;
+    assert_pinned_upstream_decode_failure(&engine, &store, &workflow_id, &run_id).await?;
     engine.shutdown()?;
     Ok(())
 }

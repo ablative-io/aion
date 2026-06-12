@@ -1,0 +1,19 @@
+# Engine e2e fixture descriptor consumed by the from-source test gates.
+
+[[workflow]]
+entry_module = "parent_query"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = []
+output = "parent-query.aion"
+
+[[workflow]]
+entry_module = "child_small"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = []
+output = "child-small.aion"

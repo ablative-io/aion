@@ -5,13 +5,18 @@
 //!
 //! This is the test that was missing when the DX-016 entry-contract
 //! regression and the constant-pool rename bug shipped.
+//!
+//! The archive is rebuilt from the committed example source on every run —
+//! see `common/example_build.rs` for why this gate must never skip.
+
+#[path = "common/example_build.rs"]
+mod example_build;
 
 use std::sync::Arc;
 
 use aion::EngineBuilder;
 use aion::activity::bridge::ActivityDispatcher;
 use aion_core::{Payload, WorkflowStatus};
-use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
@@ -37,19 +42,7 @@ impl ActivityDispatcher for GreetDispatcher {
 
 #[tokio::test]
 async fn hello_world_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
-    let archive_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/hello-world/hello-world.aion"
-    );
-    if !std::path::Path::new(archive_path).exists() {
-        eprintln!(
-            "skipping hello_world_runs_end_to_end: {archive_path} not built \
-             (run `cargo run -p aion-cli -- package examples/hello-world --build`)"
-        );
-        return Ok(());
-    }
-    let archive = std::fs::read(archive_path)?;
-    let package = Package::load_from_bytes(archive, ExtractionLimits::unbounded())?;
+    let package = example_build::built_package("examples/hello-world", "hello_world")?;
 
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
