@@ -105,9 +105,12 @@ async fn main() -> anyhow::Result<()> {
          with reconnect backoff — a quiet worker is a connected worker"
     );
 
-    // Everything but the endpoint mirrors the saga template's worker: the
-    // default task queue/namespace, an explicit identity, and the template's
-    // concurrency and reconnect settings.
+    // Everything but the endpoint and the reconnect budget mirrors the saga
+    // template's worker. The budget is deliberately effectively infinite: a
+    // long-lived worker must outwait server restarts (kill -9 the server and
+    // bring it back — the worker should still be there), so it probes every
+    // 5s for as long as it runs. The published SDK cannot express "unbounded"
+    // yet; usize::MAX is the honest spelling of that intent.
     let config = WorkerConfig::builder()
         .endpoint(endpoint)
         .task_queue("default")
@@ -115,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
         .max_concurrency(4)
         .reconnect_initial_backoff(Duration::from_millis(100))
         .reconnect_max_backoff(Duration::from_secs(5))
-        .reconnect_max_attempts(10)
+        .reconnect_max_attempts(usize::MAX)
         .build()?;
 
     Worker::builder(config)
