@@ -184,8 +184,15 @@ One bidirectional gRPC stream per worker (contract:
   (`reconnect_initial_backoff`/`max_backoff`/`max_attempts`); a server
   `DrainRequest` asks workers to finish in-flight work and reconnect without
   consuming their drop budget.
-- A worker silent past the server's `[worker] heartbeat_window`
-  (default 30000 ms) is considered lost.
+- A worker whose stream ends — process death, disconnect, expired token —
+  is considered lost: its in-flight activities fail back to the engine as
+  retryable lost-worker errors, and the workflow's retry policy decides
+  re-dispatch. The engine imposes no activity timeout of its own; an
+  activity may legitimately run for hours, bounded only by the workflow's
+  `timeout_seconds` and worker liveness. The server's
+  `[worker] heartbeat_window` (default 30000 ms) is the heartbeat cadence
+  advertised in the `RegisterAck`; window-based expiry of
+  hung-but-connected workers is roadmap.
 
 ## Matching the pieces up
 

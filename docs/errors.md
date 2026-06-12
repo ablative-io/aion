@@ -70,4 +70,5 @@ your request and its delivery (the server's `error_type` distinguishes
 | `error[not_found]` on deploy route/unload | `(type, hash)` not loaded | `aion versions` to see what is actually loaded |
 | 404 on `/deploy/*` / gRPC `Unimplemented` | Deploy surface dark | Set `[deploy] enabled = true` + both size ceilings |
 | Workflow stuck after start | No worker serving the activity type | Start a worker registering that type on the right endpoint/queue |
+| Activity failed: `worker ... lost before reporting activity result` | The serving worker's stream ended mid-activity (crash, disconnect, drain timeout) | Retryable — the workflow's retry policy decides re-dispatch; make activities idempotent. Long activities are fine: the engine imposes no activity timeout |
 | Server refuses to start, names a config key | Required key missing | Set the named key (or its `AION_*` env override) |

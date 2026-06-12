@@ -78,6 +78,7 @@ impl WorkerProtocol for WorkerGrpcService {
         let pending = self.state.pending_activities().clone();
         let heartbeat = self.state.heartbeat_tracker().clone();
         let drain = self.state.drain_state().clone();
+        let registry = self.state.worker_registry().clone();
         let worker_id = registration
             .worker_id()
             .ok_or_else(|| Status::internal("worker registration missing id"))?;
@@ -111,6 +112,17 @@ impl WorkerProtocol for WorkerGrpcService {
                 }
             });
 
+            // Armed BEFORE the inbound loop runs: the sweep in its `Drop`
+            // fires on every exit from this task — clean stream end, stream
+            // error, token expiry, even a panic unwinding `process_inbound`.
+            // The unbounded dispatch wait depends on it.
+            let teardown = StreamTeardown {
+                worker_id,
+                heartbeat: &heartbeat,
+                registry: &registry,
+                pending: &pending,
+                drain: &drain,
+            };
             let session = WorkerSession {
                 worker_id,
                 pending: &pending,
@@ -120,15 +132,97 @@ impl WorkerProtocol for WorkerGrpcService {
                 heartbeat_grace,
                 task_tx: task_tx.clone(),
             };
-            let _read_result = process_inbound(inbound, session).await;
+            if let Err(status) = process_inbound(inbound, session).await {
+                tracing::info!(
+                    worker_id = ?worker_id,
+                    %status,
+                    "worker stream closed with status"
+                );
+            }
 
             write_handle.abort();
             drop(task_tx);
-            let _ = registration.deregister();
+            drop(teardown);
+            // The teardown sweep already deregistered the stream; consuming
+            // the registration here is an idempotent no-op that still
+            // surfaces a poisoned-lock error loudly.
+            if let Err(error) = registration.deregister() {
+                tracing::error!(
+                    worker_id = ?worker_id,
+                    %error,
+                    "worker deregistration failed during stream teardown"
+                );
+            }
         });
 
         Ok(Response::new(ReceiverStream::new(task_rx)))
     }
+}
+
+/// Drop guard that fails a torn-down worker stream's in-flight activities
+/// back to the engine.
+///
+/// A guard rather than a call site so the sweep cannot be skipped by any
+/// exit from the stream task — including a panic unwinding the inbound
+/// loop, which would otherwise leave every dispatch blocked on that worker
+/// waiting forever.
+struct StreamTeardown<'a> {
+    worker_id: WorkerId,
+    heartbeat: &'a crate::worker::HeartbeatTracker,
+    registry: &'a crate::worker::ConnectedWorkerRegistry,
+    pending: &'a PendingActivities,
+    drain: &'a crate::shutdown::DrainState,
+}
+
+impl Drop for StreamTeardown<'_> {
+    fn drop(&mut self) {
+        teardown_worker_stream(
+            self.worker_id,
+            self.heartbeat,
+            self.registry,
+            self.pending,
+            self.drain,
+        );
+    }
+}
+
+/// Fail a torn-down worker stream's in-flight activities back to the engine.
+///
+/// The stream is the worker's liveness. When it ends — process death,
+/// network disconnect, expired token — every activity still assigned to
+/// this worker must be failed back through the completion sink as a
+/// retryable lost-worker error. The activity dispatch wait is unbounded by
+/// design (the engine imposes no activity timeout), so this sweep is what
+/// unblocks dispatches whose worker died mid-activity; the engine's retry
+/// policy then decides re-dispatch.
+fn teardown_worker_stream(
+    worker_id: WorkerId,
+    heartbeat: &crate::worker::HeartbeatTracker,
+    registry: &crate::worker::ConnectedWorkerRegistry,
+    pending: &PendingActivities,
+    drain: &crate::shutdown::DrainState,
+) {
+    match heartbeat.fail_disconnected_worker(worker_id, registry, pending) {
+        Ok(report) if report.tasks.is_empty() => {}
+        Ok(report) => {
+            tracing::warn!(
+                worker_id = ?worker_id,
+                failed_tasks = report.tasks.len(),
+                "worker disconnected with in-flight activities; \
+                 surfaced as retryable lost-worker failures"
+            );
+        }
+        Err(error) => {
+            tracing::error!(
+                worker_id = ?worker_id,
+                %error,
+                "failed to sweep disconnected worker's in-flight activities"
+            );
+        }
+    }
+    // In-flight accounting may have just reached zero; wake any drain
+    // waiter so shutdown does not sit out its full timeout.
+    drain.notify_activity_drained();
 }
 
 struct WorkerSession<'a> {
@@ -157,11 +251,22 @@ async fn process_inbound(
                     Ok(completion) => {
                         let workflow_id = completion.workflow_id.clone();
                         let activity_id = completion.activity_id.clone();
-                        let _ = session.heartbeat.complete_task(
+                        if let Err(error) = session.heartbeat.complete_task(
                             session.worker_id,
                             &workflow_id,
                             &activity_id,
-                        );
+                        ) {
+                            // A poisoned liveness tracker would also break
+                            // the lost-worker sweep the unbounded dispatch
+                            // wait relies on — never swallow it.
+                            tracing::error!(
+                                worker_id = ?session.worker_id,
+                                workflow_id = %workflow_id,
+                                activity_id = %activity_id,
+                                %error,
+                                "failed to clear in-flight tracking for completed activity"
+                            );
+                        }
                         session.drain.notify_activity_drained();
                         if let Err(error) = session.pending.complete_activity(completion) {
                             tracing::error!(
@@ -209,11 +314,29 @@ async fn process_inbound(
                 );
             }
             generated::worker_to_server::Message::Heartbeat(heartbeat_msg) => {
-                let _ = session.heartbeat.record_heartbeat(
+                if let Err(error) = session.heartbeat.record_heartbeat(
                     session.worker_id,
                     decode_heartbeat(heartbeat_msg),
                     std::time::Instant::now(),
-                );
+                ) {
+                    // Malformed frames and heartbeats for untracked tasks
+                    // are worker-side defects worth surfacing; a poisoned
+                    // tracker lock is a server-side corruption signal that
+                    // must never vanish silently.
+                    if matches!(error, crate::ServerError::LockPoisoned { .. }) {
+                        tracing::error!(
+                            worker_id = ?session.worker_id,
+                            %error,
+                            "heartbeat tracker lock poisoned; liveness state untrustworthy"
+                        );
+                    } else {
+                        tracing::warn!(
+                            worker_id = ?session.worker_id,
+                            %error,
+                            "worker heartbeat rejected"
+                        );
+                    }
+                }
                 if token_expired(session.token_expires_at) {
                     let first_expired = *expired_since.get_or_insert_with(std::time::Instant::now);
                     let _ = session
