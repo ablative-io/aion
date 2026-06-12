@@ -288,9 +288,16 @@ You should see a JSON report naming the archive and its content-hash version:
       "modules": 42
     }
   ],
-  "excluded": []
+  "excluded": [
+    { "module": "gleeunit", "reason": "dev_dependency" },
+    { "module": "aion@testing", "reason": "sdk_test_only" }
+  ]
 }
 ```
+
+(The real `excluded` list is longer — dev dependencies and the SDK's
+test-only modules are excluded from the archive by design; each entry
+names its reason.)
 
 (`aion package . --build` compiles and packages in one step. The full
 packaging reference is [`docs/packaging.md`](packaging.md).)
@@ -306,7 +313,7 @@ Rust SDK is a **library** — `cargo install aion-worker` fails with
 cd ..
 cargo new my-worker
 cd my-worker
-cargo add aion-worker@0.4
+cargo add aion-worker@0.5
 cargo add tokio --features macros,rt-multi-thread
 cargo add serde --features derive
 cargo add serde_json
@@ -441,7 +448,7 @@ aion start my_flow --input '{"name":"Ada"}'
 You should see the assigned identifiers:
 
 ```json
-{"workflow_id":"<workflow-id>","run_id":"<run-id>"}
+{"run_id":"<run-id>","workflow_id":"<workflow-id>"}
 ```
 
 The run executes `greet` on your worker, then suspends waiting for the
@@ -451,7 +458,7 @@ The run executes `greet` on your worker, then suspends waiting for the
 aion query <workflow-id> status
 ```
 
-You should see `"awaiting_approval"`. Queries are answered live by the
+You should see `{"result":"awaiting_approval"}`. Queries are answered live by the
 handler the workflow registered — they read state, never change it.
 
 ## 7. Prove the durability

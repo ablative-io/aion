@@ -20,7 +20,7 @@ design: your activities are your code, so a worker is your own crate:
 ```sh
 cargo new my-worker
 cd my-worker
-cargo add aion-worker@0.4
+cargo add aion-worker@0.5
 cargo add tokio --features macros,rt-multi-thread
 cargo add serde --features derive
 cargo add serde_json

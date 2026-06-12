@@ -74,12 +74,12 @@ const fn wire_hint(code: WireErrorCode) -> Option<&'static str> {
              server's denial detail above",
         ),
         WireErrorCode::VersionPinned => Some(
-            "the version is route-active or pinned by live state; `aion-cli versions` \
+            "the version is route-active or pinned by live state; `aion versions` \
              shows what is routed — route another version first, or wait for the \
              pinning runs to finish",
         ),
         WireErrorCode::NotFound => Some(
-            "the (workflow-type, content-hash) pair is not loaded; `aion-cli versions` \
+            "the (workflow-type, content-hash) pair is not loaded; `aion versions` \
              lists every loaded version",
         ),
         _ => None,
@@ -144,18 +144,18 @@ const fn hint(error: &ClientError) -> Option<&'static str> {
         ),
         ClientError::QueryFailed { .. } => Some(
             "the workflow's query handler ran and reported this failure; inspect \
-             the handler, or the run with `aion-cli describe <workflow-id>`",
+             the handler, or the run with `aion describe <workflow-id>`",
         ),
         ClientError::QueryTimeout { .. } => Some(
             "the query missed its deadline; the workflow may be busy or stalled \
-             — retry, or inspect the run with `aion-cli describe <workflow-id>`",
+             — retry, or inspect the run with `aion describe <workflow-id>`",
         ),
         ClientError::UnknownQuery { .. } => Some(
             "the workflow does not register a query with this name; check the \
              query name against the workflow's query handlers",
         ),
         ClientError::NotRunning { .. } => Some(
-            "the target run is no longer running; `aion-cli list --status \
+            "the target run is no longer running; `aion list --status \
              running` shows runs that can still serve queries and signals",
         ),
         ClientError::NamespaceDenied { .. } => Some(
