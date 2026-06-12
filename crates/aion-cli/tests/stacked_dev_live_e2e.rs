@@ -415,7 +415,8 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
             r#"{{"repo_root":"{}","brief_id":"brief-7","base_ref":"main","placement":"local","isolation":"worktree","brief":"Implement the widget","design":"docs/design.md","checklist":"docs/checklist.md","stories":["story-1"],"verify_fix_cap":3,"review_cap":3,"round_backoff_ms":100,"review_deadline_ms":86400000}}"#,
             workflow_repo.display()
         );
-        let workflow_id = start_run_once_the_worker_serves(&project, &endpoint, &input)?;
+        let workflow_id =
+            start_run_once_the_worker_serves(&project, &endpoint, &input, &mut worker)?;
 
         wait_for_review_phase(&project, &endpoint, &workflow_id, &mut worker)?;
 
@@ -527,14 +528,18 @@ fn wait_for_review_phase(
 /// `provision_workspace`. There is no worker-listing API to gate on, so the
 /// run itself is the readiness probe: while a started run fails with
 /// "no connected worker", start a fresh one until the deadline. Any other
-/// failure (and any later one) is reported verbatim by the phase wait.
+/// failure (and any later one) is reported verbatim by the phase wait. A
+/// worker process that died (it can never register) fails immediately with
+/// the worker's own output instead of burning the deadline on retries.
 fn start_run_once_the_worker_serves(
     project: &Path,
     endpoint: &str,
     input: &str,
+    worker: &mut ChildGuard,
 ) -> Result<String, TestError> {
     let deadline = Instant::now() + GRPC_DEADLINE;
     loop {
+        worker.require_alive()?;
         let output = run_cli(
             project,
             &[

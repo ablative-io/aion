@@ -10,6 +10,21 @@ description = "Standalone activity worker serving the stacked-dev workflow famil
 # crates.io exactly like the saga template's worker does.
 [workspace]
 
+# Out-of-workspace crates cannot inherit the repo's `[workspace.lints]`, so
+# the same strict set is pinned here verbatim — this crate is held to the
+# identical clippy/rustc bar as every workspace member.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
 [dependencies]
 aion-worker = "0.5.0"
 anyhow = "1"

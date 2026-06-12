@@ -43,6 +43,7 @@ pub enum Isolation {
 impl Isolation {
     /// The wire name, used verbatim in failure messages exactly like
     /// `codecs_core.isolation_to_string`.
+    #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::Worktree => "worktree",

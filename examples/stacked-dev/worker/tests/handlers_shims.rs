@@ -216,7 +216,9 @@ fn warm_build_success_reports_ok_true() -> TestResult {
     .map_err(|failure| failure.message().to_owned())?;
     match result {
         StartupResult::Warmed { build_warm } => assert!(build_warm.ok),
-        other => return Err(format!("warm_build must answer Warmed: {other:?}").into()),
+        other @ StartupResult::Developed { .. } => {
+            return Err(format!("warm_build must answer Warmed: {other:?}").into());
+        }
     }
     assert!(shims.log("cargo").contains("build"));
     Ok(())
@@ -238,7 +240,9 @@ fn warm_build_failure_is_recorded_as_ok_false_never_an_error() -> TestResult {
         StartupResult::Warmed { build_warm } => {
             assert!(!build_warm.ok, "a failed build forfeits the cache");
         }
-        other => return Err(format!("warm_build must answer Warmed: {other:?}").into()),
+        other @ StartupResult::Developed { .. } => {
+            return Err(format!("warm_build must answer Warmed: {other:?}").into());
+        }
     }
     Ok(())
 }
@@ -294,7 +298,9 @@ fn dev_parses_the_canned_dev_result_and_overrides_the_session_id() -> TestResult
             assert_eq!(dev_result.files_touched, ["crates/aion-core/src/lib.rs"]);
             assert_eq!(dev_result.summary, "implemented the brief");
         }
-        other => return Err(format!("dev must answer Developed: {other:?}").into()),
+        other @ StartupResult::Warmed { .. } => {
+            return Err(format!("dev must answer Developed: {other:?}").into());
+        }
     }
     let log = shims.log("norn");
     assert!(log.contains("--print --session-id stacked-dev-brief-7"));
@@ -324,7 +330,9 @@ fn dev_unwraps_the_result_envelope_when_the_bare_shape_fails() -> TestResult {
             assert_eq!(dev_result.session_id, "stacked-dev-brief-7");
             assert_eq!(dev_result.summary, "enveloped");
         }
-        other => return Err(format!("dev must answer Developed: {other:?}").into()),
+        other @ StartupResult::Warmed { .. } => {
+            return Err(format!("dev must answer Developed: {other:?}").into());
+        }
     }
     Ok(())
 }

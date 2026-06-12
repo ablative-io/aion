@@ -29,6 +29,7 @@ pub struct CliRun {
 
 impl CliRun {
     /// Whether the command exited with status zero.
+    #[must_use]
     pub fn succeeded(&self) -> bool {
         self.exit_status == 0
     }
@@ -54,6 +55,7 @@ pub enum CliFailure {
 impl CliFailure {
     /// Render the failure as a single diagnostic line, wording identical to
     /// `cli.failure_message` in the Gleam local implementations.
+    #[must_use]
     pub fn message(&self) -> String {
         match self {
             Self::ExecutableNotFound { executable } => {
@@ -77,6 +79,7 @@ pub struct Shell {
 
 impl Shell {
     /// Resolve executables against the process's own `PATH`.
+    #[must_use]
     pub fn inherited() -> Self {
         Self {
             path_override: None,
@@ -93,6 +96,14 @@ impl Shell {
 
     /// Run `executable` with `args` in `cwd`, capturing exit status,
     /// combined output, and duration.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`CliFailure::SpawnFailed`] when `cwd` is not a directory
+    /// or the process cannot start, and [`CliFailure::ExecutableNotFound`]
+    /// when `executable` does not resolve on the effective search path. A
+    /// non-zero exit status is NOT an error — it is recorded data on the
+    /// returned [`CliRun`].
     pub fn run(&self, executable: &str, args: &[&str], cwd: &str) -> Result<CliRun, CliFailure> {
         // A missing working directory would surface from spawn as the same
         // `NotFound` io error as a missing binary on some platforms; check it

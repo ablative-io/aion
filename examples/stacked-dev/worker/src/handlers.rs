@@ -49,6 +49,12 @@ const UNPARSEABLE_OUTPUT_HEAD: usize = 1000;
 ///
 /// Only worktree isolation has an implementation; the other typed variants
 /// fail loudly, exactly like the local implementation's seam.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when the isolation mode has no
+/// implementation, when `yg` cannot run, or when either `yg` verb exits
+/// non-zero.
 pub fn provision_workspace(
     shell: &Shell,
     input: ProvisionInput,
@@ -66,18 +72,25 @@ pub fn provision_workspace(
 }
 
 fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace, ActivityFailure> {
+    let ProvisionInput {
+        repo_root,
+        brief_id,
+        base_ref,
+        placement,
+        isolation,
+    } = input;
     // Two real yg verbs: add the branch as a child of the base ref, then
     // provision its worktree at a known absolute path (built from the repo
     // root) so every downstream activity holds a real directory and never a
     // cwd-relative guess.
-    let branch = format!("stacked-dev-{}", input.brief_id);
-    let worktree_path = format!("{}/.yggdrasil-worktrees/{branch}", input.repo_root);
+    let branch = format!("stacked-dev-{brief_id}");
+    let worktree_path = format!("{repo_root}/.yggdrasil-worktrees/{branch}");
 
     require_run(
         shell,
         "yg",
-        &["branch", "add", &branch, &input.base_ref],
-        &input.repo_root,
+        &["branch", "add", &branch, &base_ref],
+        &repo_root,
         "yg branch add",
     )?;
     // An explicit --path keeps the worktree location known a priori, never
@@ -86,14 +99,14 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
         shell,
         "yg",
         &["branch", "provision", &branch, "--path", &worktree_path],
-        &input.repo_root,
+        &repo_root,
         "yg branch provision",
     )?;
     Ok(Workspace {
         path: worktree_path,
         branch,
-        placement: input.placement,
-        isolation: input.isolation,
+        placement,
+        isolation,
     })
 }
 
@@ -101,6 +114,13 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
 /// Registered for BOTH the `warm_build` and `dev` activity names — the two
 /// activities flow through one homogeneous `workflow.all` fan-out, so they
 /// share the tagged `StartupTask`/`StartupResult` envelope.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when the owning CLI cannot run (`cargo` for
+/// the warm build, `norn` for the dev round), when `norn` exits non-zero, or
+/// when its output matches neither documented `DevResult` shape. A failed
+/// `cargo build` is NOT an error — it is the recorded `ok: false` outcome.
 pub fn startup_task(shell: &Shell, task: StartupTask) -> Result<StartupResult, ActivityFailure> {
     match task {
         StartupTask::WarmBuild { workspace } => warm_build(shell, &workspace),
@@ -183,6 +203,11 @@ fn dev_prompt(input: &DevInput) -> String {
 
 /// `dev_resume`: resume the same dev agent session with feedback
 /// (scoped-check diagnostics or encoded review notes).
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
+/// answers with output matching neither documented `DevResult` shape.
 pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevResult, ActivityFailure> {
     // Resume by the deterministic session id; the feedback is the prompt.
     // Like the local implementation, resume carries no --workspace-root (the
@@ -214,17 +239,27 @@ pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevResult, Activi
 /// graph, then run diagnostics limited to it. An empty affected set falls
 /// back LOUDLY to a named workspace-wide scope; zero checks are never run
 /// silently.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `yg` cannot run or when the
+/// affected-set query exits non-zero. A failing diagnostics run is NOT an
+/// error — it is the recorded fail verdict carrying the diagnostics.
 pub fn scoped_checks(shell: &Shell, input: ScopedInput) -> Result<CheckResult, ActivityFailure> {
+    let ScopedInput {
+        workspace,
+        files_touched,
+    } = input;
     // Affected packages come from the dependency graph: one bare crate name
     // per line (direct-only = the crates that actually contain the changed
     // files; the gate runs broad).
     let mut affected_args = vec!["graph", "affected", "--plain", "--direct-only"];
-    affected_args.extend(input.files_touched.iter().map(String::as_str));
+    affected_args.extend(files_touched.iter().map(String::as_str));
     let affected_run = require_run(
         shell,
         "yg",
         &affected_args,
-        &input.workspace.path,
+        &workspace.path,
         "yg graph affected",
     )?;
     let packages: Vec<String> = affected_run
@@ -242,7 +277,7 @@ pub fn scoped_checks(shell: &Shell, input: ScopedInput) -> Result<CheckResult, A
         check_with(
             shell,
             &["diagnostics", "check", "--workspace", "--format", "json"],
-            &input.workspace,
+            &workspace,
             Vec::new(),
             scope,
         )
@@ -254,7 +289,9 @@ pub fn scoped_checks(shell: &Shell, input: ScopedInput) -> Result<CheckResult, A
             args.push(name);
         }
         let scope = format!("affected: {}", packages.join(", "));
-        check_with(shell, &args, &input.workspace, packages.clone(), &scope)
+        // `args` borrows the package names, so the owned set is cloned into
+        // the result.
+        check_with(shell, &args, &workspace, packages.clone(), &scope)
     }
 }
 
@@ -292,13 +329,22 @@ fn check_with(
 
 /// `full_checks`: the authoritative gate — the full workspace diagnostics
 /// run, stricter than the fast scoped inner loop.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when the gate scope has no implementation or
+/// when `yg` cannot run. A failing workspace sweep is NOT an error — it is
+/// the recorded fail verdict carrying the report.
 pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, ActivityFailure> {
-    match input.scope {
+    let GateInput {
+        workspace, scope, ..
+    } = input;
+    match scope {
         GateScope::WorkspaceWide => {
             match shell.run(
                 "yg",
                 &["diagnostics", "check", "--workspace", "--format", "json"],
-                &input.workspace.path,
+                &workspace.path,
             ) {
                 Ok(command_run) => {
                     let verdict = if command_run.succeeded() {
@@ -327,7 +373,18 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
 
 /// `request_review`: emit a review request. It only requests — the verdict
 /// arrives later on the `review_verdict` signal.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `meridian` cannot run, exits non-zero,
+/// or answers without a parseable `request_id`.
 pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
+    let ReviewRequest {
+        workspace,
+        brief_id,
+        dev_result,
+        ..
+    } = input;
     let command_run = require_run(
         shell,
         "meridian",
@@ -335,13 +392,13 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
             "review",
             "request",
             "--workspace",
-            &input.workspace.path,
+            &workspace.path,
             "--brief-id",
-            &input.brief_id,
+            &brief_id,
             "--summary",
-            &input.dev_result.summary,
+            &dev_result.summary,
         ],
-        &input.workspace.path,
+        &workspace.path,
         "meridian review request",
     )?;
     let acked: RequestIdField = require_json(&command_run, "meridian review request")?;
@@ -352,12 +409,19 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
 
 /// `land`: stack submit, then stack land. Never a manual cherry-pick or
 /// merge.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `meridian` cannot run, when either verb
+/// exits non-zero, or when an output lacks its parseable field (`pr_url` for
+/// submit, `merge_commit` for land).
 pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> {
+    let LandInput { workspace, .. } = input;
     let submit_run = require_run(
         shell,
         "meridian",
         &["stack", "submit"],
-        &input.workspace.path,
+        &workspace.path,
         "meridian stack submit",
     )?;
     let submitted: PrUrlField = require_json(&submit_run, "meridian stack submit")?;
@@ -365,7 +429,7 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
         shell,
         "meridian",
         &["stack", "land"],
-        &input.workspace.path,
+        &workspace.path,
         "meridian stack land",
     )?;
     let landed: MergeCommitField = require_json(&land_run, "meridian stack land")?;
@@ -442,14 +506,14 @@ fn require_json<T: serde::de::DeserializeOwned>(
 /// No silent fallback beyond that documented two-shape attempt. The caller
 /// overrides `session_id` with the id it set regardless.
 fn parse_dev_result(command_run: &CliRun, context: &str) -> Result<DevResult, ActivityFailure> {
-    let trimmed = command_run.output.trim();
-    if let Ok(dev_result) = serde_json::from_str::<DevResult>(trimmed) {
-        return Ok(dev_result);
-    }
-
     #[derive(Deserialize)]
     struct ResultEnvelope {
         result: DevResult,
+    }
+
+    let trimmed = command_run.output.trim();
+    if let Ok(dev_result) = serde_json::from_str::<DevResult>(trimmed) {
+        return Ok(dev_result);
     }
     if let Ok(envelope) = serde_json::from_str::<ResultEnvelope>(trimmed) {
         return Ok(envelope.result);
