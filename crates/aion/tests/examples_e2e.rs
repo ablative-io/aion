@@ -4,9 +4,12 @@
 //! the behavioral examples must run end-to-end on the paths remote
 //! deployments exercise: the data-pipeline fan-out/fan-in over activities,
 //! the approval-gate signal race inside `with_timeout`, and the
-//! subscription's billing deadline plus continue-as-new rotation. Archives
-//! are build artifacts, so each test skips (with a notice) when its archive
-//! has not been produced yet.
+//! subscription's billing deadline plus continue-as-new rotation. Every
+//! archive is rebuilt from the committed example source on each run — see
+//! `common/example_build.rs` for why these gates must never skip.
+
+#[path = "common/example_build.rs"]
+mod example_build;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,46 +18,35 @@ use aion::activity::bridge::ActivityDispatcher;
 use aion::signal::ConcreteSignalRouter;
 use aion::{EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload};
-use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
-const EXAMPLE_ARCHIVES: &[(&str, &str)] = &[
-    ("approval-gate", "approval-gate/approval-gate.aion"),
-    (
-        "batch-orchestrator",
-        "batch-orchestrator/batch-orchestrator.aion",
-    ),
-    ("data-pipeline", "data-pipeline/data-pipeline.aion"),
-    ("subscription", "subscription/subscription.aion"),
-    (
-        "agent-orchestration",
-        "agent-orchestration/orchestrator.aion",
-    ),
-    ("order-saga", "order-saga/order-saga.aion"),
-    ("hello-world", "hello-world/hello-world.aion"),
+const EXAMPLE_PROJECTS: &[&str] = &[
+    "approval-gate",
+    "batch-orchestrator",
+    "data-pipeline",
+    "subscription",
+    "agent-orchestration",
+    "order-saga",
+    "hello-world",
 ];
-
-fn examples_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
-}
 
 #[tokio::test]
 async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std::error::Error>> {
-    let root = examples_root();
-    for (name, relative) in EXAMPLE_ARCHIVES {
-        let path = root.join(relative);
-        if !path.exists() {
-            eprintln!("skipping {name}: {} not built", path.display());
-            continue;
-        }
-        let package =
-            Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
-        let engine = EngineBuilder::new()
+    for name in EXAMPLE_PROJECTS {
+        let report = example_build::build_project(&format!("examples/{name}"))?;
+        assert!(
+            !report.packages.is_empty(),
+            "{name} declared no workflow packages"
+        );
+        let mut builder = EngineBuilder::new()
             .store(InMemoryStore::default())
             .in_memory_visibility()
-            .scheduler_threads(1)
-            .load_workflows(package)
+            .scheduler_threads(1);
+        for packaged in &report.packages {
+            builder = builder.load_workflows(packaged.package.clone());
+        }
+        let engine = builder
             .build()
             .await
             .map_err(|error| format!("{name} failed to load: {error}"))?;
@@ -123,15 +115,7 @@ impl ActivityDispatcher for PipelineDispatcher {
 
 #[tokio::test]
 async fn data_pipeline_example_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
-    let path = examples_root().join("data-pipeline/data-pipeline.aion");
-    if !path.exists() {
-        eprintln!(
-            "skipping data_pipeline_example_runs_end_to_end: {} not built",
-            path.display()
-        );
-        return Ok(());
-    }
-    let package = Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
+    let package = example_build::built_package("examples/data-pipeline", "data_pipeline")?;
     let engine = EngineBuilder::new()
         .store(InMemoryStore::default())
         .in_memory_visibility()
@@ -236,15 +220,7 @@ impl ActivityDispatcher for RecordingDispatcher {
 
 #[tokio::test]
 async fn approval_gate_signal_drives_publication() -> Result<(), Box<dyn std::error::Error>> {
-    let path = examples_root().join("approval-gate/approval-gate.aion");
-    if !path.exists() {
-        eprintln!(
-            "skipping approval_gate_signal_drives_publication: {} not built",
-            path.display()
-        );
-        return Ok(());
-    }
-    let package = Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
+    let package = example_build::built_package("examples/approval-gate", "approval_gate")?;
     let dispatcher = Arc::new(RecordingDispatcher::new());
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
@@ -308,15 +284,7 @@ async fn approval_gate_signal_drives_publication() -> Result<(), Box<dyn std::er
 #[tokio::test]
 async fn subscription_bills_after_deadline_with_signaled_plan_and_rotates()
 -> Result<(), Box<dyn std::error::Error>> {
-    let path = examples_root().join("subscription/subscription.aion");
-    if !path.exists() {
-        eprintln!(
-            "skipping subscription_bills_after_deadline_with_signaled_plan_and_rotates: {} not built",
-            path.display()
-        );
-        return Ok(());
-    }
-    let package = Package::load_from_bytes(std::fs::read(&path)?, ExtractionLimits::unbounded())?;
+    let package = example_build::built_package("examples/subscription", "subscription")?;
     let dispatcher = Arc::new(RecordingDispatcher::new());
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()

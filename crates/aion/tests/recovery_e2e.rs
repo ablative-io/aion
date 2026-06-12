@@ -7,12 +7,14 @@
 //! replay resumes it, and live execution drives it to completion without
 //! duplicating any recorded event.
 
+#[path = "common/example_build.rs"]
+mod example_build;
+
 use std::sync::Arc;
 
 use aion::EngineBuilder;
 use aion::activity::bridge::ActivityDispatcher;
 use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId, WorkflowStatus};
-use aion_package::{ExtractionLimits, Package};
 use aion_store::{EventStore, InMemoryStore, WriteToken};
 use chrono::Utc;
 use serde_json::json;
@@ -39,19 +41,7 @@ impl ActivityDispatcher for GreetDispatcher {
 
 #[tokio::test]
 async fn interrupted_workflow_recovers_and_completes() -> Result<(), Box<dyn std::error::Error>> {
-    let archive_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/hello-world/hello-world.aion"
-    );
-    if !std::path::Path::new(archive_path).exists() {
-        eprintln!(
-            "skipping interrupted_workflow_recovers_and_completes: {archive_path} not built \
-             (run `cargo run -p aion-cli -- package examples/hello-world --build`)"
-        );
-        return Ok(());
-    }
-    let package =
-        Package::load_from_bytes(std::fs::read(archive_path)?, ExtractionLimits::unbounded())?;
+    let package = example_build::built_package("examples/hello-world", "hello_world")?;
 
     // Simulate the crash: durable history holds only the start event.
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());

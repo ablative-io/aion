@@ -15,16 +15,6 @@ categories = ["asynchronous", "development-tools"]
 [lib]
 name = "aion"
 
-[features]
-# Runtime gate for end-to-end tests that drive the Gleam-SDK batch
-# orchestrator example through live queries at the child-await yield point.
-# The query pump protocol works at HEAD, but the example's child-result
-# decode path hits beamr 0.4.9 VM gaps in `gleam_json`/`gleam_stdlib`
-# (undefined `erlang:integer_to_list/2`, `bad argument` in json decode), so
-# the gated tests cannot pass until the upstream beamr fixes land. See
-# `tests/example_query_reentry.rs` and `examples/batch-orchestrator/README.md`.
-beamr_query_reentry_fixed = []
-
 [lints]
 workspace = true
 
@@ -52,4 +42,5 @@ saffron.workspace = true
 [dev-dependencies]
 aion-package = { version = "0.3.0", path = "../aion-package", features = ["test-support"] }
 beamr = { workspace = true, features = ["test-support"] }
+fs4.workspace = true
 tracing-subscriber.workspace = true
