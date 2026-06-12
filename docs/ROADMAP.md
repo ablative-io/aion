@@ -112,6 +112,20 @@ Riding in main, unpublished:
 
 ## 6. Known flakes and loose ends
 
+- **stacked-dev worker: mint-or-resume for crash recovery (Tom,
+  2026-06-13).** Activities are at-least-once; a crash mid-`dev` re-runs
+  the step. The session id is deterministic (branch-derived) and norn
+  persists sessions to disk with `--resume <ID>`, so the conversation
+  survives — but the worker's dev handler currently always mints
+  (`--session-id`). Rider: detect the existing session (or fall back to
+  `--resume` on mint collision) so a kill -9 mid-development resumes the
+  same agent session as if nothing happened. Same refinement applies to
+  the Meridian dispatcher's norn activity later.
+- **Engine: no-worker dispatch is terminal (found by the worker e2e).**
+  An activity dispatched with no connected worker fails the run instead
+  of parking as pending work. A durability engine should wait; folds into
+  the task-queues/routing item in §7.
+
 - Under heavy parallel load in one checkout:
   `payload_binary_remains_valid_through_spawn_and_is_released` failed once;
   `examples_e2e` hit one `Incompatible locked version` gleam-build race.
