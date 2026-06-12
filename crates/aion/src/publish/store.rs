@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{
-    EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore,
-    WriteToken,
+    EventStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
+    StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -159,6 +159,39 @@ impl ReadableEventStore for PublishingEventStore {
 
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
         self.inner.expired_timers(as_of).await
+    }
+}
+
+#[async_trait]
+impl PackageStore for PublishingEventStore {
+    async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        self.inner.put_package(record).await
+    }
+
+    async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
+        self.inner.list_packages().await
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.delete_package(workflow_type, content_hash).await
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        self.inner
+            .put_package_route(workflow_type, content_hash)
+            .await
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
+        self.inner.list_package_routes().await
     }
 }
 

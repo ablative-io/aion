@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{
-    Event, EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId,
-    WorkflowFilter, WorkflowId, WorkflowSummary, WritableEventStore, WriteToken,
-    conformance::run_event_store_suite,
+    Event, EventStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
+    RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
+    WritableEventStore, WriteToken, conformance::run_event_store_suite,
 };
 use aion_store_libsql::LibSqlStore;
 use async_trait::async_trait;
@@ -100,6 +100,41 @@ impl ReadableEventStore for StoreOpenResult {
 
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
         self.store()?.expired_timers(as_of).await
+    }
+}
+
+#[async_trait]
+impl PackageStore for StoreOpenResult {
+    async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        self.store()?.put_package(record).await
+    }
+
+    async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
+        self.store()?.list_packages().await
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        self.store()?
+            .delete_package(workflow_type, content_hash)
+            .await
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        self.store()?
+            .put_package_route(workflow_type, content_hash)
+            .await
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
+        self.store()?.list_package_routes().await
     }
 }
 

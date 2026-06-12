@@ -9,6 +9,7 @@ use aion_core::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::package::{PackageRecord, PackageRouteRecord, PackageStore};
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
 use crate::{
     ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
@@ -78,6 +79,8 @@ struct InMemoryState {
     histories: HashMap<WorkflowId, Vec<Event>>,
     timers: HashMap<(WorkflowId, TimerId), TimerEntry>,
     visibility: HashMap<(WorkflowId, aion_core::RunId), VisibilityRecord>,
+    packages: HashMap<(String, String), PackageRecord>,
+    package_routes: HashMap<String, String>,
 }
 
 impl InMemoryStore {
@@ -96,6 +99,71 @@ fn history_in_sequence_order(history: &[Event]) -> Vec<Event> {
     let mut ordered = history.to_vec();
     ordered.sort_by_key(Event::seq);
     ordered
+}
+
+#[async_trait]
+impl PackageStore for InMemoryStore {
+    async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        let mut state = self.lock_state()?;
+        state
+            .package_routes
+            .insert(record.workflow_type.clone(), record.content_hash.clone());
+        state.packages.insert(
+            (record.workflow_type.clone(), record.content_hash.clone()),
+            record,
+        );
+        Ok(())
+    }
+
+    async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
+        let state = self.lock_state()?;
+        let mut records: Vec<PackageRecord> = state.packages.values().cloned().collect();
+        records.sort_by(|left, right| {
+            left.deployed_at
+                .cmp(&right.deployed_at)
+                .then_with(|| left.workflow_type.cmp(&right.workflow_type))
+                .then_with(|| left.content_hash.cmp(&right.content_hash))
+        });
+        Ok(records)
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        let mut state = self.lock_state()?;
+        state
+            .packages
+            .remove(&(workflow_type.to_owned(), content_hash.to_owned()));
+        Ok(())
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        let mut state = self.lock_state()?;
+        state
+            .package_routes
+            .insert(workflow_type.to_owned(), content_hash.to_owned());
+        Ok(())
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
+        let state = self.lock_state()?;
+        let mut routes: Vec<PackageRouteRecord> = state
+            .package_routes
+            .iter()
+            .map(|(workflow_type, content_hash)| PackageRouteRecord {
+                workflow_type: workflow_type.clone(),
+                content_hash: content_hash.clone(),
+            })
+            .collect();
+        routes.sort_by(|left, right| left.workflow_type.cmp(&right.workflow_type));
+        Ok(routes)
+    }
 }
 
 #[async_trait]

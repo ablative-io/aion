@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use aion_store::{
-    Event, ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter,
-    WorkflowId, WorkflowSummary, WritableEventStore, WriteToken,
+    Event, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
+    StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
+    WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -81,6 +82,37 @@ impl LibSqlStore {
     /// Borrow the shared libSQL connection used by append, read, and timer modules.
     pub(crate) fn connection(&self) -> &libsql::Connection {
         &self.conn
+    }
+}
+
+#[async_trait]
+impl PackageStore for LibSqlStore {
+    async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        crate::package::put_package(self.connection(), record).await
+    }
+
+    async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
+        crate::package::list_packages(self.connection()).await
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        crate::package::delete_package(self.connection(), workflow_type, content_hash).await
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        crate::package::put_package_route(self.connection(), workflow_type, content_hash).await
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
+        crate::package::list_package_routes(self.connection()).await
     }
 }
 

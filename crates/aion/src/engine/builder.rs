@@ -91,11 +91,24 @@ fn install_engine_nif_seams(
     query_mailbox_engine
 }
 
-async fn load_workflow_sources(
+/// Assemble the startup catalog: persisted runtime deploys reload first
+/// (with their persisted route pointers), then explicit operator-supplied
+/// sources load on top.
+///
+/// The order is the routing-intent precedence: a package named explicitly at
+/// THIS boot (`--workflow-package` / builder source) is the operator's newest
+/// instruction and wins the route for its type, while every persisted deploy
+/// still reloads so startup recovery — which runs after this and resolves
+/// each run's recorded pinned version — finds every version it needs.
+/// Operator-file sources are not persisted; only the runtime deploy seam
+/// writes package rows.
+async fn assemble_startup_catalog(
     runtime: &RuntimeHandle,
+    store: &dyn EventStore,
     sources: Vec<WorkflowPackageSource>,
 ) -> Result<Arc<WorkflowCatalog>, EngineError> {
     let catalog = Arc::new(WorkflowCatalog::new());
+    crate::loader::persistence::reload_persisted_packages(runtime, catalog.as_ref(), store).await?;
     for source in sources {
         let package = package_from_source(source)?;
         let outcome = catalog.load_package(runtime, &package).await?;
@@ -484,7 +497,12 @@ impl EngineBuilder {
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);
         runtime.install_nifs(nifs)?;
 
-        let catalog = load_workflow_sources(runtime.as_ref(), self.workflow_sources).await?;
+        // Persisted runtime deploys must be resident before startup recovery
+        // below resolves any run's recorded pinned version — this is the
+        // restart half of the deploy durability promise.
+        let catalog =
+            assemble_startup_catalog(runtime.as_ref(), store.as_ref(), self.workflow_sources)
+                .await?;
 
         let registry = self
             .active_registry

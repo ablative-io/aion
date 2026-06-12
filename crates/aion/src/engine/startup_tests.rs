@@ -133,6 +133,48 @@ impl aion_store::WritableEventStore for RacingSuccessorStore {
     }
 }
 
+/// The sweep never touches deployed packages: reads are legitimately empty,
+/// mutations are unexpected.
+#[async_trait::async_trait]
+impl aion_store::PackageStore for RacingSuccessorStore {
+    async fn put_package(&self, record: aion_store::PackageRecord) -> Result<(), StoreError> {
+        let _ = record;
+        Err(StoreError::Backend(
+            "unexpected put_package in the sweep test".to_owned(),
+        ))
+    }
+
+    async fn list_packages(&self) -> Result<Vec<aion_store::PackageRecord>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        let _ = (workflow_type, content_hash);
+        Err(StoreError::Backend(
+            "unexpected delete_package in the sweep test".to_owned(),
+        ))
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        let _ = (workflow_type, content_hash);
+        Err(StoreError::Backend(
+            "unexpected put_package_route in the sweep test".to_owned(),
+        ))
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<aion_store::PackageRouteRecord>, StoreError> {
+        Ok(Vec::new())
+    }
+}
+
 /// `(base history, history with the successor, continued run id)`.
 type StrandedHistories = (Vec<Event>, Vec<Event>, RunId);
 

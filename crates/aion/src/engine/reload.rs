@@ -27,14 +27,25 @@ impl Engine {
     /// re-deploying a previously rolled-back version must take effect
     /// (`route_changed` reports whether it did).
     ///
+    /// A successful load is persisted to the store (archive bytes plus,
+    /// atomically, the route pointer) so the deploy survives a restart:
+    /// startup reloads every persisted package before recovery resolves any
+    /// run's recorded pinned version. Idempotent re-loads re-persist —
+    /// re-deploying is a routing intent and the durable pointer must mirror
+    /// it.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::ShuttingDown`] once shutdown begins,
     /// [`EngineError::Load`] for archive, collision, registration, or
     /// entry-verification failures, and [`EngineError::ManifestMismatch`]
     /// when an idempotent re-load presents the resident content hash with a
-    /// different manifest. On failure the catalog is untouched: routing,
-    /// loaded versions, and in-flight dispatches are unaffected.
+    /// different manifest. On those failures the catalog is untouched:
+    /// routing, loaded versions, and in-flight dispatches are unaffected.
+    /// Returns [`EngineError::Store`] when the load committed but
+    /// persistence failed — the version is live in THIS process yet would
+    /// not survive a restart, so the deploy must not be reported applied;
+    /// re-sending the same archive is idempotent and retries persistence.
     pub async fn load_package(
         &self,
         source: impl Into<WorkflowPackageSource>,
@@ -43,10 +54,18 @@ impl Engine {
         // after shutdown begins so modules never register into a dying VM.
         let operation = self.shutdown_gate.begin_start()?;
         let result = async {
+            // Catalog commit and persistence are one deploy mutation: an
+            // interleaved route/unload/deploy between them could persist
+            // state the catalog no longer holds.
+            let _deploy = self.deploy_mutations.lock().await;
             let package = package_from_source(source.into())?;
-            self.workflow_catalog()
+            let outcome = self
+                .workflow_catalog()
                 .load_package(self.runtime(), &package)
-                .await
+                .await?;
+            crate::loader::persistence::persist_deployed_package(self.store().as_ref(), &package)
+                .await?;
+            Ok(outcome)
         }
         .await;
         drop(operation);
@@ -66,22 +85,37 @@ impl Engine {
     /// Re-points routing for `workflow_type` at an already-loaded version
     /// (rollback / roll-forward). Atomic and idempotent.
     ///
+    /// The pointer is persisted so the re-point survives a restart; startup
+    /// restores persisted pointers after reloading persisted packages.
+    ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ShuttingDown`] once shutdown begins, and
+    /// Returns [`EngineError::ShuttingDown`] once shutdown begins,
     /// [`EngineError::UnknownVersion`] naming the loaded set when
     /// `(type, version)` is not loaded — routing to a never-loaded hash is
-    /// impossible.
+    /// impossible — and [`EngineError::Store`] when the in-memory re-point
+    /// committed but the durable pointer could not be written (retrying the
+    /// same re-point is idempotent and re-attempts persistence).
     pub async fn route_workflow_version(
         &self,
         workflow_type: &str,
         version: &ContentHash,
     ) -> Result<(), EngineError> {
         let operation = self.shutdown_gate.begin_operation()?;
-        let result = self
-            .workflow_catalog()
-            .route_version(workflow_type, version)
-            .await;
+        let result = async {
+            // One deploy mutation: the catalog re-point and the durable
+            // pointer write must not interleave with another deploy
+            // mutation's persistence.
+            let _deploy = self.deploy_mutations.lock().await;
+            self.workflow_catalog()
+                .route_version(workflow_type, version)
+                .await?;
+            self.store()
+                .put_package_route(workflow_type, &version.to_string())
+                .await?;
+            Ok(())
+        }
+        .await;
         drop(operation);
         result
     }
@@ -97,14 +131,20 @@ impl Engine {
     /// The engine owns the mechanism; the embedding platform owns *when* to
     /// unload. There is no automatic garbage collection.
     ///
+    /// Unload deletes the persisted deploy artifact too (a no-op for
+    /// versions loaded from operator files, which were never persisted), so
+    /// an unloaded version does not resurrect at the next restart.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::ShuttingDown`] once shutdown begins,
     /// [`EngineError::UnknownVersion`] when `(type, version)` is not loaded,
     /// [`EngineError::RouteActive`] when the version is route-active,
     /// [`EngineError::VersionPinned`] naming the concrete pin holder (with
-    /// the catalog restored untouched), and [`EngineError::Runtime`] when
-    /// module unregistration fails after the catalog commit.
+    /// the catalog restored untouched), [`EngineError::Store`] when the
+    /// persisted artifact could not be deleted (the catalog is restored and
+    /// the unload did not happen), and [`EngineError::Runtime`] when module
+    /// unregistration fails after the catalog commit.
     pub async fn unload_workflow_version(
         &self,
         workflow_type: &str,
@@ -124,6 +164,10 @@ impl Engine {
         version: &ContentHash,
     ) -> Result<(), EngineError> {
         let catalog = self.workflow_catalog();
+        // Deploy lock first (the engine-wide ordering: deploy_mutations,
+        // then the catalog mutation lock), so the persisted-artifact delete
+        // below cannot interleave with a concurrent re-deploy's persistence.
+        let _deploy = self.deploy_mutations.lock().await;
         let _mutation = catalog.begin_mutation().await;
         // Swap the version out FIRST: from this instant no new resolution can
         // produce it, so the checks below cannot be invalidated by a racing
@@ -135,6 +179,18 @@ impl Engine {
         {
             catalog.restore_version(removed)?;
             return Err(error);
+        }
+        // Delete the persisted artifact BEFORE unregistering modules: if the
+        // delete fails the unload is rolled back wholesale, never leaving a
+        // version that is gone from this process yet resurrects at the next
+        // restart. Idempotent for never-persisted (operator-file) versions.
+        if let Err(error) = self
+            .store()
+            .delete_package(workflow_type, &version.to_string())
+            .await
+        {
+            catalog.restore_version(removed)?;
+            return Err(error.into());
         }
         self.unregister_unloaded_modules(workflow_type, version, &removed)
     }
