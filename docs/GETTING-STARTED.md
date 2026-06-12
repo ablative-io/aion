@@ -532,3 +532,8 @@ model is in the [operations guide](guides/operations.md).
 - [`docs/examples/order-saga.md`](examples/order-saga.md) — the flagship
   order-fulfillment saga: retries, timeout races, child workflows, and saga
   compensation in one walkthrough.
+- [`examples/stacked-dev/`](../examples/stacked-dev/) — the composition
+  showcase: a three-workflow family driving a real dev pipeline (concurrent
+  activities, bounded verify-fix loops, a signal-driven review gate, typed
+  exhaustion), runnable hermetically with `gleam test` or live against a
+  server.

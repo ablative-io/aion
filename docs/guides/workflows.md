@@ -253,6 +253,25 @@ recorded in the parent's history. Two packaging rules:
   type by entry module name against loaded packages; loading only the parent
   leaves every spawn failing with an unknown child workflow type.
 
+Nesting has no depth restriction: children can spawn children (proven to
+three levels with recovery and queries at every depth), and a workflow type
+may spawn itself recursively, terminated by its own typed input. Two
+semantics to know:
+
+- **Each child is its own durable run** with its own history; on recovery
+  every level replays independently and awaited spawns are never re-issued.
+- **Cancellation does not cascade.** Cancelling a parent records its
+  terminal and fails the awaiting grandparent's `child.await` with a
+  `cancelled:<reason>` error, but the cancelled workflow's *own* children
+  keep running to their own terminals. If a tree must die together, today
+  the canceller must cancel each run; a per-spawn parent-close policy is
+  under design.
+
+[`examples/stacked-dev/`](../../examples/stacked-dev/) is the composition
+showcase: a three-workflow family (parent plus two independently
+dispatchable children) with bounded retry loops, a signal-driven review
+gate, and concurrent activities.
+
 ## Continue-as-new
 
 Long-lived loops (subscriptions, polling cycles) should not grow history
@@ -272,5 +291,9 @@ legitimate run, including human-scale signal waits.
 `aion/testing` runs workflows in-process without a server: the harness
 executes the local implementation function carried by each
 `activity.new(...)`, so the typed body is testable with plain `gleam test`.
+Compositions test too: `testing.mock_child` registers a typed double for a
+child workflow type, running the child's real `execute` function through
+`spawn_and_wait` in-process — [`examples/stacked-dev/`](../../examples/stacked-dev/)'s
+suite drives a three-workflow pipeline this way, end to end, with no server.
 The module documentation on
 [HexDocs](https://hexdocs.pm/aion_flow/) covers the harness surface.
