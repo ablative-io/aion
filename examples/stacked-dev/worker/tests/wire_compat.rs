@@ -343,10 +343,11 @@ fn land_input_wire_shape() -> TestResult {
     let (dev_result_literal, dev_result) = dev_result();
     assert_wire(
         &format!(
-            r#"{{"workspace":{workspace_literal},"base_ref":"main","dev_result":{dev_result_literal}}}"#
+            r#"{{"workspace":{workspace_literal},"repo_root":"/sample/repo","base_ref":"main","dev_result":{dev_result_literal}}}"#
         ),
         &LandInput {
             workspace,
+            repo_root: "/sample/repo".to_owned(),
             base_ref: "main".to_owned(),
             dev_result,
         },

@@ -291,6 +291,10 @@ pub struct ReviewAck {
 pub struct LandInput {
     /// The approved workspace.
     pub workspace: Workspace,
+    /// The main repository the merge runs from (`yg branch merge` removes
+    /// the branch's worktree as part of landing, so it must not run from
+    /// inside it).
+    pub repo_root: String,
     /// The tree parent the branch merges into.
     pub base_ref: String,
     /// The dev result being landed.

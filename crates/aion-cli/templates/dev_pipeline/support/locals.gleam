@@ -391,18 +391,39 @@ pub fn request_review(
   }
 }
 
-/// Land the approved work: `yg branch merge` into the tree parent. Never a
-/// manual cherry-pick or merge.
+/// Land the approved work: commit the dev rounds' files on the branch, then
+/// `yg branch merge` into the tree parent. Never a manual cherry-pick or
+/// merge.
 pub fn land(input: LandInput) -> Result(Landed, error.ActivityError) {
-  // Landing is a yg-level stack operation (confirmed direction, 2026-06-13):
-  // `yg branch merge <branch>` merges the branch into its tree parent — the
-  // base ref it was provisioned from. Local, no PR machinery; exit zero is
-  // the whole contract.
+  // Confirmed live (2026-06-13): the dev rounds leave the agent's work
+  // UNCOMMITTED in the worktree, and `yg branch merge` merges committed
+  // work only — so landing commits first. A dev round that changed nothing
+  // fails loudly here ("nothing to commit"): landing a no-op is an error,
+  // never a silent empty merge.
+  use _staged <- require_run(
+    cli.run("git", ["add", "-A"], input.workspace.path),
+    "git add",
+  )
+  use _committed <- require_run(
+    cli.run(
+      "git",
+      [
+        "commit",
+        "-m",
+        input.workspace.branch <> ": " <> input.dev_result.summary,
+      ],
+      input.workspace.path,
+    ),
+    "git commit",
+  )
+  // Also confirmed live: the merge removes the branch's worktree as part of
+  // landing, so it MUST run from the main repository — run from inside the
+  // worktree it deletes its own git context mid-merge and dies.
   use _merged <- require_run(
     cli.run(
       "yg",
       ["branch", "merge", input.workspace.branch, "--yes"],
-      input.workspace.path,
+      input.repo_root,
     ),
     "yg branch merge",
   )

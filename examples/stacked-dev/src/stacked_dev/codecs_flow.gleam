@@ -250,6 +250,7 @@ pub fn land_input_codec() -> codec.Codec(LandInput) {
     fn(input: LandInput) {
       json.object([
         #("workspace", codecs_core.workspace_to_json(input.workspace)),
+        #("repo_root", json.string(input.repo_root)),
         #("base_ref", json.string(input.base_ref)),
         #("dev_result", codecs_core.dev_result_to_json(input.dev_result)),
       ])
@@ -259,6 +260,7 @@ pub fn land_input_codec() -> codec.Codec(LandInput) {
         "workspace",
         codecs_core.workspace_decoder(),
       )
+      use repo_root <- decode.field("repo_root", decode.string)
       use base_ref <- decode.field("base_ref", decode.string)
       use dev_result <- decode.field(
         "dev_result",
@@ -266,6 +268,7 @@ pub fn land_input_codec() -> codec.Codec(LandInput) {
       )
       decode.success(LandInput(
         workspace: workspace,
+        repo_root: repo_root,
         base_ref: base_ref,
         dev_result: dev_result,
       ))

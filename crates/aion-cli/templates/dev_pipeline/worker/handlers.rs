@@ -433,24 +433,44 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
     })
 }
 
-/// `land`: the yg-level stack operation — merge the branch into its tree
-/// parent. Local, no PR machinery; exit zero is the whole contract.
+/// `land`: commit the dev rounds' files on the branch, then the yg-level
+/// stack operation — merge the branch into its tree parent. Local, no PR
+/// machinery.
+///
+/// Confirmed live (2026-06-13): the dev rounds leave the agent's work
+/// UNCOMMITTED in the worktree and `yg branch merge` merges committed work
+/// only, so landing commits first. The merge runs from the MAIN repository:
+/// `yg branch merge` removes the branch's worktree as part of landing — run
+/// from inside the worktree it deletes its own git context mid-merge and
+/// dies.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `yg` cannot run or the merge exits
-/// non-zero.
+/// Terminal [`ActivityFailure`] when `git` or `yg` cannot run, when the
+/// commit exits non-zero (including a dev round that changed nothing —
+/// landing a no-op is an error, never a silent empty merge), or when the
+/// merge exits non-zero.
 pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> {
     let LandInput {
         workspace,
+        repo_root,
         base_ref,
-        ..
+        dev_result,
     } = input;
+    require_run(shell, "git", &["add", "-A"], &workspace.path, "git add")?;
+    let message = format!("{}: {}", workspace.branch, dev_result.summary);
+    require_run(
+        shell,
+        "git",
+        &["commit", "-m", &message],
+        &workspace.path,
+        "git commit",
+    )?;
     require_run(
         shell,
         "yg",
         &["branch", "merge", &workspace.branch, "--yes"],
-        &workspace.path,
+        &repo_root,
         "yg branch merge",
     )?;
     Ok(Landed {

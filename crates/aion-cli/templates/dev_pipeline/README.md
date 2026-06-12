@@ -12,7 +12,8 @@ template — brief in, landed on main out:
    signal raced against a durable deadline (`workflow.with_timeout`) —
    approve lands, structured change requests resume the same agent session
    and re-gate, reject and timeout are typed failures,
-5. `land` — `yg branch merge` into the base ref.
+5. `land` — commit the dev work, then `yg branch merge` into the base ref
+   (run from the repo root: the merge removes the branch's worktree).
 
 Every loop cap, backoff, and deadline is a **required** input field: the
 caller decides, the workflow bakes nothing in. Live `{phase, round}` status
@@ -153,7 +154,8 @@ cargo test --manifest-path worker/Cargo.toml
 ## Adapting the pipeline
 
 The scaffold shells to `yg` (worktree provisioning, affected-set scoping,
-diagnostics checks, and landing via `yg branch merge`), `norn` (the dev
+diagnostics checks, and landing via `git commit` + `yg branch merge`
+from the repo root), `norn` (the dev
 agent, resumed by deterministic session id `{{name}}-<brief_id>`), `cargo`
 (the advisory warm build), and `meridian` (review requests:
 `meridian review request <BRANCH> --reviewer <NAME>... --as Meridian` —

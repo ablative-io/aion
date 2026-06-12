@@ -266,6 +266,7 @@ fn review_loop(
         Ok(ReviewVerdict(decision: Approve)) ->
           land(
             workspace,
+            input.repo_root,
             input.base_ref,
             dev_result,
             build_warm,
@@ -381,6 +382,7 @@ fn fix_and_regate(
 /// caller).
 fn land(
   workspace: Workspace,
+  repo_root: String,
   base_ref: String,
   dev_result: DevResult,
   build_warm: BuildWarm,
@@ -392,6 +394,7 @@ fn land(
     workflow.run(
       activities.land(LandInput(
         workspace: workspace,
+        repo_root: repo_root,
         base_ref: base_ref,
         dev_result: dev_result,
       )),

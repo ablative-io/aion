@@ -283,6 +283,7 @@ esac"#,
 esac"#,
     )?;
     write_shim(dir, "cargo", "exit 0")?;
+    write_shim(dir, "git", "exit 0")?;
     write_shim(
         dir,
         "meridian",

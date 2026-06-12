@@ -63,6 +63,7 @@ fn pipeline(
   let #(env, shim_set) = bare_pipeline()
   shims.write_meridian(shim_set)
   shims.write_norn(shim_set)
+  shims.write_git(shim_set)
   install_checks(shim_set)
   #(env, shim_set)
 }
@@ -127,8 +128,11 @@ pub fn full_pipeline_happy_path_approves_first_round_test() {
   shims.invocations(shim_set, "yg", "branch add") |> should.equal(1)
   shims.invocations(shim_set, "yg", "branch provision") |> should.equal(1)
 
-  // Land is the yg-level stack operation: merge the branch into its parent,
-  // exactly once, after review approved.
+  // Land commits the dev rounds' files on the branch, then merges it into
+  // its parent via yg, exactly once, after review approved.
+  shims.invocations(shim_set, "git", "add -A") |> should.equal(1)
+  shims.invocations(shim_set, "git", "commit -m " <> shims.landed_branch)
+  |> should.equal(1)
   shims.invocations(shim_set, "yg", "branch merge " <> shims.landed_branch)
   |> should.equal(1)
   // The review request led with the branch positional (the greedy

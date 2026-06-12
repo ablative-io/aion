@@ -141,6 +141,12 @@ pub fn write_cargo(shims: Shims) -> Nil {
   write_shim(shims, "cargo", ["exit 0"])
 }
 
+/// Install a `git` shim where staging and committing succeed (the land
+/// activity commits the dev rounds' files before merging).
+pub fn write_git(shims: Shims) -> Nil {
+  write_shim(shims, "git", ["exit 0"])
+}
+
 /// Install a `cargo` shim where `cargo build` (the warm build) fails.
 pub fn write_cargo_failing_build(shims: Shims) -> Nil {
   write_shim(shims, "cargo", [
@@ -296,6 +302,7 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
     env,
     activities.land(LandInput(
       workspace: workspace,
+      repo_root: "/sample/repo",
       base_ref: "main",
       dev_result: dev_result,
     )),

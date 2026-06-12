@@ -37,7 +37,7 @@ stacked_dev                         (top-level workflow.define)
 │     ├── dev_resume             (on RequestChanges: norn resume w/ review notes)
 │     └── gate                   (re-gate each fix round)
 │
-└── land                         (activity: yg branch merge — into the base ref)
+└── land                         (activity: git commit + yg branch merge — into the base ref)
 ```
 
 All three workflows are `[[workflow]]` entries of this one package
@@ -206,8 +206,11 @@ the worker), the review request (`meridian review request <BRANCH>
 --reviewer <NAME>... --as Meridian` — branch positional FIRST because the
 greedy `--reviewer` flag swallows a trailing positional; reviewers a
 required input; the request is always signed as the Meridian system
-member; workspace from the CLI's global config), and landing (`yg branch merge <branch>` into the tree
-parent — local, no PR machinery; output is `{branch, merged_into}`).
+member; workspace from the CLI's global config), and landing (`git
+commit` of the dev rounds' files, then `yg branch merge <branch>` into
+the tree parent, run from the REPO ROOT — the merge removes the branch's
+worktree, so running it from inside the worktree kills its own git
+context; local, no PR machinery; output is `{branch, merged_into}`).
 
 ## Layout
 

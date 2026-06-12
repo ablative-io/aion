@@ -196,10 +196,20 @@ pub type ReviewVerdict {
   ReviewVerdict(decision: ReviewDecision)
 }
 
-/// Input to the `land` activity: an approved workspace and the dev result
-/// whose work is being landed.
+/// Input to the `land` activity: an approved workspace, the repository the
+/// merge runs from, and the dev result whose work is being landed.
+///
+/// `repo_root` matters: `yg branch merge` removes the branch's worktree as
+/// part of landing, so it must run from the main repository — run from
+/// inside the worktree it deletes its own git context mid-merge (confirmed
+/// live, 2026-06-13).
 pub type LandInput {
-  LandInput(workspace: Workspace, base_ref: String, dev_result: DevResult)
+  LandInput(
+    workspace: Workspace,
+    repo_root: String,
+    base_ref: String,
+    dev_result: DevResult,
+  )
 }
 
 /// Output of the `land` activity.

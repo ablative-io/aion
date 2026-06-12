@@ -588,14 +588,16 @@ fn request_review_parses_the_request_id() -> TestResult {
 }
 
 #[test]
-fn land_merges_the_branch_into_its_parent_via_yg() -> TestResult {
+fn land_commits_then_merges_the_branch_into_its_parent_via_yg() -> TestResult {
     let shims = Shims::new()?;
+    shims.write("git", "exit 0")?;
     shims.write("yg", "exit 0")?;
 
     let landed = handlers::land(
         &shims.shell(),
         LandInput {
             workspace: workspace(shims.root_string()),
+            repo_root: shims.root_string(),
             base_ref: "main".to_owned(),
             dev_result: {{name}}_worker::types::DevResult {
                 session_id: "{{name}}-brief-7".to_owned(),
@@ -608,20 +610,58 @@ fn land_merges_the_branch_into_its_parent_via_yg() -> TestResult {
 
     assert_eq!(landed.branch, "{{name}}-brief-7");
     assert_eq!(landed.merged_into, "main");
+    let git_log = shims.log("git");
+    assert!(git_log.contains("add -A"));
+    assert!(git_log.contains("commit -m {{name}}-brief-7: implemented the brief"));
     let log = shims.log("yg");
     assert!(log.contains("branch merge {{name}}-brief-7 --yes"));
     Ok(())
 }
 
 #[test]
+fn land_with_nothing_to_commit_is_terminal() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write(
+        "git",
+        "if [ \"$1\" = commit ]; then echo 'nothing to commit, working tree clean'; exit 1; fi\nexit 0",
+    )?;
+    shims.write("yg", "exit 0")?;
+
+    let failure = handlers::land(
+        &shims.shell(),
+        LandInput {
+            workspace: workspace(shims.root_string()),
+            repo_root: shims.root_string(),
+            base_ref: "main".to_owned(),
+            dev_result: {{name}}_worker::types::DevResult {
+                session_id: "s".to_owned(),
+                files_touched: Vec::new(),
+                summary: String::new(),
+            },
+        },
+    )
+    .err()
+    .ok_or("a no-op land must fail the activity")?;
+    assert_terminal(&failure, "git commit failed — exit status 1");
+    assert_terminal(&failure, "nothing to commit");
+    assert!(
+        !shims.log("yg").contains("branch merge"),
+        "the merge must not run after a failed commit"
+    );
+    Ok(())
+}
+
+#[test]
 fn land_with_failing_merge_is_terminal() -> TestResult {
     let shims = Shims::new()?;
+    shims.write("git", "exit 0")?;
     shims.write("yg", "echo 'merge conflict in crates/x' >&2; exit 1")?;
 
     let failure = handlers::land(
         &shims.shell(),
         LandInput {
             workspace: workspace(shims.root_string()),
+            repo_root: shims.root_string(),
             base_ref: "main".to_owned(),
             dev_result: {{name}}_worker::types::DevResult {
                 session_id: "s".to_owned(),
