@@ -28,6 +28,7 @@ const EXAMPLE_PROJECTS: &[&str] = &[
     "subscription",
     "agent-orchestration",
     "order-saga",
+    "order-fulfillment",
     "hello-world",
 ];
 

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["order_id", "item", "quantity", "amount_cents", "approval_timeout_ms"],
+  "additionalProperties": false,
+  "properties": {
+    "order_id": { "type": "string", "minLength": 1 },
+    "item": { "type": "string", "minLength": 1 },
+    "quantity": { "type": "integer", "minimum": 1 },
+    "amount_cents": { "type": "integer", "minimum": 1 },
+    "approval_timeout_ms": { "type": "integer", "minimum": 1 }
+  }
+}
