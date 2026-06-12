@@ -16,7 +16,7 @@ categories = ["development-tools"]
 workspace = true
 
 [dependencies]
-aion-core = { version = "0.2.0", path = "../aion-core" }
+aion-core = { version = "0.3.0", path = "../aion-core" }
 beamr = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
