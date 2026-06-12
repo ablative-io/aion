@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "job_id": { "type": "string" },
+    "note": { "type": "string" },
+    "gate": { "type": "boolean" }
+  },
+  "required": ["job_id", "note", "gate"]
+}
