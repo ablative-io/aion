@@ -7,7 +7,7 @@ templates, `aion codegen`), `aion_flow` 0.4.0 on hex, beamr 0.6.0
 underneath; outside-in validated end to end including a live stacked-dev
 run against real yg/norn/cargo/meridian CLIs.
 
-## 1. Pending design decision: parent-close policy (cancellation cascade)
+## 1. Parent-close policy — DECIDED (Tom, 2026-06-13), implementation queued
 
 **The fact (pinned by `crates/aion/tests/nested_workflows_e2e.rs`):**
 cancelling a workflow records its terminal and kills only its own process.
@@ -18,15 +18,16 @@ own descendants are **left resident** — live Running processes that nothing
 reaps, surviving indefinitely until their own terminals. A grandchild
 parked on a three-month timer outlives its entire cancelled tree.
 
-**Recommendation (undecided — Tom's call):** Temporal-style per-spawn
-parent-close policy, `RequestCancel | Terminate | Abandon`, as a
-**required** argument on `child.spawn` / `spawn_and_wait` (the
-no-arbitrary-defaults rule means authors must choose, not inherit).
-`Abandon` is today's behavior made explicit. Engine work: propagate on
-parent terminal (all terminals, not just cancel), recursively;
-recovery must re-arm pending propagations. SDK + docs + the
-`workflows.md` child section ("a per-spawn parent-close policy is under
-design") update when it lands.
+**Decision (Tom accepted the recommendation, 2026-06-13):**
+Temporal-style per-spawn parent-close policy, `RequestCancel |
+Terminate | Abandon`, as a **required** argument on `child.spawn` /
+`spawn_and_wait` (the no-arbitrary-defaults rule means authors must
+choose, not inherit). `Abandon` is today's behavior made explicit —
+the child hands off and keeps running independently after the parent's
+terminal. Engine work: propagate on parent terminal (all terminals,
+not just cancel), recursively; recovery must re-arm pending
+propagations. SDK + docs + the `workflows.md` child section ("a
+per-spawn parent-close policy is under design") update when it lands.
 
 ## 2. Proof portfolio (the "contemporary of Temporal" wave)
 
@@ -86,7 +87,13 @@ internal test suites. Agreed plan, in credibility-per-effort order:
    and an `aion input <workflow_type>` helper should emit a valid input
    skeleton from the deployed schema (composing the input document by hand
    is the remaining authoring pain — embedding design docs as JSON-encoded
-   strings is easy to get wrong silently).
+   strings is easy to get wrong silently). **Polymorphic input (Tom,
+   2026-06-13):** `--input` should take inline JSON or `@file`
+   interchangeably; a directory form (`--input @docs/design/foo/`) that
+   assembles the input by mapping schema fields to files in the directory
+   is wanted but needs design — field→file mapping must be explicit and
+   schema-driven, not guessed (no-arbitrary-defaults applies to
+   inference too).
 4. **`aion dev`** — watch mode: rebuild + repackage + hot-redeploy on file
    change (content-hash namespacing already makes redeploy safe).
 5. **Dashboard timeline** — per-run event timeline view in aion-dashboard.
@@ -104,7 +111,24 @@ All eleven crates published at 0.6.0 (timeout removal, `aion new` +
 templates, `aion codegen`, hint-string fix, worker SDK reconnect +
 session log); `aion_flow` 0.4.0 on hex (`testing.mock_child`); template
 pins bumped to `>= 0.4.0 and < 0.5.0`. CHANGELOG.md added at the repo
-root — keep it current with every release from here.
+root — keep it current with every release from here. Same day, the
+live test-bed run (brief tk-015) completed the ENTIRE stacked_dev arc
+against real CLIs — provision, norn dev, verify, gate, review DM,
+human signal, and land (commit + merge from repo root) — so every
+step of the flagship workflow is live-proven.
+
+**Candidate follow-ups from the release experience (Tom, 2026-06-13):**
+- **Release pipeline as an aion workflow** (and a fifth template
+  candidate): ordered multi-crate publish, long verify builds, a human
+  "ship it" approval signal, durable resume if it dies mid-wave —
+  this very process, run by hand today, is shaped exactly like a
+  workflow. Today's run also showed the version bump ripples into
+  scaffold-gate assertions and example/fixture lockfiles; a workflow
+  step could sweep those mechanically.
+- **Briefs-driven self-hosted dev:** use `stacked_dev` to dispatch
+  norn agents against aion's own roadmap items — author the design
+  docs/briefs (the tk-015 input shape), fan out runs, review via
+  meridian. The dogfood becomes the dev process.
 
 ## 5. Meridian integration (Tom's current focus)
 
