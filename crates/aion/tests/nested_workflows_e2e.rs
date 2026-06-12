@@ -24,8 +24,11 @@
 //!   is silently orphaned: children are not process-linked to parents by
 //!   design (`src/child/spawn.rs`), and no parent-close policy exists yet.
 //!
-//! Every payload in here is deliberately >64 bytes so the large
-//! refc-binary path stays exercised end-to-end.
+//! Every spawn input, activity input, activity result, and the release
+//! signal payload is deliberately >64 bytes so the large refc-binary path
+//! stays exercised end-to-end (the recovery test's propagated outputs
+//! carry the >64-byte release token too; the short `l1:l2:l3:...` result
+//! strings elsewhere intentionally cover the small-payload path).
 
 #[path = "common/example_build.rs"]
 mod example_build;
@@ -52,8 +55,8 @@ const FIXTURE: &str = "crates/aion/tests/fixtures/nested_chain";
 /// path honestly exercised at every level.
 const NOTE: &str = "audit: nested-chain conformance probe; payload deliberately exceeds the \
 sixty-four byte inline-binary boundary at every level so parent spawn inputs, activity \
-inputs, activity results, and propagated child outputs all ride the large refc-binary \
-path end-to-end";
+inputs, and activity results all ride the large refc-binary path end-to-end across \
+the whole nested chain";
 /// A >64-byte release-signal token, for the same reason.
 const RELEASE_TOKEN: &str = "release-credential: durable-resume authorized by the recovery \
 gate after byte-identical replay was asserted across all three nested histories";
@@ -160,7 +163,10 @@ impl ActivityDispatcher for LeafDispatcher {
     }
 }
 
-/// Build all four fixture packages from the committed Gleam source.
+/// Build all four fixture packages from the committed Gleam source. The
+/// four `[[workflow]]` entries share one project: after the first call the
+/// per-project flock plus `gleam build`'s incremental cache make the repeat
+/// builds cheap.
 fn chain_packages() -> Result<Vec<Package>, Box<dyn std::error::Error>> {
     Ok(vec![
         example_build::built_package(FIXTURE, "level_one")?,
@@ -845,7 +851,10 @@ async fn self_spawning_recursion_stops_at_depth_three_and_recovers() -> TestResu
 ///   whose message is `cancelled:<reason>` (the watcher's D-4 mapping in
 ///   `src/runtime/nif_child_watch.rs` — no distinct cancelled taxonomy);
 /// - appends nothing to the cancelled `level_two` when the orphan later
-///   completes (its watcher observes the parent terminal and exits).
+///   completes: the watcher `level_two` armed for `level_three` is aborted
+///   when `level_two`'s process exits (`nif_state.rs::cleanup_process`),
+///   and the record path's atomic parent-terminal guard
+///   (`record_parent_child_terminal`) backstops any race.
 ///
 /// This test pins that behavior; it does not endorse it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -937,7 +946,27 @@ async fn cancelling_level_two_orphans_level_three_and_fails_level_one_await() ->
         })
         .ok_or("orphan recorded no result")?;
     assert_eq!(decoded_string(&orphan_result)?, "l3:done:job-cancel");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Ordering anchor for the negative assertion below: the orphan's exit
+    // bookkeeping reconciles its registry projection to Completed strictly
+    // AFTER the completion doorbell fires — the only trigger a leaked
+    // watcher could have. (The watcher itself was aborted at level_two's
+    // process exit, and the record path's parent-terminal guard makes any
+    // racing append impossible; this wait just gives a regression a real
+    // window to expose itself instead of a bare sleep.)
+    let reconcile_deadline = Instant::now() + POLL_DEADLINE;
+    loop {
+        let status = engine
+            .registry()
+            .get(&l3, &l3_run)?
+            .map(|handle| handle.cached_status());
+        if status == Some(WorkflowStatus::Completed) {
+            break;
+        }
+        if Instant::now() >= reconcile_deadline {
+            return Err(format!("orphan registry projection never reconciled: {status:?}").into());
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
     assert_eq!(
         store.read_history(&l2).await?,
         cancelled_two,
