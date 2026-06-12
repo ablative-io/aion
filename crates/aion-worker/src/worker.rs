@@ -108,6 +108,18 @@ impl Worker {
         &self.available_handlers
     }
 
+    /// Announce an established session: operators watching the worker's logs
+    /// previously got no positive signal that registration succeeded (only
+    /// drop/backoff warnings on failure).
+    fn log_session_established(&self) {
+        info!(
+            identity = %self.config.identity,
+            endpoint = %self.config.endpoint,
+            activity_types = ?self.activity_types,
+            "worker session established; serving activities"
+        );
+    }
+
     /// Connects to the configured endpoint, registers activities, and serves indefinitely.
     ///
     /// Registration completes only when the server's `RegisterAck` — the
@@ -224,6 +236,7 @@ impl Worker {
                 ) => result,
             };
             let mut session = connected?;
+            self.log_session_established();
             let session_started = tokio::time::Instant::now();
             let mut health = SessionHealth::default();
             // The unacked-result replay races shutdown so a hung re-report

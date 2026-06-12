@@ -71,10 +71,39 @@ where
     }
 }
 
+/// Every activity name this worker serves, in registration order.
+const SERVED_ACTIVITIES: [&str; 8] = [
+    "provision_workspace",
+    "warm_build",
+    "dev",
+    "scoped_checks",
+    "dev_resume",
+    "full_checks",
+    "request_review",
+    "land",
+];
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Surface the worker SDK's own tracing (task receipt at info, session
+    // drops and reconnect backoff at warn) — without a subscriber the worker
+    // is silent even while serving. Default to info; RUST_LOG overrides.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let endpoint = endpoint_from_args()?;
     let shell = Shell::inherited();
+
+    tracing::info!(
+        endpoint = %endpoint,
+        activities = ?SERVED_ACTIVITIES,
+        "stacked-dev-worker starting; connection failures will be logged \
+         with reconnect backoff — a quiet worker is a connected worker"
+    );
 
     // Everything but the endpoint mirrors the saga template's worker: the
     // default task queue/namespace, an explicit identity, and the template's
