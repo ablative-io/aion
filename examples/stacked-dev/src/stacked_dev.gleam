@@ -38,6 +38,7 @@ import gleam/dynamic/decode
 import onatopp_dev
 import stacked_dev/activities
 import stacked_dev/codecs_flow
+import stacked_dev/codecs_workflows
 import stacked_dev/errors
 import stacked_dev/types.{
   type BuildWarm, type DevResult, type GateResult, type ReviewVerdict,
@@ -66,9 +67,9 @@ pub fn definition() -> workflow.WorkflowDefinition(
 ) {
   workflow.define(
     "stacked-dev",
-    codecs_flow.stacked_dev_input_codec(),
-    codecs_flow.stacked_dev_result_codec(),
-    codecs_flow.stacked_dev_error_codec(),
+    codecs_workflows.stacked_dev_input_codec(),
+    codecs_workflows.stacked_dev_result_codec(),
+    codecs_workflows.stacked_dev_error_codec(),
     execute,
   )
 }
@@ -87,11 +88,11 @@ pub fn review_signal() -> workflow.SignalRef(ReviewVerdict) {
 pub fn run(raw_input: Dynamic) -> Result(String, StackedDevError) {
   case decode.run(raw_input, decode.string) {
     Ok(raw_json) ->
-      case codecs_flow.stacked_dev_input_codec().decode(raw_json) {
+      case codecs_workflows.stacked_dev_input_codec().decode(raw_json) {
         Ok(input) ->
           case execute(input) {
             Ok(output) ->
-              Ok(codecs_flow.stacked_dev_result_codec().encode(output))
+              Ok(codecs_workflows.stacked_dev_result_codec().encode(output))
             Error(workflow_error) -> Error(workflow_error)
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
@@ -176,9 +177,9 @@ fn run_onatopp(
         verify_fix_cap: input.verify_fix_cap,
         round_backoff_ms: input.round_backoff_ms,
       ),
-      codecs_flow.onatopp_input_codec(),
-      codecs_flow.onatopp_result_codec(),
-      codecs_flow.onatopp_error_codec(),
+      codecs_workflows.onatopp_input_codec(),
+      codecs_workflows.onatopp_result_codec(),
+      codecs_workflows.onatopp_error_codec(),
     )
   {
     Ok(result) -> Ok(result)
@@ -406,7 +407,7 @@ fn set_status(phase: String, round: Int) -> Result(Nil, StackedDevError) {
   case
     query.handler(
       status_query_name,
-      codecs_flow.stacked_dev_status_codec(),
+      codecs_workflows.stacked_dev_status_codec(),
       fn() { status },
     )
   {

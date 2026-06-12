@@ -27,7 +27,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import stacked_dev/activities
-import stacked_dev/codecs_flow
+import stacked_dev/codecs_workflows
 import stacked_dev/errors
 import stacked_dev/types.{
   type BuildWarm, type DevResult, type OnatoppError, type OnatoppInput,
@@ -52,9 +52,9 @@ pub fn definition() -> workflow.WorkflowDefinition(
 ) {
   workflow.define(
     "onatopp-dev",
-    codecs_flow.onatopp_input_codec(),
-    codecs_flow.onatopp_result_codec(),
-    codecs_flow.onatopp_error_codec(),
+    codecs_workflows.onatopp_input_codec(),
+    codecs_workflows.onatopp_result_codec(),
+    codecs_workflows.onatopp_error_codec(),
     execute,
   )
 }
@@ -64,20 +64,21 @@ pub fn definition() -> workflow.WorkflowDefinition(
 /// The runtime delivers the start input as a raw JSON string. Success and
 /// failure are both encoded back to JSON text here: the engine records these
 /// exact payloads as the child terminal, and the awaiting parent decodes
-/// them with the same codecs `stacked_dev/codecs_flow` exports.
+/// them with the same codecs `stacked_dev/codecs_workflows` exports.
 pub fn run(raw_input: Dynamic) -> Result(String, String) {
   case decode.run(raw_input, decode.string) {
     Ok(raw_json) ->
-      case codecs_flow.onatopp_input_codec().decode(raw_json) {
+      case codecs_workflows.onatopp_input_codec().decode(raw_json) {
         Ok(input) ->
           case execute(input) {
-            Ok(output) -> Ok(codecs_flow.onatopp_result_codec().encode(output))
+            Ok(output) ->
+              Ok(codecs_workflows.onatopp_result_codec().encode(output))
             Error(onatopp_error) ->
-              Error(codecs_flow.onatopp_error_codec().encode(onatopp_error))
+              Error(codecs_workflows.onatopp_error_codec().encode(onatopp_error))
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
           Error(
-            codecs_flow.onatopp_error_codec().encode(OnatoppStageFailed(
+            codecs_workflows.onatopp_error_codec().encode(OnatoppStageFailed(
               stage: "decode_input",
               message: "failed to decode onatopp-dev input: " <> reason,
             )),
@@ -85,7 +86,7 @@ pub fn run(raw_input: Dynamic) -> Result(String, String) {
       }
     Error(_) ->
       Error(
-        codecs_flow.onatopp_error_codec().encode(OnatoppStageFailed(
+        codecs_workflows.onatopp_error_codec().encode(OnatoppStageFailed(
           stage: "decode_input",
           message: "onatopp-dev input payload was not a string",
         )),
@@ -211,9 +212,11 @@ fn fix_round(
 fn set_status(phase: String, round: Int) -> Result(Nil, OnatoppError) {
   let status = OnatoppStatus(phase: phase, round: round)
   case
-    query.handler(status_query_name, codecs_flow.onatopp_status_codec(), fn() {
-      status
-    })
+    query.handler(
+      status_query_name,
+      codecs_workflows.onatopp_status_codec(),
+      fn() { status },
+    )
   {
     Ok(Nil) -> Ok(Nil)
     Error(query_error) ->

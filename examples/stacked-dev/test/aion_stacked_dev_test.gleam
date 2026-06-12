@@ -17,7 +17,7 @@ import gleeunit
 import gleeunit/should
 import onatopp_dev
 import stacked_dev
-import stacked_dev/codecs_flow
+import stacked_dev/codecs_workflows
 import stacked_dev/types.{
   type ReviewVerdict, type StackedDevInput, Approve, Local, OnatoppStatus,
   ProvisionFailed, Reject, RequestChanges, ReviewNote, ReviewRejected,
@@ -159,7 +159,7 @@ pub fn verify_fix_exhaustion_surfaces_typed_diagnostics_test() {
   // the capped round.
   query.dispatch(
     onatopp_dev.status_query_name,
-    codecs_flow.onatopp_status_codec(),
+    codecs_workflows.onatopp_status_codec(),
   )
   |> should.equal(Ok(OnatoppStatus(phase: "verifying", round: 2)))
 }
@@ -252,12 +252,12 @@ pub fn status_query_answers_live_phase_and_round_per_stage_test() {
   let assert Ok(_) = stacked_dev.execute(base_input())
   query.dispatch(
     stacked_dev.status_query_name,
-    codecs_flow.stacked_dev_status_codec(),
+    codecs_workflows.stacked_dev_status_codec(),
   )
   |> should.equal(Ok(StackedDevStatus(phase: "landed", round: 1)))
   query.dispatch(
     onatopp_dev.status_query_name,
-    codecs_flow.onatopp_status_codec(),
+    codecs_workflows.onatopp_status_codec(),
   )
   |> should.equal(Ok(OnatoppStatus(phase: "converged", round: 1)))
 
@@ -268,7 +268,7 @@ pub fn status_query_answers_live_phase_and_round_per_stage_test() {
     stacked_dev.execute(base_input())
   query.dispatch(
     stacked_dev.status_query_name,
-    codecs_flow.stacked_dev_status_codec(),
+    codecs_workflows.stacked_dev_status_codec(),
   )
   |> should.equal(Ok(StackedDevStatus(phase: "in_review", round: 1)))
 }

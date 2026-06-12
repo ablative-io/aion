@@ -18,6 +18,7 @@ import gleam/string
 import onatopp_dev
 import stacked_dev/activities
 import stacked_dev/codecs_flow
+import stacked_dev/codecs_workflows
 import stacked_dev/types.{
   type Workspace, DevInput, DevResult, GateInput, GatePass, GateResult,
   LandInput, Local, ProvisionInput, ResumeInput, ReviewRequest, ScopedInput,
@@ -237,9 +238,9 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
     testing.mock_child(
       env,
       onatopp_dev.workflow_type,
-      codecs_flow.onatopp_input_codec(),
-      codecs_flow.onatopp_result_codec(),
-      codecs_flow.onatopp_error_codec(),
+      codecs_workflows.onatopp_input_codec(),
+      codecs_workflows.onatopp_result_codec(),
+      codecs_workflows.onatopp_error_codec(),
       onatopp_dev.execute,
     )
   let assert Ok(_) =
