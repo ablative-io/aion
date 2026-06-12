@@ -124,6 +124,60 @@ Query-semantic failures ride the `QueryResponse.error` oneof on a successful tra
 
 Namespace denial, unknown workflow ids, and backend faults remain transport-level errors with the usual status codes (403/404/500), exactly as for every other operation — a query against another tenant's workflow is byte-identical to one against a workflow that never existed.
 
+## Operator deploy API
+
+> **Operator surface, not a caller operation.** Deploy is deliberately outside the caller SDK contract (`CLIENT-CONTRACT.md`): client SDKs SHALL NOT expose it. The wire surface is a separate gRPC `DeployService` (`crates/aion-proto/proto/deploy.proto`) plus the `/deploy/*` HTTP routes below, driven by `aion-cli deploy/versions/route/unload`.
+
+The deploy surface is **dark by default**. It mounts only when commissioned in server config:
+
+```toml
+[deploy]
+enabled = true                 # default false: routes not mounted (HTTP 404, gRPC Unimplemented)
+max_archive_bytes = 16777216   # REQUIRED when enabled; no default — size for your packages
+```
+
+`max_archive_bytes` (env override `AION_DEPLOY_MAX_ARCHIVE_BYTES`; `AION_DEPLOY_ENABLED` gates the mount) is enforced while reading the upload on both transports; oversized archives are refused with `413` / `InvalidArgument` naming the key.
+
+**Authorization** is a deployment-wide `deploy` grant, decided before any handler logic runs:
+
+- JWT path (`[auth] enabled = true` with the `auth` feature): a boolean `deploy` claim in the same bearer token. Absent claim = no grant; existing data-operation tokens keep working unchanged.
+- Development paths: the `x-aion-deploy: true` header/metadata entry, the dev analog of the claim (`aion-cli` sends it automatically). The dev-token fallback checks the shared secret first, then the header.
+- Denials are `403` / `PermissionDenied` with the dedicated `deploy_denied` wire code, and the message names the knob that carries the grant (header vs token claim).
+
+The grant is engine-global on purpose: **a package load is engine-global**. Loading registers code into the shared VM and re-points routing for a workflow *type* that is startable from every namespace — there is no namespace field anywhere on the deploy surface, and no per-namespace isolation is implied.
+
+| Method | Path | Body | Behavior |
+|---|---|---|---|
+| `POST` | `/deploy/packages` | raw `application/octet-stream` `.aion` archive | Load + atomic route flip. Response: `workflow_type`, `content_hash`, `deployed_entry_module`, `entry_function`, `freshly_loaded`, `route_changed`. Idempotent: re-POSTing a resident archive succeeds with `freshly_loaded = false`; `route_changed` reports whether routing moved (re-deploy after rollback). A deploy pipeline may retry blindly. |
+| `GET` | `/deploy/versions` | — | The deploy read model: every loaded version with `route_active`, sorted `(type, loaded_at)`. Keeps serving during drain. |
+| `POST` | `/deploy/route` | JSON `{"workflow_type", "content_hash"}` | Atomic, idempotent re-point (rollback / roll-forward) to an already-loaded version. |
+| `POST` | `/deploy/unload` | JSON `{"workflow_type", "content_hash"}` | Unload a non-routed version after the engine verifies nothing pins it. |
+
+Failure taxonomy (both transports; messages pass the engine's refusal prose through):
+
+| Condition | Wire code | HTTP | gRPC |
+|---|---|---|---|
+| No deploy grant | `deploy_denied` | 403 | `PermissionDenied` |
+| Version route-active or pinned (live run, in-flight start, recoverable run, recorded child) | `version_pinned` | 409 | `FailedPrecondition` |
+| Malformed archive / hash mismatch / collision / same-hash-different-manifest | `invalid_input` | 400 | `InvalidArgument` |
+| Unknown `(workflow_type, content_hash)` | `not_found` | 404 | `NotFound` |
+| Archive exceeds `deploy.max_archive_bytes` | `invalid_input` (names the key) | 413 | `InvalidArgument` |
+| Draining / shutting down (mutations only) | `backend` with explicit message | 503 | `Unavailable` |
+| Deploy surface disabled | — (not mounted) | 404 | `Unimplemented` |
+
+Every mutation emits one structured audit log line (`operation`, `subject`, `grant_source`, `transport`, `workflow_type`, `content_hash`, `outcome`, and `freshly_loaded`/`route_changed` for loads); denials log at `warn`. Metrics: `aion_deploy_operations_total{operation, outcome}`, `aion_deploy_denied_total{transport}`, and the `aion_loaded_workflow_versions{workflow_type}` gauge.
+
+CLI (`--token` overrides the `AION_TOKEN` environment variable; without either, the development headers apply):
+
+```bash
+aion-cli --endpoint 127.0.0.1:50051 --token "$TOKEN" deploy dist/order.aion
+aion-cli versions --workflow-type order
+aion-cli route order <content-hash>     # rollback / roll-forward
+aion-cli unload order <content-hash>
+```
+
+See [docs/packaging.md](packaging.md) for building the `.aion` archives this API consumes.
+
 ## WebSocket event streaming
 
 Connect to `ws://<server>/events/stream` and then send one JSON text or binary message that selects the subscription. The server ignores ping/pong frames while waiting, but closes the stream with an input error if the subscription is missing or malformed.

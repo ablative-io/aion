@@ -68,6 +68,17 @@ fn development_caller_from_headers(headers: &axum::http::HeaderMap) -> CallerIde
         .and_then(|value| value.to_str().ok())
         .map_or_else(Vec::new, parse_namespaces);
     CallerIdentity::new(subject.unwrap_or("anonymous"), namespaces)
+        .with_deploy(deploy_header_granted(headers))
+}
+
+/// Deployment-wide deploy grant from the development `x-aion-deploy` header,
+/// the dev-mode analog of the JWT `deploy` claim. Absent or non-true = no
+/// grant.
+fn deploy_header_granted(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-aion-deploy")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
 /// Development-mode token authentication used when `auth.enabled` is `true` but
@@ -115,7 +126,7 @@ fn development_token_caller_from_headers(
         );
     };
 
-    CallerIdentity::new(subject, namespaces)
+    CallerIdentity::new(subject, namespaces).with_deploy(deploy_header_granted(headers))
 }
 
 #[cfg(feature = "auth")]

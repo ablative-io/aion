@@ -22,6 +22,8 @@ pub mod auth;
 pub mod config;
 /// Dashboard asset serving helpers.
 pub mod dashboard;
+/// Operator deploy surface authorization.
+pub mod deploy;
 /// Server error and stream-failure types.
 pub mod error;
 /// Engine-internal workflow filtering for enumeration surfaces.
@@ -40,6 +42,7 @@ pub mod stream;
 pub mod worker;
 
 pub use config::ServerConfig;
+pub use deploy::DeployGuard;
 pub use error::{ServerError, StreamFailure};
 pub use namespace::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceOperation, NamespaceResolver,

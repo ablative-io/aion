@@ -280,7 +280,15 @@ impl ClientError {
             // single-writer invariant violation (a double-writer bug). The
             // server has no idempotency-key feature, so this is never
             // AlreadyExists; it is an unexpected server failure.
-            WireErrorCode::SequenceConflict | WireErrorCode::Backend => Self::Server { detail },
+            // `deploy_denied` / `version_pinned` belong to the operator
+            // deploy surface, which the caller SDK contract deliberately
+            // excludes (CLIENT-CONTRACT scope); they can never be returned
+            // by a caller SDK operation, so they fall into the generic
+            // server bucket rather than growing the caller taxonomy.
+            WireErrorCode::SequenceConflict
+            | WireErrorCode::Backend
+            | WireErrorCode::DeployDenied
+            | WireErrorCode::VersionPinned => Self::Server { detail },
             WireErrorCode::QueryFailed => Self::QueryFailed { detail },
             WireErrorCode::QueryTimeout => Self::QueryTimeout { detail },
             WireErrorCode::Lagged => Self::Unavailable { detail },

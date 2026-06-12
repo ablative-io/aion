@@ -1,10 +1,45 @@
 //! Typed `manifest.json` model and `.aion` format-version checks.
 
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::PackageError;
+
+/// Canonical SHA-256 digest of one manifest's serialized JSON form.
+///
+/// The package content hash deliberately covers the canonical beam set only
+/// (`manifest.json` is excluded), so two archives with identical beams but
+/// different manifests carry the same [`crate::ContentHash`]. This digest is
+/// the tripwire that detects exactly that divergence: the engine catalog
+/// retains it per loaded version and refuses an idempotent re-load whose
+/// incoming manifest digest differs.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ManifestDigest([u8; 32]);
+
+impl ManifestDigest {
+    /// Creates a manifest digest from raw SHA-256 digest bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the raw SHA-256 digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for ManifestDigest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 /// Current `.aion` manifest and archive-layout schema version supported by this crate.
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
@@ -93,6 +128,26 @@ impl Manifest {
             })
         }
     }
+
+    /// Computes the canonical SHA-256 digest of this manifest.
+    ///
+    /// The digest covers the manifest's stable serialized JSON form (the same
+    /// field names and ordering written into `manifest.json`), so any
+    /// semantic difference — entry function, schemas, timeout, declared
+    /// activities — produces a different digest even when the beam set (and
+    /// therefore the content hash) is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackageError::ManifestSerialise`] when the manifest cannot be
+    /// serialized to JSON.
+    pub fn canonical_digest(&self) -> Result<ManifestDigest, PackageError> {
+        let bytes = serde_json::to_vec(self)
+            .map_err(|source| PackageError::ManifestSerialise { source })?;
+        let mut digest = Sha256::new();
+        digest.update(&bytes);
+        Ok(ManifestDigest(digest.finalize().into()))
+    }
 }
 
 #[cfg(test)]
@@ -177,6 +232,34 @@ mod tests {
     #[test]
     fn supported_format_version_passes() -> Result<(), PackageError> {
         sample_manifest().check_format_version()
+    }
+
+    /// Identical manifests digest identically; any semantic change (entry
+    /// function here) changes the digest even though the beam set — and
+    /// therefore the content hash — is untouched.
+    #[test]
+    fn canonical_digest_detects_manifest_divergence() -> Result<(), PackageError> {
+        let manifest = sample_manifest();
+        let same = sample_manifest();
+        let mut diverged = sample_manifest();
+        diverged.entry_function = "start".to_owned();
+
+        assert_eq!(manifest.canonical_digest()?, same.canonical_digest()?);
+        assert_ne!(manifest.canonical_digest()?, diverged.canonical_digest()?);
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_digest_renders_as_lowercase_hex() -> Result<(), PackageError> {
+        let digest = sample_manifest().canonical_digest()?;
+        let text = digest.to_string();
+
+        assert_eq!(text.len(), 64);
+        assert!(
+            text.bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        );
+        Ok(())
     }
 
     #[test]

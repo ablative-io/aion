@@ -159,7 +159,9 @@ async fn load_into_running_engine_routes_new_starts_while_old_run_finishes_on_v1
     // Park a v1 instance, then load v2 into the RUNNING engine.
     let (parked_id, parked_run) = start(&engine).await?;
     let loaded = engine.load_package(v2.clone()).await?;
-    assert_eq!(loaded.version(), v2.content_hash());
+    assert_eq!(loaded.record.version(), v2.content_hash());
+    assert!(loaded.freshly_loaded, "first v2 load must be fresh");
+    assert!(loaded.route_changed, "first v2 load must take the route");
 
     // New starts route to v2 and complete with v2 behavior.
     let (new_id, new_run) = start(&engine).await?;
@@ -258,7 +260,15 @@ async fn idempotent_reload_registers_nothing_and_re_routes_rolled_back_versions(
 
     let first = engine.load_package(v1.clone()).await?;
     let second = engine.load_package(v1.clone()).await?;
-    assert_eq!(first, second, "re-load must return the identical record");
+    assert_eq!(
+        first.record, second.record,
+        "re-load must return the identical record"
+    );
+    assert!(!second.freshly_loaded, "re-load must report idempotence");
+    assert!(
+        !second.route_changed,
+        "re-loading the route-active hash is a full no-op"
+    );
     assert_eq!(engine.list_workflow_versions()?.len(), 1);
     assert!(
         engine
@@ -273,7 +283,12 @@ async fn idempotent_reload_registers_nothing_and_re_routes_rolled_back_versions(
     assert_eq!(result_int(&engine, &id, &run).await?, 2);
 
     let re_deployed = engine.load_package(v1.clone()).await?;
-    assert_eq!(re_deployed, first);
+    assert_eq!(re_deployed.record, first.record);
+    assert!(!re_deployed.freshly_loaded);
+    assert!(
+        re_deployed.route_changed,
+        "re-deploying a rolled-back hash must re-point the route"
+    );
     assert_eq!(engine.list_workflow_versions()?.len(), 2);
     let (id, run) = start(&engine).await?;
     assert_eq!(result_int(&engine, &id, &run).await?, 1);
@@ -323,8 +338,10 @@ async fn listing_shows_route_flags_and_route_workflow_version_re_points() -> Tes
     let unknown = ContentHash::from_bytes([9; 32]);
     let result = engine.route_workflow_version(RELOAD_MODULE, &unknown).await;
     assert!(
-        matches!(&result, Err(EngineError::Load { reason })
-            if reason.contains("not loaded") && reason.contains(&v1.content_hash().to_string())),
+        matches!(&result, Err(EngineError::UnknownVersion { workflow_type, version, loaded })
+            if workflow_type == RELOAD_MODULE
+                && version == &unknown
+                && loaded.contains(&v1.content_hash().to_string())),
         "routing to a never-loaded hash must fail typed: {result:?}"
     );
 
@@ -349,7 +366,8 @@ async fn unload_refuses_pinned_versions_and_succeeds_when_free() -> TestResult {
         .unload_workflow_version(RELOAD_MODULE, v2.content_hash())
         .await;
     assert!(
-        matches!(&result, Err(EngineError::Load { reason }) if reason.contains("route-active")),
+        matches!(&result, Err(EngineError::RouteActive { workflow_type, version })
+            if workflow_type == RELOAD_MODULE && version == v2.content_hash()),
         "unloading the routed version must be refused: {result:?}"
     );
 
@@ -358,8 +376,10 @@ async fn unload_refuses_pinned_versions_and_succeeds_when_free() -> TestResult {
         .unload_workflow_version(RELOAD_MODULE, v1.content_hash())
         .await;
     assert!(
-        matches!(&result, Err(EngineError::Load { reason })
-            if reason.contains(&parked_id.to_string())),
+        matches!(&result, Err(EngineError::VersionPinned {
+            pinned_by: aion::PinHolder::LiveRun { workflow_id, .. },
+            ..
+        }) if workflow_id == &parked_id),
         "unload must name the live run pinning the version: {result:?}"
     );
     // The refusal restored the catalog: v1 stays loaded and routable.
@@ -392,8 +412,10 @@ async fn unload_refuses_pinned_versions_and_succeeds_when_free() -> TestResult {
         .unload_workflow_version(RELOAD_MODULE, v1.content_hash())
         .await;
     assert!(
-        matches!(&result, Err(EngineError::Load { reason })
-            if reason.contains("recoverable run") && reason.contains(&ghost_id.to_string())),
+        matches!(&result, Err(EngineError::VersionPinned {
+            pinned_by: aion::PinHolder::RecoverableRun { workflow_id },
+            ..
+        }) if workflow_id == &ghost_id),
         "unload must name the recoverable run pinning the version: {result:?}"
     );
 
@@ -414,7 +436,7 @@ async fn unload_refuses_pinned_versions_and_succeeds_when_free() -> TestResult {
         .route_workflow_version(RELOAD_MODULE, v1.content_hash())
         .await;
     assert!(
-        matches!(&result, Err(EngineError::Load { reason }) if reason.contains("not loaded")),
+        matches!(&result, Err(EngineError::UnknownVersion { .. })),
         "routing to an unloaded version must fail typed: {result:?}"
     );
 
@@ -441,5 +463,46 @@ async fn load_package_after_shutdown_is_refused() -> TestResult {
         matches!(result, Err(EngineError::ShuttingDown)),
         "loads after shutdown must be refused: {result:?}"
     );
+    Ok(())
+}
+
+// --- D10 rider: same-hash-different-manifest tripwire -------------------------
+
+/// Two archives with identical beams but diverging manifests carry the same
+/// content hash; re-loading the diverged archive into a running engine must
+/// be refused typed with the catalog untouched, and the byte-identical
+/// archive must keep re-loading idempotently.
+#[tokio::test]
+async fn same_hash_different_manifest_reload_is_refused() -> TestResult {
+    let beam = compile_reload_beam(1)?;
+    let original = reload_package(&beam, "run")?;
+    let diverged = reload_package(&beam, "park")?;
+    assert_eq!(
+        original.content_hash(),
+        diverged.content_hash(),
+        "identical beams must carry the identical content hash"
+    );
+
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = engine_with(&store, vec![original.clone()]).await?;
+
+    let result = engine.load_package(diverged).await;
+    assert!(
+        matches!(&result, Err(EngineError::ManifestMismatch { workflow_type, version, .. })
+            if workflow_type == RELOAD_MODULE && version == original.content_hash()),
+        "diverged-manifest re-load must be refused typed: {result:?}"
+    );
+
+    // The refusal left the resident version fully serviceable.
+    assert_eq!(engine.list_workflow_versions()?.len(), 1);
+    let (id, run) = start(&engine).await?;
+    assert_eq!(result_int(&engine, &id, &run).await?, 1);
+
+    // The byte-identical archive still re-loads idempotently.
+    let again = engine.load_package(original).await?;
+    assert!(!again.freshly_loaded);
+    assert!(!again.route_changed);
+
+    engine.shutdown()?;
     Ok(())
 }

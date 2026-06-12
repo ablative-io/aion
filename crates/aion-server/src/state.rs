@@ -234,6 +234,12 @@ impl ServerState {
         &self.inner.namespace_guard
     }
 
+    /// Build the deploy authorization guard over the shared resolver.
+    #[must_use]
+    pub fn deploy_guard(&self) -> crate::deploy::DeployGuard {
+        crate::deploy::DeployGuard::new(self.inner.namespace_guard.resolver().clone())
+    }
+
     /// Borrow non-secret runtime settings needed by transports.
     #[must_use]
     pub fn runtime_config(&self) -> &RuntimeConfig {
@@ -355,8 +361,9 @@ mod tests {
 
     use super::ServerState;
     use crate::config::{
-        AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
-        NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+        AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+        MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig,
+        WorkerConfig,
     };
 
     fn runtime_config() -> RuntimeConfig {
@@ -385,6 +392,7 @@ mod tests {
                 event_broadcast_capacity: Some(64),
             },
             workflow_packages: Vec::new(),
+            deploy: DeployConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

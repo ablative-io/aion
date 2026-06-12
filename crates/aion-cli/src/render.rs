@@ -17,13 +17,72 @@
 //! detail is ever masked by a context message.
 
 use aion_client::ClientError;
+use aion_proto::{WireError, WireErrorCode};
 
 /// Renders any CLI failure into the stderr contract described in the module
-/// docs.
+/// docs. Deploy subcommands carry the raw typed [`WireError`] (their wire
+/// codes — `deploy_denied`, `version_pinned` — are operator surface and
+/// deliberately outside the caller SDK taxonomy).
 pub(crate) fn render_error(error: &anyhow::Error) -> String {
-    match find_client_error(error) {
-        Some(client_error) => render_client_error(error, client_error),
-        None => format!("error: {}", joined_chain(error)),
+    if let Some(client_error) = find_client_error(error) {
+        return render_client_error(error, client_error);
+    }
+    if let Some(wire) = find_wire_error(error) {
+        return render_wire_error(error, wire);
+    }
+    format!("error: {}", joined_chain(error))
+}
+
+/// Finds a raw wire error (deploy path) anywhere in the anyhow chain.
+fn find_wire_error(error: &anyhow::Error) -> Option<&WireError> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<WireError>())
+}
+
+fn render_wire_error(error: &anyhow::Error, wire: &WireError) -> String {
+    let mut rendered = format!("error[{}]: ", wire.code);
+    for layer in error
+        .chain()
+        .take_while(|cause| cause.downcast_ref::<WireError>().is_none())
+    {
+        rendered.push_str(&layer.to_string());
+        rendered.push_str(": ");
+    }
+    if wire.message.is_empty() {
+        rendered.push_str("(the server supplied no detail message)");
+    } else {
+        rendered.push_str(&wire.message);
+    }
+    if let Some(error_type) = &wire.error_type {
+        rendered.push_str("\n  server error type: ");
+        rendered.push_str(error_type);
+    }
+    if let Some(hint) = wire_hint(wire.code) {
+        rendered.push_str("\n  hint: ");
+        rendered.push_str(hint);
+    }
+    rendered
+}
+
+/// Actionable hints for the deploy wire codes the CLI can surface.
+const fn wire_hint(code: WireErrorCode) -> Option<&'static str> {
+    match code {
+        WireErrorCode::DeployDenied => Some(
+            "this caller holds no deploy grant; pass --token (or AION_TOKEN) with a \
+             token whose deploy claim is true, or in development mode check the \
+             server's denial detail above",
+        ),
+        WireErrorCode::VersionPinned => Some(
+            "the version is route-active or pinned by live state; `aion-cli versions` \
+             shows what is routed — route another version first, or wait for the \
+             pinning runs to finish",
+        ),
+        WireErrorCode::NotFound => Some(
+            "the (workflow-type, content-hash) pair is not loaded; `aion-cli versions` \
+             lists every loaded version",
+        ),
+        _ => None,
     }
 }
 

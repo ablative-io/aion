@@ -16,7 +16,7 @@ use aion::ActivityDispatcher as _;
 use aion_server::ServerState;
 use aion_server::api::worker_grpc::worker_service;
 use aion_server::config::{
-    AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
+    AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig, MetricsConfig,
     NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
 use aion_server::worker::{ConnectedWorkerRegistry, WorkerActivityDispatcher};
@@ -67,6 +67,7 @@ fn runtime_config() -> RuntimeConfig {
             event_broadcast_capacity: Some(64),
         },
         workflow_packages: Vec::new(),
+        deploy: DeployConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),

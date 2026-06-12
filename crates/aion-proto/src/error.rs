@@ -57,6 +57,11 @@ pub enum WireErrorCode {
     Backend,
     /// The workflow's query handler ran and reported an application-level failure.
     QueryFailed,
+    /// The caller is not authorized to use the operator deploy surface.
+    DeployDenied,
+    /// A deploy unload/route was refused because the version is route-active
+    /// or pinned by live state.
+    VersionPinned,
 }
 
 impl WireErrorCode {
@@ -74,6 +79,8 @@ impl WireErrorCode {
             Self::InvalidInput => "invalid_input",
             Self::Backend => "backend",
             Self::QueryFailed => "query_failed",
+            Self::DeployDenied => "deploy_denied",
+            Self::VersionPinned => "version_pinned",
         }
     }
 }
@@ -192,6 +199,18 @@ impl WireError {
         Self::new(WireErrorCode::QueryFailed, message)
     }
 
+    /// Deploy authorization failure.
+    #[must_use]
+    pub fn deploy_denied(message: impl Into<String>) -> Self {
+        Self::new(WireErrorCode::DeployDenied, message)
+    }
+
+    /// Deploy version-pinned refusal.
+    #[must_use]
+    pub fn version_pinned(message: impl Into<String>) -> Self {
+        Self::new(WireErrorCode::VersionPinned, message)
+    }
+
     /// Not-found failure with a concrete typed error variant name.
     #[must_use]
     pub fn not_found_with_type(error_type: impl Into<String>, message: impl Into<String>) -> Self {
@@ -240,6 +259,10 @@ pub enum ProtoWireErrorCode {
     Backend = 9,
     /// See [`WireErrorCode::QueryFailed`].
     QueryFailed = 10,
+    /// See [`WireErrorCode::DeployDenied`].
+    DeployDenied = 11,
+    /// See [`WireErrorCode::VersionPinned`].
+    VersionPinned = 12,
 }
 
 /// Proto representation of [`WireError`].
@@ -269,6 +292,8 @@ impl From<WireErrorCode> for ProtoWireErrorCode {
             WireErrorCode::InvalidInput => Self::InvalidInput,
             WireErrorCode::Backend => Self::Backend,
             WireErrorCode::QueryFailed => Self::QueryFailed,
+            WireErrorCode::DeployDenied => Self::DeployDenied,
+            WireErrorCode::VersionPinned => Self::VersionPinned,
         }
     }
 }
@@ -291,6 +316,8 @@ impl TryFrom<ProtoWireErrorCode> for WireErrorCode {
             ProtoWireErrorCode::InvalidInput => Ok(Self::InvalidInput),
             ProtoWireErrorCode::Backend => Ok(Self::Backend),
             ProtoWireErrorCode::QueryFailed => Ok(Self::QueryFailed),
+            ProtoWireErrorCode::DeployDenied => Ok(Self::DeployDenied),
+            ProtoWireErrorCode::VersionPinned => Ok(Self::VersionPinned),
         }
     }
 }
@@ -339,7 +366,9 @@ mod tests {
             WireErrorCode::Lagged => Some(WireErrorCode::InvalidInput),
             WireErrorCode::InvalidInput => Some(WireErrorCode::Backend),
             WireErrorCode::Backend => Some(WireErrorCode::QueryFailed),
-            WireErrorCode::QueryFailed => None,
+            WireErrorCode::QueryFailed => Some(WireErrorCode::DeployDenied),
+            WireErrorCode::DeployDenied => Some(WireErrorCode::VersionPinned),
+            WireErrorCode::VersionPinned => None,
         }
     }
 
@@ -376,6 +405,8 @@ mod tests {
             (WireErrorCode::InvalidInput, 8),
             (WireErrorCode::Backend, 9),
             (WireErrorCode::QueryFailed, 10),
+            (WireErrorCode::DeployDenied, 11),
+            (WireErrorCode::VersionPinned, 12),
         ];
         assert_eq!(
             expected.len(),
@@ -406,6 +437,8 @@ mod tests {
             (WireErrorCode::InvalidInput, "invalid_input"),
             (WireErrorCode::Backend, "backend"),
             (WireErrorCode::QueryFailed, "query_failed"),
+            (WireErrorCode::DeployDenied, "deploy_denied"),
+            (WireErrorCode::VersionPinned, "version_pinned"),
         ];
         assert_eq!(
             expected.len(),
@@ -507,6 +540,14 @@ mod tests {
         assert_eq!(
             WireError::query_failed("handler raised").code,
             WireErrorCode::QueryFailed
+        );
+        assert_eq!(
+            WireError::deploy_denied("no deploy grant").code,
+            WireErrorCode::DeployDenied
+        );
+        assert_eq!(
+            WireError::version_pinned("pinned by live run").code,
+            WireErrorCode::VersionPinned
         );
     }
 }

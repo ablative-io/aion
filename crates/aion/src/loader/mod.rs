@@ -13,7 +13,7 @@ pub mod load;
 pub mod version_info;
 
 pub use catalog::{PinnedWorkflow, WorkflowCatalog};
-pub use load::LoadedWorkflow;
+pub use load::{LoadOutcome, LoadedWorkflow};
 pub use version_info::WorkflowVersionInfo;
 
 /// Canonical durable form of a loaded package version.

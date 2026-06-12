@@ -2,6 +2,7 @@
 
 **Repo:** `/Users/tom/Developer/ablative/aion`, main @ `3a18cf5f` ("Bump all publishable crates and Gleam packages to 0.2.0"), clean tree.
 **Parent brief:** [`runtime-package-reload.md`](runtime-package-reload.md) (#62). D3 adopted **(a)**: embedded-engine API now, serde-ready types, *"the aion-server endpoint is deferred to its own follow-up brief with a deploy-authz design."* This is that brief.
+**Status:** decisions D1–D10 ADOPTED (Tom, 2026-06-12, recommendation (a) in every case); IMPLEMENTED — engine riders (typed refusals, `LoadOutcome`, manifest-digest tripwire), `DeployService` + `/deploy/*` over shared handlers, `deploy` claim / `x-aion-deploy` authz, `deploy_denied`/`version_pinned` wire codes, audit + metrics, `aion-cli deploy/versions/route/unload`, docs.
 **Scope:** expose the landed `Engine` reload seam (`load_package`, `route_workflow_version`, `list_workflow_versions`, `unload_workflow_version`) over the server's public transports as an **operator deploy API**, with a real authorization design. Plus the `aion-cli` remote subcommands that drive it. This brief is design-only; no implementation accompanies it.
 **Why deploy is not a data operation:** loading a package registers code into the shared BEAM VM and re-points routing for a workflow *type*. In `SharedEngine` mode that type is startable from **every** namespace — there is no namespace→package binding anywhere in the engine (verified, §1.4). Namespace grants therefore authorize the wrong thing; deploy needs its own grant.
 

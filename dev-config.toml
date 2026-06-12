@@ -38,3 +38,14 @@ default = "default"
 # channel behind /events/stream. Lag is filter-blind, so size for the global
 # event volume across all namespaces, not per-subscription volume.
 event_broadcast_capacity = 1024
+
+# Operator deploy API (runtime package load/route/unload). Dark by default:
+# with this section absent or enabled = false, /deploy/* is not mounted and
+# the gRPC DeployService answers Unimplemented. When enabled,
+# max_archive_bytes is REQUIRED (no default) — size it for your packages
+# (example archives run 360-422 KB; 16 MiB shown here). Authorization is the
+# deployment-wide deploy grant: the `deploy` JWT claim, or in development the
+# x-aion-deploy: true header (aion-cli sends it automatically).
+#[deploy]
+#enabled = true
+#max_archive_bytes = 16777216

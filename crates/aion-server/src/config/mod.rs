@@ -70,6 +70,8 @@ pub struct ServerConfig {
     pub websocket: WebSocketConfig,
     /// Workflow package archives loaded into the engine at startup.
     pub workflow_packages: Vec<PathBuf>,
+    /// Operator deploy API settings.
+    pub deploy: DeployConfig,
 }
 
 /// Public transport listener addresses from `[server]`.
@@ -237,6 +239,26 @@ pub struct WebSocketConfig {
 /// Operator-facing message for an absent or zero `event_broadcast_capacity`.
 pub(crate) const EVENT_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.event_broadcast_capacity is required and has no default: the server always mounts /events/stream, so live event streaming capacity must be configured explicitly; set websocket.event_broadcast_capacity (or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY) to a positive integer sized for global event volume across all namespaces";
 
+/// Operator deploy API settings from `[deploy]`.
+///
+/// The deploy surface is dark by default: with `enabled = false` (or the
+/// section absent) neither the `/deploy/*` HTTP routes nor the gRPC
+/// `DeployService` are mounted, so a workflow server that is not a deploy
+/// target exposes no deploy attack surface at all.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeployConfig {
+    /// Whether the deploy surface is mounted. Defaults to false.
+    pub enabled: bool,
+    /// Upload-size ceiling for `.aion` archives, in bytes. REQUIRED when
+    /// `enabled = true`; no default (house rule) — the operator sizes it for
+    /// their packages.
+    pub max_archive_bytes: Option<u64>,
+}
+
+/// Operator-facing message for an absent or zero `deploy.max_archive_bytes`.
+pub(crate) const DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED: &str = "deploy.max_archive_bytes is required and has no default when deploy.enabled is true: the archive upload ceiling must be an explicit operator decision sized for the deployment's packages; set deploy.max_archive_bytes (or AION_DEPLOY_MAX_ARCHIVE_BYTES) to a positive number of bytes";
+
 /// Operator-facing message for an absent or zero `query_timeout_ms`.
 pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms is required and has no default: the server always mounts /workflows/query, so the workflow query reply deadline must be configured explicitly; set runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to a positive number of milliseconds";
 
@@ -259,6 +281,8 @@ pub struct RuntimeConfig {
     pub websocket: WebSocketConfig,
     /// Workflow package archives loaded into the engine at startup.
     pub workflow_packages: Vec<PathBuf>,
+    /// Operator deploy API settings.
+    pub deploy: DeployConfig,
     /// Engine scheduler thread count.
     pub scheduler_threads: usize,
     /// Engine reply deadline for workflow queries. REQUIRED — carried as an
@@ -341,6 +365,7 @@ impl ServerConfig {
             worker: self.worker,
             websocket: self.websocket,
             workflow_packages: self.workflow_packages,
+            deploy: self.deploy,
             scheduler_threads: self.runtime.scheduler_threads,
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
@@ -423,6 +448,12 @@ impl ServerConfig {
         match self.runtime.query_timeout_ms {
             None | Some(0) => return config_error(QUERY_TIMEOUT_REQUIRED),
             Some(_) => {}
+        }
+        if self.deploy.enabled {
+            match self.deploy.max_archive_bytes {
+                None | Some(0) => return config_error(DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED),
+                Some(_) => {}
+            }
         }
         Ok(())
     }
@@ -743,6 +774,103 @@ mod tests {
             message.contains("runtime.query_timeout_ms"),
             "validation message must name the zero-valued key: {message}"
         );
+    }
+
+    /// The deploy surface is commissioned explicitly: enabling it without
+    /// the archive ceiling must fail startup naming the key and the
+    /// environment override (the `query_timeout_ms` /
+    /// `event_broadcast_capacity` required-config pattern).
+    #[test]
+    fn deploy_enabled_without_max_archive_bytes_fails_naming_key_and_env() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [deploy]
+                enabled = true
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("deploy.max_archive_bytes"),
+            "validation message must name the missing key: {message}"
+        );
+        assert!(
+            message.contains("AION_DEPLOY_MAX_ARCHIVE_BYTES"),
+            "validation message must name the environment override: {message}"
+        );
+    }
+
+    #[test]
+    fn deploy_zero_max_archive_bytes_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [deploy]
+                enabled = true
+                max_archive_bytes = 0
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("deploy.max_archive_bytes"),
+            "validation message must name the zero-valued key: {message}"
+        );
+    }
+
+    /// An absent `[deploy]` section means the surface stays dark and the
+    /// ceiling is not required.
+    #[test]
+    fn deploy_disabled_requires_no_archive_ceiling() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        )?;
+
+        assert!(!config.deploy.enabled);
+        assert_eq!(config.deploy.max_archive_bytes, None);
+        Ok(())
+    }
+
+    #[test]
+    fn deploy_section_parses_enabled_with_ceiling() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [deploy]
+                enabled = true
+                max_archive_bytes = 16777216
+            ",
+        )?;
+
+        assert!(config.deploy.enabled);
+        assert_eq!(config.deploy.max_archive_bytes, Some(16_777_216));
+        Ok(())
     }
 
     #[test]

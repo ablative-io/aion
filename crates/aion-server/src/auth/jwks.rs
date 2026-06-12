@@ -18,6 +18,7 @@ pub struct AuthenticatedClaims {
     subject: String,
     namespace: String,
     expires_at: u64,
+    deploy: bool,
 }
 
 impl AuthenticatedClaims {
@@ -39,12 +40,20 @@ impl AuthenticatedClaims {
         self.expires_at
     }
 
+    /// Deployment-wide deploy grant from the `deploy` claim. Absent = false:
+    /// existing tokens keep working unchanged for data operations.
+    #[must_use]
+    pub const fn deploy(&self) -> bool {
+        self.deploy
+    }
+
     /// Convert validated claims into a single-namespace caller identity whose
     /// grant is attributed to the token's namespace claim, so namespace
     /// denials hint at the token grant rather than the development header.
     #[must_use]
     pub fn caller_identity(&self) -> CallerIdentity {
         CallerIdentity::from_token_claims(self.subject.clone(), [self.namespace.clone()])
+            .with_deploy(self.deploy)
     }
 }
 
@@ -71,6 +80,9 @@ struct TokenClaims {
     sub: String,
     namespace: String,
     exp: u64,
+    /// Deployment-wide deploy grant. Absent claim = no grant.
+    #[serde(default)]
+    deploy: bool,
 }
 
 /// Redacted JWT/JWKS validation errors.
@@ -136,6 +148,7 @@ impl JwksCache {
             subject: claims.sub,
             namespace: claims.namespace,
             expires_at: claims.exp,
+            deploy: claims.deploy,
         })
     }
 

@@ -98,12 +98,13 @@ async fn load_workflow_sources(
     let catalog = Arc::new(WorkflowCatalog::new());
     for source in sources {
         let package = package_from_source(source)?;
-        let loaded_workflow = catalog.load_package(runtime, &package).await?;
+        let outcome = catalog.load_package(runtime, &package).await?;
         tracing::info!(
-            workflow_type = loaded_workflow.workflow_type(),
-            content_hash = %loaded_workflow.version(),
+            workflow_type = outcome.record.workflow_type(),
+            content_hash = %outcome.record.version(),
+            freshly_loaded = outcome.freshly_loaded,
             "loaded workflow package {}",
-            loaded_workflow.workflow_type()
+            outcome.record.workflow_type()
         );
     }
     Ok(catalog)

@@ -69,6 +69,8 @@ enum WireErrorCode {
   WIRE_ERROR_CODE_INVALID_INPUT = 8;
   WIRE_ERROR_CODE_BACKEND = 9;
   WIRE_ERROR_CODE_QUERY_FAILED = 10;
+  WIRE_ERROR_CODE_DEPLOY_DENIED = 11;
+  WIRE_ERROR_CODE_VERSION_PINNED = 12;
 }
 
 // Wire-safe error value returned by server, client, and worker APIs.

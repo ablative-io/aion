@@ -104,6 +104,7 @@ async fn run(cli: CliOverrides) -> Result<ExitCode> {
         namespace_mode = namespace_mode_label(&runtime.namespace.mode),
         store_backend = store_backend_label(store_backend),
         auth_enabled = runtime.auth.enabled,
+        deploy_enabled = runtime.deploy.enabled,
         metrics_enabled = runtime.metrics.enabled,
         workflow_package_count = workflow_packages.len(),
         workflow_packages = ?workflow_packages,
@@ -156,10 +157,16 @@ async fn serve_grpc(
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let workflow = api::grpc::workflow_service(state.clone());
-    let worker = api::worker_grpc::worker_service(state);
-    TonicServer::builder()
+    let worker = api::worker_grpc::worker_service(state.clone());
+    let mut router = TonicServer::builder()
         .add_service(workflow)
-        .add_service(worker)
+        .add_service(worker);
+    // Dark by default: the deploy service joins the listener only when the
+    // operator commissioned it; otherwise the surface answers Unimplemented.
+    if state.runtime_config().deploy.enabled {
+        router = router.add_service(api::deploy_grpc::deploy_service(state)?);
+    }
+    router
         .serve_with_shutdown(address, shutdown_requested(shutdown))
         .await
         .map_err(|source| transport_bind("grpc", address, source))?;

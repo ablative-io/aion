@@ -20,6 +20,7 @@ aion = { package = "aion-rs", version = "0.2.0", path = "../aion" }
 aion-proto = { version = "0.2.0", path = "../aion-proto", features = ["generated"] }
 aion-store-libsql = { version = "0.2.0", path = "../aion-store-libsql" }
 aion-store = { version = "0.2.0", path = "../aion-store" }
+aion-package = { version = "0.2.0", path = "../aion-package" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
@@ -34,6 +35,10 @@ futures.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 prost.workspace = true
 tokio-stream = "0.1"
+# Names the typed body length-limit error so the deploy archive upload can
+# distinguish "over deploy.max_archive_bytes" (413) from transport read
+# failures; same version axum already uses internally.
+http-body-util = "0.1"
 tower = { workspace = true, features = ["util"] }
 rust-embed = "8.11.0"
 tracing.workspace = true
@@ -49,7 +54,6 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-aion-package = { version = "0.2.0", path = "../aion-package" }
 aion-worker = { path = "../aion-worker" }
 tempfile = "3.27.0"
 tokio-stream = { version = "0.1", features = ["net"] }

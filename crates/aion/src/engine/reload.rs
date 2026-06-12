@@ -8,7 +8,8 @@
 use aion_core::Event;
 use aion_package::ContentHash;
 
-use crate::loader::{LoadedWorkflow, WorkflowVersionInfo};
+use crate::error::PinHolder;
+use crate::loader::{LoadOutcome, WorkflowVersionInfo};
 use crate::{EngineError, WorkflowCatalog};
 
 use super::api::Engine;
@@ -21,20 +22,23 @@ impl Engine {
     /// Every start that resolved before the route flip completes on the
     /// version it resolved (loads never unregister anything); every start
     /// after this call returns resolves the new version. Re-loading an
-    /// already-loaded hash is idempotent (nothing registers) but still
-    /// re-points the route at it — re-deploying a previously rolled-back
-    /// version must take effect.
+    /// already-loaded hash is idempotent (nothing registers,
+    /// `freshly_loaded = false`) but still re-points the route at it —
+    /// re-deploying a previously rolled-back version must take effect
+    /// (`route_changed` reports whether it did).
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ShuttingDown`] once shutdown begins, and
+    /// Returns [`EngineError::ShuttingDown`] once shutdown begins,
     /// [`EngineError::Load`] for archive, collision, registration, or
-    /// entry-verification failures. On failure the catalog is untouched:
-    /// routing, loaded versions, and in-flight dispatches are unaffected.
+    /// entry-verification failures, and [`EngineError::ManifestMismatch`]
+    /// when an idempotent re-load presents the resident content hash with a
+    /// different manifest. On failure the catalog is untouched: routing,
+    /// loaded versions, and in-flight dispatches are unaffected.
     pub async fn load_package(
         &self,
         source: impl Into<WorkflowPackageSource>,
-    ) -> Result<LoadedWorkflow, EngineError> {
+    ) -> Result<LoadOutcome, EngineError> {
         // A load is new-work admission, not a wind-down operation: refuse
         // after shutdown begins so modules never register into a dying VM.
         let operation = self.shutdown_gate.begin_start()?;
@@ -65,8 +69,9 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`EngineError::ShuttingDown`] once shutdown begins, and
-    /// [`EngineError::Load`] naming the loaded set when `(type, version)` is
-    /// not loaded — routing to a never-loaded hash is impossible.
+    /// [`EngineError::UnknownVersion`] naming the loaded set when
+    /// `(type, version)` is not loaded — routing to a never-loaded hash is
+    /// impossible.
     pub async fn route_workflow_version(
         &self,
         workflow_type: &str,
@@ -95,9 +100,11 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`EngineError::ShuttingDown`] once shutdown begins,
-    /// [`EngineError::Load`] for refusals (with the catalog restored
-    /// untouched), and [`EngineError::Runtime`] when module unregistration
-    /// fails after the catalog commit.
+    /// [`EngineError::UnknownVersion`] when `(type, version)` is not loaded,
+    /// [`EngineError::RouteActive`] when the version is route-active,
+    /// [`EngineError::VersionPinned`] naming the concrete pin holder (with
+    /// the catalog restored untouched), and [`EngineError::Runtime`] when
+    /// module unregistration fails after the catalog commit.
     pub async fn unload_workflow_version(
         &self,
         workflow_type: &str,
@@ -141,10 +148,10 @@ impl Engine {
         version: &ContentHash,
     ) -> Result<(), EngineError> {
         if catalog.has_pinned_starts(workflow_type, version)? {
-            return Err(EngineError::Load {
-                reason: format!(
-                    "cannot unload workflow `{workflow_type}` version `{version}`: an in-flight start is pinned to it"
-                ),
+            return Err(EngineError::VersionPinned {
+                workflow_type: workflow_type.to_owned(),
+                version: version.clone(),
+                pinned_by: PinHolder::InFlightStart,
             });
         }
 
@@ -153,12 +160,13 @@ impl Engine {
                 && handle.loaded_version() == version
                 && !handle.cached_status().is_terminal()
             {
-                return Err(EngineError::Load {
-                    reason: format!(
-                        "cannot unload workflow `{workflow_type}` version `{version}`: live run `{}/{}` is pinned to it",
-                        handle.workflow_id(),
-                        handle.run_id()
-                    ),
+                return Err(EngineError::VersionPinned {
+                    workflow_type: workflow_type.to_owned(),
+                    version: version.clone(),
+                    pinned_by: PinHolder::LiveRun {
+                        workflow_id: handle.workflow_id().clone(),
+                        run_id: handle.run_id().clone(),
+                    },
                 });
             }
         }
@@ -176,20 +184,25 @@ impl Engine {
                 _ => None,
             });
             if current_run_pin == Some(true) {
-                return Err(EngineError::Load {
-                    reason: format!(
-                        "cannot unload workflow `{workflow_type}` version `{version}`: recoverable run `{workflow_id}` is pinned to it"
-                    ),
+                return Err(EngineError::VersionPinned {
+                    workflow_type: workflow_type.to_owned(),
+                    version: version.clone(),
+                    pinned_by: PinHolder::RecoverableRun {
+                        workflow_id: workflow_id.clone(),
+                    },
                 });
             }
             if let Some(child_workflow_id) = self
                 .recorded_unstarted_child_pin(&history, workflow_type, &recorded)
                 .await?
             {
-                return Err(EngineError::Load {
-                    reason: format!(
-                        "cannot unload workflow `{workflow_type}` version `{version}`: child `{child_workflow_id}` recorded by `{workflow_id}` is pinned to it and has not started"
-                    ),
+                return Err(EngineError::VersionPinned {
+                    workflow_type: workflow_type.to_owned(),
+                    version: version.clone(),
+                    pinned_by: PinHolder::RecordedChild {
+                        child_workflow_id,
+                        recorded_by: workflow_id.clone(),
+                    },
                 });
             }
         }

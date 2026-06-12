@@ -1,6 +1,6 @@
 //! Test-only catalog seeding helpers shared by in-crate unit suites.
 
-use aion_package::{ContentHash, ManifestVersion};
+use aion_package::{ContentHash, ManifestDigest, ManifestVersion};
 use chrono::Utc;
 
 use super::{CatalogEntry, WorkflowCatalog};
@@ -41,6 +41,7 @@ impl WorkflowCatalog {
             CatalogEntry {
                 workflow: record.clone(),
                 manifest_version: ManifestVersion::new("test"),
+                manifest_digest: ManifestDigest::from_bytes([0; 32]),
                 loaded_at: Utc::now(),
             },
         );

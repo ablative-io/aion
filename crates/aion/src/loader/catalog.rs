@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use aion_core::PackageVersion;
-use aion_package::{ContentHash, ManifestVersion, Package};
+use aion_package::{ContentHash, ManifestDigest, ManifestVersion, Package};
 use chrono::{DateTime, Utc};
 
-use super::load::{LoadedWorkflow, StagedLoad, load_error, rollback_registered};
+use super::load::{LoadOutcome, LoadedWorkflow, StagedLoad, load_error, rollback_registered};
 use super::version_info::WorkflowVersionInfo;
 use crate::{error::EngineError, runtime::RuntimeHandle};
 
@@ -53,6 +53,10 @@ struct CatalogSnapshot {
 struct CatalogEntry {
     workflow: LoadedWorkflow,
     manifest_version: ManifestVersion,
+    /// Canonical digest of the manifest this version was loaded with. The
+    /// content hash covers beams only, so this digest is what detects a
+    /// same-hash-different-manifest re-load (the silent-wrong-deploy tripwire).
+    manifest_digest: ManifestDigest,
     loaded_at: DateTime<Utc>,
 }
 
@@ -338,20 +342,26 @@ impl WorkflowCatalog {
     /// workflow type's new dispatches to it.
     ///
     /// Re-loading an already-loaded hash registers nothing and returns the
-    /// existing record, but still re-points the route at it ("deploy archive
-    /// X" is a routing intent); loading the currently-routed hash is a full
-    /// no-op.
+    /// existing record with `freshly_loaded = false`, but still re-points the
+    /// route at it ("deploy archive X" is a routing intent); loading the
+    /// currently-routed hash is a full no-op (`route_changed = false`). An
+    /// idempotent re-load whose manifest differs from the resident version's
+    /// manifest is refused typed ([`EngineError::ManifestMismatch`]) — the
+    /// content hash covers beams only, so a differing manifest means the
+    /// archive is not the version the catalog holds.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::Load`] for validation, collision, registration,
-    /// or entry-verification failures. On failure the snapshot is untouched:
-    /// routing, existing versions, and in-flight dispatches are unaffected.
+    /// or entry-verification failures, and [`EngineError::ManifestMismatch`]
+    /// for the same-hash-different-manifest refusal. On failure the snapshot
+    /// is untouched: routing, existing versions, and in-flight dispatches are
+    /// unaffected.
     pub async fn load_package(
         &self,
         runtime: &RuntimeHandle,
         package: &Package,
-    ) -> Result<LoadedWorkflow, EngineError> {
+    ) -> Result<LoadOutcome, EngineError> {
         let hash = package.content_hash();
         let nif_modules = runtime.registered_nif_modules();
 
@@ -409,7 +419,7 @@ impl WorkflowCatalog {
         mut register: F,
         mut rollback: R,
         verify_entry: V,
-    ) -> Result<LoadedWorkflow, EngineError>
+    ) -> Result<LoadOutcome, EngineError>
     where
         F: FnMut(&str, &[u8]) -> Result<(), EngineError>,
         R: FnMut(&str) -> Result<(), EngineError>,
@@ -435,16 +445,33 @@ impl WorkflowCatalog {
 
         let key = (staged.workflow_type.clone(), staged.version.clone());
         if let Some(existing) = snapshot.by_version.get(&key) {
+            // Same-hash-different-manifest tripwire: the content hash covers
+            // the beam set only, so an "idempotent" re-load can carry a
+            // manifest the resident version was never loaded with. Refuse
+            // typed instead of silently ignoring the incoming manifest.
+            if existing.manifest_digest != staged.manifest_digest {
+                return Err(EngineError::ManifestMismatch {
+                    workflow_type: staged.workflow_type.clone(),
+                    version: staged.version.clone(),
+                    resident_digest: existing.manifest_digest.to_string(),
+                    incoming_digest: staged.manifest_digest.to_string(),
+                });
+            }
             // Idempotent re-load: nothing registers, but re-deploying a
             // previously rolled-back version re-points the route at it.
             let record = existing.workflow.clone();
-            if snapshot.routed.get(&staged.workflow_type) != Some(&staged.version) {
+            let route_changed = snapshot.routed.get(&staged.workflow_type) != Some(&staged.version);
+            if route_changed {
                 let mut next = (*snapshot).clone();
                 next.routed
                     .insert(staged.workflow_type.clone(), staged.version.clone());
                 self.install(next)?;
             }
-            return Ok(record);
+            return Ok(LoadOutcome {
+                record,
+                freshly_loaded: false,
+                route_changed,
+            });
         }
 
         let mut registered_now = Vec::new();
@@ -490,21 +517,33 @@ impl WorkflowCatalog {
             CatalogEntry {
                 workflow: record.clone(),
                 manifest_version: staged.manifest_version.clone(),
+                manifest_digest: staged.manifest_digest.clone(),
                 loaded_at: Utc::now(),
             },
         );
+        // A fresh load always commits the route pointer; `route_changed`
+        // reports whether it actually moved (a fresh version of a type can
+        // never already be route-active, so this is always true today, but
+        // computing it under the lock keeps the truth race-free by
+        // construction).
+        let route_changed = snapshot.routed.get(&staged.workflow_type) != Some(&staged.version);
         next.routed
             .insert(staged.workflow_type.clone(), staged.version.clone());
         self.install(next)?;
-        Ok(record)
+        Ok(LoadOutcome {
+            record,
+            freshly_loaded: true,
+            route_changed,
+        })
     }
 
     /// Re-points the route for `workflow_type` at an already-loaded version.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Load`] naming the loaded set when the version is
-    /// not loaded, and [`EngineError::CatalogPoisoned`] on lock poison.
+    /// Returns [`EngineError::UnknownVersion`] naming the loaded set when the
+    /// version is not loaded, and [`EngineError::CatalogPoisoned`] on lock
+    /// poison.
     pub(crate) async fn route_version(
         &self,
         workflow_type: &str,
@@ -514,10 +553,11 @@ impl WorkflowCatalog {
         let snapshot = self.current()?;
         let key = (workflow_type.to_owned(), version.clone());
         if !snapshot.by_version.contains_key(&key) {
-            return Err(load_error(format!(
-                "cannot route workflow `{workflow_type}` to version `{version}`: not loaded (loaded versions: {})",
-                snapshot.loaded_versions_of(workflow_type)
-            )));
+            return Err(EngineError::UnknownVersion {
+                workflow_type: workflow_type.to_owned(),
+                version: version.clone(),
+                loaded: snapshot.loaded_versions_of(workflow_type),
+            });
         }
         if snapshot.routed.get(workflow_type) == Some(version) {
             return Ok(());
@@ -538,8 +578,9 @@ impl WorkflowCatalog {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Load`] when the version is not loaded or is the
-    /// route-active version of its type.
+    /// Returns [`EngineError::UnknownVersion`] when the version is not loaded
+    /// and [`EngineError::RouteActive`] when it is the route-active version of
+    /// its type.
     pub(crate) fn swap_out_version(
         &self,
         workflow_type: &str,
@@ -548,15 +589,17 @@ impl WorkflowCatalog {
         let snapshot = self.current()?;
         let key = (workflow_type.to_owned(), version.clone());
         let Some(entry) = snapshot.by_version.get(&key) else {
-            return Err(load_error(format!(
-                "cannot unload workflow `{workflow_type}` version `{version}`: not loaded (loaded versions: {})",
-                snapshot.loaded_versions_of(workflow_type)
-            )));
+            return Err(EngineError::UnknownVersion {
+                workflow_type: workflow_type.to_owned(),
+                version: version.clone(),
+                loaded: snapshot.loaded_versions_of(workflow_type),
+            });
         };
         if snapshot.routed.get(workflow_type) == Some(version) {
-            return Err(load_error(format!(
-                "cannot unload workflow `{workflow_type}` version `{version}`: it is the route-active version; route another version first"
-            )));
+            return Err(EngineError::RouteActive {
+                workflow_type: workflow_type.to_owned(),
+                version: version.clone(),
+            });
         }
         let mut next = (*snapshot).clone();
         next.by_version.remove(&key);

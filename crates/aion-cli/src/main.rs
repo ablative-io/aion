@@ -18,6 +18,7 @@ use crate::payload::{
     payload_to_json,
 };
 
+mod deploy;
 mod output;
 mod package;
 mod payload;
@@ -41,6 +42,11 @@ struct Cli {
     /// Caller subject metadata sent to the server.
     #[arg(long, global = true, default_value = DEFAULT_SUBJECT)]
     subject: String,
+    /// Bearer token for authenticated servers. Overrides the `AION_TOKEN`
+    /// environment variable; when both are absent the development
+    /// header paths apply.
+    #[arg(long, global = true)]
+    token: Option<String>,
     /// Print formatted, human-readable JSON.
     #[arg(long, global = true)]
     pretty: bool,
@@ -65,6 +71,36 @@ enum Command {
         /// Run `gleam build` in the project before packaging.
         #[arg(long)]
         build: bool,
+    },
+    /// Deploy a built `.aion` archive into a running server (operator API).
+    ///
+    /// Requires the server's `[deploy]` surface to be enabled and the caller
+    /// to hold the deploy grant (`deploy` token claim, or the
+    /// `x-aion-deploy` development header the CLI sends automatically).
+    Deploy {
+        /// Path to a complete `.aion` archive.
+        archive: PathBuf,
+    },
+    /// List every loaded workflow version with its routing flag (operator API).
+    Versions {
+        /// Show only versions of this workflow type.
+        #[arg(long)]
+        workflow_type: Option<String>,
+    },
+    /// Re-point routing for a workflow type at an already-loaded version
+    /// (rollback / roll-forward; operator API).
+    Route {
+        /// Logical workflow type.
+        workflow_type: String,
+        /// Content hash of the already-loaded target version.
+        content_hash: String,
+    },
+    /// Unload a non-routed, unpinned workflow version (operator API).
+    Unload {
+        /// Logical workflow type.
+        workflow_type: String,
+        /// Content hash of the version to unload.
+        content_hash: String,
     },
     /// Operate workflows on a running Aion server.
     #[command(flatten)]
@@ -153,15 +189,37 @@ async fn main() -> ExitCode {
 }
 
 /// Dispatches the parsed command, connecting to the server only for remote
-/// commands. `package` is local-only and never constructs a client.
+/// commands. `package` is local-only and never constructs a client; the
+/// deploy subcommands drive the operator `DeployService` directly and never
+/// touch the caller SDK.
 async fn run(cli: &Cli) -> Result<Value> {
     match &cli.command {
         Command::Package { path, out, build } => package::run(path, out.as_deref(), *build),
+        Command::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
+        Command::Versions { workflow_type } => {
+            deploy::versions(&deploy_target(cli), workflow_type.as_deref()).await
+        }
+        Command::Route {
+            workflow_type,
+            content_hash,
+        } => deploy::route(&deploy_target(cli), workflow_type, content_hash).await,
+        Command::Unload {
+            workflow_type,
+            content_hash,
+        } => deploy::unload(&deploy_target(cli), workflow_type, content_hash).await,
         Command::Remote(command) => {
             let client = build_client(cli).await?;
             execute(&client, command).await
         }
     }
+}
+
+fn deploy_target(cli: &Cli) -> deploy::DeployTarget {
+    deploy::DeployTarget::new(
+        normalize_endpoint(&cli.endpoint),
+        cli.subject.clone(),
+        deploy::resolve_token(cli.token.clone()),
+    )
 }
 
 async fn build_client(cli: &Cli) -> Result<Client> {
@@ -434,7 +492,11 @@ mod tests {
                     | RemoteCommand::Query { run_id, .. },
                 ) => assert!(run_id.is_none()),
                 Command::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
-                | Command::Package { .. } => {
+                | Command::Package { .. }
+                | Command::Deploy { .. }
+                | Command::Versions { .. }
+                | Command::Route { .. }
+                | Command::Unload { .. } => {
                     anyhow::bail!("expected workflow operation command")
                 }
             }
@@ -479,11 +541,74 @@ mod tests {
                     | RemoteCommand::List { .. }
                     | RemoteCommand::Describe { .. },
                 )
-                | Command::Package { .. } => {
+                | Command::Package { .. }
+                | Command::Deploy { .. }
+                | Command::Versions { .. }
+                | Command::Route { .. }
+                | Command::Unload { .. } => {
                     anyhow::bail!("expected run-targeted workflow operation command")
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn deploy_subcommands_parse_with_global_token() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion-cli",
+            "--token",
+            "operator-token",
+            "deploy",
+            "dist/order.aion",
+        ])?;
+        assert_eq!(cli.token.as_deref(), Some("operator-token"));
+        let Command::Deploy { archive } = cli.command else {
+            anyhow::bail!("expected deploy command");
+        };
+        assert_eq!(archive, Path::new("dist/order.aion"));
+
+        let cli = Cli::try_parse_from(["aion-cli", "versions", "--workflow-type", "order"])?;
+        assert!(cli.token.is_none());
+        let Command::Versions { workflow_type } = cli.command else {
+            anyhow::bail!("expected versions command");
+        };
+        assert_eq!(workflow_type.as_deref(), Some("order"));
+
+        let hash = "a".repeat(64);
+        let cli = Cli::try_parse_from(["aion-cli", "route", "order", &hash])?;
+        let Command::Route {
+            workflow_type,
+            content_hash,
+        } = cli.command
+        else {
+            anyhow::bail!("expected route command");
+        };
+        assert_eq!(workflow_type, "order");
+        assert_eq!(content_hash, hash);
+
+        let cli = Cli::try_parse_from(["aion-cli", "unload", "order", &hash])?;
+        let Command::Unload {
+            workflow_type,
+            content_hash,
+        } = cli.command
+        else {
+            anyhow::bail!("expected unload command");
+        };
+        assert_eq!(workflow_type, "order");
+        assert_eq!(content_hash, hash);
+        Ok(())
+    }
+
+    #[test]
+    fn deploy_help_documents_the_operator_surface() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(deploy) = command.find_subcommand_mut("deploy") else {
+            anyhow::bail!("deploy subcommand should be registered");
+        };
+        let help = deploy.render_long_help().to_string();
+        assert!(help.contains("operator API"));
+        assert!(help.contains("deploy"));
         Ok(())
     }
 

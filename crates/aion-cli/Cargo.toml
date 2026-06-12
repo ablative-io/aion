@@ -19,6 +19,12 @@ workspace = true
 aion-client = { version = "0.2.0", path = "../aion-client" }
 aion-core = { version = "0.2.0", path = "../aion-core" }
 aion-package = { version = "0.2.0", path = "../aion-package" }
+# Deploy is an operator API: its gRPC stub comes from aion-proto's generated
+# module, never from aion-client (the caller SDK is contract-bound and must
+# not grow operator operations).
+aion-proto = { version = "0.2.0", path = "../aion-proto", features = ["generated"] }
+prost = { workspace = true }
+tonic = { workspace = true, features = ["transport"] }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
@@ -27,7 +33,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
-aion-proto = { version = "0.2.0", path = "../aion-proto", features = ["generated"] }
-prost = { workspace = true }
+aion-server = { path = "../aion-server" }
+aion-store = { version = "0.2.0", path = "../aion-store" }
+tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
-tonic = { workspace = true, features = ["transport"] }
+tokio-stream = { version = "0.1", features = ["net"] }

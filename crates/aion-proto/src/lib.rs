@@ -19,6 +19,8 @@
 
 /// Conversion helpers between wire structures and `aion-core` values.
 pub mod convert;
+/// Operator deploy API wire contracts.
+pub mod deploy;
 /// Wire-level error types and protobuf-friendly error payloads.
 pub mod error;
 /// Event-stream subscription and streamed-event contracts.
@@ -40,6 +42,11 @@ pub use convert::{
     decode_schedule_state, decode_workflow_filter, decode_workflow_summary, encode_core_value,
     encode_event, encode_schedule_config, encode_schedule_state, encode_workflow_filter,
     encode_workflow_summary,
+};
+pub use deploy::{
+    ProtoListVersionsRequest, ProtoListVersionsResponse, ProtoLoadPackageRequest,
+    ProtoLoadPackageResponse, ProtoRouteVersionRequest, ProtoRouteVersionResponse,
+    ProtoUnloadVersionRequest, ProtoUnloadVersionResponse, ProtoWorkflowVersion,
 };
 pub use error::{ProtoWireError, ProtoWireErrorCode, WireError, WireErrorCode};
 pub use events::{

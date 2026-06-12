@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/events.proto",
         "proto/workflow.proto",
         "proto/worker.proto",
+        "proto/deploy.proto",
     ];
 
     println!("cargo:rerun-if-changed=build.rs");

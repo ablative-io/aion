@@ -65,6 +65,12 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
                 config.websocket.event_broadcast_capacity =
                     Some(parse_positive_usize(&name, &value)?);
             }
+            "AION_DEPLOY_ENABLED" => {
+                config.deploy.enabled = parse_bool(&name, &value)?;
+            }
+            "AION_DEPLOY_MAX_ARCHIVE_BYTES" => {
+                config.deploy.max_archive_bytes = Some(parse_positive_u64(&name, &value)?);
+            }
             "AION_NAMESPACES_DEFAULT" => {
                 if value.is_empty() {
                     return config_error("AION_NAMESPACES_DEFAULT must not be empty");

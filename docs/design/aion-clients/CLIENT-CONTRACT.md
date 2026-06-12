@@ -6,7 +6,7 @@ The contract covers the caller SDK operation catalogue: `connect`, `start`, `sig
 
 ## Scope and AW boundary
 
-The Aion client SDKs consume the AW-owned `aion-server` API and `aion-proto` wire types. They SHALL NOT define their own wire formats, endpoints, request fields, response fields, or WebSocket frame shapes. This contract names the authoritative `aion-proto` request and response messages and the `aion-core` domain values carried inside `WireEnvelope`; it does not restate those messages field-by-field as a new protocol.
+The Aion client SDKs consume the AW-owned `aion-server` API and `aion-proto` wire types. They SHALL NOT define their own wire formats, endpoints, request fields, response fields, or WebSocket frame shapes. The operator deploy surface (`DeployService` / the `/deploy/*` routes and their `deploy_denied`/`version_pinned` wire codes) is server-operator API outside this contract: caller SDKs SHALL NOT expose deploy operations. This contract names the authoritative `aion-proto` request and response messages and the `aion-core` domain values carried inside `WireEnvelope`; it does not restate those messages field-by-field as a new protocol.
 
 Current AW alignment gaps are called out explicitly where the desired SDK behaviour depends on server/proto support that is not yet present in the checked-in proto. SDK implementations must not pretend those gaps are new client-owned fields. They should map to the AW-owned request/metadata/cursor once AW lands the protocol support.
 

@@ -69,7 +69,7 @@ async fn load_counting(
     catalog: &WorkflowCatalog,
     package: &Package,
     registered: &RefCell<Vec<String>>,
-) -> Result<super::LoadedWorkflow, EngineError> {
+) -> Result<crate::loader::LoadOutcome, EngineError> {
     catalog
         .load_package_with(
             package,
@@ -86,7 +86,7 @@ async fn load_counting(
 async fn load_plain(
     catalog: &WorkflowCatalog,
     package: &Package,
-) -> Result<super::LoadedWorkflow, EngineError> {
+) -> Result<crate::loader::LoadOutcome, EngineError> {
     catalog
         .load_package_with(
             package,
@@ -103,7 +103,10 @@ async fn registers_every_package_derived_deployed_module() -> TestResult {
     let registered = RefCell::new(Vec::<String>::new());
     let catalog = WorkflowCatalog::new();
 
-    let record = load_counting(&catalog, &package, &registered).await?;
+    let outcome = load_counting(&catalog, &package, &registered).await?;
+    let record = outcome.record;
+    assert!(outcome.freshly_loaded, "first load must be fresh");
+    assert!(outcome.route_changed, "first load must take the route");
 
     let registered = registered.into_inner();
     let expected: Vec<String> = package
@@ -127,7 +130,7 @@ async fn records_deployed_entry_function_and_routes_to_it() -> TestResult {
     let package = package("workflow/order", vec![1, 2, 3])?;
     let catalog = WorkflowCatalog::new();
 
-    let record = load_plain(&catalog, &package).await?;
+    let record = load_plain(&catalog, &package).await?.record;
 
     assert_eq!(record.workflow_type(), package.manifest().entry_module);
     assert_eq!(
@@ -150,8 +153,8 @@ async fn retains_two_versions_and_routes_to_the_last_loaded() -> TestResult {
     let second = package("workflow/order", vec![1, 2, 4])?;
     let catalog = WorkflowCatalog::new();
 
-    let first_record = load_plain(&catalog, &first).await?;
-    let second_record = load_plain(&catalog, &second).await?;
+    let first_record = load_plain(&catalog, &first).await?.record;
+    let second_record = load_plain(&catalog, &second).await?.record;
 
     assert_ne!(first.content_hash(), second.content_hash());
     assert_ne!(
@@ -181,10 +184,18 @@ async fn identical_reload_is_idempotent_and_reload_re_routes() -> TestResult {
     let calls = RefCell::new(Vec::<String>::new());
     let catalog = WorkflowCatalog::new();
 
-    let first_record = load_counting(&catalog, &first, &calls).await?;
+    let first_outcome = load_counting(&catalog, &first, &calls).await?;
+    assert!(first_outcome.freshly_loaded);
+    assert!(first_outcome.route_changed);
+    let first_record = first_outcome.record;
     let after_first = calls.borrow().len();
     let again = load_counting(&catalog, &first, &calls).await?;
-    assert_eq!(first_record, again);
+    assert_eq!(first_record, again.record);
+    assert!(!again.freshly_loaded, "re-load must report idempotence");
+    assert!(
+        !again.route_changed,
+        "re-loading the route-active hash is a full no-op"
+    );
     assert_eq!(
         calls.borrow().len(),
         after_first,
@@ -203,7 +214,15 @@ async fn identical_reload_is_idempotent_and_reload_re_routes() -> TestResult {
     );
     let before = calls.borrow().len();
     let re_deployed = load_counting(&catalog, &first, &calls).await?;
-    assert_eq!(re_deployed, first_record);
+    assert_eq!(re_deployed.record, first_record);
+    assert!(
+        !re_deployed.freshly_loaded,
+        "re-deploy of a resident hash registers nothing"
+    );
+    assert!(
+        re_deployed.route_changed,
+        "re-deploying a rolled-back hash must re-point the route"
+    );
     assert_eq!(calls.borrow().len(), before);
     assert_eq!(
         catalog
@@ -328,7 +347,7 @@ async fn package_loaded_under_content_hash_namespace_spawns_entrypoint() -> Test
     let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
     let catalog = WorkflowCatalog::new();
 
-    let record = catalog.load_package(&runtime, &package).await?;
+    let record = catalog.load_package(&runtime, &package).await?.record;
     let pid = runtime.spawn_workflow(
         record.deployed_entry_module(),
         record.entry_function(),
@@ -371,7 +390,7 @@ async fn unexported_entry_function_fails_the_runtime_load() -> TestResult {
 async fn start_pins_are_held_until_dropped() -> TestResult {
     let package = package("workflow/order", vec![1, 2, 3])?;
     let catalog = WorkflowCatalog::new();
-    let record = load_plain(&catalog, &package).await?;
+    let record = load_plain(&catalog, &package).await?.record;
     let version = record.version().clone();
 
     assert!(!catalog.has_pinned_starts("workflow/order", &version)?);
@@ -443,7 +462,7 @@ async fn route_version_re_points_and_rejects_unknown_hashes() -> TestResult {
     let first = package("workflow/order", vec![1, 2, 3])?;
     let second = package("workflow/order", vec![1, 2, 4])?;
     let catalog = WorkflowCatalog::new();
-    let first_record = load_plain(&catalog, &first).await?;
+    let first_record = load_plain(&catalog, &first).await?.record;
     load_plain(&catalog, &second).await?;
 
     catalog
@@ -454,8 +473,10 @@ async fn route_version_re_points_and_rejects_unknown_hashes() -> TestResult {
     let unknown = aion_package::ContentHash::from_bytes([7; 32]);
     let result = catalog.route_version("workflow/order", &unknown).await;
     assert!(
-        matches!(&result, Err(EngineError::Load { reason })
-            if reason.contains("not loaded") && reason.contains(&first.content_hash().to_string())),
+        matches!(&result, Err(EngineError::UnknownVersion { workflow_type, version, loaded })
+            if workflow_type == "workflow/order"
+                && version == &unknown
+                && loaded.contains(&first.content_hash().to_string())),
         "unknown route target must fail typed naming the loaded set: {result:?}"
     );
     Ok(())
@@ -466,14 +487,15 @@ async fn swap_out_refuses_routed_version_and_restore_round_trips() -> TestResult
     let first = package("workflow/order", vec![1, 2, 3])?;
     let second = package("workflow/order", vec![1, 2, 4])?;
     let catalog = WorkflowCatalog::new();
-    let first_record = load_plain(&catalog, &first).await?;
+    let first_record = load_plain(&catalog, &first).await?.record;
     load_plain(&catalog, &second).await?;
 
     {
         let _mutation = catalog.begin_mutation().await;
         let routed = catalog.swap_out_version("workflow/order", second.content_hash());
         assert!(
-            matches!(&routed, Err(EngineError::Load { reason }) if reason.contains("route-active")),
+            matches!(&routed, Err(EngineError::RouteActive { workflow_type, version })
+                if workflow_type == "workflow/order" && version == second.content_hash()),
             "swapping out the routed version must be refused: {routed:?}"
         );
 
@@ -487,5 +509,48 @@ async fn swap_out_refuses_routed_version_and_restore_round_trips() -> TestResult
         catalog.get("workflow/order", first.content_hash())?,
         Some(first_record)
     );
+    Ok(())
+}
+
+/// D10 rider: an idempotent re-load that carries the resident content hash
+/// with a DIFFERENT manifest must be refused typed, leaving the catalog
+/// bit-for-bit untouched. The content hash covers beams only, so this is the
+/// only thing standing between a remote deploy endpoint and a silent
+/// wrong-deploy.
+#[tokio::test]
+async fn same_hash_different_manifest_reload_is_refused_typed() -> TestResult {
+    let original = package("workflow/order", vec![1, 2, 3])?;
+    let mut diverged_manifest = original.manifest().clone();
+    diverged_manifest.entry_function = "start".to_owned();
+    let archive = PackageBuilder::with_source(
+        diverged_manifest,
+        original.beams().clone(),
+        BTreeMap::<String, Vec<u8>>::new(),
+    )
+    .write_to_bytes()?;
+    let diverged = Package::load_from_bytes(archive)?;
+    assert_eq!(
+        original.content_hash(),
+        diverged.content_hash(),
+        "identical beams must carry the identical content hash"
+    );
+
+    let catalog = WorkflowCatalog::new();
+    let resident = load_plain(&catalog, &original).await?;
+
+    let result = load_plain(&catalog, &diverged).await;
+    assert!(
+        matches!(&result, Err(EngineError::ManifestMismatch { workflow_type, version, .. })
+            if workflow_type == "workflow/order" && version == original.content_hash()),
+        "diverged-manifest re-load must be refused typed: {result:?}"
+    );
+
+    // The refusal left the catalog untouched: one version, original routed.
+    assert_eq!(catalog.workflows()?.len(), 1);
+    assert_eq!(catalog.routed("workflow/order")?, Some(resident.record));
+
+    // The byte-identical archive still re-loads idempotently.
+    let again = load_plain(&catalog, &original).await?;
+    assert!(!again.freshly_loaded);
     Ok(())
 }

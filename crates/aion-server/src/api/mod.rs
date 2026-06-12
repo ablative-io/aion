@@ -1,5 +1,7 @@
 //! Module declarations.
 
+/// Operator deploy gRPC endpoint implementation.
+pub mod deploy_grpc;
 /// gRPC service implementation.
 pub mod grpc;
 /// Shared workflow operation handlers used by transports.

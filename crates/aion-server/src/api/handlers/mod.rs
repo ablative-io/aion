@@ -1,6 +1,7 @@
 //! Shared handler layer over Engine.
 //!
 //! Module layout:
+//! - `deploy` — operator deploy (load/list/route/unload) handlers.
 //! - `workflows` — start/signal/query/cancel workflow operation handlers.
 //! - `visibility` — list/count handlers and namespace filter scoping.
 //! - `describe` — describe-workflow handler.
@@ -8,6 +9,8 @@
 //! - `payload` — required-field and envelope encode/decode helpers.
 //! - `error` — engine-error-to-wire-error mapping.
 
+/// Operator deploy handlers shared by both transports.
+pub mod deploy;
 mod describe;
 mod error;
 mod payload;

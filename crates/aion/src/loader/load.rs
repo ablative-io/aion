@@ -1,8 +1,25 @@
 //! Package staging: validated load units shared by the workflow catalog.
 
-use aion_package::{ContentHash, ManifestVersion, Package};
+use aion_package::{ContentHash, ManifestDigest, ManifestVersion, Package};
 
 use crate::error::EngineError;
+
+/// Outcome of one package load, computed inside the catalog mutation lock.
+///
+/// `freshly_loaded` distinguishes a real registration from an idempotent
+/// re-load of a resident hash; `route_changed` reports whether the call
+/// re-pointed routing (false means the hash was already route-active and the
+/// load was a full no-op). Both flags are race-free truth captured under the
+/// same lock that committed the mutation, never a list-before/list-after read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadOutcome {
+    /// The loaded (or already-resident) workflow record.
+    pub record: LoadedWorkflow,
+    /// True when this call registered the version; false on idempotent re-load.
+    pub freshly_loaded: bool,
+    /// True when this call re-pointed the type's route at the version.
+    pub route_changed: bool,
+}
 
 /// Workflow package entrypoint registered in the embedded runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +77,7 @@ pub(crate) struct StagedLoad<'a> {
     pub(crate) deployed_entry_module: String,
     pub(crate) entry_function: String,
     pub(crate) manifest_version: ManifestVersion,
+    pub(crate) manifest_digest: ManifestDigest,
     pub(crate) version: ContentHash,
     pub(crate) modules: Vec<StagedModule<'a>>,
 }
@@ -89,6 +107,7 @@ impl<'a> StagedLoad<'a> {
             deployed_entry_module: package.deployed_entry_module(),
             entry_function: manifest.entry_function.clone(),
             manifest_version: manifest.version.clone(),
+            manifest_digest: manifest.canonical_digest()?,
             version,
             modules,
         })

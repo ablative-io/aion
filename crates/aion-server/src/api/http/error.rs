@@ -18,8 +18,8 @@ impl IntoResponse for HttpWireError {
 fn http_status(code: WireErrorCode) -> StatusCode {
     match code {
         WireErrorCode::NotFound => StatusCode::NOT_FOUND,
-        WireErrorCode::NamespaceDenied => StatusCode::FORBIDDEN,
-        WireErrorCode::SequenceConflict => StatusCode::CONFLICT,
+        WireErrorCode::NamespaceDenied | WireErrorCode::DeployDenied => StatusCode::FORBIDDEN,
+        WireErrorCode::SequenceConflict | WireErrorCode::VersionPinned => StatusCode::CONFLICT,
         WireErrorCode::UnknownQuery | WireErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
         WireErrorCode::QueryTimeout => StatusCode::REQUEST_TIMEOUT,
         WireErrorCode::NotRunning => StatusCode::PRECONDITION_FAILED,

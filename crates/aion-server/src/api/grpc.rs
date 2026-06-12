@@ -303,7 +303,16 @@ fn development_caller_from_metadata(metadata: &tonic::metadata::MetadataMap) -> 
         .and_then(|value| value.to_str().ok())
         .map(parse_namespaces)
         .unwrap_or_default();
-    CallerIdentity::new(subject, namespaces)
+    CallerIdentity::new(subject, namespaces).with_deploy(deploy_metadata_granted(metadata))
+}
+
+/// Deployment-wide deploy grant from the development `x-aion-deploy`
+/// metadata entry, the dev-mode analog of the JWT `deploy` claim.
+fn deploy_metadata_granted(metadata: &tonic::metadata::MetadataMap) -> bool {
+    metadata
+        .get("x-aion-deploy")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
 /// Development-mode token authentication for gRPC metadata, mirroring the HTTP
@@ -338,7 +347,7 @@ fn development_token_caller_from_metadata(
         return CallerIdentity::denied("anonymous", "missing required metadata: x-aion-subject");
     };
 
-    CallerIdentity::new(subject, namespaces)
+    CallerIdentity::new(subject, namespaces).with_deploy(deploy_metadata_granted(metadata))
 }
 
 #[cfg(feature = "auth")]
@@ -359,8 +368,13 @@ fn parse_namespaces(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn status_from_wire_error(error: WireError) -> Status {
-    let code = grpc_code(error.code);
+pub(crate) fn status_from_wire_error(error: WireError) -> Status {
+    status_with_code(grpc_code(error.code), error)
+}
+
+/// Build a tonic status with an explicit code, carrying the typed
+/// `ProtoWireError` detail payload when it encodes.
+pub(crate) fn status_with_code(code: Code, error: WireError) -> Status {
     let message = error.message.clone();
     let mut details = Vec::new();
     let proto_error = ProtoWireError::from(error);
@@ -374,13 +388,17 @@ fn status_from_wire_error(error: WireError) -> Status {
 fn grpc_code(code: aion_proto::WireErrorCode) -> Code {
     match code {
         aion_proto::WireErrorCode::NotFound => Code::NotFound,
-        aion_proto::WireErrorCode::NamespaceDenied => Code::PermissionDenied,
+        aion_proto::WireErrorCode::NamespaceDenied | aion_proto::WireErrorCode::DeployDenied => {
+            Code::PermissionDenied
+        }
         aion_proto::WireErrorCode::SequenceConflict => Code::Aborted,
         aion_proto::WireErrorCode::UnknownQuery | aion_proto::WireErrorCode::InvalidInput => {
             Code::InvalidArgument
         }
         aion_proto::WireErrorCode::QueryTimeout => Code::DeadlineExceeded,
-        aion_proto::WireErrorCode::NotRunning => Code::FailedPrecondition,
+        aion_proto::WireErrorCode::NotRunning | aion_proto::WireErrorCode::VersionPinned => {
+            Code::FailedPrecondition
+        }
         aion_proto::WireErrorCode::Lagged => Code::ResourceExhausted,
         // query_failed normally rides QueryResponse.error inside an OK
         // response; a transport-level carrier still attaches the typed
@@ -679,8 +697,9 @@ mod tests {
     use crate::{
         NamespaceResolver,
         config::{
-            AuthConfig, DashboardAssetSource, DashboardConfig, ListenConfig, MetricsConfig,
-            NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+            AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+            MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig,
+            WorkerConfig,
         },
     };
 
@@ -857,6 +876,7 @@ mod tests {
                 event_broadcast_capacity: Some(64),
             },
             workflow_packages: Vec::new(),
+            deploy: DeployConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(std::time::Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

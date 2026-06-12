@@ -45,6 +45,7 @@ async fn jwks_document() -> Json<serde_json::Value> {
 }
 
 /// Mint a valid signed caller token for `subject` granting `namespace`.
+/// The token carries no `deploy` claim (the claim-absent case).
 pub(crate) fn mint_token(
     subject: &str,
     namespace: &str,
@@ -54,6 +55,23 @@ pub(crate) fn mint_token(
         namespace,
         jsonwebtoken::get_current_timestamp() + 3600,
     )
+}
+
+/// Mint a valid signed token carrying an explicit `deploy` claim value.
+pub(crate) fn mint_token_with_deploy(
+    subject: &str,
+    namespace: &str,
+    deploy: bool,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(KEY_ID.to_owned());
+    let claims = serde_json::json!({
+        "sub": subject,
+        "namespace": namespace,
+        "exp": jsonwebtoken::get_current_timestamp() + 3600,
+        "deploy": deploy,
+    });
+    jsonwebtoken::encode(&header, &claims, &EncodingKey::from_secret(SECRET))
 }
 
 /// Mint a correctly signed but already-expired token.

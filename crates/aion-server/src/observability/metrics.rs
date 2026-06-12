@@ -50,6 +50,9 @@ struct MetricsInner {
     inflight_activities: IntGaugeVec,
     signals_delivered: IntCounterVec,
     schedules_fired: IntCounterVec,
+    deploy_operations: IntCounterVec,
+    deploy_denied: IntCounterVec,
+    loaded_workflow_versions: IntGaugeVec,
 }
 
 impl MetricsInner {
@@ -74,6 +77,12 @@ impl MetricsInner {
             .register(Box::new(self.signals_delivered.clone()))?;
         self.registry
             .register(Box::new(self.schedules_fired.clone()))?;
+        self.registry
+            .register(Box::new(self.deploy_operations.clone()))?;
+        self.registry
+            .register(Box::new(self.deploy_denied.clone()))?;
+        self.registry
+            .register(Box::new(self.loaded_workflow_versions.clone()))?;
         Ok(())
     }
 }
@@ -205,6 +214,31 @@ impl Metrics {
             .with_label_values(&[namespace])
             .inc();
     }
+
+    /// Increment the deploy-operation counter for one mutation outcome.
+    pub fn deploy_operation(&self, operation: &str, outcome: &str) {
+        self.inner
+            .deploy_operations
+            .with_label_values(&[operation, outcome])
+            .inc();
+    }
+
+    /// Increment the deploy-denied counter for a transport.
+    pub fn deploy_denied(&self, transport: &str) {
+        self.inner
+            .deploy_denied
+            .with_label_values(&[transport])
+            .inc();
+    }
+
+    /// Set the loaded-version gauge for one workflow type from the
+    /// post-operation listing.
+    pub fn set_loaded_workflow_versions(&self, workflow_type: &str, count: i64) {
+        self.inner
+            .loaded_workflow_versions
+            .with_label_values(&[workflow_type])
+            .set(count);
+    }
 }
 
 fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
@@ -285,6 +319,7 @@ fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
         ),
         &["namespace"],
     )?;
+    let (deploy_operations, deploy_denied, loaded_workflow_versions) = build_deploy_metrics()?;
 
     Ok(MetricsInner {
         registry,
@@ -298,7 +333,37 @@ fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
         inflight_activities,
         signals_delivered,
         schedules_fired,
+        deploy_operations,
+        deploy_denied,
+        loaded_workflow_versions,
     })
+}
+
+/// Deploy API collectors: mutation counter, denial counter, and the
+/// loaded-version gauge fed from the post-operation listing.
+fn build_deploy_metrics() -> Result<(IntCounterVec, IntCounterVec, IntGaugeVec), MetricsError> {
+    let deploy_operations = IntCounterVec::new(
+        Opts::new(
+            "aion_deploy_operations_total",
+            "Total deploy API mutations by operation and outcome class.",
+        ),
+        &["operation", "outcome"],
+    )?;
+    let deploy_denied = IntCounterVec::new(
+        Opts::new(
+            "aion_deploy_denied_total",
+            "Total deploy API authorization denials by transport.",
+        ),
+        &["transport"],
+    )?;
+    let loaded_workflow_versions = IntGaugeVec::new(
+        Opts::new(
+            "aion_loaded_workflow_versions",
+            "Currently loaded package versions per workflow type.",
+        ),
+        &["workflow_type"],
+    )?;
+    Ok((deploy_operations, deploy_denied, loaded_workflow_versions))
 }
 
 /// Pre-initialize known label sets so all metric families appear in the

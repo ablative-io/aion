@@ -144,6 +144,15 @@ impl ServerError {
         }
     }
 
+    /// Construct a deploy-authorization denial carried on the dedicated
+    /// `deploy_denied` wire code (deploy is not a namespace operation).
+    #[must_use]
+    pub fn deploy_denied(message: impl Into<String>) -> Self {
+        Self::Wire {
+            wire: WireError::deploy_denied(message),
+        }
+    }
+
     /// Construct a lagged-stream error.
     #[must_use]
     pub const fn lagged_stream() -> Self {
@@ -256,6 +265,10 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         }
         EngineError::EventStreaming(_) => simple_engine_fields("EventStreaming", source),
         EngineError::Load { .. } => simple_engine_fields("Load", source),
+        EngineError::UnknownVersion { .. } => simple_engine_fields("UnknownVersion", source),
+        EngineError::VersionPinned { .. } => simple_engine_fields("VersionPinned", source),
+        EngineError::RouteActive { .. } => simple_engine_fields("RouteActive", source),
+        EngineError::ManifestMismatch { .. } => simple_engine_fields("ManifestMismatch", source),
         EngineError::Package(_) => simple_engine_fields("Package", source),
         EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
         EngineError::Runtime { .. } => simple_engine_fields("Runtime", source),
@@ -341,6 +354,22 @@ fn wire_from_engine(source: &EngineError) -> WireError {
             WireError::backend_with_type("EventStreaming", source.to_string())
         }
         EngineError::Load { .. } => WireError::backend_with_type("Load", source.to_string()),
+        // Deploy-surface refusals (the §2.4 mapping table): unknown
+        // `(type, version)` is not-found; route-active and pinned versions
+        // are state conflicts carried by the dedicated `version_pinned`
+        // code; a same-hash-different-manifest archive is invalid input.
+        EngineError::UnknownVersion { .. } => {
+            WireError::not_found_with_type("UnknownVersion", source.to_string())
+        }
+        EngineError::VersionPinned { .. } => {
+            WireError::version_pinned(source.to_string()).with_error_type("VersionPinned")
+        }
+        EngineError::RouteActive { .. } => {
+            WireError::version_pinned(source.to_string()).with_error_type("RouteActive")
+        }
+        EngineError::ManifestMismatch { .. } => {
+            WireError::invalid_input(source.to_string()).with_error_type("ManifestMismatch")
+        }
         EngineError::Package(_) => WireError::backend_with_type("Package", source.to_string()),
         EngineError::Schedule { .. } => {
             WireError::backend_with_type("Schedule", source.to_string())

@@ -23,14 +23,26 @@ use super::schedule_source::{HistoryScheduleNamespaceSource, ScheduleNamespaceSo
 /// started through this server.
 pub const NAMESPACE_ATTRIBUTE: &str = "aion.namespace";
 
-/// Where a caller's namespace grants came from, so a denial message can point
-/// the operator at the knob that actually carries the grant.
+/// Where a caller's grants came from, so a denial message can point the
+/// operator at the knob that actually carries the grant (the development
+/// headers, or the validated token's claims).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GrantSource {
-    /// Grants parsed from the development `x-aion-namespaces` header.
+pub(crate) enum GrantSource {
+    /// Grants parsed from the development `x-aion-namespaces` /
+    /// `x-aion-deploy` headers.
     NamespacesHeader,
-    /// Grants carried by a validated token's namespace claim.
+    /// Grants carried by a validated token's claims.
     TokenClaim,
+}
+
+impl GrantSource {
+    /// Stable label for audit log fields.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::NamespacesHeader => "header",
+            Self::TokenClaim => "token_claim",
+        }
+    }
 }
 
 /// Authenticated caller metadata supplied by an adapter boundary.
@@ -40,6 +52,9 @@ pub struct CallerIdentity {
     namespaces: BTreeSet<String>,
     denial_reason: Option<String>,
     grant_source: GrantSource,
+    /// Whether the caller holds the deployment-wide deploy grant (the
+    /// `deploy` token claim, or the `x-aion-deploy` development header).
+    deploy: bool,
 }
 
 impl CallerIdentity {
@@ -52,6 +67,7 @@ impl CallerIdentity {
             namespaces: namespaces.into_iter().collect(),
             denial_reason: None,
             grant_source: GrantSource::NamespacesHeader,
+            deploy: false,
         }
     }
 
@@ -68,7 +84,26 @@ impl CallerIdentity {
             namespaces: namespaces.into_iter().collect(),
             denial_reason: None,
             grant_source: GrantSource::TokenClaim,
+            deploy: false,
         }
+    }
+
+    /// Attach the deployment-wide deploy grant decision to this identity.
+    ///
+    /// The grant is engine-global, never namespace-scoped: loading a package
+    /// re-points routing for a workflow type that is startable from every
+    /// namespace, so a namespace-valued grant would promise an isolation the
+    /// engine does not provide.
+    #[must_use]
+    pub fn with_deploy(mut self, deploy: bool) -> Self {
+        self.deploy = deploy;
+        self
+    }
+
+    /// Whether the caller holds the deployment-wide deploy grant.
+    #[must_use]
+    pub const fn deploy_granted(&self) -> bool {
+        self.deploy
     }
 
     /// Build a caller identity that must be denied with a transport-specific reason.
@@ -79,6 +114,7 @@ impl CallerIdentity {
             namespaces: BTreeSet::new(),
             denial_reason: Some(reason.into()),
             grant_source: GrantSource::NamespacesHeader,
+            deploy: false,
         }
     }
 
@@ -92,8 +128,14 @@ impl CallerIdentity {
         self.namespaces.contains(namespace)
     }
 
-    fn denial_reason(&self) -> Option<&str> {
+    pub(crate) fn denial_reason(&self) -> Option<&str> {
         self.denial_reason.as_deref()
+    }
+
+    /// Where this caller's grants came from, for grant-source-aware denials
+    /// and audit fields.
+    pub(crate) const fn grant_source(&self) -> GrantSource {
+        self.grant_source
     }
 }
 
@@ -337,6 +379,18 @@ impl NamespaceResolver {
     #[must_use]
     pub const fn mode(&self) -> &NamespaceMode {
         &self.mode
+    }
+
+    /// Borrow the engine handle for engine-global (non-namespace) operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Config`] only for resolver instances constructed
+    /// without an engine for unit tests.
+    pub(crate) fn engine(&self) -> Result<&Arc<Engine>, ServerError> {
+        self.engine.as_ref().ok_or_else(|| ServerError::Config {
+            message: "namespace resolver has no engine handle".to_owned(),
+        })
     }
 
     /// Shut down the engine owned by this resolver.

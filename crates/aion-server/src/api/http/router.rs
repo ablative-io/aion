@@ -2,9 +2,12 @@
 
 use axum::{
     Router,
-    routing::{get, post},
+    extract::DefaultBodyLimit,
+    http::StatusCode,
+    routing::{any, get, post},
 };
 
+use super::deploy::{list_versions, route_version, unload_version, upload_package};
 use super::events::subscribe_events_socket;
 use super::schedules::{
     create_schedule, delete_schedule, describe_schedule, list_schedules, pause_schedule,
@@ -46,9 +49,34 @@ pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
     Ok(router.merge(dashboard))
 }
 
+/// Disabled deploy surface: a plain 404 with no body, indistinguishable
+/// from an unmounted route family.
+async fn deploy_disabled() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 /// Build the public workflow-management HTTP router.
 pub fn workflow_router(state: ServerState) -> Router {
-    Router::new()
+    // The deploy surface is dark by default: when `[deploy].enabled` is
+    // false the routes are not mounted and every `/deploy/*` path is a
+    // plain 404 (the explicit catch-all keeps the dashboard SPA fallback
+    // from answering for the deploy namespace). The archive upload route
+    // disables the default body limit because `read_archive_body` enforces
+    // the operator-configured `deploy.max_archive_bytes` ceiling while
+    // streaming.
+    let deploy = if state.runtime_config().deploy.enabled {
+        Router::new()
+            .route(
+                "/deploy/packages",
+                post(upload_package).layer(DefaultBodyLimit::disable()),
+            )
+            .route("/deploy/versions", get(list_versions))
+            .route("/deploy/route", post(route_version))
+            .route("/deploy/unload", post(unload_version))
+    } else {
+        Router::new().route("/deploy/{*rest}", any(deploy_disabled))
+    };
+    deploy
         .route("/workflows", get(get_workflows))
         .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))

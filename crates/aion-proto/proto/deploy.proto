@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package aion;
+
+// Operator deploy API: runtime package load, version listing, routing, and
+// unload. This is a privileged operator surface, deliberately separate from
+// WorkflowService so caller SDK stubs never carry deploy operations
+// (CLIENT-CONTRACT: SDKs SHALL NOT expose deploy). Operations are
+// engine-global — there is no namespace field anywhere on this surface,
+// because a loaded workflow type is startable from every namespace.
+service DeployService {
+  rpc LoadPackage(LoadPackageRequest) returns (LoadPackageResponse);
+  rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+  rpc RouteVersion(RouteVersionRequest) returns (RouteVersionResponse);
+  rpc UnloadVersion(UnloadVersionRequest) returns (UnloadVersionResponse);
+}
+
+// A complete `.aion` archive, uploaded in one unary message. The server
+// enforces the operator-configured `[deploy].max_archive_bytes` ceiling.
+message LoadPackageRequest {
+  bytes archive = 1;
+}
+
+// Outcome of a package load. Idempotency is specified behavior: re-sending
+// the same archive succeeds with `freshly_loaded = false`, and
+// `route_changed` reports whether the call re-pointed routing.
+message LoadPackageResponse {
+  string workflow_type = 1;
+  // Textual ContentHash — the version identifier everywhere on the wire.
+  string content_hash = 2;
+  string deployed_entry_module = 3;
+  string entry_function = 4;
+  // False = idempotent re-load (the hash was already resident).
+  bool freshly_loaded = 5;
+  // False = the hash was already route-active (full no-op).
+  bool route_changed = 6;
+}
+
+// Engine-global listing; no namespace (the catalog is namespace-blind).
+message ListVersionsRequest {}
+
+// One loaded version of one workflow type, mirroring the engine's
+// WorkflowVersionInfo listing record.
+message WorkflowVersion {
+  string workflow_type = 1;
+  string content_hash = 2;
+  string deployed_entry_module = 3;
+  string entry_function = 4;
+  string manifest_version = 5;
+  // RFC 3339 engine-local load instant.
+  string loaded_at = 6;
+  bool route_active = 7;
+}
+
+message ListVersionsResponse {
+  repeated WorkflowVersion versions = 1;
+}
+
+// Atomic, idempotent route re-point (rollback / roll-forward).
+message RouteVersionRequest {
+  string workflow_type = 1;
+  string content_hash = 2;
+}
+
+message RouteVersionResponse {}
+
+// Unload of a non-routed, unpinned version; refusals are typed
+// (`version_pinned`) and name what pins the version.
+message UnloadVersionRequest {
+  string workflow_type = 1;
+  string content_hash = 2;
+}
+
+message UnloadVersionResponse {}

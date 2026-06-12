@@ -2,7 +2,7 @@
 
 use crate::schedule::{ScheduleError, ScheduleEvaluatorError};
 use aion_core::{RunId, ScheduleId, WorkflowId};
-use aion_package::PackageError;
+use aion_package::{ContentHash, PackageError};
 use aion_store::StoreError;
 
 use crate::durability::DurabilityError;
@@ -25,6 +25,59 @@ pub enum EngineError {
     Load {
         /// Human-readable load failure reason.
         reason: String,
+    },
+
+    /// A route or unload targeted a `(workflow type, version)` that is not loaded.
+    #[error(
+        "workflow `{workflow_type}` version `{version}` is not loaded (loaded versions: {loaded})"
+    )]
+    UnknownVersion {
+        /// Logical workflow type requested by the caller.
+        workflow_type: String,
+        /// Content-hash version requested by the caller.
+        version: ContentHash,
+        /// Comma-separated loaded versions of the type, or `none`.
+        loaded: String,
+    },
+
+    /// An unload was refused because something still pins the version.
+    #[error("cannot unload workflow `{workflow_type}` version `{version}`: {pinned_by}")]
+    VersionPinned {
+        /// Logical workflow type targeted by the unload.
+        workflow_type: String,
+        /// Content-hash version targeted by the unload.
+        version: ContentHash,
+        /// What pins the version, naming the concrete holder.
+        pinned_by: PinHolder,
+    },
+
+    /// An unload was refused because the version is route-active for its type.
+    #[error(
+        "cannot unload workflow `{workflow_type}` version `{version}`: it is the route-active version; route another version first"
+    )]
+    RouteActive {
+        /// Logical workflow type targeted by the unload.
+        workflow_type: String,
+        /// Content-hash version targeted by the unload.
+        version: ContentHash,
+    },
+
+    /// An idempotent re-load presented the resident content hash with a
+    /// different manifest. The content hash covers the canonical beam set
+    /// only, so this is the wrong-deploy tripwire: the resident version is
+    /// retained untouched and the incoming archive is refused.
+    #[error(
+        "workflow `{workflow_type}` version `{version}` is already loaded with a different manifest (resident digest {resident_digest}, incoming digest {incoming_digest}); the content hash covers beams only — rebuild the archive so its manifest matches the resident version, or change the beam set"
+    )]
+    ManifestMismatch {
+        /// Logical workflow type targeted by the load.
+        workflow_type: String,
+        /// Content-hash version shared by both archives.
+        version: ContentHash,
+        /// Canonical digest of the resident manifest.
+        resident_digest: String,
+        /// Canonical digest of the incoming manifest.
+        incoming_digest: String,
     },
 
     /// The builder was given both `event_streaming` and an explicit event-publisher seam.
@@ -103,6 +156,57 @@ pub enum EngineError {
     /// Live workflow query dispatch failed after the target was resolved.
     #[error("query error: {0}")]
     Query(#[from] crate::query::QueryError),
+}
+
+/// What pins a workflow version against unload, naming the concrete holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinHolder {
+    /// A start resolved this version but has not yet registered a handle.
+    InFlightStart,
+    /// A live, non-terminal run executes on this version.
+    LiveRun {
+        /// Pinning workflow id.
+        workflow_id: WorkflowId,
+        /// Pinning run id.
+        run_id: RunId,
+    },
+    /// A recoverable instance in the store is pinned to this version.
+    RecoverableRun {
+        /// Pinning workflow id.
+        workflow_id: WorkflowId,
+    },
+    /// A recorded-but-never-started child is pinned to this version.
+    RecordedChild {
+        /// Child workflow id pinned to the version.
+        child_workflow_id: WorkflowId,
+        /// Parent workflow whose history records the child.
+        recorded_by: WorkflowId,
+    },
+}
+
+impl std::fmt::Display for PinHolder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InFlightStart => formatter.write_str("an in-flight start is pinned to it"),
+            Self::LiveRun {
+                workflow_id,
+                run_id,
+            } => write!(
+                formatter,
+                "live run `{workflow_id}/{run_id}` is pinned to it"
+            ),
+            Self::RecoverableRun { workflow_id } => {
+                write!(formatter, "recoverable run `{workflow_id}` is pinned to it")
+            }
+            Self::RecordedChild {
+                child_workflow_id,
+                recorded_by,
+            } => write!(
+                formatter,
+                "child `{child_workflow_id}` recorded by `{recorded_by}` is pinned to it and has not started"
+            ),
+        }
+    }
 }
 
 /// Errors surfaced by the signal routing boundary.
