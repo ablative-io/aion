@@ -51,8 +51,12 @@ worker/worker.py             Python activity worker for the server path
 
 ## Build and package
 
+Install the CLI once from the checkout if you have not
+(`cargo install --path crates/aion-cli --locked`; the binary is `aion`),
+then:
+
 ```sh
-cargo run -p aion-cli -- package examples/order-fulfillment --build
+aion package examples/order-fulfillment --build
 ```
 
 This compiles the Gleam project and writes both archives:
@@ -74,14 +78,20 @@ type.
 cargo test -p aion-rs --test order_saga_e2e
 ```
 
-The tests skip with a notice when the archives have not been built.
+The suite rebuilds both archives from the committed Gleam source on every
+run; a missing `gleam` toolchain fails the gate loudly rather than skipping.
 
 ## Run against a live server + Python worker
 
-Start the dev server (terminal 1):
+Start the dev server with the deploy surface enabled (terminal 1) — the
+repo-root `dev-config.toml` keeps `[deploy]` dark by default, so commission
+it from the environment:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+AION_DEPLOY_ENABLED=true \
+AION_DEPLOY_MAX_ARCHIVE_BYTES=16777216 \
+AION_DEPLOY_MAX_INFLATED_BYTES=67108864 \
+aion server --config dev-config.toml
 ```
 
 Install and start the worker with the transient charge failure enabled
@@ -97,8 +107,8 @@ SIMULATE_TRANSIENT_CHARGE_FAILURE=true python examples/order-fulfillment/worker/
 Deploy both archives and start an order (terminal 3):
 
 ```sh
-cargo run -p aion-cli -- deploy examples/order-fulfillment/order-fulfillment.aion
-cargo run -p aion-cli -- deploy examples/order-fulfillment/order-shipping.aion
+aion deploy examples/order-fulfillment/order-fulfillment.aion
+aion deploy examples/order-fulfillment/order-shipping.aion
 
 ORDER_JSON='{"order_id":"o1","item":"widget","quantity":2,"amount_cents":4999,"approval_timeout_ms":300000}'
 ORDER_BYTES=$(printf '%s' "$ORDER_JSON" | python3 -c 'import sys; print(",".join(str(b) for b in sys.stdin.read().encode()))')
@@ -141,14 +151,11 @@ curl -sS -X POST http://127.0.0.1:8080/workflows/describe \
 
 ## Known engine limitations exercised here
 
-- **64-byte engine-to-Gleam payload ceiling (beamr VM defect).** An activity
-  result or failure payload larger than 64 bytes delivered to a
-  Gleam-compiled workflow at an await currently kills the workflow process
-  with `VM execution error: bad argument` (63/64 bytes work, 65 does not;
-  Erlang-coded workflows and the workflow *start* input are unaffected).
-  Keep worker result payloads and failure messages inside that budget until
-  the beamr fix lands — this example's ids and messages are deliberately
-  short.
+- **64-byte engine-to-Gleam payload ceiling — fixed in beamr 0.6.0 (aion
+  0.4.0).** Older beamr releases (0.4.6–0.5.0) killed a Gleam-compiled
+  workflow receiving an await payload over 64 bytes; beamr 0.6.0 fixed the
+  refc-binary BIFs and realistic payloads now flow end-to-end. This
+  example's ids and messages predate the fix and are deliberately short.
 - **Engine-side automatic retry is not wired yet.** `charge_payment`
   declares a `RetryPolicy` and the policy rides the dispatch config
   verbatim, but no engine component consumes it: every wire delivery is

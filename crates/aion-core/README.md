@@ -6,7 +6,7 @@ Pure domain model and shared vocabulary for Aion durable workflows. This leaf cr
 
 ```toml
 [dependencies]
-aion-core = "0.1.0"
+aion-core = "0.4.0"
 ```
 
 ## Key public types

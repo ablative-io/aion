@@ -1,6 +1,6 @@
 # Fake worker endpoint
 
-`fake_engine/` is the language-neutral conformance harness for Aion worker SDKs. It plays the server side of the AW-owned `WorkerProtocol.StreamWorker` bidirectional gRPC stream and records the observable behaviour of a worker process. The harness is a fake worker endpoint only; it does not start or connect to a live `aion-server` or engine.
+`fake_engine/` is the language-neutral conformance harness for Aion worker SDKs. It plays the server side of the AW-owned `WorkerProtocol.StreamWorker` bidirectional gRPC stream and records the observable behaviour of a worker process. The harness is a fake worker endpoint only; it does not start or connect to a live Aion server or engine.
 
 ## Protocol surface implemented
 

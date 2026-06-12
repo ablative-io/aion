@@ -4,14 +4,15 @@ Typed Gleam SDK for authoring durable Aion workflows. Use it to define workflow 
 
 Workflow code should be deterministic: do not read wall clocks or ambient entropy directly. Use `aion/workflow.now`, `aion/workflow.random`, `aion/workflow.random_int`, and timer primitives so replay sees the same command stream.
 
-## Use in this repository
+## Install
 
-The package is named `aion_flow` and targets Erlang/BEAM. Repository examples use it as a local path dependency rather than relying on a published package:
+The package is named `aion_flow`, targets Erlang/BEAM, and is published on [Hex](https://hex.pm/packages/aion_flow):
 
-```toml
-[dependencies]
-aion_flow = { path = "../../gleam/aion_flow" }
+```sh
+gleam add aion_flow
 ```
+
+(Repository examples use it as a local path dependency: `aion_flow = { path = "../../gleam/aion_flow" }`.)
 
 Public modules:
 
@@ -46,6 +47,32 @@ pub fn run(input: Request) -> Result(Greeting, String) {
 ```
 
 `workflow.define(name, input_codec, output_codec, error_codec, entry_fn)` returns a typed `WorkflowDefinition(input, output, workflow_error)` that package tooling and tests can inspect with `workflow.name`, `workflow.input_codec`, `workflow.output_codec`, `workflow.error_codec`, and `workflow.entry_fn`.
+
+## The engine entry point
+
+The typed function above is what tests and tooling call. The function the **engine** calls — the `entry_function` named in `workflow.toml` — has a fixed contract: it receives the start input as a **raw JSON string inside a `Dynamic`** and must return its success value re-encoded as a JSON string:
+
+```gleam
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+
+pub fn run(raw_input: Dynamic) -> Result(String, MyError) {
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) ->
+      case request_codec().decode(raw_json) {
+        Ok(input) ->
+          case execute(input) {
+            Ok(output) -> Ok(output_codec().encode(output))
+            Error(workflow_error) -> Error(workflow_error)
+          }
+        Error(_) -> Error(MyError("failed to decode workflow input"))
+      }
+    Error(_) -> Error(MyError("workflow input payload was not a string"))
+  }
+}
+```
+
+Keep the typed body (`execute`) separate so the harness can test it directly. The repository's [workflow authoring guide](https://github.com/ablative-io/aion/blob/main/docs/guides/workflows.md) covers the contract and the determinism rules in full.
 
 ## Declare and call activities
 
@@ -232,4 +259,4 @@ pub fn run(input: Request) -> Result(String, String) {
 }
 ```
 
-For a complete end-to-end sample that builds a Gleam workflow, packages it as `.aion`, starts `aion-server`, runs a Python worker, and starts a workflow over HTTP, see [`../../examples/hello-world/README.md`](../../examples/hello-world/README.md).
+For a complete end-to-end sample that builds a Gleam workflow, packages it as `.aion`, starts the server with `aion server`, runs a Python worker, and starts a workflow over HTTP, see [`../../examples/hello-world/README.md`](../../examples/hello-world/README.md).

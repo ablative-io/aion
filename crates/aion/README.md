@@ -6,7 +6,7 @@ Transport-agnostic Aion workflow engine with durability, replay, timers, and sup
 
 ```toml
 [dependencies]
-aion = "0.1.0"
+aion = "0.4.0"
 ```
 
 ## Key public types

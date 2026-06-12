@@ -6,7 +6,7 @@ Durable libSQL-backed event store implementation for Aion workflows. This crate 
 
 ```toml
 [dependencies]
-aion-store-libsql = "0.1.0"
+aion-store-libsql = "0.4.0"
 ```
 
 ## Key public types

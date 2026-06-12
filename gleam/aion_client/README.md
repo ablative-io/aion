@@ -10,7 +10,7 @@ gleam add aion_client
 
 ## Server prerequisite
 
-Run an `aion-server` that implements the AW workflow API. The example test mirrors the AL-007 fixture values and can be run with:
+Run an Aion server (`aion server --config <file>`) that implements the AW workflow API. The example test mirrors the AL-007 fixture values and can be run with:
 
 ```sh
 export AION_SERVER_URL=http://127.0.0.1:8080

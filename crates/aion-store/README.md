@@ -6,7 +6,7 @@ Persistence contracts and in-memory event stores for Aion durable workflows. The
 
 ```toml
 [dependencies]
-aion-store = "0.1.0"
+aion-store = "0.4.0"
 ```
 
 ## Key public types

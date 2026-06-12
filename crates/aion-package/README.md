@@ -6,7 +6,7 @@ Archive validation, content hashing, and namespacing for Aion workflow packages.
 
 ```toml
 [dependencies]
-aion-package = "0.1.0"
+aion-package = "0.4.0"
 ```
 
 ## Key public types

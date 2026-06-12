@@ -66,19 +66,25 @@ Use short periods for local runs. This sample bills every 10 seconds and rotates
 
 ## Running and signaling
 
-Package the example with `cargo run -p aion-cli -- package examples/subscription` (after `gleam build`, or pass `--build`; see [`docs/packaging.md`](../../docs/packaging.md)), which reads the example's [`workflow.toml`](workflow.toml) and writes `examples/subscription/subscription.aion`. Once the archive is loaded by the server and a worker exposing the `bill_subscriber` activity is registered, start the `subscription` workflow with the JSON input above using the same CLI flow as the other examples.
+Install the CLI once from the checkout (the crate is aion-cli; the binary is `aion`):
+
+```sh
+cargo install --path crates/aion-cli --locked
+```
+
+Package the example with `aion package examples/subscription` (after `gleam build`, or pass `--build`; see [`docs/packaging.md`](../../docs/packaging.md)), which reads the example's [`workflow.toml`](workflow.toml) and writes `examples/subscription/subscription.aion`. Once the archive is loaded by the server and a worker exposing the `bill_subscriber` activity is registered, start the `subscription` workflow with the JSON input above using the same CLI flow as the other examples.
 
 Send an upgrade signal during a billing period:
 
 ```sh
-cargo run -q -p aion-cli -- --subject subscription-user signal "$WORKFLOW_ID" plan_change \
+aion --subject subscription-user signal "$WORKFLOW_ID" plan_change \
   --payload '{"direction":"upgrade","plan":"pro"}'
 ```
 
 Send a downgrade signal during a billing period:
 
 ```sh
-cargo run -q -p aion-cli -- --subject subscription-user signal "$WORKFLOW_ID" plan_change \
+aion --subject subscription-user signal "$WORKFLOW_ID" plan_change \
   --payload '{"direction":"downgrade","plan":"starter"}'
 ```
 

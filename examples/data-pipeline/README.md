@@ -67,6 +67,12 @@ Install these tools before starting:
 
 All commands below are copy-pasteable from the repository root unless noted.
 
+Install the CLI once from the checkout (the crate is aion-cli; the binary is `aion`):
+
+```sh
+cargo install --path crates/aion-cli --locked
+```
+
 ## 1. Build the Gleam workflow
 
 ```sh
@@ -83,7 +89,7 @@ fetch, process, and aggregation stages.
 Package the compiled workflow into an archive the server can load:
 
 ```sh
-cargo run -p aion-cli -- package examples/data-pipeline
+aion package examples/data-pipeline
 ```
 
 This reads the example's [`workflow.toml`](workflow.toml) and writes
@@ -101,10 +107,10 @@ namespace.
 In terminal 1:
 
 ```sh
-cargo run -p aion-server -- --config dev-config.toml
+aion server --config dev-config.toml
 ```
 
-Leave this process running. Use `aion-cli` over the gRPC endpoint
+Leave this process running. Use the `aion` CLI over the gRPC endpoint
 (`127.0.0.1:50051`) to start and inspect workflows.
 
 ## 3. Start the Python activity worker
@@ -148,7 +154,7 @@ Leave this process running.
 In terminal 3:
 
 ```sh
-START_RESPONSE=$(cargo run -q -p aion-cli -- \
+START_RESPONSE=$(aion \
   --subject data-pipeline-user \
   start data_pipeline --input '{"urls":["https://example.com/alpha","https://example.com/beta","https://example.com/gamma"]}')
 printf '%s\n' "$START_RESPONSE"
@@ -170,7 +176,7 @@ JSON output into shell variables manually.
 Describe the workflow and include history:
 
 ```sh
-cargo run -q -p aion-cli -- --subject data-pipeline-user \
+aion --subject data-pipeline-user \
   describe "$WORKFLOW_ID" --pretty
 ```
 

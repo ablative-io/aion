@@ -137,10 +137,11 @@ the refund id and a human-readable reason in the result payload.
 `crates/aion/tests/order_saga_e2e.rs` drives the packaged archives through
 the real engine (in-process harness: real BEAM VM, real signal router, real
 query service, real package loading — the activity worker is a deterministic
-in-process `ActivityDispatcher` stand-in). Build the archives first:
+in-process `ActivityDispatcher` stand-in). The suite builds both archives
+from the committed Gleam source on every run (`gleam build` + packaging; a
+missing Gleam toolchain fails the gate loudly rather than skipping):
 
 ```sh
-cargo run -p aion-cli -- package examples/order-fulfillment --build
 cargo test -p aion-rs --test order_saga_e2e
 ```
 
@@ -178,14 +179,13 @@ The four tests:
 Building and running this scenario for real surfaced the following (all
 verified empirically; see the test sources for the guards that encode them):
 
-1. **beamr VM: >64-byte engine-to-Gleam await payloads kill the workflow.**
-   Any activity result or failure payload over 64 bytes delivered to a
-   *Gleam-compiled* workflow at an await dies with `VM execution error: bad
-   argument` (63/64 bytes work, 65 does not; Erlang-coded workflows and the
-   workflow start-input path are unaffected). Reproduces identically on
-   beamr 0.4.6, 0.4.9, and 0.5.0. Until the beamr fix lands, worker payloads
-   and failure messages must stay within 64 bytes — the e2e dispatcher
-   enforces this budget loudly.
+1. **beamr VM: >64-byte engine-to-Gleam await payloads killed the workflow
+   (fixed in beamr 0.6.0 / aion 0.4.0).** On beamr 0.4.6–0.5.0, any activity
+   result or failure payload over 64 bytes delivered to a *Gleam-compiled*
+   workflow at an await died with `VM execution error: bad argument`. beamr
+   0.6.0 fixed the refc-binary BIFs; the pin tests that tripped on this
+   defect were flipped back to full end-to-end completion — live queries
+   during child awaits with realistic payloads now complete.
 2. **beamr VM: wake re-entry breaks when a suspending closure re-executes a
    cross-module call.** A pump-wrapped await whose closure body computes an
    argument via a cross-module call (e.g. the SDK's old
@@ -208,9 +208,10 @@ verified empirically; see the test sources for the guards that encode them):
    (`crates/aion/src/runtime/handle/delivery.rs`, `activity_failure`); only
    the Gleam SDK interprets the prefix. Durable history therefore
    misclassifies transient failures.
-5. **Example behavioral tests skip silently when archives are not built.**
-   All `examples_e2e.rs` scenario tests (and this suite) skip with only a
-   captured `eprintln!` notice when `.aion` archives are absent — a green
-   run does not imply the Gleam SDK path was exercised. The beamr 0.5.0 bump
-   was validated green while every Gleam-workflow behavioral test was
-   skipping.
+5. **Example behavioral tests used to skip silently when archives were not
+   built (fixed).** These suites previously skipped when `.aion` archives
+   were absent, so a green run did not imply the Gleam SDK path was
+   exercised — the beamr 0.5.0 bump was validated green while every
+   Gleam-workflow behavioral test was skipping. Every gate now rebuilds its
+   archives from committed Gleam source on each run, and a missing `gleam`
+   toolchain fails the gate instead of skipping.

@@ -1,6 +1,6 @@
 # Packaging Gleam workflows into `.aion` archives
 
-This guide covers packaging any Gleam workflow project — not just the bundled examples — into the `.aion` archive format that `aion-server` loads. The tool is `aion-cli package`, a thin shell over the `aion_package::package_project` library function.
+This guide covers packaging any Gleam workflow project — not just the bundled examples — into the `.aion` archive format the server loads. The tool is `aion package`, a thin shell over the `aion_package::package_project` library function.
 
 ## Project layout
 
@@ -21,7 +21,7 @@ my-workflow/
 
 The project must be **built** before packaging: the packager reads compiled BEAM files from `build/dev/erlang` and never invokes the compiler itself (the CLI's `--build` flag is the one exception, described below).
 
-> **Naming note:** `workflow.toml` is the *packaging* descriptor. It is unrelated to the `aion.toml` file that `aion-server` auto-discovers in its working directory as *server* configuration — the two files configure different programs and never collide.
+> **Naming note:** `workflow.toml` is the *packaging* descriptor. It is unrelated to the `aion.toml` file that `aion server` auto-discovers in its working directory as *server* configuration — the two files configure different programs and never collide.
 
 ## `workflow.toml` reference
 
@@ -51,7 +51,7 @@ output         = "my-workflow.aion"      # OPTIONAL, derived otherwise
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `entry_module` | string | **yes** | The compiled module whose function the engine calls. This is also the **workflow type** clients pass to `aion-cli start` — there is no separate type name. Must be a safe logical module name (no `$`, no path tricks) and unique across all `[[workflow]]` entries. Nested Gleam modules use `@` separators (`billing/cycle.gleam` compiles to `billing@cycle`). |
+| `entry_module` | string | **yes** | The compiled module whose function the engine calls. This is also the **workflow type** clients pass to `aion start` — there is no separate type name. Must be a safe logical module name (no `$`, no path tricks) and unique across all `[[workflow]]` entries. Nested Gleam modules use `@` separators (`billing/cycle.gleam` compiles to `billing@cycle`). |
 | `entry_function` | string | **yes** | The exported function on the entry module the engine invokes. The SDK convention is `run`, but it is a convention, not a default — state it explicitly. |
 | `timeout_seconds` | integer | **yes** | Workflow execution timeout in whole seconds. Must be at least 1. |
 | `input_schema` | string (path) | **yes** | Path to a JSON file, resolved against the project root, containing the JSON Schema for the workflow's input payload. The parsed document is embedded in the manifest verbatim; the file must exist and parse as JSON. |
@@ -93,7 +93,7 @@ The server deploys each version as immutable modules named `<module>$<hash>`, wh
 ## CLI usage
 
 ```sh
-aion-cli package [PATH] [--out <FILE>] [--build] [--pretty]
+aion package [PATH] [--out <FILE>] [--build] [--pretty]
 ```
 
 - `PATH` — workflow project root (the directory containing `workflow.toml`). Defaults to the current directory.
@@ -122,7 +122,7 @@ On success it prints one JSON document to stdout and exits 0:
 }
 ```
 
-`packages[].workflow_type` is the name to pass to `aion-cli start`; `packages[].output` is the path to load with `aion-server --workflow-package` or a `workflow_packages` config entry — or to deploy into a *running* server with `aion-cli deploy <archive>` when the server's `[deploy]` surface is enabled (see [docs/API.md — Operator deploy API](API.md#operator-deploy-api)). The document is `jq`-friendly: `jq -r '.packages[0].output'` extracts the archive path for deploy scripts. Errors print an `Error:` chain on stderr and exit 1; CLI usage mistakes exit 2.
+`packages[].workflow_type` is the name to pass to `aion start`; `packages[].output` is the path to load with `aion server --workflow-package` or a `workflow_packages` config entry — or to deploy into a *running* server with `aion deploy <archive>` when the server's `[deploy]` surface is enabled (see [docs/API.md — Operator deploy API](API.md#operator-deploy-api)). The document is `jq`-friendly: `jq -r '.packages[0].output'` extracts the archive path for deploy scripts. Errors print an `Error:` chain on stderr and exit 1; CLI usage mistakes exit 2.
 
 ## Troubleshooting
 

@@ -24,6 +24,12 @@ Install these tools before starting:
 
 All commands below are copy-pasteable from the repository root unless noted.
 
+Install the CLI once from the checkout (the crate is aion-cli; the binary is `aion`):
+
+```sh
+cargo install --path crates/aion-cli --locked
+```
+
 ## 1. Build the Gleam workflows
 
 ```sh
@@ -39,7 +45,7 @@ The source consumes only the public `aion_flow` modules: `aion/workflow`, `aion/
 ## 2. Package and load both workflows
 
 ```sh
-cargo run -p aion-cli -- package examples/batch-orchestrator
+aion package examples/batch-orchestrator
 ```
 
 This reads the example's [`workflow.toml`](workflow.toml) and the BEAM files produced by `gleam build` (pass `--build` to compile and package in one step; see [`docs/packaging.md`](../../docs/packaging.md) for the full reference) and writes **two** archives:
@@ -54,7 +60,7 @@ Start the dev server in terminal 1 with **both** packages loaded — the parent 
 ```sh
 AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024 \
 AION_RUNTIME_QUERY_TIMEOUT_MS=10000 \
-cargo run -p aion-server -- \
+aion server \
   --workflow-package examples/batch-orchestrator/batch-orchestrator.aion \
   --workflow-package examples/batch-orchestrator/batch-orchestrator-item.aion
 ```
@@ -87,7 +93,7 @@ Leave the worker running.
 In terminal 3, start a workflow with several independent items. One payload intentionally contains `fail` so you can see a child failure recorded as an item outcome while the parent still completes.
 
 ```sh
-START_RESPONSE=$(cargo run -q -p aion-cli -- \
+START_RESPONSE=$(aion \
   --subject batch-user \
   start batch_orchestrator \
   --input '{"items":[{"id":"item-1","payload":"alpha"},{"id":"item-2","payload":"beta"},{"id":"item-3","payload":"please-fail"},{"id":"item-4","payload":"delta"}]}')
@@ -105,7 +111,7 @@ If you do not have `jq`, copy the `workflow_id` and `run_id` strings from the JS
 While the parent is still awaiting children, query the `batch_progress` handler (a four-item batch finishes in well under a second, so use a larger batch when you want to observe intermediate progress):
 
 ```sh
-cargo run -q -p aion-cli -- \
+aion \
   --subject batch-user \
   query "$WORKFLOW_ID" batch_progress --pretty
 ```
@@ -132,7 +138,7 @@ Queries are read-only. A query handler should return already-known workflow stat
 After all children complete or fail, describe the workflow:
 
 ```sh
-cargo run -q -p aion-cli -- \
+aion \
   --subject batch-user \
   describe "$WORKFLOW_ID" --pretty
 ```

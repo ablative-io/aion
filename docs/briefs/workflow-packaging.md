@@ -1,4 +1,4 @@
-# Design Brief — Workflow Packaging Tooling (`workflow.toml` → `package_project` → `aion-cli package`)
+# Design Brief — Workflow Packaging Tooling (`workflow.toml` → `package_project` → `aion package`)
 
 **Repo:** `/Users/tom/Developer/ablative/aion`, main @ `1769b710` ("Point package metadata at the canonical repo and author").
 **Coordination warning:** another agent is actively editing `crates/aion/src/**` (#58 Wave C — working tree dirty in `engine/`, `runtime/`). This work touches **only** `crates/aion-package`, `crates/aion-cli`, `examples/`, and docs — a disjoint file set. No `git stash`; commit verified waves immediately (hard project rule). Task **#52** (CLI error-detail improvements) touches `aion-cli` error rendering — Wave 2 must rebase on it or coordinate.
@@ -23,7 +23,7 @@ This brief is self-contained: an implementing agent needs no prior conversation 
 ## Commissioned shape (Tom, 2026-06-11 — fixed constraints, design within them)
 
 1. **Library-first:** a public project-packaging API in `aion-package` (e.g. `package_project(root, options)`) consuming an **already-built** Gleam project. **No process spawning in the library** — Meridian links this function directly and exposes it as a native agent tool in its unified CLI binary.
-2. `aion-cli package` is a thin shell over that library; process spawning (optionally invoking `gleam build`) is allowed in the CLI layer only.
+2. `aion package` is a thin shell over that library; process spawning (optionally invoking `gleam build`) is allowed in the CLI layer only.
 3. Manifest configuration comes from a `workflow.toml` in the workflow project root (commissioned as `aion.toml`; renamed per the D-10 resolution).
 4. The bespoke example packager binaries are **replaced** by the new tool; the examples become consumers and the proof.
 5. End-user documentation: how to package an arbitrary Gleam workflow.
@@ -181,7 +181,7 @@ Field-level requirements:
 
 ## 3. Module discovery + filtering
 
-- **R8** — Discovery root is `<project>/build/dev/erlang`. The library never builds; if the directory (or any required package's `ebin`) is missing, fail with `ProjectNotBuilt` whose message names the missing path and says to run `gleam build` (or `aion-cli package --build`).
+- **R8** — Discovery root is `<project>/build/dev/erlang`. The library never builds; if the directory (or any required package's `ebin`) is missing, fail with `ProjectNotBuilt` whose message names the missing path and says to run `gleam build` (or `aion package --build`).
 - **R9** — Per-package collection: for each package in the **production dependency closure** (D-8), read `build/dev/erlang/<pkg>/ebin/*.beam`; module name = UTF-8 file stem; non-UTF-8 stems are typed errors; non-`.beam` entries (`.app`, `fingerprint/`…) are skipped silently.
 - **R10** — SDK test-module filter (D-9): stems `aion_flow_ffi`, `aion@testing`, and prefix `aion@testing@` are excluded **only when found in the `aion_flow` package's ebin**, and each exclusion is recorded in the returned report (module, package, reason). A *user's own* module named `aion_flow_ffi` must NOT be silently dropped — it flows into `BeamSet::new` and fails typed as `ReservedModuleName` (the existing `RESERVED_MODULE_NAMES` contract is the single source of truth; the library adds no second list).
 - **R11** — Duplicate logical module names across packages are detected **before** `BeamSet::new` so the error can carry provenance (both package names), instead of the bare `MalformedBeamEntry` the set would give.
@@ -323,7 +323,7 @@ pub enum PackagingError {
 ## 5. CLI UX (`crates/aion-cli`)
 
 ```
-aion-cli package [PATH] [--out <FILE>] [--build] [--pretty]
+aion package [PATH] [--out <FILE>] [--build] [--pretty]
 ```
 
 - **R17** — `PATH` positional, defaults to `.` (argued: operating on the cwd is the universal convention of every project tool the target user already runs — `gleam build`, `cargo build` — not an invented value).
@@ -372,7 +372,7 @@ aion-cli package [PATH] [--out <FILE>] [--build] [--pretty]
 
 - **R24** — Delete all seven `examples/*/packager/` directories (binaries, `Cargo.toml`s, lockfiles). No compatibility shims, no zombie code.
 - **R25** — Each of the seven examples gains `workflow.toml` + `schemas/input.json` + `schemas/output.json`, transcribing exactly the values in §1.2's variance table (entry module, function, timeout, activities, output filename preserved — `hello-world.aion` etc. via the explicit `output` field where the derived name differs). The committed `*.aion` artifacts are regenerated with the new tool.
-- **R26** — Docs: `GETTING-STARTED.md` step 2 and `examples/*/README.md` packaging sections replace `cargo run --manifest-path examples/<x>/packager/Cargo.toml` with `cargo run -p aion-cli -- package examples/<x>` (with the `gleam build` prerequisite or `--build`). New end-user guide `docs/packaging.md`: packaging an arbitrary Gleam workflow — project layout, full `workflow.toml` reference (every field, required/optional/derived), discovery and filtering behaviour, determinism/content-hash story, troubleshooting table keyed by `PackagingError` messages, and a note on the D-10 rename (the server's auto-discovered `aion.toml` is an unrelated server-config file).
+- **R26** — Docs: `GETTING-STARTED.md` step 2 and `examples/*/README.md` packaging sections replace `cargo run --manifest-path examples/<x>/packager/Cargo.toml` with `aion package examples/<x>` (with the `gleam build` prerequisite or `--build`). New end-user guide `docs/packaging.md`: packaging an arbitrary Gleam workflow — project layout, full `workflow.toml` reference (every field, required/optional/derived), discovery and filtering behaviour, determinism/content-hash story, troubleshooting table keyed by `PackagingError` messages, and a note on the D-10 rename (the server's auto-discovered `aion.toml` is an unrelated server-config file).
 
 ---
 

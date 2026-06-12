@@ -10,7 +10,7 @@ python -m pip install -e sdks/python/aion-client
 
 ## Server prerequisite
 
-Run an `aion-server` that implements the AW workflow API. The runnable example uses the AL-007 fixture defaults:
+Run an Aion server (`aion server --config <file>`) that implements the AW workflow API. The runnable example uses the AL-007 fixture defaults:
 
 ```sh
 export AION_SERVER_URL=http://127.0.0.1:50051

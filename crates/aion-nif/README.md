@@ -6,7 +6,7 @@ Native function declaration helpers for Gleam and Elixir Aion workflows. The cra
 
 ```toml
 [dependencies]
-aion-nif = "0.1.0"
+aion-nif = "0.4.0"
 ```
 
 ## Key public types
