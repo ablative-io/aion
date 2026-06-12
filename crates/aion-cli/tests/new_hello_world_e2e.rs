@@ -201,10 +201,7 @@ fn drive_run_to_completion(project: &Path, endpoint: &str) -> Result<(), TestErr
 
     let deadline = Instant::now() + COMPLETION_DEADLINE;
     loop {
-        let output = common::run_cli(
-            project,
-            &["--endpoint", endpoint, "describe", &workflow_id],
-        )?;
+        let output = common::run_cli(project, &["--endpoint", endpoint, "describe", &workflow_id])?;
         let described = common::success_json(&output)?;
         let status = described["summary"]["status"]
             .as_str()
@@ -213,10 +210,9 @@ fn drive_run_to_completion(project: &Path, endpoint: &str) -> Result<(), TestErr
         if status == "Completed" {
             let rendered = described.to_string();
             if !rendered.contains("Hello, Ada!") {
-                return Err(format!(
-                    "completed history must carry the typed greeting: {rendered}"
-                )
-                .into());
+                return Err(
+                    format!("completed history must carry the typed greeting: {rendered}").into(),
+                );
             }
             return Ok(());
         }

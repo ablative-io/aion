@@ -81,9 +81,8 @@ fn scaffold(parent: &Path, args: &NewArgs) -> Result<Value> {
         let contents = render(contents_template, &args.name)?;
         let destination = target.join(&relative);
         if let Some(directory) = destination.parent() {
-            std::fs::create_dir_all(directory).with_context(|| {
-                format!("failed to create directory {}", directory.display())
-            })?;
+            std::fs::create_dir_all(directory)
+                .with_context(|| format!("failed to create directory {}", directory.display()))?;
         }
         std::fs::write(&destination, contents)
             .with_context(|| format!("failed to write {}", destination.display()))?;
@@ -126,8 +125,9 @@ fn validate_name(name: &str) -> Result<()> {
     let starts_with_letter = characters
         .next()
         .is_some_and(|first| first.is_ascii_lowercase());
-    let rest_is_snake = characters
-        .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_');
+    let rest_is_snake = characters.all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    });
     if !starts_with_letter || !rest_is_snake {
         bail!(
             "invalid project name {name:?}: the name becomes the Gleam entry module, so it \
@@ -182,8 +182,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        NewArgs, Template, WorkerLanguage, ensure_target_is_empty, render, scaffold,
-        validate_name,
+        NewArgs, Template, WorkerLanguage, ensure_target_is_empty, render, scaffold, validate_name,
     };
 
     type TestError = Box<dyn std::error::Error>;
@@ -207,7 +206,14 @@ mod tests {
     #[test]
     fn name_validation_rejects_invalid_names_with_the_rule() -> Result<(), TestError> {
         for name in [
-            "", "My_Flow", "9lives", "_hidden", "kebab-case", "with space", "emoji✨", "gleam",
+            "",
+            "My_Flow",
+            "9lives",
+            "_hidden",
+            "kebab-case",
+            "with space",
+            "emoji✨",
+            "gleam",
         ] {
             let error = require_error(validate_name(name))?;
             assert!(
@@ -264,7 +270,11 @@ mod tests {
             format!("aion-worker = \"{}\"", env!("CARGO_PKG_VERSION"))
         );
         let error = require_error(render("oops {{nmae}}", "demo"))?;
-        assert!(error.to_string().contains("unresolved template placeholder"));
+        assert!(
+            error
+                .to_string()
+                .contains("unresolved template placeholder")
+        );
         Ok(())
     }
 
@@ -289,9 +299,7 @@ mod tests {
             .filter_map(|(index, marker)| {
                 let token: String = readme[index + marker.len()..]
                     .chars()
-                    .take_while(|character| {
-                        character.is_ascii_alphanumeric() || *character == '-'
-                    })
+                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '-')
                     .collect();
                 if token.is_empty() { None } else { Some(token) }
             })

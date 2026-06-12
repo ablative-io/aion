@@ -107,10 +107,7 @@ pub fn package_project(project: &Path, name: &str) -> Result<PathBuf, TestError>
         .and_then(|packages| packages.first())
         .ok_or("aion package must report one packaged workflow")?;
     if packaged["workflow_type"] != name {
-        return Err(format!(
-            "packaged workflow type must be {name}; report: {report}"
-        )
-        .into());
+        return Err(format!("packaged workflow type must be {name}; report: {report}").into());
     }
     let archive = project.join(format!("{name}.aion"));
     if !archive.is_file() {

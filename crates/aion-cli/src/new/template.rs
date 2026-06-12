@@ -28,9 +28,18 @@ pub enum Template {
 
 /// Files every template emits.
 const SHARED_FILES: &[ManifestFile] = &[
-    ("gleam.toml", include_str!("../../templates/shared/gleam.toml")),
-    (".gitignore", include_str!("../../templates/shared/gitignore")),
-    ("aion.toml", include_str!("../../templates/shared/aion.toml")),
+    (
+        "gleam.toml",
+        include_str!("../../templates/shared/gleam.toml"),
+    ),
+    (
+        ".gitignore",
+        include_str!("../../templates/shared/gitignore"),
+    ),
+    (
+        "aion.toml",
+        include_str!("../../templates/shared/aion.toml"),
+    ),
 ];
 
 const HELLO_WORLD_FILES: &[ManifestFile] = &[

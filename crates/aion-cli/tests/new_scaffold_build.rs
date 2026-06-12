@@ -131,7 +131,14 @@ fn new_refuses_worker_for_templates_without_activities() -> Result<(), TestError
     let temp_dir = tempfile::tempdir()?;
     let output = common::run_cli(
         temp_dir.path(),
-        &["new", "no_worker", "--template", "hello-world", "--worker", "rust"],
+        &[
+            "new",
+            "no_worker",
+            "--template",
+            "hello-world",
+            "--worker",
+            "rust",
+        ],
     )?;
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);

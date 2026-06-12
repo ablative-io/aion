@@ -461,7 +461,13 @@ mod tests {
     #[test]
     fn new_parses_name_template_and_worker() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from([
-            "aion", "new", "my_flow", "--template", "saga", "--worker", "rust",
+            "aion",
+            "new",
+            "my_flow",
+            "--template",
+            "saga",
+            "--worker",
+            "rust",
         ])?;
         let Command::Client(ClientCommand::New(_)) = cli.command else {
             anyhow::bail!("expected new command");
