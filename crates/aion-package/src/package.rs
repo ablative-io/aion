@@ -618,10 +618,8 @@ mod tests {
         .write_to_bytes()?;
         let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
 
-        let reloaded = Package::load_from_bytes(
-            package.to_archive_bytes()?,
-            ExtractionLimits::unbounded(),
-        )?;
+        let reloaded =
+            Package::load_from_bytes(package.to_archive_bytes()?, ExtractionLimits::unbounded())?;
 
         assert_eq!(reloaded, package);
         assert_eq!(

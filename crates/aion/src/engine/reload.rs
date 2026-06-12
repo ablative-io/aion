@@ -59,11 +59,8 @@ impl Engine {
                 .workflow_catalog()
                 .load_package(self.runtime(), &package)
                 .await?;
-            crate::loader::persistence::persist_deployed_package(
-                self.store().as_ref(),
-                &package,
-            )
-            .await?;
+            crate::loader::persistence::persist_deployed_package(self.store().as_ref(), &package)
+                .await?;
             Ok(outcome)
         }
         .await;

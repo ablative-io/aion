@@ -30,11 +30,11 @@ fn deployed_at(offset_seconds: i64) -> Result<DateTime<Utc>, StoreError> {
 }
 
 fn expect<T: PartialEq + std::fmt::Debug>(
-    found: T,
+    found: &T,
     wanted: &T,
     contract: &str,
 ) -> Result<(), StoreError> {
-    if &found == wanted {
+    if found == wanted {
         Ok(())
     } else {
         Err(StoreError::Backend(format!(
@@ -53,7 +53,7 @@ pub(super) async fn put_and_list_packages_round_trip_in_deploy_order(
     store.put_package(earlier.clone()).await?;
 
     expect(
-        store.list_packages().await?,
+        &store.list_packages().await?,
         &vec![earlier, later],
         "list_packages must return complete records in ascending deployed_at order",
     )
@@ -70,7 +70,7 @@ pub(super) async fn put_package_replaces_existing_row(
     store.put_package(replacement.clone()).await?;
 
     expect(
-        store.list_packages().await?,
+        &store.list_packages().await?,
         &vec![replacement],
         "re-persisting the same (type, hash) must replace the row, not duplicate it",
     )
@@ -89,7 +89,7 @@ pub(super) async fn put_package_points_route_at_persisted_version(
         .await?;
 
     expect(
-        store.list_package_routes().await?,
+        &store.list_package_routes().await?,
         &vec![PackageRouteRecord {
             workflow_type: "checkout".to_owned(),
             content_hash: second,
@@ -111,7 +111,7 @@ pub(super) async fn put_package_route_repoints_without_touching_archives(
     store.put_package_route("checkout", &first).await?;
 
     expect(
-        store.list_package_routes().await?,
+        &store.list_package_routes().await?,
         &vec![PackageRouteRecord {
             workflow_type: "checkout".to_owned(),
             content_hash: first,
@@ -119,7 +119,7 @@ pub(super) async fn put_package_route_repoints_without_touching_archives(
         "put_package_route must re-point the route (rollback)",
     )?;
     expect(
-        store.list_packages().await?,
+        &store.list_packages().await?,
         &vec![v1, v2],
         "a route re-point must leave persisted archives untouched",
     )
@@ -137,7 +137,7 @@ pub(super) async fn delete_package_removes_only_target_and_is_idempotent(
 
     store.delete_package("checkout", &first).await?;
     expect(
-        store.list_packages().await?,
+        &store.list_packages().await?,
         &vec![v2.clone()],
         "delete_package must remove exactly the target version",
     )?;
@@ -147,7 +147,7 @@ pub(super) async fn delete_package_removes_only_target_and_is_idempotent(
     store.delete_package("checkout", &first).await?;
     store.delete_package("never-persisted", &second).await?;
     expect(
-        store.list_packages().await?,
+        &store.list_packages().await?,
         &vec![v2],
         "idempotent deletes must leave surviving rows untouched",
     )
@@ -161,7 +161,7 @@ pub(super) async fn routes_list_in_workflow_type_order(
     store.put_package_route("alpha", &hash).await?;
 
     expect(
-        store.list_package_routes().await?,
+        &store.list_package_routes().await?,
         &vec![
             PackageRouteRecord {
                 workflow_type: "alpha".to_owned(),

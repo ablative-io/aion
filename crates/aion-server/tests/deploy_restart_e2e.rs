@@ -272,7 +272,10 @@ async fn runtime_deploy_survives_server_restart_and_run_completes() -> Result<()
     // Epoch 1: empty server; the deploy API is the only package source.
     let store: Arc<dyn EventStore> = Arc::new(LibSqlStore::open(db_path.clone()).await?);
     let (engine, router) = server_over(store).await?;
-    let response = router.clone().oneshot(post_archive(archive.clone())?).await?;
+    let response = router
+        .clone()
+        .oneshot(post_archive(archive.clone())?)
+        .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let loaded: ProtoLoadPackageResponse = read_json(response).await?;
     assert!(loaded.freshly_loaded);
@@ -344,13 +347,8 @@ async fn empty_store_restart_reloads_nothing() -> Result<(), TestError> {
     let listing: ProtoListVersionsResponse = read_json(response).await?;
     assert!(listing.versions.is_empty(), "{listing:?}");
 
-    let response = signal_over_http(
-        &router,
-        &WorkflowId::new_v4(),
-        &RunId::new_v4(),
-        "release",
-    )
-    .await?;
+    let response =
+        signal_over_http(&router, &WorkflowId::new_v4(), &RunId::new_v4(), "release").await?;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let error: aion_proto::WireError = read_json(response).await?;
     assert_eq!(error.code, WireErrorCode::NotFound);

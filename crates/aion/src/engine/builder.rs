@@ -108,8 +108,7 @@ async fn assemble_startup_catalog(
     sources: Vec<WorkflowPackageSource>,
 ) -> Result<Arc<WorkflowCatalog>, EngineError> {
     let catalog = Arc::new(WorkflowCatalog::new());
-    crate::loader::persistence::reload_persisted_packages(runtime, catalog.as_ref(), store)
-        .await?;
+    crate::loader::persistence::reload_persisted_packages(runtime, catalog.as_ref(), store).await?;
     for source in sources {
         let package = package_from_source(source)?;
         let outcome = catalog.load_package(runtime, &package).await?;

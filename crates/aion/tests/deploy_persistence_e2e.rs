@@ -71,7 +71,9 @@ async fn runtime_deployed_package_survives_restart_and_recovers_runs() -> TestRe
 
     // And the deployed version remains route-active for new starts.
     let (new_id, new_run) = start(&recovered).await?;
-    recovered.signal(&new_id, &new_run, "step", input()?).await?;
+    recovered
+        .signal(&new_id, &new_run, "step", input()?)
+        .await?;
     recovered
         .signal(&new_id, &new_run, "release", input()?)
         .await?;
