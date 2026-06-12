@@ -99,13 +99,26 @@ Riding in main, unpublished:
 
 ## 5. Meridian integration (Tom's current focus)
 
-`examples/stacked-dev` is the contract. Meridian owes:
-- Real flag/schema wiring at the eight `TODO(meridian)` seams — inventoried
-  in `examples/stacked-dev/README.md`, all in
-  `src/stacked_dev/locals.gleam` (+ one on `types.BuildWarm`): exchange-VM
-  dispatch, provision flags, `affected-modules` subcommand, affected-closure
-  gate scope, norn run/resume flags, review-request command, stack
-  submit/land schemas, warm-cache sharing per isolation mode.
+`examples/stacked-dev` is the contract. Most CLI seams were resolved by
+live contact 2026-06-13 (yg provision/diagnostics/merge, norn run/resume
++ output envelope, `meridian review request` argv/identity/response
+envelope); the remaining typed seams are exchange-VM dispatch (Copy/
+Overlay/Vm isolation), affected-closure gate scope, and warm-cache
+sharing per isolation mode. Meridian owes:
+- **CLI contract discipline (the lesson of the live-dogfood night).**
+  Five consecutive run failures were guessed-contract drift, not logic
+  bugs: argv order (clap's greedy `--reviewer` swallowing a positional),
+  an undocumented required identity (`--as`), workspace resolution
+  (config key, not `workspace activate` state), and an imagined response
+  shape (`request_id` does not exist). Fixes wanted on the Meridian side:
+  (a) schema'd/versioned machine output on every CLI verb — norn's
+  `--output-schema` is the model, it never broke; (b) `review request`
+  should validate the branch exists before DM-ing reviewers; (c)
+  `workspace join` 415s (the join POST lacks a Content-Type header); (d)
+  `workspace activate` state should be consulted by `review request`.
+  On our side the discipline is permanent: every test shim emits a REAL
+  captured envelope, never an invented one — contract drift must break a
+  test, not a live run.
 - A Meridian worker serving the eight activity names
   (`provision_workspace`, `warm_build`, `dev`, `scoped_checks`,
   `dev_resume`, `full_checks`, `request_review`, `land`) mirroring the
