@@ -34,7 +34,7 @@ pub fn all(
       let specs = activity_specs(activities)
       let id = collection_id("all", specs)
 
-      case pump.run(fn() { ffi.collect_all(id, specs) }) {
+      case pump.run(fn() { pump.shield(ffi.collect_all(id, specs)) }) {
         Ok(payloads) -> decode_many(payloads, output_codec)
         Error(raw_error) -> Error(activity_error(raw_error))
       }
@@ -63,7 +63,7 @@ pub fn race(
       let specs = activity_specs(activities)
       let id = collection_id("race", specs)
 
-      case pump.run(fn() { ffi.collect_race(id, specs) }) {
+      case pump.run(fn() { pump.shield(ffi.collect_race(id, specs)) }) {
         Ok(payload) -> decode_one(payload, output_codec)
         Error(raw_error) -> Error(activity_error(raw_error))
       }

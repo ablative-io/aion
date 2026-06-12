@@ -42,7 +42,9 @@ pub fn receive(
   reference: SignalRef(payload),
 ) -> Result(payload, error.ReceiveError) {
   case
-    pump.run(fn() { ffi.receive_signal(name(reference), receive_config()) })
+    pump.run(fn() {
+      pump.shield(ffi.receive_signal(name(reference), receive_config()))
+    })
   {
     Ok(raw_payload) -> {
       let payload_codec = codec(reference)

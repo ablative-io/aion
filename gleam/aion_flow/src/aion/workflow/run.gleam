@@ -48,7 +48,9 @@ pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
     Ok(correlation_id) -> {
       // The await is a yield point: pending workflow queries are serviced
       // by the query pump before the activity result resolves.
-      case pump.run(fn() { ffi.await_activity_result(correlation_id) }) {
+      case
+        pump.run(fn() { pump.shield(ffi.await_activity_result(correlation_id)) })
+      {
         Ok(payload) -> {
           case output_codec.decode(payload) {
             Ok(output) -> Ok(output)

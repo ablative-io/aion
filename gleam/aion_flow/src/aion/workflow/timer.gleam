@@ -32,7 +32,9 @@ pub fn timer_id(reference: TimerRef) -> String {
 /// query pump while the timer is parked. `with_timeout` needs no pump of its
 /// own — the awaits running inside its operation are the yield points.
 pub fn sleep(duration: duration.Duration) -> Result(Nil, error.EngineError) {
-  case pump.run(fn() { ffi.sleep(duration_to_boundary(duration)) }) {
+  case
+    pump.run(fn() { pump.shield(ffi.sleep(duration_to_boundary(duration))) })
+  {
     Ok(_) -> Ok(Nil)
     Error(raw_error) -> Error(error.EngineFailure(message: raw_error))
   }

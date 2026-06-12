@@ -68,7 +68,7 @@ pub fn await(
   // sentinel that the enclosing scope consumes. Child failure — including
   // engine-side cancellation/timeout terminals — arrives as `{ok, "error:"}`
   // data and is decoded by `decode_child_result` below.
-  case pump.run(fn() { ffi.await_child(child_id(handle)) }) {
+  case pump.run(fn() { pump.shield(ffi.await_child(child_id(handle))) }) {
     Ok(raw_result) -> decode_child_result(raw_result, handle)
     Error(raw_error) -> Error(error.ChildEngineFailure(message: raw_error))
   }
