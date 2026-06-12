@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "depth": { "type": "integer", "minimum": 1 },
+    "max_depth": { "type": "integer", "minimum": 1 },
+    "job_id": { "type": "string" },
+    "note": { "type": "string" }
+  },
+  "required": ["depth", "max_depth", "job_id", "note"]
+}

@@ -1,0 +1,44 @@
+# Engine e2e fixture descriptor consumed by the from-source test gates
+# (`crates/aion/tests/nested_workflows_e2e.rs`).
+#
+# Four entries sharing one beam set: the three-level chain
+# `level_one -> level_two -> level_three` and the self-spawning recursion
+# probe `level_self`. A spawned child's workflow type is resolved by entry
+# module name against the engine's loaded packages, so every level needs its
+# own archive loaded alongside the others.
+
+[[workflow]]
+entry_module = "level_one"
+entry_function = "run"
+timeout_seconds = 600
+input_schema = "schemas/chain_input.json"
+output_schema = "schemas/output.json"
+activities = []
+output = "level-one.aion"
+
+[[workflow]]
+entry_module = "level_two"
+entry_function = "run"
+timeout_seconds = 600
+input_schema = "schemas/chain_input.json"
+output_schema = "schemas/output.json"
+activities = []
+output = "level-two.aion"
+
+[[workflow]]
+entry_module = "level_three"
+entry_function = "run"
+timeout_seconds = 600
+input_schema = "schemas/chain_input.json"
+output_schema = "schemas/output.json"
+activities = ["leaf_work"]
+output = "level-three.aion"
+
+[[workflow]]
+entry_module = "level_self"
+entry_function = "run"
+timeout_seconds = 600
+input_schema = "schemas/self_input.json"
+output_schema = "schemas/output.json"
+activities = ["leaf_work"]
+output = "level-self.aion"
