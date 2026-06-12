@@ -148,4 +148,17 @@ Riding in main, unpublished:
   Meridian worker answer). The engine-level candidate is Temporal-style
   worker heartbeats: `heartbeat(details)` updating queryable live state
   without appending history, which also enables heartbeat timeouts for
-  detecting hung activities.
+  detecting hung activities. CONFIRMED WANTED (Tom, 2026-06-13).
+- **Worker task queues / routing / affinity.** CONFIRMED WANTED (Tom,
+  2026-06-13). Today activities dispatch by name to whichever connected
+  worker serves that name — fine for one worker, insufficient for fleets:
+  filesystem-coupled activity families (stacked-dev's provision → dev →
+  checks → land all share a worktree path) must land on the SAME worker
+  that provisioned the workspace. Temporal solves this with task queues;
+  we want named queues (worker registers names+queue, workflow/spawn
+  chooses queue) plus run-affinity ("subsequent activities of this run
+  prefer the worker that served activity X"), and capability placement
+  falls out (norn workers on the token box, check workers on CI-class
+  machines, GPU activities by the GPU). Single-remote-worker deployments
+  need none of this and work today — the worker owns its private disk and
+  only data crosses the wire.
