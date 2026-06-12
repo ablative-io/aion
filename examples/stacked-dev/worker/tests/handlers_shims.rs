@@ -311,11 +311,11 @@ fn dev_parses_the_canned_dev_result_and_overrides_the_session_id() -> TestResult
 }
 
 #[test]
-fn dev_unwraps_the_result_envelope_when_the_bare_shape_fails() -> TestResult {
+fn dev_unwraps_real_norns_output_envelope_ignoring_telemetry_fields() -> TestResult {
     let shims = Shims::new()?;
     shims.write(
         "norn",
-        r#"printf '%s' '{"result":{"session_id":"x","files_touched":["a.rs"],"summary":"enveloped"}}'"#,
+        r#"printf '%s' '{"output":{"session_id":"x","files_touched":["a.rs"],"summary":"enveloped"},"usage":{"input_tokens":1,"output_tokens":2},"model":"m","session_id":"x","events":[{"type":"UserMessage"}]}'"#,
     )?;
 
     let result = handlers::startup_task(

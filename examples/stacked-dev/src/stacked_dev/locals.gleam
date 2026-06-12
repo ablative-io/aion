@@ -431,10 +431,12 @@ fn require_json(
 
 /// Decode a norn command's stdout as a `DevResult`.
 ///
-/// TODO(meridian): norn `--output-format json` emits a completion envelope;
-/// confirm whether the structured `DevResult` is the envelope root or a nested
-/// field, and adjust `dev_result_codec` accordingly. The session id is set by
-/// the caller (`--session-id`), so it is overwritten after decode regardless.
+/// CONFIRMED against real norn (live run, 2026-06-13): `--output-format json`
+/// emits a completion envelope with the schema-constrained result under
+/// `"output"` (alongside `usage`/`model`/`events`, ignored here). The bare
+/// shape is tried first because the fake-CLI shims emit the `DevResult` raw.
+/// The session id is set by the caller (`--session-id`), so it is overwritten
+/// after decode regardless.
 fn require_dev_result(
   command_run: cli.CliRun,
   context: String,
@@ -444,8 +446,15 @@ fn require_dev_result(
   case codecs_core.dev_result_codec().decode(trimmed) {
     Ok(dev_result) -> next(dev_result)
     Error(_) ->
-      Error(error.terminal(
-        context <> " produced unparseable output: " <> trimmed,
-      ))
+      case codecs_core.norn_envelope_codec().decode(trimmed) {
+        Ok(dev_result) -> next(dev_result)
+        Error(_) ->
+          Error(error.terminal(
+            context
+            <> " produced unparseable output (tried the bare DevResult shape"
+            <> " and norn's {\"output\": ...} envelope): "
+            <> trimmed,
+          ))
+      }
   }
 }

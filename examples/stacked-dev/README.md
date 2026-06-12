@@ -190,7 +190,6 @@ Every Meridian-specific unknown is marked in code rather than guessed:
 | Complete affected-closure gate scope | `src/stacked_dev/locals.gleam`, `full_checks` |
 | `--profile <dev profile>` + richer prompt assembly (design-context extraction, per-R# rendering from `onatopp-dev-norn/workflow.rhai`) | `src/stacked_dev/locals.gleam`, `dev` |
 | Carry the workspace root on `ResumeInput` so resume can confine file tools with `--workspace-root` | `src/stacked_dev/locals.gleam`, `dev_resume` |
-| Confirm norn's `--output-format json` envelope shape (is the structured `DevResult` the root or a nested field?) | `src/stacked_dev/locals.gleam`, `require_dev_result` |
 | Review request command and output schema | `src/stacked_dev/locals.gleam`, `request_review` |
 | Stack submit/land output schemas | `src/stacked_dev/locals.gleam`, `land` |
 | Warm-cache sharing across isolation modes | `src/stacked_dev/types.gleam`, `BuildWarm` doc |
@@ -200,7 +199,10 @@ worktree provisioning (`yg branch add` + `yg branch provision --path`),
 affected-set scoping (`yg graph affected --plain --direct-only`), scoped
 and workspace checks (`yg diagnostics check`), norn headless invocation
 (`--print --session-id/--resume --output-schema --output-format json`
-with a deterministic branch-derived session id).
+with a deterministic branch-derived session id), and norn's JSON envelope
+(confirmed live: the schema-constrained result sits under `"output"`,
+alongside usage/model/event telemetry — decoded by both `locals.gleam` and
+the worker).
 
 ## Layout
 

@@ -506,22 +506,27 @@ fn require_json<T: serde::de::DeserializeOwned>(
 /// No silent fallback beyond that documented two-shape attempt. The caller
 /// overrides `session_id` with the id it set regardless.
 fn parse_dev_result(command_run: &CliRun, context: &str) -> Result<DevResult, ActivityFailure> {
+    // CONFIRMED against real norn (live run, 2026-06-13): `--output-format
+    // json` emits a completion envelope with the schema-constrained result
+    // under `"output"`, alongside `usage`/`model`/`session_id`/`events`
+    // (ignored here). The bare shape stays first for the fake-CLI shims,
+    // which emit the `DevResult` raw.
     #[derive(Deserialize)]
-    struct ResultEnvelope {
-        result: DevResult,
+    struct NornEnvelope {
+        output: DevResult,
     }
 
     let trimmed = command_run.output.trim();
     if let Ok(dev_result) = serde_json::from_str::<DevResult>(trimmed) {
         return Ok(dev_result);
     }
-    if let Ok(envelope) = serde_json::from_str::<ResultEnvelope>(trimmed) {
-        return Ok(envelope.result);
+    if let Ok(envelope) = serde_json::from_str::<NornEnvelope>(trimmed) {
+        return Ok(envelope.output);
     }
 
     Err(ActivityFailure::terminal(format!(
         "{context} produced unparseable output \
-         (tried the bare DevResult shape and the {{\"result\": …}} envelope): {}",
+         (tried the bare DevResult shape and norn's {{\"output\": …}} envelope): {}",
         head(trimmed, UNPARSEABLE_OUTPUT_HEAD)
     )))
 }

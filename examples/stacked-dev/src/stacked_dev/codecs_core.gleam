@@ -187,6 +187,22 @@ pub fn dev_result_codec() -> codec.Codec(DevResult) {
   codec.json_codec(dev_result_to_json, dev_result_decoder())
 }
 
+/// Codec for real norn's `--output-format json` completion envelope: the
+/// schema-constrained result sits under `"output"`, alongside usage/model/
+/// event fields this workflow ignores (confirmed live, 2026-06-13). Encoding
+/// reproduces only the `output` field — the rest is norn-owned telemetry.
+pub fn norn_envelope_codec() -> codec.Codec(DevResult) {
+  codec.json_codec(
+    fn(result: DevResult) {
+      json.object([#("output", dev_result_to_json(result))])
+    },
+    {
+      use dev_result <- decode.field("output", dev_result_decoder())
+      decode.success(dev_result)
+    },
+  )
+}
+
 /// Codec for the startup fan-out input envelope shared by the `warm_build`
 /// and `dev` activities (see `types.StartupTask`).
 pub fn startup_task_codec() -> codec.Codec(StartupTask) {
