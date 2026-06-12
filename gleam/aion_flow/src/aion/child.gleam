@@ -68,7 +68,12 @@ pub fn await(
   // sentinel that the enclosing scope consumes. Child failure — including
   // engine-side cancellation/timeout terminals — arrives as `{ok, "error:"}`
   // data and is decoded by `decode_child_result` below.
-  case pump.run(fn() { pump.shield(ffi.await_child(child_id(handle))) }) {
+  //
+  // The child id is precomputed so the pump thunk's body is exactly one
+  // shielded FFI call on a captured value — the re-execution-safety contract
+  // for suspending awaits (see `aion/internal/pump`).
+  let awaited_child_id = child_id(handle)
+  case pump.run(fn() { pump.shield(ffi.await_child(awaited_child_id)) }) {
     Ok(raw_result) -> decode_child_result(raw_result, handle)
     Error(raw_error) -> Error(error.ChildEngineFailure(message: raw_error))
   }

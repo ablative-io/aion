@@ -27,6 +27,13 @@
 //// *argument* of a cross-module call, and the Erlang compiler can neither
 //// tail-call nor inline a remote call, so the suspending call always
 //// compiles to a plain `call_ext` whose re-execution is safe.
+////
+//// In addition, every thunk's body must be exactly one shielded FFI call on
+//// *captured values*: arguments are precomputed outside the thunk, never
+//// derived inside it. Nothing in the thunk may recompute state on re-entry —
+//// the same contract the engine documents for hand-rolled await funs in
+//// `crates/aion/tests/fixtures/aion_fixture_query.erl` — and the pump itself
+//// relies on it when it re-enters the same await after servicing a query.
 
 import aion/internal/ffi
 

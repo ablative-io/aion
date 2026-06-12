@@ -17,8 +17,11 @@
   pins its FFI call out of tail position via `aion/internal/pump.shield`: the
   suspending call sits in argument position of a cross-module call, which the
   Erlang compiler can neither tail-call nor inline, so it always compiles to
-  a re-execution-safe `call_ext`. The call-shape contract is documented in
-  `aion/internal/pump`.
+  a re-execution-safe `call_ext`. In addition, every pump thunk's arguments
+  are precomputed outside the thunk (`timer.sleep`'s boundary,
+  `signal.receive`'s name/config, `child.await`'s child id), so a thunk body
+  is exactly one shielded FFI call on captured values and re-entry recomputes
+  nothing. The call-shape contract is documented in `aion/internal/pump`.
 
 ## 0.2.0
 

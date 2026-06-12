@@ -41,11 +41,12 @@ pub fn codec(reference: SignalRef(payload)) -> Codec(payload) {
 pub fn receive(
   reference: SignalRef(payload),
 ) -> Result(payload, error.ReceiveError) {
-  case
-    pump.run(fn() {
-      pump.shield(ffi.receive_signal(name(reference), receive_config()))
-    })
-  {
+  // Both arguments are precomputed so the pump thunk's body is exactly one
+  // shielded FFI call on captured values — the re-execution-safety contract
+  // for suspending awaits (see `aion/internal/pump`).
+  let signal_name = name(reference)
+  let config = receive_config()
+  case pump.run(fn() { pump.shield(ffi.receive_signal(signal_name, config)) }) {
     Ok(raw_payload) -> {
       let payload_codec = codec(reference)
       case payload_codec.decode(raw_payload) {
