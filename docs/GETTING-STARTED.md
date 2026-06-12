@@ -34,8 +34,15 @@ and operates workflows over gRPC. Verify:
 aion --help
 ```
 
-You should see the subcommands: `server`, `package`, `deploy`, `versions`,
-`route`, `unload`, `start`, `signal`, `query`, `cancel`, `list`, `describe`.
+You should see the subcommands: `server`, `new`, `package`, `deploy`,
+`versions`, `route`, `unload`, `start`, `signal`, `query`, `cancel`, `list`,
+`describe`.
+
+> Prefer a generated starting point? `aion new <name>` scaffolds a complete,
+> buildable project — workflow, schemas, `workflow.toml`, a dev `aion.toml`,
+> and a README with these same steps (`--template hello-world`,
+> `approval-flow`, or `saga`; `--worker rust` adds a worker crate). This
+> guide builds the same thing by hand so you see every part.
 
 > There is no separate server binary and no installable worker binary.
 > `cargo install aion-server` and `cargo install aion-worker` are not how
