@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3d0e81fe8f9a98571f4eb7fe2a72fa42a708f565c5793c4f5c53e33b7039428"
+checksum = "d4d504eb1ae4dc3c6d7fb34b64b90cafd4fe60661cf15d98544b22240b29b9c7"
 dependencies = [
  "chrono",
  "serde",
@@ -27,9 +27,9 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48a74818ab4cdcf255ded9a2fc7fbe4cfd9ce9591e3ff0eb08a2db0de33bc8d6"
+checksum = "b72fd3fc15fb87d442cace1ac8fd31c51da23a67a58843cf0af4f7bedfb193fb"
 dependencies = [
  "aion-core",
  "chrono",
@@ -47,9 +47,9 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2855fd907659ce77d58607b339b787649ea63b3b857e247d7d973f5f1aba9d28"
+checksum = "179386c6991e0d322a7d7ff0a2f4b46eaaccb4ea53c70b9a4948e310ecf39418"
 dependencies = [
  "aion-core",
  "aion-proto",
