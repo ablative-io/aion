@@ -63,6 +63,7 @@ dependencies = [
  "aion-store",
  "anyhow",
  "clap",
+ "fs4",
  "prost 0.14.3",
  "serde",
  "serde_json",
