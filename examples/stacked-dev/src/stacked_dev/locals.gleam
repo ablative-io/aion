@@ -338,21 +338,20 @@ pub fn full_checks(
 pub fn request_review(
   input: ReviewRequest,
 ) -> Result(ReviewAck, error.ActivityError) {
-  // TODO(meridian): confirm the review request command and its output
-  // schema (a meridian/collective message or an artifact write).
+  // CONFIRMED against the real CLI (live run, 2026-06-13):
+  // `meridian review request --reviewer <NAME>... <BRANCH>` — reviewers are
+  // member names/UUIDs (a required input field); the meridian workspace
+  // resolves from the CLI's own global config, never from workflow inputs.
+  let reviewer_args =
+    list.flat_map(input.reviewers, fn(reviewer) { ["--reviewer", reviewer] })
   use command_run <- require_run(
     cli.run(
       "meridian",
-      [
-        "review",
-        "request",
-        "--workspace",
-        input.workspace.path,
-        "--brief-id",
-        input.brief_id,
-        "--summary",
-        input.dev_result.summary,
-      ],
+      list.flatten([
+        ["review", "request"],
+        reviewer_args,
+        [input.workspace.branch],
+      ]),
       input.workspace.path,
     ),
     "meridian review request",
@@ -367,24 +366,19 @@ pub fn request_review(
 /// Land the approved work: stack submit, then stack land. Never a manual
 /// cherry-pick or merge.
 pub fn land(input: LandInput) -> Result(Landed, error.ActivityError) {
-  // TODO(meridian): confirm the stack submit/land output schemas.
-  use submit_run <- require_run(
-    cli.run("meridian", ["stack", "submit"], input.workspace.path),
-    "meridian stack submit",
+  // Landing is a yg-level stack operation (confirmed direction, 2026-06-13):
+  // `yg branch merge <branch>` merges the branch into its tree parent — the
+  // base ref it was provisioned from. Local, no PR machinery; exit zero is
+  // the whole contract.
+  use _merged <- require_run(
+    cli.run(
+      "yg",
+      ["branch", "merge", input.workspace.branch, "--yes"],
+      input.workspace.path,
+    ),
+    "yg branch merge",
   )
-  use pr_url <- require_json(submit_run, "meridian stack submit", {
-    use pr_url <- decode.field("pr_url", decode.string)
-    decode.success(pr_url)
-  })
-  use land_run <- require_run(
-    cli.run("meridian", ["stack", "land"], input.workspace.path),
-    "meridian stack land",
-  )
-  use merge_commit <- require_json(land_run, "meridian stack land", {
-    use merge_commit <- decode.field("merge_commit", decode.string)
-    decode.success(merge_commit)
-  })
-  Ok(Landed(pr_url: pr_url, merge_commit: merge_commit))
+  Ok(Landed(branch: input.workspace.branch, merged_into: input.base_ref))
 }
 
 // --- helpers ---------------------------------------------------------------

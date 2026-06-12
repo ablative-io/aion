@@ -37,7 +37,7 @@ stacked_dev                         (top-level workflow.define)
 │     ├── dev_resume             (on RequestChanges: norn resume w/ review notes)
 │     └── gate                   (re-gate each fix round)
 │
-└── land                         (activity: meridian stack submit + stack land)
+└── land                         (activity: yg branch merge — into the base ref)
 ```
 
 All three workflows are `[[workflow]]` entries of this one package
@@ -63,6 +63,7 @@ so every activity holds an absolute working directory.
 {
   "repo_root": "/abs/path/to/repo",
   "brief_id": "brief-7",
+  "reviewers": ["your-member-name"],
   "base_ref": "main",
   "placement": "local",
   "isolation": "worktree",
@@ -131,7 +132,8 @@ cd examples/stacked-dev/worker && cargo build
 # Start a run with the full required input.
 aion start stacked_dev --input '{
   "repo_root": "/abs/path/to/repo",
-  "brief_id": "brief-7", "base_ref": "main",
+  "brief_id": "brief-7", "reviewers": ["your-member-name"],
+  "base_ref": "main",
   "placement": "local", "isolation": "worktree",
   "brief": "Implement the widget",
   "design": "docs/design.md", "checklist": "docs/checklist.md",
@@ -190,8 +192,6 @@ Every Meridian-specific unknown is marked in code rather than guessed:
 | Complete affected-closure gate scope | `src/stacked_dev/locals.gleam`, `full_checks` |
 | `--profile <dev profile>` + richer prompt assembly (design-context extraction, per-R# rendering from `onatopp-dev-norn/workflow.rhai`) | `src/stacked_dev/locals.gleam`, `dev` |
 | Carry the workspace root on `ResumeInput` so resume can confine file tools with `--workspace-root` | `src/stacked_dev/locals.gleam`, `dev_resume` |
-| Review request command and output schema | `src/stacked_dev/locals.gleam`, `request_review` |
-| Stack submit/land output schemas | `src/stacked_dev/locals.gleam`, `land` |
 | Warm-cache sharing across isolation modes | `src/stacked_dev/types.gleam`, `BuildWarm` doc |
 
 Resolved since first authoring (now real commands, asserted in tests):
@@ -199,10 +199,13 @@ worktree provisioning (`yg branch add` + `yg branch provision --path`),
 affected-set scoping (`yg graph affected --plain --direct-only`), scoped
 and workspace checks (`yg diagnostics check`), norn headless invocation
 (`--print --session-id/--resume --output-schema --output-format json`
-with a deterministic branch-derived session id), and norn's JSON envelope
+with a deterministic branch-derived session id), norn's JSON envelope
 (confirmed live: the schema-constrained result sits under `"output"`,
 alongside usage/model/event telemetry — decoded by both `locals.gleam` and
-the worker).
+the worker), the review request (`meridian review request --reviewer
+<NAME>... <BRANCH>`, reviewers a required input, workspace from the CLI's
+global config), and landing (`yg branch merge <branch>` into the tree
+parent — local, no PR machinery; output is `{branch, merged_into}`).
 
 ## Layout
 

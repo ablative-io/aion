@@ -165,6 +165,7 @@ pub type ReviewRequest {
   ReviewRequest(
     workspace: Workspace,
     brief_id: String,
+    reviewers: List(String),
     dev_result: DevResult,
     gate_result: GateResult,
   )
@@ -198,12 +199,12 @@ pub type ReviewVerdict {
 /// Input to the `land` activity: an approved workspace and the dev result
 /// whose work is being landed.
 pub type LandInput {
-  LandInput(workspace: Workspace, dev_result: DevResult)
+  LandInput(workspace: Workspace, base_ref: String, dev_result: DevResult)
 }
 
 /// Output of the `land` activity.
 pub type Landed {
-  Landed(pr_url: String, merge_commit: String)
+  Landed(branch: String, merged_into: String)
 }
 
 /// Input to the `onatopp_dev` child workflow (also independently
@@ -254,6 +255,7 @@ pub type StackedDevInput {
   StackedDevInput(
     repo_root: String,
     brief_id: String,
+    reviewers: List(String),
     base_ref: String,
     placement: Placement,
     isolation: Isolation,
@@ -271,8 +273,8 @@ pub type StackedDevInput {
 /// Output of a landed `stacked_dev` run.
 pub type StackedDevResult {
   StackedDevResult(
-    pr_url: String,
-    merge_commit: String,
+    branch: String,
+    merged_into: String,
     session_id: String,
     build_warm: BuildWarm,
     verify_rounds: Int,

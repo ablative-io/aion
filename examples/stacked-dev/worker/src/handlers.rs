@@ -379,25 +379,26 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
 /// Terminal [`ActivityFailure`] when `meridian` cannot run, exits non-zero,
 /// or answers without a parseable `request_id`.
 pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
+    // CONFIRMED against the real CLI (live run, 2026-06-13):
+    // `meridian review request --reviewer <NAME>... <BRANCH>` — reviewers are
+    // member names/UUIDs (a required input field), the branch is positional,
+    // and the meridian workspace resolves from the CLI's own global config.
     let ReviewRequest {
         workspace,
-        brief_id,
-        dev_result,
+        reviewers,
         ..
     } = input;
+    let mut args: Vec<String> = vec!["review".to_owned(), "request".to_owned()];
+    for reviewer in &reviewers {
+        args.push("--reviewer".to_owned());
+        args.push(reviewer.clone());
+    }
+    args.push(workspace.branch.clone());
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let command_run = require_run(
         shell,
         "meridian",
-        &[
-            "review",
-            "request",
-            "--workspace",
-            &workspace.path,
-            "--brief-id",
-            &brief_id,
-            "--summary",
-            &dev_result.summary,
-        ],
+        &arg_refs,
         &workspace.path,
         "meridian review request",
     )?;
@@ -407,35 +408,29 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
     })
 }
 
-/// `land`: stack submit, then stack land. Never a manual cherry-pick or
-/// merge.
+/// `land`: the yg-level stack operation — merge the branch into its tree
+/// parent. Local, no PR machinery; exit zero is the whole contract.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `meridian` cannot run, when either verb
-/// exits non-zero, or when an output lacks its parseable field (`pr_url` for
-/// submit, `merge_commit` for land).
+/// Terminal [`ActivityFailure`] when `yg` cannot run or the merge exits
+/// non-zero.
 pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> {
-    let LandInput { workspace, .. } = input;
-    let submit_run = require_run(
+    let LandInput {
+        workspace,
+        base_ref,
+        ..
+    } = input;
+    require_run(
         shell,
-        "meridian",
-        &["stack", "submit"],
+        "yg",
+        &["branch", "merge", &workspace.branch, "--yes"],
         &workspace.path,
-        "meridian stack submit",
+        "yg branch merge",
     )?;
-    let submitted: PrUrlField = require_json(&submit_run, "meridian stack submit")?;
-    let land_run = require_run(
-        shell,
-        "meridian",
-        &["stack", "land"],
-        &workspace.path,
-        "meridian stack land",
-    )?;
-    let landed: MergeCommitField = require_json(&land_run, "meridian stack land")?;
     Ok(Landed {
-        pr_url: submitted.pr_url,
-        merge_commit: landed.merge_commit,
+        branch: workspace.branch,
+        merged_into: base_ref,
     })
 }
 
@@ -446,18 +441,6 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
 #[derive(Deserialize)]
 struct RequestIdField {
     request_id: String,
-}
-
-/// `{"pr_url": ..}` field of the stack-submit output.
-#[derive(Deserialize)]
-struct PrUrlField {
-    pr_url: String,
-}
-
-/// `{"merge_commit": ..}` field of the stack-land output.
-#[derive(Deserialize)]
-struct MergeCommitField {
-    merge_commit: String,
 }
 
 /// Require a command to run AND exit zero; anything else is a terminal
