@@ -31,6 +31,7 @@
     testing_reset/0,
     testing_advance/1,
     testing_register_activity_mock/2,
+    testing_register_child_mock/2,
     testing_clear_observations/0,
     testing_observations/0,
     testing_query_replies/0,
@@ -176,10 +177,18 @@ dispatch_query(Name, _Config) ->
 query_recorded_observations() ->
     {ok, integer_to_binary(length(observations()))}.
 
+%% Registered child doubles take precedence over the legacy hardcoded
+%% fixtures, mirroring activity mock dispatch: workflow projects register a
+%% typed child handler (usually the child module's real `execute` function)
+%% through `aion/testing.mock_child`, and the handler runs synchronously at
+%% spawn time so the recorded terminal is available to the await.
 spawn_child(Name, Input, _Config) ->
     observe(<<"child_spawn:", Name/binary, ":", Input/binary>>),
     ChildId = next_child_id(),
-    Result = child_result(Name, Input),
+    Result = case lookup_child_mock(Name) of
+        {ok, Handler} -> Handler(Input);
+        error -> child_result(Name, Input)
+    end,
     erlang:put({aion_child_result, self(), ChildId}, Result),
     {ok, ChildId}.
 
@@ -247,6 +256,21 @@ testing_register_activity_mock(Name, Handler) ->
     Key = {aion_activity_mock, self(), Name},
     erlang:put(Key, Handler),
     {ok, <<"registered">>}.
+
+%% The handler is the type-erased child double registered by
+%% `aion/testing.mock_child`: it receives the encoded child input and returns
+%% `{ok, <<"ok:", Output/binary>>}` / `{ok, <<"error:", Error/binary>>}` for
+%% recorded child terminals, or `{error, Reason}` for an engine-level fault.
+testing_register_child_mock(Name, Handler) ->
+    Key = {aion_child_mock, self(), Name},
+    erlang:put(Key, Handler),
+    {ok, <<"registered">>}.
+
+lookup_child_mock(Name) ->
+    case erlang:get({aion_child_mock, self(), Name}) of
+        undefined -> error;
+        Handler -> {ok, Handler}
+    end.
 
 testing_enqueue_collect_result(Result) ->
     Key = {aion_collect_script, self()},
@@ -468,6 +492,7 @@ is_aion_key({aion_all_cancelled, Pid}) -> Pid =:= self();
 is_aion_key({aion_clock, Pid}) -> Pid =:= self();
 is_aion_key({aion_timers, Pid}) -> Pid =:= self();
 is_aion_key({aion_activity_mock, Pid, _Name}) -> Pid =:= self();
+is_aion_key({aion_child_mock, Pid, _Name}) -> Pid =:= self();
 is_aion_key(_Key) -> false.
 
 pid_key() ->

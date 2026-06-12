@@ -210,6 +210,115 @@ pub fn non_deterministic_replay_assertion_fails_with_diagnostic_test() {
   }
 }
 
+pub type RefusalReason {
+  RefusalReason(reason: String)
+}
+
+pub fn child_mock_runs_typed_handler_and_returns_output_test() {
+  case testing.new() {
+    Ok(env) -> {
+      testing.mock_child(
+        env,
+        "typed-child",
+        charge_request_codec(),
+        charge_receipt_codec(),
+        refusal_codec(),
+        fn(request: ChargeRequest) {
+          Ok(ChargeReceipt(id: "child-" <> request.order_id, approved: True))
+        },
+      )
+      |> should.equal(Ok(env))
+
+      workflow.spawn_and_wait(
+        "typed-child",
+        fn(_request: ChargeRequest) {
+          Error(RefusalReason(reason: "unreached type anchor"))
+        },
+        ChargeRequest(order_id: "order-200", cents: 700),
+        charge_request_codec(),
+        charge_receipt_codec(),
+        refusal_codec(),
+      )
+      |> should.equal(Ok(ChargeReceipt(id: "child-order-200", approved: True)))
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn child_mock_typed_error_surfaces_as_child_workflow_failed_test() {
+  case testing.new() {
+    Ok(env) -> {
+      testing.mock_child(
+        env,
+        "refusing-child",
+        charge_request_codec(),
+        charge_receipt_codec(),
+        refusal_codec(),
+        fn(_request: ChargeRequest) {
+          Error(RefusalReason(reason: "limit exceeded"))
+        },
+      )
+      |> should.equal(Ok(env))
+
+      workflow.spawn_and_wait(
+        "refusing-child",
+        fn(_request: ChargeRequest) {
+          Error(RefusalReason(reason: "unreached type anchor"))
+        },
+        ChargeRequest(order_id: "order-201", cents: 900),
+        charge_request_codec(),
+        charge_receipt_codec(),
+        refusal_codec(),
+      )
+      |> should.equal(
+        Error(
+          error.ChildWorkflowFailed(RefusalReason(reason: "limit exceeded")),
+        ),
+      )
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn unregistered_child_name_keeps_legacy_fixture_behaviour_test() {
+  case testing.new() {
+    Ok(env) -> {
+      // No child mock registered: the FFI double's legacy fixtures answer,
+      // and unknown names stay loud engine failures.
+      case
+        workflow.spawn_and_wait(
+          "never-registered-child",
+          fn(_request: ChargeRequest) {
+            Error(RefusalReason(reason: "unreached type anchor"))
+          },
+          ChargeRequest(order_id: "order-202", cents: 100),
+          charge_request_codec(),
+          charge_receipt_codec(),
+          refusal_codec(),
+        )
+      {
+        Error(error.ChildEngineFailure(message: _)) ->
+          testing.new()
+          |> should.equal(Ok(env))
+        _ -> should.fail()
+      }
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+fn refusal_codec() -> codec.Codec(RefusalReason) {
+  codec.json_codec(
+    fn(refusal: RefusalReason) {
+      json.object([#("reason", json.string(refusal.reason))])
+    },
+    {
+      use reason <- decode.field("reason", decode.string)
+      decode.success(RefusalReason(reason: reason))
+    },
+  )
+}
+
 fn charge_activity(
   name: String,
   request: ChargeRequest,

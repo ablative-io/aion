@@ -8,6 +8,7 @@
 //// in tests and production.
 
 import aion/activity.{type Activity}
+import aion/codec.{type Codec}
 import aion/duration
 import aion/error
 import aion/internal/ffi
@@ -70,6 +71,23 @@ pub fn mock_activity(
   handler: fn(input) -> Result(output, error.ActivityError),
 ) -> Result(TestEnv, error.EngineError) {
   mock.activity(env, activity_value, handler)
+}
+
+/// Register a typed child-workflow double for the current test process.
+///
+/// `workflow.spawn_and_wait` calls with the same child name run `handler`
+/// in-process and record its typed result as the child terminal. Register the
+/// child module's real `execute` function to exercise full parent-child
+/// composition under `gleam test`.
+pub fn mock_child(
+  env: TestEnv,
+  name: String,
+  input_codec: Codec(input),
+  output_codec: Codec(output),
+  error_codec: Codec(workflow_error),
+  handler: fn(input) -> Result(output, workflow_error),
+) -> Result(TestEnv, error.EngineError) {
+  mock.child(env, name, input_codec, output_codec, error_codec, handler)
 }
 
 /// Capture the current observation sequence emitted by the test FFI double.

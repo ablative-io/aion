@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gate output",
+  "type": "object",
+  "required": ["verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "object",
+      "required": ["outcome"],
+      "additionalProperties": false,
+      "properties": {
+        "outcome": { "type": "string", "enum": ["pass", "fail"] },
+        "report": { "type": "string" }
+      }
+    }
+  }
+}

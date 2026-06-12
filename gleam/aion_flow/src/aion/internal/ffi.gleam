@@ -119,6 +119,12 @@ pub fn testing_register_activity_mock(
   handler: fn(String) -> Result(String, String),
 ) -> Result(String, String)
 
+@external(erlang, "aion_flow_ffi", "testing_register_child_mock")
+pub fn testing_register_child_mock(
+  name: String,
+  handler: fn(String) -> Result(String, String),
+) -> Result(String, String)
+
 @external(erlang, "aion_flow_ffi", "testing_clear_observations")
 pub fn testing_clear_observations() -> Result(String, String)
 
