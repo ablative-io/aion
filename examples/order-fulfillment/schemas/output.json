@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["order_id", "status", "payment_id", "shipment_id", "refund_id", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "order_id": { "type": "string" },
+        "status": { "enum": ["completed", "cancelled"] },
+        "payment_id": { "type": "string" },
+        "shipment_id": { "type": ["string", "null"] },
+        "refund_id": { "type": ["string", "null"] },
+        "reason": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "stage", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "order_failed" },
+        "stage": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  ]
+}

@@ -32,6 +32,11 @@ const EXAMPLE_ARCHIVES: &[(&str, &str)] = &[
         "agent-orchestration/orchestrator.aion",
     ),
     ("order-saga", "order-saga/order-saga.aion"),
+    (
+        "order-fulfillment",
+        "order-fulfillment/order-fulfillment.aion",
+    ),
+    ("order-shipping", "order-fulfillment/order-shipping.aion"),
     ("hello-world", "hello-world/hello-world.aion"),
 ];
 
