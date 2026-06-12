@@ -19,6 +19,7 @@ use crate::payload::{
     payload_to_json,
 };
 
+mod codegen;
 mod deploy;
 mod new;
 mod output;
@@ -90,6 +91,24 @@ enum ClientCommand {
     /// retries, and refund compensation). `--worker rust` additionally
     /// scaffolds a `worker/` crate serving the template's activities.
     New(new::NewArgs),
+    /// Generate Gleam types and JSON codecs from a project's JSON Schemas.
+    ///
+    /// Runs entirely locally: reads `workflow.toml` and every
+    /// `schemas/*.json` in the project root, and writes one deterministic
+    /// module (`src/<package>_io.gleam`, do not edit) containing a Gleam
+    /// type plus an encoder/decoder pair per schema — the schemas stay the
+    /// single source of truth and the codecs cannot drift. Schema constructs
+    /// outside the supported subset fail loudly with the file and JSON
+    /// pointer; see docs/guides/codegen.md for the subset table.
+    Codegen {
+        /// Workflow project root containing `workflow.toml` and `schemas/`.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Verify the generated module on disk is current instead of
+        /// writing; exits non-zero naming the drifted file (CI gate).
+        #[arg(long)]
+        check: bool,
+    },
     /// Package an already-built Gleam workflow project into `.aion` archives.
     ///
     /// Runs entirely locally: reads `workflow.toml` in the project root and
@@ -236,6 +255,7 @@ async fn main() -> ExitCode {
 async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
     match command {
         ClientCommand::New(args) => new::run(args),
+        ClientCommand::Codegen { path, check } => codegen::run(path, *check),
         ClientCommand::Package { path, out, build } => package::run(path, out.as_deref(), *build),
         ClientCommand::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
         ClientCommand::Versions { workflow_type } => {
@@ -503,6 +523,45 @@ mod tests {
     }
 
     #[test]
+    fn codegen_defaults_to_current_directory_without_check() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "codegen"])?;
+
+        let Command::Client(ClientCommand::Codegen { path, check }) = cli.command else {
+            anyhow::bail!("expected codegen command");
+        };
+        assert_eq!(path, Path::new("."));
+        assert!(!check);
+        Ok(())
+    }
+
+    #[test]
+    fn codegen_accepts_path_and_check() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "codegen", "examples/hello-world", "--check"])?;
+
+        let Command::Client(ClientCommand::Codegen { path, check }) = cli.command else {
+            anyhow::bail!("expected codegen command");
+        };
+        assert_eq!(path, Path::new("examples/hello-world"));
+        assert!(check);
+        Ok(())
+    }
+
+    #[test]
+    fn codegen_help_documents_the_contract() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(codegen) = command.find_subcommand_mut("codegen") else {
+            anyhow::bail!("codegen subcommand should be registered");
+        };
+        let help = codegen.render_long_help().to_string();
+
+        assert!(help.contains("--check"));
+        assert!(help.contains("schemas/*.json"));
+        assert!(help.contains("do not edit"));
+        assert!(help.contains("fail loudly"));
+        Ok(())
+    }
+
+    #[test]
     fn package_defaults_to_current_directory_without_build_or_out() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "package"])?;
 
@@ -584,6 +643,7 @@ mod tests {
                 | Command::Client(
                     ClientCommand::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
                     | ClientCommand::New(_)
+                    | ClientCommand::Codegen { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }
@@ -630,6 +690,7 @@ mod tests {
                         | RemoteCommand::Describe { .. },
                     )
                     | ClientCommand::New(_)
+                    | ClientCommand::Codegen { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }

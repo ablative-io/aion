@@ -20,6 +20,8 @@
 pub mod beam;
 /// Archive builder utilities for tests and packaging tools.
 pub mod builder;
+/// Gleam type and JSON codec generation from project schemas.
+pub mod codegen;
 /// Package validation and archive-loading errors.
 pub mod error;
 /// Explicit inflate budgets for archive extraction.
@@ -39,6 +41,7 @@ pub mod version;
 
 pub use beam::{BeamModule, BeamSet, RESERVED_MODULE_NAMES};
 pub use builder::PackageBuilder;
+pub use codegen::{CodegenError, CodegenMode, CodegenReport, codegen_project};
 pub use error::PackageError;
 pub use extraction::ExtractionLimits;
 pub use hash::{ContentHash, content_hash};
