@@ -59,6 +59,7 @@ pub fn provision_input_codec() -> codec.Codec(ProvisionInput) {
   codec.json_codec(
     fn(input: ProvisionInput) {
       json.object([
+        #("repo_root", json.string(input.repo_root)),
         #("brief_id", json.string(input.brief_id)),
         #("base_ref", json.string(input.base_ref)),
         #("placement", json.string(placement_to_string(input.placement))),
@@ -72,11 +73,13 @@ pub fn provision_input_codec() -> codec.Codec(ProvisionInput) {
 /// Decoder for the provisioning fields. Shared with the `stacked_dev` input
 /// codec, whose top-level object carries the same four fields.
 pub fn provision_input_decoder() -> decode.Decoder(ProvisionInput) {
+  use repo_root <- decode.field("repo_root", decode.string)
   use brief_id <- decode.field("brief_id", decode.string)
   use base_ref <- decode.field("base_ref", decode.string)
   use placement <- decode.field("placement", placement_decoder())
   use isolation <- decode.field("isolation", isolation_decoder())
   decode.success(ProvisionInput(
+    repo_root: repo_root,
     brief_id: brief_id,
     base_ref: base_ref,
     placement: placement,

@@ -1,14 +1,14 @@
 //// Activity local implementations — the test seam (brief section 4).
 ////
 //// Under the `aion/testing` harness each activity executes one of these
-//// functions in-process; each shells to the real CLI named in the brief
-//// (`norn` for dev work, `cargo` for checks and the warm build, `meridian`
-//// for provisioning, scoping, review, and landing) through
-//// `stacked_dev/cli`. The hermetic test suite intercepts at the process
-//// boundary with fake-CLI shims placed first on `PATH` — the most realistic
-//// seam — while these implementations stay honest: they really shell out,
-//// and a missing CLI with no shim is a loud `Terminal` activity failure,
-//// never a silent skip.
+//// functions in-process; each shells to the real CLI that owns the step
+//// (`norn` for the dev agent, `yg` for worktree provisioning, affected-module
+//// scoping, and diagnostics checks, `cargo` for the advisory warm build,
+//// `meridian` for review requests and landing) through `stacked_dev/cli`.
+//// The hermetic test suite intercepts at the process boundary with fake-CLI
+//// shims placed first on `PATH` — the most realistic seam — while these
+//// implementations stay honest: they really shell out, and a missing CLI with
+//// no shim is a loud `Terminal` activity failure, never a silent skip.
 ////
 //// Deployed, a Meridian worker serves the same activity names and these
 //// functions never run.
@@ -25,12 +25,12 @@ import stacked_dev/types.{
   type GateResult, type LandInput, type Landed, type ProvisionInput,
   type ResumeInput, type ReviewAck, type ReviewRequest, type ScopedInput,
   type StartupResult, type StartupTask, type Workspace, AffectedClosure,
-  BuildWarm, CheckFail, CheckPass, CheckResult, Copy, DevTask, Developed,
-  GateFail, GatePass, GateResult, Landed, Overlay, ReviewAck, Vm, WarmTask,
-  Warmed, Workspace, WorkspaceWide, Worktree,
+  BuildWarm, CheckFail, CheckPass, CheckResult, Copy, DevResult, DevTask,
+  Developed, GateFail, GatePass, GateResult, Landed, Overlay, ReviewAck, Vm,
+  WarmTask, Warmed, Workspace, WorkspaceWide, Worktree,
 }
 
-/// Provision an isolated workspace via the `meridian` CLI.
+/// Provision an isolated workspace via the `yg` CLI.
 ///
 /// Only the worktree isolation mode has a local implementation today; the
 /// other typed variants are explicit seams that fail loudly until Meridian's
@@ -56,35 +56,29 @@ pub fn provision_workspace(
 fn provision_worktree(
   input: ProvisionInput,
 ) -> Result(Workspace, error.ActivityError) {
-  // TODO(meridian): confirm the provision subcommand and flag names; the
-  // placement/isolation axis itself is real.
-  use command_run <- require_run(
-    cli.run(
-      "meridian",
-      [
-        "workspace",
-        "provision",
-        "--brief-id",
-        input.brief_id,
-        "--base-ref",
-        input.base_ref,
-        "--isolation",
-        codecs_core.isolation_to_string(input.isolation),
-        "--placement",
-        codecs_core.placement_to_string(input.placement),
-      ],
-      ".",
-    ),
-    "meridian workspace provision",
+  // Worktree provisioning is two real yg verbs: add the branch as a child of
+  // the base ref in the tree, then provision its worktree at a known path.
+  // The worktree path is absolute (built from the repo root), so every
+  // downstream activity holds a real directory and never a cwd-relative guess.
+  let branch = "stacked-dev-" <> input.brief_id
+  let worktree_path = input.repo_root <> "/.yggdrasil-worktrees/" <> branch
+
+  use _added <- require_run(
+    cli.run("yg", ["branch", "add", branch, input.base_ref], input.repo_root),
+    "yg branch add",
   )
-  use provisioned <- require_json(command_run, "meridian workspace provision", {
-    use path <- decode.field("path", decode.string)
-    use branch <- decode.field("branch", decode.string)
-    decode.success(#(path, branch))
-  })
-  let #(path, branch) = provisioned
+  // We pass an explicit --path so the worktree location is known a priori and
+  // never parsed out of human output.
+  use _provisioned <- require_run(
+    cli.run(
+      "yg",
+      ["branch", "provision", branch, "--path", worktree_path],
+      input.repo_root,
+    ),
+    "yg branch provision",
+  )
   Ok(Workspace(
-    path: path,
+    path: worktree_path,
     branch: branch,
     placement: input.placement,
     isolation: input.isolation,
@@ -125,30 +119,67 @@ fn warm_build(
 
 /// Run the dev agent against the brief via the `norn` CLI.
 fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
-  // TODO(meridian): confirm the norn run flag names (the dev step itself is
-  // the one the brief is surest about).
+  // The session id is deterministic (the branch name), so resume rounds target
+  // the same session without ever capturing a generated id. norn validates the
+  // charset; "stacked-dev-<brief>" is legal.
+  let session_id = input.workspace.branch
+  let prompt = dev_prompt(input)
+
+  // norn takes the prompt positionally; --print is headless, --session-id mints
+  // exactly this id, --output-schema constrains the structured result, and
+  // --output-format json emits the final envelope we decode.
+  // TODO(meridian): add --profile <dev profile> and port the richer prompt
+  // assembly (design-context extraction, per-R# rendering) from
+  // .meridian/workflows/onatopp-dev-norn/workflow.rhai.
   use command_run <- require_run(
     cli.run(
       "norn",
       [
-        "run",
-        "--workspace",
+        "--print",
+        "--session-id",
+        session_id,
+        "--workspace-root",
         input.workspace.path,
-        "--brief",
-        input.brief,
-        "--design",
-        input.design,
-        "--checklist",
-        input.checklist,
-        "--stories",
-        string.join(input.stories, ","),
+        "--output-schema",
+        dev_output_schema(),
+        "--output-format",
+        "json",
+        prompt,
       ],
       input.workspace.path,
     ),
-    "norn run",
+    "norn dev",
   )
-  use dev_result <- require_dev_result(command_run, "norn run")
-  Ok(Developed(dev_result: dev_result))
+  use dev_result <- require_dev_result(command_run, "norn dev")
+  Ok(Developed(dev_result: DevResult(..dev_result, session_id: session_id)))
+}
+
+/// The JSON Schema norn structures the dev/resume result against — the
+/// `DevResult` shape (`session_id`, `files_touched`, `summary`). Passed inline
+/// to `--output-schema` so there is no schema file to resolve in the workspace.
+fn dev_output_schema() -> String {
+  "{\"type\":\"object\","
+  <> "\"required\":[\"session_id\",\"files_touched\",\"summary\"],"
+  <> "\"additionalProperties\":false,"
+  <> "\"properties\":{"
+  <> "\"session_id\":{\"type\":\"string\"},"
+  <> "\"files_touched\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+  <> "\"summary\":{\"type\":\"string\"}}}"
+}
+
+/// Assemble the dev prompt from the brief and its design context.
+fn dev_prompt(input: DevInput) -> String {
+  string.join(
+    [
+      "Implement the following brief in this workspace.",
+      "## Brief\n" <> input.brief,
+      "## Design\n" <> input.design,
+      "## Checklist\n" <> input.checklist,
+      "## Stories\n" <> string.join(input.stories, "\n"),
+      "Return your structured result matching the output schema.",
+    ],
+    "\n\n",
+  )
 }
 
 /// Resume the same dev agent session with feedback (scoped-check diagnostics
@@ -156,21 +187,32 @@ fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
 pub fn dev_resume(
   input: ResumeInput,
 ) -> Result(DevResult, error.ActivityError) {
-  // TODO(meridian): confirm the norn resume flag names.
+  // Resume by the deterministic session id; the feedback is the prompt.
+  // TODO(meridian): carry the workspace root on ResumeInput so resume can also
+  // confine file tools with --workspace-root like the dev step does.
   use command_run <- require_run(
     cli.run(
       "norn",
-      ["resume", "--session", input.session_id, "--feedback", input.feedback],
+      [
+        "--print",
+        "--resume",
+        input.session_id,
+        "--output-schema",
+        dev_output_schema(),
+        "--output-format",
+        "json",
+        input.feedback,
+      ],
       ".",
     ),
     "norn resume",
   )
   use dev_result <- require_dev_result(command_run, "norn resume")
-  Ok(dev_result)
+  Ok(DevResult(..dev_result, session_id: input.session_id))
 }
 
-/// Scoped verification: compute the affected module set, then run
-/// clippy/test/fmt limited to it.
+/// Scoped verification: compute the affected package set from the dependency
+/// graph, then run diagnostics limited to it.
 ///
 /// Resolves open question Q1 (scoping seam): the affected set comes from a
 /// CLI call — the Gleam side stays pure and the workflow consumes
@@ -180,80 +222,107 @@ pub fn dev_resume(
 pub fn scoped_checks(
   input: ScopedInput,
 ) -> Result(CheckResult, error.ActivityError) {
-  // TODO(meridian): affected-modules subcommand — the libyggd dependency
-  // graph query lives behind the meridian CLI for now.
-  use command_run <- require_run(
+  // Affected packages come from the dependency graph: `yg graph affected
+  // --plain --direct-only` prints one bare crate name per line (direct-only =
+  // the crates that actually contain the changed files; the gate runs broad).
+  use affected_run <- require_run(
     cli.run(
-      "meridian",
-      [
-        "affected-modules",
-        "--workspace-root",
-        input.workspace.path,
-        "--files",
-        string.join(input.files_touched, ","),
-      ],
+      "yg",
+      list.flatten([
+        ["graph", "affected", "--plain", "--direct-only"],
+        input.files_touched,
+      ]),
       input.workspace.path,
     ),
-    "meridian affected-modules",
+    "yg graph affected",
   )
-  use affected_modules <- require_json(
-    command_run,
-    "meridian affected-modules",
-    {
-      use affected <- decode.field(
-        "affected_modules",
-        decode.list(decode.string),
-      )
-      decode.success(affected)
-    },
-  )
-  case affected_modules {
+  let packages =
+    affected_run.output
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.filter(fn(name) { name != "" })
+
+  case packages {
     [] -> {
-      // Loud fallback to a named wider scope — never silently run nothing.
+      // No affected packages — fall back LOUDLY to a named workspace-wide
+      // scope; zero checks are never run silently.
       let scope =
-        "workspace-wide fallback: affected-module scoping returned an empty set"
-      use verdict <- try_check_commands(
-        workspace_check_commands(),
+        "workspace-wide fallback: affected scoping returned an empty set"
+      check_with(
+        ["diagnostics", "check", "--workspace", "--format", "json"],
         input.workspace,
+        [],
+        scope,
       )
-      Ok(CheckResult(
-        verdict: verdict,
-        affected_modules: [],
-        checked_scope: scope,
-      ))
     }
     modules -> {
+      // One scoped diagnostics run over exactly the affected packages.
+      let package_args =
+        list.flat_map(modules, fn(name) { ["--package", name] })
+      let args =
+        list.flatten([
+          ["diagnostics", "check", "--format", "json"],
+          package_args,
+        ])
       let scope = "affected: " <> string.join(modules, ", ")
-      use verdict <- try_check_commands(
-        scoped_check_commands(modules),
-        input.workspace,
-      )
-      Ok(CheckResult(
-        verdict: verdict,
-        affected_modules: modules,
-        checked_scope: scope,
-      ))
+      check_with(args, input.workspace, modules, scope)
     }
   }
 }
 
-/// The authoritative gate: full fmt + clippy + test, stricter than the fast
-/// scoped inner loop.
+/// Run one `yg diagnostics check` invocation and shape the verdict. Exit zero
+/// is a pass; a non-zero exit carries the diagnostics output. A command that
+/// cannot run at all is a loud `Terminal` activity failure.
+fn check_with(
+  args: List(String),
+  workspace: Workspace,
+  affected_modules: List(String),
+  scope: String,
+) -> Result(CheckResult, error.ActivityError) {
+  case cli.run("yg", args, workspace.path) {
+    Ok(command_run) -> {
+      let verdict = case cli.succeeded(command_run) {
+        True -> CheckPass
+        False -> CheckFail(diagnostics: command_run.output)
+      }
+      Ok(CheckResult(
+        verdict: verdict,
+        affected_modules: affected_modules,
+        checked_scope: scope,
+      ))
+    }
+    Error(failure) ->
+      Error(error.terminal(
+        "yg diagnostics check: " <> cli.failure_message(failure),
+      ))
+  }
+}
+
+/// The authoritative gate: the full workspace diagnostics run, stricter than
+/// the fast scoped inner loop.
 pub fn full_checks(
   input: GateInput,
 ) -> Result(GateResult, error.ActivityError) {
   case input.scope {
-    WorkspaceWide -> {
-      use verdict <- try_check_commands(
-        workspace_check_commands(),
-        input.workspace,
-      )
-      case verdict {
-        CheckPass -> Ok(GateResult(verdict: GatePass))
-        CheckFail(diagnostics: diagnostics) ->
-          Ok(GateResult(verdict: GateFail(report: diagnostics)))
+    WorkspaceWide ->
+      case
+        cli.run(
+          "yg",
+          ["diagnostics", "check", "--workspace", "--format", "json"],
+          input.workspace.path,
+        )
+      {
+        Ok(command_run) ->
+          case cli.succeeded(command_run) {
+            True -> Ok(GateResult(verdict: GatePass))
+            False ->
+              Ok(GateResult(verdict: GateFail(report: command_run.output)))
+          }
+        Error(failure) ->
+          Error(error.terminal(
+            "yg diagnostics check --workspace: " <> cli.failure_message(failure),
+          ))
       }
-    }
     AffectedClosure(modules: _) ->
       // Open question Q2: the affected-closure gate scope is a typed seam
       // only — nothing guessed until the graph-derived closure is trusted.
@@ -320,78 +389,6 @@ pub fn land(input: LandInput) -> Result(Landed, error.ActivityError) {
 
 // --- helpers ---------------------------------------------------------------
 
-/// Cargo commands for the workspace-wide scope (the gate, and the loud
-/// scoped fallback).
-fn workspace_check_commands() -> List(List(String)) {
-  [
-    ["fmt", "--check"],
-    ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
-    ["test"],
-  ]
-}
-
-/// Cargo commands limited to the affected modules: fmt once, then clippy and
-/// test per module.
-fn scoped_check_commands(modules: List(String)) -> List(List(String)) {
-  [
-    [["fmt", "--check"]],
-    list.map(modules, fn(module) {
-      ["clippy", "-p", module, "--all-targets", "--", "-D", "warnings"]
-    }),
-    list.map(modules, fn(module) { ["test", "-p", module] }),
-  ]
-  |> list.flatten
-}
-
-/// Run a list of cargo commands in the workspace, aggregating every failed
-/// command's diagnostics. Infrastructure failures (missing executable,
-/// spawn errors) are loud `Terminal` activity errors.
-fn try_check_commands(
-  commands: List(List(String)),
-  workspace: Workspace,
-  next: fn(types.CheckVerdict) -> Result(value, error.ActivityError),
-) -> Result(value, error.ActivityError) {
-  let outcomes =
-    list.try_map(commands, fn(args) {
-      case cli.run("cargo", args, workspace.path) {
-        Ok(command_run) ->
-          case cli.succeeded(command_run) {
-            True -> Ok(CheckPass)
-            False ->
-              Ok(CheckFail(
-                diagnostics: "cargo "
-                <> string.join(args, " ")
-                <> " failed — "
-                <> cli.run_diagnostics(command_run),
-              ))
-          }
-        Error(failure) ->
-          Error(error.terminal(
-            "cargo "
-            <> string.join(args, " ")
-            <> ": "
-            <> cli.failure_message(failure),
-          ))
-      }
-    })
-  case outcomes {
-    Ok(verdicts) -> {
-      let failures =
-        list.filter_map(verdicts, fn(verdict) {
-          case verdict {
-            CheckPass -> Error(Nil)
-            CheckFail(diagnostics: diagnostics) -> Ok(diagnostics)
-          }
-        })
-      case failures {
-        [] -> next(CheckPass)
-        _ -> next(CheckFail(diagnostics: string.join(failures, "\n")))
-      }
-    }
-    Error(activity_error) -> Error(activity_error)
-  }
-}
-
 /// Require a command to run AND exit zero; anything else is a `Terminal`
 /// activity failure carrying the command's diagnostics.
 fn require_run(
@@ -433,6 +430,11 @@ fn require_json(
 }
 
 /// Decode a norn command's stdout as a `DevResult`.
+///
+/// TODO(meridian): norn `--output-format json` emits a completion envelope;
+/// confirm whether the structured `DevResult` is the envelope root or a nested
+/// field, and adjust `dev_result_codec` accordingly. The session id is set by
+/// the caller (`--session-id`), so it is overwritten after decode regardless.
 fn require_dev_result(
   command_run: cli.CliRun,
   context: String,

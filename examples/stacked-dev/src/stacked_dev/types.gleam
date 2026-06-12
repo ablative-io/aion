@@ -26,6 +26,7 @@ pub type Isolation {
 /// Input to the `provision_workspace` activity.
 pub type ProvisionInput {
   ProvisionInput(
+    repo_root: String,
     brief_id: String,
     base_ref: String,
     placement: Placement,
@@ -251,6 +252,7 @@ pub type OnatoppError {
 /// the caller decides every cap, backoff, and deadline.
 pub type StackedDevInput {
   StackedDevInput(
+    repo_root: String,
     brief_id: String,
     base_ref: String,
     placement: Placement,

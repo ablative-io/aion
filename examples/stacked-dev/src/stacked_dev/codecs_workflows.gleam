@@ -146,6 +146,7 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
   codec.json_codec(
     fn(input: StackedDevInput) {
       json.object([
+        #("repo_root", json.string(input.repo_root)),
         #("brief_id", json.string(input.brief_id)),
         #("base_ref", json.string(input.base_ref)),
         #(
@@ -177,6 +178,7 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
       use round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
       use review_deadline_ms <- decode.field("review_deadline_ms", decode.int)
       decode.success(StackedDevInput(
+        repo_root: provision.repo_root,
         brief_id: provision.brief_id,
         base_ref: provision.base_ref,
         placement: provision.placement,

@@ -145,6 +145,7 @@ fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
   case
     workflow.run(
       activities.provision_workspace(ProvisionInput(
+        repo_root: input.repo_root,
         brief_id: input.brief_id,
         base_ref: input.base_ref,
         placement: input.placement,

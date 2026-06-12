@@ -17,17 +17,18 @@ the section-7 open questions are resolved in code and indexed below.
 ```
 stacked_dev                         (top-level workflow.define)
 │
-├── provision_workspace             (activity: meridian)
+├── provision_workspace             (activity: yg branch add + provision)
 │
 ├── onatopp_dev  (child workflow — spawn_and_wait)
-│     ├── workflow.all([warm_build, dev])      cargo build ∥ norn run
+│     ├── workflow.all([warm_build, dev])      cargo build ∥ norn --print
 │     └── scoped_verify_loop  (bounded by verify_fix_cap):
-│           ├── scoped_checks   (activity: affected-module clippy/test/fmt)
-│           └── dev_resume      (activity: norn resume w/ diagnostics)
+│           ├── scoped_checks   (activity: yg graph affected +
+│           │                    yg diagnostics check --package <each>)
+│           └── dev_resume      (activity: norn --print --resume w/ diagnostics)
 │               └── workflow.sleep(round_backoff_ms) between rounds
 │
 ├── gate  (child workflow — spawn_and_wait)
-│     └── full_checks            (activity: fmt + clippy --workspace + test)
+│     └── full_checks            (activity: yg diagnostics check --workspace)
 │
 ├── review_loop  (bounded by review_cap):
 │     ├── request_review         (activity: meridian review request)
@@ -54,9 +55,13 @@ state (and replay re-arms them automatically).
 
 Every loop cap, backoff, and deadline is a **required** input field (open
 question Q5): the caller decides, the workflow bakes nothing in.
+`repo_root` is the absolute path of the repository to provision from; the
+worktree lands at `<repo_root>/.yggdrasil-worktrees/stacked-dev-<brief_id>`,
+so every activity holds an absolute working directory.
 
 ```json
 {
+  "repo_root": "/abs/path/to/repo",
   "brief_id": "brief-7",
   "base_ref": "main",
   "placement": "local",
@@ -84,7 +89,7 @@ harness: both children execute their real `execute` functions through
 `spawn_and_wait` (typed child doubles registered with
 `testing.mock_child`), and every activity executes its real local
 implementation, which genuinely shells out. Hermeticity comes from
-per-test fake-CLI shims (`meridian`, `norn`, `cargo`) written to a private
+per-test fake-CLI shims (`yg`, `norn`, `cargo`, `meridian`) written to a private
 directory placed **alone** on `PATH`; the shims emit canned JSON and record
 their argv to log files the tests assert against. No real norn/meridian
 install is needed — and the suite proves that a missing CLI with no shim is
@@ -114,6 +119,7 @@ aion deploy examples/stacked-dev/gate.aion
 
 # Start a run with the full required input.
 aion start stacked_dev --input '{
+  "repo_root": "/abs/path/to/repo",
   "brief_id": "brief-7", "base_ref": "main",
   "placement": "local", "isolation": "worktree",
   "brief": "Implement the widget",
@@ -165,13 +171,20 @@ Every Meridian-specific unknown is marked in code rather than guessed:
 | Seam | Location |
 |---|---|
 | Exchange-VM dispatch for `Copy`/`Overlay`/`Vm` isolation | `src/stacked_dev/locals.gleam`, `provision_workspace` |
-| Provision subcommand/flag names | `src/stacked_dev/locals.gleam`, `provision_worktree` |
-| `affected-modules` subcommand (graph query home) | `src/stacked_dev/locals.gleam`, `scoped_checks` |
 | Complete affected-closure gate scope | `src/stacked_dev/locals.gleam`, `full_checks` |
-| norn run/resume flag names | `src/stacked_dev/locals.gleam`, `dev` and `dev_resume` |
+| `--profile <dev profile>` + richer prompt assembly (design-context extraction, per-R# rendering from `onatopp-dev-norn/workflow.rhai`) | `src/stacked_dev/locals.gleam`, `dev` |
+| Carry the workspace root on `ResumeInput` so resume can confine file tools with `--workspace-root` | `src/stacked_dev/locals.gleam`, `dev_resume` |
+| Confirm norn's `--output-format json` envelope shape (is the structured `DevResult` the root or a nested field?) | `src/stacked_dev/locals.gleam`, `require_dev_result` |
 | Review request command and output schema | `src/stacked_dev/locals.gleam`, `request_review` |
 | Stack submit/land output schemas | `src/stacked_dev/locals.gleam`, `land` |
 | Warm-cache sharing across isolation modes | `src/stacked_dev/types.gleam`, `BuildWarm` doc |
+
+Resolved since first authoring (now real commands, asserted in tests):
+worktree provisioning (`yg branch add` + `yg branch provision --path`),
+affected-set scoping (`yg graph affected --plain --direct-only`), scoped
+and workspace checks (`yg diagnostics check`), norn headless invocation
+(`--print --session-id/--resume --output-schema --output-format json`
+with a deterministic branch-derived session id).
 
 ## Layout
 
