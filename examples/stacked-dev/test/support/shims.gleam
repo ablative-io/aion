@@ -51,6 +51,9 @@ pub type Shims {
 /// and into typed exhaustion errors.
 pub const clippy_diagnostics = "error: unused variable count in crates/aion-core/src/lib.rs:42"
 
+/// The canned report line the failing-workspace-clippy cargo shim emits.
+pub const workspace_clippy_report = "error: cross-crate lint failure only the full workspace sweep catches"
+
 /// The session id the norn shim reports for run and resume.
 pub const session_id = "sess-1"
 
@@ -61,6 +64,11 @@ pub const pr_url = "https://example.test/pr/41"
 pub const merge_commit = "deadbeefcafe"
 
 /// Create a fresh shim directory and point `PATH` at it exclusively.
+///
+/// `PATH` is VM-global (unlike the harness's process-scoped fixtures), so
+/// this suite relies on gleeunit's default sequential runner: every test
+/// repoints `PATH` at its own shim directory before running the pipeline.
+/// Do not move these tests to a parallel runner.
 pub fn install() -> Shims {
   let assert Ok(root) = raw_make_shim_root()
   let assert Ok(_) = raw_put_env("PATH", root)
@@ -154,6 +162,19 @@ pub fn write_cargo_failing_scoped_clippy(shims: Shims, failures: Int) -> Nil {
     "    echo \"" <> clippy_diagnostics <> "\"",
     "    exit 1",
     "  fi",
+    "fi",
+    "exit 0",
+  ])
+}
+
+/// Install a `cargo` shim where only WORKSPACE-WIDE clippy (the gate's
+/// `clippy --workspace ...`) fails with the canned report: the fast scoped
+/// loop converges, but the authoritative gate catches what scoping missed.
+pub fn write_cargo_failing_workspace_clippy(shims: Shims) -> Nil {
+  write_shim(shims, "cargo", [
+    "if [ \"$1\" = \"clippy\" ] && [ \"$2\" = \"--workspace\" ]; then",
+    "  echo \"" <> workspace_clippy_report <> "\"",
+    "  exit 1",
     "fi",
     "exit 0",
   ])

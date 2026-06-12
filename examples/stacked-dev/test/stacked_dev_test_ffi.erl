@@ -15,13 +15,31 @@
 
 %% Create a unique shim root containing an empty `workspace` directory (the
 %% directory the provision shim hands back as the workspace path).
+%%
+%% `erlang:unique_integer/1` restarts with every VM, so it alone would let a
+%% test run reuse a directory — and its appended argv logs — left under the
+%% tmp dir by a previous run. The OS pid disambiguates across runs, and any
+%% surviving collision (pid reuse) is deleted before use so every test
+%% starts from an empty recording.
 make_shim_root() ->
-    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Unique = os:getpid() ++ "-" ++ integer_to_list(erlang:unique_integer([positive])),
     Root = filename:join(base_tmp_dir(), "aion-stacked-dev-" ++ Unique),
     Workspace = filename:join(Root, "workspace"),
-    case filelib:ensure_path(Workspace) of
-        ok -> {ok, list_to_binary(Root)};
-        {error, Reason} -> {error, format_error("create shim root", Reason)}
+    case clear_stale_root(Root) of
+        ok ->
+            case filelib:ensure_path(Workspace) of
+                ok -> {ok, list_to_binary(Root)};
+                {error, Reason} ->
+                    {error, format_error("create shim root", Reason)}
+            end;
+        {error, Reason} ->
+            {error, format_error("clear stale shim root", Reason)}
+    end.
+
+clear_stale_root(Root) ->
+    case filelib:is_dir(Root) of
+        true -> file:del_dir_r(Root);
+        false -> ok
     end.
 
 %% Write a shim script and mark it executable.

@@ -19,10 +19,10 @@ import onatopp_dev
 import stacked_dev
 import stacked_dev/codecs_workflows
 import stacked_dev/types.{
-  type ReviewVerdict, type StackedDevInput, Approve, Local, OnatoppStatus,
-  ProvisionFailed, Reject, RequestChanges, ReviewNote, ReviewRejected,
-  ReviewTimedOut, ReviewVerdict, StackedDevInput, StackedDevStatus,
-  VerifyExhausted, Worktree,
+  type ReviewVerdict, type StackedDevInput, Approve, GateRejected, Local,
+  OnatoppStatus, ProvisionFailed, Reject, RequestChanges, ReviewCapExhausted,
+  ReviewNote, ReviewRejected, ReviewTimedOut, ReviewVerdict, StackedDevInput,
+  StackedDevStatus, VerifyExhausted, Worktree,
 }
 import support/shims
 
@@ -202,6 +202,50 @@ pub fn review_request_changes_notes_reach_dev_resume_and_regate_test() {
   |> should.equal(2)
   shims.invocations(shim_set, "meridian", "stack land")
   |> should.equal(1)
+}
+
+pub fn gate_failure_after_convergence_is_typed_gate_rejected_test() {
+  // Scoped checks pass (the fast loop converges), but the authoritative
+  // workspace-wide gate catches a cross-crate failure: the run fails loudly
+  // with the gate's report instead of looping or reaching review.
+  let #(_env, shim_set) = pipeline(shims.write_cargo_failing_workspace_clippy)
+
+  let assert Error(GateRejected(report: report)) =
+    stacked_dev.execute(base_input())
+
+  report |> string.contains(shims.workspace_clippy_report) |> should.be_true
+  shims.invocations(shim_set, "meridian", "review request")
+  |> should.equal(0)
+  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
+}
+
+pub fn review_cap_exhaustion_fails_the_run_with_typed_rounds_test() {
+  // One review round allowed; the reviewer requests changes, the fix
+  // re-gates cleanly, and the next round would exceed the cap — a typed
+  // ReviewCapExhausted, never an infinite review loop.
+  let #(_env, shim_set) = pipeline(shims.write_cargo_passing)
+  send_verdict(
+    ReviewVerdict(
+      decision: RequestChanges(notes: [
+        ReviewNote(
+          file: "crates/aion-core/src/lib.rs",
+          line: 7,
+          note: "round one is never enough",
+        ),
+      ]),
+    ),
+  )
+
+  let input = StackedDevInput(..base_input(), review_cap: 1)
+  stacked_dev.execute(input)
+  |> should.equal(Error(ReviewCapExhausted(rounds: 1)))
+
+  // Exactly one review round ran; the fix was re-gated; nothing landed.
+  shims.invocations(shim_set, "meridian", "review request")
+  |> should.equal(1)
+  shims.invocations(shim_set, "cargo", "clippy --workspace")
+  |> should.equal(2)
+  shims.invocations(shim_set, "meridian", "stack submit") |> should.equal(0)
 }
 
 pub fn review_reject_fails_the_run_with_typed_reason_test() {
