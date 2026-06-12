@@ -30,7 +30,8 @@ pub struct NewArgs {
     template: Template,
     /// Additionally scaffold an activity worker crate under `worker/`
     /// serving the template's activities. Only templates that dispatch
-    /// activities (saga) accept this.
+    /// activities (saga, dev-pipeline) accept this; dev-pipeline requires
+    /// it.
     #[arg(long, value_enum)]
     worker: Option<WorkerLanguage>,
 }
@@ -74,6 +75,7 @@ fn scaffold(parent: &Path, args: &NewArgs) -> Result<Value> {
     let files = manifest(args)?;
     let target = parent.join(&args.name);
     ensure_target_is_empty(&target)?;
+    let target_preexisted = target.exists();
 
     let mut written = Vec::with_capacity(files.len());
     for (path_template, contents_template) in files {
@@ -89,6 +91,10 @@ fn scaffold(parent: &Path, args: &NewArgs) -> Result<Value> {
         written.push(relative);
     }
 
+    if args.template.generates_codecs() {
+        written.push(generate_codecs(&target, target_preexisted)?);
+    }
+
     to_value(NewOutput {
         project: args.name.clone(),
         path: target.display().to_string(),
@@ -99,21 +105,67 @@ fn scaffold(parent: &Path, args: &NewArgs) -> Result<Value> {
     })
 }
 
+/// Runs `aion codegen` in-process over the freshly written project,
+/// generating `src/<name>_io.gleam` from the emitted schemas (the
+/// template's sources import that module). On failure the partial scaffold
+/// is removed — the target was verified empty before writing, so everything
+/// under it is ours — and the error is propagated loudly.
+fn generate_codecs(target: &Path, target_preexisted: bool) -> Result<String> {
+    match aion_package::codegen_project(target, aion_package::CodegenMode::Write) {
+        Ok(report) => Ok(report.module_relative),
+        Err(codegen_error) => {
+            std::fs::remove_dir_all(target).with_context(|| {
+                format!(
+                    "failed to remove the partial scaffold at {} after codegen failed: \
+                     {codegen_error}",
+                    target.display()
+                )
+            })?;
+            if target_preexisted {
+                std::fs::create_dir(target).with_context(|| {
+                    format!(
+                        "failed to restore the empty directory {} after codegen failed: \
+                         {codegen_error}",
+                        target.display()
+                    )
+                })?;
+            }
+            Err(codegen_error).context("failed to generate src/<name>_io.gleam from schemas/")
+        }
+    }
+}
+
 /// Resolves the full file manifest: template files plus, when requested and
 /// available, the worker crate. Refuses `--worker` for templates whose
 /// workflows dispatch no activities — there is nothing for a worker to
-/// serve, and a dangling worker crate would be a lie.
+/// serve, and a dangling worker crate would be a lie. Conversely refuses to
+/// OMIT `--worker` for templates whose every activity is worker-served: a
+/// dev pipeline without its worker cannot run live, and emitting one would
+/// be a different lie.
 fn manifest(args: &NewArgs) -> Result<Vec<ManifestFile>> {
     let mut files = args.template.files();
-    if let Some(WorkerLanguage::Rust) = args.worker {
-        if args.template.activities().is_empty() {
-            bail!(
-                "the {} template declares no activities, so there is no worker to scaffold; \
-                 use `--template saga` or drop `--worker`",
-                args.template.id()
-            );
+    match args.worker {
+        Some(WorkerLanguage::Rust) => {
+            if args.template.activities().is_empty() {
+                bail!(
+                    "the {} template declares no activities, so there is no worker to scaffold; \
+                     use `--template saga`, `--template dev-pipeline`, or drop `--worker`",
+                    args.template.id()
+                );
+            }
+            files.extend_from_slice(args.template.worker_files());
         }
-        files.extend_from_slice(args.template.worker_files());
+        None => {
+            if args.template.requires_worker() {
+                bail!(
+                    "the {} template requires a worker: all eight of its activities \
+                     (provision, warm build, dev agent, checks, gate, review request, land) \
+                     are served by the standalone worker crate in a live deployment, so a \
+                     scaffold without one cannot run; pass `--worker rust`",
+                    args.template.id()
+                );
+            }
+        }
     }
     Ok(files)
 }
@@ -338,6 +390,66 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_dev_pipeline_without_a_worker_and_writes_nothing() -> Result<(), TestError> {
+        let parent = tempfile::tempdir()?;
+        let args = NewArgs::for_tests("pipe_flow", Template::DevPipeline, None);
+        let error = require_error(scaffold(parent.path(), &args))?;
+        assert!(
+            error.to_string().contains("requires a worker"),
+            "refusal must explain the requirement: {error}"
+        );
+        assert!(
+            error.to_string().contains("--worker rust"),
+            "refusal must name the fix: {error}"
+        );
+        assert!(
+            !parent.path().join("pipe_flow").exists(),
+            "a refused scaffold must write nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scaffold_dev_pipeline_generates_the_io_module_from_schemas() -> Result<(), TestError> {
+        let parent = tempfile::tempdir()?;
+        let args = NewArgs::for_tests(
+            "demo_pipe",
+            Template::DevPipeline,
+            Some(WorkerLanguage::Rust),
+        );
+        let output: Value = scaffold(parent.path(), &args)?;
+        let project = parent.path().join("demo_pipe");
+
+        assert_eq!(output["template"], "dev-pipeline");
+        assert_eq!(output["worker"], "rust");
+        let files = output["files"].as_array().ok_or("files must be an array")?;
+        assert!(
+            files.iter().any(|file| file == "src/demo_pipe_io.gleam"),
+            "the scaffold report must list the generated module: {output}"
+        );
+        for relative in files {
+            let relative = relative.as_str().ok_or("file entries must be strings")?;
+            assert!(
+                project.join(relative).is_file(),
+                "{relative} must exist on disk"
+            );
+        }
+
+        // The generated module is exactly what the schemas generate: an
+        // immediate `aion codegen --check` over the scaffold passes.
+        let report = aion_package::codegen_project(&project, aion_package::CodegenMode::Check)
+            .map_err(|error| format!("freshly scaffolded codegen --check failed: {error}"))?;
+        assert!(!report.written, "check mode must not rewrite the module");
+
+        // The sources import the generated module under its package name.
+        let codecs = std::fs::read_to_string(project.join("src/demo_pipe/codecs_workflows.gleam"))?;
+        assert!(codecs.contains("import demo_pipe_io as generated"));
+        let cargo = std::fs::read_to_string(project.join("worker/Cargo.toml"))?;
+        assert!(cargo.contains(&format!("aion-worker = \"{}\"", env!("CARGO_PKG_VERSION"))));
         Ok(())
     }
 

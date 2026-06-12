@@ -41,7 +41,9 @@ You should see the subcommands: `server`, `new`, `package`, `deploy`,
 > Prefer a generated starting point? `aion new <name>` scaffolds a complete,
 > buildable project — workflow, schemas, `workflow.toml`, a dev `aion.toml`,
 > and a README with these same steps (`--template hello-world`,
-> `approval-flow`, or `saga`; `--worker rust` adds a worker crate). This
+> `approval-flow`, `saga`, or `dev-pipeline`; `--worker rust` adds a worker
+> crate, and `dev-pipeline` — three composed workflows with schema-generated
+> codecs via `aion codegen` and a hermetic test suite — requires it). This
 > guide builds the same thing by hand so you see every part.
 
 > There is no separate server binary and no installable worker binary.

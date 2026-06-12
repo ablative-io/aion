@@ -60,14 +60,20 @@ internal test suites. Agreed plan, in credibility-per-effort order:
 
 ## 3. Authoring roadmap (sequenced)
 
-1. **Schema→Gleam codegen** — `aion new` ships schemas but codecs are
-   hand-derived in the template. Add a build/package step (or
-   `aion codegen`) regenerating `<name>_io.gleam` (types + codecs) from
-   `schemas/*.json` so the schema is the single source of truth. Pairs with
-   the scaffold; do first.
-2. **Dev-pipeline template** — lift `examples/stacked-dev` into an
-   `aion new` template (the fourth), once codegen exists so the template's
-   codecs are generated, not vendored.
+1. **Schema→Gleam codegen** — DONE: `aion codegen` regenerates
+   `src/<name>_io.gleam` (types + codecs) from `schemas/*.json`, with
+   `--check` as the CI drift gate (`docs/guides/codegen.md`).
+2. **Dev-pipeline template** — DONE: `aion new <name> --template
+   dev-pipeline --worker rust` (the fourth template; the worker is required
+   and the refusal explains why) scaffolds `examples/stacked-dev` as a
+   starting point — three composed workflows, six schemas, the CLI-shelling
+   worker, and the hermetic 11-scenario test suite — and runs codegen
+   in-process so workflow-level codecs are generated, not vendored.
+   Remaining follow-ups: activity payloads / typed errors / status replies
+   have no schemas and keep hand-written codecs (adding activity schemas is
+   a future wave); the other three templates still vendor hand-written
+   codecs and do not run codegen; the `TODO(meridian)` seams ride along
+   from `examples/stacked-dev` (see §5).
 3. **`aion dev`** — watch mode: rebuild + repackage + hot-redeploy on file
    change (content-hash namespacing already makes redeploy safe).
 4. **Dashboard timeline** — per-run event timeline view in aion-dashboard.

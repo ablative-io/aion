@@ -1,0 +1,40 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: https://github.com/ablative-io/aion/blob/main/docs/packaging.md
+#
+# Three entries — the dev-pipeline family: the `{{name}}` parent plus
+# the `{{name}}_dev` and `{{name}}_gate` children, each
+# independently dispatchable. A spawned child's workflow type is resolved by
+# entry module name against the engine's loaded packages, so all three
+# archives must be deployed together for full parent-child runs. All archives
+# share the same beam set and content hash; only the entry module differs.
+#
+# Timeouts size the longest legitimate run: the parent waits on human-scale
+# review verdicts (seven days), the dev child iterates agent rounds for up to
+# a day, and the gate is one full check sweep (six hours).
+
+[[workflow]]
+entry_module = "{{name}}"
+entry_function = "run"
+timeout_seconds = 604800
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["provision_workspace", "dev_resume", "request_review", "land"]
+output = "{{name}}.aion"
+
+[[workflow]]
+entry_module = "{{name}}_dev"
+entry_function = "run"
+timeout_seconds = 86400
+input_schema = "schemas/dev_input.json"
+output_schema = "schemas/dev_output.json"
+activities = ["warm_build", "dev", "scoped_checks", "dev_resume"]
+output = "{{name}}-dev.aion"
+
+[[workflow]]
+entry_module = "{{name}}_gate"
+entry_function = "run"
+timeout_seconds = 21600
+input_schema = "schemas/gate_input.json"
+output_schema = "schemas/gate_output.json"
+activities = ["full_checks"]
+output = "{{name}}-gate.aion"

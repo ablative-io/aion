@@ -1,0 +1,36 @@
+[package]
+name = "{{name}}_worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Standalone activity worker serving the {{name}} dev pipeline's eight activities."
+
+# This crate stands alone: it is the worker a deployment would write against
+# the published `aion-worker` SDK, not a member of any surrounding workspace.
+[workspace]
+
+# Strict lints pinned locally (a standalone crate inherits no workspace
+# lints): the worker is held to the same clippy/rustc bar as the engine.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+aion-worker = "{{aion_worker_version}}"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
