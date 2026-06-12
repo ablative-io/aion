@@ -202,9 +202,11 @@ and workspace checks (`yg diagnostics check`), norn headless invocation
 with a deterministic branch-derived session id), norn's JSON envelope
 (confirmed live: the schema-constrained result sits under `"output"`,
 alongside usage/model/event telemetry — decoded by both `locals.gleam` and
-the worker), the review request (`meridian review request --reviewer
-<NAME>... <BRANCH>`, reviewers a required input, workspace from the CLI's
-global config), and landing (`yg branch merge <branch>` into the tree
+the worker), the review request (`meridian review request <BRANCH>
+--reviewer <NAME>... --as Meridian` — branch positional FIRST because the
+greedy `--reviewer` flag swallows a trailing positional; reviewers a
+required input; the request is always signed as the Meridian system
+member; workspace from the CLI's global config), and landing (`yg branch merge <branch>` into the tree
 parent — local, no PR machinery; output is `{branch, merged_into}`).
 
 ## Layout

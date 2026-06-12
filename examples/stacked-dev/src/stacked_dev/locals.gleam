@@ -338,19 +338,23 @@ pub fn full_checks(
 pub fn request_review(
   input: ReviewRequest,
 ) -> Result(ReviewAck, error.ActivityError) {
-  // CONFIRMED against the real CLI (live run, 2026-06-13):
-  // `meridian review request --reviewer <NAME>... <BRANCH>` — reviewers are
-  // member names/UUIDs (a required input field); the meridian workspace
-  // resolves from the CLI's own global config, never from workflow inputs.
+  // CONFIRMED against the real CLI (live runs, 2026-06-13):
+  // `meridian review request <BRANCH> --reviewer <NAME>... --as Meridian`.
+  // The branch positional must come FIRST: `--reviewer` is greedy
+  // multi-value and swallows a trailing positional as another reviewer.
+  // `--as` names the requesting identity — always the Meridian system
+  // member (the CLI refuses to guess when the workspace has several
+  // members). The meridian workspace resolves from the CLI's own global
+  // config, never from workflow inputs.
   let reviewer_args =
     list.flat_map(input.reviewers, fn(reviewer) { ["--reviewer", reviewer] })
   use command_run <- require_run(
     cli.run(
       "meridian",
       list.flatten([
-        ["review", "request"],
+        ["review", "request", input.workspace.branch],
         reviewer_args,
-        [input.workspace.branch],
+        ["--as", "Meridian"],
       ]),
       input.workspace.path,
     ),
