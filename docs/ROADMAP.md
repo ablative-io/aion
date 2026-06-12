@@ -74,15 +74,26 @@ internal test suites. Agreed plan, in credibility-per-effort order:
    a future wave); the other three templates still vendor hand-written
    codecs and do not run codegen; the `TODO(meridian)` seams ride along
    from `examples/stacked-dev` (see §5).
-3. **`aion dev`** — watch mode: rebuild + repackage + hot-redeploy on file
+3. **CLI JSON ergonomics (Tom, 2026-06-13 — live-dogfood friction).**
+   `--input`/`--payload` should accept the curl `@file` convention
+   (`aion start stacked_dev --input @input.json`,
+   `aion signal <id> review_verdict --payload @verdict.json`) instead of
+   forcing `"$(cat ...)"` shell quoting; `aion start` should validate the
+   input against the deployed package's input schema CLIENT-side, failing
+   with a file+RFC6901 pointer before dispatch instead of as a failed run;
+   and an `aion input <workflow_type>` helper should emit a valid input
+   skeleton from the deployed schema (composing the input document by hand
+   is the remaining authoring pain — embedding design docs as JSON-encoded
+   strings is easy to get wrong silently).
+4. **`aion dev`** — watch mode: rebuild + repackage + hot-redeploy on file
    change (content-hash namespacing already makes redeploy safe).
-4. **Dashboard timeline** — per-run event timeline view in aion-dashboard.
-5. **Elixir SDK** — BEAM-native polyglot authoring (the strategic counter
+5. **Dashboard timeline** — per-run event timeline view in aion-dashboard.
+6. **Elixir SDK** — BEAM-native polyglot authoring (the strategic counter
    to Temporal's client-runtime polyglot story; see §6 of the Temporal
    discussion — we never build client-side determinism cores).
-6. **Declarative DSL + visual builder** — on top of the typed SDK, not
+7. **Declarative DSL + visual builder** — on top of the typed SDK, not
    instead of it.
-7. **WASM workflow runtime** — long-term polyglot path (beamr-wasm exists;
+8. **WASM workflow runtime** — long-term polyglot path (beamr-wasm exists;
    banked beamr items below are prerequisites).
 
 ## 4. Next publish bundle (whenever Tom is ready)
@@ -119,6 +130,18 @@ sharing per isolation mode. Meridian owes:
   On our side the discipline is permanent: every test shim emits a REAL
   captured envelope, never an invented one — contract drift must break a
   test, not a live run.
+- **Multi-reviewer verdicts (DECIDED — Tom + Waffles, 2026-06-13).** The
+  workflow keeps its single `review_verdict` signal: one signal = THE
+  decision. Reviewers vote to Meridian (`meridian review complete
+  --verdict`, which clears each reviewer from the branch's
+  `pending_reviewers` set and emits `ReviewVerdictSubmitted`); Meridian's
+  coordinator applies the quorum policy (all-in, majority, any-reject —
+  org policy lives in Meridian, never baked into workflow code) and, once
+  decided, fires `aion signal <workflow_id> review_verdict` itself. The
+  missing wire: the coordinator is keyed by BRANCH but `aion signal`
+  takes the WORKFLOW id — review request must carry the workflow id
+  along (request metadata / DM context) or Meridian needs a branch→run
+  mapping recorded at request time.
 - A Meridian worker serving the eight activity names
   (`provision_workspace`, `warm_build`, `dev`, `scoped_checks`,
   `dev_resume`, `full_checks`, `request_review`, `land`) mirroring the
