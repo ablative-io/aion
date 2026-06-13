@@ -447,6 +447,29 @@
       },
       "depends_on": [],
       "notes": "Separate repo when started; the design-system extraction (RM-016 note) rides with it."
+    },
+    {
+      "id": "RM-021",
+      "title": "Workflow authoring experience: declare activities once, generate the rest",
+      "status": "idea",
+      "kind": "design",
+      "summary": "Collapse new-family authoring to: schemas + one workflow module + one activities module. Everything that is today hand-mirrored gets generated — the Rust worker handlers (which must mirror locals invocation-for-invocation, i.e. a generator's job by definition), SERVED_ACTIVITIES, wire_compat pins, workflow.toml entries, locals/worker registration plumbing, and the hermetic-shim harness skeleton. Likely shape: `aion new workflow <name>` scaffolds inside an existing package; an activity declaration form (in Gleam or manifest) drives worker codegen the same way schemas already drive codec codegen. Evidence: in the brief-dev cluster, each activity exists in ~4 places that must agree byte-for-byte.",
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "I was sort of hoping for like a you write up the file and you know you might have like a file with some functions you might have a fight and then you just have sort of like remain work profile. It's just a couple of steps or something like that I don't know but like where can we reduce the authoring time and that kind of stuff?",
+        "context": "Watching the brief-dev implementation waves run; STT read-through: 'remain work profile' = a main workflow file, 'a fight' = a file. The ask: a file of activity functions + a main workflow file + a couple of steps, instead of hand-authoring schemas/codecs/worker/manifests/test harness per family."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
+      "depends_on": [
+        "RM-017"
+      ],
+      "notes": "Distinct from RM-003 (CLI input ergonomics) — this is family-authoring cost, not dispatch cost. Candidate to design right after the RM-011 pilot, informed by what the pilot proves painful."
     }
   ]
 }
