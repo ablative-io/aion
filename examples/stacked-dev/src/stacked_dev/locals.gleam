@@ -15,6 +15,7 @@
 
 import aion/codec
 import aion/error
+import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -25,14 +26,15 @@ import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/enrich
 import stacked_dev/types.{
-  type BriefDocument, type CheckResult, type DevInput, type DevResult,
-  type EnrichInput, type GateInput, type GateResult, type LandInput, type Landed,
-  type ProvisionInput, type ResumeInput, type ReviewAck, type ReviewRequest,
-  type ScopedInput, type StartupResult, type StartupTask, type Workspace,
-  AffectedClosure, BuildWarm, CheckFail, CheckPass, CheckResult, Copy,
-  DevEnrichment, DevResult, DevTask, Developed, ExecutionEnrichment, GateFail,
-  GatePass, GateResult, Landed, Overlay, ReviewAck, ReviewEnrichment,
-  ScoutEnrichment, Vm, WarmTask, Warmed, Workspace, WorkspaceWide, Worktree,
+  type BriefDocument, type CheckResult, type DevInput, type EnrichInput,
+  type GateInput, type GateResult, type LandInput, type Landed,
+  type ProvisionInput, type ResumeInput, type ReviewAck, type ReviewInput,
+  type ReviewRequest, type ScopedInput, type ScoutInput, type StartupResult,
+  type StartupTask, type Workspace, AffectedClosure, BuildWarm, CheckFail,
+  CheckPass, CheckResult, Copy, DevEnrichment, DevTask, Developed,
+  ExecutionEnrichment, GateFail, GatePass, GateResult, Landed, Overlay,
+  ReviewAck, ReviewEnrichment, ScoutEnrichment, Vm, WarmTask, Warmed, Workspace,
+  WorkspaceWide, Worktree,
 }
 
 /// Provision an isolated workspace via the `yg` CLI.
@@ -122,20 +124,13 @@ fn warm_build(
   }
 }
 
-/// Run the dev agent against the brief via the `norn` CLI.
-fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
-  // The session id is deterministic (the branch name), so resume rounds target
-  // the same session without ever capturing a generated id. norn validates the
-  // charset; "stacked-dev-<brief>" is legal.
-  let session_id = input.workspace.branch
-  let prompt = dev_prompt(input)
-
-  // norn takes the prompt positionally; --print is headless, --session-id mints
-  // exactly this id, --output-schema constrains the structured result, and
-  // --output-format json emits the final envelope we decode.
-  // TODO(meridian): add --profile <dev profile> and port the richer prompt
-  // assembly (design-context extraction, per-R# rendering) from
-  // .meridian/workflows/onatopp-dev-norn/workflow.rhai.
+/// Run the read-only scout agent in its own deterministic session
+/// (`<branch>-scout`, CN4) via the `norn` CLI. The projected scout prompt
+/// rides positionally; the output validates against the scout-report schema.
+pub fn scout(
+  input: ScoutInput,
+) -> Result(stage_io.ScoutReport, error.ActivityError) {
+  let session_id = input.workspace.branch <> "-scout"
   use command_run <- require_run(
     cli.run(
       "norn",
@@ -146,52 +141,106 @@ fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
         "--workspace-root",
         input.workspace.path,
         "--output-schema",
-        dev_output_schema(),
+        scout_output_schema,
         "--output-format",
         "json",
-        prompt,
+        input.prompt,
+      ],
+      input.workspace.path,
+    ),
+    "norn scout",
+  )
+  require_report(
+    command_run,
+    "norn scout",
+    stage_io.scout_report_decoder(),
+    codecs_core.report_envelope_decoder(stage_io.scout_report_decoder()),
+  )
+}
+
+/// Run the dev agent against the projected dev prompt via the `norn` CLI.
+fn dev(input: DevInput) -> Result(StartupResult, error.ActivityError) {
+  // The session id is deterministic (the branch name), so resume rounds target
+  // the same session without ever capturing a generated id. norn validates the
+  // charset; "stacked-dev-<brief>" is legal.
+  let session_id = input.workspace.branch
+
+  // norn takes the projected prompt positionally; --print is headless,
+  // --session-id mints exactly this id, --output-schema constrains the
+  // structured result to the dev-report shape, and --output-format json emits
+  // the final envelope we decode.
+  use command_run <- require_run(
+    cli.run(
+      "norn",
+      [
+        "--print",
+        "--session-id",
+        session_id,
+        "--workspace-root",
+        input.workspace.path,
+        "--output-schema",
+        dev_output_schema,
+        "--output-format",
+        "json",
+        input.prompt,
       ],
       input.workspace.path,
     ),
     "norn dev",
   )
-  use dev_result <- require_dev_result(command_run, "norn dev")
-  Ok(Developed(dev_result: DevResult(..dev_result, session_id: session_id)))
+  case
+    require_report(
+      command_run,
+      "norn dev",
+      stage_io.dev_report_decoder(),
+      codecs_core.report_envelope_decoder(stage_io.dev_report_decoder()),
+    )
+  {
+    Ok(dev_report) -> Ok(Developed(dev_report: dev_report))
+    Error(activity_error) -> Error(activity_error)
+  }
 }
 
-/// The JSON Schema norn structures the dev/resume result against — the
-/// `DevResult` shape (`session_id`, `files_touched`, `summary`). Passed inline
-/// to `--output-schema` so there is no schema file to resolve in the workspace.
-fn dev_output_schema() -> String {
-  "{\"type\":\"object\","
-  <> "\"required\":[\"session_id\",\"files_touched\",\"summary\"],"
-  <> "\"additionalProperties\":false,"
-  <> "\"properties\":{"
-  <> "\"session_id\":{\"type\":\"string\"},"
-  <> "\"files_touched\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
-  <> "\"summary\":{\"type\":\"string\"}}}"
-}
-
-/// Assemble the dev prompt from the brief and its design context.
-fn dev_prompt(input: DevInput) -> String {
-  string.join(
-    [
-      "Implement the following brief in this workspace.",
-      "## Brief\n" <> input.brief,
-      "## Design\n" <> input.design,
-      "## Checklist\n" <> input.checklist,
-      "## Stories\n" <> string.join(input.stories, "\n"),
-      "Return your structured result matching the output schema.",
-    ],
-    "\n\n",
+/// Run the adversarial reviewer agent in its own deterministic session
+/// (`<branch>-review` — NEVER the dev session, CN4) via the `norn` CLI. The
+/// projected review prompt rides positionally; the output validates against
+/// the review-report schema.
+pub fn dev_review(
+  input: ReviewInput,
+) -> Result(stage_io.ReviewReport, error.ActivityError) {
+  let session_id = input.workspace.branch <> "-review"
+  use command_run <- require_run(
+    cli.run(
+      "norn",
+      [
+        "--print",
+        "--session-id",
+        session_id,
+        "--workspace-root",
+        input.workspace.path,
+        "--output-schema",
+        review_output_schema,
+        "--output-format",
+        "json",
+        input.prompt,
+      ],
+      input.workspace.path,
+    ),
+    "norn review",
+  )
+  require_report(
+    command_run,
+    "norn review",
+    stage_io.review_report_decoder(),
+    codecs_core.report_envelope_decoder(stage_io.review_report_decoder()),
   )
 }
 
-/// Resume the same dev agent session with feedback (scoped-check diagnostics
-/// or encoded review notes).
+/// Resume the same dev agent session with feedback (scoped-check diagnostics).
+/// Returns a FULL replacement dev report against the dev-report schema.
 pub fn dev_resume(
   input: ResumeInput,
-) -> Result(DevResult, error.ActivityError) {
+) -> Result(stage_io.DevReport, error.ActivityError) {
   // Resume by the deterministic session id; the feedback is the prompt.
   // TODO(meridian): carry the workspace root on ResumeInput so resume can also
   // confine file tools with --workspace-root like the dev step does.
@@ -203,7 +252,7 @@ pub fn dev_resume(
         "--resume",
         input.session_id,
         "--output-schema",
-        dev_output_schema(),
+        dev_output_schema,
         "--output-format",
         "json",
         input.feedback,
@@ -212,9 +261,31 @@ pub fn dev_resume(
     ),
     "norn resume",
   )
-  use dev_result <- require_dev_result(command_run, "norn resume")
-  Ok(DevResult(..dev_result, session_id: input.session_id))
+  require_report(
+    command_run,
+    "norn resume",
+    stage_io.dev_report_decoder(),
+    codecs_core.report_envelope_decoder(stage_io.dev_report_decoder()),
+  )
 }
+
+/// The scout-report stage-contract schema, inline for `--output-schema`. A
+/// Gleam string constant pinned structurally to `schemas/scout_report.json`
+/// (which the drift gate pins byte-for-byte to the design-system canon, CN7)
+/// by `test/stage_schema_test.gleam`.
+pub const scout_output_schema = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"Scout Report\",\"description\":\"Structured output contract for the scout stage: read-only codebase exploration that gathers implementation context per requirement. The enrichments entries are appended in place to the brief's requirements as their scout blocks.\",\"type\":\"object\",\"required\":[\"summary\",\"enrichments\",\"verification\"],\"additionalProperties\":false,\"properties\":{\"summary\":{\"type\":\"string\",\"description\":\"2-3 sentences orienting the implementer\"},\"enrichments\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"files\",\"context\",\"approach\",\"notes\"],\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^R\\\\d+$\",\"description\":\"R# id from the brief — one entry per requirement, no omissions\"},\"files\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Key files relevant to this R# (path:line-range — brief note). 2-5 per R#, chosen to save the implementer time, not to catalogue.\"},\"context\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Key findings: conventions to match, type signatures, gotchas. 2-4 per R#.\"},\"approach\":{\"type\":\"string\",\"description\":\"How to implement this R# — one paragraph, concrete\"},\"notes\":{\"type\":\"string\",\"description\":\"Anything non-obvious the brief might not have considered: edge cases, integration gotchas. Empty string if none.\"}}}},\"verification\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Concrete checks to run after implementation, discovered during exploration\"}}}"
+
+/// The dev-report stage-contract schema, inline for `--output-schema`. A Gleam
+/// string constant pinned structurally to `schemas/dev_report.json` (which the
+/// drift gate pins byte-for-byte to the design-system canon, CN7) by
+/// `test/stage_schema_test.gleam`.
+pub const dev_output_schema = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"Dev Report\",\"description\":\"Structured output contract for the dev stage: implementation of every requirement in the brief. The enrichments entries are appended in place to the brief's requirements as their dev blocks. The attestation records what the agent BELIEVES — the workflow runs the real gate afterwards and stores both; the attestation is never trusted as the gate.\",\"type\":\"object\",\"required\":[\"summary\",\"commit_message\",\"enrichments\",\"attestation\"],\"additionalProperties\":false,\"properties\":{\"summary\":{\"type\":\"string\",\"description\":\"1-2 sentences on what was done\"},\"commit_message\":{\"type\":\"string\",\"description\":\"Conventional-commits style message for this round's commit\"},\"enrichments\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"status\",\"files_changed\",\"how\",\"deviation\",\"checklist\",\"stories\"],\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^R\\\\d+$\",\"description\":\"R# id — one entry per requirement, blocked ones included with status blocked\"},\"status\":{\"type\":\"string\",\"enum\":[\"implemented\",\"blocked\"]},\"files_changed\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"path\",\"change\",\"note\"],\"additionalProperties\":false,\"properties\":{\"path\":{\"type\":\"string\"},\"change\":{\"type\":\"string\",\"enum\":[\"created\",\"modified\",\"deleted\"]},\"note\":{\"type\":\"string\"}}}},\"how\":{\"type\":\"string\",\"description\":\"How this requirement was met — the rationale and shape of the change, not a diff narration\"},\"deviation\":{\"type\":\"string\",\"description\":\"Empty if the scouted plan was followed; otherwise what changed and why — silent deviation is a review finding\"},\"checklist\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"done\",\"note\"],\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^C\\\\d+$\"},\"done\":{\"type\":\"boolean\"},\"note\":{\"type\":\"string\"}}},\"description\":\"Delivery claim per C# assigned to this R#\"},\"stories\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"satisfied\",\"note\"],\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^S\\\\d+$\"},\"satisfied\":{\"type\":\"boolean\"},\"note\":{\"type\":\"string\"}}},\"description\":\"Satisfaction claim per S# assigned to this R#\"}}}},\"attestation\":{\"type\":\"object\",\"required\":[\"no_panics\",\"no_unsafe\",\"boundaries_respected\",\"tests_pass\"],\"additionalProperties\":false,\"properties\":{\"no_panics\":{\"type\":\"boolean\",\"description\":\"No unwrap/expect/panic/todo in library code\"},\"no_unsafe\":{\"type\":\"boolean\",\"description\":\"No unsafe blocks added\"},\"boundaries_respected\":{\"type\":\"boolean\",\"description\":\"All SHALL NOT boundaries observed\"},\"tests_pass\":{\"type\":\"boolean\",\"description\":\"The agent's belief — the workflow measures the truth at the gate\"}}}}}"
+
+/// The review-report stage-contract schema, inline for `--output-schema`. A
+/// Gleam string constant pinned structurally to `schemas/review_report.json`
+/// (which the drift gate pins byte-for-byte to the design-system canon, CN7)
+/// by `test/stage_schema_test.gleam`.
+pub const review_output_schema = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"Review Report\",\"description\":\"Structured output contract for the adversarial review stage. The reviewer verifies the ACTUAL DIFF against each acceptance criterion — never the dev's claims — then hardens. Verdict and fixes are both recorded; there is no severity taxonomy because there are no minor issues: everything found is fixed or named as an issue. The enrichments entries are appended in place to the brief's requirements as their review blocks.\",\"type\":\"object\",\"required\":[\"summary\",\"commit_message\",\"enrichments\",\"verification\"],\"additionalProperties\":false,\"properties\":{\"summary\":{\"type\":\"string\",\"description\":\"The honest overall read — what is solid, what was found, what was fixed\"},\"commit_message\":{\"type\":\"string\",\"description\":\"Conventional-commits style message for the harden commit; empty string when the harden pass changed nothing\"},\"enrichments\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"alignment\",\"acceptance\",\"checklist\",\"stories\",\"issues\",\"fixes\"],\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^R\\\\d+$\",\"description\":\"R# id — one entry per requirement\"},\"alignment\":{\"type\":\"string\",\"enum\":[\"aligned\",\"drifted\",\"fixed\"],\"description\":\"aligned = implementation matches spec; drifted = it does not and remains so (a failing state); fixed = it drifted and the harden pass corrected it\"},\"acceptance\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"criterion\",\"met\",\"evidence\"],\"additionalProperties\":false,\"properties\":{\"criterion\":{\"type\":\"string\",\"description\":\"The acceptance criterion verbatim from the brief\"},\"met\":{\"type\":\"boolean\"},\"evidence\":{\"type\":\"string\",\"description\":\"What in the diff proves it: file:line, test name, command output — not the dev report\"}}},\"description\":\"One verdict per acceptance criterion. A single boolean for the whole requirement is not a review.\"},\"checklist\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"pattern\":\"^C\\\\d+$\"},\"description\":\"C-numbers VERIFIED delivered (verification flips done in the cluster checklist, not the dev's claim)\"},\"stories\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"pattern\":\"^S\\\\d+$\"},\"description\":\"S-numbers verified satisfied\"},\"issues\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Everything found, fixed or not — an issue that was fixed still gets recorded here with its fix below\"},\"fixes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"What the harden pass changed\"}}}},\"verification\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"criterion\",\"passed\",\"note\"],\"additionalProperties\":false,\"properties\":{\"criterion\":{\"type\":\"string\",\"description\":\"Brief-level verification step, verbatim\"},\"passed\":{\"type\":\"boolean\"},\"note\":{\"type\":\"string\"}}},\"description\":\"The brief's cross-cutting verification steps, each actually executed\"}}}"
 
 /// Scoped verification: compute the affected package set from the dependency
 /// graph, then run diagnostics limited to it.
@@ -586,29 +657,31 @@ fn require_json(
   }
 }
 
-/// Decode a norn command's stdout as a `DevResult`.
+/// Decode a norn command's stdout as a stage report, generic over the
+/// report's inner decoder.
 ///
 /// CONFIRMED against real norn (live run, 2026-06-13): `--output-format json`
 /// emits a completion envelope with the schema-constrained result under
-/// `"output"` (alongside `usage`/`model`/`events`, ignored here). The bare
-/// shape is tried first because the fake-CLI shims emit the `DevResult` raw.
-/// The session id is set by the caller (`--session-id`), so it is overwritten
-/// after decode regardless.
-fn require_dev_result(
+/// `"output"` (alongside `usage`/`model`/`events`, ignored here). Exactly two
+/// shapes are accepted — the bare report (the fake-CLI shims emit it raw) and
+/// the real `{"output": <report>}` envelope — and nothing else (C31). A third
+/// shape fails terminally naming both accepted shapes.
+fn require_report(
   command_run: cli.CliRun,
   context: String,
-  next: fn(DevResult) -> Result(value, error.ActivityError),
-) -> Result(value, error.ActivityError) {
+  bare: decode.Decoder(report),
+  envelope: decode.Decoder(report),
+) -> Result(report, error.ActivityError) {
   let trimmed = string.trim(command_run.output)
-  case codecs_core.dev_result_codec().decode(trimmed) {
-    Ok(dev_result) -> next(dev_result)
+  case json.parse(trimmed, bare) {
+    Ok(report) -> Ok(report)
     Error(_) ->
-      case codecs_core.norn_envelope_codec().decode(trimmed) {
-        Ok(dev_result) -> next(dev_result)
+      case json.parse(trimmed, envelope) {
+        Ok(report) -> Ok(report)
         Error(_) ->
           Error(error.terminal(
             context
-            <> " produced unparseable output (tried the bare DevResult shape"
+            <> " produced unparseable output (tried the bare report shape"
             <> " and norn's {\"output\": ...} envelope): "
             <> trimmed,
           ))

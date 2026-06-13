@@ -15,12 +15,12 @@ import aion/query
 import aion/signal
 import aion/testing
 import aion_stacked_dev_io as stage_io
+import brief_dev
 import gleam/list
 import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
-import onatopp_dev
 import stacked_dev
 import stacked_dev/activities
 import stacked_dev/codecs_brief
@@ -29,13 +29,15 @@ import stacked_dev/codecs_workflows
 import stacked_dev/enrich
 import stacked_dev/locals
 import stacked_dev/types.{
-  type ReviewVerdict, type StackedDevInput, Approve, AttestationBlock,
-  BriefDocument, BriefRequirement, DevEnrichment, EnrichInput, ExecutionBlock,
+  type BriefDocument, type ResolvedContext, type ReviewVerdict,
+  type StackedDevInput, Approve, AttestationBlock, BriefDevStatus, BriefDocument,
+  BriefRequirement, DevEnrichment, EnrichInput, ExecutionBlock,
   ExecutionEnrichment, ExecutionLanded, GateBlock, GateRejected, Local,
-  OnatoppStatus, ProvisionFailed, Reject, RequestChanges, RequirementFiles,
-  ReviewCapExhausted, ReviewEnrichment, ReviewNote, ReviewRejected,
-  ReviewTimedOut, ReviewVerdict, ScoutBlock, ScoutEnrichment, StackedDevInput,
-  StackedDevStatus, VerdictApproved, VerifyExhausted, Workspace, Worktree,
+  ProvisionFailed, Reject, RequestChanges, RequirementFiles, ResolvedContext,
+  ResolvedProvenance, ReviewCapExhausted, ReviewEnrichment, ReviewNote,
+  ReviewRejected, ReviewTimedOut, ReviewVerdict, ScoutBlock, ScoutEnrichment,
+  StackedDevInput, StackedDevStatus, VerdictApproved, VerifyExhausted, Workspace,
+  Worktree,
 }
 import support/fixtures
 import support/shims
@@ -56,14 +58,60 @@ fn base_input(shim_set: shims.Shims) -> StackedDevInput {
     base_ref: "main",
     placement: Local,
     isolation: Worktree,
-    brief: "Implement the stacked-dev example",
-    design: "docs/design.md",
-    checklist: "docs/checklist.md",
-    stories: ["story-1", "story-2"],
+    brief_document: base_document(),
+    resolved_context: base_context(),
     verify_fix_cap: 3,
     review_cap: 3,
     round_backoff_ms: 25,
     review_deadline_ms: 60_000,
+  )
+}
+
+/// A one-requirement authored brief document the pipeline scenarios carry.
+/// brief_dev does not enrich the document, so the requirement id need not
+/// match the shim reports' ids.
+fn base_document() -> BriefDocument {
+  BriefDocument(
+    id: "BD-007",
+    cluster: "brief-dev",
+    title: "Implement the stacked-dev example",
+    depends_on: [],
+    blocked_by: [],
+    checklist: [],
+    stories: [],
+    design_anchor: [],
+    purpose: "Exercise the pipeline end to end.",
+    task: "Implement R1.",
+    requirements: [
+      BriefRequirement(
+        id: "R1",
+        title: "The variant",
+        spec: "Add the variant.",
+        acceptance: ["the variant exists"],
+        files: RequirementFiles(create: [], modify: [], delete: []),
+        checklist: [],
+        stories: [],
+        scout: option.None,
+        dev: option.None,
+        review: option.None,
+      ),
+    ],
+    boundaries: ["No scope creep."],
+    verification: ["gleam test"],
+    execution: option.None,
+  )
+}
+
+/// A minimal pre-resolved context the pipeline scenarios carry.
+fn base_context() -> ResolvedContext {
+  ResolvedContext(
+    adrs: [],
+    checklist: [],
+    stories: [],
+    constraints: [],
+    intention: "Design-system v2 briefs become executable.",
+    design_path: "docs/design/brief-dev/design.json",
+    provenance: ResolvedProvenance(requested_by: "Tom", quote: ""),
   )
 }
 
@@ -161,8 +209,10 @@ pub fn full_pipeline_happy_path_approves_first_round_test() {
 
   // The startup fan-out really warmed the cache concurrently with dev.
   shims.invocations(shim_set, "cargo", "build") |> should.equal(1)
+  // Three deterministic-session norn rounds ran: scout (<branch>-scout), dev
+  // (<branch>), and the adversarial review (<branch>-review).
   shims.invocations(shim_set, "norn", "--print --session-id")
-  |> should.equal(1)
+  |> should.equal(3)
 }
 
 pub fn verify_fix_loop_converges_on_round_two_test() {
@@ -208,10 +258,10 @@ pub fn verify_fix_exhaustion_surfaces_typed_diagnostics_test() {
   // The child's status query reports where it stopped: still verifying at
   // the capped round.
   query.dispatch(
-    onatopp_dev.status_query_name,
-    codecs_workflows.onatopp_status_codec(),
+    brief_dev.status_query_name,
+    codecs_workflows.brief_dev_status_codec(),
   )
-  |> should.equal(Ok(OnatoppStatus(phase: "verifying", round: 2)))
+  |> should.equal(Ok(BriefDevStatus(phase: "verifying", round: 2)))
 }
 
 pub fn review_request_changes_notes_reach_dev_resume_and_regate_test() {
@@ -348,10 +398,10 @@ pub fn status_query_answers_live_phase_and_round_per_stage_test() {
   )
   |> should.equal(Ok(StackedDevStatus(phase: "landed", round: 1)))
   query.dispatch(
-    onatopp_dev.status_query_name,
-    codecs_workflows.onatopp_status_codec(),
+    brief_dev.status_query_name,
+    codecs_workflows.brief_dev_status_codec(),
   )
-  |> should.equal(Ok(OnatoppStatus(phase: "converged", round: 1)))
+  |> should.equal(Ok(BriefDevStatus(phase: "converged", round: 1)))
 
   // A rejected run stops with the handler registered for the review phase.
   let #(_env, shim_set) = pipeline(checks_passing)

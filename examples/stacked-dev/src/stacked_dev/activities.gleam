@@ -8,15 +8,23 @@
 //// same names.
 
 import aion/activity
+import aion/codec
+import aion_stacked_dev_io as stage_io
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/codecs_flow
 import stacked_dev/locals
 import stacked_dev/types.{
   type DevInput, type EnrichInput, type GateInput, type LandInput,
-  type ProvisionInput, type ResumeInput, type ReviewRequest, type ScopedInput,
-  DevTask, WarmTask,
+  type ProvisionInput, type ResumeInput, type ReviewInput, type ReviewRequest,
+  type ScopedInput, type ScoutInput, DevTask, WarmTask,
 }
+
+/// Activity name served by the read-only scout (norn run) worker.
+pub const scout_name = "scout"
+
+/// Activity name served by the adversarial reviewer (norn run) worker.
+pub const dev_review_name = "dev_review"
 
 /// Activity name served by the provisioning worker.
 pub const provision_workspace_name = "provision_workspace"
@@ -47,6 +55,43 @@ pub const land_name = "land"
 /// the execution block before land) — the `Enrichment` variant selects the
 /// merge.
 pub const enrich_brief_name = "enrich_brief"
+
+/// `scout`: the read-only orientation round in its own deterministic norn
+/// session (`<branch>-scout`, CN4). Output validates against the generated
+/// scout-report stage contract (ADR-007).
+pub fn scout(
+  input: ScoutInput,
+) -> activity.Activity(ScoutInput, stage_io.ScoutReport) {
+  activity.new(
+    scout_name,
+    input,
+    codecs_core.scout_input_codec(),
+    codec.json_codec(
+      stage_io.scout_report_to_json,
+      stage_io.scout_report_decoder(),
+    ),
+    locals.scout,
+  )
+}
+
+/// `dev_review`: the adversarial reviewer round in its own deterministic norn
+/// session (`<branch>-review`, NEVER the dev session — CN4, fresh eyes are the
+/// point, S11). Output validates against the generated review-report stage
+/// contract (ADR-007).
+pub fn dev_review(
+  input: ReviewInput,
+) -> activity.Activity(ReviewInput, stage_io.ReviewReport) {
+  activity.new(
+    dev_review_name,
+    input,
+    codecs_flow.review_input_codec(),
+    codec.json_codec(
+      stage_io.review_report_to_json,
+      stage_io.review_report_decoder(),
+    ),
+    locals.dev_review,
+  )
+}
 
 /// `provision_workspace`: provision an isolated workspace off the base ref.
 pub fn provision_workspace(
@@ -102,16 +147,17 @@ pub fn scoped_checks(
   )
 }
 
-/// `dev_resume`: resume the same agent session with diagnostics or review
-/// notes.
+/// `dev_resume`: resume the same agent session with diagnostics. Returns a
+/// FULL replacement dev report (BD-003 — wholesale, never a partial merge);
+/// the output codec is the generated dev-report pair, not `dev_result_codec`.
 pub fn dev_resume(
   input: ResumeInput,
-) -> activity.Activity(ResumeInput, types.DevResult) {
+) -> activity.Activity(ResumeInput, stage_io.DevReport) {
   activity.new(
     dev_resume_name,
     input,
     codecs_core.resume_input_codec(),
-    codecs_core.dev_result_codec(),
+    codec.json_codec(stage_io.dev_report_to_json, stage_io.dev_report_decoder()),
     locals.dev_resume,
   )
 }

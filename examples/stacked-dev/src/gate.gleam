@@ -2,7 +2,7 @@
 ////
 //// One recorded `full_checks` activity: `cargo fmt --check`, workspace-wide
 //// `cargo clippy -- -D warnings`, and `cargo test`. The fast scoped loop in
-//// `onatopp_dev` is the inner iteration aid; this gate is the trustworthy
+//// `brief_dev` is the inner iteration aid; this gate is the trustworthy
 //// outer judgment, run as its own child workflow so it composes, versions,
 //// and tests in isolation — and stays independently dispatchable for
 //// partial runs (open question Q6).

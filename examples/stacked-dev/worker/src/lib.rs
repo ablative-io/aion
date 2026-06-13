@@ -5,6 +5,8 @@
 //! with the `aion-worker` SDK; the hermetic test suite drives the same
 //! handler functions directly with fake-CLI shims on a private `PATH`.
 
+pub mod enrich;
 pub mod handlers;
+pub mod schemas;
 pub mod shell;
 pub mod types;

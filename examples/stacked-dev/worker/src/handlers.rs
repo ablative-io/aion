@@ -17,27 +17,20 @@
 //! private `PATH`; `main.rs` adapts them onto the worker's async handler
 //! signature.
 
+use std::path::PathBuf;
+
 use aion_worker::ActivityFailure;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
+use crate::schemas::{DEV_OUTPUT_SCHEMA, REVIEW_OUTPUT_SCHEMA, SCOUT_OUTPUT_SCHEMA};
 use crate::shell::{CliRun, Shell};
 use crate::types::{
-    CheckResult, CheckVerdict, DevInput, DevResult, GateInput, GateResult, GateScope, GateVerdict,
-    Isolation, LandInput, Landed, ProvisionInput, ResumeInput, ReviewAck, ReviewRequest,
-    ScopedInput, StartupResult, StartupTask, Workspace,
+    BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport, EnrichInput, GateInput,
+    GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed, ProvisionInput, ResumeInput,
+    ReviewAck, ReviewInput, ReviewReport, ReviewRequest, ScopedInput, ScoutInput, ScoutReport,
+    StartupResult, StartupTask, Workspace,
 };
-
-/// The JSON Schema norn structures the dev/resume result against — the
-/// `DevResult` shape. Passed inline to `--output-schema` so there is no
-/// schema file to resolve in the workspace. Byte-identical to
-/// `locals.dev_output_schema`.
-const DEV_OUTPUT_SCHEMA: &str = "{\"type\":\"object\",\
-\"required\":[\"session_id\",\"files_touched\",\"summary\"],\
-\"additionalProperties\":false,\
-\"properties\":{\
-\"session_id\":{\"type\":\"string\"},\
-\"files_touched\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\
-\"summary\":{\"type\":\"string\"}}}";
 
 /// How much of an unparseable norn stdout rides in the terminal failure
 /// message. Presentational truncation only: enough to diagnose the envelope
@@ -149,17 +142,17 @@ fn warm_build(shell: &Shell, workspace: &Workspace) -> Result<StartupResult, Act
     }
 }
 
-/// Run the dev agent against the brief via the `norn` CLI.
+/// Run the dev agent against the projected dev prompt via the `norn` CLI.
 fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure> {
     // The session id is deterministic (the branch name), so resume rounds
     // target the same session without ever capturing a generated id.
     let session_id = input.workspace.branch.clone();
-    let prompt = dev_prompt(input);
 
-    // norn takes the prompt positionally; --print is headless, --session-id
-    // mints exactly this id, --workspace-root confines file tools,
-    // --output-schema constrains the structured result, and
-    // --output-format json emits the final envelope we decode.
+    // norn takes the projected prompt positionally; --print is headless,
+    // --session-id mints exactly this id, --workspace-root confines file
+    // tools, --output-schema constrains the structured result to the
+    // dev-report shape, and --output-format json emits the final envelope we
+    // decode.
     let command_run = require_run(
         shell,
         "norn",
@@ -173,66 +166,112 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
             DEV_OUTPUT_SCHEMA,
             "--output-format",
             "json",
-            &prompt,
+            &input.prompt,
         ],
         &input.workspace.path,
         "norn dev",
     )?;
-    let dev_result = parse_dev_result(&command_run, "norn dev")?;
-    Ok(StartupResult::Developed {
-        dev_result: DevResult {
-            session_id,
-            ..dev_result
-        },
-    })
+    let dev_report = parse_report::<DevReport>(&command_run, "norn dev")?;
+    Ok(StartupResult::Developed { dev_report })
 }
 
-/// Assemble the dev prompt from the brief and its design context, identical
-/// to `locals.dev_prompt`.
-fn dev_prompt(input: &DevInput) -> String {
-    [
-        "Implement the following brief in this workspace.".to_owned(),
-        format!("## Brief\n{}", input.brief),
-        format!("## Design\n{}", input.design),
-        format!("## Checklist\n{}", input.checklist),
-        format!("## Stories\n{}", input.stories.join("\n")),
-        "Return your structured result matching the output schema.".to_owned(),
-    ]
-    .join("\n\n")
-}
-
-/// `dev_resume`: resume the same dev agent session with feedback
-/// (scoped-check diagnostics or encoded review notes).
+/// `scout`: the read-only orientation round in its own deterministic norn
+/// session (`<branch>-scout`, CN4).
 ///
 /// # Errors
 ///
 /// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
-/// answers with output matching neither documented `DevResult` shape.
-pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevResult, ActivityFailure> {
+/// answers with output matching neither the bare report nor the `{"output":
+/// …}` envelope.
+pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFailure> {
+    let ScoutInput { workspace, prompt } = input;
+    let session_id = format!("{}-scout", workspace.branch);
+    let command_run = require_run(
+        shell,
+        "norn",
+        &[
+            "--print",
+            "--session-id",
+            &session_id,
+            "--workspace-root",
+            &workspace.path,
+            "--output-schema",
+            SCOUT_OUTPUT_SCHEMA,
+            "--output-format",
+            "json",
+            &prompt,
+        ],
+        &workspace.path,
+        "norn scout",
+    )?;
+    parse_report::<ScoutReport>(&command_run, "norn scout")
+}
+
+/// `dev_review`: the adversarial reviewer round in its own deterministic norn
+/// session (`<branch>-review` — NEVER the dev session, CN4).
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
+/// answers with output matching neither the bare report nor the `{"output":
+/// …}` envelope.
+pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, ActivityFailure> {
+    let ReviewInput { workspace, prompt } = input;
+    let session_id = format!("{}-review", workspace.branch);
+    let command_run = require_run(
+        shell,
+        "norn",
+        &[
+            "--print",
+            "--session-id",
+            &session_id,
+            "--workspace-root",
+            &workspace.path,
+            "--output-schema",
+            REVIEW_OUTPUT_SCHEMA,
+            "--output-format",
+            "json",
+            &prompt,
+        ],
+        &workspace.path,
+        "norn review",
+    )?;
+    parse_report::<ReviewReport>(&command_run, "norn review")
+}
+
+/// `dev_resume`: resume the same dev agent session with feedback (scoped-check
+/// diagnostics). Returns a FULL replacement dev report.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
+/// answers with output matching neither the bare report nor the `{"output":
+/// …}` envelope.
+pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, ActivityFailure> {
     // Resume by the deterministic session id; the feedback is the prompt.
     // Like the local implementation, resume carries no --workspace-root (the
     // workspace root is not on ResumeInput yet — TODO(meridian) in locals).
+    let ResumeInput {
+        session_id,
+        feedback,
+    } = input;
     let command_run = require_run(
         shell,
         "norn",
         &[
             "--print",
             "--resume",
-            &input.session_id,
+            &session_id,
             "--output-schema",
             DEV_OUTPUT_SCHEMA,
             "--output-format",
             "json",
-            &input.feedback,
+            &feedback,
         ],
         ".",
         "norn resume",
     )?;
-    let dev_result = parse_dev_result(&command_run, "norn resume")?;
-    Ok(DevResult {
-        session_id: input.session_id,
-        ..dev_result
-    })
+    parse_report::<DevReport>(&command_run, "norn resume")
 }
 
 /// `scoped_checks`: compute the affected package set from the dependency
@@ -479,6 +518,72 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
     })
 }
 
+/// `enrich_brief`: append one stage report or the execution block into the
+/// brief file inside the run's worktree (ADR-007, ADR-009), mirroring
+/// `locals.enrich_brief`. The write is guarded by CN3: the on-disk brief's
+/// authored subset must equal the handed document's before anything is
+/// written — divergence is a terminal failure naming the brief path and the
+/// first divergent field, never a silent overwrite. A missing, unreadable, or
+/// undecodable brief file is a broken worktree: a can't-execute condition that
+/// fails terminally (CN5), never a retry or a skip.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when the brief file cannot be read or decoded,
+/// when an authored field diverges, when a report names an unknown
+/// requirement, or when the merged document cannot be written.
+pub fn enrich_brief(_shell: &Shell, input: EnrichInput) -> Result<BriefDocument, ActivityFailure> {
+    let EnrichInput {
+        workspace,
+        document,
+        enrichment,
+    } = input;
+    // The design-system layout is a format constraint (briefs/ is what
+    // validate.py keys its brief-schema detection on), so the path derives
+    // from the handed document — never from a workflow-supplied guess.
+    let brief_path: PathBuf = [
+        workspace.path.as_str(),
+        "docs",
+        "design",
+        document.cluster.as_str(),
+        "briefs",
+        &format!("{}.json", document.id),
+    ]
+    .iter()
+    .collect();
+    let brief_path_display = brief_path.display().to_string();
+
+    let raw = std::fs::read_to_string(&brief_path).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "enrich_brief: cannot read {brief_path_display}: {source}"
+        ))
+    })?;
+    let on_disk: BriefDocument = serde_json::from_str(&raw).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "enrich_brief: brief file {brief_path_display} failed to decode: {source}"
+        ))
+    })?;
+    if let Some(field) = crate::enrich::authored_divergence(&on_disk, &document) {
+        return Err(ActivityFailure::terminal(format!(
+            "enrich_brief: authored field {field} in {brief_path_display} \
+             diverges from the handed document; refusing to write (CN3)"
+        )));
+    }
+    let merged = crate::enrich::apply(document, &enrichment)
+        .map_err(|error| ActivityFailure::terminal(format!("enrich_brief: {error}")))?;
+    let encoded = serde_json::to_string(&merged).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "enrich_brief: cannot encode merged document: {source}"
+        ))
+    })?;
+    std::fs::write(&brief_path, encoded).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "enrich_brief: cannot write {brief_path_display}: {source}"
+        ))
+    })?;
+    Ok(merged)
+}
+
 // --- helpers ----------------------------------------------------------------
 
 /// The `meridian review request` response envelope — only the fields the
@@ -532,37 +637,36 @@ fn require_json<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Decode a norn command's stdout as a `DevResult`.
+/// Decode a norn command's stdout as a stage report, generic over the report
+/// type.
 ///
-/// norn's `--output-format json` envelope shape is an open TODO(meridian) in
-/// the local implementations: the structured `DevResult` may be the envelope
-/// root or nested under a `result` field. Exactly two shapes are attempted —
-/// the bare `DevResult`, then a `{"result": <DevResult>}` envelope — and if
-/// BOTH fail the activity fails terminally carrying the head of the output.
-/// No silent fallback beyond that documented two-shape attempt. The caller
-/// overrides `session_id` with the id it set regardless.
-fn parse_dev_result(command_run: &CliRun, context: &str) -> Result<DevResult, ActivityFailure> {
-    // CONFIRMED against real norn (live run, 2026-06-13): `--output-format
-    // json` emits a completion envelope with the schema-constrained result
-    // under `"output"`, alongside `usage`/`model`/`session_id`/`events`
-    // (ignored here). The bare shape stays first for the fake-CLI shims,
-    // which emit the `DevResult` raw.
+/// CONFIRMED against real norn (live run, 2026-06-13): `--output-format json`
+/// emits a completion envelope with the schema-constrained result under
+/// `"output"`, alongside `usage`/`model`/`session_id`/`events` (ignored
+/// here). Exactly two shapes are attempted — the bare report (the fake-CLI
+/// shims emit it raw), then norn's `{"output": <report>}` envelope — and if
+/// BOTH fail the activity fails terminally carrying the head of the output. No
+/// silent fallback beyond that documented two-shape attempt (C31).
+fn parse_report<T: DeserializeOwned>(
+    command_run: &CliRun,
+    context: &str,
+) -> Result<T, ActivityFailure> {
     #[derive(Deserialize)]
-    struct NornEnvelope {
-        output: DevResult,
+    struct NornEnvelope<T> {
+        output: T,
     }
 
     let trimmed = command_run.output.trim();
-    if let Ok(dev_result) = serde_json::from_str::<DevResult>(trimmed) {
-        return Ok(dev_result);
+    if let Ok(report) = serde_json::from_str::<T>(trimmed) {
+        return Ok(report);
     }
-    if let Ok(envelope) = serde_json::from_str::<NornEnvelope>(trimmed) {
+    if let Ok(envelope) = serde_json::from_str::<NornEnvelope<T>>(trimmed) {
         return Ok(envelope.output);
     }
 
     Err(ActivityFailure::terminal(format!(
         "{context} produced unparseable output \
-         (tried the bare DevResult shape and norn's {{\"output\": …}} envelope): {}",
+         (tried the bare report shape and norn's {{\"output\": …}} envelope): {}",
         head(trimmed, UNPARSEABLE_OUTPUT_HEAD)
     )))
 }

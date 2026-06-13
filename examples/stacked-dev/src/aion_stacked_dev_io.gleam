@@ -8,6 +8,1609 @@ import gleam/json
 import gleam/list
 import gleam/option
 
+/// Generated from `schemas/brief_dev_input.json`.
+pub type BriefDevInput {
+  BriefDevInput(
+    workspace: BriefDevInputWorkspace,
+    document: BriefDevInputDocument,
+    context: BriefDevInputContext,
+    verify_fix_cap: Int,
+    round_backoff_ms: Int,
+  )
+}
+
+/// Encodes `BriefDevInput` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_to_json(value: BriefDevInput) -> json.Json {
+  json.object([
+    #("workspace", brief_dev_input_workspace_to_json(value.workspace)),
+    #("document", brief_dev_input_document_to_json(value.document)),
+    #("context", brief_dev_input_context_to_json(value.context)),
+    #("verify_fix_cap", json.int(value.verify_fix_cap)),
+    #("round_backoff_ms", json.int(value.round_backoff_ms)),
+  ])
+}
+
+/// Decoder for `BriefDevInput` from schema-shaped JSON.
+pub fn brief_dev_input_decoder() -> decode.Decoder(BriefDevInput) {
+  use field_workspace <- decode.field("workspace", brief_dev_input_workspace_decoder())
+  use field_document <- decode.field("document", brief_dev_input_document_decoder())
+  use field_context <- decode.field("context", brief_dev_input_context_decoder())
+  use field_verify_fix_cap <- decode.field("verify_fix_cap", decode.int)
+  use field_round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
+  decode.success(BriefDevInput(
+    workspace: field_workspace,
+    document: field_document,
+    context: field_context,
+    verify_fix_cap: field_verify_fix_cap,
+    round_backoff_ms: field_round_backoff_ms,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/workspace`.
+pub type BriefDevInputWorkspace {
+  BriefDevInputWorkspace(
+    path: String,
+    branch: String,
+    placement: BriefDevInputWorkspacePlacement,
+    isolation: BriefDevInputWorkspaceIsolation,
+  )
+}
+
+/// Encodes `BriefDevInputWorkspace` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_workspace_to_json(value: BriefDevInputWorkspace) -> json.Json {
+  json.object([
+    #("path", json.string(value.path)),
+    #("branch", json.string(value.branch)),
+    #("placement", brief_dev_input_workspace_placement_to_json(value.placement)),
+    #("isolation", brief_dev_input_workspace_isolation_to_json(value.isolation)),
+  ])
+}
+
+/// Decoder for `BriefDevInputWorkspace` from schema-shaped JSON.
+pub fn brief_dev_input_workspace_decoder() -> decode.Decoder(BriefDevInputWorkspace) {
+  use field_path <- decode.field("path", decode.string)
+  use field_branch <- decode.field("branch", decode.string)
+  use field_placement <- decode.field("placement", brief_dev_input_workspace_placement_decoder())
+  use field_isolation <- decode.field("isolation", brief_dev_input_workspace_isolation_decoder())
+  decode.success(BriefDevInputWorkspace(
+    path: field_path,
+    branch: field_branch,
+    placement: field_placement,
+    isolation: field_isolation,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/workspace/properties/placement`.
+pub type BriefDevInputWorkspacePlacement {
+  BriefDevInputWorkspacePlacementLocal
+  BriefDevInputWorkspacePlacementRemote
+}
+
+/// Encodes `BriefDevInputWorkspacePlacement` as its wire string.
+pub fn brief_dev_input_workspace_placement_to_json(value: BriefDevInputWorkspacePlacement) -> json.Json {
+  case value {
+    BriefDevInputWorkspacePlacementLocal -> json.string("local")
+    BriefDevInputWorkspacePlacementRemote -> json.string("remote")
+  }
+}
+
+/// Decoder for `BriefDevInputWorkspacePlacement` from its wire string.
+pub fn brief_dev_input_workspace_placement_decoder() -> decode.Decoder(BriefDevInputWorkspacePlacement) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "local" -> decode.success(BriefDevInputWorkspacePlacementLocal)
+      "remote" -> decode.success(BriefDevInputWorkspacePlacementRemote)
+      _ -> decode.failure(BriefDevInputWorkspacePlacementLocal, "BriefDevInputWorkspacePlacement")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/workspace/properties/isolation`.
+pub type BriefDevInputWorkspaceIsolation {
+  BriefDevInputWorkspaceIsolationWorktree
+  BriefDevInputWorkspaceIsolationCopy
+  BriefDevInputWorkspaceIsolationOverlay
+  BriefDevInputWorkspaceIsolationVm
+}
+
+/// Encodes `BriefDevInputWorkspaceIsolation` as its wire string.
+pub fn brief_dev_input_workspace_isolation_to_json(value: BriefDevInputWorkspaceIsolation) -> json.Json {
+  case value {
+    BriefDevInputWorkspaceIsolationWorktree -> json.string("worktree")
+    BriefDevInputWorkspaceIsolationCopy -> json.string("copy")
+    BriefDevInputWorkspaceIsolationOverlay -> json.string("overlay")
+    BriefDevInputWorkspaceIsolationVm -> json.string("vm")
+  }
+}
+
+/// Decoder for `BriefDevInputWorkspaceIsolation` from its wire string.
+pub fn brief_dev_input_workspace_isolation_decoder() -> decode.Decoder(BriefDevInputWorkspaceIsolation) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "worktree" -> decode.success(BriefDevInputWorkspaceIsolationWorktree)
+      "copy" -> decode.success(BriefDevInputWorkspaceIsolationCopy)
+      "overlay" -> decode.success(BriefDevInputWorkspaceIsolationOverlay)
+      "vm" -> decode.success(BriefDevInputWorkspaceIsolationVm)
+      _ -> decode.failure(BriefDevInputWorkspaceIsolationWorktree, "BriefDevInputWorkspaceIsolation")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document`.
+pub type BriefDevInputDocument {
+  BriefDevInputDocument(
+    id: String,
+    cluster: String,
+    title: String,
+    depends_on: List(String),
+    blocked_by: List(String),
+    checklist: List(String),
+    stories: List(String),
+    design_anchor: List(String),
+    purpose: String,
+    task: String,
+    requirements: List(BriefDevInputDocumentRequirementsItem),
+    boundaries: List(String),
+    verification: List(String),
+    execution: option.Option(BriefDevInputDocumentExecution),
+  )
+}
+
+/// Encodes `BriefDevInputDocument` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_to_json(value: BriefDevInputDocument) -> json.Json {
+  json.object(
+    list.flatten([
+      [#("id", json.string(value.id))],
+      [#("cluster", json.string(value.cluster))],
+      [#("title", json.string(value.title))],
+      [#("depends_on", json.array(value.depends_on, json.string))],
+      [#("blocked_by", json.array(value.blocked_by, json.string))],
+      [#("checklist", json.array(value.checklist, json.string))],
+      [#("stories", json.array(value.stories, json.string))],
+      [#("design_anchor", json.array(value.design_anchor, json.string))],
+      [#("purpose", json.string(value.purpose))],
+      [#("task", json.string(value.task))],
+      [#("requirements", json.array(value.requirements, brief_dev_input_document_requirements_item_to_json))],
+      [#("boundaries", json.array(value.boundaries, json.string))],
+      [#("verification", json.array(value.verification, json.string))],
+      case value.execution {
+        option.Some(present) -> [#("execution", brief_dev_input_document_execution_to_json(present))]
+        option.None -> []
+      },
+    ]),
+  )
+}
+
+/// Decoder for `BriefDevInputDocument` from schema-shaped JSON.
+pub fn brief_dev_input_document_decoder() -> decode.Decoder(BriefDevInputDocument) {
+  use field_id <- decode.field("id", decode.string)
+  use field_cluster <- decode.field("cluster", decode.string)
+  use field_title <- decode.field("title", decode.string)
+  use field_depends_on <- decode.field("depends_on", decode.list(decode.string))
+  use field_blocked_by <- decode.field("blocked_by", decode.list(decode.string))
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
+  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_design_anchor <- decode.field("design_anchor", decode.list(decode.string))
+  use field_purpose <- decode.field("purpose", decode.string)
+  use field_task <- decode.field("task", decode.string)
+  use field_requirements <- decode.field("requirements", decode.list(brief_dev_input_document_requirements_item_decoder()))
+  use field_boundaries <- decode.field("boundaries", decode.list(decode.string))
+  use field_verification <- decode.field("verification", decode.list(decode.string))
+  use field_execution <- decode.optional_field(
+    "execution",
+    option.None,
+    decode.optional(brief_dev_input_document_execution_decoder()),
+  )
+  decode.success(BriefDevInputDocument(
+    id: field_id,
+    cluster: field_cluster,
+    title: field_title,
+    depends_on: field_depends_on,
+    blocked_by: field_blocked_by,
+    checklist: field_checklist,
+    stories: field_stories,
+    design_anchor: field_design_anchor,
+    purpose: field_purpose,
+    task: field_task,
+    requirements: field_requirements,
+    boundaries: field_boundaries,
+    verification: field_verification,
+    execution: field_execution,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items`.
+pub type BriefDevInputDocumentRequirementsItem {
+  BriefDevInputDocumentRequirementsItem(
+    id: String,
+    title: String,
+    spec: String,
+    acceptance: List(String),
+    files: BriefDevInputDocumentRequirementsItemFiles,
+    checklist: List(String),
+    stories: List(String),
+    scout: option.Option(BriefDevInputDocumentRequirementsItemScout),
+    dev: option.Option(BriefDevInputDocumentRequirementsItemDev),
+    review: option.Option(BriefDevInputDocumentRequirementsItemReview),
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_to_json(value: BriefDevInputDocumentRequirementsItem) -> json.Json {
+  json.object(
+    list.flatten([
+      [#("id", json.string(value.id))],
+      [#("title", json.string(value.title))],
+      [#("spec", json.string(value.spec))],
+      [#("acceptance", json.array(value.acceptance, json.string))],
+      [#("files", brief_dev_input_document_requirements_item_files_to_json(value.files))],
+      [#("checklist", json.array(value.checklist, json.string))],
+      [#("stories", json.array(value.stories, json.string))],
+      case value.scout {
+        option.Some(present) -> [#("scout", brief_dev_input_document_requirements_item_scout_to_json(present))]
+        option.None -> []
+      },
+      case value.dev {
+        option.Some(present) -> [#("dev", brief_dev_input_document_requirements_item_dev_to_json(present))]
+        option.None -> []
+      },
+      case value.review {
+        option.Some(present) -> [#("review", brief_dev_input_document_requirements_item_review_to_json(present))]
+        option.None -> []
+      },
+    ]),
+  )
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItem` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_title <- decode.field("title", decode.string)
+  use field_spec <- decode.field("spec", decode.string)
+  use field_acceptance <- decode.field("acceptance", decode.list(decode.string))
+  use field_files <- decode.field("files", brief_dev_input_document_requirements_item_files_decoder())
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
+  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_scout <- decode.optional_field(
+    "scout",
+    option.None,
+    decode.optional(brief_dev_input_document_requirements_item_scout_decoder()),
+  )
+  use field_dev <- decode.optional_field(
+    "dev",
+    option.None,
+    decode.optional(brief_dev_input_document_requirements_item_dev_decoder()),
+  )
+  use field_review <- decode.optional_field(
+    "review",
+    option.None,
+    decode.optional(brief_dev_input_document_requirements_item_review_decoder()),
+  )
+  decode.success(BriefDevInputDocumentRequirementsItem(
+    id: field_id,
+    title: field_title,
+    spec: field_spec,
+    acceptance: field_acceptance,
+    files: field_files,
+    checklist: field_checklist,
+    stories: field_stories,
+    scout: field_scout,
+    dev: field_dev,
+    review: field_review,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/files`.
+pub type BriefDevInputDocumentRequirementsItemFiles {
+  BriefDevInputDocumentRequirementsItemFiles(
+    create: List(String),
+    modify: List(String),
+    delete: List(String),
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemFiles` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_files_to_json(value: BriefDevInputDocumentRequirementsItemFiles) -> json.Json {
+  json.object([
+    #("create", json.array(value.create, json.string)),
+    #("modify", json.array(value.modify, json.string)),
+    #("delete", json.array(value.delete, json.string)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemFiles` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_files_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemFiles) {
+  use field_create <- decode.field("create", decode.list(decode.string))
+  use field_modify <- decode.field("modify", decode.list(decode.string))
+  use field_delete <- decode.field("delete", decode.list(decode.string))
+  decode.success(BriefDevInputDocumentRequirementsItemFiles(
+    create: field_create,
+    modify: field_modify,
+    delete: field_delete,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/scout`.
+pub type BriefDevInputDocumentRequirementsItemScout {
+  BriefDevInputDocumentRequirementsItemScout(
+    files: List(String),
+    context: List(String),
+    approach: String,
+    notes: String,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemScout` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_scout_to_json(value: BriefDevInputDocumentRequirementsItemScout) -> json.Json {
+  json.object([
+    #("files", json.array(value.files, json.string)),
+    #("context", json.array(value.context, json.string)),
+    #("approach", json.string(value.approach)),
+    #("notes", json.string(value.notes)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemScout` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_scout_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemScout) {
+  use field_files <- decode.field("files", decode.list(decode.string))
+  use field_context <- decode.field("context", decode.list(decode.string))
+  use field_approach <- decode.field("approach", decode.string)
+  use field_notes <- decode.field("notes", decode.string)
+  decode.success(BriefDevInputDocumentRequirementsItemScout(
+    files: field_files,
+    context: field_context,
+    approach: field_approach,
+    notes: field_notes,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/dev`.
+pub type BriefDevInputDocumentRequirementsItemDev {
+  BriefDevInputDocumentRequirementsItemDev(
+    status: BriefDevInputDocumentRequirementsItemDevStatus,
+    files_changed: List(BriefDevInputDocumentRequirementsItemDevFilesChangedItem),
+    how: String,
+    deviation: String,
+    checklist: List(BriefDevInputDocumentRequirementsItemDevChecklistItem),
+    stories: List(BriefDevInputDocumentRequirementsItemDevStoriesItem),
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemDev` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_dev_to_json(value: BriefDevInputDocumentRequirementsItemDev) -> json.Json {
+  json.object([
+    #("status", brief_dev_input_document_requirements_item_dev_status_to_json(value.status)),
+    #("files_changed", json.array(value.files_changed, brief_dev_input_document_requirements_item_dev_files_changed_item_to_json)),
+    #("how", json.string(value.how)),
+    #("deviation", json.string(value.deviation)),
+    #("checklist", json.array(value.checklist, brief_dev_input_document_requirements_item_dev_checklist_item_to_json)),
+    #("stories", json.array(value.stories, brief_dev_input_document_requirements_item_dev_stories_item_to_json)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemDev` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_dev_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemDev) {
+  use field_status <- decode.field("status", brief_dev_input_document_requirements_item_dev_status_decoder())
+  use field_files_changed <- decode.field("files_changed", decode.list(brief_dev_input_document_requirements_item_dev_files_changed_item_decoder()))
+  use field_how <- decode.field("how", decode.string)
+  use field_deviation <- decode.field("deviation", decode.string)
+  use field_checklist <- decode.field("checklist", decode.list(brief_dev_input_document_requirements_item_dev_checklist_item_decoder()))
+  use field_stories <- decode.field("stories", decode.list(brief_dev_input_document_requirements_item_dev_stories_item_decoder()))
+  decode.success(BriefDevInputDocumentRequirementsItemDev(
+    status: field_status,
+    files_changed: field_files_changed,
+    how: field_how,
+    deviation: field_deviation,
+    checklist: field_checklist,
+    stories: field_stories,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/dev/properties/status`.
+pub type BriefDevInputDocumentRequirementsItemDevStatus {
+  BriefDevInputDocumentRequirementsItemDevStatusImplemented
+  BriefDevInputDocumentRequirementsItemDevStatusBlocked
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemDevStatus` as its wire string.
+pub fn brief_dev_input_document_requirements_item_dev_status_to_json(value: BriefDevInputDocumentRequirementsItemDevStatus) -> json.Json {
+  case value {
+    BriefDevInputDocumentRequirementsItemDevStatusImplemented -> json.string("implemented")
+    BriefDevInputDocumentRequirementsItemDevStatusBlocked -> json.string("blocked")
+  }
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemDevStatus` from its wire string.
+pub fn brief_dev_input_document_requirements_item_dev_status_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemDevStatus) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "implemented" -> decode.success(BriefDevInputDocumentRequirementsItemDevStatusImplemented)
+      "blocked" -> decode.success(BriefDevInputDocumentRequirementsItemDevStatusBlocked)
+      _ -> decode.failure(BriefDevInputDocumentRequirementsItemDevStatusImplemented, "BriefDevInputDocumentRequirementsItemDevStatus")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/dev/properties/files_changed/items`.
+pub type BriefDevInputDocumentRequirementsItemDevFilesChangedItem {
+  BriefDevInputDocumentRequirementsItemDevFilesChangedItem(
+    path: String,
+    change: BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemDevFilesChangedItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_dev_files_changed_item_to_json(value: BriefDevInputDocumentRequirementsItemDevFilesChangedItem) -> json.Json {
+  json.object([
+    #("path", json.string(value.path)),
+    #("change", brief_dev_input_document_requirements_item_dev_files_changed_item_change_to_json(value.change)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemDevFilesChangedItem` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_dev_files_changed_item_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemDevFilesChangedItem) {
+  use field_path <- decode.field("path", decode.string)
+  use field_change <- decode.field("change", brief_dev_input_document_requirements_item_dev_files_changed_item_change_decoder())
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevInputDocumentRequirementsItemDevFilesChangedItem(
+    path: field_path,
+    change: field_change,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/dev/properties/files_changed/items/properties/change`.
+pub type BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange {
+  BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeCreated
+  BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeModified
+  BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeDeleted
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange` as its wire string.
+pub fn brief_dev_input_document_requirements_item_dev_files_changed_item_change_to_json(value: BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange) -> json.Json {
+  case value {
+    BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeCreated -> json.string("created")
+    BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeModified -> json.string("modified")
+    BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeDeleted -> json.string("deleted")
+  }
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange` from its wire string.
+pub fn brief_dev_input_document_requirements_item_dev_files_changed_item_change_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "created" -> decode.success(BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeCreated)
+      "modified" -> decode.success(BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeModified)
+      "deleted" -> decode.success(BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeDeleted)
+      _ -> decode.failure(BriefDevInputDocumentRequirementsItemDevFilesChangedItemChangeCreated, "BriefDevInputDocumentRequirementsItemDevFilesChangedItemChange")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/dev/properties/checklist/items`.
+pub type BriefDevInputDocumentRequirementsItemDevChecklistItem {
+  BriefDevInputDocumentRequirementsItemDevChecklistItem(
+    id: String,
+    done: Bool,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemDevChecklistItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_dev_checklist_item_to_json(value: BriefDevInputDocumentRequirementsItemDevChecklistItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("done", json.bool(value.done)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemDevChecklistItem` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_dev_checklist_item_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemDevChecklistItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_done <- decode.field("done", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevInputDocumentRequirementsItemDevChecklistItem(
+    id: field_id,
+    done: field_done,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/dev/properties/stories/items`.
+pub type BriefDevInputDocumentRequirementsItemDevStoriesItem {
+  BriefDevInputDocumentRequirementsItemDevStoriesItem(
+    id: String,
+    satisfied: Bool,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemDevStoriesItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_dev_stories_item_to_json(value: BriefDevInputDocumentRequirementsItemDevStoriesItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("satisfied", json.bool(value.satisfied)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemDevStoriesItem` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_dev_stories_item_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemDevStoriesItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_satisfied <- decode.field("satisfied", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevInputDocumentRequirementsItemDevStoriesItem(
+    id: field_id,
+    satisfied: field_satisfied,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/review`.
+pub type BriefDevInputDocumentRequirementsItemReview {
+  BriefDevInputDocumentRequirementsItemReview(
+    alignment: BriefDevInputDocumentRequirementsItemReviewAlignment,
+    acceptance: List(BriefDevInputDocumentRequirementsItemReviewAcceptanceItem),
+    checklist: List(String),
+    stories: List(String),
+    issues: List(String),
+    fixes: List(String),
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemReview` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_review_to_json(value: BriefDevInputDocumentRequirementsItemReview) -> json.Json {
+  json.object([
+    #("alignment", brief_dev_input_document_requirements_item_review_alignment_to_json(value.alignment)),
+    #("acceptance", json.array(value.acceptance, brief_dev_input_document_requirements_item_review_acceptance_item_to_json)),
+    #("checklist", json.array(value.checklist, json.string)),
+    #("stories", json.array(value.stories, json.string)),
+    #("issues", json.array(value.issues, json.string)),
+    #("fixes", json.array(value.fixes, json.string)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemReview` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_review_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemReview) {
+  use field_alignment <- decode.field("alignment", brief_dev_input_document_requirements_item_review_alignment_decoder())
+  use field_acceptance <- decode.field("acceptance", decode.list(brief_dev_input_document_requirements_item_review_acceptance_item_decoder()))
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
+  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_issues <- decode.field("issues", decode.list(decode.string))
+  use field_fixes <- decode.field("fixes", decode.list(decode.string))
+  decode.success(BriefDevInputDocumentRequirementsItemReview(
+    alignment: field_alignment,
+    acceptance: field_acceptance,
+    checklist: field_checklist,
+    stories: field_stories,
+    issues: field_issues,
+    fixes: field_fixes,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/review/properties/alignment`.
+pub type BriefDevInputDocumentRequirementsItemReviewAlignment {
+  BriefDevInputDocumentRequirementsItemReviewAlignmentAligned
+  BriefDevInputDocumentRequirementsItemReviewAlignmentDrifted
+  BriefDevInputDocumentRequirementsItemReviewAlignmentFixed
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemReviewAlignment` as its wire string.
+pub fn brief_dev_input_document_requirements_item_review_alignment_to_json(value: BriefDevInputDocumentRequirementsItemReviewAlignment) -> json.Json {
+  case value {
+    BriefDevInputDocumentRequirementsItemReviewAlignmentAligned -> json.string("aligned")
+    BriefDevInputDocumentRequirementsItemReviewAlignmentDrifted -> json.string("drifted")
+    BriefDevInputDocumentRequirementsItemReviewAlignmentFixed -> json.string("fixed")
+  }
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemReviewAlignment` from its wire string.
+pub fn brief_dev_input_document_requirements_item_review_alignment_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemReviewAlignment) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "aligned" -> decode.success(BriefDevInputDocumentRequirementsItemReviewAlignmentAligned)
+      "drifted" -> decode.success(BriefDevInputDocumentRequirementsItemReviewAlignmentDrifted)
+      "fixed" -> decode.success(BriefDevInputDocumentRequirementsItemReviewAlignmentFixed)
+      _ -> decode.failure(BriefDevInputDocumentRequirementsItemReviewAlignmentAligned, "BriefDevInputDocumentRequirementsItemReviewAlignment")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/requirements/items/properties/review/properties/acceptance/items`.
+pub type BriefDevInputDocumentRequirementsItemReviewAcceptanceItem {
+  BriefDevInputDocumentRequirementsItemReviewAcceptanceItem(
+    criterion: String,
+    met: Bool,
+    evidence: String,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentRequirementsItemReviewAcceptanceItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_requirements_item_review_acceptance_item_to_json(value: BriefDevInputDocumentRequirementsItemReviewAcceptanceItem) -> json.Json {
+  json.object([
+    #("criterion", json.string(value.criterion)),
+    #("met", json.bool(value.met)),
+    #("evidence", json.string(value.evidence)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentRequirementsItemReviewAcceptanceItem` from schema-shaped JSON.
+pub fn brief_dev_input_document_requirements_item_review_acceptance_item_decoder() -> decode.Decoder(BriefDevInputDocumentRequirementsItemReviewAcceptanceItem) {
+  use field_criterion <- decode.field("criterion", decode.string)
+  use field_met <- decode.field("met", decode.bool)
+  use field_evidence <- decode.field("evidence", decode.string)
+  decode.success(BriefDevInputDocumentRequirementsItemReviewAcceptanceItem(
+    criterion: field_criterion,
+    met: field_met,
+    evidence: field_evidence,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/execution`.
+pub type BriefDevInputDocumentExecution {
+  BriefDevInputDocumentExecution(
+    status: BriefDevInputDocumentExecutionStatus,
+    workflow_id: String,
+    branch: String,
+    session_id: String,
+    gate: BriefDevInputDocumentExecutionGate,
+    attestation: BriefDevInputDocumentExecutionAttestation,
+    review_verdict: BriefDevInputDocumentExecutionReviewVerdict,
+    landed_commit: String,
+    merged_into: String,
+    completed_at: String,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentExecution` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_execution_to_json(value: BriefDevInputDocumentExecution) -> json.Json {
+  json.object([
+    #("status", brief_dev_input_document_execution_status_to_json(value.status)),
+    #("workflow_id", json.string(value.workflow_id)),
+    #("branch", json.string(value.branch)),
+    #("session_id", json.string(value.session_id)),
+    #("gate", brief_dev_input_document_execution_gate_to_json(value.gate)),
+    #("attestation", brief_dev_input_document_execution_attestation_to_json(value.attestation)),
+    #("review_verdict", brief_dev_input_document_execution_review_verdict_to_json(value.review_verdict)),
+    #("landed_commit", json.string(value.landed_commit)),
+    #("merged_into", json.string(value.merged_into)),
+    #("completed_at", json.string(value.completed_at)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentExecution` from schema-shaped JSON.
+pub fn brief_dev_input_document_execution_decoder() -> decode.Decoder(BriefDevInputDocumentExecution) {
+  use field_status <- decode.field("status", brief_dev_input_document_execution_status_decoder())
+  use field_workflow_id <- decode.field("workflow_id", decode.string)
+  use field_branch <- decode.field("branch", decode.string)
+  use field_session_id <- decode.field("session_id", decode.string)
+  use field_gate <- decode.field("gate", brief_dev_input_document_execution_gate_decoder())
+  use field_attestation <- decode.field("attestation", brief_dev_input_document_execution_attestation_decoder())
+  use field_review_verdict <- decode.field("review_verdict", brief_dev_input_document_execution_review_verdict_decoder())
+  use field_landed_commit <- decode.field("landed_commit", decode.string)
+  use field_merged_into <- decode.field("merged_into", decode.string)
+  use field_completed_at <- decode.field("completed_at", decode.string)
+  decode.success(BriefDevInputDocumentExecution(
+    status: field_status,
+    workflow_id: field_workflow_id,
+    branch: field_branch,
+    session_id: field_session_id,
+    gate: field_gate,
+    attestation: field_attestation,
+    review_verdict: field_review_verdict,
+    landed_commit: field_landed_commit,
+    merged_into: field_merged_into,
+    completed_at: field_completed_at,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/execution/properties/status`.
+pub type BriefDevInputDocumentExecutionStatus {
+  BriefDevInputDocumentExecutionStatusInFlight
+  BriefDevInputDocumentExecutionStatusLanded
+  BriefDevInputDocumentExecutionStatusFailed
+}
+
+/// Encodes `BriefDevInputDocumentExecutionStatus` as its wire string.
+pub fn brief_dev_input_document_execution_status_to_json(value: BriefDevInputDocumentExecutionStatus) -> json.Json {
+  case value {
+    BriefDevInputDocumentExecutionStatusInFlight -> json.string("in_flight")
+    BriefDevInputDocumentExecutionStatusLanded -> json.string("landed")
+    BriefDevInputDocumentExecutionStatusFailed -> json.string("failed")
+  }
+}
+
+/// Decoder for `BriefDevInputDocumentExecutionStatus` from its wire string.
+pub fn brief_dev_input_document_execution_status_decoder() -> decode.Decoder(BriefDevInputDocumentExecutionStatus) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "in_flight" -> decode.success(BriefDevInputDocumentExecutionStatusInFlight)
+      "landed" -> decode.success(BriefDevInputDocumentExecutionStatusLanded)
+      "failed" -> decode.success(BriefDevInputDocumentExecutionStatusFailed)
+      _ -> decode.failure(BriefDevInputDocumentExecutionStatusInFlight, "BriefDevInputDocumentExecutionStatus")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/execution/properties/gate`.
+pub type BriefDevInputDocumentExecutionGate {
+  BriefDevInputDocumentExecutionGate(
+    fmt: Bool,
+    clippy: Bool,
+    tests: Bool,
+    fix_rounds: Int,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentExecutionGate` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_execution_gate_to_json(value: BriefDevInputDocumentExecutionGate) -> json.Json {
+  json.object([
+    #("fmt", json.bool(value.fmt)),
+    #("clippy", json.bool(value.clippy)),
+    #("tests", json.bool(value.tests)),
+    #("fix_rounds", json.int(value.fix_rounds)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentExecutionGate` from schema-shaped JSON.
+pub fn brief_dev_input_document_execution_gate_decoder() -> decode.Decoder(BriefDevInputDocumentExecutionGate) {
+  use field_fmt <- decode.field("fmt", decode.bool)
+  use field_clippy <- decode.field("clippy", decode.bool)
+  use field_tests <- decode.field("tests", decode.bool)
+  use field_fix_rounds <- decode.field("fix_rounds", decode.int)
+  decode.success(BriefDevInputDocumentExecutionGate(
+    fmt: field_fmt,
+    clippy: field_clippy,
+    tests: field_tests,
+    fix_rounds: field_fix_rounds,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/execution/properties/attestation`.
+pub type BriefDevInputDocumentExecutionAttestation {
+  BriefDevInputDocumentExecutionAttestation(
+    no_panics: Bool,
+    no_unsafe: Bool,
+    boundaries_respected: Bool,
+    tests_pass: Bool,
+  )
+}
+
+/// Encodes `BriefDevInputDocumentExecutionAttestation` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_document_execution_attestation_to_json(value: BriefDevInputDocumentExecutionAttestation) -> json.Json {
+  json.object([
+    #("no_panics", json.bool(value.no_panics)),
+    #("no_unsafe", json.bool(value.no_unsafe)),
+    #("boundaries_respected", json.bool(value.boundaries_respected)),
+    #("tests_pass", json.bool(value.tests_pass)),
+  ])
+}
+
+/// Decoder for `BriefDevInputDocumentExecutionAttestation` from schema-shaped JSON.
+pub fn brief_dev_input_document_execution_attestation_decoder() -> decode.Decoder(BriefDevInputDocumentExecutionAttestation) {
+  use field_no_panics <- decode.field("no_panics", decode.bool)
+  use field_no_unsafe <- decode.field("no_unsafe", decode.bool)
+  use field_boundaries_respected <- decode.field("boundaries_respected", decode.bool)
+  use field_tests_pass <- decode.field("tests_pass", decode.bool)
+  decode.success(BriefDevInputDocumentExecutionAttestation(
+    no_panics: field_no_panics,
+    no_unsafe: field_no_unsafe,
+    boundaries_respected: field_boundaries_respected,
+    tests_pass: field_tests_pass,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/document/properties/execution/properties/review_verdict`.
+pub type BriefDevInputDocumentExecutionReviewVerdict {
+  BriefDevInputDocumentExecutionReviewVerdictApproved
+  BriefDevInputDocumentExecutionReviewVerdictChangesRequested
+  BriefDevInputDocumentExecutionReviewVerdictRejected
+}
+
+/// Encodes `BriefDevInputDocumentExecutionReviewVerdict` as its wire string.
+pub fn brief_dev_input_document_execution_review_verdict_to_json(value: BriefDevInputDocumentExecutionReviewVerdict) -> json.Json {
+  case value {
+    BriefDevInputDocumentExecutionReviewVerdictApproved -> json.string("approved")
+    BriefDevInputDocumentExecutionReviewVerdictChangesRequested -> json.string("changes_requested")
+    BriefDevInputDocumentExecutionReviewVerdictRejected -> json.string("rejected")
+  }
+}
+
+/// Decoder for `BriefDevInputDocumentExecutionReviewVerdict` from its wire string.
+pub fn brief_dev_input_document_execution_review_verdict_decoder() -> decode.Decoder(BriefDevInputDocumentExecutionReviewVerdict) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "approved" -> decode.success(BriefDevInputDocumentExecutionReviewVerdictApproved)
+      "changes_requested" -> decode.success(BriefDevInputDocumentExecutionReviewVerdictChangesRequested)
+      "rejected" -> decode.success(BriefDevInputDocumentExecutionReviewVerdictRejected)
+      _ -> decode.failure(BriefDevInputDocumentExecutionReviewVerdictApproved, "BriefDevInputDocumentExecutionReviewVerdict")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/context`.
+pub type BriefDevInputContext {
+  BriefDevInputContext(
+    adrs: List(BriefDevInputContextAdrsItem),
+    checklist: List(BriefDevInputContextChecklistItem),
+    stories: List(BriefDevInputContextStoriesItem),
+    constraints: List(BriefDevInputContextConstraintsItem),
+    intention: String,
+    design_path: String,
+    provenance: BriefDevInputContextProvenance,
+  )
+}
+
+/// Encodes `BriefDevInputContext` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_context_to_json(value: BriefDevInputContext) -> json.Json {
+  json.object([
+    #("adrs", json.array(value.adrs, brief_dev_input_context_adrs_item_to_json)),
+    #("checklist", json.array(value.checklist, brief_dev_input_context_checklist_item_to_json)),
+    #("stories", json.array(value.stories, brief_dev_input_context_stories_item_to_json)),
+    #("constraints", json.array(value.constraints, brief_dev_input_context_constraints_item_to_json)),
+    #("intention", json.string(value.intention)),
+    #("design_path", json.string(value.design_path)),
+    #("provenance", brief_dev_input_context_provenance_to_json(value.provenance)),
+  ])
+}
+
+/// Decoder for `BriefDevInputContext` from schema-shaped JSON.
+pub fn brief_dev_input_context_decoder() -> decode.Decoder(BriefDevInputContext) {
+  use field_adrs <- decode.field("adrs", decode.list(brief_dev_input_context_adrs_item_decoder()))
+  use field_checklist <- decode.field("checklist", decode.list(brief_dev_input_context_checklist_item_decoder()))
+  use field_stories <- decode.field("stories", decode.list(brief_dev_input_context_stories_item_decoder()))
+  use field_constraints <- decode.field("constraints", decode.list(brief_dev_input_context_constraints_item_decoder()))
+  use field_intention <- decode.field("intention", decode.string)
+  use field_design_path <- decode.field("design_path", decode.string)
+  use field_provenance <- decode.field("provenance", brief_dev_input_context_provenance_decoder())
+  decode.success(BriefDevInputContext(
+    adrs: field_adrs,
+    checklist: field_checklist,
+    stories: field_stories,
+    constraints: field_constraints,
+    intention: field_intention,
+    design_path: field_design_path,
+    provenance: field_provenance,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/context/properties/adrs/items`.
+pub type BriefDevInputContextAdrsItem {
+  BriefDevInputContextAdrsItem(
+    id: String,
+    title: String,
+    decision: String,
+    quote: String,
+    decided_by: String,
+  )
+}
+
+/// Encodes `BriefDevInputContextAdrsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_context_adrs_item_to_json(value: BriefDevInputContextAdrsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("title", json.string(value.title)),
+    #("decision", json.string(value.decision)),
+    #("quote", json.string(value.quote)),
+    #("decided_by", json.string(value.decided_by)),
+  ])
+}
+
+/// Decoder for `BriefDevInputContextAdrsItem` from schema-shaped JSON.
+pub fn brief_dev_input_context_adrs_item_decoder() -> decode.Decoder(BriefDevInputContextAdrsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_title <- decode.field("title", decode.string)
+  use field_decision <- decode.field("decision", decode.string)
+  use field_quote <- decode.field("quote", decode.string)
+  use field_decided_by <- decode.field("decided_by", decode.string)
+  decode.success(BriefDevInputContextAdrsItem(
+    id: field_id,
+    title: field_title,
+    decision: field_decision,
+    quote: field_quote,
+    decided_by: field_decided_by,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/context/properties/checklist/items`.
+pub type BriefDevInputContextChecklistItem {
+  BriefDevInputContextChecklistItem(
+    id: String,
+    text: String,
+  )
+}
+
+/// Encodes `BriefDevInputContextChecklistItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_context_checklist_item_to_json(value: BriefDevInputContextChecklistItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("text", json.string(value.text)),
+  ])
+}
+
+/// Decoder for `BriefDevInputContextChecklistItem` from schema-shaped JSON.
+pub fn brief_dev_input_context_checklist_item_decoder() -> decode.Decoder(BriefDevInputContextChecklistItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_text <- decode.field("text", decode.string)
+  decode.success(BriefDevInputContextChecklistItem(
+    id: field_id,
+    text: field_text,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/context/properties/stories/items`.
+pub type BriefDevInputContextStoriesItem {
+  BriefDevInputContextStoriesItem(
+    id: String,
+    text: String,
+  )
+}
+
+/// Encodes `BriefDevInputContextStoriesItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_context_stories_item_to_json(value: BriefDevInputContextStoriesItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("text", json.string(value.text)),
+  ])
+}
+
+/// Decoder for `BriefDevInputContextStoriesItem` from schema-shaped JSON.
+pub fn brief_dev_input_context_stories_item_decoder() -> decode.Decoder(BriefDevInputContextStoriesItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_text <- decode.field("text", decode.string)
+  decode.success(BriefDevInputContextStoriesItem(
+    id: field_id,
+    text: field_text,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/context/properties/constraints/items`.
+pub type BriefDevInputContextConstraintsItem {
+  BriefDevInputContextConstraintsItem(
+    id: String,
+    text: String,
+  )
+}
+
+/// Encodes `BriefDevInputContextConstraintsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_context_constraints_item_to_json(value: BriefDevInputContextConstraintsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("text", json.string(value.text)),
+  ])
+}
+
+/// Decoder for `BriefDevInputContextConstraintsItem` from schema-shaped JSON.
+pub fn brief_dev_input_context_constraints_item_decoder() -> decode.Decoder(BriefDevInputContextConstraintsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_text <- decode.field("text", decode.string)
+  decode.success(BriefDevInputContextConstraintsItem(
+    id: field_id,
+    text: field_text,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_input.json` at `/properties/context/properties/provenance`.
+pub type BriefDevInputContextProvenance {
+  BriefDevInputContextProvenance(
+    requested_by: String,
+    quote: String,
+  )
+}
+
+/// Encodes `BriefDevInputContextProvenance` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_input_context_provenance_to_json(value: BriefDevInputContextProvenance) -> json.Json {
+  json.object([
+    #("requested_by", json.string(value.requested_by)),
+    #("quote", json.string(value.quote)),
+  ])
+}
+
+/// Decoder for `BriefDevInputContextProvenance` from schema-shaped JSON.
+pub fn brief_dev_input_context_provenance_decoder() -> decode.Decoder(BriefDevInputContextProvenance) {
+  use field_requested_by <- decode.field("requested_by", decode.string)
+  use field_quote <- decode.field("quote", decode.string)
+  decode.success(BriefDevInputContextProvenance(
+    requested_by: field_requested_by,
+    quote: field_quote,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json`.
+pub type BriefDevOutput {
+  BriefDevOutput(
+    scout: BriefDevOutputScout,
+    dev: BriefDevOutputDev,
+    review: BriefDevOutputReview,
+    verify_rounds: Int,
+    build_warm: BriefDevOutputBuildWarm,
+  )
+}
+
+/// Encodes `BriefDevOutput` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_to_json(value: BriefDevOutput) -> json.Json {
+  json.object([
+    #("scout", brief_dev_output_scout_to_json(value.scout)),
+    #("dev", brief_dev_output_dev_to_json(value.dev)),
+    #("review", brief_dev_output_review_to_json(value.review)),
+    #("verify_rounds", json.int(value.verify_rounds)),
+    #("build_warm", brief_dev_output_build_warm_to_json(value.build_warm)),
+  ])
+}
+
+/// Decoder for `BriefDevOutput` from schema-shaped JSON.
+pub fn brief_dev_output_decoder() -> decode.Decoder(BriefDevOutput) {
+  use field_scout <- decode.field("scout", brief_dev_output_scout_decoder())
+  use field_dev <- decode.field("dev", brief_dev_output_dev_decoder())
+  use field_review <- decode.field("review", brief_dev_output_review_decoder())
+  use field_verify_rounds <- decode.field("verify_rounds", decode.int)
+  use field_build_warm <- decode.field("build_warm", brief_dev_output_build_warm_decoder())
+  decode.success(BriefDevOutput(
+    scout: field_scout,
+    dev: field_dev,
+    review: field_review,
+    verify_rounds: field_verify_rounds,
+    build_warm: field_build_warm,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/scout`.
+pub type BriefDevOutputScout {
+  BriefDevOutputScout(
+    summary: String,
+    enrichments: List(BriefDevOutputScoutEnrichmentsItem),
+    verification: List(String),
+  )
+}
+
+/// Encodes `BriefDevOutputScout` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_scout_to_json(value: BriefDevOutputScout) -> json.Json {
+  json.object([
+    #("summary", json.string(value.summary)),
+    #("enrichments", json.array(value.enrichments, brief_dev_output_scout_enrichments_item_to_json)),
+    #("verification", json.array(value.verification, json.string)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputScout` from schema-shaped JSON.
+pub fn brief_dev_output_scout_decoder() -> decode.Decoder(BriefDevOutputScout) {
+  use field_summary <- decode.field("summary", decode.string)
+  use field_enrichments <- decode.field("enrichments", decode.list(brief_dev_output_scout_enrichments_item_decoder()))
+  use field_verification <- decode.field("verification", decode.list(decode.string))
+  decode.success(BriefDevOutputScout(
+    summary: field_summary,
+    enrichments: field_enrichments,
+    verification: field_verification,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/scout/properties/enrichments/items`.
+pub type BriefDevOutputScoutEnrichmentsItem {
+  BriefDevOutputScoutEnrichmentsItem(
+    id: String,
+    files: List(String),
+    context: List(String),
+    approach: String,
+    notes: String,
+  )
+}
+
+/// Encodes `BriefDevOutputScoutEnrichmentsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_scout_enrichments_item_to_json(value: BriefDevOutputScoutEnrichmentsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("files", json.array(value.files, json.string)),
+    #("context", json.array(value.context, json.string)),
+    #("approach", json.string(value.approach)),
+    #("notes", json.string(value.notes)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputScoutEnrichmentsItem` from schema-shaped JSON.
+pub fn brief_dev_output_scout_enrichments_item_decoder() -> decode.Decoder(BriefDevOutputScoutEnrichmentsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_files <- decode.field("files", decode.list(decode.string))
+  use field_context <- decode.field("context", decode.list(decode.string))
+  use field_approach <- decode.field("approach", decode.string)
+  use field_notes <- decode.field("notes", decode.string)
+  decode.success(BriefDevOutputScoutEnrichmentsItem(
+    id: field_id,
+    files: field_files,
+    context: field_context,
+    approach: field_approach,
+    notes: field_notes,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev`.
+pub type BriefDevOutputDev {
+  BriefDevOutputDev(
+    summary: String,
+    commit_message: String,
+    enrichments: List(BriefDevOutputDevEnrichmentsItem),
+    attestation: BriefDevOutputDevAttestation,
+  )
+}
+
+/// Encodes `BriefDevOutputDev` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_dev_to_json(value: BriefDevOutputDev) -> json.Json {
+  json.object([
+    #("summary", json.string(value.summary)),
+    #("commit_message", json.string(value.commit_message)),
+    #("enrichments", json.array(value.enrichments, brief_dev_output_dev_enrichments_item_to_json)),
+    #("attestation", brief_dev_output_dev_attestation_to_json(value.attestation)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputDev` from schema-shaped JSON.
+pub fn brief_dev_output_dev_decoder() -> decode.Decoder(BriefDevOutputDev) {
+  use field_summary <- decode.field("summary", decode.string)
+  use field_commit_message <- decode.field("commit_message", decode.string)
+  use field_enrichments <- decode.field("enrichments", decode.list(brief_dev_output_dev_enrichments_item_decoder()))
+  use field_attestation <- decode.field("attestation", brief_dev_output_dev_attestation_decoder())
+  decode.success(BriefDevOutputDev(
+    summary: field_summary,
+    commit_message: field_commit_message,
+    enrichments: field_enrichments,
+    attestation: field_attestation,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/enrichments/items`.
+pub type BriefDevOutputDevEnrichmentsItem {
+  BriefDevOutputDevEnrichmentsItem(
+    id: String,
+    status: BriefDevOutputDevEnrichmentsItemStatus,
+    files_changed: List(BriefDevOutputDevEnrichmentsItemFilesChangedItem),
+    how: String,
+    deviation: String,
+    checklist: List(BriefDevOutputDevEnrichmentsItemChecklistItem),
+    stories: List(BriefDevOutputDevEnrichmentsItemStoriesItem),
+  )
+}
+
+/// Encodes `BriefDevOutputDevEnrichmentsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_dev_enrichments_item_to_json(value: BriefDevOutputDevEnrichmentsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("status", brief_dev_output_dev_enrichments_item_status_to_json(value.status)),
+    #("files_changed", json.array(value.files_changed, brief_dev_output_dev_enrichments_item_files_changed_item_to_json)),
+    #("how", json.string(value.how)),
+    #("deviation", json.string(value.deviation)),
+    #("checklist", json.array(value.checklist, brief_dev_output_dev_enrichments_item_checklist_item_to_json)),
+    #("stories", json.array(value.stories, brief_dev_output_dev_enrichments_item_stories_item_to_json)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputDevEnrichmentsItem` from schema-shaped JSON.
+pub fn brief_dev_output_dev_enrichments_item_decoder() -> decode.Decoder(BriefDevOutputDevEnrichmentsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_status <- decode.field("status", brief_dev_output_dev_enrichments_item_status_decoder())
+  use field_files_changed <- decode.field("files_changed", decode.list(brief_dev_output_dev_enrichments_item_files_changed_item_decoder()))
+  use field_how <- decode.field("how", decode.string)
+  use field_deviation <- decode.field("deviation", decode.string)
+  use field_checklist <- decode.field("checklist", decode.list(brief_dev_output_dev_enrichments_item_checklist_item_decoder()))
+  use field_stories <- decode.field("stories", decode.list(brief_dev_output_dev_enrichments_item_stories_item_decoder()))
+  decode.success(BriefDevOutputDevEnrichmentsItem(
+    id: field_id,
+    status: field_status,
+    files_changed: field_files_changed,
+    how: field_how,
+    deviation: field_deviation,
+    checklist: field_checklist,
+    stories: field_stories,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/enrichments/items/properties/status`.
+pub type BriefDevOutputDevEnrichmentsItemStatus {
+  BriefDevOutputDevEnrichmentsItemStatusImplemented
+  BriefDevOutputDevEnrichmentsItemStatusBlocked
+}
+
+/// Encodes `BriefDevOutputDevEnrichmentsItemStatus` as its wire string.
+pub fn brief_dev_output_dev_enrichments_item_status_to_json(value: BriefDevOutputDevEnrichmentsItemStatus) -> json.Json {
+  case value {
+    BriefDevOutputDevEnrichmentsItemStatusImplemented -> json.string("implemented")
+    BriefDevOutputDevEnrichmentsItemStatusBlocked -> json.string("blocked")
+  }
+}
+
+/// Decoder for `BriefDevOutputDevEnrichmentsItemStatus` from its wire string.
+pub fn brief_dev_output_dev_enrichments_item_status_decoder() -> decode.Decoder(BriefDevOutputDevEnrichmentsItemStatus) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "implemented" -> decode.success(BriefDevOutputDevEnrichmentsItemStatusImplemented)
+      "blocked" -> decode.success(BriefDevOutputDevEnrichmentsItemStatusBlocked)
+      _ -> decode.failure(BriefDevOutputDevEnrichmentsItemStatusImplemented, "BriefDevOutputDevEnrichmentsItemStatus")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/enrichments/items/properties/files_changed/items`.
+pub type BriefDevOutputDevEnrichmentsItemFilesChangedItem {
+  BriefDevOutputDevEnrichmentsItemFilesChangedItem(
+    path: String,
+    change: BriefDevOutputDevEnrichmentsItemFilesChangedItemChange,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevOutputDevEnrichmentsItemFilesChangedItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_dev_enrichments_item_files_changed_item_to_json(value: BriefDevOutputDevEnrichmentsItemFilesChangedItem) -> json.Json {
+  json.object([
+    #("path", json.string(value.path)),
+    #("change", brief_dev_output_dev_enrichments_item_files_changed_item_change_to_json(value.change)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputDevEnrichmentsItemFilesChangedItem` from schema-shaped JSON.
+pub fn brief_dev_output_dev_enrichments_item_files_changed_item_decoder() -> decode.Decoder(BriefDevOutputDevEnrichmentsItemFilesChangedItem) {
+  use field_path <- decode.field("path", decode.string)
+  use field_change <- decode.field("change", brief_dev_output_dev_enrichments_item_files_changed_item_change_decoder())
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevOutputDevEnrichmentsItemFilesChangedItem(
+    path: field_path,
+    change: field_change,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/enrichments/items/properties/files_changed/items/properties/change`.
+pub type BriefDevOutputDevEnrichmentsItemFilesChangedItemChange {
+  BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeCreated
+  BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeModified
+  BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeDeleted
+}
+
+/// Encodes `BriefDevOutputDevEnrichmentsItemFilesChangedItemChange` as its wire string.
+pub fn brief_dev_output_dev_enrichments_item_files_changed_item_change_to_json(value: BriefDevOutputDevEnrichmentsItemFilesChangedItemChange) -> json.Json {
+  case value {
+    BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeCreated -> json.string("created")
+    BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeModified -> json.string("modified")
+    BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeDeleted -> json.string("deleted")
+  }
+}
+
+/// Decoder for `BriefDevOutputDevEnrichmentsItemFilesChangedItemChange` from its wire string.
+pub fn brief_dev_output_dev_enrichments_item_files_changed_item_change_decoder() -> decode.Decoder(BriefDevOutputDevEnrichmentsItemFilesChangedItemChange) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "created" -> decode.success(BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeCreated)
+      "modified" -> decode.success(BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeModified)
+      "deleted" -> decode.success(BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeDeleted)
+      _ -> decode.failure(BriefDevOutputDevEnrichmentsItemFilesChangedItemChangeCreated, "BriefDevOutputDevEnrichmentsItemFilesChangedItemChange")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/enrichments/items/properties/checklist/items`.
+pub type BriefDevOutputDevEnrichmentsItemChecklistItem {
+  BriefDevOutputDevEnrichmentsItemChecklistItem(
+    id: String,
+    done: Bool,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevOutputDevEnrichmentsItemChecklistItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_dev_enrichments_item_checklist_item_to_json(value: BriefDevOutputDevEnrichmentsItemChecklistItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("done", json.bool(value.done)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputDevEnrichmentsItemChecklistItem` from schema-shaped JSON.
+pub fn brief_dev_output_dev_enrichments_item_checklist_item_decoder() -> decode.Decoder(BriefDevOutputDevEnrichmentsItemChecklistItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_done <- decode.field("done", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevOutputDevEnrichmentsItemChecklistItem(
+    id: field_id,
+    done: field_done,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/enrichments/items/properties/stories/items`.
+pub type BriefDevOutputDevEnrichmentsItemStoriesItem {
+  BriefDevOutputDevEnrichmentsItemStoriesItem(
+    id: String,
+    satisfied: Bool,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevOutputDevEnrichmentsItemStoriesItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_dev_enrichments_item_stories_item_to_json(value: BriefDevOutputDevEnrichmentsItemStoriesItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("satisfied", json.bool(value.satisfied)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputDevEnrichmentsItemStoriesItem` from schema-shaped JSON.
+pub fn brief_dev_output_dev_enrichments_item_stories_item_decoder() -> decode.Decoder(BriefDevOutputDevEnrichmentsItemStoriesItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_satisfied <- decode.field("satisfied", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevOutputDevEnrichmentsItemStoriesItem(
+    id: field_id,
+    satisfied: field_satisfied,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/dev/properties/attestation`.
+pub type BriefDevOutputDevAttestation {
+  BriefDevOutputDevAttestation(
+    no_panics: Bool,
+    no_unsafe: Bool,
+    boundaries_respected: Bool,
+    tests_pass: Bool,
+  )
+}
+
+/// Encodes `BriefDevOutputDevAttestation` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_dev_attestation_to_json(value: BriefDevOutputDevAttestation) -> json.Json {
+  json.object([
+    #("no_panics", json.bool(value.no_panics)),
+    #("no_unsafe", json.bool(value.no_unsafe)),
+    #("boundaries_respected", json.bool(value.boundaries_respected)),
+    #("tests_pass", json.bool(value.tests_pass)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputDevAttestation` from schema-shaped JSON.
+pub fn brief_dev_output_dev_attestation_decoder() -> decode.Decoder(BriefDevOutputDevAttestation) {
+  use field_no_panics <- decode.field("no_panics", decode.bool)
+  use field_no_unsafe <- decode.field("no_unsafe", decode.bool)
+  use field_boundaries_respected <- decode.field("boundaries_respected", decode.bool)
+  use field_tests_pass <- decode.field("tests_pass", decode.bool)
+  decode.success(BriefDevOutputDevAttestation(
+    no_panics: field_no_panics,
+    no_unsafe: field_no_unsafe,
+    boundaries_respected: field_boundaries_respected,
+    tests_pass: field_tests_pass,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/review`.
+pub type BriefDevOutputReview {
+  BriefDevOutputReview(
+    summary: String,
+    commit_message: String,
+    enrichments: List(BriefDevOutputReviewEnrichmentsItem),
+    verification: List(BriefDevOutputReviewVerificationItem),
+  )
+}
+
+/// Encodes `BriefDevOutputReview` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_review_to_json(value: BriefDevOutputReview) -> json.Json {
+  json.object([
+    #("summary", json.string(value.summary)),
+    #("commit_message", json.string(value.commit_message)),
+    #("enrichments", json.array(value.enrichments, brief_dev_output_review_enrichments_item_to_json)),
+    #("verification", json.array(value.verification, brief_dev_output_review_verification_item_to_json)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputReview` from schema-shaped JSON.
+pub fn brief_dev_output_review_decoder() -> decode.Decoder(BriefDevOutputReview) {
+  use field_summary <- decode.field("summary", decode.string)
+  use field_commit_message <- decode.field("commit_message", decode.string)
+  use field_enrichments <- decode.field("enrichments", decode.list(brief_dev_output_review_enrichments_item_decoder()))
+  use field_verification <- decode.field("verification", decode.list(brief_dev_output_review_verification_item_decoder()))
+  decode.success(BriefDevOutputReview(
+    summary: field_summary,
+    commit_message: field_commit_message,
+    enrichments: field_enrichments,
+    verification: field_verification,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/review/properties/enrichments/items`.
+pub type BriefDevOutputReviewEnrichmentsItem {
+  BriefDevOutputReviewEnrichmentsItem(
+    id: String,
+    alignment: BriefDevOutputReviewEnrichmentsItemAlignment,
+    acceptance: List(BriefDevOutputReviewEnrichmentsItemAcceptanceItem),
+    checklist: List(String),
+    stories: List(String),
+    issues: List(String),
+    fixes: List(String),
+  )
+}
+
+/// Encodes `BriefDevOutputReviewEnrichmentsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_review_enrichments_item_to_json(value: BriefDevOutputReviewEnrichmentsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("alignment", brief_dev_output_review_enrichments_item_alignment_to_json(value.alignment)),
+    #("acceptance", json.array(value.acceptance, brief_dev_output_review_enrichments_item_acceptance_item_to_json)),
+    #("checklist", json.array(value.checklist, json.string)),
+    #("stories", json.array(value.stories, json.string)),
+    #("issues", json.array(value.issues, json.string)),
+    #("fixes", json.array(value.fixes, json.string)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputReviewEnrichmentsItem` from schema-shaped JSON.
+pub fn brief_dev_output_review_enrichments_item_decoder() -> decode.Decoder(BriefDevOutputReviewEnrichmentsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_alignment <- decode.field("alignment", brief_dev_output_review_enrichments_item_alignment_decoder())
+  use field_acceptance <- decode.field("acceptance", decode.list(brief_dev_output_review_enrichments_item_acceptance_item_decoder()))
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
+  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_issues <- decode.field("issues", decode.list(decode.string))
+  use field_fixes <- decode.field("fixes", decode.list(decode.string))
+  decode.success(BriefDevOutputReviewEnrichmentsItem(
+    id: field_id,
+    alignment: field_alignment,
+    acceptance: field_acceptance,
+    checklist: field_checklist,
+    stories: field_stories,
+    issues: field_issues,
+    fixes: field_fixes,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/review/properties/enrichments/items/properties/alignment`.
+pub type BriefDevOutputReviewEnrichmentsItemAlignment {
+  BriefDevOutputReviewEnrichmentsItemAlignmentAligned
+  BriefDevOutputReviewEnrichmentsItemAlignmentDrifted
+  BriefDevOutputReviewEnrichmentsItemAlignmentFixed
+}
+
+/// Encodes `BriefDevOutputReviewEnrichmentsItemAlignment` as its wire string.
+pub fn brief_dev_output_review_enrichments_item_alignment_to_json(value: BriefDevOutputReviewEnrichmentsItemAlignment) -> json.Json {
+  case value {
+    BriefDevOutputReviewEnrichmentsItemAlignmentAligned -> json.string("aligned")
+    BriefDevOutputReviewEnrichmentsItemAlignmentDrifted -> json.string("drifted")
+    BriefDevOutputReviewEnrichmentsItemAlignmentFixed -> json.string("fixed")
+  }
+}
+
+/// Decoder for `BriefDevOutputReviewEnrichmentsItemAlignment` from its wire string.
+pub fn brief_dev_output_review_enrichments_item_alignment_decoder() -> decode.Decoder(BriefDevOutputReviewEnrichmentsItemAlignment) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "aligned" -> decode.success(BriefDevOutputReviewEnrichmentsItemAlignmentAligned)
+      "drifted" -> decode.success(BriefDevOutputReviewEnrichmentsItemAlignmentDrifted)
+      "fixed" -> decode.success(BriefDevOutputReviewEnrichmentsItemAlignmentFixed)
+      _ -> decode.failure(BriefDevOutputReviewEnrichmentsItemAlignmentAligned, "BriefDevOutputReviewEnrichmentsItemAlignment")
+    }
+  })
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/review/properties/enrichments/items/properties/acceptance/items`.
+pub type BriefDevOutputReviewEnrichmentsItemAcceptanceItem {
+  BriefDevOutputReviewEnrichmentsItemAcceptanceItem(
+    criterion: String,
+    met: Bool,
+    evidence: String,
+  )
+}
+
+/// Encodes `BriefDevOutputReviewEnrichmentsItemAcceptanceItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_review_enrichments_item_acceptance_item_to_json(value: BriefDevOutputReviewEnrichmentsItemAcceptanceItem) -> json.Json {
+  json.object([
+    #("criterion", json.string(value.criterion)),
+    #("met", json.bool(value.met)),
+    #("evidence", json.string(value.evidence)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputReviewEnrichmentsItemAcceptanceItem` from schema-shaped JSON.
+pub fn brief_dev_output_review_enrichments_item_acceptance_item_decoder() -> decode.Decoder(BriefDevOutputReviewEnrichmentsItemAcceptanceItem) {
+  use field_criterion <- decode.field("criterion", decode.string)
+  use field_met <- decode.field("met", decode.bool)
+  use field_evidence <- decode.field("evidence", decode.string)
+  decode.success(BriefDevOutputReviewEnrichmentsItemAcceptanceItem(
+    criterion: field_criterion,
+    met: field_met,
+    evidence: field_evidence,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/review/properties/verification/items`.
+pub type BriefDevOutputReviewVerificationItem {
+  BriefDevOutputReviewVerificationItem(
+    criterion: String,
+    passed: Bool,
+    note: String,
+  )
+}
+
+/// Encodes `BriefDevOutputReviewVerificationItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_review_verification_item_to_json(value: BriefDevOutputReviewVerificationItem) -> json.Json {
+  json.object([
+    #("criterion", json.string(value.criterion)),
+    #("passed", json.bool(value.passed)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputReviewVerificationItem` from schema-shaped JSON.
+pub fn brief_dev_output_review_verification_item_decoder() -> decode.Decoder(BriefDevOutputReviewVerificationItem) {
+  use field_criterion <- decode.field("criterion", decode.string)
+  use field_passed <- decode.field("passed", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(BriefDevOutputReviewVerificationItem(
+    criterion: field_criterion,
+    passed: field_passed,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/brief_dev_output.json` at `/properties/build_warm`.
+pub type BriefDevOutputBuildWarm {
+  BriefDevOutputBuildWarm(
+    ok: Bool,
+    duration_ms: Int,
+  )
+}
+
+/// Encodes `BriefDevOutputBuildWarm` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn brief_dev_output_build_warm_to_json(value: BriefDevOutputBuildWarm) -> json.Json {
+  json.object([
+    #("ok", json.bool(value.ok)),
+    #("duration_ms", json.int(value.duration_ms)),
+  ])
+}
+
+/// Decoder for `BriefDevOutputBuildWarm` from schema-shaped JSON.
+pub fn brief_dev_output_build_warm_decoder() -> decode.Decoder(BriefDevOutputBuildWarm) {
+  use field_ok <- decode.field("ok", decode.bool)
+  use field_duration_ms <- decode.field("duration_ms", decode.int)
+  decode.success(BriefDevOutputBuildWarm(
+    ok: field_ok,
+    duration_ms: field_duration_ms,
+  ))
+}
+
 /// Generated from `schemas/dev_report.json`.
 pub type DevReport {
   DevReport(
@@ -547,10 +2150,8 @@ pub type Input {
     base_ref: String,
     placement: InputPlacement,
     isolation: InputIsolation,
-    brief: String,
-    design: String,
-    checklist: String,
-    stories: List(String),
+    brief_document: InputBriefDocument,
+    resolved_context: InputResolvedContext,
     verify_fix_cap: Int,
     review_cap: Int,
     round_backoff_ms: Int,
@@ -568,10 +2169,8 @@ pub fn input_to_json(value: Input) -> json.Json {
     #("base_ref", json.string(value.base_ref)),
     #("placement", input_placement_to_json(value.placement)),
     #("isolation", input_isolation_to_json(value.isolation)),
-    #("brief", json.string(value.brief)),
-    #("design", json.string(value.design)),
-    #("checklist", json.string(value.checklist)),
-    #("stories", json.array(value.stories, json.string)),
+    #("brief_document", input_brief_document_to_json(value.brief_document)),
+    #("resolved_context", input_resolved_context_to_json(value.resolved_context)),
     #("verify_fix_cap", json.int(value.verify_fix_cap)),
     #("review_cap", json.int(value.review_cap)),
     #("round_backoff_ms", json.int(value.round_backoff_ms)),
@@ -587,10 +2186,8 @@ pub fn input_decoder() -> decode.Decoder(Input) {
   use field_base_ref <- decode.field("base_ref", decode.string)
   use field_placement <- decode.field("placement", input_placement_decoder())
   use field_isolation <- decode.field("isolation", input_isolation_decoder())
-  use field_brief <- decode.field("brief", decode.string)
-  use field_design <- decode.field("design", decode.string)
-  use field_checklist <- decode.field("checklist", decode.string)
-  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_brief_document <- decode.field("brief_document", input_brief_document_decoder())
+  use field_resolved_context <- decode.field("resolved_context", input_resolved_context_decoder())
   use field_verify_fix_cap <- decode.field("verify_fix_cap", decode.int)
   use field_review_cap <- decode.field("review_cap", decode.int)
   use field_round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
@@ -602,10 +2199,8 @@ pub fn input_decoder() -> decode.Decoder(Input) {
     base_ref: field_base_ref,
     placement: field_placement,
     isolation: field_isolation,
-    brief: field_brief,
-    design: field_design,
-    checklist: field_checklist,
-    stories: field_stories,
+    brief_document: field_brief_document,
+    resolved_context: field_resolved_context,
     verify_fix_cap: field_verify_fix_cap,
     review_cap: field_review_cap,
     round_backoff_ms: field_round_backoff_ms,
@@ -669,230 +2264,905 @@ pub fn input_isolation_decoder() -> decode.Decoder(InputIsolation) {
   })
 }
 
-/// Generated from `schemas/onatopp_input.json`.
-pub type OnatoppInput {
-  OnatoppInput(
-    workspace: OnatoppInputWorkspace,
-    brief: String,
-    design: String,
-    checklist: String,
+/// Generated from `schemas/input.json` at `/properties/brief_document`.
+pub type InputBriefDocument {
+  InputBriefDocument(
+    id: String,
+    cluster: String,
+    title: String,
+    depends_on: List(String),
+    blocked_by: List(String),
+    checklist: List(String),
     stories: List(String),
-    verify_fix_cap: Int,
-    round_backoff_ms: Int,
+    design_anchor: List(String),
+    purpose: String,
+    task: String,
+    requirements: List(InputBriefDocumentRequirementsItem),
+    boundaries: List(String),
+    verification: List(String),
+    execution: option.Option(InputBriefDocumentExecution),
   )
 }
 
-/// Encodes `OnatoppInput` as schema-shaped JSON; optional fields are
+/// Encodes `InputBriefDocument` as schema-shaped JSON; optional fields are
 /// omitted when `None`.
-pub fn onatopp_input_to_json(value: OnatoppInput) -> json.Json {
-  json.object([
-    #("workspace", onatopp_input_workspace_to_json(value.workspace)),
-    #("brief", json.string(value.brief)),
-    #("design", json.string(value.design)),
-    #("checklist", json.string(value.checklist)),
-    #("stories", json.array(value.stories, json.string)),
-    #("verify_fix_cap", json.int(value.verify_fix_cap)),
-    #("round_backoff_ms", json.int(value.round_backoff_ms)),
-  ])
+pub fn input_brief_document_to_json(value: InputBriefDocument) -> json.Json {
+  json.object(
+    list.flatten([
+      [#("id", json.string(value.id))],
+      [#("cluster", json.string(value.cluster))],
+      [#("title", json.string(value.title))],
+      [#("depends_on", json.array(value.depends_on, json.string))],
+      [#("blocked_by", json.array(value.blocked_by, json.string))],
+      [#("checklist", json.array(value.checklist, json.string))],
+      [#("stories", json.array(value.stories, json.string))],
+      [#("design_anchor", json.array(value.design_anchor, json.string))],
+      [#("purpose", json.string(value.purpose))],
+      [#("task", json.string(value.task))],
+      [#("requirements", json.array(value.requirements, input_brief_document_requirements_item_to_json))],
+      [#("boundaries", json.array(value.boundaries, json.string))],
+      [#("verification", json.array(value.verification, json.string))],
+      case value.execution {
+        option.Some(present) -> [#("execution", input_brief_document_execution_to_json(present))]
+        option.None -> []
+      },
+    ]),
+  )
 }
 
-/// Decoder for `OnatoppInput` from schema-shaped JSON.
-pub fn onatopp_input_decoder() -> decode.Decoder(OnatoppInput) {
-  use field_workspace <- decode.field("workspace", onatopp_input_workspace_decoder())
-  use field_brief <- decode.field("brief", decode.string)
-  use field_design <- decode.field("design", decode.string)
-  use field_checklist <- decode.field("checklist", decode.string)
+/// Decoder for `InputBriefDocument` from schema-shaped JSON.
+pub fn input_brief_document_decoder() -> decode.Decoder(InputBriefDocument) {
+  use field_id <- decode.field("id", decode.string)
+  use field_cluster <- decode.field("cluster", decode.string)
+  use field_title <- decode.field("title", decode.string)
+  use field_depends_on <- decode.field("depends_on", decode.list(decode.string))
+  use field_blocked_by <- decode.field("blocked_by", decode.list(decode.string))
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
   use field_stories <- decode.field("stories", decode.list(decode.string))
-  use field_verify_fix_cap <- decode.field("verify_fix_cap", decode.int)
-  use field_round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
-  decode.success(OnatoppInput(
-    workspace: field_workspace,
-    brief: field_brief,
-    design: field_design,
+  use field_design_anchor <- decode.field("design_anchor", decode.list(decode.string))
+  use field_purpose <- decode.field("purpose", decode.string)
+  use field_task <- decode.field("task", decode.string)
+  use field_requirements <- decode.field("requirements", decode.list(input_brief_document_requirements_item_decoder()))
+  use field_boundaries <- decode.field("boundaries", decode.list(decode.string))
+  use field_verification <- decode.field("verification", decode.list(decode.string))
+  use field_execution <- decode.optional_field(
+    "execution",
+    option.None,
+    decode.optional(input_brief_document_execution_decoder()),
+  )
+  decode.success(InputBriefDocument(
+    id: field_id,
+    cluster: field_cluster,
+    title: field_title,
+    depends_on: field_depends_on,
+    blocked_by: field_blocked_by,
     checklist: field_checklist,
     stories: field_stories,
-    verify_fix_cap: field_verify_fix_cap,
-    round_backoff_ms: field_round_backoff_ms,
+    design_anchor: field_design_anchor,
+    purpose: field_purpose,
+    task: field_task,
+    requirements: field_requirements,
+    boundaries: field_boundaries,
+    verification: field_verification,
+    execution: field_execution,
   ))
 }
 
-/// Generated from `schemas/onatopp_input.json` at `/properties/workspace`.
-pub type OnatoppInputWorkspace {
-  OnatoppInputWorkspace(
-    path: String,
-    branch: String,
-    placement: OnatoppInputWorkspacePlacement,
-    isolation: OnatoppInputWorkspaceIsolation,
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items`.
+pub type InputBriefDocumentRequirementsItem {
+  InputBriefDocumentRequirementsItem(
+    id: String,
+    title: String,
+    spec: String,
+    acceptance: List(String),
+    files: InputBriefDocumentRequirementsItemFiles,
+    checklist: List(String),
+    stories: List(String),
+    scout: option.Option(InputBriefDocumentRequirementsItemScout),
+    dev: option.Option(InputBriefDocumentRequirementsItemDev),
+    review: option.Option(InputBriefDocumentRequirementsItemReview),
   )
 }
 
-/// Encodes `OnatoppInputWorkspace` as schema-shaped JSON; optional fields are
+/// Encodes `InputBriefDocumentRequirementsItem` as schema-shaped JSON; optional fields are
 /// omitted when `None`.
-pub fn onatopp_input_workspace_to_json(value: OnatoppInputWorkspace) -> json.Json {
+pub fn input_brief_document_requirements_item_to_json(value: InputBriefDocumentRequirementsItem) -> json.Json {
+  json.object(
+    list.flatten([
+      [#("id", json.string(value.id))],
+      [#("title", json.string(value.title))],
+      [#("spec", json.string(value.spec))],
+      [#("acceptance", json.array(value.acceptance, json.string))],
+      [#("files", input_brief_document_requirements_item_files_to_json(value.files))],
+      [#("checklist", json.array(value.checklist, json.string))],
+      [#("stories", json.array(value.stories, json.string))],
+      case value.scout {
+        option.Some(present) -> [#("scout", input_brief_document_requirements_item_scout_to_json(present))]
+        option.None -> []
+      },
+      case value.dev {
+        option.Some(present) -> [#("dev", input_brief_document_requirements_item_dev_to_json(present))]
+        option.None -> []
+      },
+      case value.review {
+        option.Some(present) -> [#("review", input_brief_document_requirements_item_review_to_json(present))]
+        option.None -> []
+      },
+    ]),
+  )
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItem` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_title <- decode.field("title", decode.string)
+  use field_spec <- decode.field("spec", decode.string)
+  use field_acceptance <- decode.field("acceptance", decode.list(decode.string))
+  use field_files <- decode.field("files", input_brief_document_requirements_item_files_decoder())
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
+  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_scout <- decode.optional_field(
+    "scout",
+    option.None,
+    decode.optional(input_brief_document_requirements_item_scout_decoder()),
+  )
+  use field_dev <- decode.optional_field(
+    "dev",
+    option.None,
+    decode.optional(input_brief_document_requirements_item_dev_decoder()),
+  )
+  use field_review <- decode.optional_field(
+    "review",
+    option.None,
+    decode.optional(input_brief_document_requirements_item_review_decoder()),
+  )
+  decode.success(InputBriefDocumentRequirementsItem(
+    id: field_id,
+    title: field_title,
+    spec: field_spec,
+    acceptance: field_acceptance,
+    files: field_files,
+    checklist: field_checklist,
+    stories: field_stories,
+    scout: field_scout,
+    dev: field_dev,
+    review: field_review,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/files`.
+pub type InputBriefDocumentRequirementsItemFiles {
+  InputBriefDocumentRequirementsItemFiles(
+    create: List(String),
+    modify: List(String),
+    delete: List(String),
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemFiles` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_files_to_json(value: InputBriefDocumentRequirementsItemFiles) -> json.Json {
+  json.object([
+    #("create", json.array(value.create, json.string)),
+    #("modify", json.array(value.modify, json.string)),
+    #("delete", json.array(value.delete, json.string)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemFiles` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_files_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemFiles) {
+  use field_create <- decode.field("create", decode.list(decode.string))
+  use field_modify <- decode.field("modify", decode.list(decode.string))
+  use field_delete <- decode.field("delete", decode.list(decode.string))
+  decode.success(InputBriefDocumentRequirementsItemFiles(
+    create: field_create,
+    modify: field_modify,
+    delete: field_delete,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/scout`.
+pub type InputBriefDocumentRequirementsItemScout {
+  InputBriefDocumentRequirementsItemScout(
+    files: List(String),
+    context: List(String),
+    approach: String,
+    notes: String,
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemScout` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_scout_to_json(value: InputBriefDocumentRequirementsItemScout) -> json.Json {
+  json.object([
+    #("files", json.array(value.files, json.string)),
+    #("context", json.array(value.context, json.string)),
+    #("approach", json.string(value.approach)),
+    #("notes", json.string(value.notes)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemScout` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_scout_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemScout) {
+  use field_files <- decode.field("files", decode.list(decode.string))
+  use field_context <- decode.field("context", decode.list(decode.string))
+  use field_approach <- decode.field("approach", decode.string)
+  use field_notes <- decode.field("notes", decode.string)
+  decode.success(InputBriefDocumentRequirementsItemScout(
+    files: field_files,
+    context: field_context,
+    approach: field_approach,
+    notes: field_notes,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/dev`.
+pub type InputBriefDocumentRequirementsItemDev {
+  InputBriefDocumentRequirementsItemDev(
+    status: InputBriefDocumentRequirementsItemDevStatus,
+    files_changed: List(InputBriefDocumentRequirementsItemDevFilesChangedItem),
+    how: String,
+    deviation: String,
+    checklist: List(InputBriefDocumentRequirementsItemDevChecklistItem),
+    stories: List(InputBriefDocumentRequirementsItemDevStoriesItem),
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemDev` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_dev_to_json(value: InputBriefDocumentRequirementsItemDev) -> json.Json {
+  json.object([
+    #("status", input_brief_document_requirements_item_dev_status_to_json(value.status)),
+    #("files_changed", json.array(value.files_changed, input_brief_document_requirements_item_dev_files_changed_item_to_json)),
+    #("how", json.string(value.how)),
+    #("deviation", json.string(value.deviation)),
+    #("checklist", json.array(value.checklist, input_brief_document_requirements_item_dev_checklist_item_to_json)),
+    #("stories", json.array(value.stories, input_brief_document_requirements_item_dev_stories_item_to_json)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemDev` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_dev_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemDev) {
+  use field_status <- decode.field("status", input_brief_document_requirements_item_dev_status_decoder())
+  use field_files_changed <- decode.field("files_changed", decode.list(input_brief_document_requirements_item_dev_files_changed_item_decoder()))
+  use field_how <- decode.field("how", decode.string)
+  use field_deviation <- decode.field("deviation", decode.string)
+  use field_checklist <- decode.field("checklist", decode.list(input_brief_document_requirements_item_dev_checklist_item_decoder()))
+  use field_stories <- decode.field("stories", decode.list(input_brief_document_requirements_item_dev_stories_item_decoder()))
+  decode.success(InputBriefDocumentRequirementsItemDev(
+    status: field_status,
+    files_changed: field_files_changed,
+    how: field_how,
+    deviation: field_deviation,
+    checklist: field_checklist,
+    stories: field_stories,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/dev/properties/status`.
+pub type InputBriefDocumentRequirementsItemDevStatus {
+  InputBriefDocumentRequirementsItemDevStatusImplemented
+  InputBriefDocumentRequirementsItemDevStatusBlocked
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemDevStatus` as its wire string.
+pub fn input_brief_document_requirements_item_dev_status_to_json(value: InputBriefDocumentRequirementsItemDevStatus) -> json.Json {
+  case value {
+    InputBriefDocumentRequirementsItemDevStatusImplemented -> json.string("implemented")
+    InputBriefDocumentRequirementsItemDevStatusBlocked -> json.string("blocked")
+  }
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemDevStatus` from its wire string.
+pub fn input_brief_document_requirements_item_dev_status_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemDevStatus) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "implemented" -> decode.success(InputBriefDocumentRequirementsItemDevStatusImplemented)
+      "blocked" -> decode.success(InputBriefDocumentRequirementsItemDevStatusBlocked)
+      _ -> decode.failure(InputBriefDocumentRequirementsItemDevStatusImplemented, "InputBriefDocumentRequirementsItemDevStatus")
+    }
+  })
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/dev/properties/files_changed/items`.
+pub type InputBriefDocumentRequirementsItemDevFilesChangedItem {
+  InputBriefDocumentRequirementsItemDevFilesChangedItem(
+    path: String,
+    change: InputBriefDocumentRequirementsItemDevFilesChangedItemChange,
+    note: String,
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemDevFilesChangedItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_dev_files_changed_item_to_json(value: InputBriefDocumentRequirementsItemDevFilesChangedItem) -> json.Json {
   json.object([
     #("path", json.string(value.path)),
-    #("branch", json.string(value.branch)),
-    #("placement", onatopp_input_workspace_placement_to_json(value.placement)),
-    #("isolation", onatopp_input_workspace_isolation_to_json(value.isolation)),
+    #("change", input_brief_document_requirements_item_dev_files_changed_item_change_to_json(value.change)),
+    #("note", json.string(value.note)),
   ])
 }
 
-/// Decoder for `OnatoppInputWorkspace` from schema-shaped JSON.
-pub fn onatopp_input_workspace_decoder() -> decode.Decoder(OnatoppInputWorkspace) {
+/// Decoder for `InputBriefDocumentRequirementsItemDevFilesChangedItem` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_dev_files_changed_item_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemDevFilesChangedItem) {
   use field_path <- decode.field("path", decode.string)
-  use field_branch <- decode.field("branch", decode.string)
-  use field_placement <- decode.field("placement", onatopp_input_workspace_placement_decoder())
-  use field_isolation <- decode.field("isolation", onatopp_input_workspace_isolation_decoder())
-  decode.success(OnatoppInputWorkspace(
+  use field_change <- decode.field("change", input_brief_document_requirements_item_dev_files_changed_item_change_decoder())
+  use field_note <- decode.field("note", decode.string)
+  decode.success(InputBriefDocumentRequirementsItemDevFilesChangedItem(
     path: field_path,
-    branch: field_branch,
-    placement: field_placement,
-    isolation: field_isolation,
+    change: field_change,
+    note: field_note,
   ))
 }
 
-/// Generated from `schemas/onatopp_input.json` at `/properties/workspace/properties/placement`.
-pub type OnatoppInputWorkspacePlacement {
-  OnatoppInputWorkspacePlacementLocal
-  OnatoppInputWorkspacePlacementRemote
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/dev/properties/files_changed/items/properties/change`.
+pub type InputBriefDocumentRequirementsItemDevFilesChangedItemChange {
+  InputBriefDocumentRequirementsItemDevFilesChangedItemChangeCreated
+  InputBriefDocumentRequirementsItemDevFilesChangedItemChangeModified
+  InputBriefDocumentRequirementsItemDevFilesChangedItemChangeDeleted
 }
 
-/// Encodes `OnatoppInputWorkspacePlacement` as its wire string.
-pub fn onatopp_input_workspace_placement_to_json(value: OnatoppInputWorkspacePlacement) -> json.Json {
+/// Encodes `InputBriefDocumentRequirementsItemDevFilesChangedItemChange` as its wire string.
+pub fn input_brief_document_requirements_item_dev_files_changed_item_change_to_json(value: InputBriefDocumentRequirementsItemDevFilesChangedItemChange) -> json.Json {
   case value {
-    OnatoppInputWorkspacePlacementLocal -> json.string("local")
-    OnatoppInputWorkspacePlacementRemote -> json.string("remote")
+    InputBriefDocumentRequirementsItemDevFilesChangedItemChangeCreated -> json.string("created")
+    InputBriefDocumentRequirementsItemDevFilesChangedItemChangeModified -> json.string("modified")
+    InputBriefDocumentRequirementsItemDevFilesChangedItemChangeDeleted -> json.string("deleted")
   }
 }
 
-/// Decoder for `OnatoppInputWorkspacePlacement` from its wire string.
-pub fn onatopp_input_workspace_placement_decoder() -> decode.Decoder(OnatoppInputWorkspacePlacement) {
+/// Decoder for `InputBriefDocumentRequirementsItemDevFilesChangedItemChange` from its wire string.
+pub fn input_brief_document_requirements_item_dev_files_changed_item_change_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemDevFilesChangedItemChange) {
   decode.then(decode.string, fn(raw) {
     case raw {
-      "local" -> decode.success(OnatoppInputWorkspacePlacementLocal)
-      "remote" -> decode.success(OnatoppInputWorkspacePlacementRemote)
-      _ -> decode.failure(OnatoppInputWorkspacePlacementLocal, "OnatoppInputWorkspacePlacement")
+      "created" -> decode.success(InputBriefDocumentRequirementsItemDevFilesChangedItemChangeCreated)
+      "modified" -> decode.success(InputBriefDocumentRequirementsItemDevFilesChangedItemChangeModified)
+      "deleted" -> decode.success(InputBriefDocumentRequirementsItemDevFilesChangedItemChangeDeleted)
+      _ -> decode.failure(InputBriefDocumentRequirementsItemDevFilesChangedItemChangeCreated, "InputBriefDocumentRequirementsItemDevFilesChangedItemChange")
     }
   })
 }
 
-/// Generated from `schemas/onatopp_input.json` at `/properties/workspace/properties/isolation`.
-pub type OnatoppInputWorkspaceIsolation {
-  OnatoppInputWorkspaceIsolationWorktree
-  OnatoppInputWorkspaceIsolationCopy
-  OnatoppInputWorkspaceIsolationOverlay
-  OnatoppInputWorkspaceIsolationVm
-}
-
-/// Encodes `OnatoppInputWorkspaceIsolation` as its wire string.
-pub fn onatopp_input_workspace_isolation_to_json(value: OnatoppInputWorkspaceIsolation) -> json.Json {
-  case value {
-    OnatoppInputWorkspaceIsolationWorktree -> json.string("worktree")
-    OnatoppInputWorkspaceIsolationCopy -> json.string("copy")
-    OnatoppInputWorkspaceIsolationOverlay -> json.string("overlay")
-    OnatoppInputWorkspaceIsolationVm -> json.string("vm")
-  }
-}
-
-/// Decoder for `OnatoppInputWorkspaceIsolation` from its wire string.
-pub fn onatopp_input_workspace_isolation_decoder() -> decode.Decoder(OnatoppInputWorkspaceIsolation) {
-  decode.then(decode.string, fn(raw) {
-    case raw {
-      "worktree" -> decode.success(OnatoppInputWorkspaceIsolationWorktree)
-      "copy" -> decode.success(OnatoppInputWorkspaceIsolationCopy)
-      "overlay" -> decode.success(OnatoppInputWorkspaceIsolationOverlay)
-      "vm" -> decode.success(OnatoppInputWorkspaceIsolationVm)
-      _ -> decode.failure(OnatoppInputWorkspaceIsolationWorktree, "OnatoppInputWorkspaceIsolation")
-    }
-  })
-}
-
-/// Generated from `schemas/onatopp_output.json`.
-pub type OnatoppOutput {
-  OnatoppOutput(
-    dev_result: OnatoppOutputDevResult,
-    build_warm: OnatoppOutputBuildWarm,
-    verify_rounds: Int,
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/dev/properties/checklist/items`.
+pub type InputBriefDocumentRequirementsItemDevChecklistItem {
+  InputBriefDocumentRequirementsItemDevChecklistItem(
+    id: String,
+    done: Bool,
+    note: String,
   )
 }
 
-/// Encodes `OnatoppOutput` as schema-shaped JSON; optional fields are
+/// Encodes `InputBriefDocumentRequirementsItemDevChecklistItem` as schema-shaped JSON; optional fields are
 /// omitted when `None`.
-pub fn onatopp_output_to_json(value: OnatoppOutput) -> json.Json {
+pub fn input_brief_document_requirements_item_dev_checklist_item_to_json(value: InputBriefDocumentRequirementsItemDevChecklistItem) -> json.Json {
   json.object([
-    #("dev_result", onatopp_output_dev_result_to_json(value.dev_result)),
-    #("build_warm", onatopp_output_build_warm_to_json(value.build_warm)),
-    #("verify_rounds", json.int(value.verify_rounds)),
+    #("id", json.string(value.id)),
+    #("done", json.bool(value.done)),
+    #("note", json.string(value.note)),
   ])
 }
 
-/// Decoder for `OnatoppOutput` from schema-shaped JSON.
-pub fn onatopp_output_decoder() -> decode.Decoder(OnatoppOutput) {
-  use field_dev_result <- decode.field("dev_result", onatopp_output_dev_result_decoder())
-  use field_build_warm <- decode.field("build_warm", onatopp_output_build_warm_decoder())
-  use field_verify_rounds <- decode.field("verify_rounds", decode.int)
-  decode.success(OnatoppOutput(
-    dev_result: field_dev_result,
-    build_warm: field_build_warm,
-    verify_rounds: field_verify_rounds,
+/// Decoder for `InputBriefDocumentRequirementsItemDevChecklistItem` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_dev_checklist_item_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemDevChecklistItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_done <- decode.field("done", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(InputBriefDocumentRequirementsItemDevChecklistItem(
+    id: field_id,
+    done: field_done,
+    note: field_note,
   ))
 }
 
-/// Generated from `schemas/onatopp_output.json` at `/properties/dev_result`.
-pub type OnatoppOutputDevResult {
-  OnatoppOutputDevResult(
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/dev/properties/stories/items`.
+pub type InputBriefDocumentRequirementsItemDevStoriesItem {
+  InputBriefDocumentRequirementsItemDevStoriesItem(
+    id: String,
+    satisfied: Bool,
+    note: String,
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemDevStoriesItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_dev_stories_item_to_json(value: InputBriefDocumentRequirementsItemDevStoriesItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("satisfied", json.bool(value.satisfied)),
+    #("note", json.string(value.note)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemDevStoriesItem` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_dev_stories_item_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemDevStoriesItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_satisfied <- decode.field("satisfied", decode.bool)
+  use field_note <- decode.field("note", decode.string)
+  decode.success(InputBriefDocumentRequirementsItemDevStoriesItem(
+    id: field_id,
+    satisfied: field_satisfied,
+    note: field_note,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/review`.
+pub type InputBriefDocumentRequirementsItemReview {
+  InputBriefDocumentRequirementsItemReview(
+    alignment: InputBriefDocumentRequirementsItemReviewAlignment,
+    acceptance: List(InputBriefDocumentRequirementsItemReviewAcceptanceItem),
+    checklist: List(String),
+    stories: List(String),
+    issues: List(String),
+    fixes: List(String),
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemReview` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_review_to_json(value: InputBriefDocumentRequirementsItemReview) -> json.Json {
+  json.object([
+    #("alignment", input_brief_document_requirements_item_review_alignment_to_json(value.alignment)),
+    #("acceptance", json.array(value.acceptance, input_brief_document_requirements_item_review_acceptance_item_to_json)),
+    #("checklist", json.array(value.checklist, json.string)),
+    #("stories", json.array(value.stories, json.string)),
+    #("issues", json.array(value.issues, json.string)),
+    #("fixes", json.array(value.fixes, json.string)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemReview` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_review_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemReview) {
+  use field_alignment <- decode.field("alignment", input_brief_document_requirements_item_review_alignment_decoder())
+  use field_acceptance <- decode.field("acceptance", decode.list(input_brief_document_requirements_item_review_acceptance_item_decoder()))
+  use field_checklist <- decode.field("checklist", decode.list(decode.string))
+  use field_stories <- decode.field("stories", decode.list(decode.string))
+  use field_issues <- decode.field("issues", decode.list(decode.string))
+  use field_fixes <- decode.field("fixes", decode.list(decode.string))
+  decode.success(InputBriefDocumentRequirementsItemReview(
+    alignment: field_alignment,
+    acceptance: field_acceptance,
+    checklist: field_checklist,
+    stories: field_stories,
+    issues: field_issues,
+    fixes: field_fixes,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/review/properties/alignment`.
+pub type InputBriefDocumentRequirementsItemReviewAlignment {
+  InputBriefDocumentRequirementsItemReviewAlignmentAligned
+  InputBriefDocumentRequirementsItemReviewAlignmentDrifted
+  InputBriefDocumentRequirementsItemReviewAlignmentFixed
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemReviewAlignment` as its wire string.
+pub fn input_brief_document_requirements_item_review_alignment_to_json(value: InputBriefDocumentRequirementsItemReviewAlignment) -> json.Json {
+  case value {
+    InputBriefDocumentRequirementsItemReviewAlignmentAligned -> json.string("aligned")
+    InputBriefDocumentRequirementsItemReviewAlignmentDrifted -> json.string("drifted")
+    InputBriefDocumentRequirementsItemReviewAlignmentFixed -> json.string("fixed")
+  }
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemReviewAlignment` from its wire string.
+pub fn input_brief_document_requirements_item_review_alignment_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemReviewAlignment) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "aligned" -> decode.success(InputBriefDocumentRequirementsItemReviewAlignmentAligned)
+      "drifted" -> decode.success(InputBriefDocumentRequirementsItemReviewAlignmentDrifted)
+      "fixed" -> decode.success(InputBriefDocumentRequirementsItemReviewAlignmentFixed)
+      _ -> decode.failure(InputBriefDocumentRequirementsItemReviewAlignmentAligned, "InputBriefDocumentRequirementsItemReviewAlignment")
+    }
+  })
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/requirements/items/properties/review/properties/acceptance/items`.
+pub type InputBriefDocumentRequirementsItemReviewAcceptanceItem {
+  InputBriefDocumentRequirementsItemReviewAcceptanceItem(
+    criterion: String,
+    met: Bool,
+    evidence: String,
+  )
+}
+
+/// Encodes `InputBriefDocumentRequirementsItemReviewAcceptanceItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_requirements_item_review_acceptance_item_to_json(value: InputBriefDocumentRequirementsItemReviewAcceptanceItem) -> json.Json {
+  json.object([
+    #("criterion", json.string(value.criterion)),
+    #("met", json.bool(value.met)),
+    #("evidence", json.string(value.evidence)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentRequirementsItemReviewAcceptanceItem` from schema-shaped JSON.
+pub fn input_brief_document_requirements_item_review_acceptance_item_decoder() -> decode.Decoder(InputBriefDocumentRequirementsItemReviewAcceptanceItem) {
+  use field_criterion <- decode.field("criterion", decode.string)
+  use field_met <- decode.field("met", decode.bool)
+  use field_evidence <- decode.field("evidence", decode.string)
+  decode.success(InputBriefDocumentRequirementsItemReviewAcceptanceItem(
+    criterion: field_criterion,
+    met: field_met,
+    evidence: field_evidence,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/execution`.
+pub type InputBriefDocumentExecution {
+  InputBriefDocumentExecution(
+    status: InputBriefDocumentExecutionStatus,
+    workflow_id: String,
+    branch: String,
     session_id: String,
-    files_touched: List(String),
-    summary: String,
+    gate: InputBriefDocumentExecutionGate,
+    attestation: InputBriefDocumentExecutionAttestation,
+    review_verdict: InputBriefDocumentExecutionReviewVerdict,
+    landed_commit: String,
+    merged_into: String,
+    completed_at: String,
   )
 }
 
-/// Encodes `OnatoppOutputDevResult` as schema-shaped JSON; optional fields are
+/// Encodes `InputBriefDocumentExecution` as schema-shaped JSON; optional fields are
 /// omitted when `None`.
-pub fn onatopp_output_dev_result_to_json(value: OnatoppOutputDevResult) -> json.Json {
+pub fn input_brief_document_execution_to_json(value: InputBriefDocumentExecution) -> json.Json {
   json.object([
+    #("status", input_brief_document_execution_status_to_json(value.status)),
+    #("workflow_id", json.string(value.workflow_id)),
+    #("branch", json.string(value.branch)),
     #("session_id", json.string(value.session_id)),
-    #("files_touched", json.array(value.files_touched, json.string)),
-    #("summary", json.string(value.summary)),
+    #("gate", input_brief_document_execution_gate_to_json(value.gate)),
+    #("attestation", input_brief_document_execution_attestation_to_json(value.attestation)),
+    #("review_verdict", input_brief_document_execution_review_verdict_to_json(value.review_verdict)),
+    #("landed_commit", json.string(value.landed_commit)),
+    #("merged_into", json.string(value.merged_into)),
+    #("completed_at", json.string(value.completed_at)),
   ])
 }
 
-/// Decoder for `OnatoppOutputDevResult` from schema-shaped JSON.
-pub fn onatopp_output_dev_result_decoder() -> decode.Decoder(OnatoppOutputDevResult) {
+/// Decoder for `InputBriefDocumentExecution` from schema-shaped JSON.
+pub fn input_brief_document_execution_decoder() -> decode.Decoder(InputBriefDocumentExecution) {
+  use field_status <- decode.field("status", input_brief_document_execution_status_decoder())
+  use field_workflow_id <- decode.field("workflow_id", decode.string)
+  use field_branch <- decode.field("branch", decode.string)
   use field_session_id <- decode.field("session_id", decode.string)
-  use field_files_touched <- decode.field("files_touched", decode.list(decode.string))
-  use field_summary <- decode.field("summary", decode.string)
-  decode.success(OnatoppOutputDevResult(
+  use field_gate <- decode.field("gate", input_brief_document_execution_gate_decoder())
+  use field_attestation <- decode.field("attestation", input_brief_document_execution_attestation_decoder())
+  use field_review_verdict <- decode.field("review_verdict", input_brief_document_execution_review_verdict_decoder())
+  use field_landed_commit <- decode.field("landed_commit", decode.string)
+  use field_merged_into <- decode.field("merged_into", decode.string)
+  use field_completed_at <- decode.field("completed_at", decode.string)
+  decode.success(InputBriefDocumentExecution(
+    status: field_status,
+    workflow_id: field_workflow_id,
+    branch: field_branch,
     session_id: field_session_id,
-    files_touched: field_files_touched,
-    summary: field_summary,
+    gate: field_gate,
+    attestation: field_attestation,
+    review_verdict: field_review_verdict,
+    landed_commit: field_landed_commit,
+    merged_into: field_merged_into,
+    completed_at: field_completed_at,
   ))
 }
 
-/// Generated from `schemas/onatopp_output.json` at `/properties/build_warm`.
-pub type OnatoppOutputBuildWarm {
-  OnatoppOutputBuildWarm(
-    ok: Bool,
-    duration_ms: Int,
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/execution/properties/status`.
+pub type InputBriefDocumentExecutionStatus {
+  InputBriefDocumentExecutionStatusInFlight
+  InputBriefDocumentExecutionStatusLanded
+  InputBriefDocumentExecutionStatusFailed
+}
+
+/// Encodes `InputBriefDocumentExecutionStatus` as its wire string.
+pub fn input_brief_document_execution_status_to_json(value: InputBriefDocumentExecutionStatus) -> json.Json {
+  case value {
+    InputBriefDocumentExecutionStatusInFlight -> json.string("in_flight")
+    InputBriefDocumentExecutionStatusLanded -> json.string("landed")
+    InputBriefDocumentExecutionStatusFailed -> json.string("failed")
+  }
+}
+
+/// Decoder for `InputBriefDocumentExecutionStatus` from its wire string.
+pub fn input_brief_document_execution_status_decoder() -> decode.Decoder(InputBriefDocumentExecutionStatus) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "in_flight" -> decode.success(InputBriefDocumentExecutionStatusInFlight)
+      "landed" -> decode.success(InputBriefDocumentExecutionStatusLanded)
+      "failed" -> decode.success(InputBriefDocumentExecutionStatusFailed)
+      _ -> decode.failure(InputBriefDocumentExecutionStatusInFlight, "InputBriefDocumentExecutionStatus")
+    }
+  })
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/execution/properties/gate`.
+pub type InputBriefDocumentExecutionGate {
+  InputBriefDocumentExecutionGate(
+    fmt: Bool,
+    clippy: Bool,
+    tests: Bool,
+    fix_rounds: Int,
   )
 }
 
-/// Encodes `OnatoppOutputBuildWarm` as schema-shaped JSON; optional fields are
+/// Encodes `InputBriefDocumentExecutionGate` as schema-shaped JSON; optional fields are
 /// omitted when `None`.
-pub fn onatopp_output_build_warm_to_json(value: OnatoppOutputBuildWarm) -> json.Json {
+pub fn input_brief_document_execution_gate_to_json(value: InputBriefDocumentExecutionGate) -> json.Json {
   json.object([
-    #("ok", json.bool(value.ok)),
-    #("duration_ms", json.int(value.duration_ms)),
+    #("fmt", json.bool(value.fmt)),
+    #("clippy", json.bool(value.clippy)),
+    #("tests", json.bool(value.tests)),
+    #("fix_rounds", json.int(value.fix_rounds)),
   ])
 }
 
-/// Decoder for `OnatoppOutputBuildWarm` from schema-shaped JSON.
-pub fn onatopp_output_build_warm_decoder() -> decode.Decoder(OnatoppOutputBuildWarm) {
-  use field_ok <- decode.field("ok", decode.bool)
-  use field_duration_ms <- decode.field("duration_ms", decode.int)
-  decode.success(OnatoppOutputBuildWarm(
-    ok: field_ok,
-    duration_ms: field_duration_ms,
+/// Decoder for `InputBriefDocumentExecutionGate` from schema-shaped JSON.
+pub fn input_brief_document_execution_gate_decoder() -> decode.Decoder(InputBriefDocumentExecutionGate) {
+  use field_fmt <- decode.field("fmt", decode.bool)
+  use field_clippy <- decode.field("clippy", decode.bool)
+  use field_tests <- decode.field("tests", decode.bool)
+  use field_fix_rounds <- decode.field("fix_rounds", decode.int)
+  decode.success(InputBriefDocumentExecutionGate(
+    fmt: field_fmt,
+    clippy: field_clippy,
+    tests: field_tests,
+    fix_rounds: field_fix_rounds,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/execution/properties/attestation`.
+pub type InputBriefDocumentExecutionAttestation {
+  InputBriefDocumentExecutionAttestation(
+    no_panics: Bool,
+    no_unsafe: Bool,
+    boundaries_respected: Bool,
+    tests_pass: Bool,
+  )
+}
+
+/// Encodes `InputBriefDocumentExecutionAttestation` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_brief_document_execution_attestation_to_json(value: InputBriefDocumentExecutionAttestation) -> json.Json {
+  json.object([
+    #("no_panics", json.bool(value.no_panics)),
+    #("no_unsafe", json.bool(value.no_unsafe)),
+    #("boundaries_respected", json.bool(value.boundaries_respected)),
+    #("tests_pass", json.bool(value.tests_pass)),
+  ])
+}
+
+/// Decoder for `InputBriefDocumentExecutionAttestation` from schema-shaped JSON.
+pub fn input_brief_document_execution_attestation_decoder() -> decode.Decoder(InputBriefDocumentExecutionAttestation) {
+  use field_no_panics <- decode.field("no_panics", decode.bool)
+  use field_no_unsafe <- decode.field("no_unsafe", decode.bool)
+  use field_boundaries_respected <- decode.field("boundaries_respected", decode.bool)
+  use field_tests_pass <- decode.field("tests_pass", decode.bool)
+  decode.success(InputBriefDocumentExecutionAttestation(
+    no_panics: field_no_panics,
+    no_unsafe: field_no_unsafe,
+    boundaries_respected: field_boundaries_respected,
+    tests_pass: field_tests_pass,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/brief_document/properties/execution/properties/review_verdict`.
+pub type InputBriefDocumentExecutionReviewVerdict {
+  InputBriefDocumentExecutionReviewVerdictApproved
+  InputBriefDocumentExecutionReviewVerdictChangesRequested
+  InputBriefDocumentExecutionReviewVerdictRejected
+}
+
+/// Encodes `InputBriefDocumentExecutionReviewVerdict` as its wire string.
+pub fn input_brief_document_execution_review_verdict_to_json(value: InputBriefDocumentExecutionReviewVerdict) -> json.Json {
+  case value {
+    InputBriefDocumentExecutionReviewVerdictApproved -> json.string("approved")
+    InputBriefDocumentExecutionReviewVerdictChangesRequested -> json.string("changes_requested")
+    InputBriefDocumentExecutionReviewVerdictRejected -> json.string("rejected")
+  }
+}
+
+/// Decoder for `InputBriefDocumentExecutionReviewVerdict` from its wire string.
+pub fn input_brief_document_execution_review_verdict_decoder() -> decode.Decoder(InputBriefDocumentExecutionReviewVerdict) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "approved" -> decode.success(InputBriefDocumentExecutionReviewVerdictApproved)
+      "changes_requested" -> decode.success(InputBriefDocumentExecutionReviewVerdictChangesRequested)
+      "rejected" -> decode.success(InputBriefDocumentExecutionReviewVerdictRejected)
+      _ -> decode.failure(InputBriefDocumentExecutionReviewVerdictApproved, "InputBriefDocumentExecutionReviewVerdict")
+    }
+  })
+}
+
+/// Generated from `schemas/input.json` at `/properties/resolved_context`.
+pub type InputResolvedContext {
+  InputResolvedContext(
+    adrs: List(InputResolvedContextAdrsItem),
+    checklist: List(InputResolvedContextChecklistItem),
+    stories: List(InputResolvedContextStoriesItem),
+    constraints: List(InputResolvedContextConstraintsItem),
+    intention: String,
+    design_path: String,
+    provenance: InputResolvedContextProvenance,
+  )
+}
+
+/// Encodes `InputResolvedContext` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_resolved_context_to_json(value: InputResolvedContext) -> json.Json {
+  json.object([
+    #("adrs", json.array(value.adrs, input_resolved_context_adrs_item_to_json)),
+    #("checklist", json.array(value.checklist, input_resolved_context_checklist_item_to_json)),
+    #("stories", json.array(value.stories, input_resolved_context_stories_item_to_json)),
+    #("constraints", json.array(value.constraints, input_resolved_context_constraints_item_to_json)),
+    #("intention", json.string(value.intention)),
+    #("design_path", json.string(value.design_path)),
+    #("provenance", input_resolved_context_provenance_to_json(value.provenance)),
+  ])
+}
+
+/// Decoder for `InputResolvedContext` from schema-shaped JSON.
+pub fn input_resolved_context_decoder() -> decode.Decoder(InputResolvedContext) {
+  use field_adrs <- decode.field("adrs", decode.list(input_resolved_context_adrs_item_decoder()))
+  use field_checklist <- decode.field("checklist", decode.list(input_resolved_context_checklist_item_decoder()))
+  use field_stories <- decode.field("stories", decode.list(input_resolved_context_stories_item_decoder()))
+  use field_constraints <- decode.field("constraints", decode.list(input_resolved_context_constraints_item_decoder()))
+  use field_intention <- decode.field("intention", decode.string)
+  use field_design_path <- decode.field("design_path", decode.string)
+  use field_provenance <- decode.field("provenance", input_resolved_context_provenance_decoder())
+  decode.success(InputResolvedContext(
+    adrs: field_adrs,
+    checklist: field_checklist,
+    stories: field_stories,
+    constraints: field_constraints,
+    intention: field_intention,
+    design_path: field_design_path,
+    provenance: field_provenance,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/resolved_context/properties/adrs/items`.
+pub type InputResolvedContextAdrsItem {
+  InputResolvedContextAdrsItem(
+    id: String,
+    title: String,
+    decision: String,
+    quote: String,
+    decided_by: String,
+  )
+}
+
+/// Encodes `InputResolvedContextAdrsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_resolved_context_adrs_item_to_json(value: InputResolvedContextAdrsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("title", json.string(value.title)),
+    #("decision", json.string(value.decision)),
+    #("quote", json.string(value.quote)),
+    #("decided_by", json.string(value.decided_by)),
+  ])
+}
+
+/// Decoder for `InputResolvedContextAdrsItem` from schema-shaped JSON.
+pub fn input_resolved_context_adrs_item_decoder() -> decode.Decoder(InputResolvedContextAdrsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_title <- decode.field("title", decode.string)
+  use field_decision <- decode.field("decision", decode.string)
+  use field_quote <- decode.field("quote", decode.string)
+  use field_decided_by <- decode.field("decided_by", decode.string)
+  decode.success(InputResolvedContextAdrsItem(
+    id: field_id,
+    title: field_title,
+    decision: field_decision,
+    quote: field_quote,
+    decided_by: field_decided_by,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/resolved_context/properties/checklist/items`.
+pub type InputResolvedContextChecklistItem {
+  InputResolvedContextChecklistItem(
+    id: String,
+    text: String,
+  )
+}
+
+/// Encodes `InputResolvedContextChecklistItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_resolved_context_checklist_item_to_json(value: InputResolvedContextChecklistItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("text", json.string(value.text)),
+  ])
+}
+
+/// Decoder for `InputResolvedContextChecklistItem` from schema-shaped JSON.
+pub fn input_resolved_context_checklist_item_decoder() -> decode.Decoder(InputResolvedContextChecklistItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_text <- decode.field("text", decode.string)
+  decode.success(InputResolvedContextChecklistItem(
+    id: field_id,
+    text: field_text,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/resolved_context/properties/stories/items`.
+pub type InputResolvedContextStoriesItem {
+  InputResolvedContextStoriesItem(
+    id: String,
+    text: String,
+  )
+}
+
+/// Encodes `InputResolvedContextStoriesItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_resolved_context_stories_item_to_json(value: InputResolvedContextStoriesItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("text", json.string(value.text)),
+  ])
+}
+
+/// Decoder for `InputResolvedContextStoriesItem` from schema-shaped JSON.
+pub fn input_resolved_context_stories_item_decoder() -> decode.Decoder(InputResolvedContextStoriesItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_text <- decode.field("text", decode.string)
+  decode.success(InputResolvedContextStoriesItem(
+    id: field_id,
+    text: field_text,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/resolved_context/properties/constraints/items`.
+pub type InputResolvedContextConstraintsItem {
+  InputResolvedContextConstraintsItem(
+    id: String,
+    text: String,
+  )
+}
+
+/// Encodes `InputResolvedContextConstraintsItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_resolved_context_constraints_item_to_json(value: InputResolvedContextConstraintsItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("text", json.string(value.text)),
+  ])
+}
+
+/// Decoder for `InputResolvedContextConstraintsItem` from schema-shaped JSON.
+pub fn input_resolved_context_constraints_item_decoder() -> decode.Decoder(InputResolvedContextConstraintsItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_text <- decode.field("text", decode.string)
+  decode.success(InputResolvedContextConstraintsItem(
+    id: field_id,
+    text: field_text,
+  ))
+}
+
+/// Generated from `schemas/input.json` at `/properties/resolved_context/properties/provenance`.
+pub type InputResolvedContextProvenance {
+  InputResolvedContextProvenance(
+    requested_by: String,
+    quote: String,
+  )
+}
+
+/// Encodes `InputResolvedContextProvenance` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn input_resolved_context_provenance_to_json(value: InputResolvedContextProvenance) -> json.Json {
+  json.object([
+    #("requested_by", json.string(value.requested_by)),
+    #("quote", json.string(value.quote)),
+  ])
+}
+
+/// Decoder for `InputResolvedContextProvenance` from schema-shaped JSON.
+pub fn input_resolved_context_provenance_decoder() -> decode.Decoder(InputResolvedContextProvenance) {
+  use field_requested_by <- decode.field("requested_by", decode.string)
+  use field_quote <- decode.field("quote", decode.string)
+  decode.success(InputResolvedContextProvenance(
+    requested_by: field_requested_by,
+    quote: field_quote,
   ))
 }
 

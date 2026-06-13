@@ -2,15 +2,15 @@
 # Reference: docs/packaging.md.
 #
 # Three entries — the stacked-dev family (open question Q6): the `stacked_dev`
-# parent plus the `onatopp_dev` and `gate` children, each independently
+# parent plus the `brief_dev` and `gate` children, each independently
 # dispatchable. A spawned child's workflow type is resolved by entry module
 # name against the engine's loaded packages, so all three archives must be
 # deployed together for full parent-child runs. All archives share the same
 # beam set and content hash; only the entry module differs.
 #
 # Timeouts size the longest legitimate run: the parent waits on human-scale
-# review verdicts (seven days), the dev child iterates agent rounds for up to
-# a day, and the gate is one full check sweep (six hours).
+# review verdicts (seven days), the brief-dev child iterates agent rounds for
+# up to a day, and the gate is one full check sweep (six hours).
 
 [[workflow]]
 entry_module = "stacked_dev"
@@ -18,17 +18,17 @@ entry_function = "run"
 timeout_seconds = 604800
 input_schema = "schemas/input.json"
 output_schema = "schemas/output.json"
-activities = ["provision_workspace", "dev_resume", "request_review", "land"]
+activities = ["provision_workspace", "dev_resume", "request_review", "enrich_brief", "land"]
 output = "stacked-dev.aion"
 
 [[workflow]]
-entry_module = "onatopp_dev"
+entry_module = "brief_dev"
 entry_function = "run"
 timeout_seconds = 86400
-input_schema = "schemas/onatopp_input.json"
-output_schema = "schemas/onatopp_output.json"
-activities = ["warm_build", "dev", "scoped_checks", "dev_resume"]
-output = "onatopp-dev.aion"
+input_schema = "schemas/brief_dev_input.json"
+output_schema = "schemas/brief_dev_output.json"
+activities = ["scout", "warm_build", "dev", "scoped_checks", "dev_resume", "dev_review"]
+output = "brief-dev.aion"
 
 [[workflow]]
 entry_module = "gate"

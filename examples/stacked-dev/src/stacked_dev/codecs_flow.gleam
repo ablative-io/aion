@@ -14,11 +14,12 @@ import stacked_dev/codecs_core
 import stacked_dev/types.{
   type EnrichInput, type Enrichment, type GateError, type GateInput,
   type GateResult, type GateScope, type GateVerdict, type LandInput, type Landed,
-  type ReviewAck, type ReviewNote, type ReviewRequest, type ReviewVerdict,
-  AffectedClosure, Approve, DevEnrichment, EnrichInput, ExecutionEnrichment,
-  GateFail, GateInput, GatePass, GateResult, GateStageFailed, LandInput, Landed,
-  Reject, RequestChanges, ReviewAck, ReviewEnrichment, ReviewNote, ReviewRequest,
-  ReviewVerdict, ScoutEnrichment, WorkspaceWide,
+  type ReviewAck, type ReviewInput, type ReviewNote, type ReviewRequest,
+  type ReviewVerdict, AffectedClosure, Approve, DevEnrichment, EnrichInput,
+  ExecutionEnrichment, GateFail, GateInput, GatePass, GateResult,
+  GateStageFailed, LandInput, Landed, Reject, RequestChanges, ReviewAck,
+  ReviewEnrichment, ReviewInput, ReviewNote, ReviewRequest, ReviewVerdict,
+  ScoutEnrichment, WorkspaceWide,
 }
 
 /// Codec for the `gate` child input.
@@ -162,6 +163,28 @@ pub fn review_request_codec() -> codec.Codec(ReviewRequest) {
         dev_result: dev_result,
         gate_result: gate_result,
       ))
+    },
+  )
+}
+
+/// Codec for the `dev_review` activity input: the workspace and the projected
+/// review prompt (BD-003). Distinct from `review_request_codec`, which is the
+/// outer arc's human review-request payload.
+pub fn review_input_codec() -> codec.Codec(ReviewInput) {
+  codec.json_codec(
+    fn(input: ReviewInput) {
+      json.object([
+        #("workspace", codecs_core.workspace_to_json(input.workspace)),
+        #("prompt", json.string(input.prompt)),
+      ])
+    },
+    {
+      use workspace <- decode.field(
+        "workspace",
+        codecs_core.workspace_decoder(),
+      )
+      use prompt <- decode.field("prompt", decode.string)
+      decode.success(ReviewInput(workspace: workspace, prompt: prompt))
     },
   )
 }

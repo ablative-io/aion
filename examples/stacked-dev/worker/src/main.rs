@@ -1,14 +1,14 @@
 //! Standalone activity worker for the stacked-dev workflow family.
 //!
-//! Serves all eight activity names the three `workflow.toml` entries declare
+//! Serves all eleven activity names the three `workflow.toml` entries declare
 //! (`provision_workspace`, `warm_build`, `dev`, `scoped_checks`,
-//! `dev_resume`, `full_checks`, `request_review`, `land` — `await_verdict`
-//! is a signal, not an activity) by shelling to the real CLIs that own each
-//! step. The handler bodies live in [`handlers`] and mirror the example's
-//! local implementations (`../src/stacked_dev/locals.gleam`) exactly;
-//! `warm_build` and `dev` share the tagged `StartupTask`/`StartupResult`
-//! envelope because both flow through one homogeneous `workflow.all`
-//! fan-out.
+//! `dev_resume`, `full_checks`, `request_review`, `land`, `scout`,
+//! `dev_review`, `enrich_brief` — `await_verdict` is a signal, not an
+//! activity) by shelling to the real CLIs that own each step. The handler
+//! bodies live in [`handlers`] and mirror the example's local implementations
+//! (`../src/stacked_dev/locals.gleam`) exactly; `warm_build` and `dev` share
+//! the tagged `StartupTask`/`StartupResult` envelope because both flow through
+//! one homogeneous `workflow.all` fan-out.
 //!
 //! Usage: `stacked-dev-worker --endpoint http://127.0.0.1:50051`
 //! The endpoint is the aion server's `[server] grpc_address` and is the only
@@ -72,7 +72,7 @@ where
 }
 
 /// Every activity name this worker serves, in registration order.
-const SERVED_ACTIVITIES: [&str; 8] = [
+const SERVED_ACTIVITIES: [&str; 11] = [
     "provision_workspace",
     "warm_build",
     "dev",
@@ -81,6 +81,9 @@ const SERVED_ACTIVITIES: [&str; 8] = [
     "full_checks",
     "request_review",
     "land",
+    "scout",
+    "dev_review",
+    "enrich_brief",
 ];
 
 #[tokio::main]
@@ -146,7 +149,10 @@ async fn main() -> anyhow::Result<()> {
             "request_review",
             blocking(shell.clone(), handlers::request_review),
         )?
-        .register_activity("land", blocking(shell, handlers::land))?
+        .register_activity("land", blocking(shell.clone(), handlers::land))?
+        .register_activity("scout", blocking(shell.clone(), handlers::scout))?
+        .register_activity("dev_review", blocking(shell.clone(), handlers::dev_review))?
+        .register_activity("enrich_brief", blocking(shell, handlers::enrich_brief))?
         .build()?
         .run()
         .await?;

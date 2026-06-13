@@ -18,8 +18,11 @@ use aion_worker::{ActivityFailure, Classification};
 use stacked_dev_worker::handlers;
 use stacked_dev_worker::shell::Shell;
 use stacked_dev_worker::types::{
-    CheckVerdict, DevInput, GateInput, GateScope, GateVerdict, Isolation, LandInput, Placement,
-    ProvisionInput, ResumeInput, ReviewRequest, ScopedInput, StartupResult, StartupTask, Workspace,
+    Alignment, Attestation, BriefDocument, BriefRequirement, CheckVerdict, Claim, DevInput,
+    EnrichInput, Enrichment, ExecutionBlock, ExecutionStatus, ExecutionVerdict, GateBlock,
+    GateInput, GateScope, GateVerdict, Isolation, LandInput, Placement, ProvisionInput,
+    RequirementFiles, ResumeInput, ReviewInput, ReviewRequest, ScopedInput, ScoutInput,
+    StartupResult, StartupTask, Workspace,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -268,22 +271,18 @@ fn missing_cli_is_a_loud_terminal_failure() -> TestResult {
 fn dev_input(workspace_path: String) -> DevInput {
     DevInput {
         workspace: workspace(workspace_path),
-        brief: "Implement the widget".to_owned(),
-        design: "docs/design.md".to_owned(),
-        checklist: "docs/checklist.md".to_owned(),
-        stories: vec!["story-1".to_owned()],
+        prompt: "Implement the brief...".to_owned(),
     }
 }
 
+/// A captured-real dev-report envelope body (the bare dev-report shape the
+/// fake-CLI shims emit). R1 implemented, touching one file.
+const DEV_REPORT_BODY: &str = r#"{"summary":"implemented the brief","commit_message":"feat: R1","enrichments":[{"id":"R1","status":"implemented","files_changed":[{"path":"crates/aion-core/src/lib.rs","change":"modified","note":"added"}],"how":"added it","deviation":"","checklist":[],"stories":[]}],"attestation":{"no_panics":true,"no_unsafe":true,"boundaries_respected":true,"tests_pass":true}}"#;
+
 #[test]
-fn dev_parses_the_canned_dev_result_and_overrides_the_session_id() -> TestResult {
+fn dev_parses_the_canned_dev_report() -> TestResult {
     let shims = Shims::new()?;
-    // The shim reports a DIFFERENT session id; the handler must override it
-    // with the deterministic branch-derived id it passed via --session-id.
-    shims.write(
-        "norn",
-        r#"printf '%s' '{"session_id":"whatever-norn-minted","files_touched":["crates/aion-core/src/lib.rs"],"summary":"implemented the brief"}'"#,
-    )?;
+    shims.write("norn", &format!("printf '%s' '{DEV_REPORT_BODY}'"))?;
 
     let result = handlers::startup_task(
         &shims.shell(),
@@ -293,10 +292,11 @@ fn dev_parses_the_canned_dev_result_and_overrides_the_session_id() -> TestResult
     )
     .map_err(|failure| failure.message().to_owned())?;
     match result {
-        StartupResult::Developed { dev_result } => {
-            assert_eq!(dev_result.session_id, "stacked-dev-brief-7");
-            assert_eq!(dev_result.files_touched, ["crates/aion-core/src/lib.rs"]);
-            assert_eq!(dev_result.summary, "implemented the brief");
+        StartupResult::Developed { dev_report } => {
+            assert_eq!(dev_report.summary, "implemented the brief");
+            assert_eq!(dev_report.enrichments.len(), 1);
+            assert_eq!(dev_report.enrichments[0].id, "R1");
+            assert!(dev_report.attestation.tests_pass.0);
         }
         other @ StartupResult::Warmed { .. } => {
             return Err(format!("dev must answer Developed: {other:?}").into());
@@ -306,16 +306,20 @@ fn dev_parses_the_canned_dev_result_and_overrides_the_session_id() -> TestResult
     assert!(log.contains("--print --session-id stacked-dev-brief-7"));
     assert!(log.contains(&format!("--workspace-root {}", shims.root_string())));
     assert!(log.contains("--output-format json"));
-    assert!(log.contains("Implement the widget"), "prompt rides last");
+    assert!(log.contains("Implement the brief..."), "prompt rides last");
     Ok(())
 }
 
 #[test]
 fn dev_unwraps_real_norns_output_envelope_ignoring_telemetry_fields() -> TestResult {
     let shims = Shims::new()?;
+    // A captured-real {"output": <dev report>} completion envelope (P4) with
+    // norn's telemetry fields alongside, which the handler ignores.
     shims.write(
         "norn",
-        r#"printf '%s' '{"output":{"session_id":"x","files_touched":["a.rs"],"summary":"enveloped"},"usage":{"input_tokens":1,"output_tokens":2},"model":"m","session_id":"x","events":[{"type":"UserMessage"}]}'"#,
+        &format!(
+            r#"printf '%s' '{{"output":{DEV_REPORT_BODY},"usage":{{"input_tokens":1,"output_tokens":2}},"model":"m","session_id":"x","events":[{{"type":"UserMessage"}}]}}'"#
+        ),
     )?;
 
     let result = handlers::startup_task(
@@ -326,9 +330,8 @@ fn dev_unwraps_real_norns_output_envelope_ignoring_telemetry_fields() -> TestRes
     )
     .map_err(|failure| failure.message().to_owned())?;
     match result {
-        StartupResult::Developed { dev_result } => {
-            assert_eq!(dev_result.session_id, "stacked-dev-brief-7");
-            assert_eq!(dev_result.summary, "enveloped");
+        StartupResult::Developed { dev_report } => {
+            assert_eq!(dev_report.summary, "implemented the brief");
         }
         other @ StartupResult::Warmed { .. } => {
             return Err(format!("dev must answer Developed: {other:?}").into());
@@ -360,9 +363,11 @@ fn dev_output_matching_neither_shape_is_terminal_with_the_output_head() -> TestR
 #[test]
 fn dev_resume_resumes_the_session_and_carries_the_feedback() -> TestResult {
     let shims = Shims::new()?;
+    // A full replacement dev report (BD-003); the resume returns the whole
+    // report, never a partial merge.
     shims.write(
         "norn",
-        r#"printf '%s' '{"session_id":"x","files_touched":["a.rs","b.rs"],"summary":"applied feedback"}'"#,
+        r#"printf '%s' '{"summary":"applied feedback","commit_message":"fix: address diagnostics","enrichments":[{"id":"R1","status":"implemented","files_changed":[{"path":"a.rs","change":"modified","note":"fixed"}],"how":"applied","deviation":"","checklist":[],"stories":[]}],"attestation":{"no_panics":true,"no_unsafe":true,"boundaries_respected":true,"tests_pass":true}}'"#,
     )?;
     // `dev_resume` runs with cwd "." (the workspace root is not on
     // ResumeInput), so the shim must be reachable through the Shell's own
@@ -376,8 +381,8 @@ fn dev_resume_resumes_the_session_and_carries_the_feedback() -> TestResult {
     )
     .map_err(|failure| failure.message().to_owned())?;
 
-    assert_eq!(resumed.session_id, "stacked-dev-brief-7");
     assert_eq!(resumed.summary, "applied feedback");
+    assert_eq!(resumed.enrichments.len(), 1);
     let log = shims.log("norn");
     assert!(log.contains("--print --resume stacked-dev-brief-7"));
     assert!(
@@ -673,5 +678,293 @@ fn land_with_failing_merge_is_terminal() -> TestResult {
         &failure,
         "yg branch merge failed — exit status 1: merge conflict in crates/x",
     );
+    Ok(())
+}
+
+// --- scout / dev_review (the new norn stages) -------------------------------
+
+/// A captured-real scout-report completion envelope (P4): the bare report sits
+/// under "output" alongside norn's telemetry, which the handler ignores.
+const SCOUT_ENVELOPE: &str = r#"printf '%s' '{"output":{"summary":"scouted","enrichments":[{"id":"R1","files":["src/a.gleam"],"context":["match conventions"],"approach":"add it","notes":"watch the codec ordering"}],"verification":["gleam test"]},"usage":{"input_tokens":1,"output_tokens":2},"model":"m","session_id":"x"}'"#;
+
+/// A captured-real review-report completion envelope (P4) carrying a
+/// distinguishable note string.
+const REVIEW_ENVELOPE: &str = r#"printf '%s' '{"output":{"summary":"the diff holds up","commit_message":"","enrichments":[{"id":"R1","alignment":"aligned","acceptance":[{"criterion":"it exists","met":true,"evidence":"src/a.gleam:1"}],"checklist":[],"stories":[],"issues":[],"fixes":[]}],"verification":[]},"usage":{"input_tokens":1,"output_tokens":2},"model":"m"}'"#;
+
+#[test]
+fn scout_runs_the_scout_session_and_parses_the_captured_envelope() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("norn", SCOUT_ENVELOPE)?;
+
+    let report = handlers::scout(
+        &shims.shell(),
+        ScoutInput {
+            workspace: workspace(shims.root_string()),
+            prompt: "Scout this brief...".to_owned(),
+        },
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    assert_eq!(report.summary, "scouted");
+    assert_eq!(report.enrichments.len(), 1);
+    assert_eq!(report.enrichments[0].notes, "watch the codec ordering");
+    let log = shims.log("norn");
+    assert!(
+        log.contains("--session-id stacked-dev-brief-7-scout"),
+        "the scout session id must end -scout: {log}"
+    );
+    assert!(log.contains("--output-format json"));
+    Ok(())
+}
+
+#[test]
+fn dev_review_runs_the_review_session_and_surfaces_the_note() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("norn", REVIEW_ENVELOPE)?;
+
+    let report = handlers::dev_review(
+        &shims.shell(),
+        ReviewInput {
+            workspace: workspace(shims.root_string()),
+            prompt: "Review this brief...".to_owned(),
+        },
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    // A distinguishable note string from the shim's review report arrives
+    // verbatim, and the session id ends -review (never the dev session, CN4).
+    assert_eq!(report.summary, "the diff holds up");
+    assert_eq!(report.enrichments[0].alignment, Alignment::Aligned);
+    let log = shims.log("norn");
+    assert!(
+        log.contains("--session-id stacked-dev-brief-7-review"),
+        "the review session id must end -review: {log}"
+    );
+    assert!(
+        !log.contains("--session-id stacked-dev-brief-7 "),
+        "the review must never use the bare dev session id"
+    );
+    Ok(())
+}
+
+#[test]
+fn stage_parser_accepts_bare_then_envelope_then_fails_on_a_third_shape() -> TestResult {
+    // Bare report shape.
+    let bare = Shims::new()?;
+    bare.write(
+        "norn",
+        r#"printf '%s' '{"summary":"bare","enrichments":[],"verification":[]}'"#,
+    )?;
+    let report = handlers::scout(
+        &bare.shell(),
+        ScoutInput {
+            workspace: workspace(bare.root_string()),
+            prompt: "p".to_owned(),
+        },
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+    assert_eq!(report.summary, "bare");
+
+    // Envelope shape.
+    let enveloped = Shims::new()?;
+    enveloped.write(
+        "norn",
+        r#"printf '%s' '{"output":{"summary":"enveloped","enrichments":[],"verification":[]}}'"#,
+    )?;
+    let report = handlers::scout(
+        &enveloped.shell(),
+        ScoutInput {
+            workspace: workspace(enveloped.root_string()),
+            prompt: "p".to_owned(),
+        },
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+    assert_eq!(report.summary, "enveloped");
+
+    // A third shape fails terminally naming both attempted shapes.
+    let third = Shims::new()?;
+    third.write("norn", r#"printf '%s' '{"wrapper":{"summary":"nope"}}'"#)?;
+    let failure = handlers::scout(
+        &third.shell(),
+        ScoutInput {
+            workspace: workspace(third.root_string()),
+            prompt: "p".to_owned(),
+        },
+    )
+    .err()
+    .ok_or("a third shape must fail the activity")?;
+    assert_terminal(&failure, "produced unparseable output");
+    assert_terminal(&failure, "bare report shape");
+    assert_terminal(&failure, "{\"output\": …}");
+    Ok(())
+}
+
+// --- enrich_brief (file IO, no CLI shim) ------------------------------------
+
+fn enrich_document() -> BriefDocument {
+    BriefDocument {
+        id: "BD-900".to_owned(),
+        cluster: "brief-dev".to_owned(),
+        title: "Enrichment test brief".to_owned(),
+        depends_on: Vec::new(),
+        blocked_by: Vec::new(),
+        checklist: vec!["C19".to_owned()],
+        stories: vec!["S12".to_owned()],
+        design_anchor: vec!["ADR-007".to_owned()],
+        purpose: "Exercise the append-only merge.".to_owned(),
+        task: "Merge and inspect.".to_owned(),
+        requirements: vec![BriefRequirement {
+            id: "R1".to_owned(),
+            title: "Requirement R1".to_owned(),
+            spec: "Spec for R1.".to_owned(),
+            acceptance: vec!["Acceptance for R1.".to_owned()],
+            files: RequirementFiles {
+                create: Vec::new(),
+                modify: Vec::new(),
+                delete: Vec::new(),
+            },
+            checklist: vec!["C19".to_owned()],
+            stories: vec!["S12".to_owned()],
+            scout: None,
+            dev: None,
+            review: None,
+        }],
+        boundaries: vec!["No authored field changes.".to_owned()],
+        verification: vec!["cargo test".to_owned()],
+        execution: None,
+    }
+}
+
+fn execution_block() -> ExecutionBlock {
+    ExecutionBlock {
+        status: ExecutionStatus::Landed,
+        workflow_id: "wf-1".to_owned(),
+        branch: "stacked-dev-BD-900".to_owned(),
+        session_id: "stacked-dev-BD-900".to_owned(),
+        gate: GateBlock {
+            fmt: true,
+            clippy: true,
+            tests: true,
+            fix_rounds: 0,
+        },
+        attestation: Attestation {
+            no_panics: Claim(true),
+            no_unsafe: Claim(true),
+            boundaries_respected: Claim(true),
+            tests_pass: Claim(true),
+        },
+        review_verdict: ExecutionVerdict::Approved,
+        landed_commit: String::new(),
+        merged_into: "main".to_owned(),
+        completed_at: "123".to_owned(),
+    }
+}
+
+/// Seed the brief at its design-system path under `root` and return that path.
+fn seed_brief(root: &Path, document: &BriefDocument) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let path = root
+        .join("docs")
+        .join("design")
+        .join(&document.cluster)
+        .join("briefs")
+        .join(format!("{}.json", document.id));
+    std::fs::create_dir_all(path.parent().ok_or("brief path has no parent")?)?;
+    std::fs::write(&path, serde_json::to_string(document)?)?;
+    Ok(path)
+}
+
+#[test]
+fn enrich_brief_merges_and_writes_the_worktree_brief_in_place() -> TestResult {
+    let shims = Shims::new()?;
+    let document = enrich_document();
+    let path = seed_brief(shims.root(), &document)?;
+
+    let returned = handlers::enrich_brief(
+        &shims.shell(),
+        EnrichInput {
+            workspace: Workspace {
+                path: shims.root_string(),
+                branch: "stacked-dev-BD-900".to_owned(),
+                placement: Placement::Local,
+                isolation: Isolation::Worktree,
+            },
+            document: document.clone(),
+            enrichment: Enrichment::Execution {
+                block: execution_block(),
+            },
+        },
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    // The file decodes as the merged document afterwards, with the execution
+    // block's gate and attestation as two distinct objects (P1).
+    let raw = std::fs::read_to_string(&path)?;
+    assert!(raw.contains("\"gate\""));
+    assert!(raw.contains("\"attestation\""));
+    let on_disk: BriefDocument = serde_json::from_str(&raw)?;
+    assert_eq!(on_disk, returned);
+    let execution = on_disk.execution.ok_or("execution must be present")?;
+    assert_eq!(execution, execution_block());
+    Ok(())
+}
+
+#[test]
+fn enrich_brief_refuses_an_authored_divergence_and_leaves_the_file_unchanged() -> TestResult {
+    let shims = Shims::new()?;
+    let document = enrich_document();
+    // The on-disk brief carries a different authored task field.
+    let mut on_disk_doc = document.clone();
+    on_disk_doc.task = "A different task.".to_owned();
+    let path = seed_brief(shims.root(), &on_disk_doc)?;
+    let before = std::fs::read(&path)?;
+
+    let failure = handlers::enrich_brief(
+        &shims.shell(),
+        EnrichInput {
+            workspace: Workspace {
+                path: shims.root_string(),
+                branch: "stacked-dev-BD-900".to_owned(),
+                placement: Placement::Local,
+                isolation: Isolation::Worktree,
+            },
+            document,
+            enrichment: Enrichment::Execution {
+                block: execution_block(),
+            },
+        },
+    )
+    .err()
+    .ok_or("an authored divergence must fail the activity")?;
+
+    assert_terminal(&failure, "task");
+    assert_terminal(&failure, "refusing to write");
+    // The file bytes are identical before and after the refused call.
+    let after = std::fs::read(&path)?;
+    assert_eq!(before, after, "the file must be byte-unchanged");
+    Ok(())
+}
+
+#[test]
+fn enrich_brief_with_an_absent_file_is_terminal() -> TestResult {
+    let shims = Shims::new()?;
+    // No brief seeded: the worktree path does not exist.
+    let failure = handlers::enrich_brief(
+        &shims.shell(),
+        EnrichInput {
+            workspace: Workspace {
+                path: shims.root_string(),
+                branch: "stacked-dev-BD-900".to_owned(),
+                placement: Placement::Local,
+                isolation: Isolation::Worktree,
+            },
+            document: enrich_document(),
+            enrichment: Enrichment::Execution {
+                block: execution_block(),
+            },
+        },
+    )
+    .err()
+    .ok_or("a missing brief file must fail the activity")?;
+    assert_terminal(&failure, "cannot read");
     Ok(())
 }
