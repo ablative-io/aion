@@ -6,6 +6,7 @@
 //// share one vocabulary. Codecs live in `stacked_dev/codecs_core` and
 //// `stacked_dev/codecs_flow`.
 
+import aion_stacked_dev_io as stage_io
 import gleam/option
 
 /// Where the provisioned workspace runs.
@@ -525,6 +526,30 @@ pub type ResolvedItem {
 /// verbatim words (P6).
 pub type ResolvedProvenance {
   ResolvedProvenance(requested_by: String, quote: String)
+}
+
+/// Input to the `enrich_brief` activity: the workspace whose worktree holds
+/// the brief file, the brief document the workflow currently carries, and
+/// the stage payload to append. One activity serves all four write points —
+/// the `Enrichment` variant selects the merge.
+pub type EnrichInput {
+  EnrichInput(
+    workspace: Workspace,
+    document: BriefDocument,
+    enrichment: Enrichment,
+  )
+}
+
+/// The stage payload appended by one `enrich_brief` call. The report types
+/// are BD-001's generated stage contracts and `ExecutionBlock` is BD-001's
+/// brief type, consumed as-is. `ExecutionEnrichment` carries the measured
+/// gate results and the believed dev attestation as the separate fields
+/// `ExecutionBlock` defines — never collapsed into one flag (P1).
+pub type Enrichment {
+  ScoutEnrichment(report: stage_io.ScoutReport)
+  DevEnrichment(report: stage_io.DevReport)
+  ReviewEnrichment(report: stage_io.ReviewReport)
+  ExecutionEnrichment(block: ExecutionBlock)
 }
 
 /// Pre-resolved reference context assembled by dispatcher activities before

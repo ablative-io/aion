@@ -8,12 +8,14 @@
 //// same names.
 
 import aion/activity
+import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/codecs_flow
 import stacked_dev/locals
 import stacked_dev/types.{
-  type DevInput, type GateInput, type LandInput, type ProvisionInput,
-  type ResumeInput, type ReviewRequest, type ScopedInput, DevTask, WarmTask,
+  type DevInput, type EnrichInput, type GateInput, type LandInput,
+  type ProvisionInput, type ResumeInput, type ReviewRequest, type ScopedInput,
+  DevTask, WarmTask,
 }
 
 /// Activity name served by the provisioning worker.
@@ -39,6 +41,12 @@ pub const request_review_name = "request_review"
 
 /// Activity name served by the landing (`yg branch merge`) worker.
 pub const land_name = "land"
+
+/// Activity name served by the brief-enrichment worker. One name serves all
+/// four write points (after scout, after dev convergence, after review, and
+/// the execution block before land) — the `Enrichment` variant selects the
+/// merge.
+pub const enrich_brief_name = "enrich_brief"
 
 /// `provision_workspace`: provision an isolated workspace off the base ref.
 pub fn provision_workspace(
@@ -142,5 +150,21 @@ pub fn land(input: LandInput) -> activity.Activity(LandInput, types.Landed) {
     codecs_flow.land_input_codec(),
     codecs_flow.landed_codec(),
     locals.land,
+  )
+}
+
+/// `enrich_brief`: append one stage report or the execution block into the
+/// brief file inside the run's worktree (ADR-007, ADR-009). The output codec
+/// is BD-001's brief document codec — the same single codec function the
+/// workflow input path uses.
+pub fn enrich_brief(
+  input: EnrichInput,
+) -> activity.Activity(EnrichInput, types.BriefDocument) {
+  activity.new(
+    enrich_brief_name,
+    input,
+    codecs_flow.enrich_input_codec(),
+    codecs_brief.brief_document_codec(),
+    locals.enrich_brief,
   )
 }

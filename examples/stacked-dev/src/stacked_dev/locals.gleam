@@ -13,21 +13,26 @@
 //// Deployed, a Meridian worker serves the same activity names and these
 //// functions never run.
 
+import aion/codec
 import aion/error
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
+import gleam/option
 import gleam/string
 import stacked_dev/cli
+import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
+import stacked_dev/enrich
 import stacked_dev/types.{
-  type CheckResult, type DevInput, type DevResult, type GateInput,
-  type GateResult, type LandInput, type Landed, type ProvisionInput,
-  type ResumeInput, type ReviewAck, type ReviewRequest, type ScopedInput,
-  type StartupResult, type StartupTask, type Workspace, AffectedClosure,
-  BuildWarm, CheckFail, CheckPass, CheckResult, Copy, DevResult, DevTask,
-  Developed, GateFail, GatePass, GateResult, Landed, Overlay, ReviewAck, Vm,
-  WarmTask, Warmed, Workspace, WorkspaceWide, Worktree,
+  type BriefDocument, type CheckResult, type DevInput, type DevResult,
+  type EnrichInput, type GateInput, type GateResult, type LandInput, type Landed,
+  type ProvisionInput, type ResumeInput, type ReviewAck, type ReviewRequest,
+  type ScopedInput, type StartupResult, type StartupTask, type Workspace,
+  AffectedClosure, BuildWarm, CheckFail, CheckPass, CheckResult, Copy,
+  DevEnrichment, DevResult, DevTask, Developed, ExecutionEnrichment, GateFail,
+  GatePass, GateResult, Landed, Overlay, ReviewAck, ReviewEnrichment,
+  ScoutEnrichment, Vm, WarmTask, Warmed, Workspace, WorkspaceWide, Worktree,
 }
 
 /// Provision an isolated workspace via the `yg` CLI.
@@ -429,6 +434,115 @@ pub fn land(input: LandInput) -> Result(Landed, error.ActivityError) {
   )
   Ok(Landed(branch: input.workspace.branch, merged_into: input.base_ref))
 }
+
+/// Append one stage report or the execution block into the brief file inside
+/// the run's worktree (ADR-007: one living document; ADR-009: enrichment
+/// rides the branch and lands with the merge).
+///
+/// The write is guarded by CN3: the on-disk brief's authored subset must
+/// equal the handed document's before anything is written — divergence is a
+/// Terminal failure naming the brief path and the first divergent field,
+/// never a silent overwrite. A missing, unreadable, or undecodable brief
+/// file is a broken worktree: a can't-execute condition that fails terminally
+/// (CN5), never a retry or a skip.
+pub fn enrich_brief(
+  input: EnrichInput,
+) -> Result(BriefDocument, error.ActivityError) {
+  let brief_codec = codecs_brief.brief_document_codec()
+  // The design-system layout is a format constraint (briefs/ is what
+  // validate.py keys its brief-schema detection on), so the path derives
+  // from the handed document — never from a workflow-supplied guess.
+  let brief_path =
+    input.workspace.path
+    <> "/docs/design/"
+    <> input.document.cluster
+    <> "/briefs/"
+    <> input.document.id
+    <> ".json"
+  use raw <- require_brief_read(brief_path)
+  use on_disk <- require_brief_decode(brief_codec, raw, brief_path)
+  case enrich.authored_divergence(on_disk, input.document) {
+    option.Some(field) ->
+      Error(error.terminal(
+        "enrich_brief: authored field "
+        <> field
+        <> " in "
+        <> brief_path
+        <> " diverges from the handed document; refusing to write (CN3)",
+      ))
+    option.None ->
+      case apply_enrichment(input) {
+        Error(enrich_error) ->
+          Error(error.terminal(
+            "enrich_brief: " <> enrich.describe(enrich_error),
+          ))
+        Ok(merged) ->
+          case write_text_file(brief_path, brief_codec.encode(merged)) {
+            Ok(Nil) -> Ok(merged)
+            Error(reason) ->
+              Error(error.terminal(
+                "enrich_brief: cannot write " <> brief_path <> ": " <> reason,
+              ))
+          }
+      }
+  }
+}
+
+/// Apply the merge selected by the `Enrichment` variant to the handed
+/// document. The execution block is written exactly as given — gate results
+/// and attestation stay separate fields (P1).
+fn apply_enrichment(
+  input: EnrichInput,
+) -> Result(BriefDocument, enrich.EnrichError) {
+  case input.enrichment {
+    ScoutEnrichment(report: report) ->
+      enrich.merge_scout(input.document, report)
+    DevEnrichment(report: report) -> enrich.merge_dev(input.document, report)
+    ReviewEnrichment(report: report) ->
+      enrich.merge_review(input.document, report)
+    ExecutionEnrichment(block: block) ->
+      enrich.merge_execution(input.document, block)
+  }
+}
+
+fn require_brief_read(
+  brief_path: String,
+  next: fn(String) -> Result(value, error.ActivityError),
+) -> Result(value, error.ActivityError) {
+  case read_text_file(brief_path) {
+    Ok(raw) -> next(raw)
+    Error(reason) ->
+      Error(error.terminal(
+        "enrich_brief: cannot read " <> brief_path <> ": " <> reason,
+      ))
+  }
+}
+
+fn require_brief_decode(
+  brief_codec: codec.Codec(BriefDocument),
+  raw: String,
+  brief_path: String,
+  next: fn(BriefDocument) -> Result(value, error.ActivityError),
+) -> Result(value, error.ActivityError) {
+  case brief_codec.decode(raw) {
+    Ok(document) -> next(document)
+    Error(codec.DecodeError(reason: reason, path: field_path)) ->
+      Error(error.terminal(
+        "enrich_brief: brief file "
+        <> brief_path
+        <> " failed to decode at "
+        <> string.join(field_path, "/")
+        <> ": "
+        <> reason,
+      ))
+  }
+}
+
+@external(erlang, "stacked_dev_file_ffi", "read_file")
+fn read_text_file(path: String) -> Result(String, String)
+
+@external(erlang, "stacked_dev_file_ffi", "write_file")
+fn write_text_file(path: String, contents: String) -> Result(Nil, String)
 
 // --- helpers ---------------------------------------------------------------
 

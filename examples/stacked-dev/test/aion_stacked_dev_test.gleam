@@ -9,21 +9,35 @@
 //// the channel `aion signal <run-id> review_verdict --payload '{...}'`
 //// drives on a live server.
 
+import aion/activity
+import aion/error
 import aion/query
 import aion/signal
 import aion/testing
+import aion_stacked_dev_io as stage_io
+import gleam/list
+import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
 import onatopp_dev
 import stacked_dev
+import stacked_dev/activities
+import stacked_dev/codecs_brief
+import stacked_dev/codecs_flow
 import stacked_dev/codecs_workflows
+import stacked_dev/enrich
+import stacked_dev/locals
 import stacked_dev/types.{
-  type ReviewVerdict, type StackedDevInput, Approve, GateRejected, Local,
-  OnatoppStatus, ProvisionFailed, Reject, RequestChanges, ReviewCapExhausted,
-  ReviewNote, ReviewRejected, ReviewTimedOut, ReviewVerdict, StackedDevInput,
-  StackedDevStatus, VerifyExhausted, Worktree,
+  type ReviewVerdict, type StackedDevInput, Approve, AttestationBlock,
+  BriefDocument, BriefRequirement, DevEnrichment, EnrichInput, ExecutionBlock,
+  ExecutionEnrichment, ExecutionLanded, GateBlock, GateRejected, Local,
+  OnatoppStatus, ProvisionFailed, Reject, RequestChanges, RequirementFiles,
+  ReviewCapExhausted, ReviewEnrichment, ReviewNote, ReviewRejected,
+  ReviewTimedOut, ReviewVerdict, ScoutBlock, ScoutEnrichment, StackedDevInput,
+  StackedDevStatus, VerdictApproved, VerifyExhausted, Workspace, Worktree,
 }
+import support/fixtures
 import support/shims
 
 pub fn main() {
@@ -362,4 +376,517 @@ pub fn missing_cli_with_no_shim_is_a_loud_activity_failure_test() {
   message
   |> string.contains("executable not found on PATH: yg")
   |> should.be_true
+}
+
+// --- enrichment (BD-004) -----------------------------------------------------
+//
+// Pure append-only merge semantics (enrich.gleam), the enrich_input codec,
+// and the enrich_brief activity local implementation. These tests are pure
+// of the CLI seam — no shims are installed — and the activity tests exercise
+// the real file boundary against per-test directories under /tmp.
+
+const enrich_fixture_path = "../../docs/design/brief-dev/briefs/BD-001.json"
+
+const enriched_fixture_dir = "/tmp/aion-stacked-dev-enrich"
+
+const enriched_fixture_file = "/tmp/aion-stacked-dev-enrich/briefs/enriched-fixture.json"
+
+@external(erlang, "stacked_dev_file_ffi", "write_file")
+fn write_file(path: String, contents: String) -> Result(Nil, String)
+
+@external(erlang, "stacked_dev_file_ffi", "remove_tree")
+fn remove_tree(path: String) -> Result(Nil, String)
+
+/// A two-requirement (R1, R2) authored brief document, enrichment-free.
+fn enrich_document() -> types.BriefDocument {
+  BriefDocument(
+    id: "BD-900",
+    cluster: "brief-dev",
+    title: "Enrichment test brief",
+    depends_on: [],
+    blocked_by: [],
+    checklist: ["C19"],
+    stories: ["S12"],
+    design_anchor: ["ADR-007"],
+    purpose: "Exercise the append-only merge.",
+    task: "Merge and inspect.",
+    requirements: [enrich_requirement("R1"), enrich_requirement("R2")],
+    boundaries: ["No authored field changes."],
+    verification: ["gleam test"],
+    execution: option.None,
+  )
+}
+
+fn enrich_requirement(id: String) -> types.BriefRequirement {
+  BriefRequirement(
+    id: id,
+    title: "Requirement " <> id,
+    spec: "Spec for " <> id <> ".",
+    acceptance: ["Acceptance for " <> id <> "."],
+    files: RequirementFiles(create: [], modify: [], delete: []),
+    checklist: ["C19"],
+    stories: ["S12"],
+    scout: option.None,
+    dev: option.None,
+    review: option.None,
+  )
+}
+
+fn scout_entry(
+  id: String,
+  notes: String,
+) -> stage_io.ScoutReportEnrichmentsItem {
+  stage_io.ScoutReportEnrichmentsItem(
+    id: id,
+    files: ["file-" <> id],
+    context: ["context-" <> id],
+    approach: "approach-" <> id,
+    notes: notes,
+  )
+}
+
+fn scout_report(
+  entries: List(stage_io.ScoutReportEnrichmentsItem),
+) -> stage_io.ScoutReport {
+  stage_io.ScoutReport(
+    summary: "scout summary",
+    enrichments: entries,
+    verification: ["gleam test"],
+  )
+}
+
+fn dev_entry(id: String) -> stage_io.DevReportEnrichmentsItem {
+  stage_io.DevReportEnrichmentsItem(
+    id: id,
+    status: stage_io.DevReportEnrichmentsItemStatusImplemented,
+    files_changed: [
+      stage_io.DevReportEnrichmentsItemFilesChangedItem(
+        path: "src/file-" <> id <> ".gleam",
+        change: stage_io.DevReportEnrichmentsItemFilesChangedItemChangeModified,
+        note: "dev note for " <> id,
+      ),
+    ],
+    how: "how-" <> id,
+    deviation: "",
+    checklist: [
+      stage_io.DevReportEnrichmentsItemChecklistItem(
+        id: "C19",
+        done: True,
+        note: "delivered",
+      ),
+    ],
+    stories: [
+      stage_io.DevReportEnrichmentsItemStoriesItem(
+        id: "S12",
+        satisfied: True,
+        note: "satisfied",
+      ),
+    ],
+  )
+}
+
+fn dev_report(
+  entries: List(stage_io.DevReportEnrichmentsItem),
+) -> stage_io.DevReport {
+  stage_io.DevReport(
+    summary: "dev summary",
+    commit_message: "BD-900: enrichment test",
+    enrichments: entries,
+    attestation: stage_io.DevReportAttestation(
+      no_panics: True,
+      no_unsafe: True,
+      boundaries_respected: True,
+      tests_pass: True,
+    ),
+  )
+}
+
+fn review_entry(id: String) -> stage_io.ReviewReportEnrichmentsItem {
+  stage_io.ReviewReportEnrichmentsItem(
+    id: id,
+    alignment: stage_io.ReviewReportEnrichmentsItemAlignmentAligned,
+    acceptance: [
+      stage_io.ReviewReportEnrichmentsItemAcceptanceItem(
+        criterion: "Acceptance for " <> id <> ".",
+        met: True,
+        evidence: "evidence for " <> id,
+      ),
+    ],
+    checklist: ["C19"],
+    stories: ["S12"],
+    issues: [],
+    fixes: [],
+  )
+}
+
+fn review_report(
+  entries: List(stage_io.ReviewReportEnrichmentsItem),
+) -> stage_io.ReviewReport {
+  stage_io.ReviewReport(
+    summary: "review summary",
+    commit_message: "BD-900: review fixes",
+    enrichments: entries,
+    verification: [
+      stage_io.ReviewReportVerificationItem(
+        criterion: "gleam test",
+        passed: True,
+        note: "",
+      ),
+    ],
+  )
+}
+
+/// The measured gate and the believed attestation stay separate fields (P1);
+/// `landed_commit` stays empty because a commit cannot name itself (ADR-009).
+fn sample_execution_block(workflow_id: String) -> types.ExecutionBlock {
+  ExecutionBlock(
+    status: ExecutionLanded,
+    workflow_id: workflow_id,
+    branch: "stacked-dev-BD-900",
+    session_id: "stacked-dev-BD-900",
+    gate: GateBlock(fmt: True, clippy: True, tests: True, fix_rounds: 0),
+    attestation: AttestationBlock(
+      no_panics: True,
+      no_unsafe: True,
+      boundaries_respected: True,
+      tests_pass: True,
+    ),
+    review_verdict: VerdictApproved,
+    landed_commit: "",
+    merged_into: "main",
+    completed_at: "2026-06-13T00:00:00Z",
+  )
+}
+
+fn enrich_workspace(root: String) -> types.Workspace {
+  Workspace(
+    path: root,
+    branch: "stacked-dev-BD-900",
+    placement: Local,
+    isolation: Worktree,
+  )
+}
+
+/// A fresh per-test workspace root with the document seeded at the brief's
+/// design-system path; returns that path.
+fn seed_brief(root: String, document: types.BriefDocument) -> String {
+  let path =
+    root
+    <> "/docs/design/"
+    <> document.cluster
+    <> "/briefs/"
+    <> document.id
+    <> ".json"
+  let assert Ok(Nil) = remove_tree(root)
+  let assert Ok(Nil) =
+    write_file(path, codecs_brief.brief_document_codec().encode(document))
+  path
+}
+
+pub fn merge_scout_appends_blocks_and_keeps_authored_subset_stable_test() {
+  let document = enrich_document()
+  let report =
+    scout_report([
+      scout_entry("R1", "watch the codec ordering"),
+      scout_entry("R2", ""),
+    ])
+
+  let assert Ok(merged) = enrich.merge_scout(document, report)
+
+  let assert [first, second] = merged.requirements
+  first.scout
+  |> should.equal(
+    option.Some(ScoutBlock(
+      files: ["file-R1"],
+      context: ["context-R1"],
+      approach: "approach-R1",
+      notes: "watch the codec ordering",
+    )),
+  )
+  second.scout
+  |> should.equal(
+    option.Some(ScoutBlock(
+      files: ["file-R2"],
+      context: ["context-R2"],
+      approach: "approach-R2",
+      notes: "",
+    )),
+  )
+
+  // The encoded authored subset is byte-identical before and after the merge.
+  let brief_codec = codecs_brief.brief_document_codec()
+  brief_codec.encode(enrich.authored_subset(merged))
+  |> should.equal(brief_codec.encode(enrich.authored_subset(document)))
+}
+
+pub fn merge_scout_replaces_an_existing_block_wholesale_test() {
+  let document = enrich_document()
+  let assert Ok(once) =
+    enrich.merge_scout(
+      document,
+      scout_report([scout_entry("R1", "watch the codec ordering")]),
+    )
+  let assert Ok(twice) =
+    enrich.merge_scout(once, scout_report([scout_entry("R1", "")]))
+
+  // The block was replaced wholesale, never field-merged: the second
+  // report's empty notes win.
+  let assert [first, ..] = twice.requirements
+  let assert option.Some(block) = first.scout
+  block.notes |> should.equal("")
+}
+
+pub fn merge_dev_leaves_scout_blocks_untouched_test() {
+  let document = enrich_document()
+  let assert Ok(scouted) =
+    enrich.merge_scout(
+      document,
+      scout_report([scout_entry("R1", "a"), scout_entry("R2", "b")]),
+    )
+  let assert Ok(developed) =
+    enrich.merge_dev(scouted, dev_report([dev_entry("R1"), dev_entry("R2")]))
+
+  // Cross-stage isolation: every scout block is byte-identical, only the dev
+  // blocks were set, and review stays absent.
+  list.map(developed.requirements, fn(requirement) { requirement.scout })
+  |> should.equal(
+    list.map(scouted.requirements, fn(requirement) { requirement.scout }),
+  )
+  list.all(developed.requirements, fn(requirement) {
+    requirement.dev != option.None && requirement.review == option.None
+  })
+  |> should.be_true
+}
+
+pub fn merge_execution_sets_then_replaces_wholesale_test() {
+  let document = enrich_document()
+  document.execution |> should.equal(option.None)
+
+  let assert Ok(once) =
+    enrich.merge_execution(document, sample_execution_block("wf-1"))
+  once.execution |> should.equal(option.Some(sample_execution_block("wf-1")))
+
+  let assert Ok(twice) =
+    enrich.merge_execution(once, sample_execution_block("wf-2"))
+  twice.execution |> should.equal(option.Some(sample_execution_block("wf-2")))
+}
+
+pub fn merge_unknown_requirement_id_is_a_loud_error_test() {
+  enrich.merge_scout(enrich_document(), scout_report([scout_entry("R9", "")]))
+  |> should.equal(Error(enrich.UnknownRequirementId(id: "R9")))
+}
+
+pub fn enrich_input_codec_round_trips_every_variant_test() {
+  let input_codec = codecs_flow.enrich_input_codec()
+  let document = enrich_document()
+  [
+    ScoutEnrichment(report: scout_report([scout_entry("R1", "n")])),
+    DevEnrichment(report: dev_report([dev_entry("R1")])),
+    ReviewEnrichment(report: review_report([review_entry("R1")])),
+    ExecutionEnrichment(block: sample_execution_block("wf-1")),
+  ]
+  |> list.each(fn(enrichment) {
+    let input =
+      EnrichInput(
+        workspace: enrich_workspace("/w"),
+        document: document,
+        enrichment: enrichment,
+      )
+    input_codec.decode(input_codec.encode(input)) |> should.equal(Ok(input))
+  })
+}
+
+pub fn enrich_input_codec_uses_documented_stage_tags_test() {
+  let input_codec = codecs_flow.enrich_input_codec()
+  let document = enrich_document()
+  let scout_input =
+    EnrichInput(
+      workspace: enrich_workspace("/w"),
+      document: document,
+      enrichment: ScoutEnrichment(report: scout_report([scout_entry("R1", "")])),
+    )
+  let execution_input =
+    EnrichInput(
+      workspace: enrich_workspace("/w"),
+      document: document,
+      enrichment: ExecutionEnrichment(block: sample_execution_block("wf-1")),
+    )
+  input_codec.encode(scout_input)
+  |> string.contains("\"stage\":\"scout\"")
+  |> should.be_true
+  input_codec.encode(execution_input)
+  |> string.contains("\"stage\":\"execution\"")
+  |> should.be_true
+}
+
+pub fn enrich_input_codec_rejects_undocumented_stage_tags_test() {
+  let input_codec = codecs_flow.enrich_input_codec()
+  let encoded =
+    input_codec.encode(EnrichInput(
+      workspace: enrich_workspace("/w"),
+      document: enrich_document(),
+      enrichment: ScoutEnrichment(report: scout_report([scout_entry("R1", "")])),
+    ))
+  string.replace(encoded, "\"stage\":\"scout\"", "\"stage\":\"harden\"")
+  |> input_codec.decode
+  |> should.be_error
+}
+
+pub fn enrich_brief_activity_name_matches_the_constant_test() {
+  activities.enrich_brief_name |> should.equal("enrich_brief")
+  let built =
+    activities.enrich_brief(EnrichInput(
+      workspace: enrich_workspace("/w"),
+      document: enrich_document(),
+      enrichment: ExecutionEnrichment(block: sample_execution_block("wf-1")),
+    ))
+  activity.name(built) |> should.equal(activities.enrich_brief_name)
+}
+
+pub fn enrich_brief_merges_and_writes_the_worktree_brief_in_place_test() {
+  let document = enrich_document()
+  let root = "/tmp/aion-stacked-dev-enrich-test/happy"
+  let path = seed_brief(root, document)
+  let report = scout_report([scout_entry("R1", "n1"), scout_entry("R2", "n2")])
+
+  let assert Ok(returned) =
+    locals.enrich_brief(EnrichInput(
+      workspace: enrich_workspace(root),
+      document: document,
+      enrichment: ScoutEnrichment(report: report),
+    ))
+
+  // The return value is exactly the pure merge's result, and the file at the
+  // derived design-system path now decodes as that document.
+  let assert Ok(expected) = enrich.merge_scout(document, report)
+  returned |> should.equal(expected)
+  let brief_codec = codecs_brief.brief_document_codec()
+  let assert Ok(on_disk_raw) = fixtures.read_file(path)
+  let assert Ok(on_disk) = brief_codec.decode(on_disk_raw)
+  on_disk |> should.equal(returned)
+
+  // The on-disk authored subset encodes byte-identically to the pre-call one.
+  brief_codec.encode(enrich.authored_subset(on_disk))
+  |> should.equal(brief_codec.encode(enrich.authored_subset(document)))
+}
+
+pub fn enrich_brief_fails_terminally_on_authored_divergence_test() {
+  let document = enrich_document()
+  let root = "/tmp/aion-stacked-dev-enrich-test/divergent"
+  // The on-disk brief carries a different authored task field.
+  let path =
+    seed_brief(root, BriefDocument(..document, task: "A different task."))
+  let assert Ok(before) = fixtures.read_file(path)
+
+  let assert Error(error.Terminal(message: message, details: _)) =
+    locals.enrich_brief(EnrichInput(
+      workspace: enrich_workspace(root),
+      document: document,
+      enrichment: ScoutEnrichment(report: scout_report([scout_entry("R1", "")])),
+    ))
+
+  // The failure names the divergent field and the brief path, and the file
+  // bytes are untouched — divergence is never silently overwritten (CN3).
+  message |> string.contains("task") |> should.be_true
+  message |> string.contains(path) |> should.be_true
+  let assert Ok(after) = fixtures.read_file(path)
+  after |> should.equal(before)
+}
+
+pub fn enrich_brief_fails_terminally_when_the_brief_file_is_absent_test() {
+  let document = enrich_document()
+  let root = "/tmp/aion-stacked-dev-enrich-test/absent"
+  let assert Ok(Nil) = remove_tree(root)
+
+  let assert Error(error.Terminal(message: message, details: _)) =
+    locals.enrich_brief(EnrichInput(
+      workspace: enrich_workspace(root),
+      document: document,
+      enrichment: ScoutEnrichment(report: scout_report([scout_entry("R1", "")])),
+    ))
+
+  // A broken worktree is a can't-execute condition naming the derived path.
+  message
+  |> string.contains(root <> "/docs/design/brief-dev/briefs/BD-900.json")
+  |> should.be_true
+}
+
+pub fn enrich_brief_records_gate_and_attestation_distinctly_test() {
+  let document = enrich_document()
+  let root = "/tmp/aion-stacked-dev-enrich-test/execution"
+  let path = seed_brief(root, document)
+  let block = sample_execution_block("wf-execution")
+
+  let assert Ok(_) =
+    locals.enrich_brief(EnrichInput(
+      workspace: enrich_workspace(root),
+      document: document,
+      enrichment: ExecutionEnrichment(block: block),
+    ))
+
+  // The handed block was written exactly as given: the measured gate and the
+  // believed attestation arrive on disk as two distinct objects (P1).
+  let assert Ok(raw) = fixtures.read_file(path)
+  raw |> string.contains("\"gate\"") |> should.be_true
+  raw |> string.contains("\"attestation\"") |> should.be_true
+  let assert Ok(on_disk) = codecs_brief.brief_document_codec().decode(raw)
+  let assert option.Some(execution) = on_disk.execution
+  execution.gate |> should.equal(block.gate)
+  execution.attestation |> should.equal(block.attestation)
+  execution |> should.equal(block)
+}
+
+pub fn enriched_fixture_is_emitted_for_the_design_system_validator_test() {
+  // The seeded BD-001 brief merged through all four write points. The emitted
+  // file is the merge functions' own output — never hand-written JSON — so
+  // `python3 docs/design-system/scripts/validate.py
+  // /tmp/aion-stacked-dev-enrich/briefs/enriched-fixture.json` (run from the
+  // repo root after `gleam test`) proves the enriched document still
+  // validates against brief.schema.json.
+  let assert Ok(raw) = fixtures.read_file(enrich_fixture_path)
+  let brief_codec = codecs_brief.brief_document_codec()
+  let assert Ok(document) = brief_codec.decode(raw)
+  let ids = list.map(document.requirements, fn(requirement) { requirement.id })
+
+  let assert Ok(scouted) =
+    enrich.merge_scout(
+      document,
+      scout_report(
+        list.map(ids, fn(id) { scout_entry(id, "fixture notes for " <> id) }),
+      ),
+    )
+  let assert Ok(developed) =
+    enrich.merge_dev(scouted, dev_report(list.map(ids, dev_entry)))
+  let assert Ok(reviewed) =
+    enrich.merge_review(developed, review_report(list.map(ids, review_entry)))
+  let assert Ok(enriched) =
+    enrich.merge_execution(reviewed, sample_execution_block("wf-bd001-fixture"))
+
+  // Every requirement carries all three stage blocks; the execution block is
+  // present with its gate and attestation as distinct objects; the authored
+  // subset is byte-stable through the full enrichment.
+  list.all(enriched.requirements, fn(requirement) {
+    requirement.scout != option.None
+    && requirement.dev != option.None
+    && requirement.review != option.None
+  })
+  |> should.be_true
+  let assert option.Some(execution) = enriched.execution
+  execution.gate
+  |> should.equal(GateBlock(fmt: True, clippy: True, tests: True, fix_rounds: 0))
+  execution.attestation
+  |> should.equal(AttestationBlock(
+    no_panics: True,
+    no_unsafe: True,
+    boundaries_respected: True,
+    tests_pass: True,
+  ))
+  brief_codec.encode(enrich.authored_subset(enriched))
+  |> should.equal(brief_codec.encode(enrich.authored_subset(document)))
+
+  // Emit under a fresh briefs/ directory — the parent directory name is what
+  // validate.py keys its brief-schema detection on.
+  let assert Ok(Nil) = remove_tree(enriched_fixture_dir)
+  let assert Ok(Nil) =
+    write_file(enriched_fixture_file, brief_codec.encode(enriched))
 }

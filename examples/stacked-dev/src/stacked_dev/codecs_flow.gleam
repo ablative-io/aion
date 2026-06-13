@@ -5,16 +5,20 @@
 //// `stacked_dev/codecs_workflows`.
 
 import aion/codec
+import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
+import stacked_dev/codecs_brief
+import stacked_dev/codecs_brief_blocks as blocks
 import stacked_dev/codecs_core
 import stacked_dev/types.{
-  type GateError, type GateInput, type GateResult, type GateScope,
-  type GateVerdict, type LandInput, type Landed, type ReviewAck, type ReviewNote,
-  type ReviewRequest, type ReviewVerdict, AffectedClosure, Approve, GateFail,
-  GateInput, GatePass, GateResult, GateStageFailed, LandInput, Landed, Reject,
-  RequestChanges, ReviewAck, ReviewNote, ReviewRequest, ReviewVerdict,
-  WorkspaceWide,
+  type EnrichInput, type Enrichment, type GateError, type GateInput,
+  type GateResult, type GateScope, type GateVerdict, type LandInput, type Landed,
+  type ReviewAck, type ReviewNote, type ReviewRequest, type ReviewVerdict,
+  AffectedClosure, Approve, DevEnrichment, EnrichInput, ExecutionEnrichment,
+  GateFail, GateInput, GatePass, GateResult, GateStageFailed, LandInput, Landed,
+  Reject, RequestChanges, ReviewAck, ReviewEnrichment, ReviewNote, ReviewRequest,
+  ReviewVerdict, ScoutEnrichment, WorkspaceWide,
 }
 
 /// Codec for the `gate` child input.
@@ -242,6 +246,101 @@ pub fn review_verdict_codec() -> codec.Codec(ReviewVerdict) {
       }
     },
   )
+}
+
+/// Codec for the `enrich_brief` activity input. Hand-written: the
+/// `Enrichment` union is outside the codegen v1 subset (codegen rejects
+/// unions). The activity OUTPUT codec is BD-001's brief document codec used
+/// directly — no second brief document codec exists.
+///
+/// Wire shape: `{"workspace": .., "document": .., "enrichment": {"stage":
+/// "scout"|"dev"|"review"|"execution", "report"|"block": ..}}` — the stage
+/// payload rides under `"report"` for the three stage variants and under
+/// `"block"` for the execution variant.
+pub fn enrich_input_codec() -> codec.Codec(EnrichInput) {
+  codec.json_codec(
+    fn(input: EnrichInput) {
+      json.object([
+        #("workspace", codecs_core.workspace_to_json(input.workspace)),
+        #("document", codecs_brief.brief_document_to_json(input.document)),
+        #("enrichment", enrichment_to_json(input.enrichment)),
+      ])
+    },
+    {
+      use workspace <- decode.field(
+        "workspace",
+        codecs_core.workspace_decoder(),
+      )
+      use document <- decode.field(
+        "document",
+        codecs_brief.brief_document_decoder(),
+      )
+      use enrichment <- decode.field("enrichment", enrichment_decoder())
+      decode.success(EnrichInput(
+        workspace: workspace,
+        document: document,
+        enrichment: enrichment,
+      ))
+    },
+  )
+}
+
+fn enrichment_to_json(enrichment: Enrichment) -> json.Json {
+  case enrichment {
+    ScoutEnrichment(report: report) ->
+      json.object([
+        #("stage", json.string("scout")),
+        #("report", stage_io.scout_report_to_json(report)),
+      ])
+    DevEnrichment(report: report) ->
+      json.object([
+        #("stage", json.string("dev")),
+        #("report", stage_io.dev_report_to_json(report)),
+      ])
+    ReviewEnrichment(report: report) ->
+      json.object([
+        #("stage", json.string("review")),
+        #("report", stage_io.review_report_to_json(report)),
+      ])
+    ExecutionEnrichment(block: block) ->
+      json.object([
+        #("stage", json.string("execution")),
+        #("block", blocks.execution_block_to_json(block)),
+      ])
+  }
+}
+
+fn enrichment_decoder() -> decode.Decoder(Enrichment) {
+  use stage <- decode.field("stage", decode.string)
+  case stage {
+    "scout" -> {
+      use report <- decode.field("report", stage_io.scout_report_decoder())
+      decode.success(ScoutEnrichment(report: report))
+    }
+    "dev" -> {
+      use report <- decode.field("report", stage_io.dev_report_decoder())
+      decode.success(DevEnrichment(report: report))
+    }
+    "review" -> {
+      use report <- decode.field("report", stage_io.review_report_decoder())
+      decode.success(ReviewEnrichment(report: report))
+    }
+    "execution" -> {
+      use block <- decode.field("block", blocks.execution_block_decoder())
+      decode.success(ExecutionEnrichment(block: block))
+    }
+    _ ->
+      decode.failure(
+        ScoutEnrichment(
+          report: stage_io.ScoutReport(
+            summary: "",
+            enrichments: [],
+            verification: [],
+          ),
+        ),
+        "scout, dev, review, or execution",
+      )
+  }
 }
 
 /// Codec for the `land` activity input.
