@@ -15,7 +15,7 @@ The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand
 
 - **Links:** cluster `brief-dev`; decisions ADR-008, ADR-009; briefs BD-001, BD-002, BD-003, BD-004, BD-005, BD-006, BD-007
 - **Depends on:** RM-016
-- **Notes:** Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 PROPOSED, awaiting Tom — BD-003/004/005 carry them in blocked_by. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Dispatch implementation next.
+- **Notes:** Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 DECIDED by Tom same day — blocked_by on BD-003/004/005 cleared. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Implementation in flight.
 
 ## Designed (2)
 

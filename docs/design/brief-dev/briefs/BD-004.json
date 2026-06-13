@@ -2,11 +2,24 @@
   "id": "BD-004",
   "cluster": "brief-dev",
   "title": "Append-only enrichment",
-  "depends_on": ["BD-001"],
-  "blocked_by": ["ADR-009 (proposed — awaiting Tom's decision)"],
-  "checklist": ["C19", "C20", "C21", "C22"],
-  "stories": ["S12", "S13"],
-  "design_anchor": ["ADR-007", "ADR-009"],
+  "depends_on": [
+    "BD-001"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C19",
+    "C20",
+    "C21",
+    "C22"
+  ],
+  "stories": [
+    "S12",
+    "S13"
+  ],
+  "design_anchor": [
+    "ADR-007",
+    "ADR-009"
+  ],
   "purpose": "Deliver the enrichment mechanism that makes the brief one living document (ADR-007): a pure append-only merge of stage reports and the execution block into the brief document, and the enrich_brief activity that writes the merged document into the run's worktree brief file (ADR-009) after deep-comparing the authored subset (CN3). Every downstream stage prompt and the landed provenance record depend on this merge never touching an authored field, so the guarantee is delivered as a pure function with its own tests, separate from the activity that performs the file IO.",
   "task": "Build the enrichment layer in two strata. First, src/stacked_dev/enrich.gleam: pure functions that merge one scout/dev/review report or one execution block into a brief document, replacing the targeted blocks wholesale and copying every authored field through verbatim. Second, the enrich_brief activity (definition in activities.gleam, payload types in types.gleam, codecs in codecs_flow.gleam, local implementation in locals.gleam): it locates the brief file inside the run's worktree at docs/design/<cluster>/briefs/<id>.json (cluster and id read from the handed document — the design-system layout is a format constraint, like the briefs/ directory validate.py keys on), deep-compares the on-disk authored subset against the handed document, fails terminally on any divergence before writing (CN3), and otherwise writes the merged document back and returns it. The brief document, stage report, and execution block types and their codecs come from BD-001 — this brief only consumes them. SPLIT NOTE on C21: this brief delivers the merge functions and the activity for all four write points (after scout, after dev convergence, after review, and the execution block before land); the call sites that invoke the activity live in brief_dev.gleam (BD-003) and in the outer arc of stacked_dev.gleam (BD-005), and the workflow.toml activities declarations ride with those call-site briefs. The acceptance here proves the mechanism supports each write point; the wiring proof lands with BD-003/BD-005 and the hermetic scenarios with BD-007. Out of scope: prompts, the brief_dev pipeline, worker handlers and wire pins for enrich payloads (BD-005), and all hermetic pipeline scenarios (BD-007).",
   "requirements": [
@@ -23,12 +36,18 @@
         "enrich.gleam contains no @external declarations and imports neither stacked_dev/cli nor any file-IO module."
       ],
       "files": {
-        "create": ["examples/stacked-dev/src/stacked_dev/enrich.gleam"],
+        "create": [
+          "examples/stacked-dev/src/stacked_dev/enrich.gleam"
+        ],
         "modify": [],
         "delete": []
       },
-      "checklist": ["C19"],
-      "stories": ["S12"]
+      "checklist": [
+        "C19"
+      ],
+      "stories": [
+        "S12"
+      ]
     },
     {
       "id": "R2",
@@ -41,11 +60,17 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/src/stacked_dev/types.gleam"],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/types.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C20"],
-      "stories": ["S13"]
+      "checklist": [
+        "C20"
+      ],
+      "stories": [
+        "S13"
+      ]
     },
     {
       "id": "R3",
@@ -58,10 +83,14 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/src/stacked_dev/codecs_flow.gleam"],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/codecs_flow.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C20"],
+      "checklist": [
+        "C20"
+      ],
       "stories": []
     },
     {
@@ -75,10 +104,15 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/src/stacked_dev/activities.gleam"],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/activities.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C20", "C21"],
+      "checklist": [
+        "C20",
+        "C21"
+      ],
       "stories": []
     },
     {
@@ -94,11 +128,19 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/src/stacked_dev/locals.gleam"],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/locals.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C20", "C21"],
-      "stories": ["S12", "S13"]
+      "checklist": [
+        "C20",
+        "C21"
+      ],
+      "stories": [
+        "S12",
+        "S13"
+      ]
     },
     {
       "id": "R6",
@@ -112,10 +154,15 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/test/aion_stacked_dev_test.gleam"],
+        "modify": [
+          "examples/stacked-dev/test/aion_stacked_dev_test.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C19", "C22"],
+      "checklist": [
+        "C19",
+        "C22"
+      ],
       "stories": []
     }
   ],

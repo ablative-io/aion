@@ -2,11 +2,33 @@
   "id": "BD-003",
   "cluster": "brief-dev",
   "title": "The brief_dev pipeline workflow",
-  "depends_on": ["BD-001", "BD-002"],
-  "blocked_by": ["ADR-008 (proposed — awaiting Tom's decision)"],
-  "checklist": ["C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18"],
-  "stories": ["S6", "S9", "S10", "S11"],
-  "design_anchor": ["ADR-001", "ADR-003", "ADR-008"],
+  "depends_on": [
+    "BD-001",
+    "BD-002"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C10",
+    "C11",
+    "C12",
+    "C13",
+    "C14",
+    "C15",
+    "C16",
+    "C17",
+    "C18"
+  ],
+  "stories": [
+    "S6",
+    "S9",
+    "S10",
+    "S11"
+  ],
+  "design_anchor": [
+    "ADR-001",
+    "ADR-003",
+    "ADR-008"
+  ],
   "purpose": "Replaces the scout-less, review-less onatopp_dev inner child with brief_dev: the v2 all-norn pipeline (scout → concurrent warm-build+dev → verify-fix loop → adversarial review → harden re-verify) as a durable workflow over the BD-001 types and BD-002 projections (ADR-008 — evolve in place, no parallel family). Every stage runs in its own deterministic norn session ('<branch>-scout' / '<branch>' / '<branch>-review', CN4), every negative outcome is either recorded data or a typed error per the C18 taxonomy, and every cap and backoff is a required input the engine never bounds (ADR-001, ADR-003, CN2). This is the workflow that makes attestation-never-the-gate executable: the reviewer sees the dev's claims next to measured check results and verifies the diff itself (P1, S10).",
   "task": "Replace src/onatopp_dev.gleam with src/brief_dev.gleam and rebuild the inner-child contract around the brief document. Stage flow: scout activity (read-only norn, session '<branch>-scout', scout-report output schema) → concurrent warm_build + dev preserved via the existing tagged StartupTask/StartupResult envelope through workflow.all (dev session stays '<branch>') → the onatopp verify-fix loop preserved verbatim in shape (scoped_checks, then on CheckFail a durable round_backoff_ms sleep and dev_resume with projected feedback, bounded by required verify_fix_cap) → dev_review activity (norn reviewer, session '<branch>-review', review-report output schema, NEVER the dev session) → if any review enrichment is left 'drifted', fail typed listing the drifted R# ids and their issues → if review fixes are non-empty, re-run scoped_checks and fail typed on regression → converge. Activity contract reshapes that follow from the design ('all reused as-is except dev/dev_resume prompts now come from prompts.gleam projections' and stage outputs are the stage-contract reports): DevInput becomes (workspace, prompt) — the projected prompt is built in workflow code from BD-002's pure functions, so locals.dev drops its internal prompt assembly; the dev and dev_resume activities now return the dev-report shape (StartupResult's Developed carries a DevReport; fix rounds return a FULL replacement report per PROMPTING.md), with files_touched for scoped_checks derived in workflow code as the deduplicated files_changed paths of the latest report's enrichments, and the dev session id remaining deterministic from the branch. The DevResult type and its codec are KEPT — the outer arc's request_review/land payloads still use them until BD-005 reshapes the outer arc. Deletions: src/onatopp_dev.gleam, its workflow.toml entry, schemas/onatopp_input.json + onatopp_output.json, the stale onatopp-dev.aion archive, the Onatopp* types and codecs. New manifest entry brief_dev with schemas/brief_dev_input.json + brief_dev_output.json written inside the codegen v1 subset (no $ref/$defs/oneOf — codegen reads every schemas/*.json, so these must generate; the input schema inlines the brief-document and resolved-context shapes with additionalProperties false throughout; the generated BriefDevInput* types are an unused byproduct, the workflow keeps the hand-written codecs); timeout_seconds 86400 is carried over from the retired onatopp entry — an author-chosen budget from the live family, not a new invented default (ADR-001 note). Error taxonomy note: C18 names five categories (scout failure, dev block, verify exhaustion, review drift, stage failure); C15 additionally mandates a typed error for a harden pass that breaks verification, so BriefDevError carries a sixth variant HardenRegressed — a deliberate, declared addition, with startup fan-out failure folded into the stage-failure variant. Enrichment call sites (writing scout/dev/review blocks into the worktree brief file, C19-C22) are NOT here — BD-004 inserts enrich_brief calls into this module after it lands; brief_dev returns the three reports in its result so the parent and BD-004 have everything they need. SEQUENCING HAZARD, read before dispatch: src/stacked_dev.gleam imports the deleted onatopp_dev module and consumes dev_resume's old DevResult output, and this brief is barred from touching it (the outer-arc rewiring is BD-005's C23/C24). Between this brief's landing and BD-005's, gleam build fails in stacked_dev.gleam ONLY — this brief and BD-005 must ride one deployment wave (CN6: the family redeploys as a unit), and this brief's suite-level verification is completed at the BD-005 tip. Any build error outside stacked_dev.gleam is this brief's defect.",
   "requirements": [
@@ -23,10 +45,15 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/src/stacked_dev/types.gleam"],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/types.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C12", "C18"],
+      "checklist": [
+        "C12",
+        "C18"
+      ],
       "stories": []
     },
     {
@@ -49,7 +76,9 @@
         ],
         "delete": []
       },
-      "checklist": ["C18"],
+      "checklist": [
+        "C18"
+      ],
       "stories": []
     },
     {
@@ -64,11 +93,18 @@
       ],
       "files": {
         "create": [],
-        "modify": ["examples/stacked-dev/src/stacked_dev/activities.gleam"],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/activities.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C11", "C14"],
-      "stories": ["S11"]
+      "checklist": [
+        "C11",
+        "C14"
+      ],
+      "stories": [
+        "S11"
+      ]
     },
     {
       "id": "R4",
@@ -82,12 +118,23 @@
         "grep -c 'onatopp' examples/stacked-dev/src/stacked_dev/locals.gleam returns 0."
       ],
       "files": {
-        "create": ["examples/stacked-dev/test/stage_schema_test.gleam"],
-        "modify": ["examples/stacked-dev/src/stacked_dev/locals.gleam"],
+        "create": [
+          "examples/stacked-dev/test/stage_schema_test.gleam"
+        ],
+        "modify": [
+          "examples/stacked-dev/src/stacked_dev/locals.gleam"
+        ],
         "delete": []
       },
-      "checklist": ["C11", "C12", "C14"],
-      "stories": ["S9", "S11"]
+      "checklist": [
+        "C11",
+        "C12",
+        "C14"
+      ],
+      "stories": [
+        "S9",
+        "S11"
+      ]
     },
     {
       "id": "R5",
@@ -102,12 +149,29 @@
         "workflow.sleep appears exactly once, with duration.milliseconds(input.round_backoff_ms); no other duration literal exists in the module."
       ],
       "files": {
-        "create": ["examples/stacked-dev/src/brief_dev.gleam"],
+        "create": [
+          "examples/stacked-dev/src/brief_dev.gleam"
+        ],
         "modify": [],
-        "delete": ["examples/stacked-dev/src/onatopp_dev.gleam"]
+        "delete": [
+          "examples/stacked-dev/src/onatopp_dev.gleam"
+        ]
       },
-      "checklist": ["C10", "C11", "C12", "C13", "C15", "C16", "C17"],
-      "stories": ["S6", "S9", "S10", "S11"]
+      "checklist": [
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C15",
+        "C16",
+        "C17"
+      ],
+      "stories": [
+        "S6",
+        "S9",
+        "S10",
+        "S11"
+      ]
     },
     {
       "id": "R6",
@@ -135,7 +199,9 @@
           "examples/stacked-dev/onatopp-dev.aion"
         ]
       },
-      "checklist": ["C10"],
+      "checklist": [
+        "C10"
+      ],
       "stories": []
     },
     {
@@ -149,11 +215,15 @@
         "cd examples/stacked-dev && gleam test runs brief_dev_codecs_test and it passes (executed at the BD-005 tip)."
       ],
       "files": {
-        "create": ["examples/stacked-dev/test/brief_dev_codecs_test.gleam"],
+        "create": [
+          "examples/stacked-dev/test/brief_dev_codecs_test.gleam"
+        ],
         "modify": [],
         "delete": []
       },
-      "checklist": ["C18"],
+      "checklist": [
+        "C18"
+      ],
       "stories": []
     }
   ],

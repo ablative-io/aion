@@ -2,7 +2,7 @@
 
 _Updated: 2026-06-13_
 
-## Decided (7)
+## Decided (9)
 
 ### ADR-001 — No arbitrary limits, no assumed defaults
 
@@ -104,15 +104,16 @@ _Updated: 2026-06-13_
 - Workflow codecs for stage payloads are generated from the same schemas authors validate against
 - check-roadmap.py enforces that ledger status claims carry their artifacts
 
-## Proposed (2)
-
 ### ADR-008 — brief_dev replaces onatopp_dev inside the stacked-dev family
 
-- **Scope:** brief-dev · **Date:** 2026-06-13
+- **Scope:** brief-dev · **Date:** 2026-06-13 · **Decided by:** Tom
 
-**Context.** The v2 pipeline (scout → dev → verify → adversarial review → harden) needs a home. The stacked-dev family's inner child onatopp_dev is a scout-less, review-less dev loop — exactly the thing the pipeline supersedes. The fork: evolve the family in place, or build a sibling family alongside it.
+**Context.** The v2 pipeline (scout → dev → verify → adversarial review → harden) needs a home. The stacked-dev family's inner child onatopp_dev is a scout-less, review-less dev loop — exactly the thing the pipeline supersedes. The fork: evolve the family in place, or build a sibling family alongside it. Tom accepted the replacement while noting he'd also have been comfortable keeping both temporarily; ADR-002 tips the balance to replace.
 
 **Decision.** Evolve in place: onatopp_dev.gleam is deleted and brief_dev.gleam takes its slot as stacked_dev's inner child; the outer arc keeps its live-proven contracts. Rejected: a parallel brief-dev family — two families serving one purpose is the zombie-code pattern ADR-002 prohibits, and the outer arc's provision/gate/review/land contracts took a full dogfood night to prove against real CLIs; duplicating them duplicates that risk.
+
+> so brief Dev replacing on a top Dev in the stacked dev family. I guess that's fine but like I also don't mind sort of holding onto both for the time being
+> — Tom, 2026-06-13
 
 **Consequences:**
 - StackedDevInput reshapes (v2 brief document + resolved context replace the four document strings) — breaking, family redeploys as a unit
@@ -121,11 +122,14 @@ _Updated: 2026-06-13_
 
 ### ADR-009 — Enrichment rides the worktree branch and lands with the merge
 
-- **Scope:** brief-dev · **Date:** 2026-06-13
+- **Scope:** brief-dev · **Date:** 2026-06-13 · **Decided by:** Tom
 
 **Context.** Stage reports must be appended into the brief document in place (ADR-007). But WHERE does the write happen while a run is in flight? The brief lives in the repo; the run works in a provisioned worktree on a stacked branch. The fork: enrich the main-tree brief from outside the run, enrich a separate store and merge later, or enrich the worktree copy so the record travels with the code.
 
 **Decision.** The enrich_brief activity writes the brief file inside the run's worktree; the enriched brief is committed by land alongside the implementation and arrives on main in the same merge. Rejected: main-tree writes from a running workflow (races concurrent runs and pollutes main with in-flight state) and a separate execution store (re-creates the spec/record split ADR-007 closed; aion's event history already serves as the append-only store).
+
+> then the second one I agree with
+> — Tom, 2026-06-13
 
 **Consequences:**
 - A failed/rejected run leaves NO enrichment on main — its record lives only in the workflow's durable event history (describe), which is the correct asymmetry: main carries the record of what landed

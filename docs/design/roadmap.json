@@ -378,7 +378,7 @@
       "depends_on": [
         "RM-016"
       ],
-      "notes": "Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 PROPOSED, awaiting Tom — BD-003/004/005 carry them in blocked_by. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Dispatch implementation next."
+      "notes": "Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 DECIDED by Tom same day — blocked_by on BD-003/004/005 cleared. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Implementation in flight."
     },
     {
       "id": "RM-018",

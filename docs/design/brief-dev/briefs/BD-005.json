@@ -6,9 +6,7 @@
     "BD-003",
     "BD-004"
   ],
-  "blocked_by": [
-    "ADR-008 (proposed — awaiting Tom's decision)"
-  ],
+  "blocked_by": [],
   "checklist": [
     "C23",
     "C24",
