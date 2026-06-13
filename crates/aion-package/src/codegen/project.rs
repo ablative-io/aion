@@ -515,14 +515,35 @@ activities = []
         Ok(())
     }
 
-    /// Real-world proof against this repository's stacked-dev example: the
-    /// `$defs`/`$ref` indirection in `onatopp_input.json` is outside the v1
-    /// subset and must fail loudly, naming the file and pointer. (The five
-    /// other stacked-dev schemas are proven to generate and compile in the
-    /// CLI integration suite.)
+    /// A schema that factors its shape through `$defs`/`$ref` is outside the v1
+    /// subset and must fail loudly, naming the file and pointer. Built as a
+    /// fixture: every stacked-dev example schema is in-subset since the
+    /// brief-dev migration, so the example no longer carries an out-of-subset
+    /// case to assert against.
     #[test]
-    fn stacked_dev_example_hits_the_loud_error_on_onatopp_input() -> TestResult {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/stacked-dev");
+    fn schema_outside_subset_hits_the_loud_error() -> TestResult {
+        const FACTORED_WORKFLOW_TOML: &str = r#"[[workflow]]
+entry_module = "demo"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/factored.json"
+output_schema = "schemas/output.json"
+activities = []
+"#;
+        const FACTORED_SCHEMA: &[u8] = br##"{
+  "type": "object",
+  "properties": { "workspace": { "$ref": "#/$defs/workspace" } },
+  "$defs": { "workspace": { "type": "object", "properties": {} } }
+}"##;
+        let root = fixture::temp_project(
+            "codegen-outside-subset",
+            &[
+                ("gleam.toml", GLEAM_TOML.as_bytes()),
+                ("workflow.toml", FACTORED_WORKFLOW_TOML.as_bytes()),
+                ("schemas/factored.json", FACTORED_SCHEMA),
+                ("schemas/output.json", OUTPUT_SCHEMA),
+            ],
+        )?;
 
         let result = codegen_project(&root, CodegenMode::Check);
         let Err(CodegenError::UnsupportedConstruct {
@@ -533,9 +554,10 @@ activities = []
         else {
             return Err(format!("expected UnsupportedConstruct, got {result:?}").into());
         };
-        assert_eq!(file, Path::new("schemas/onatopp_input.json"));
+        assert_eq!(file, Path::new("schemas/factored.json"));
         assert_eq!(pointer, "/$defs");
         assert!(construct.contains("unrecognised keyword `$defs`"));
+        fs::remove_dir_all(&root)?;
         Ok(())
     }
 }

@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn dollar_defs_and_ref_fail_with_pointer() -> TestResult {
         assert_unsupported(
-            "onatopp_input",
+            "factored",
             r##"{
                 "type": "object",
                 "properties": { "workspace": { "$ref": "#/$defs/workspace" } },

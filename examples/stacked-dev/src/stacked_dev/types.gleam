@@ -62,15 +62,25 @@ pub type BuildWarm {
   BuildWarm(ok: Bool, duration_ms: Int)
 }
 
-/// Input to the `dev` activity (norn run).
+/// Input to the `dev` activity (norn run). The prompt is the projected dev
+/// prompt built in workflow code from BD-002's pure functions — the four
+/// document strings no longer ride this input (BD-003).
 pub type DevInput {
-  DevInput(
-    workspace: Workspace,
-    brief: String,
-    design: String,
-    checklist: String,
-    stories: List(String),
-  )
+  DevInput(workspace: Workspace, prompt: String)
+}
+
+/// Input to the `scout` activity (read-only norn run). The prompt is the
+/// projected scout prompt built in workflow code from BD-002's pure
+/// functions (BD-003).
+pub type ScoutInput {
+  ScoutInput(workspace: Workspace, prompt: String)
+}
+
+/// Input to the `dev_review` activity (adversarial reviewer norn run). The
+/// prompt is the projected review prompt built in workflow code from BD-002's
+/// pure functions (BD-003).
+pub type ReviewInput {
+  ReviewInput(workspace: Workspace, prompt: String)
 }
 
 /// Result of a dev round. `session_id` is essential: later rounds resume the
@@ -91,9 +101,11 @@ pub type StartupTask {
 
 /// Envelope output for the concurrent startup fan-out, mirroring
 /// `StartupTask`: `warm_build` answers `Warmed`, `dev` answers `Developed`.
+/// `Developed` now carries the dev-stage report (the dev/dev_resume activities
+/// return the dev-report shape — BD-003).
 pub type StartupResult {
   Warmed(build_warm: BuildWarm)
-  Developed(dev_result: DevResult)
+  Developed(dev_report: stage_io.DevReport)
 }
 
 /// Input to the `scoped_checks` activity: the fast inner verification loop
@@ -220,42 +232,61 @@ pub type Landed {
   Landed(branch: String, merged_into: String)
 }
 
-/// Input to the `onatopp_dev` child workflow (also independently
-/// dispatchable as a top-level run — open question Q6).
+/// Input to the `brief_dev` child workflow (also independently dispatchable
+/// as a top-level run). It carries the v2 brief document and the pre-resolved
+/// reference context in place of the four document strings (ADR-008).
 ///
 /// `verify_fix_cap` and `round_backoff_ms` are required inputs, never baked
-/// defaults (open question Q5).
-pub type OnatoppInput {
-  OnatoppInput(
+/// defaults (CN2, ADR-001/ADR-003).
+pub type BriefDevInput {
+  BriefDevInput(
     workspace: Workspace,
-    brief: String,
-    design: String,
-    checklist: String,
-    stories: List(String),
+    document: BriefDocument,
+    context: ResolvedContext,
     verify_fix_cap: Int,
     round_backoff_ms: Int,
   )
 }
 
-/// Output of the `onatopp_dev` child workflow: the converged dev result,
-/// the advisory warm-build outcome, and how many verify rounds it took.
-pub type OnatoppResult {
-  OnatoppResult(
-    dev_result: DevResult,
-    build_warm: BuildWarm,
+/// Output of the `brief_dev` child workflow: the three stage reports (the
+/// generated stage contracts), how many verify rounds it took, and the
+/// advisory warm-build outcome (C18).
+pub type BriefDevResult {
+  BriefDevResult(
+    scout: stage_io.ScoutReport,
+    dev: stage_io.DevReport,
+    review: stage_io.ReviewReport,
     verify_rounds: Int,
+    build_warm: BuildWarm,
   )
 }
 
-/// Typed errors of the `onatopp_dev` child workflow.
-pub type OnatoppError {
-  /// The concurrent warm-build/dev startup fan-out failed.
-  StartupFailed(message: String)
+/// One review-found requirement left `drifted` after the harden pass: its R#
+/// id and the issues the reviewer recorded. Carried by `ReviewDrifted`.
+pub type DriftedRequirement {
+  DriftedRequirement(id: String, issues: List(String))
+}
+
+/// Typed errors of the `brief_dev` child workflow (C18, plus the C15-mandated
+/// `HardenRegressed`). Exactly six constructors.
+pub type BriefDevError {
+  /// The read-only scout stage failed to execute.
+  ScoutFailed(message: String)
+  /// The dev report marked one or more requirements `blocked`; carries those
+  /// R# ids.
+  DevBlocked(requirement_ids: List(String))
   /// The bounded verify-fix loop spent its attempt budget; carries the last
   /// scoped-check diagnostics so the failure is actionable.
   VerifyFixExhausted(rounds: Int, diagnostics: String)
-  /// Any other stage failure, tagged with the stage that raised it.
-  OnatoppStageFailed(stage: String, message: String)
+  /// The review report left one or more requirements `drifted` after the
+  /// harden pass; carries each drifted requirement's id and issues.
+  ReviewDrifted(drifted: List(DriftedRequirement))
+  /// A harden pass (re-running scoped checks after review fixes) broke
+  /// verification; carries the regression diagnostics (C15).
+  HardenRegressed(diagnostics: String)
+  /// Any other stage failure, tagged with the stage that raised it. The
+  /// startup fan-out shape violation folds into this variant.
+  BriefDevStageFailed(stage: String, message: String)
 }
 
 /// Input to the `stacked_dev` top-level workflow.
@@ -272,10 +303,8 @@ pub type StackedDevInput {
     base_ref: String,
     placement: Placement,
     isolation: Isolation,
-    brief: String,
-    design: String,
-    checklist: String,
-    stories: List(String),
+    brief_document: BriefDocument,
+    resolved_context: ResolvedContext,
     verify_fix_cap: Int,
     review_cap: Int,
     round_backoff_ms: Int,
@@ -295,15 +324,30 @@ pub type StackedDevResult {
   )
 }
 
-/// Typed errors of the `stacked_dev` top-level workflow.
+/// Typed errors of the `stacked_dev` top-level workflow. The `brief_dev`
+/// child's typed errors are lifted here variant-by-variant, payloads intact
+/// (BD-005 R4): scout failure, dev block, verify exhaustion, review drift,
+/// harden regression, and stage failure each have a distinct lifting.
 pub type StackedDevError {
   /// Workspace provisioning failed.
   ProvisionFailed(message: String)
-  /// The `onatopp_dev` child failed outside its verify-fix budget.
+  /// The `brief_dev` child's read-only scout stage failed; lifted from
+  /// `ScoutFailed`.
+  ScoutFailedInChild(message: String)
+  /// The `brief_dev` child reported one or more requirements `blocked`;
+  /// lifted from `DevBlocked` with those R# ids attached.
+  DevBlockedInChild(requirement_ids: List(String))
+  /// The `brief_dev` child failed outside the typed taxonomy below.
   DevFailed(message: String)
   /// The child's verify-fix loop spent its budget; lifted from
   /// `VerifyFixExhausted` with the last diagnostics attached.
   VerifyExhausted(rounds: Int, diagnostics: String)
+  /// The child's review report left one or more requirements `drifted`;
+  /// lifted from `ReviewDrifted` with every drifted R# id and its issues.
+  ReviewDriftedInChild(drifted: List(DriftedRequirement))
+  /// The child's harden pass broke verification; lifted from
+  /// `HardenRegressed` with the regression diagnostics.
+  HardenRegressedInChild(diagnostics: String)
   /// The authoritative gate executed and failed. A converged verify loop
   /// that still fails the gate surfaces loudly instead of looping.
   GateRejected(report: String)
@@ -324,9 +368,9 @@ pub type StackedDevStatus {
   StackedDevStatus(phase: String, round: Int)
 }
 
-/// Live status answered by the `onatopp_dev_status` query.
-pub type OnatoppStatus {
-  OnatoppStatus(phase: String, round: Int)
+/// Live status answered by the `brief_dev_status` query.
+pub type BriefDevStatus {
+  BriefDevStatus(phase: String, round: Int)
 }
 
 /// A v2 implementation brief: a self-contained unit of work AND its

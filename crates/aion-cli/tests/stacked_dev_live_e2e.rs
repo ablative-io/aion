@@ -163,12 +163,12 @@ fn build_example_archives(repo: &Path) -> Result<(), TestError> {
                 .collect()
         })
         .unwrap_or_default();
-    for expected in ["stacked_dev", "onatopp_dev", "gate"] {
+    for expected in ["stacked_dev", "brief_dev", "gate"] {
         if !packaged.contains(&expected) {
             return Err(format!("package must report {expected}: {report}").into());
         }
     }
-    for archive in ["stacked-dev.aion", "onatopp-dev.aion", "gate.aion"] {
+    for archive in ["stacked-dev.aion", "brief-dev.aion", "gate.aion"] {
         if !example.join(archive).is_file() {
             return Err(format!("packaging did not produce {archive}").into());
         }
@@ -241,6 +241,68 @@ fn write_shim(dir: &Path, name: &str, body: &str) -> Result<(), TestError> {
 /// Install the happy-path shim set: yg provisions/passes, norn answers the
 /// structured `DevResult` for dev and resume, cargo warm-builds clean, and
 /// meridian acks the review; landing is `yg branch merge`.
+/// Seed the worktree brief (authored fields only) at the path `enrich_brief`
+/// derives, and return the matching run input as a JSON string. Real `yg branch
+/// provision` would check this file out of the repo; the shim only mkdir's, so
+/// the test plants it. The input's `brief_document` is the same value, so the
+/// authored subsets are byte-identical and enrich never sees divergence (CN3).
+fn seed_and_build_input(workflow_repo: &Path) -> Result<String, TestError> {
+    let brief_document = serde_json::json!({
+        "id": "brief-7",
+        "cluster": "brief-dev",
+        "title": "Implement the widget",
+        "depends_on": [],
+        "blocked_by": [],
+        "checklist": ["C1"],
+        "stories": ["S1"],
+        "design_anchor": ["ADR-008"],
+        "purpose": "prove the family end to end",
+        "task": "implement the widget",
+        "requirements": [{
+            "id": "R1",
+            "title": "the widget",
+            "spec": "add the widget",
+            "acceptance": ["it exists"],
+            "files": { "create": [], "modify": ["src/a.gleam"], "delete": [] },
+            "checklist": ["C1"],
+            "stories": ["S1"]
+        }],
+        "boundaries": ["touch only the widget"],
+        "verification": ["gleam test"]
+    });
+    let brief_dir =
+        workflow_repo.join(".yggdrasil-worktrees/stacked-dev-brief-7/docs/design/brief-dev/briefs");
+    std::fs::create_dir_all(&brief_dir)?;
+    std::fs::write(
+        brief_dir.join("brief-7.json"),
+        serde_json::to_string(&brief_document)?,
+    )?;
+
+    Ok(serde_json::json!({
+        "repo_root": workflow_repo.display().to_string(),
+        "brief_id": "brief-7",
+        "reviewers": ["sample-reviewer"],
+        "base_ref": "main",
+        "placement": "local",
+        "isolation": "worktree",
+        "brief_document": brief_document,
+        "resolved_context": {
+            "adrs": [{ "id": "ADR-008", "title": "replace", "decision": "d", "quote": "q", "decided_by": "Tom" }],
+            "checklist": [{ "id": "C1", "text": "ct" }],
+            "stories": [{ "id": "S1", "text": "st" }],
+            "constraints": [{ "id": "CN1", "text": "nt" }],
+            "intention": "exercise the pipeline",
+            "design_path": "docs/design/brief-dev/design.json",
+            "provenance": { "requested_by": "Tom", "quote": "do this" }
+        },
+        "verify_fix_cap": 3,
+        "review_cap": 3,
+        "round_backoff_ms": 100,
+        "review_deadline_ms": 86_400_000
+    })
+    .to_string())
+}
+
 fn write_shims(dir: &Path) -> Result<(), TestError> {
     write_shim(
         dir,
@@ -266,15 +328,32 @@ fn write_shims(dir: &Path) -> Result<(), TestError> {
     ;;
 esac"#,
     )?;
+    // The norn shim answers per stage, keyed on the deterministic session id
+    // (`<branch>-scout`, `<branch>`, `<branch>-review`) — proving the session
+    // discipline the handlers promise. Each stage emits the bare report shape
+    // its parser expects: scout → ScoutReport, dev/resume → DevReport (aligned,
+    // tests_pass), review → ReviewReport (aligned, no fixes ⇒ no harden, no
+    // drift ⇒ the run converges and lands).
     write_shim(
         dir,
         "norn",
-        r#"case "$2" in
+        r#"dev_report='{"summary":"implemented","commit_message":"feat: R1","enrichments":[{"id":"R1","status":"implemented","files_changed":[{"path":"src/a.gleam","change":"modified","note":"added"}],"how":"added it","deviation":"","checklist":[{"id":"C1","done":true,"note":"done"}],"stories":[{"id":"S1","satisfied":true,"note":"ok"}]}],"attestation":{"no_panics":true,"no_unsafe":true,"boundaries_respected":true,"tests_pass":true}}'
+case "$2" in
   --session-id)
-    printf '%s' '{"session_id":"shim","files_touched":["crates/aion-core/src/lib.rs"],"summary":"implemented the brief"}'
+    case "$3" in
+      *-scout)
+        printf '%s' '{"summary":"scouted","enrichments":[{"id":"R1","files":["src/a.gleam"],"context":["match conventions"],"approach":"add it","notes":""}],"verification":["gleam test"]}'
+        ;;
+      *-review)
+        printf '%s' '{"summary":"verified","commit_message":"","enrichments":[{"id":"R1","alignment":"aligned","acceptance":[{"criterion":"it exists","met":true,"evidence":"src/a.gleam:1"}],"checklist":["C1"],"stories":["S1"],"issues":[],"fixes":[]}],"verification":[{"criterion":"gleam test","passed":true,"note":""}]}'
+        ;;
+      *)
+        printf '%s' "$dev_report"
+        ;;
+    esac
     ;;
   --resume)
-    printf '%s' '{"session_id":"shim","files_touched":["crates/aion-core/src/lib.rs"],"summary":"applied feedback"}'
+    printf '%s' "$dev_report"
     ;;
   *)
     echo "unexpected norn invocation: $*" >&2
@@ -381,6 +460,11 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
     std::fs::create_dir_all(&workflow_repo)?;
     write_shims(&shim_dir)?;
 
+    // Seed the worktree brief and build the matching run input together, so the
+    // authored subset the input carries and the on-disk file enrich_brief reads
+    // are byte-identical.
+    let input = seed_and_build_input(&workflow_repo)?;
+
     let http_port = reserve_port()?;
     let grpc_port = reserve_port()?;
     write_server_config(&project, http_port, grpc_port)?;
@@ -389,7 +473,7 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
 
     let result = (|| -> Result<(), TestError> {
         deploy_archive(&example, &endpoint, "stacked-dev.aion", "stacked_dev")?;
-        deploy_archive(&example, &endpoint, "onatopp-dev.aion", "onatopp_dev")?;
+        deploy_archive(&example, &endpoint, "brief-dev.aion", "brief_dev")?;
         deploy_archive(&example, &endpoint, "gate.aion", "gate")?;
 
         // The worker's entire PATH is the shim directory: the handlers really
@@ -404,10 +488,6 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
             .spawn()?;
         let mut worker = ChildGuard::new(worker_child, "stacked-dev-worker");
 
-        let input = format!(
-            r#"{{"repo_root":"{}","brief_id":"brief-7","reviewers":["sample-reviewer"],"base_ref":"main","placement":"local","isolation":"worktree","brief":"Implement the widget","design":"docs/design.md","checklist":"docs/checklist.md","stories":["story-1"],"verify_fix_cap":3,"review_cap":3,"round_backoff_ms":100,"review_deadline_ms":86400000}}"#,
-            workflow_repo.display()
-        );
         let workflow_id =
             start_run_once_the_worker_serves(&project, &endpoint, &input, &mut worker)?;
 

@@ -3,7 +3,7 @@ name = "stacked-dev-worker"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Standalone activity worker serving the stacked-dev workflow family's eight activities."
+description = "Standalone activity worker serving the stacked-dev workflow family's eleven activities."
 
 # Deliberately NOT a workspace member: this is the worker a deployment would
 # write against the published SDK, so it consumes `aion-worker` from

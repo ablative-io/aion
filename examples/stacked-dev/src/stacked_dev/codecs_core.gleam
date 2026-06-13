@@ -3,15 +3,17 @@
 //// Workflow-level and review/land codecs live in `stacked_dev/codecs_flow`.
 
 import aion/codec
+import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
 import stacked_dev/types.{
   type BuildWarm, type CheckResult, type CheckVerdict, type DevInput,
   type DevResult, type Isolation, type Placement, type ProvisionInput,
-  type ResumeInput, type ScopedInput, type StartupResult, type StartupTask,
-  type Workspace, BuildWarm, CheckFail, CheckPass, CheckResult, Copy, DevInput,
-  DevResult, DevTask, Developed, Local, Overlay, ProvisionInput, Remote,
-  ResumeInput, ScopedInput, Vm, WarmTask, Warmed, Workspace, Worktree,
+  type ResumeInput, type ScopedInput, type ScoutInput, type StartupResult,
+  type StartupTask, type Workspace, BuildWarm, CheckFail, CheckPass, CheckResult,
+  Copy, DevInput, DevResult, DevTask, Developed, Local, Overlay, ProvisionInput,
+  Remote, ResumeInput, ScopedInput, ScoutInput, Vm, WarmTask, Warmed, Workspace,
+  Worktree,
 }
 
 /// Wire name for a `Placement` value.
@@ -133,31 +135,39 @@ pub fn build_warm_decoder() -> decode.Decoder(BuildWarm) {
   decode.success(BuildWarm(ok: ok, duration_ms: duration_ms))
 }
 
-/// JSON encoder for a `DevInput`.
+/// JSON encoder for a `DevInput` — the workspace and the projected prompt
+/// (BD-003: the four document strings are gone; the prompt is built in
+/// workflow code from BD-002's projections).
 pub fn dev_input_to_json(input: DevInput) -> json.Json {
   json.object([
     #("workspace", workspace_to_json(input.workspace)),
-    #("brief", json.string(input.brief)),
-    #("design", json.string(input.design)),
-    #("checklist", json.string(input.checklist)),
-    #("stories", json.array(input.stories, json.string)),
+    #("prompt", json.string(input.prompt)),
   ])
 }
 
 /// Decoder for a `DevInput`.
 pub fn dev_input_decoder() -> decode.Decoder(DevInput) {
   use workspace <- decode.field("workspace", workspace_decoder())
-  use brief <- decode.field("brief", decode.string)
-  use design <- decode.field("design", decode.string)
-  use checklist <- decode.field("checklist", decode.string)
-  use stories <- decode.field("stories", decode.list(decode.string))
-  decode.success(DevInput(
-    workspace: workspace,
-    brief: brief,
-    design: design,
-    checklist: checklist,
-    stories: stories,
-  ))
+  use prompt <- decode.field("prompt", decode.string)
+  decode.success(DevInput(workspace: workspace, prompt: prompt))
+}
+
+/// Codec for the `scout` activity input: the workspace and the projected
+/// scout prompt (BD-003).
+pub fn scout_input_codec() -> codec.Codec(ScoutInput) {
+  codec.json_codec(
+    fn(input: ScoutInput) {
+      json.object([
+        #("workspace", workspace_to_json(input.workspace)),
+        #("prompt", json.string(input.prompt)),
+      ])
+    },
+    {
+      use workspace <- decode.field("workspace", workspace_decoder())
+      use prompt <- decode.field("prompt", decode.string)
+      decode.success(ScoutInput(workspace: workspace, prompt: prompt))
+    },
+  )
 }
 
 /// JSON encoder for a `DevResult`, shared by the dev/resume codecs and the
@@ -187,20 +197,23 @@ pub fn dev_result_codec() -> codec.Codec(DevResult) {
   codec.json_codec(dev_result_to_json, dev_result_decoder())
 }
 
-/// Codec for real norn's `--output-format json` completion envelope: the
-/// schema-constrained result sits under `"output"`, alongside usage/model/
-/// event fields this workflow ignores (confirmed live, 2026-06-13). Encoding
-/// reproduces only the `output` field — the rest is norn-owned telemetry.
-pub fn norn_envelope_codec() -> codec.Codec(DevResult) {
-  codec.json_codec(
-    fn(result: DevResult) {
-      json.object([#("output", dev_result_to_json(result))])
-    },
-    {
-      use dev_result <- decode.field("output", dev_result_decoder())
-      decode.success(dev_result)
-    },
-  )
+/// Real norn's `--output-format json` completion envelope decoder, generic
+/// over the stage report's inner decoder: the schema-constrained result sits
+/// under `"output"`, alongside usage/model/event fields this workflow ignores
+/// (confirmed live, 2026-06-13). This is the codec seam for C31's parsing
+/// rule — the locals accept the bare report shape OR this `{"output": ...}`
+/// envelope and nothing else.
+pub fn report_envelope_decoder(
+  inner: decode.Decoder(report),
+) -> decode.Decoder(report) {
+  use report <- decode.field("output", inner)
+  decode.success(report)
+}
+
+/// Decoder for real norn's dev-report completion envelope (the `{"output":
+/// <dev report>}` shape), used by the dev/dev_resume locals.
+pub fn dev_report_envelope_decoder() -> decode.Decoder(stage_io.DevReport) {
+  report_envelope_decoder(stage_io.dev_report_decoder())
 }
 
 /// Codec for the startup fan-out input envelope shared by the `warm_build`
@@ -253,10 +266,10 @@ pub fn startup_result_codec() -> codec.Codec(StartupResult) {
             #("task", json.string("warm_build")),
             #("build_warm", build_warm_to_json(build_warm)),
           ])
-        Developed(dev_result: dev_result) ->
+        Developed(dev_report: dev_report) ->
           json.object([
             #("task", json.string("dev")),
-            #("dev_result", dev_result_to_json(dev_result)),
+            #("dev_report", stage_io.dev_report_to_json(dev_report)),
           ])
       }
     },
@@ -268,8 +281,11 @@ pub fn startup_result_codec() -> codec.Codec(StartupResult) {
           decode.success(Warmed(build_warm: build_warm))
         }
         "dev" -> {
-          use dev_result <- decode.field("dev_result", dev_result_decoder())
-          decode.success(Developed(dev_result: dev_result))
+          use dev_report <- decode.field(
+            "dev_report",
+            stage_io.dev_report_decoder(),
+          )
+          decode.success(Developed(dev_report: dev_report))
         }
         _ ->
           decode.failure(

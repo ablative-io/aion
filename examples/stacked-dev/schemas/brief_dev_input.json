@@ -1,63 +1,29 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "stacked_dev input",
-  "description": "Carries the v2 brief document and the pre-resolved reference context in place of the four document strings (ADR-008). Every loop cap, backoff, and deadline is required — the caller decides them, the workflow bakes no defaults (CN2).",
+  "title": "brief_dev input",
+  "description": "The v2 brief document plus the pre-resolved reference context and the two required loop parameters. Every cap and backoff is required — the caller decides them, the workflow bakes no defaults (CN2).",
   "type": "object",
   "required": [
-    "repo_root",
-    "brief_id",
-    "reviewers",
-    "base_ref",
-    "placement",
-    "isolation",
-    "brief_document",
-    "resolved_context",
+    "workspace",
+    "document",
+    "context",
     "verify_fix_cap",
-    "review_cap",
-    "round_backoff_ms",
-    "review_deadline_ms"
+    "round_backoff_ms"
   ],
   "additionalProperties": false,
   "properties": {
-    "repo_root": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Absolute path to the repository the worktree is provisioned from."
+    "workspace": {
+      "type": "object",
+      "required": ["path", "branch", "placement", "isolation"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "placement": { "type": "string", "enum": ["local", "remote"] },
+        "isolation": { "type": "string", "enum": ["worktree", "copy", "overlay", "vm"] }
+      }
     },
-    "brief_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "reviewers": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "minItems": 1,
-      "description": "Member names or UUIDs to request review from."
-    },
-    "base_ref": {
-      "type": "string",
-      "minLength": 1
-    },
-    "placement": {
-      "type": "string",
-      "enum": [
-        "local",
-        "remote"
-      ]
-    },
-    "isolation": {
-      "type": "string",
-      "enum": [
-        "worktree",
-        "copy",
-        "overlay",
-        "vm"
-      ]
-    },
-    "brief_document": {
+    "document": {
       "type": "object",
       "required": ["id", "cluster", "title", "depends_on", "blocked_by", "checklist", "stories", "design_anchor", "purpose", "task", "requirements", "boundaries", "verification"],
       "additionalProperties": false,
@@ -224,7 +190,7 @@
         }
       }
     },
-    "resolved_context": {
+    "context": {
       "type": "object",
       "required": ["adrs", "checklist", "stories", "constraints", "intention", "design_path", "provenance"],
       "additionalProperties": false,
@@ -293,21 +259,7 @@
         }
       }
     },
-    "verify_fix_cap": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "review_cap": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "round_backoff_ms": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "review_deadline_ms": {
-      "type": "integer",
-      "minimum": 0
-    }
+    "verify_fix_cap": { "type": "integer", "minimum": 1 },
+    "round_backoff_ms": { "type": "integer", "minimum": 0 }
   }
 }

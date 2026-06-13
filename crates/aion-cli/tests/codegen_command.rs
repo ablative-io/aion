@@ -294,14 +294,14 @@ fn stacked_dev_supported_schemas_generate_and_compile() -> Result<(), TestError>
     std::fs::create_dir_all(project.join("src"))?;
 
     let example_schemas = repo_examples_dir()?.join("stacked-dev/schemas");
-    // onatopp_input.json uses `$defs`/`$ref` — outside the v1 subset; its
-    // loud error is proven in `stacked_dev_schema_outside_subset_fails_loudly`.
+    // brief_dev_output.json is the inner-child output contract (scout/dev/review
+    // blocks, all inlined within the v1 subset since the brief-dev migration).
     for name in [
         "input.json",
         "output.json",
         "gate_input.json",
         "gate_output.json",
-        "onatopp_output.json",
+        "brief_dev_output.json",
     ] {
         std::fs::copy(
             example_schemas.join(name),
@@ -337,7 +337,7 @@ fn stacked_dev_supported_schemas_generate_and_compile() -> Result<(), TestError>
         "pub type GateInputWorkspaceIsolation {",
         "pub type GateInputScope {",
         "modules: option.Option(List(String)),",
-        "pub type OnatoppOutputDevResult {",
+        "pub type BriefDevOutputDev {",
     ] {
         assert!(
             module.contains(expected),
@@ -349,15 +349,46 @@ fn stacked_dev_supported_schemas_generate_and_compile() -> Result<(), TestError>
     Ok(())
 }
 
-/// Real-world finding, proven loud: `onatopp_input.json` factors its
-/// workspace shape through `$defs`/`$ref`, which is outside the v1 subset,
-/// so `aion codegen` on the pristine stacked-dev example fails naming the
-/// file and pointer (and `--check` writes nothing).
+/// Loud-failure proof: a schema that factors its shape through `$defs`/`$ref`
+/// is outside the v1 codegen subset, so `aion codegen --check` exits 1 and
+/// names the offending file and JSON pointer rather than emitting a partial
+/// module. Held independent of any example — every stacked-dev schema is
+/// in-subset since the brief-dev migration, so this builds its own fixture.
 #[test]
-fn stacked_dev_schema_outside_subset_fails_loudly() -> Result<(), TestError> {
-    let example = repo_examples_dir()?.join("stacked-dev");
+fn schema_outside_subset_fails_loudly() -> Result<(), TestError> {
+    let temp_dir = tempfile::tempdir()?;
+    let project = temp_dir.path().join("outside_subset");
+    std::fs::create_dir_all(project.join("schemas"))?;
 
-    let output = common::run_cli(&example, &["codegen", ".", "--check"])?;
+    std::fs::write(
+        project.join("schemas/factored.json"),
+        r##"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["endpoint"],
+  "additionalProperties": false,
+  "$defs": {
+    "host": { "type": "string" }
+  },
+  "properties": {
+    "endpoint": { "$ref": "#/$defs/host" }
+  }
+}"##,
+    )?;
+    std::fs::write(
+        project.join("gleam.toml"),
+        "name = \"outside_subset\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n\n\
+         [dependencies]\ngleam_stdlib = \">= 0.60.0 and < 2.0.0\"\n\
+         gleam_json = \">= 2.0.0 and < 4.0.0\"\n",
+    )?;
+    std::fs::write(
+        project.join("workflow.toml"),
+        "[[workflow]]\nentry_module = \"outside_subset\"\nentry_function = \"run\"\n\
+         timeout_seconds = 604800\ninput_schema = \"schemas/factored.json\"\n\
+         output_schema = \"schemas/factored.json\"\nactivities = []\n",
+    )?;
+
+    let output = common::run_cli(&project, &["codegen", ".", "--check"])?;
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -365,7 +396,7 @@ fn stacked_dev_schema_outside_subset_fails_loudly() -> Result<(), TestError> {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("schemas/onatopp_input.json")
+        stderr.contains("schemas/factored.json")
             && stderr.contains("/$defs")
             && stderr.contains("unsupported JSON Schema construct"),
         "the loud error must name the file and pointer: {stderr}"

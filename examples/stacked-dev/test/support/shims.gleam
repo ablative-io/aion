@@ -11,17 +11,21 @@
 
 import aion/activity
 import aion/testing
+import brief_dev
 import gate
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/string
-import onatopp_dev
 import stacked_dev/activities
 import stacked_dev/codecs_flow
 import stacked_dev/codecs_workflows
 import stacked_dev/types.{
-  type Workspace, DevInput, DevResult, GateInput, GatePass, GateResult,
-  LandInput, Local, ProvisionInput, ResumeInput, ReviewRequest, ScopedInput,
+  type BriefDocument, type EnrichInput, type ExecutionBlock, type Workspace,
+  AttestationBlock, BriefDocument, DevInput, DevResult, EnrichInput,
+  ExecutionBlock, ExecutionEnrichment, ExecutionLanded, GateBlock, GateInput,
+  GatePass, GateResult, LandInput, Local, ProvisionInput, ResumeInput,
+  ReviewInput, ReviewRequest, ScopedInput, ScoutInput, VerdictApproved,
   Workspace, WorkspaceWide, Worktree,
 }
 
@@ -114,22 +118,45 @@ pub fn write_meridian(shims: Shims) -> Nil {
   ])
 }
 
-/// Install the `norn` shim. The dev invocation (`--print --session-id ...`)
-/// reports one touched file; resume (`--print --resume ...`) keeps the session
-/// and reports the feedback applied. The activity overrides the session id
-/// with the one it set, so the value reported here only anchors the shape.
+/// The scout-report envelope the scout norn invocation (`<branch>-scout`)
+/// emits: one entry for R1 against the scout-report schema.
+pub const scout_report_json = "{\"summary\":\"scouted the brief\",\"enrichments\":[{\"id\":\"R1\",\"files\":[\"crates/aion-core/src/lib.rs\"],\"context\":[\"match the existing taxonomy\"],\"approach\":\"add the variant\",\"notes\":\"\"}],\"verification\":[\"gleam test\"]}"
+
+/// The dev-report envelope the dev norn invocation (the bare `<branch>`
+/// session) emits: R1 implemented, touching one file.
+pub const dev_report_json = "{\"summary\":\"implemented the brief\",\"commit_message\":\"feat: implement R1\",\"enrichments\":[{\"id\":\"R1\",\"status\":\"implemented\",\"files_changed\":[{\"path\":\"crates/aion-core/src/lib.rs\",\"change\":\"modified\",\"note\":\"added the variant\"}],\"how\":\"added the variant\",\"deviation\":\"\",\"checklist\":[],\"stories\":[]}],\"attestation\":{\"no_panics\":true,\"no_unsafe\":true,\"boundaries_respected\":true,\"tests_pass\":true}}"
+
+/// The dev-report envelope a resume round emits: a FULL replacement report
+/// touching a second file, proving the fix round produced a complete report.
+pub const dev_resume_report_json = "{\"summary\":\"applied feedback\",\"commit_message\":\"fix: address diagnostics\",\"enrichments\":[{\"id\":\"R1\",\"status\":\"implemented\",\"files_changed\":[{\"path\":\"crates/aion-core/src/lib.rs\",\"change\":\"modified\",\"note\":\"fixed\"},{\"path\":\"crates/aion-core/src/error.rs\",\"change\":\"modified\",\"note\":\"fixed\"}],\"how\":\"applied the diagnostics\",\"deviation\":\"\",\"checklist\":[],\"stories\":[]}],\"attestation\":{\"no_panics\":true,\"no_unsafe\":true,\"boundaries_respected\":true,\"tests_pass\":true}}"
+
+/// The review-report envelope the reviewer norn invocation (`<branch>-review`)
+/// emits: R1 aligned with no fixes, so no drift and no harden re-verify.
+pub const review_report_json = "{\"summary\":\"verified the diff\",\"commit_message\":\"\",\"enrichments\":[{\"id\":\"R1\",\"alignment\":\"aligned\",\"acceptance\":[{\"criterion\":\"the variant exists\",\"met\":true,\"evidence\":\"crates/aion-core/src/lib.rs:42\"}],\"checklist\":[],\"stories\":[],\"issues\":[],\"fixes\":[]}],\"verification\":[{\"criterion\":\"gleam test\",\"passed\":true,\"note\":\"\"}]}"
+
+/// Install the `norn` shim. Each stage is distinguished by its session-id
+/// suffix: `<branch>-scout` emits a scout report, `<branch>-review` emits a
+/// review report, the bare `<branch>` session emits a dev report, and resume
+/// (`--print --resume ...`) emits a full replacement dev report. Every
+/// envelope is a bare stage report against its schema.
 pub fn write_norn(shims: Shims) -> Nil {
   write_shim(shims, "norn", [
     "case \"$2\" in",
     "  --session-id)",
-    "    printf '%s' '{\"session_id\":\""
-      <> session_id
-      <> "\",\"files_touched\":[\"crates/aion-core/src/lib.rs\"],\"summary\":\"implemented the brief\"}'",
+    "    case \"$3\" in",
+    "      *-scout)",
+    "        printf '%s' '" <> scout_report_json <> "'",
+    "        ;;",
+    "      *-review)",
+    "        printf '%s' '" <> review_report_json <> "'",
+    "        ;;",
+    "      *)",
+    "        printf '%s' '" <> dev_report_json <> "'",
+    "        ;;",
+    "    esac",
     "    ;;",
     "  --resume)",
-    "    printf '%s' '{\"session_id\":\""
-      <> session_id
-      <> "\",\"files_touched\":[\"crates/aion-core/src/lib.rs\",\"crates/aion-core/src/error.rs\"],\"summary\":\"applied feedback\"}'",
+    "    printf '%s' '" <> dev_resume_report_json <> "'",
     "    ;;",
     "  *)",
     "    echo \"unexpected norn invocation: $*\" >&2",
@@ -260,18 +287,14 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
       isolation: Worktree,
     )),
   )
+  register_activity(
+    env,
+    activities.scout(ScoutInput(workspace: workspace, prompt: "")),
+  )
   register_activity(env, activities.warm_build(workspace))
   register_activity(
     env,
-    activities.dev(
-      DevInput(
-        workspace: workspace,
-        brief: "",
-        design: "",
-        checklist: "",
-        stories: [],
-      ),
-    ),
+    activities.dev(DevInput(workspace: workspace, prompt: "")),
   )
   register_activity(
     env,
@@ -282,6 +305,10 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
   register_activity(
     env,
     activities.dev_resume(ResumeInput(session_id: "sample", feedback: "")),
+  )
+  register_activity(
+    env,
+    activities.dev_review(ReviewInput(workspace: workspace, prompt: "")),
   )
   register_activity(
     env,
@@ -310,15 +337,31 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
       dev_result: dev_result,
     )),
   )
+  // The enrich_brief activity writes the worktree brief from a real path; the
+  // pipeline scenarios provision their worktree fresh and do not seed a brief
+  // file, so the outer-arc execution-block write is doubled with a pure
+  // handler that returns the handed document (its real filesystem behaviour
+  // is covered by the BD-004 enrich_brief activity tests below). The outer arc
+  // ignores the returned document, so the identity stub suffices.
+  let enrich =
+    activities.enrich_brief(EnrichInput(
+      workspace: workspace,
+      document: sample_brief_document(),
+      enrichment: ExecutionEnrichment(block: sample_execution_block()),
+    ))
+  let assert Ok(_) =
+    testing.mock_activity(env, enrich, fn(input: EnrichInput) {
+      Ok(input.document)
+    })
 
   let assert Ok(_) =
     testing.mock_child(
       env,
-      onatopp_dev.workflow_type,
-      codecs_workflows.onatopp_input_codec(),
-      codecs_workflows.onatopp_result_codec(),
-      codecs_workflows.onatopp_error_codec(),
-      onatopp_dev.execute,
+      brief_dev.workflow_type,
+      codecs_workflows.brief_dev_input_codec(),
+      codecs_workflows.brief_dev_result_codec(),
+      codecs_workflows.brief_dev_error_codec(),
+      brief_dev.execute,
     )
   let assert Ok(_) =
     testing.mock_child(
@@ -349,6 +392,48 @@ fn sample_workspace() -> Workspace {
     branch: "stacked/sample",
     placement: Local,
     isolation: Worktree,
+  )
+}
+
+/// A minimal brief document anchoring the enrich_brief activity's name/codecs
+/// (the sample input never runs; the registered handler is the stub above).
+fn sample_brief_document() -> BriefDocument {
+  BriefDocument(
+    id: "BD-000",
+    cluster: "brief-dev",
+    title: "sample",
+    depends_on: [],
+    blocked_by: [],
+    checklist: [],
+    stories: [],
+    design_anchor: [],
+    purpose: "",
+    task: "",
+    requirements: [],
+    boundaries: [],
+    verification: [],
+    execution: option.None,
+  )
+}
+
+/// A minimal execution block anchoring the enrich_brief activity's name/codecs.
+fn sample_execution_block() -> ExecutionBlock {
+  ExecutionBlock(
+    status: ExecutionLanded,
+    workflow_id: "wf",
+    branch: "stacked/sample",
+    session_id: "stacked/sample",
+    gate: GateBlock(fmt: True, clippy: True, tests: True, fix_rounds: 0),
+    attestation: AttestationBlock(
+      no_panics: True,
+      no_unsafe: True,
+      boundaries_respected: True,
+      tests_pass: True,
+    ),
+    review_verdict: VerdictApproved,
+    landed_commit: "",
+    merged_into: "main",
+    completed_at: "",
   )
 }
 

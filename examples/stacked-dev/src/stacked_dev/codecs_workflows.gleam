@@ -6,29 +6,34 @@
 //// land).
 
 import aion/codec
+import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
+import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/types.{
-  type OnatoppError, type OnatoppInput, type OnatoppResult, type OnatoppStatus,
-  type StackedDevError, type StackedDevInput, type StackedDevResult,
-  type StackedDevStatus, DevFailed, GateRejected, LandFailed, OnatoppInput,
-  OnatoppResult, OnatoppStageFailed, OnatoppStatus, ProvisionFailed,
-  ReviewCapExhausted, ReviewRejected, ReviewTimedOut, StackedDevInput,
-  StackedDevResult, StackedDevStatus, StageFailed, StartupFailed,
-  VerifyExhausted, VerifyFixExhausted,
+  type BriefDevError, type BriefDevInput, type BriefDevResult,
+  type BriefDevStatus, type DriftedRequirement, type StackedDevError,
+  type StackedDevInput, type StackedDevResult, type StackedDevStatus,
+  BriefDevInput, BriefDevResult, BriefDevStageFailed, BriefDevStatus, DevBlocked,
+  DevBlockedInChild, DevFailed, DriftedRequirement, GateRejected,
+  HardenRegressed, HardenRegressedInChild, LandFailed, ProvisionFailed,
+  ReviewCapExhausted, ReviewDrifted, ReviewDriftedInChild, ReviewRejected,
+  ReviewTimedOut, ScoutFailed, ScoutFailedInChild, StackedDevInput,
+  StackedDevResult, StackedDevStatus, StageFailed, VerifyExhausted,
+  VerifyFixExhausted,
 }
 
-/// Codec for the `onatopp_dev` workflow input.
-pub fn onatopp_input_codec() -> codec.Codec(OnatoppInput) {
+/// Codec for the `brief_dev` workflow input: the v2 brief document and the
+/// pre-resolved reference context, plus the two required loop parameters
+/// (BD-003 R2).
+pub fn brief_dev_input_codec() -> codec.Codec(BriefDevInput) {
   codec.json_codec(
-    fn(input: OnatoppInput) {
+    fn(input: BriefDevInput) {
       json.object([
         #("workspace", codecs_core.workspace_to_json(input.workspace)),
-        #("brief", json.string(input.brief)),
-        #("design", json.string(input.design)),
-        #("checklist", json.string(input.checklist)),
-        #("stories", json.array(input.stories, json.string)),
+        #("document", codecs_brief.brief_document_to_json(input.document)),
+        #("context", codecs_brief.resolved_context_to_json(input.context)),
         #("verify_fix_cap", json.int(input.verify_fix_cap)),
         #("round_backoff_ms", json.int(input.round_backoff_ms)),
       ])
@@ -38,18 +43,20 @@ pub fn onatopp_input_codec() -> codec.Codec(OnatoppInput) {
         "workspace",
         codecs_core.workspace_decoder(),
       )
-      use brief <- decode.field("brief", decode.string)
-      use design <- decode.field("design", decode.string)
-      use checklist <- decode.field("checklist", decode.string)
-      use stories <- decode.field("stories", decode.list(decode.string))
+      use document <- decode.field(
+        "document",
+        codecs_brief.brief_document_decoder(),
+      )
+      use context <- decode.field(
+        "context",
+        codecs_brief.resolved_context_decoder(),
+      )
       use verify_fix_cap <- decode.field("verify_fix_cap", decode.int)
       use round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
-      decode.success(OnatoppInput(
+      decode.success(BriefDevInput(
         workspace: workspace,
-        brief: brief,
-        design: design,
-        checklist: checklist,
-        stories: stories,
+        document: document,
+        context: context,
         verify_fix_cap: verify_fix_cap,
         round_backoff_ms: round_backoff_ms,
       ))
@@ -57,91 +64,149 @@ pub fn onatopp_input_codec() -> codec.Codec(OnatoppInput) {
   )
 }
 
-/// Codec for the `onatopp_dev` workflow output.
-pub fn onatopp_result_codec() -> codec.Codec(OnatoppResult) {
+/// Codec for the `brief_dev` workflow output: the three generated stage
+/// reports, the verify-round count, and the advisory warm-build outcome
+/// (BD-003 R2).
+pub fn brief_dev_result_codec() -> codec.Codec(BriefDevResult) {
   codec.json_codec(
-    fn(result: OnatoppResult) {
+    fn(result: BriefDevResult) {
       json.object([
-        #("dev_result", codecs_core.dev_result_to_json(result.dev_result)),
-        #("build_warm", codecs_core.build_warm_to_json(result.build_warm)),
+        #("scout", stage_io.scout_report_to_json(result.scout)),
+        #("dev", stage_io.dev_report_to_json(result.dev)),
+        #("review", stage_io.review_report_to_json(result.review)),
         #("verify_rounds", json.int(result.verify_rounds)),
+        #("build_warm", codecs_core.build_warm_to_json(result.build_warm)),
       ])
     },
     {
-      use dev_result <- decode.field(
-        "dev_result",
-        codecs_core.dev_result_decoder(),
-      )
+      use scout <- decode.field("scout", stage_io.scout_report_decoder())
+      use dev <- decode.field("dev", stage_io.dev_report_decoder())
+      use review <- decode.field("review", stage_io.review_report_decoder())
+      use verify_rounds <- decode.field("verify_rounds", decode.int)
       use build_warm <- decode.field(
         "build_warm",
         codecs_core.build_warm_decoder(),
       )
-      use verify_rounds <- decode.field("verify_rounds", decode.int)
-      decode.success(OnatoppResult(
-        dev_result: dev_result,
-        build_warm: build_warm,
+      decode.success(BriefDevResult(
+        scout: scout,
+        dev: dev,
+        review: review,
         verify_rounds: verify_rounds,
+        build_warm: build_warm,
       ))
     },
   )
 }
 
-/// Codec for the `onatopp_dev` workflow's typed error.
-pub fn onatopp_error_codec() -> codec.Codec(OnatoppError) {
-  codec.json_codec(
-    fn(onatopp_error: OnatoppError) {
-      case onatopp_error {
-        StartupFailed(message: message) ->
-          json.object([
-            #("error", json.string("startup_failed")),
-            #("message", json.string(message)),
-          ])
-        VerifyFixExhausted(rounds: rounds, diagnostics: diagnostics) ->
-          json.object([
-            #("error", json.string("verify_fix_exhausted")),
-            #("rounds", json.int(rounds)),
-            #("diagnostics", json.string(diagnostics)),
-          ])
-        OnatoppStageFailed(stage: stage, message: message) ->
-          json.object([
-            #("error", json.string("stage_failed")),
-            #("stage", json.string(stage)),
-            #("message", json.string(message)),
-          ])
-      }
-    },
-    {
-      use tag <- decode.field("error", decode.string)
-      case tag {
-        "startup_failed" -> {
-          use message <- decode.field("message", decode.string)
-          decode.success(StartupFailed(message: message))
-        }
-        "verify_fix_exhausted" -> {
-          use rounds <- decode.field("rounds", decode.int)
-          use diagnostics <- decode.field("diagnostics", decode.string)
-          decode.success(VerifyFixExhausted(
-            rounds: rounds,
-            diagnostics: diagnostics,
-          ))
-        }
-        "stage_failed" -> {
-          use stage <- decode.field("stage", decode.string)
-          use message <- decode.field("message", decode.string)
-          decode.success(OnatoppStageFailed(stage: stage, message: message))
-        }
-        _ ->
-          decode.failure(
-            StartupFailed(message: ""),
-            "startup_failed, verify_fix_exhausted, or stage_failed",
-          )
-      }
-    },
-  )
+/// Codec for the `brief_dev` workflow's typed error. Wire tags: scout_failed,
+/// dev_blocked, verify_fix_exhausted, review_drifted, harden_regressed,
+/// stage_failed. An unknown tag fails the decode naming the expected tags and
+/// is never mapped onto a variant (BD-003 R2).
+pub fn brief_dev_error_codec() -> codec.Codec(BriefDevError) {
+  codec.json_codec(brief_dev_error_to_json, brief_dev_error_decoder())
 }
 
-/// Codec for the `stacked_dev` workflow input. All four loop/deadline
-/// parameters are required fields — open question Q5.
+fn brief_dev_error_to_json(brief_dev_error: BriefDevError) -> json.Json {
+  case brief_dev_error {
+    ScoutFailed(message: message) ->
+      json.object([
+        #("error", json.string("scout_failed")),
+        #("message", json.string(message)),
+      ])
+    DevBlocked(requirement_ids: requirement_ids) ->
+      json.object([
+        #("error", json.string("dev_blocked")),
+        #("requirement_ids", json.array(requirement_ids, json.string)),
+      ])
+    VerifyFixExhausted(rounds: rounds, diagnostics: diagnostics) ->
+      json.object([
+        #("error", json.string("verify_fix_exhausted")),
+        #("rounds", json.int(rounds)),
+        #("diagnostics", json.string(diagnostics)),
+      ])
+    ReviewDrifted(drifted: drifted) ->
+      json.object([
+        #("error", json.string("review_drifted")),
+        #("drifted", json.array(drifted, drifted_requirement_to_json)),
+      ])
+    HardenRegressed(diagnostics: diagnostics) ->
+      json.object([
+        #("error", json.string("harden_regressed")),
+        #("diagnostics", json.string(diagnostics)),
+      ])
+    BriefDevStageFailed(stage: stage, message: message) ->
+      json.object([
+        #("error", json.string("stage_failed")),
+        #("stage", json.string(stage)),
+        #("message", json.string(message)),
+      ])
+  }
+}
+
+fn brief_dev_error_decoder() -> decode.Decoder(BriefDevError) {
+  use tag <- decode.field("error", decode.string)
+  case tag {
+    "scout_failed" -> {
+      use message <- decode.field("message", decode.string)
+      decode.success(ScoutFailed(message: message))
+    }
+    "dev_blocked" -> {
+      use requirement_ids <- decode.field(
+        "requirement_ids",
+        decode.list(decode.string),
+      )
+      decode.success(DevBlocked(requirement_ids: requirement_ids))
+    }
+    "verify_fix_exhausted" -> {
+      use rounds <- decode.field("rounds", decode.int)
+      use diagnostics <- decode.field("diagnostics", decode.string)
+      decode.success(VerifyFixExhausted(
+        rounds: rounds,
+        diagnostics: diagnostics,
+      ))
+    }
+    "review_drifted" -> {
+      use drifted <- decode.field(
+        "drifted",
+        decode.list(drifted_requirement_decoder()),
+      )
+      decode.success(ReviewDrifted(drifted: drifted))
+    }
+    "harden_regressed" -> {
+      use diagnostics <- decode.field("diagnostics", decode.string)
+      decode.success(HardenRegressed(diagnostics: diagnostics))
+    }
+    "stage_failed" -> {
+      use stage <- decode.field("stage", decode.string)
+      use message <- decode.field("message", decode.string)
+      decode.success(BriefDevStageFailed(stage: stage, message: message))
+    }
+    _ ->
+      decode.failure(
+        ScoutFailed(message: ""),
+        "scout_failed, dev_blocked, verify_fix_exhausted, review_drifted,"
+          <> " harden_regressed, or stage_failed",
+      )
+  }
+}
+
+fn drifted_requirement_to_json(drifted: DriftedRequirement) -> json.Json {
+  json.object([
+    #("id", json.string(drifted.id)),
+    #("issues", json.array(drifted.issues, json.string)),
+  ])
+}
+
+fn drifted_requirement_decoder() -> decode.Decoder(DriftedRequirement) {
+  use id <- decode.field("id", decode.string)
+  use issues <- decode.field("issues", decode.list(decode.string))
+  decode.success(DriftedRequirement(id: id, issues: issues))
+}
+
+/// Codec for the `stacked_dev` workflow input. Carries the v2 brief document
+/// and the pre-resolved reference context in place of the four document
+/// strings (BD-005 R3, ADR-008); the old shape no longer decodes (ADR-002).
+/// All four loop/deadline parameters stay required fields (CN2).
 pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
   codec.json_codec(
     fn(input: StackedDevInput) {
@@ -158,10 +223,14 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
           "isolation",
           json.string(codecs_core.isolation_to_string(input.isolation)),
         ),
-        #("brief", json.string(input.brief)),
-        #("design", json.string(input.design)),
-        #("checklist", json.string(input.checklist)),
-        #("stories", json.array(input.stories, json.string)),
+        #(
+          "brief_document",
+          codecs_brief.brief_document_to_json(input.brief_document),
+        ),
+        #(
+          "resolved_context",
+          codecs_brief.resolved_context_to_json(input.resolved_context),
+        ),
         #("verify_fix_cap", json.int(input.verify_fix_cap)),
         #("review_cap", json.int(input.review_cap)),
         #("round_backoff_ms", json.int(input.round_backoff_ms)),
@@ -171,10 +240,14 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
     {
       use provision <- decode.then(codecs_core.provision_input_decoder())
       use reviewers <- decode.field("reviewers", decode.list(decode.string))
-      use brief <- decode.field("brief", decode.string)
-      use design <- decode.field("design", decode.string)
-      use checklist <- decode.field("checklist", decode.string)
-      use stories <- decode.field("stories", decode.list(decode.string))
+      use brief_document <- decode.field(
+        "brief_document",
+        codecs_brief.brief_document_decoder(),
+      )
+      use resolved_context <- decode.field(
+        "resolved_context",
+        codecs_brief.resolved_context_decoder(),
+      )
       use verify_fix_cap <- decode.field("verify_fix_cap", decode.int)
       use review_cap <- decode.field("review_cap", decode.int)
       use round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
@@ -186,10 +259,8 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
         base_ref: provision.base_ref,
         placement: provision.placement,
         isolation: provision.isolation,
-        brief: brief,
-        design: design,
-        checklist: checklist,
-        stories: stories,
+        brief_document: brief_document,
+        resolved_context: resolved_context,
         verify_fix_cap: verify_fix_cap,
         review_cap: review_cap,
         round_backoff_ms: round_backoff_ms,
@@ -243,11 +314,28 @@ fn stacked_dev_error_to_json(workflow_error: StackedDevError) -> json.Json {
   case workflow_error {
     ProvisionFailed(message: message) ->
       tagged_message("provision_failed", message)
+    ScoutFailedInChild(message: message) ->
+      tagged_message("scout_failed", message)
+    DevBlockedInChild(requirement_ids: requirement_ids) ->
+      json.object([
+        #("error", json.string("dev_blocked")),
+        #("requirement_ids", json.array(requirement_ids, json.string)),
+      ])
     DevFailed(message: message) -> tagged_message("dev_failed", message)
     VerifyExhausted(rounds: rounds, diagnostics: diagnostics) ->
       json.object([
         #("error", json.string("verify_exhausted")),
         #("rounds", json.int(rounds)),
+        #("diagnostics", json.string(diagnostics)),
+      ])
+    ReviewDriftedInChild(drifted: drifted) ->
+      json.object([
+        #("error", json.string("review_drifted")),
+        #("drifted", json.array(drifted, drifted_requirement_to_json)),
+      ])
+    HardenRegressedInChild(diagnostics: diagnostics) ->
+      json.object([
+        #("error", json.string("harden_regressed")),
         #("diagnostics", json.string(diagnostics)),
       ])
     GateRejected(report: report) ->
@@ -294,6 +382,17 @@ fn stacked_dev_error_decoder() -> decode.Decoder(StackedDevError) {
       use message <- decode.field("message", decode.string)
       decode.success(ProvisionFailed(message: message))
     }
+    "scout_failed" -> {
+      use message <- decode.field("message", decode.string)
+      decode.success(ScoutFailedInChild(message: message))
+    }
+    "dev_blocked" -> {
+      use requirement_ids <- decode.field(
+        "requirement_ids",
+        decode.list(decode.string),
+      )
+      decode.success(DevBlockedInChild(requirement_ids: requirement_ids))
+    }
     "dev_failed" -> {
       use message <- decode.field("message", decode.string)
       decode.success(DevFailed(message: message))
@@ -302,6 +401,17 @@ fn stacked_dev_error_decoder() -> decode.Decoder(StackedDevError) {
       use rounds <- decode.field("rounds", decode.int)
       use diagnostics <- decode.field("diagnostics", decode.string)
       decode.success(VerifyExhausted(rounds: rounds, diagnostics: diagnostics))
+    }
+    "review_drifted" -> {
+      use drifted <- decode.field(
+        "drifted",
+        decode.list(drifted_requirement_decoder()),
+      )
+      decode.success(ReviewDriftedInChild(drifted: drifted))
+    }
+    "harden_regressed" -> {
+      use diagnostics <- decode.field("diagnostics", decode.string)
+      decode.success(HardenRegressedInChild(diagnostics: diagnostics))
     }
     "gate_rejected" -> {
       use report <- decode.field("report", decode.string)
@@ -353,10 +463,10 @@ pub fn stacked_dev_status_codec() -> codec.Codec(StackedDevStatus) {
   )
 }
 
-/// Codec for the `onatopp_dev_status` query reply.
-pub fn onatopp_status_codec() -> codec.Codec(OnatoppStatus) {
+/// Codec for the `brief_dev_status` query reply.
+pub fn brief_dev_status_codec() -> codec.Codec(BriefDevStatus) {
   codec.json_codec(
-    fn(status: OnatoppStatus) {
+    fn(status: BriefDevStatus) {
       json.object([
         #("phase", json.string(status.phase)),
         #("round", json.int(status.round)),
@@ -365,7 +475,7 @@ pub fn onatopp_status_codec() -> codec.Codec(OnatoppStatus) {
     {
       use phase <- decode.field("phase", decode.string)
       use round <- decode.field("round", decode.int)
-      decode.success(OnatoppStatus(phase: phase, round: round))
+      decode.success(BriefDevStatus(phase: phase, round: round))
     },
   )
 }
