@@ -62,47 +62,47 @@
         {
           "id": "C10",
           "text": "src/brief_dev.gleam exists as the inner-child entry module and src/onatopp_dev.gleam is deleted along with its workflow.toml entry and schemas (no parallel family).",
-          "done": false
+          "done": true
         },
         {
           "id": "C11",
           "text": "The scout stage runs the scout activity (read-only norn, session '<branch>-scout', scout-report output schema) before any dev work.",
-          "done": false
+          "done": true
         },
         {
           "id": "C12",
           "text": "The dev stage preserves the concurrent warm_build + dev fan-out via the tagged StartupTask envelope and the dev session id remains '<branch>'.",
-          "done": false
+          "done": true
         },
         {
           "id": "C13",
           "text": "The verify-fix loop preserves onatopp_dev semantics: scoped_checks then dev_resume with diagnostics, bounded by required verify_fix_cap with required round_backoff_ms sleeps.",
-          "done": false
+          "done": true
         },
         {
           "id": "C14",
           "text": "The review stage runs the dev_review activity (norn reviewer, session '<branch>-review', review-report output schema) after verify convergence, never sharing the dev session.",
-          "done": false
+          "done": true
         },
         {
           "id": "C15",
           "text": "When the review report's fixes are non-empty, the pipeline re-runs scoped_checks; a harden pass that breaks verification fails the run with a typed error naming the review stage.",
-          "done": false
+          "done": true
         },
         {
           "id": "C16",
           "text": "Any requirement left with alignment 'drifted' in the review report fails the run with a typed error listing the drifted R# ids and their issues.",
-          "done": false
+          "done": true
         },
         {
           "id": "C17",
           "text": "brief_dev re-registers its status query at every stage transition with phases: scouting, developing, verifying, fixing, reviewing, hardening, converged.",
-          "done": false
+          "done": true
         },
         {
           "id": "C18",
           "text": "BriefDevResult carries the scout, dev, and review reports plus verify_rounds and build_warm; BriefDevError covers scout failure, dev block, verify exhaustion, review drift, harden regression, and stage failure.",
-          "done": false
+          "done": true
         }
       ]
     },
@@ -137,17 +137,17 @@
         {
           "id": "C23",
           "text": "StackedDevInput carries the v2 brief document and resolved context in place of the four document strings; the input schema mirrors it with additionalProperties false and every cap/deadline still required.",
-          "done": false
+          "done": true
         },
         {
           "id": "C24",
           "text": "stacked_dev spawns brief_dev (not onatopp_dev) and lifts its typed errors into the outer union; the gate child, review loop, signal contract, and land sequence are unchanged.",
-          "done": false
+          "done": true
         },
         {
           "id": "C25",
           "text": "The landed merge contains the enriched brief file: implementation and execution record arrive on main in the same commit lineage.",
-          "done": false
+          "done": true
         }
       ]
     },
@@ -182,17 +182,17 @@
         {
           "id": "C30",
           "text": "Worker handlers for scout, dev_review, and enrich_brief mirror locals invocation-for-invocation; SERVED_ACTIVITIES lists every activity name the family dispatches.",
-          "done": false
+          "done": true
         },
         {
           "id": "C31",
           "text": "Norn scout and review invocations use --print, --session-id or --resume, --output-schema with the generated stage schemas, and --output-format json; output parsing accepts the bare shape and the real {\"output\": ...} envelope only.",
-          "done": false
+          "done": true
         },
         {
           "id": "C32",
           "text": "wire_compat.rs pins every payload that exists at its landing byte-compatible both directions against the Gleam codecs; the dispatch IO pins complete with the dispatch brief.",
-          "done": false
+          "done": true
         }
       ]
     },
