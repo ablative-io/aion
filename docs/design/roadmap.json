@@ -349,7 +349,7 @@
     {
       "id": "RM-017",
       "title": "brief_dev + dispatch workflow family",
-      "status": "idea",
+      "status": "designed",
       "kind": "feature",
       "summary": "The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand gate with fix-until-clean resume → adversarial review → harden → re-gate, progressive in-place enrichment, deterministic sessions), composed under stacked_dev, plus a dispatcher workflow that selects briefed work from roadmap.json, orders by dependencies, fans out children with explicit parent-close (ADR-004), serializes lands.",
       "provenance": {
@@ -359,15 +359,18 @@
         "context": "The onatopp-dev-norn rhai workflow is the ancestor; v2 stage contracts are its schemas done properly. Norn provider usage is much gentler than Anthropic — agents stages run norn wherever possible."
       },
       "links": {
-        "cluster": "",
-        "decisions": [],
+        "cluster": "brief-dev",
+        "decisions": [
+          "ADR-008",
+          "ADR-009"
+        ],
         "briefs": [],
         "commits": []
       },
       "depends_on": [
         "RM-016"
       ],
-      "notes": "Needs its own cluster design (workflow family, codecs from the stage schemas via codegen, worker activities)."
+      "notes": "Cluster designed 2026-06-13; ADR-008 (replace onatopp_dev in place) and ADR-009 (enrichment rides the worktree branch) PROPOSED, awaiting Tom. Briefs next."
     },
     {
       "id": "RM-018",

@@ -1,0 +1,48 @@
+{
+  "cluster": "brief-dev",
+  "personas": [
+    {
+      "name": "Tom",
+      "role": "Dispatching and steering waves of work",
+      "stories": [
+        { "id": "S1", "text": "As Tom, I want to dispatch a wave of briefed roadmap items with one aion start so that getting work done means approving documents, not babysitting terminals." },
+        { "id": "S2", "text": "As Tom, I want each brief's review to arrive as a meridian DM with the workflow parked until I signal so that I stay the decision point without being the bottleneck for everything else." },
+        { "id": "S3", "text": "As Tom, I want a dispatch run to survive kill -9 of the server at any point so that a long multi-brief wave never restarts from scratch." },
+        { "id": "S4", "text": "As Tom, I want a wave to refuse briefs whose dependencies haven't landed so that ordering mistakes are caught at dispatch, not discovered as broken builds." }
+      ]
+    },
+    {
+      "name": "Claude",
+      "role": "Authoring briefs and operating the pipeline",
+      "stories": [
+        { "id": "S5", "text": "As Claude, I want stage payloads validated against the same schemas I author briefs against so that a malformed document breaks at dispatch with a pointer, not mid-run in an agent prompt." },
+        { "id": "S6", "text": "As Claude, I want the live status query to name the current stage and round so that I can watch a run without parsing event histories." },
+        { "id": "S7", "text": "As Claude, I want a failed run's full enrichment preserved in its event history so that I can post-mortem exactly what the scout found and the dev claimed before the failure." }
+      ]
+    },
+    {
+      "name": "Norn Agent",
+      "role": "Executing a pipeline stage",
+      "stories": [
+        { "id": "S8", "text": "As a norn agent, I want my prompt to carry the resolved requirement texts, anchored decisions, and the humans' verbatim words so that I act on what was actually asked without re-deriving context." },
+        { "id": "S9", "text": "As a norn agent resuming after a crash or a fix round, I want my same session resumed by deterministic id so that I keep my context instead of rediscovering the codebase." }
+      ]
+    },
+    {
+      "name": "Reviewer Agent",
+      "role": "Adversarial verification of a dev round",
+      "stories": [
+        { "id": "S10", "text": "As a reviewer agent, I want the dev's attestation alongside the measured check results so that I can treat their divergence as a signal about where to dig." },
+        { "id": "S11", "text": "As a reviewer agent, I want a fresh session separate from the dev's so that I verify the diff with my own eyes instead of inheriting the dev's framing." }
+      ]
+    },
+    {
+      "name": "Future Maintainer",
+      "role": "Reading landed work months later",
+      "stories": [
+        { "id": "S12", "text": "As a future maintainer, I want the landed brief to carry what was asked, what the scout found, what the dev did and why, and what review proved so that provenance is one file away from the code." },
+        { "id": "S13", "text": "As a future maintainer, I want gate results and agent attestations recorded separately in the execution block so that I can tell measured truth from believed claims." }
+      ]
+    }
+  ]
+}
