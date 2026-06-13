@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scout Report",
+  "description": "Structured output contract for the scout stage: read-only codebase exploration that gathers implementation context per requirement. The enrichments entries are appended in place to the brief's requirements as their scout blocks.",
+  "type": "object",
+  "required": ["summary", "enrichments", "verification"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "2-3 sentences orienting the implementer"
+    },
+    "enrichments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "files", "context", "approach", "notes"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^R\\d+$",
+            "description": "R# id from the brief — one entry per requirement, no omissions"
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Key files relevant to this R# (path:line-range — brief note). 2-5 per R#, chosen to save the implementer time, not to catalogue."
+          },
+          "context": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Key findings: conventions to match, type signatures, gotchas. 2-4 per R#."
+          },
+          "approach": {
+            "type": "string",
+            "description": "How to implement this R# — one paragraph, concrete"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Anything non-obvious the brief might not have considered: edge cases, integration gotchas. Empty string if none."
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Concrete checks to run after implementation, discovered during exploration"
+    }
+  }
+}

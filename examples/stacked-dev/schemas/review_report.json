@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Review Report",
+  "description": "Structured output contract for the adversarial review stage. The reviewer verifies the ACTUAL DIFF against each acceptance criterion — never the dev's claims — then hardens. Verdict and fixes are both recorded; there is no severity taxonomy because there are no minor issues: everything found is fixed or named as an issue. The enrichments entries are appended in place to the brief's requirements as their review blocks.",
+  "type": "object",
+  "required": ["summary", "commit_message", "enrichments", "verification"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "The honest overall read — what is solid, what was found, what was fixed"
+    },
+    "commit_message": {
+      "type": "string",
+      "description": "Conventional-commits style message for the harden commit; empty string when the harden pass changed nothing"
+    },
+    "enrichments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "alignment", "acceptance", "checklist", "stories", "issues", "fixes"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^R\\d+$",
+            "description": "R# id — one entry per requirement"
+          },
+          "alignment": {
+            "type": "string",
+            "enum": ["aligned", "drifted", "fixed"],
+            "description": "aligned = implementation matches spec; drifted = it does not and remains so (a failing state); fixed = it drifted and the harden pass corrected it"
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["criterion", "met", "evidence"],
+              "additionalProperties": false,
+              "properties": {
+                "criterion": { "type": "string", "description": "The acceptance criterion verbatim from the brief" },
+                "met": { "type": "boolean" },
+                "evidence": { "type": "string", "description": "What in the diff proves it: file:line, test name, command output — not the dev report" }
+              }
+            },
+            "description": "One verdict per acceptance criterion. A single boolean for the whole requirement is not a review."
+          },
+          "checklist": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^C\\d+$" },
+            "description": "C-numbers VERIFIED delivered (verification flips done in the cluster checklist, not the dev's claim)"
+          },
+          "stories": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^S\\d+$" },
+            "description": "S-numbers verified satisfied"
+          },
+          "issues": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Everything found, fixed or not — an issue that was fixed still gets recorded here with its fix below"
+          },
+          "fixes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "What the harden pass changed"
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "passed", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": { "type": "string", "description": "Brief-level verification step, verbatim" },
+          "passed": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      },
+      "description": "The brief's cross-cutting verification steps, each actually executed"
+    }
+  }
+}

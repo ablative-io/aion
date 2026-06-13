@@ -6,6 +6,8 @@
 //// share one vocabulary. Codecs live in `stacked_dev/codecs_core` and
 //// `stacked_dev/codecs_flow`.
 
+import gleam/option
+
 /// Where the provisioned workspace runs.
 pub type Placement {
   Local
@@ -324,4 +326,219 @@ pub type StackedDevStatus {
 /// Live status answered by the `onatopp_dev_status` query.
 pub type OnatoppStatus {
   OnatoppStatus(phase: String, round: Int)
+}
+
+/// A v2 implementation brief: a self-contained unit of work AND its
+/// execution record, one living document (ADR-007). Mirrors
+/// `docs/design-system/schemas/brief.schema.json` field-for-field. Authors
+/// write every non-optional field; the pipeline appends the optional
+/// enrichment blocks in place and never rewrites authored fields. Emptiness
+/// is authored, never defaulted (ADR-001).
+pub type BriefDocument {
+  BriefDocument(
+    id: String,
+    cluster: String,
+    title: String,
+    depends_on: List(String),
+    blocked_by: List(String),
+    checklist: List(String),
+    stories: List(String),
+    design_anchor: List(String),
+    purpose: String,
+    task: String,
+    requirements: List(BriefRequirement),
+    boundaries: List(String),
+    verification: List(String),
+    execution: option.Option(ExecutionBlock),
+  )
+}
+
+/// One numbered requirement (R#) of a brief. The `scout`, `dev`, and
+/// `review` blocks are appended by the pipeline stages; everything else is
+/// authored.
+pub type BriefRequirement {
+  BriefRequirement(
+    id: String,
+    title: String,
+    spec: String,
+    acceptance: List(String),
+    files: RequirementFiles,
+    checklist: List(String),
+    stories: List(String),
+    scout: option.Option(ScoutBlock),
+    dev: option.Option(DevBlock),
+    review: option.Option(ReviewBlock),
+  )
+}
+
+/// The authored file plan of a requirement.
+pub type RequirementFiles {
+  RequirementFiles(
+    create: List(String),
+    modify: List(String),
+    delete: List(String),
+  )
+}
+
+/// Scout-stage findings appended to a requirement.
+pub type ScoutBlock {
+  ScoutBlock(
+    files: List(String),
+    context: List(String),
+    approach: String,
+    notes: String,
+  )
+}
+
+/// Dev-stage record appended to a requirement.
+pub type DevBlock {
+  DevBlock(
+    status: DevStatus,
+    files_changed: List(FileChange),
+    how: String,
+    deviation: String,
+    checklist: List(ChecklistClaim),
+    stories: List(StoryClaim),
+  )
+}
+
+/// Outcome of the dev stage for one requirement.
+pub type DevStatus {
+  Implemented
+  Blocked
+}
+
+/// One file the dev stage touched.
+pub type FileChange {
+  FileChange(path: String, change: ChangeKind, note: String)
+}
+
+/// What the dev stage did to a file.
+pub type ChangeKind {
+  Created
+  Modified
+  Deleted
+}
+
+/// The dev agent's delivery claim for one checklist item.
+pub type ChecklistClaim {
+  ChecklistClaim(id: String, done: Bool, note: String)
+}
+
+/// The dev agent's satisfaction claim for one user story.
+pub type StoryClaim {
+  StoryClaim(id: String, satisfied: Bool, note: String)
+}
+
+/// Adversarial-review verdict appended to a requirement.
+pub type ReviewBlock {
+  ReviewBlock(
+    alignment: Alignment,
+    acceptance: List(AcceptanceVerdict),
+    checklist: List(String),
+    stories: List(String),
+    issues: List(String),
+    fixes: List(String),
+  )
+}
+
+/// How the implementation relates to the spec after review.
+pub type Alignment {
+  Aligned
+  Drifted
+  Fixed
+}
+
+/// The reviewer's verdict on one acceptance criterion.
+pub type AcceptanceVerdict {
+  AcceptanceVerdict(criterion: String, met: Bool, evidence: String)
+}
+
+/// Run-level execution record appended to a brief before land. The gate
+/// block holds what the workflow MEASURED; the attestation block holds what
+/// the dev agent BELIEVED — divergence between them is review signal.
+pub type ExecutionBlock {
+  ExecutionBlock(
+    status: ExecutionStatus,
+    workflow_id: String,
+    branch: String,
+    session_id: String,
+    gate: GateBlock,
+    attestation: AttestationBlock,
+    review_verdict: ExecutionVerdict,
+    landed_commit: String,
+    merged_into: String,
+    completed_at: String,
+  )
+}
+
+/// Run status recorded in the execution block. Constructors are prefixed
+/// because this module already defines a `Landed` constructor.
+pub type ExecutionStatus {
+  ExecutionInFlight
+  ExecutionLanded
+  ExecutionFailed
+}
+
+/// Human (or quorum) review verdict recorded in the execution block.
+/// Constructors are prefixed because `ReviewDecision` already defines
+/// `Approve`/`Reject`.
+pub type ExecutionVerdict {
+  VerdictApproved
+  VerdictChangesRequested
+  VerdictRejected
+}
+
+/// What the workflow measured at the authoritative gate.
+pub type GateBlock {
+  GateBlock(fmt: Bool, clippy: Bool, tests: Bool, fix_rounds: Int)
+}
+
+/// What the dev agent attested — never trusted as the gate (P1).
+pub type AttestationBlock {
+  AttestationBlock(
+    no_panics: Bool,
+    no_unsafe: Bool,
+    boundaries_respected: Bool,
+    tests_pass: Bool,
+  )
+}
+
+/// One ADR resolved to its text at dispatch time (CN1). `decided_by` rides
+/// along so projections can attribute quotes to their speaker (P6).
+pub type ResolvedAdr {
+  ResolvedAdr(
+    id: String,
+    title: String,
+    decision: String,
+    quote: String,
+    decided_by: String,
+  )
+}
+
+/// One checklist item, story, or constraint resolved to its text.
+pub type ResolvedItem {
+  ResolvedItem(id: String, text: String)
+}
+
+/// Where the briefed work came from: the roadmap requester and their
+/// verbatim words (P6).
+pub type ResolvedProvenance {
+  ResolvedProvenance(requested_by: String, quote: String)
+}
+
+/// Pre-resolved reference context assembled by dispatcher activities before
+/// any workflow logic sees it (CN1): the brief's anchored ADR texts, C#/S#
+/// texts, cluster constraints, the cluster intention, and the design file
+/// reference every stage prompt carries.
+pub type ResolvedContext {
+  ResolvedContext(
+    adrs: List(ResolvedAdr),
+    checklist: List(ResolvedItem),
+    stories: List(ResolvedItem),
+    constraints: List(ResolvedItem),
+    intention: String,
+    design_path: String,
+    provenance: ResolvedProvenance,
+  )
 }
