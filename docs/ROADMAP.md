@@ -1,5 +1,11 @@
 # Roadmap — open work as of 2026-06-13
 
+> **The machine-readable ledger at `docs/design/roadmap.json` (rendered:
+> `docs/design/ROADMAP.md`) is now authoritative for item status and
+> dispatch** (design-system v2, ADR-007). The prose below remains the
+> detail reference until each item's cluster design absorbs it; new items
+> enter the ledger first.
+
 Everything below is queued, not in flight. Items are dependency-ordered
 within each section. Status of the released stack: aion 0.6.0 on crates.io
 (unified `aion` binary; no default activity timeouts, `aion new` +

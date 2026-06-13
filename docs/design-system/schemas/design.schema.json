@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cluster Design",
+  "description": "The architectural anchor for a cluster. JSON is the source of truth; DESIGN.md is rendered. Decisions live in the project decision ledger and are cited by ADR ID, never restated. The structure array is machine-checkable: every brief file path is verified against it.",
+  "type": "object",
+  "required": ["cluster", "title", "intention", "problem", "solution", "principles", "decisions", "goals", "non_goals", "structure", "inventory", "constraints"],
+  "additionalProperties": false,
+  "properties": {
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name, matching the directory under docs/design/"
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable title"
+    },
+    "intention": {
+      "type": "string",
+      "description": "The spirit of the work — what the world looks like when this is done. The anchor for every judgment call the documents don't explicitly cover. One to three paragraphs."
+    },
+    "problem": {
+      "type": "string",
+      "description": "What is broken or missing, who it affects, why now. Vague problems produce vague solutions — be specific about the pain."
+    },
+    "solution": {
+      "type": "string",
+      "description": "The design itself: how the pieces fit, integration points, data flow. Structure and rationale, not syntax — no code snippets or type signatures."
+    },
+    "principles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^P\\d+$" },
+          "text": { "type": "string" }
+        }
+      },
+      "description": "Governing principles for this cluster (5-10 max) that resolve review questions before they are asked. Empty array when the project-level ADRs suffice."
+    },
+    "decisions": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^ADR-\\d{3}$" },
+      "description": "ADR IDs this cluster introduced or is bound by. The ledger holds the content."
+    },
+    "goals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What success looks like, 3-7 entries, each verifiable — you can tell whether it was achieved"
+    },
+    "non_goals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "text": { "type": "string", "description": "The reasonable thing we are deliberately not doing" },
+          "reason": { "type": "string", "description": "Why it is excluded; empty string when obvious" }
+        }
+      },
+      "description": "Scope protection — things a reader might expect to be in scope"
+    },
+    "structure": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "note", "brief"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Repo-root-relative file or directory path" },
+          "note": { "type": "string", "description": "One line: what lives here" },
+          "brief": { "type": "string", "description": "Brief ID that introduces this path; empty string for pre-existing paths" }
+        }
+      },
+      "description": "The file layout, flat and machine-checkable. Every file path in every brief is verified against this list; two briefs claiming to create the same path is a check failure."
+    },
+    "inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "note": { "type": "string", "description": "What exists here today and its state" }
+        }
+      },
+      "description": "What exists before this cluster touches it. Essential for porting/extraction work — kills false 'create' claims. Empty array for greenfield."
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^CN\\d+$" },
+          "text": { "type": "string", "description": "Specific and checkable — 'sub-millisecond normalization for paths under 1000 chars', not 'good performance'" }
+        }
+      },
+      "description": "Things that must not change: security requirements, performance expectations, cross-cutting conventions"
+    }
+  }
+}

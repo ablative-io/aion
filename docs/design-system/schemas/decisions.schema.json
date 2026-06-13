@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Decision Ledger",
+  "description": "Append-only ADR ledger for the project. Entries are never deleted or renumbered; a reversed decision is superseded by a new entry. Designs and briefs cite ADR IDs instead of restating decisions.",
+  "type": "object",
+  "required": ["project", "updated", "decisions"],
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "Project name (e.g. aion)"
+    },
+    "updated": {
+      "type": "string",
+      "description": "ISO 8601 date of the last edit to this ledger"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "scope", "date", "decided_by", "context", "decision", "quote", "consequences", "supersedes", "superseded_by"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ADR-\\d{3}$",
+            "description": "Decision ID, sequential per project, never reused"
+          },
+          "title": {
+            "type": "string",
+            "description": "The decision in a phrase (e.g. 'No default timeouts anywhere in the engine')"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["proposed", "decided", "superseded"],
+            "description": "proposed = recommendation recorded, awaiting the call; decided = in force; superseded = replaced (superseded_by names the successor)"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Where this binds: 'project' for cross-cutting decisions, otherwise a cluster name"
+          },
+          "date": {
+            "type": "string",
+            "description": "ISO 8601 date of the status-setting event (the decision date once decided); empty string while proposed and undated"
+          },
+          "decided_by": {
+            "type": "string",
+            "description": "Who made the call; empty string while proposed"
+          },
+          "context": {
+            "type": "string",
+            "description": "Why this came up: the problem, the incident, the fork in the road. Enough that a reader who wasn't there understands the pressure."
+          },
+          "decision": {
+            "type": "string",
+            "description": "The call itself, with the rejected alternative named. If there is no rejected alternative it was not a decision."
+          },
+          "quote": {
+            "type": "string",
+            "description": "Verbatim words of the decider when they carry the intent; empty string when none. Quotes survive summarisation; paraphrase does not."
+          },
+          "consequences": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "What follows: obligations created, doors closed, work implied"
+          },
+          "supersedes": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^ADR-\\d{3}$" },
+            "description": "Earlier decisions this entry replaces"
+          },
+          "superseded_by": {
+            "type": "string",
+            "description": "The ADR ID that replaced this one; empty string while the decision stands"
+          }
+        }
+      }
+    }
+  }
+}

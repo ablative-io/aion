@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadmap Ledger",
+  "description": "The project work ledger: every item of intended work with status, provenance, and links to the artifacts that prove each status transition. The dispatcher workflow selects work from this document.",
+  "type": "object",
+  "required": ["project", "updated", "items"],
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "Project name (e.g. aion)"
+    },
+    "updated": {
+      "type": "string",
+      "description": "ISO 8601 date of the last edit to this ledger"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "kind", "summary", "provenance", "links", "depends_on", "notes"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^RM-\\d{3}$",
+            "description": "Roadmap item ID, sequential per project, never reused"
+          },
+          "title": {
+            "type": "string",
+            "description": "Short imperative title"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["idea", "designed", "briefed", "dispatched", "landed", "dropped"],
+            "description": "Lifecycle status. Each transition requires its artifact in links: designed needs a cluster or decision, briefed needs briefs with clean coverage, dispatched needs a workflow run, landed needs commits. dropped requires the reason in notes."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["feature", "fix", "design", "process", "release"],
+            "description": "What sort of work this is"
+          },
+          "summary": {
+            "type": "string",
+            "description": "What this item delivers and why it matters — one paragraph"
+          },
+          "provenance": {
+            "type": "object",
+            "required": ["requested_by", "date", "quote", "context"],
+            "additionalProperties": false,
+            "properties": {
+              "requested_by": {
+                "type": "string",
+                "description": "Who asked for this (person or process)"
+              },
+              "date": {
+                "type": "string",
+                "description": "ISO 8601 date the item entered the ledger"
+              },
+              "quote": {
+                "type": "string",
+                "description": "Verbatim words of the request when they carry load-bearing intent; empty string when no quote applies. Paraphrase drifts — quote."
+              },
+              "context": {
+                "type": "string",
+                "description": "Where this came from: the conversation, incident, or review finding that produced it"
+              }
+            }
+          },
+          "links": {
+            "type": "object",
+            "required": ["cluster", "decisions", "briefs", "commits"],
+            "additionalProperties": false,
+            "properties": {
+              "cluster": {
+                "type": "string",
+                "description": "Cluster directory name under docs/design/ once designed; empty string before that"
+              },
+              "decisions": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^ADR-\\d{3}$" },
+                "description": "ADR IDs this item produced or depends on"
+              },
+              "briefs": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Brief IDs that deliver this item"
+              },
+              "commits": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Commit hashes on main that landed this item"
+              }
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^RM-\\d{3}$" },
+            "description": "Roadmap items that must land first — direct dependencies only"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Anything the other fields don't carry: open questions, sequencing rationale, drop reason. Empty string when none."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Implementation Brief",
+  "description": "A self-contained unit of work AND its execution record, one living document. Authors write every required field; the pipeline appends the optional enrichment fields (scout/dev/review per requirement, execution per brief) in place and never rewrites authored fields. The optional shapes mirror scout-report/dev-report/review-report schemas exactly.",
+  "type": "object",
+  "required": ["id", "cluster", "title", "depends_on", "blocked_by", "checklist", "stories", "design_anchor", "purpose", "task", "requirements", "boundaries", "verification"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z]+-\\d{3}$",
+      "description": "Brief ID: cluster prefix + number (FLOW-001, BUS-003)"
+    },
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name matching the directory under docs/design/"
+    },
+    "title": {
+      "type": "string",
+      "description": "Short imperative description of what this brief delivers"
+    },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Brief IDs that must land first — direct dependencies only, the dispatcher orders by these"
+    },
+    "blocked_by": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "External blockers that are not briefs (a pending ADR, an upstream change)"
+    },
+    "checklist": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^C\\d+$" },
+      "description": "Checklist items this brief covers. Written FIRST, before requirements — coverage is tracked here and must match the union of per-R# checklist arrays in both directions."
+    },
+    "stories": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^S\\d+$" },
+      "description": "User stories this brief addresses; same bidirectional coverage rule as checklist"
+    },
+    "design_anchor": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^ADR-\\d{3}$" },
+      "description": "ADR IDs that bind this brief. The pipeline projects these decisions into every stage prompt."
+    },
+    "purpose": {
+      "type": "string",
+      "description": "What this brief delivers and why it matters — one paragraph; reference the design, don't repeat it"
+    },
+    "task": {
+      "type": "string",
+      "description": "Plain-language description of the work, read first by the implementing agent. Includes the scope boundary: what's in, what's out."
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "spec", "acceptance", "files", "checklist", "stories"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^R\\d+$",
+            "description": "Requirement ID, sequential per brief"
+          },
+          "title": {
+            "type": "string",
+            "description": "Short imperative statement"
+          },
+          "spec": {
+            "type": "string",
+            "description": "EARS notation for behavioural requirements (WHEN/WHILE/IF ... THE SYSTEM SHALL / SHALL NOT — include the SHALL NOTs, the interesting constraints live in the negative space); plain language for structural ones"
+          },
+          "acceptance": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Observable conditions, each writable as an assert statement with concrete inputs and outputs. No ambiguous 'or'. Review lives or dies here."
+          },
+          "files": {
+            "type": "object",
+            "required": ["create", "modify", "delete"],
+            "additionalProperties": false,
+            "properties": {
+              "create": { "type": "array", "items": { "type": "string" }, "description": "Verified against the codebase — false 'create' claims are the most common review finding" },
+              "modify": { "type": "array", "items": { "type": "string" } },
+              "delete": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "checklist": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^C\\d+$" },
+            "description": "C-numbers this requirement delivers — subset of the brief-level array"
+          },
+          "stories": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^S\\d+$" },
+            "description": "S-numbers this requirement addresses — subset of the brief-level array"
+          },
+          "scout": {
+            "type": "object",
+            "required": ["files", "context", "approach", "notes"],
+            "additionalProperties": false,
+            "description": "APPENDED BY THE PIPELINE — scout stage findings for this requirement",
+            "properties": {
+              "files": { "type": "array", "items": { "type": "string" }, "description": "Key files with line ranges, 2-5, not exhaustive" },
+              "context": { "type": "array", "items": { "type": "string" }, "description": "Conventions to match, signatures, gotchas" },
+              "approach": { "type": "string", "description": "How to implement — one paragraph" },
+              "notes": { "type": "string", "description": "Edge cases the brief may not have considered; empty if none" }
+            }
+          },
+          "dev": {
+            "type": "object",
+            "required": ["status", "files_changed", "how", "deviation", "checklist", "stories"],
+            "additionalProperties": false,
+            "description": "APPENDED BY THE PIPELINE — what the dev stage did for this requirement",
+            "properties": {
+              "status": { "type": "string", "enum": ["implemented", "blocked"] },
+              "files_changed": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "change", "note"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": { "type": "string" },
+                    "change": { "type": "string", "enum": ["created", "modified", "deleted"] },
+                    "note": { "type": "string" }
+                  }
+                }
+              },
+              "how": { "type": "string", "description": "How the requirement was met — the rationale, not a diff narration" },
+              "deviation": { "type": "string", "description": "Empty if the plan was followed; otherwise what changed and why" },
+              "checklist": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "done", "note"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": { "type": "string", "pattern": "^C\\d+$" },
+                    "done": { "type": "boolean" },
+                    "note": { "type": "string" }
+                  }
+                }
+              },
+              "stories": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "satisfied", "note"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": { "type": "string", "pattern": "^S\\d+$" },
+                    "satisfied": { "type": "boolean" },
+                    "note": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "review": {
+            "type": "object",
+            "required": ["alignment", "acceptance", "checklist", "stories", "issues", "fixes"],
+            "additionalProperties": false,
+            "description": "APPENDED BY THE PIPELINE — the adversarial review verdict for this requirement",
+            "properties": {
+              "alignment": { "type": "string", "enum": ["aligned", "drifted", "fixed"] },
+              "acceptance": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["criterion", "met", "evidence"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "criterion": { "type": "string", "description": "The acceptance criterion verbatim" },
+                    "met": { "type": "boolean" },
+                    "evidence": { "type": "string", "description": "What in the actual diff proves it — file:line or test name, not the dev's claim" }
+                  }
+                },
+                "description": "One entry per acceptance criterion — a single boolean for the whole R# is not a review"
+              },
+              "checklist": { "type": "array", "items": { "type": "string", "pattern": "^C\\d+$" }, "description": "C-numbers verified delivered" },
+              "stories": { "type": "array", "items": { "type": "string", "pattern": "^S\\d+$" }, "description": "S-numbers verified satisfied" },
+              "issues": { "type": "array", "items": { "type": "string" }, "description": "Everything found — there is no severity field because there are no minor issues" },
+              "fixes": { "type": "array", "items": { "type": "string" }, "description": "What the harden pass changed in response" }
+            }
+          }
+        }
+      }
+    },
+    "boundaries": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "SHALL NOT statements — scope protection against over-reach into future briefs' work"
+    },
+    "verification": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Cross-cutting checks for the whole brief, complementing per-R# acceptance"
+    },
+    "execution": {
+      "type": "object",
+      "required": ["status", "workflow_id", "branch", "session_id", "gate", "attestation", "review_verdict", "landed_commit", "merged_into", "completed_at"],
+      "additionalProperties": false,
+      "description": "APPENDED BY THE PIPELINE — the run-level record. The gate block holds what the workflow MEASURED; the attestation block holds what the dev agent BELIEVED. Divergence between them is review signal.",
+      "properties": {
+        "status": { "type": "string", "enum": ["in_flight", "landed", "failed"] },
+        "workflow_id": { "type": "string", "description": "The aion workflow id — the durable event history for this run" },
+        "branch": { "type": "string", "description": "The stacked branch the work rode" },
+        "session_id": { "type": "string", "description": "Deterministic agent session id (crash-resume resumes this session)" },
+        "gate": {
+          "type": "object",
+          "required": ["fmt", "clippy", "tests", "fix_rounds"],
+          "additionalProperties": false,
+          "properties": {
+            "fmt": { "type": "boolean" },
+            "clippy": { "type": "boolean" },
+            "tests": { "type": "boolean" },
+            "fix_rounds": { "type": "integer", "description": "How many gate-failure fix rounds it took to come clean" }
+          }
+        },
+        "attestation": {
+          "type": "object",
+          "required": ["no_panics", "no_unsafe", "boundaries_respected", "tests_pass"],
+          "additionalProperties": false,
+          "properties": {
+            "no_panics": { "type": "boolean" },
+            "no_unsafe": { "type": "boolean" },
+            "boundaries_respected": { "type": "boolean" },
+            "tests_pass": { "type": "boolean" }
+          }
+        },
+        "review_verdict": { "type": "string", "enum": ["approved", "changes_requested", "rejected"], "description": "The human (or quorum) verdict from the review signal" },
+        "landed_commit": { "type": "string", "description": "Commit hash on the target branch; empty until landed" },
+        "merged_into": { "type": "string", "description": "The branch landed into; empty until landed" },
+        "completed_at": { "type": "string", "description": "ISO 8601; empty while in flight" }
+      }
+    }
+  }
+}

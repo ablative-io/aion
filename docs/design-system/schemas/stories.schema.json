@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cluster User Stories",
+  "description": "What each persona needs and why — the outside view companion to the design's inside view. Assignment to briefs lives in the briefs' stories arrays. S-numbers are sequential across the cluster and never renumbered.",
+  "type": "object",
+  "required": ["cluster", "personas"],
+  "additionalProperties": false,
+  "properties": {
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name, matching the directory under docs/design/"
+    },
+    "personas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "role", "stories"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The actor type (AI Agent, Human Developer, Operator)"
+          },
+          "role": {
+            "type": "string",
+            "description": "What this persona is doing in this context — the same actor appears multiple times with different roles"
+          },
+          "stories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "text"],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^S\\d+$",
+                  "description": "Sequential across the whole cluster, not per-persona"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Standard format: 'As {persona}, I want {outcome} so that {value}.' The so-that clause is how reviewers judge whether the implementation serves the need. Outcome, not implementation; one need per story."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cluster Checklist",
+  "description": "The full set of verifiable requirements for a cluster, grouped by section. Assignment to briefs lives in the briefs' checklist arrays, not here. C-numbers are sequential across the cluster and never renumbered.",
+  "type": "object",
+  "required": ["cluster", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name, matching the directory under docs/design/"
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "items"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Work phase or component — sections outlive the briefs that deliver them"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "text", "done"],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^C\\d+$",
+                  "description": "Sequential across the whole cluster, not per-section"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "One sentence, readable as a true/false assertion, checkable by reading code, running a command, or inspecting output. Wording is stable once a brief cites the ID."
+                },
+                "done": {
+                  "type": "boolean",
+                  "description": "True only when delivered AND verified by review — the dev's claim alone does not flip this"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
