@@ -3,6 +3,30 @@
 All aion crates share one workspace version; entries below cover the
 whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
+## 0.6.1 — 2026-06-13
+
+### Engine (via beamr 0.6.1)
+
+- **Workflow-process heap-reservation fix.** Pinned beamr 0.6.1, whose
+  interpreter now runs `ensure_space` before the `put_list`/`put_tuple2`
+  allocations, so a data-dependent burst of cons/tuple construction — e.g.
+  decoding a large stage report inside workflow code — triggers GC and
+  heap growth instead of dying with a fatal `heap full` that bypassed the
+  collector. Surfaced by the brief_dev real-norn dogfood: a 12 KB scout
+  report decoded in the workflow process crashed the run silently right
+  after scout while a 10 KB one survived — a heap-reservation cliff, not
+  genuine exhaustion (the process heap grows to ~1 MB). No aion code
+  change; the bump adopts the VM fix. `aion_flow` is unchanged at 0.4.0.
+
+### Notes
+
+- Workflow code should stay thin (ADR-012): large activity results are
+  best threaded as opaque payloads and decoded only by the consuming
+  activity on the worker, where the heap is full-size and the work runs
+  once rather than on every replay. The thin-workflow reshape is tracked
+  as RM-023 and the standard library that makes it cheap as RM-022;
+  observability so a crash never again looks like a hang as RM-024.
+
 ## 0.6.0 — 2026-06-13
 
 ### Engine
