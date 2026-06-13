@@ -8,8 +8,20 @@
       "status": "designed",
       "kind": "feature",
       "summary": "Required per-spawn RequestCancel | Terminate | Abandon on child.spawn / spawn_and_wait; propagation on all parent terminals, recursive, with recovery re-arming pending propagations. SDK + docs + template updates ride along.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "", "context": "Accepted the standing recommendation from the nested-workflow e2e wave; see ADR-004 for the decision and its quote." },
-      "links": { "cluster": "", "decisions": ["ADR-004"], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "",
+        "context": "Accepted the standing recommendation from the nested-workflow e2e wave; see ADR-004 for the decision and its quote."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [
+          "ADR-004"
+        ],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Engine-wide semantics — wants a cluster design before briefing, not a direct brief."
     },
@@ -19,8 +31,18 @@
       "status": "idea",
       "kind": "process",
       "summary": "Claims ledger (docs/CLAIMS.md), public CI on fresh clones, chaos gate (random-kill harness asserting byte-identical history), recorded demos, published benchmark numbers, honest Temporal side-by-side. Credibility-per-effort ordered; CI is the keystone.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "The 'contemporary of Temporal' positioning conversation; plan agreed in docs/ROADMAP.md §2." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "The 'contemporary of Temporal' positioning conversation; plan agreed in docs/ROADMAP.md §2."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Do not claim multi-node scale-out — we cannot demonstrate it."
     },
@@ -30,8 +52,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "--input/--payload accept inline JSON or @file interchangeably; aion start validates input against the deployed package's schema client-side with RFC 6901 pointers before dispatch; aion input <workflow_type> emits a valid skeleton. A directory form (@dir/ assembling input by mapping schema fields to files) is wanted but needs explicit schema-driven mapping design — no inference magic (ADR-001).",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "can that be variable so I could accept a file or it could accept as you could just accept a string or a variable or you know take a directory in in the workplace sort of figures it out from there", "context": "Live-dogfood friction: catting JSON into shell args, hand-composing input documents with embedded JSON-encoded design docs." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "can that be variable so I could accept a file or it could accept as you could just accept a string or a variable or you know take a directory in in the workplace sort of figures it out from there",
+        "context": "Live-dogfood friction: catting JSON into shell args, hand-composing input documents with embedded JSON-encoded design docs."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Self-contained CLI work; strong first candidate for briefs-driven dispatch (RM-018)."
     },
@@ -41,8 +73,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "Rebuild + repackage + hot-redeploy on file change for the authoring loop.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "Authoring roadmap sequencing, docs/ROADMAP.md §3." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "Authoring roadmap sequencing, docs/ROADMAP.md §3."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": ""
     },
@@ -52,8 +94,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "Coarse progress signal from long-running activities (agent steps run an hour-plus under ADR-003); confirmed wanted. Likely consumes the messaging bus's presence primitives if RM-020 lands first.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "norn-streaming question during the live e2e wave; confirmed wanted in docs/ROADMAP.md." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "norn-streaming question during the live e2e wave; confirmed wanted in docs/ROADMAP.md."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Sequencing question vs RM-020 deliberately open."
     },
@@ -63,8 +115,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "Named task queues, routing keys, worker affinity — the locality story for filesystem-coupled activity families (same-host worktrees) and the scale-out story for everything else. Confirmed wanted.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "Where-do-workers-run strategy discussion; confirmed wanted with locality rationale in docs/ROADMAP.md." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "Where-do-workers-run strategy discussion; confirmed wanted with locality rationale in docs/ROADMAP.md."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Candidate consumer of RM-020 (bus consumer groups + sticky routing)."
     },
@@ -74,8 +136,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "Per-run event timeline view in aion-dashboard.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "docs/ROADMAP.md §3." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "docs/ROADMAP.md §3."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": ""
     },
@@ -85,8 +157,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "BEAM-native polyglot authoring — the strategic counter to Temporal's client-runtime story; we never build client-side determinism cores.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "docs/ROADMAP.md §3, from the Temporal comparison discussion." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "docs/ROADMAP.md §3, from the Temporal comparison discussion."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": ""
     },
@@ -96,8 +178,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "On top of the typed SDK, not instead of it.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "docs/ROADMAP.md §3." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "docs/ROADMAP.md §3."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": ""
     },
@@ -107,8 +199,18 @@
       "status": "idea",
       "kind": "feature",
       "summary": "Long-term polyglot path on beamr-wasm.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-12", "quote": "", "context": "docs/ROADMAP.md §3." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-12",
+        "quote": "",
+        "context": "docs/ROADMAP.md §3."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Blocked by banked beamr items (WASM tail-park apply, WASM/JIT timer parity)."
     },
@@ -118,8 +220,18 @@
       "status": "idea",
       "kind": "fix",
       "summary": "Broken-pipe-tolerant log writer (Ctrl-C with | jq spams tracing errors); startup banner reports workflow_package_count=0 despite persisted reloads; server-side worker connect/disconnect info logs.",
-      "provenance": { "requested_by": "Claude", "date": "2026-06-13", "quote": "", "context": "Observed firsthand during the live-dogfood night; queued as riders." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Claude",
+        "date": "2026-06-13",
+        "quote": "",
+        "context": "Observed firsthand during the live-dogfood night; queued as riders."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Three small disjoint fixes — the pilot wave for RM-018."
     },
@@ -129,8 +241,18 @@
       "status": "idea",
       "kind": "fix",
       "summary": "Deterministic session ids exist; the dev handler should resume an existing norn session (sessions persist on disk, --resume exists) instead of always minting — making crash-resume reuse the SAME agent session.",
-      "provenance": { "requested_by": "Claude", "date": "2026-06-13", "quote": "", "context": "Live e2e wave; rider queue. Becomes part of the brief_dev pipeline design (RM-017)." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Claude",
+        "date": "2026-06-13",
+        "quote": "",
+        "context": "Live e2e wave; rider queue. Becomes part of the brief_dev pipeline design (RM-017)."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": ""
     },
@@ -140,8 +262,18 @@
       "status": "idea",
       "kind": "fix",
       "summary": "The SDK cannot express an unbounded reconnect budget; the stacked-dev worker works around it with usize::MAX. Builder should offer the explicit choice (ADR-001: the author chooses, the SDK doesn't default).",
-      "provenance": { "requested_by": "Claude", "date": "2026-06-13", "quote": "", "context": "Worker died after ~25s of server restart during dogfood; budget raised, builder gap pinned." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Claude",
+        "date": "2026-06-13",
+        "quote": "",
+        "context": "Worker died after ~25s of server restart during dogfood; budget raised, builder gap pinned."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": ""
     },
@@ -151,8 +283,18 @@
       "status": "idea",
       "kind": "fix",
       "summary": "Activity dispatch with no connected worker fails the run terminally; it should park until a worker serves the activity (consistent with ADR-003's unbounded-wait philosophy). Workers currently must start before aion start.",
-      "provenance": { "requested_by": "Claude", "date": "2026-06-13", "quote": "", "context": "Engine quirk pinned during the live e2e wave." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Claude",
+        "date": "2026-06-13",
+        "quote": "",
+        "context": "Engine quirk pinned during the live e2e wave."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Engine semantics — needs a short design pass (interaction with worker-loss delivery), not a direct brief."
     },
@@ -162,21 +304,47 @@
       "status": "designed",
       "kind": "feature",
       "summary": "Reviewers vote via meridian review complete; the Meridian coordinator applies quorum and fires the single review_verdict signal. aion-side contract already live-proven; the work is Meridian-side plus the branch→workflow-id mapping seam at review-request time.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "", "context": "Decided with Waffles during the live-dogfood night; see ADR-006." },
-      "links": { "cluster": "", "decisions": ["ADR-006"], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "",
+        "context": "Decided with Waffles during the live-dogfood night; see ADR-006."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [
+          "ADR-006"
+        ],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Implementation lives in the yggdrasil/Meridian repo and rides their re-pin to published aion 0.6.0 + hex aion_flow 0.4.0 (pins currently 88 commits behind at rev 489be454)."
     },
     {
       "id": "RM-016",
       "title": "Design system v2: ledgers, stage contracts, in-place enrichment",
-      "status": "designed",
+      "status": "landed",
       "kind": "process",
       "summary": "docs/design-system/: roadmap + decision ledgers above the clusters, all document formats as schemas inside the aion codegen subset, stage contracts (scout/dev/review reports) as first-class schemas, briefs as living documents enriched in place, authoring/prompting/review guides, validation + rendering + coverage tooling.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "I would yeah I would love something that had yeah like like roadmap ledger like you say yeah roadmap decisions it all all those things like that and yeah that would be that would be really great and again like I'd really like you to apply your like your standards to it.", "context": "Post-0.6.0-release conversation; v1 was the .meridian/design-system scheme from the Meridian v1 era. See ADR-007." },
-      "links": { "cluster": "", "decisions": ["ADR-007"], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "I would yeah I would love something that had yeah like like roadmap ledger like you say yeah roadmap decisions it all all those things like that and yeah that would be that would be really great and again like I'd really like you to apply your like your standards to it.",
+        "context": "Post-0.6.0-release conversation; v1 was the .meridian/design-system scheme from the Meridian v1 era. See ADR-007."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [
+          "ADR-007"
+        ],
+        "briefs": [],
+        "commits": [
+          "c25ceeb8"
+        ]
+      },
       "depends_on": [],
-      "notes": "Landing in the same commit as this ledger; flip to landed with the commit hash on the next ledger touch. Extract to its own repo when RM-020 starts."
+      "notes": "Extract to its own repo when RM-020 starts."
     },
     {
       "id": "RM-017",
@@ -184,9 +352,21 @@
       "status": "idea",
       "kind": "feature",
       "summary": "The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand gate with fix-until-clean resume → adversarial review → harden → re-gate, progressive in-place enrichment, deterministic sessions), composed under stacked_dev, plus a dispatcher workflow that selects briefed work from roadmap.json, orders by dependencies, fans out children with explicit parent-close (ADR-004), serializes lands.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "I would love it if you could write a workflow that that were not just right I mean write a workflow that sort of handles the pattern so goes through like and we try to do it all as much as we could with norn via the workflow.", "context": "The onatopp-dev-norn rhai workflow is the ancestor; v2 stage contracts are its schemas done properly. Norn provider usage is much gentler than Anthropic — agents stages run norn wherever possible." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
-      "depends_on": ["RM-016"],
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "I would love it if you could write a workflow that that were not just right I mean write a workflow that sort of handles the pattern so goes through like and we try to do it all as much as we could with norn via the workflow.",
+        "context": "The onatopp-dev-norn rhai workflow is the ancestor; v2 stage contracts are its schemas done properly. Norn provider usage is much gentler than Anthropic — agents stages run norn wherever possible."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
+      "depends_on": [
+        "RM-016"
+      ],
       "notes": "Needs its own cluster design (workflow family, codecs from the stage schemas via codegen, worker activities)."
     },
     {
@@ -195,9 +375,22 @@
       "status": "idea",
       "kind": "process",
       "summary": "Author the queued roadmap items as v2 clusters/briefs, dispatch them through the workflow family at the aion repo itself, review via meridian. The dogfood becomes the dev process. Pilot wave: RM-011's three disjoint fixes, run serially before fanning out.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "i'm kind of wondering if we can't do some of this work in Aon by you writing a bunch of input briefs like you did for that and we send out a bunch of non-agents and see how they go", "context": "Reaction to tk-015 completing the full stacked_dev arc live ('non-agents' is speech-to-text for norn agents). Requires yg init on the aion repo (not yet initialized)." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
-      "depends_on": ["RM-016", "RM-017"],
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "i'm kind of wondering if we can't do some of this work in Aon by you writing a bunch of input briefs like you did for that and we send out a bunch of non-agents and see how they go",
+        "context": "Reaction to tk-015 completing the full stacked_dev arc live ('non-agents' is speech-to-text for norn agents). Requires yg init on the aion repo (not yet initialized)."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
+      "depends_on": [
+        "RM-016",
+        "RM-017"
+      ],
       "notes": ""
     },
     {
@@ -206,9 +399,21 @@
       "status": "idea",
       "kind": "process",
       "summary": "The 0.6.0 release by hand was workflow-shaped: ordered multi-crate publish, hour-class verify builds, a human ship-it approval signal, durable resume if it dies mid-wave. A workflow step could also mechanically sweep the version-bump ripple (scaffold-gate assertions, example/fixture lockfiles) that cost three gate runs.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "You know what this process would be a really good candidate for? an aion workflow. :D", "context": "Mid-0.6.0-publish observation." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
-      "depends_on": ["RM-017"],
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "You know what this process would be a really good candidate for? an aion workflow. :D",
+        "context": "Mid-0.6.0-publish observation."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
+      "depends_on": [
+        "RM-017"
+      ],
       "notes": ""
     },
     {
@@ -217,8 +422,18 @@
       "status": "idea",
       "kind": "design",
       "summary": "NATS-class bus built on beamr as its own project: the actor model as the wire protocol — durable mailboxes, native request-reply (a reply capability rides the message; no inbox/reply-channel ceremony), subscriptions as durable cursors, schema'd subjects, per-message delivery policy (required, ADR-001), presence/monitors first-class, credit-based backpressure, embedded-first. aion's heartbeats (RM-005) and queues/affinity (RM-006) become bus consumers instead of engine features.",
-      "provenance": { "requested_by": "Tom", "date": "2026-06-13", "quote": "There are a whole bunch of kind of things that just kind of were a little bit annoying to me like you know that you had to like create a reply channel like that kind of stuff you know you couldn't just have things you know bounce and come back", "context": "The 'other obvious project to build with beamr' conversation, post-0.6.0 release. Planned in v2 design-system format from day one, after RM-017/RM-018 give a clear runway." },
-      "links": { "cluster": "", "decisions": [], "briefs": [], "commits": [] },
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "There are a whole bunch of kind of things that just kind of were a little bit annoying to me like you know that you had to like create a reply channel like that kind of stuff you know you couldn't just have things you know bounce and come back",
+        "context": "The 'other obvious project to build with beamr' conversation, post-0.6.0 release. Planned in v2 design-system format from day one, after RM-017/RM-018 give a clear runway."
+      },
+      "links": {
+        "cluster": "",
+        "decisions": [],
+        "briefs": [],
+        "commits": []
+      },
       "depends_on": [],
       "notes": "Separate repo when started; the design-system extraction (RM-016 note) rides with it."
     }

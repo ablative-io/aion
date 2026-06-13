@@ -2,7 +2,7 @@
 
 _Updated: 2026-06-13_
 
-## Designed (3)
+## Designed (2)
 
 ### RM-001 — Implement parent-close policy
 
@@ -21,18 +21,6 @@ Reviewers vote via meridian review complete; the Meridian coordinator applies qu
 
 - **Links:** decisions ADR-006
 - **Notes:** Implementation lives in the yggdrasil/Meridian repo and rides their re-pin to published aion 0.6.0 + hex aion_flow 0.4.0 (pins currently 88 commits behind at rev 489be454).
-
-### RM-016 — Design system v2: ledgers, stage contracts, in-place enrichment
-
-- **Kind:** process
-
-docs/design-system/: roadmap + decision ledgers above the clusters, all document formats as schemas inside the aion codegen subset, stage contracts (scout/dev/review reports) as first-class schemas, briefs as living documents enriched in place, authoring/prompting/review guides, validation + rendering + coverage tooling.
-
-> I would yeah I would love something that had yeah like like roadmap ledger like you say yeah roadmap decisions it all all those things like that and yeah that would be that would be really great and again like I'd really like you to apply your like your standards to it.
-> — Tom, 2026-06-13
-
-- **Links:** decisions ADR-007
-- **Notes:** Landing in the same commit as this ledger; flip to landed with the commit hash on the next ledger touch. Extract to its own repo when RM-020 starts.
 
 ## Idea (17)
 
@@ -198,3 +186,17 @@ NATS-class bus built on beamr as its own project: the actor model as the wire pr
 
 - **Links:** (none)
 - **Notes:** Separate repo when started; the design-system extraction (RM-016 note) rides with it.
+
+## Landed (1)
+
+### RM-016 — Design system v2: ledgers, stage contracts, in-place enrichment
+
+- **Kind:** process
+
+docs/design-system/: roadmap + decision ledgers above the clusters, all document formats as schemas inside the aion codegen subset, stage contracts (scout/dev/review reports) as first-class schemas, briefs as living documents enriched in place, authoring/prompting/review guides, validation + rendering + coverage tooling.
+
+> I would yeah I would love something that had yeah like like roadmap ledger like you say yeah roadmap decisions it all all those things like that and yeah that would be that would be really great and again like I'd really like you to apply your like your standards to it.
+> — Tom, 2026-06-13
+
+- **Links:** decisions ADR-007; commits c25ceeb8
+- **Notes:** Extract to its own repo when RM-020 starts.
