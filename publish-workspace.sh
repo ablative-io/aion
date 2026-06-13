@@ -68,7 +68,7 @@ publish_one() {
   while (( attempt <= MAX_ATTEMPTS )); do
     echo "--- [$crate] attempt ${attempt}/${MAX_ATTEMPTS} $(date -u +%FT%TZ) ---"
     # Capture output so we can recognise the already-published case.
-    out="$(cargo publish -p "$crate" "${PUBLISH_FLAGS[@]}" 2>&1)"
+    out="$(cargo publish -p "$crate" ${PUBLISH_FLAGS[@]+"${PUBLISH_FLAGS[@]}"} 2>&1)"
     rc=$?
     echo "$out"
 
