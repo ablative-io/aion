@@ -12,16 +12,20 @@ use std::fmt::Debug;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use stacked_dev_worker::dispatch::{
+    BriefOutcome, DispatchError, DispatchInput, DispatchResult, StackedDevError,
+};
 use stacked_dev_worker::types::{
-    AcceptanceVerdict, Alignment, Attestation, BriefDevInput, BriefDevResult, BriefDocument,
-    BriefRequirement, BuildWarm, ChangeKind, CheckResult, CheckVerdict, ChecklistClaim, Claim,
-    DevBlock, DevEnrichment, DevInput, DevReport, DevResult, DevStatus, EnrichInput, Enrichment,
-    ExecutionBlock, ExecutionStatus, ExecutionVerdict, FileChange, GateBlock, GateInput,
-    GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed, Placement, ProvisionInput,
-    RequirementFiles, ResolvedAdr, ResolvedContext, ResolvedItem, ResolvedProvenance, ResumeInput,
-    ReviewAck, ReviewBlock, ReviewEnrichment, ReviewInput, ReviewReport, ReviewRequest,
-    ReviewVerification, ScopedInput, ScoutBlock, ScoutEnrichment, ScoutInput, ScoutReport,
-    StackedDevInput, StackedDevResult, StartupResult, StartupTask, StoryClaim, Workspace,
+    AcceptanceVerdict, Alignment, AssembleInput, AssembledWave, Attestation, BriefDevInput,
+    BriefDevResult, BriefDocument, BriefRequirement, BuildWarm, ChangeKind, CheckResult,
+    CheckVerdict, ChecklistClaim, Claim, DevBlock, DevEnrichment, DevInput, DevReport, DevResult,
+    DevStatus, EnrichInput, Enrichment, ExecutionBlock, ExecutionStatus, ExecutionVerdict,
+    FileChange, GateBlock, GateInput, GateResult, GateScope, GateVerdict, Isolation, LandInput,
+    Landed, Placement, ProvisionInput, RequirementFiles, ResolvedAdr, ResolvedContext,
+    ResolvedItem, ResolvedProvenance, ResumeInput, ReviewAck, ReviewBlock, ReviewEnrichment,
+    ReviewInput, ReviewReport, ReviewRequest, ReviewVerification, ScopedInput, ScoutBlock,
+    ScoutEnrichment, ScoutInput, ScoutReport, StackedDevInput, StackedDevResult, StartupResult,
+    StartupTask, StoryClaim, WaveEntry, Workspace,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -836,6 +840,124 @@ fn stacked_dev_result_wire_shape() -> TestResult {
             },
             verify_rounds: 2,
             review_rounds: 1,
+        },
+    )
+}
+
+// --- BD-006: the dispatch + assemble_wave payloads ---------------------------
+
+// Mirrors `codecs_dispatch.assemble_input_codec`.
+#[test]
+fn assemble_input_wire_shape() -> TestResult {
+    assert_wire(
+        r#"{"design_dir":"docs/design","wave":["BD-006","BD-005"]}"#,
+        &AssembleInput {
+            design_dir: "docs/design".to_owned(),
+            wave: vec!["BD-006".to_owned(), "BD-005".to_owned()],
+        },
+    )
+}
+
+// Mirrors `codecs_dispatch` `wave_entry_to_json` — the brief document and the
+// resolved context reuse BD-001's codecs.
+#[test]
+fn wave_entry_wire_shape() -> TestResult {
+    let (document_literal, brief_document) = brief_document();
+    let (context_literal, resolved_context) = resolved_context();
+    assert_wire(
+        &format!(r#"{{"brief_document":{document_literal},"resolved_context":{context_literal}}}"#),
+        &WaveEntry {
+            brief_document,
+            resolved_context,
+        },
+    )
+}
+
+// Mirrors `codecs_dispatch.assembled_wave_codec`.
+#[test]
+fn assembled_wave_wire_shape() -> TestResult {
+    let (document_literal, brief_document) = brief_document();
+    let (context_literal, resolved_context) = resolved_context();
+    assert_wire(
+        &format!(
+            r#"{{"entries":[{{"brief_document":{document_literal},"resolved_context":{context_literal}}}]}}"#
+        ),
+        &AssembledWave {
+            entries: vec![WaveEntry {
+                brief_document,
+                resolved_context,
+            }],
+        },
+    )
+}
+
+// Mirrors `codecs_dispatch.dispatch_input_codec` — all twelve required fields
+// in declaration order, no defaults (ADR-001).
+#[test]
+fn dispatch_input_wire_shape() -> TestResult {
+    assert_wire(
+        r#"{"design_dir":"docs/design","wave":["BD-006"],"repo_root":"/abs/repo","base_ref":"main","reviewers":["sample-reviewer"],"placement":"local","isolation":"worktree","verify_fix_cap":3,"review_cap":3,"round_backoff_ms":25,"review_deadline_ms":60000,"halt_on_failure":true}"#,
+        &DispatchInput {
+            design_dir: "docs/design".to_owned(),
+            wave: vec!["BD-006".to_owned()],
+            repo_root: "/abs/repo".to_owned(),
+            base_ref: "main".to_owned(),
+            reviewers: vec!["sample-reviewer".to_owned()],
+            placement: Placement::Local,
+            isolation: Isolation::Worktree,
+            verify_fix_cap: 3,
+            review_cap: 3,
+            round_backoff_ms: 25,
+            review_deadline_ms: 60_000,
+            halt_on_failure: true,
+        },
+    )
+}
+
+// Mirrors `codecs_dispatch.dispatch_result_codec` — one landed, one failed
+// (embedding the stacked_dev error encoding under `error`), one skipped, byte
+// for byte both directions.
+#[test]
+fn dispatch_result_wire_shape() -> TestResult {
+    assert_wire(
+        r#"{"outcomes":[{"outcome":"landed","brief_id":"BD-001","branch":"stacked-dev-BD-001","merged_into":"main"},{"outcome":"failed","brief_id":"BD-002","error":{"error":"stage_failed","stage":"gate","message":"boom"}},{"outcome":"skipped","brief_id":"BD-003","after":"BD-002"}]}"#,
+        &DispatchResult {
+            outcomes: vec![
+                BriefOutcome::Landed {
+                    brief_id: "BD-001".to_owned(),
+                    branch: "stacked-dev-BD-001".to_owned(),
+                    merged_into: "main".to_owned(),
+                },
+                BriefOutcome::Failed {
+                    brief_id: "BD-002".to_owned(),
+                    error: StackedDevError::StageFailed {
+                        stage: "gate".to_owned(),
+                        message: "boom".to_owned(),
+                    },
+                },
+                BriefOutcome::Skipped {
+                    brief_id: "BD-003".to_owned(),
+                    after: "BD-002".to_owned(),
+                },
+            ],
+        },
+    )
+}
+
+// Mirrors `codecs_dispatch.dispatch_error_codec`, both variants.
+#[test]
+fn dispatch_error_wire_shape() -> TestResult {
+    assert_wire(
+        r#"{"error":"assembly_refused","message":"assemble_wave refused the wave: BD-006 depends on BD-005"}"#,
+        &DispatchError::AssemblyRefused {
+            message: "assemble_wave refused the wave: BD-006 depends on BD-005".to_owned(),
+        },
+    )?;
+    assert_wire(
+        r#"{"error":"dispatch_stage_failed","stage":"spawn_stacked_dev","message":"child engine failure"}"#,
+        &DispatchError::DispatchStageFailed {
+            stage: "spawn_stacked_dev".to_owned(),
+            message: "child engine failure".to_owned(),
         },
     )
 }

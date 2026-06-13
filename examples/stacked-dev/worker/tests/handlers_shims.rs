@@ -18,9 +18,9 @@ use aion_worker::{ActivityFailure, Classification};
 use stacked_dev_worker::handlers;
 use stacked_dev_worker::shell::Shell;
 use stacked_dev_worker::types::{
-    Alignment, Attestation, BriefDocument, BriefRequirement, CheckVerdict, Claim, DevInput,
-    EnrichInput, Enrichment, ExecutionBlock, ExecutionStatus, ExecutionVerdict, GateBlock,
-    GateInput, GateScope, GateVerdict, Isolation, LandInput, Placement, ProvisionInput,
+    Alignment, AssembleInput, Attestation, BriefDocument, BriefRequirement, CheckVerdict, Claim,
+    DevInput, EnrichInput, Enrichment, ExecutionBlock, ExecutionStatus, ExecutionVerdict,
+    GateBlock, GateInput, GateScope, GateVerdict, Isolation, LandInput, Placement, ProvisionInput,
     RequirementFiles, ResumeInput, ReviewInput, ReviewRequest, ScopedInput, ScoutInput,
     StartupResult, StartupTask, Workspace,
 };
@@ -966,5 +966,239 @@ fn enrich_brief_with_an_absent_file_is_terminal() -> TestResult {
     .err()
     .ok_or("a missing brief file must fail the activity")?;
     assert_terminal(&failure, "cannot read");
+    Ok(())
+}
+
+// --- assemble_wave (ledger reads + resolution, no CLI shim) ------------------
+//
+// These tests write a complete fixture design_dir tree (the two ledgers plus a
+// synthetic `demo` cluster's documents and briefs) and drive the handler
+// directly. They cover the four refusal classes and the ordering/landed
+// acceptance from BD-006 R4; the handler mirrors `assemble.run`
+// decision-for-decision, so the same fixtures exercise the deployed path.
+
+/// One test's fixture design directory.
+struct Design {
+    dir: tempfile::TempDir,
+}
+
+impl Design {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            dir: tempfile::tempdir()?,
+        })
+    }
+
+    fn path(&self) -> String {
+        self.dir.path().to_string_lossy().into_owned()
+    }
+
+    fn write_json(&self, relative: &str, value: &serde_json::Value) -> TestResult {
+        let path = self.dir.path().join(relative);
+        std::fs::create_dir_all(path.parent().ok_or("path has no parent")?)?;
+        std::fs::write(&path, serde_json::to_string(value)?)?;
+        Ok(())
+    }
+
+    /// Seed the two project ledgers and the `demo` cluster documents the
+    /// resolver reads for every brief.
+    fn seed_standard(&self) -> TestResult {
+        self.write_json(
+            "roadmap.json",
+            &serde_json::json!({
+                "items": [{
+                    "id": "RM-1",
+                    "links": { "cluster": "demo" },
+                    "provenance": { "requested_by": "Tom", "quote": "do it" }
+                }]
+            }),
+        )?;
+        self.write_json("decisions.json", &serde_json::json!({ "decisions": [] }))?;
+        self.write_json(
+            "demo/checklist.json",
+            &serde_json::json!({
+                "cluster": "demo",
+                "sections": [{ "name": "S", "items": [
+                    { "id": "C1", "text": "ct", "done": true },
+                    { "id": "C3", "text": "c3", "done": true }
+                ] }]
+            }),
+        )?;
+        self.write_json(
+            "demo/stories.json",
+            &serde_json::json!({
+                "cluster": "demo",
+                "personas": [{ "name": "P", "stories": [{ "id": "S1", "text": "st" }] }]
+            }),
+        )?;
+        self.write_json(
+            "demo/design.json",
+            &serde_json::json!({
+                "cluster": "demo",
+                "intention": "i",
+                "constraints": [{ "id": "CN1", "text": "nt" }],
+                "structure": []
+            }),
+        )
+    }
+
+    fn write_brief(&self, id: &str, value: &serde_json::Value) -> TestResult {
+        self.write_json(&format!("demo/briefs/{id}.json"), value)
+    }
+}
+
+/// A schema-valid v2 brief document (P4): empty checklist/stories and a single
+/// requirement unless overridden by `header_checklist`/`req_checklist`.
+fn brief_value(
+    id: &str,
+    depends_on: &[&str],
+    header_checklist: &[&str],
+    req_checklist: &[&str],
+    execution_landed: bool,
+) -> serde_json::Value {
+    let mut document = serde_json::json!({
+        "id": id,
+        "cluster": "demo",
+        "title": "t",
+        "depends_on": depends_on,
+        "blocked_by": [],
+        "checklist": header_checklist,
+        "stories": [],
+        "design_anchor": [],
+        "purpose": "p",
+        "task": "k",
+        "requirements": [{
+            "id": "R1",
+            "title": "rt",
+            "spec": "rs",
+            "acceptance": ["a"],
+            "files": { "create": [], "modify": [], "delete": [] },
+            "checklist": req_checklist,
+            "stories": []
+        }],
+        "boundaries": [],
+        "verification": []
+    });
+    if execution_landed {
+        document["execution"] = serde_json::json!({
+            "status": "landed",
+            "workflow_id": "wf",
+            "branch": "b",
+            "session_id": "s",
+            "gate": { "fmt": true, "clippy": true, "tests": true, "fix_rounds": 0 },
+            "attestation": {
+                "no_panics": true, "no_unsafe": true,
+                "boundaries_respected": true, "tests_pass": true
+            },
+            "review_verdict": "approved",
+            "landed_commit": "",
+            "merged_into": "main",
+            "completed_at": "1"
+        });
+    }
+    document
+}
+
+fn assemble(
+    design: &Design,
+    wave: &[&str],
+) -> Result<stacked_dev_worker::types::AssembledWave, ActivityFailure> {
+    handlers::assemble_wave(
+        &Shell::inherited(),
+        AssembleInput {
+            design_dir: design.path(),
+            wave: wave.iter().map(|id| (*id).to_owned()).collect(),
+        },
+    )
+}
+
+#[test]
+fn assemble_orders_the_wave_by_depends_on() -> TestResult {
+    let design = Design::new()?;
+    design.seed_standard()?;
+    design.write_brief("W-001", &brief_value("W-001", &[], &[], &[], false))?;
+    design.write_brief("W-002", &brief_value("W-002", &["W-001"], &[], &[], false))?;
+
+    // Wave given out of order; the dependency must come first.
+    let wave = assemble(&design, &["W-002", "W-001"]).map_err(|f| f.message().to_owned())?;
+    let ids: Vec<String> = wave
+        .entries
+        .iter()
+        .map(|entry| entry.brief_document.id.clone())
+        .collect();
+    assert_eq!(ids, ["W-001", "W-002"]);
+    // The resolved provenance carries the roadmap requester verbatim.
+    assert_eq!(
+        wave.entries[0].resolved_context.provenance.requested_by,
+        "Tom"
+    );
+    assert_eq!(wave.entries[0].resolved_context.provenance.quote, "do it");
+    Ok(())
+}
+
+#[test]
+fn assemble_accepts_a_landed_out_of_wave_dependency() -> TestResult {
+    let design = Design::new()?;
+    design.seed_standard()?;
+    // W-001 is on disk and landed (execution.status = landed) but not in the
+    // wave; W-002 depends on it.
+    design.write_brief("W-001", &brief_value("W-001", &[], &[], &[], true))?;
+    design.write_brief("W-002", &brief_value("W-002", &["W-001"], &[], &[], false))?;
+
+    let wave = assemble(&design, &["W-002"]).map_err(|f| f.message().to_owned())?;
+    let ids: Vec<String> = wave
+        .entries
+        .iter()
+        .map(|entry| entry.brief_document.id.clone())
+        .collect();
+    assert_eq!(ids, ["W-002"]);
+    Ok(())
+}
+
+#[test]
+fn assemble_refuses_an_unlanded_out_of_wave_dependency() -> TestResult {
+    let design = Design::new()?;
+    design.seed_standard()?;
+    // W-001 is on disk WITHOUT an execution block; W-002 depends on it.
+    design.write_brief("W-001", &brief_value("W-001", &[], &[], &[], false))?;
+    design.write_brief("W-002", &brief_value("W-002", &["W-001"], &[], &[], false))?;
+
+    let failure = assemble(&design, &["W-002"])
+        .err()
+        .ok_or("an unlanded dependency must refuse the wave")?;
+    assert_terminal(&failure, "W-002");
+    assert_terminal(&failure, "W-001");
+    assert_terminal(&failure, "is not landed on disk");
+    Ok(())
+}
+
+#[test]
+fn assemble_refuses_a_coverage_violation() -> TestResult {
+    let design = Design::new()?;
+    design.seed_standard()?;
+    // The header checklist lists C3, which no R# cites — a coverage break.
+    design.write_brief("W-010", &brief_value("W-010", &[], &["C3"], &[], false))?;
+
+    let failure = assemble(&design, &["W-010"])
+        .err()
+        .ok_or("a coverage violation must refuse the wave")?;
+    assert_terminal(&failure, "W-010");
+    assert_terminal(&failure, "C3");
+    Ok(())
+}
+
+#[test]
+fn assemble_refuses_a_dependency_cycle() -> TestResult {
+    let design = Design::new()?;
+    design.seed_standard()?;
+    design.write_brief("W-020", &brief_value("W-020", &["W-021"], &[], &[], false))?;
+    design.write_brief("W-021", &brief_value("W-021", &["W-020"], &[], &[], false))?;
+
+    let failure = assemble(&design, &["W-020", "W-021"])
+        .err()
+        .ok_or("a cycle must refuse the wave")?;
+    assert_terminal(&failure, "dependency cycle");
+    assert_terminal(&failure, "W-020");
+    assert_terminal(&failure, "W-021");
     Ok(())
 }

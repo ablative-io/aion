@@ -21,20 +21,21 @@ import gleam/json
 import gleam/list
 import gleam/option
 import gleam/string
+import stacked_dev/assemble
 import stacked_dev/cli
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/enrich
 import stacked_dev/types.{
-  type BriefDocument, type CheckResult, type DevInput, type EnrichInput,
-  type GateInput, type GateResult, type LandInput, type Landed,
-  type ProvisionInput, type ResumeInput, type ReviewAck, type ReviewInput,
-  type ReviewRequest, type ScopedInput, type ScoutInput, type StartupResult,
-  type StartupTask, type Workspace, AffectedClosure, BuildWarm, CheckFail,
-  CheckPass, CheckResult, Copy, DevEnrichment, DevTask, Developed,
-  ExecutionEnrichment, GateFail, GatePass, GateResult, Landed, Overlay,
-  ReviewAck, ReviewEnrichment, ScoutEnrichment, Vm, WarmTask, Warmed, Workspace,
-  WorkspaceWide, Worktree,
+  type AssembleInput, type AssembledWave, type BriefDocument, type CheckResult,
+  type DevInput, type EnrichInput, type GateInput, type GateResult,
+  type LandInput, type Landed, type ProvisionInput, type ResumeInput,
+  type ReviewAck, type ReviewInput, type ReviewRequest, type ScopedInput,
+  type ScoutInput, type StartupResult, type StartupTask, type Workspace,
+  AffectedClosure, BuildWarm, CheckFail, CheckPass, CheckResult, Copy,
+  DevEnrichment, DevTask, Developed, ExecutionEnrichment, GateFail, GatePass,
+  GateResult, Landed, Overlay, ReviewAck, ReviewEnrichment, ScoutEnrichment, Vm,
+  WarmTask, Warmed, Workspace, WorkspaceWide, Worktree,
 }
 
 /// Provision an isolated workspace via the `yg` CLI.
@@ -606,6 +607,19 @@ fn require_brief_decode(
         <> ": "
         <> reason,
       ))
+  }
+}
+
+/// `assemble_wave`: resolve, order, and refuse a dispatch wave. The heavy
+/// resolution lives in `stacked_dev/assemble` (the only ledger-reading,
+/// reference-resolving code in the family, CN1); this wrapper lifts a refusal
+/// or can't-execute diagnostic into a terminal activity failure (CN5).
+pub fn assemble_wave(
+  input: AssembleInput,
+) -> Result(AssembledWave, error.ActivityError) {
+  case assemble.run(input) {
+    Ok(wave) -> Ok(wave)
+    Error(message) -> Error(error.terminal(message))
   }
 }
 

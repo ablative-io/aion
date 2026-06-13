@@ -923,3 +923,34 @@ pub struct StackedDevResult {
     /// How many review rounds it took.
     pub review_rounds: i64,
 }
+
+// --- assemble_wave payloads (BD-006) -----------------------------------------
+
+/// Input to the `assemble_wave` activity
+/// (`codecs_dispatch.assemble_input_codec`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssembleInput {
+    /// Directory holding the ledgers and cluster documents to resolve against.
+    pub design_dir: String,
+    /// The wave as an ordered list of brief ids.
+    pub wave: Vec<String>,
+}
+
+/// One assembled wave entry (`codecs_dispatch` `wave_entry_to_json`): a
+/// resolved v2 brief document and the reference context resolved for it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WaveEntry {
+    /// The decoded brief document.
+    pub brief_document: BriefDocument,
+    /// The pre-resolved reference context.
+    pub resolved_context: ResolvedContext,
+}
+
+/// Output of the `assemble_wave` activity
+/// (`codecs_dispatch.assembled_wave_codec`): the wave entries in dependency
+/// order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssembledWave {
+    /// The ordered wave entries.
+    pub entries: Vec<WaveEntry>,
+}

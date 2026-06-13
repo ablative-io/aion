@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dispatch output",
+  "description": "The dispatched wave's machine-readable per-brief outcomes, one per wave entry in wave order. Each outcome is a tagged object whose outcome is exactly landed, failed, or skipped. The codegen subset has no oneOf, so the per-variant field sets are documented here rather than constrained per tag; the hand-written dispatch_result codec is the authoritative per-variant contract.",
+  "type": "object",
+  "required": ["outcomes"],
+  "additionalProperties": false,
+  "properties": {
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["outcome", "brief_id"],
+        "additionalProperties": false,
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": ["landed", "failed", "skipped"]
+          },
+          "brief_id": { "type": "string" },
+          "branch": {
+            "type": "string",
+            "description": "Present on a landed outcome: the merged branch."
+          },
+          "merged_into": {
+            "type": "string",
+            "description": "Present on a landed outcome: the tree parent it merged into."
+          },
+          "after": {
+            "type": "string",
+            "description": "Present on a skipped outcome: the failed brief that halted the wave."
+          },
+          "error": {
+            "type": "object",
+            "description": "Present on a failed outcome: the child's typed stacked_dev error verbatim, tagged by its error field.",
+            "required": ["error"],
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string",
+                "enum": [
+                  "provision_failed",
+                  "scout_failed",
+                  "dev_blocked",
+                  "dev_failed",
+                  "verify_exhausted",
+                  "review_drifted",
+                  "harden_regressed",
+                  "gate_rejected",
+                  "review_rejected",
+                  "review_timed_out",
+                  "review_cap_exhausted",
+                  "land_failed",
+                  "stage_failed"
+                ]
+              },
+              "message": { "type": "string" },
+              "stage": { "type": "string" },
+              "requirement_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "rounds": { "type": "integer" },
+              "diagnostics": { "type": "string" },
+              "drifted": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "issues"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": { "type": "string" },
+                    "issues": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              },
+              "report": { "type": "string" },
+              "reason": { "type": "string" },
+              "deadline_ms": { "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

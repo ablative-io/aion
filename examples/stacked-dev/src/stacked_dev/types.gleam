@@ -611,3 +611,97 @@ pub type ResolvedContext {
     provenance: ResolvedProvenance,
   )
 }
+
+// --- dispatch wave types (BD-006) -------------------------------------------
+
+/// Input to the `assemble_wave` dispatcher activity: the design directory the
+/// ledgers and cluster documents live under, and the wave as an ordered list
+/// of brief ids. This is the ONLY place ledger reading and reference
+/// resolution enter the family (CN1) — the activity returns a fully resolved,
+/// dependency-ordered `AssembledWave` the dispatch workflow body consumes.
+pub type AssembleInput {
+  AssembleInput(design_dir: String, wave: List(String))
+}
+
+/// One assembled wave entry: a decoded v2 brief document and the reference
+/// context the dispatcher resolved for it (CN1). The dispatch workflow turns
+/// each entry into a `StackedDevInput` for one `stacked_dev` child.
+pub type WaveEntry {
+  WaveEntry(brief_document: BriefDocument, resolved_context: ResolvedContext)
+}
+
+/// Output of the `assemble_wave` activity: the wave entries in dependency
+/// order (every within-wave `depends_on` precedes its dependent, the caller's
+/// order preserved among independents).
+pub type AssembledWave {
+  AssembledWave(entries: List(WaveEntry))
+}
+
+/// Input to the `dispatch` top-level workflow: a wave of brief ids plus the
+/// shared child parameters every `stacked_dev` child needs and a required
+/// `halt_on_failure`. Every field is required by construction — no cap,
+/// deadline, or flag is defaulted (ADR-001), and there is deliberately no
+/// concurrency-limit field: delivery is serial-only until parent-close
+/// (RM-001/ADR-004) gives the dispatcher cancellation over in-flight children.
+pub type DispatchInput {
+  DispatchInput(
+    design_dir: String,
+    wave: List(String),
+    repo_root: String,
+    base_ref: String,
+    reviewers: List(String),
+    placement: Placement,
+    isolation: Isolation,
+    verify_fix_cap: Int,
+    review_cap: Int,
+    round_backoff_ms: Int,
+    review_deadline_ms: Int,
+    halt_on_failure: Bool,
+  )
+}
+
+/// One brief's machine-readable outcome in a dispatched wave. A child's typed
+/// failure is recorded data here, never a dispatch failure (P3): `BriefFailed`
+/// embeds the child's `StackedDevError` itself, not a stringified message.
+pub type BriefOutcome {
+  /// The brief's `stacked_dev` child landed: the merged branch and its tree
+  /// parent. No commit hash rides along — the live-proven land contract
+  /// returns none and extending it is barred (CN8).
+  BriefLanded(brief_id: String, branch: String, merged_into: String)
+  /// The brief's child failed with a typed error, carried verbatim.
+  BriefFailed(brief_id: String, error: StackedDevError)
+  /// The brief was never started because an earlier failure halted the wave;
+  /// `after` names the failed brief that stopped it.
+  BriefSkipped(brief_id: String, after: String)
+}
+
+/// Output of a dispatched wave: exactly one outcome per wave entry, in wave
+/// order.
+pub type DispatchResult {
+  DispatchResult(outcomes: List(BriefOutcome))
+}
+
+/// Typed errors of the `dispatch` workflow. Only can't-execute conditions are
+/// dispatch errors: an `assemble_wave` failure becomes `AssemblyRefused`, and
+/// engine-level child errors (output/error decode failures, engine failures)
+/// become `DispatchStageFailed`. A child's typed business failure is recorded
+/// as a `BriefFailed` outcome, never lifted here (P3).
+pub type DispatchError {
+  /// `assemble_wave` refused or could not assemble the wave.
+  AssemblyRefused(message: String)
+  /// An engine-level failure spawning or awaiting a child, tagged with the
+  /// stage that raised it.
+  DispatchStageFailed(stage: String, message: String)
+}
+
+/// Live status answered by the `dispatch_status` query: the brief currently in
+/// flight, its 1-based position, the wave total, and the per-brief outcomes
+/// recorded so far.
+pub type DispatchStatus {
+  DispatchStatus(
+    current_brief: String,
+    position: Int,
+    total: Int,
+    outcomes: List(BriefOutcome),
+  )
+}

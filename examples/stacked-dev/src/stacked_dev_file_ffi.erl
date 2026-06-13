@@ -11,13 +11,14 @@
 %%   read_file/1    {ok, Binary} | {error, Reason-as-binary}
 %%   write_file/2   {ok, nil}    | {error, Reason-as-binary}
 %%   remove_tree/1  {ok, nil}    | {error, Reason-as-binary}
+%%   list_dir/1     {ok, [Binary]} | {error, Reason-as-binary}
 %%
 %% Every posix failure is rendered loudly into the error binary — a file
 %% problem is data for the caller's terminal activity failure, never a crash
 %% and never a silent skip.
 -module(stacked_dev_file_ffi).
 
--export([read_file/1, write_file/2, remove_tree/1]).
+-export([read_file/1, write_file/2, remove_tree/1, list_dir/1]).
 
 read_file(Path) ->
     case file:read_file(binary_to_list(Path)) of
@@ -44,6 +45,16 @@ remove_tree(Path) ->
         ok -> {ok, nil};
         %% An absent tree is the desired end state, not a failure.
         {error, enoent} -> {ok, nil};
+        {error, Reason} -> {error, render(Reason)}
+    end.
+
+%% List one directory's immediate entry names (cluster directories and ledger
+%% files alike) so the assemble_wave resolver can scan for a brief by id. A
+%% non-existent or unreadable directory is a loud error binary, never a silent
+%% empty list.
+list_dir(Path) ->
+    case file:list_dir(binary_to_list(Path)) of
+        {ok, Names} -> {ok, [list_to_binary(Name) || Name <- Names]};
         {error, Reason} -> {error, render(Reason)}
     end.
 

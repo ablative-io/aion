@@ -310,7 +310,10 @@ pub fn stacked_dev_error_codec() -> codec.Codec(StackedDevError) {
   codec.json_codec(stacked_dev_error_to_json, stacked_dev_error_decoder())
 }
 
-fn stacked_dev_error_to_json(workflow_error: StackedDevError) -> json.Json {
+/// JSON encoder for a `StackedDevError`, exposed so the dispatch codecs can
+/// embed exactly this encoding under a failed outcome's `"error"` key — one
+/// error encoding shared between the two workflows, never a second copy (P4).
+pub fn stacked_dev_error_to_json(workflow_error: StackedDevError) -> json.Json {
   case workflow_error {
     ProvisionFailed(message: message) ->
       tagged_message("provision_failed", message)
@@ -375,7 +378,9 @@ fn tagged_message(tag: String, message: String) -> json.Json {
   ])
 }
 
-fn stacked_dev_error_decoder() -> decode.Decoder(StackedDevError) {
+/// JSON decoder for a `StackedDevError`, exposed for the dispatch codecs (see
+/// `stacked_dev_error_to_json`).
+pub fn stacked_dev_error_decoder() -> decode.Decoder(StackedDevError) {
   use tag <- decode.field("error", decode.string)
   case tag {
     "provision_failed" -> {

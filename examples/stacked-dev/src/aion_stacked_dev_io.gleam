@@ -1874,6 +1874,462 @@ pub fn dev_report_attestation_decoder() -> decode.Decoder(DevReportAttestation) 
   ))
 }
 
+/// Generated from `schemas/dispatch_input.json`.
+pub type DispatchInput {
+  DispatchInput(
+    design_dir: String,
+    wave: List(String),
+    repo_root: String,
+    base_ref: String,
+    reviewers: List(String),
+    placement: DispatchInputPlacement,
+    isolation: DispatchInputIsolation,
+    verify_fix_cap: Int,
+    review_cap: Int,
+    round_backoff_ms: Int,
+    review_deadline_ms: Int,
+    halt_on_failure: Bool,
+  )
+}
+
+/// Encodes `DispatchInput` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn dispatch_input_to_json(value: DispatchInput) -> json.Json {
+  json.object([
+    #("design_dir", json.string(value.design_dir)),
+    #("wave", json.array(value.wave, json.string)),
+    #("repo_root", json.string(value.repo_root)),
+    #("base_ref", json.string(value.base_ref)),
+    #("reviewers", json.array(value.reviewers, json.string)),
+    #("placement", dispatch_input_placement_to_json(value.placement)),
+    #("isolation", dispatch_input_isolation_to_json(value.isolation)),
+    #("verify_fix_cap", json.int(value.verify_fix_cap)),
+    #("review_cap", json.int(value.review_cap)),
+    #("round_backoff_ms", json.int(value.round_backoff_ms)),
+    #("review_deadline_ms", json.int(value.review_deadline_ms)),
+    #("halt_on_failure", json.bool(value.halt_on_failure)),
+  ])
+}
+
+/// Decoder for `DispatchInput` from schema-shaped JSON.
+pub fn dispatch_input_decoder() -> decode.Decoder(DispatchInput) {
+  use field_design_dir <- decode.field("design_dir", decode.string)
+  use field_wave <- decode.field("wave", decode.list(decode.string))
+  use field_repo_root <- decode.field("repo_root", decode.string)
+  use field_base_ref <- decode.field("base_ref", decode.string)
+  use field_reviewers <- decode.field("reviewers", decode.list(decode.string))
+  use field_placement <- decode.field("placement", dispatch_input_placement_decoder())
+  use field_isolation <- decode.field("isolation", dispatch_input_isolation_decoder())
+  use field_verify_fix_cap <- decode.field("verify_fix_cap", decode.int)
+  use field_review_cap <- decode.field("review_cap", decode.int)
+  use field_round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
+  use field_review_deadline_ms <- decode.field("review_deadline_ms", decode.int)
+  use field_halt_on_failure <- decode.field("halt_on_failure", decode.bool)
+  decode.success(DispatchInput(
+    design_dir: field_design_dir,
+    wave: field_wave,
+    repo_root: field_repo_root,
+    base_ref: field_base_ref,
+    reviewers: field_reviewers,
+    placement: field_placement,
+    isolation: field_isolation,
+    verify_fix_cap: field_verify_fix_cap,
+    review_cap: field_review_cap,
+    round_backoff_ms: field_round_backoff_ms,
+    review_deadline_ms: field_review_deadline_ms,
+    halt_on_failure: field_halt_on_failure,
+  ))
+}
+
+/// Generated from `schemas/dispatch_input.json` at `/properties/placement`.
+pub type DispatchInputPlacement {
+  DispatchInputPlacementLocal
+  DispatchInputPlacementRemote
+}
+
+/// Encodes `DispatchInputPlacement` as its wire string.
+pub fn dispatch_input_placement_to_json(value: DispatchInputPlacement) -> json.Json {
+  case value {
+    DispatchInputPlacementLocal -> json.string("local")
+    DispatchInputPlacementRemote -> json.string("remote")
+  }
+}
+
+/// Decoder for `DispatchInputPlacement` from its wire string.
+pub fn dispatch_input_placement_decoder() -> decode.Decoder(DispatchInputPlacement) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "local" -> decode.success(DispatchInputPlacementLocal)
+      "remote" -> decode.success(DispatchInputPlacementRemote)
+      _ -> decode.failure(DispatchInputPlacementLocal, "DispatchInputPlacement")
+    }
+  })
+}
+
+/// Generated from `schemas/dispatch_input.json` at `/properties/isolation`.
+pub type DispatchInputIsolation {
+  DispatchInputIsolationWorktree
+  DispatchInputIsolationCopy
+  DispatchInputIsolationOverlay
+  DispatchInputIsolationVm
+}
+
+/// Encodes `DispatchInputIsolation` as its wire string.
+pub fn dispatch_input_isolation_to_json(value: DispatchInputIsolation) -> json.Json {
+  case value {
+    DispatchInputIsolationWorktree -> json.string("worktree")
+    DispatchInputIsolationCopy -> json.string("copy")
+    DispatchInputIsolationOverlay -> json.string("overlay")
+    DispatchInputIsolationVm -> json.string("vm")
+  }
+}
+
+/// Decoder for `DispatchInputIsolation` from its wire string.
+pub fn dispatch_input_isolation_decoder() -> decode.Decoder(DispatchInputIsolation) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "worktree" -> decode.success(DispatchInputIsolationWorktree)
+      "copy" -> decode.success(DispatchInputIsolationCopy)
+      "overlay" -> decode.success(DispatchInputIsolationOverlay)
+      "vm" -> decode.success(DispatchInputIsolationVm)
+      _ -> decode.failure(DispatchInputIsolationWorktree, "DispatchInputIsolation")
+    }
+  })
+}
+
+/// Generated from `schemas/dispatch_output.json`.
+pub type DispatchOutput {
+  DispatchOutput(
+    outcomes: List(DispatchOutputOutcomesItem),
+  )
+}
+
+/// Encodes `DispatchOutput` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn dispatch_output_to_json(value: DispatchOutput) -> json.Json {
+  json.object([
+    #("outcomes", json.array(value.outcomes, dispatch_output_outcomes_item_to_json)),
+  ])
+}
+
+/// Decoder for `DispatchOutput` from schema-shaped JSON.
+pub fn dispatch_output_decoder() -> decode.Decoder(DispatchOutput) {
+  use field_outcomes <- decode.field("outcomes", decode.list(dispatch_output_outcomes_item_decoder()))
+  decode.success(DispatchOutput(
+    outcomes: field_outcomes,
+  ))
+}
+
+/// Generated from `schemas/dispatch_output.json` at `/properties/outcomes/items`.
+pub type DispatchOutputOutcomesItem {
+  DispatchOutputOutcomesItem(
+    outcome: DispatchOutputOutcomesItemOutcome,
+    brief_id: String,
+    branch: option.Option(String),
+    merged_into: option.Option(String),
+    after: option.Option(String),
+    error: option.Option(DispatchOutputOutcomesItemError),
+  )
+}
+
+/// Encodes `DispatchOutputOutcomesItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn dispatch_output_outcomes_item_to_json(value: DispatchOutputOutcomesItem) -> json.Json {
+  json.object(
+    list.flatten([
+      [#("outcome", dispatch_output_outcomes_item_outcome_to_json(value.outcome))],
+      [#("brief_id", json.string(value.brief_id))],
+      case value.branch {
+        option.Some(present) -> [#("branch", json.string(present))]
+        option.None -> []
+      },
+      case value.merged_into {
+        option.Some(present) -> [#("merged_into", json.string(present))]
+        option.None -> []
+      },
+      case value.after {
+        option.Some(present) -> [#("after", json.string(present))]
+        option.None -> []
+      },
+      case value.error {
+        option.Some(present) -> [#("error", dispatch_output_outcomes_item_error_to_json(present))]
+        option.None -> []
+      },
+    ]),
+  )
+}
+
+/// Decoder for `DispatchOutputOutcomesItem` from schema-shaped JSON.
+pub fn dispatch_output_outcomes_item_decoder() -> decode.Decoder(DispatchOutputOutcomesItem) {
+  use field_outcome <- decode.field("outcome", dispatch_output_outcomes_item_outcome_decoder())
+  use field_brief_id <- decode.field("brief_id", decode.string)
+  use field_branch <- decode.optional_field(
+    "branch",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_merged_into <- decode.optional_field(
+    "merged_into",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_after <- decode.optional_field(
+    "after",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_error <- decode.optional_field(
+    "error",
+    option.None,
+    decode.optional(dispatch_output_outcomes_item_error_decoder()),
+  )
+  decode.success(DispatchOutputOutcomesItem(
+    outcome: field_outcome,
+    brief_id: field_brief_id,
+    branch: field_branch,
+    merged_into: field_merged_into,
+    after: field_after,
+    error: field_error,
+  ))
+}
+
+/// Generated from `schemas/dispatch_output.json` at `/properties/outcomes/items/properties/outcome`.
+pub type DispatchOutputOutcomesItemOutcome {
+  DispatchOutputOutcomesItemOutcomeLanded
+  DispatchOutputOutcomesItemOutcomeFailed
+  DispatchOutputOutcomesItemOutcomeSkipped
+}
+
+/// Encodes `DispatchOutputOutcomesItemOutcome` as its wire string.
+pub fn dispatch_output_outcomes_item_outcome_to_json(value: DispatchOutputOutcomesItemOutcome) -> json.Json {
+  case value {
+    DispatchOutputOutcomesItemOutcomeLanded -> json.string("landed")
+    DispatchOutputOutcomesItemOutcomeFailed -> json.string("failed")
+    DispatchOutputOutcomesItemOutcomeSkipped -> json.string("skipped")
+  }
+}
+
+/// Decoder for `DispatchOutputOutcomesItemOutcome` from its wire string.
+pub fn dispatch_output_outcomes_item_outcome_decoder() -> decode.Decoder(DispatchOutputOutcomesItemOutcome) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "landed" -> decode.success(DispatchOutputOutcomesItemOutcomeLanded)
+      "failed" -> decode.success(DispatchOutputOutcomesItemOutcomeFailed)
+      "skipped" -> decode.success(DispatchOutputOutcomesItemOutcomeSkipped)
+      _ -> decode.failure(DispatchOutputOutcomesItemOutcomeLanded, "DispatchOutputOutcomesItemOutcome")
+    }
+  })
+}
+
+/// Generated from `schemas/dispatch_output.json` at `/properties/outcomes/items/properties/error`.
+pub type DispatchOutputOutcomesItemError {
+  DispatchOutputOutcomesItemError(
+    error: DispatchOutputOutcomesItemErrorError,
+    message: option.Option(String),
+    stage: option.Option(String),
+    requirement_ids: option.Option(List(String)),
+    rounds: option.Option(Int),
+    diagnostics: option.Option(String),
+    drifted: option.Option(List(DispatchOutputOutcomesItemErrorDriftedItem)),
+    report: option.Option(String),
+    reason: option.Option(String),
+    deadline_ms: option.Option(Int),
+  )
+}
+
+/// Encodes `DispatchOutputOutcomesItemError` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn dispatch_output_outcomes_item_error_to_json(value: DispatchOutputOutcomesItemError) -> json.Json {
+  json.object(
+    list.flatten([
+      [#("error", dispatch_output_outcomes_item_error_error_to_json(value.error))],
+      case value.message {
+        option.Some(present) -> [#("message", json.string(present))]
+        option.None -> []
+      },
+      case value.stage {
+        option.Some(present) -> [#("stage", json.string(present))]
+        option.None -> []
+      },
+      case value.requirement_ids {
+        option.Some(present) -> [#("requirement_ids", json.array(present, json.string))]
+        option.None -> []
+      },
+      case value.rounds {
+        option.Some(present) -> [#("rounds", json.int(present))]
+        option.None -> []
+      },
+      case value.diagnostics {
+        option.Some(present) -> [#("diagnostics", json.string(present))]
+        option.None -> []
+      },
+      case value.drifted {
+        option.Some(present) -> [#("drifted", json.array(present, dispatch_output_outcomes_item_error_drifted_item_to_json))]
+        option.None -> []
+      },
+      case value.report {
+        option.Some(present) -> [#("report", json.string(present))]
+        option.None -> []
+      },
+      case value.reason {
+        option.Some(present) -> [#("reason", json.string(present))]
+        option.None -> []
+      },
+      case value.deadline_ms {
+        option.Some(present) -> [#("deadline_ms", json.int(present))]
+        option.None -> []
+      },
+    ]),
+  )
+}
+
+/// Decoder for `DispatchOutputOutcomesItemError` from schema-shaped JSON.
+pub fn dispatch_output_outcomes_item_error_decoder() -> decode.Decoder(DispatchOutputOutcomesItemError) {
+  use field_error <- decode.field("error", dispatch_output_outcomes_item_error_error_decoder())
+  use field_message <- decode.optional_field(
+    "message",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_stage <- decode.optional_field(
+    "stage",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_requirement_ids <- decode.optional_field(
+    "requirement_ids",
+    option.None,
+    decode.optional(decode.list(decode.string)),
+  )
+  use field_rounds <- decode.optional_field(
+    "rounds",
+    option.None,
+    decode.optional(decode.int),
+  )
+  use field_diagnostics <- decode.optional_field(
+    "diagnostics",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_drifted <- decode.optional_field(
+    "drifted",
+    option.None,
+    decode.optional(decode.list(dispatch_output_outcomes_item_error_drifted_item_decoder())),
+  )
+  use field_report <- decode.optional_field(
+    "report",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_reason <- decode.optional_field(
+    "reason",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use field_deadline_ms <- decode.optional_field(
+    "deadline_ms",
+    option.None,
+    decode.optional(decode.int),
+  )
+  decode.success(DispatchOutputOutcomesItemError(
+    error: field_error,
+    message: field_message,
+    stage: field_stage,
+    requirement_ids: field_requirement_ids,
+    rounds: field_rounds,
+    diagnostics: field_diagnostics,
+    drifted: field_drifted,
+    report: field_report,
+    reason: field_reason,
+    deadline_ms: field_deadline_ms,
+  ))
+}
+
+/// Generated from `schemas/dispatch_output.json` at `/properties/outcomes/items/properties/error/properties/error`.
+pub type DispatchOutputOutcomesItemErrorError {
+  DispatchOutputOutcomesItemErrorErrorProvisionFailed
+  DispatchOutputOutcomesItemErrorErrorScoutFailed
+  DispatchOutputOutcomesItemErrorErrorDevBlocked
+  DispatchOutputOutcomesItemErrorErrorDevFailed
+  DispatchOutputOutcomesItemErrorErrorVerifyExhausted
+  DispatchOutputOutcomesItemErrorErrorReviewDrifted
+  DispatchOutputOutcomesItemErrorErrorHardenRegressed
+  DispatchOutputOutcomesItemErrorErrorGateRejected
+  DispatchOutputOutcomesItemErrorErrorReviewRejected
+  DispatchOutputOutcomesItemErrorErrorReviewTimedOut
+  DispatchOutputOutcomesItemErrorErrorReviewCapExhausted
+  DispatchOutputOutcomesItemErrorErrorLandFailed
+  DispatchOutputOutcomesItemErrorErrorStageFailed
+}
+
+/// Encodes `DispatchOutputOutcomesItemErrorError` as its wire string.
+pub fn dispatch_output_outcomes_item_error_error_to_json(value: DispatchOutputOutcomesItemErrorError) -> json.Json {
+  case value {
+    DispatchOutputOutcomesItemErrorErrorProvisionFailed -> json.string("provision_failed")
+    DispatchOutputOutcomesItemErrorErrorScoutFailed -> json.string("scout_failed")
+    DispatchOutputOutcomesItemErrorErrorDevBlocked -> json.string("dev_blocked")
+    DispatchOutputOutcomesItemErrorErrorDevFailed -> json.string("dev_failed")
+    DispatchOutputOutcomesItemErrorErrorVerifyExhausted -> json.string("verify_exhausted")
+    DispatchOutputOutcomesItemErrorErrorReviewDrifted -> json.string("review_drifted")
+    DispatchOutputOutcomesItemErrorErrorHardenRegressed -> json.string("harden_regressed")
+    DispatchOutputOutcomesItemErrorErrorGateRejected -> json.string("gate_rejected")
+    DispatchOutputOutcomesItemErrorErrorReviewRejected -> json.string("review_rejected")
+    DispatchOutputOutcomesItemErrorErrorReviewTimedOut -> json.string("review_timed_out")
+    DispatchOutputOutcomesItemErrorErrorReviewCapExhausted -> json.string("review_cap_exhausted")
+    DispatchOutputOutcomesItemErrorErrorLandFailed -> json.string("land_failed")
+    DispatchOutputOutcomesItemErrorErrorStageFailed -> json.string("stage_failed")
+  }
+}
+
+/// Decoder for `DispatchOutputOutcomesItemErrorError` from its wire string.
+pub fn dispatch_output_outcomes_item_error_error_decoder() -> decode.Decoder(DispatchOutputOutcomesItemErrorError) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "provision_failed" -> decode.success(DispatchOutputOutcomesItemErrorErrorProvisionFailed)
+      "scout_failed" -> decode.success(DispatchOutputOutcomesItemErrorErrorScoutFailed)
+      "dev_blocked" -> decode.success(DispatchOutputOutcomesItemErrorErrorDevBlocked)
+      "dev_failed" -> decode.success(DispatchOutputOutcomesItemErrorErrorDevFailed)
+      "verify_exhausted" -> decode.success(DispatchOutputOutcomesItemErrorErrorVerifyExhausted)
+      "review_drifted" -> decode.success(DispatchOutputOutcomesItemErrorErrorReviewDrifted)
+      "harden_regressed" -> decode.success(DispatchOutputOutcomesItemErrorErrorHardenRegressed)
+      "gate_rejected" -> decode.success(DispatchOutputOutcomesItemErrorErrorGateRejected)
+      "review_rejected" -> decode.success(DispatchOutputOutcomesItemErrorErrorReviewRejected)
+      "review_timed_out" -> decode.success(DispatchOutputOutcomesItemErrorErrorReviewTimedOut)
+      "review_cap_exhausted" -> decode.success(DispatchOutputOutcomesItemErrorErrorReviewCapExhausted)
+      "land_failed" -> decode.success(DispatchOutputOutcomesItemErrorErrorLandFailed)
+      "stage_failed" -> decode.success(DispatchOutputOutcomesItemErrorErrorStageFailed)
+      _ -> decode.failure(DispatchOutputOutcomesItemErrorErrorProvisionFailed, "DispatchOutputOutcomesItemErrorError")
+    }
+  })
+}
+
+/// Generated from `schemas/dispatch_output.json` at `/properties/outcomes/items/properties/error/properties/drifted/items`.
+pub type DispatchOutputOutcomesItemErrorDriftedItem {
+  DispatchOutputOutcomesItemErrorDriftedItem(
+    id: String,
+    issues: List(String),
+  )
+}
+
+/// Encodes `DispatchOutputOutcomesItemErrorDriftedItem` as schema-shaped JSON; optional fields are
+/// omitted when `None`.
+pub fn dispatch_output_outcomes_item_error_drifted_item_to_json(value: DispatchOutputOutcomesItemErrorDriftedItem) -> json.Json {
+  json.object([
+    #("id", json.string(value.id)),
+    #("issues", json.array(value.issues, json.string)),
+  ])
+}
+
+/// Decoder for `DispatchOutputOutcomesItemErrorDriftedItem` from schema-shaped JSON.
+pub fn dispatch_output_outcomes_item_error_drifted_item_decoder() -> decode.Decoder(DispatchOutputOutcomesItemErrorDriftedItem) {
+  use field_id <- decode.field("id", decode.string)
+  use field_issues <- decode.field("issues", decode.list(decode.string))
+  decode.success(DispatchOutputOutcomesItemErrorDriftedItem(
+    id: field_id,
+    issues: field_issues,
+  ))
+}
+
 /// Generated from `schemas/gate_input.json`.
 pub type GateInput {
   GateInput(

@@ -12,12 +12,14 @@ import aion/codec
 import aion_stacked_dev_io as stage_io
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
+import stacked_dev/codecs_dispatch
 import stacked_dev/codecs_flow
 import stacked_dev/locals
 import stacked_dev/types.{
-  type DevInput, type EnrichInput, type GateInput, type LandInput,
-  type ProvisionInput, type ResumeInput, type ReviewInput, type ReviewRequest,
-  type ScopedInput, type ScoutInput, DevTask, WarmTask,
+  type AssembleInput, type AssembledWave, type DevInput, type EnrichInput,
+  type GateInput, type LandInput, type ProvisionInput, type ResumeInput,
+  type ReviewInput, type ReviewRequest, type ScopedInput, type ScoutInput,
+  DevTask, WarmTask,
 }
 
 /// Activity name served by the read-only scout (norn run) worker.
@@ -55,6 +57,12 @@ pub const land_name = "land"
 /// the execution block before land) — the `Enrichment` variant selects the
 /// merge.
 pub const enrich_brief_name = "enrich_brief"
+
+/// Activity name served by the wave dispatcher worker. This is the ONLY place
+/// ledger reading and reference resolution enter the family (CN1): the
+/// `dispatch` workflow body consumes the returned `AssembledWave` and itself
+/// reads no file and parses no ledger.
+pub const assemble_wave_name = "assemble_wave"
 
 /// `scout`: the read-only orientation round in its own deterministic norn
 /// session (`<branch>-scout`, CN4). Output validates against the generated
@@ -212,5 +220,21 @@ pub fn enrich_brief(
     codecs_flow.enrich_input_codec(),
     codecs_brief.brief_document_codec(),
     locals.enrich_brief,
+  )
+}
+
+/// `assemble_wave`: read the ledgers and cluster documents under `design_dir`,
+/// resolve every reference, order the wave by `depends_on`, and refuse the
+/// whole wave when any brief is stale, coverage-broken, or dependency-blocked
+/// (CN1, S4, S17). The local implementation is `locals.assemble_wave`.
+pub fn assemble_wave(
+  input: AssembleInput,
+) -> activity.Activity(AssembleInput, AssembledWave) {
+  activity.new(
+    assemble_wave_name,
+    input,
+    codecs_dispatch.assemble_input_codec(),
+    codecs_dispatch.assembled_wave_codec(),
+    locals.assemble_wave,
   )
 }

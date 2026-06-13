@@ -1,16 +1,33 @@
 # Workflow packaging descriptor consumed by `aion package`.
 # Reference: docs/packaging.md.
 #
-# Three entries — the stacked-dev family (open question Q6): the `stacked_dev`
-# parent plus the `brief_dev` and `gate` children, each independently
-# dispatchable. A spawned child's workflow type is resolved by entry module
-# name against the engine's loaded packages, so all three archives must be
-# deployed together for full parent-child runs. All archives share the same
-# beam set and content hash; only the entry module differs.
+# Four entries — the stacked-dev family (open question Q6): the `dispatch`
+# wave dispatcher above the `stacked_dev` parent, which composes the
+# `brief_dev` and `gate` children, each independently dispatchable. A spawned
+# child's workflow type is resolved by entry module name against the engine's
+# loaded packages, so all FOUR archives must be deployed together for full
+# dispatch/parent-child runs (CN6 — the family deploys as a unit: all four
+# archives rebuild and redeploy together on any change). All archives share
+# the same beam set and content hash; only the entry module differs.
 #
-# Timeouts size the longest legitimate run: the parent waits on human-scale
-# review verdicts (seven days), the brief-dev child iterates agent rounds for
-# up to a day, and the gate is one full check sweep (six hours).
+# Timeouts size the longest legitimate run: the dispatcher waits on a whole
+# wave of children that each park on human-scale review (thirty days), the
+# parent waits on one human-scale review verdict (seven days), the brief-dev
+# child iterates agent rounds for up to a day, and the gate is one full check
+# sweep (six hours).
+
+# dispatch sizes its timeout for a whole wave of children that each park up to
+# seven days on human review: thirty days is the author's sizing of the
+# longest legitimate wave, chosen here — not a default the engine imposes
+# (ADR-001/ADR-003).
+[[workflow]]
+entry_module = "dispatch"
+entry_function = "run"
+timeout_seconds = 2592000
+input_schema = "schemas/dispatch_input.json"
+output_schema = "schemas/dispatch_output.json"
+activities = ["assemble_wave"]
+output = "dispatch.aion"
 
 [[workflow]]
 entry_module = "stacked_dev"
