@@ -26,10 +26,10 @@ use serde::de::DeserializeOwned;
 use crate::schemas::{DEV_OUTPUT_SCHEMA, REVIEW_OUTPUT_SCHEMA, SCOUT_OUTPUT_SCHEMA};
 use crate::shell::{CliRun, Shell};
 use crate::types::{
-    BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport, EnrichInput, GateInput,
-    GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed, ProvisionInput, ResumeInput,
-    ReviewAck, ReviewInput, ReviewReport, ReviewRequest, ScopedInput, ScoutInput, ScoutReport,
-    StartupResult, StartupTask, Workspace,
+    AssembleInput, AssembledWave, BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport,
+    EnrichInput, GateInput, GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed,
+    ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport, ReviewRequest, ScopedInput,
+    ScoutInput, ScoutReport, StartupResult, StartupTask, Workspace,
 };
 
 /// How much of an unparseable norn stdout rides in the terminal failure
@@ -582,6 +582,24 @@ pub fn enrich_brief(_shell: &Shell, input: EnrichInput) -> Result<BriefDocument,
         ))
     })?;
     Ok(merged)
+}
+
+/// `assemble_wave`: resolve, order, and refuse a dispatch wave (BD-006),
+/// mirroring `locals.assemble_wave`. The ledger-reading, reference-resolving
+/// logic lives in [`crate::assemble`] (the only such code in the worker, CN1);
+/// this is the handler seam the worker registers. It takes no `Shell` — like
+/// the local, it performs file IO directly and shells nothing.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] on a refusal or any can't-execute condition
+/// (unreadable ledger, undecodable brief, dependency-blocked, coverage-broken,
+/// or cyclic wave).
+pub fn assemble_wave(
+    _shell: &Shell,
+    input: AssembleInput,
+) -> Result<AssembledWave, ActivityFailure> {
+    crate::assemble::assemble_wave(input)
 }
 
 // --- helpers ----------------------------------------------------------------
