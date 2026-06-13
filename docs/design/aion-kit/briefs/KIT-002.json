@@ -1,0 +1,94 @@
+{
+  "id": "KIT-002",
+  "cluster": "aion-kit",
+  "title": "aion_kit/template: composition primitives and named-template render",
+  "depends_on": ["KIT-001"],
+  "blocked_by": [],
+  "checklist": ["C9", "C10", "C11", "C12"],
+  "stories": ["S1", "S2", "S9"],
+  "design_anchor": ["ADR-011", "ADR-001", "ADR-002"],
+  "purpose": "Delivers the text/prompt rendering module: the composition primitives and a named-template render, generalised from the prompts.gleam join_blocks/join_lines/bulleted helpers and its key-value lines (files_line/reference_line). This is how a family composes prompt text from parts — joining sections, lines, bullets, and key-value pairs while dropping the empties — without re-deriving the joiners (S1), and how a static prompt skeleton can carry its holes as named placeholders (S2). Pure and deterministic (CN2): safe to call from workflow or activity code. Depends on KIT-001 only for the package skeleton; it shares no files with KIT-003 and is parallel-runnable with it once KIT-001 lands.",
+  "task": "Create gleam/aion_kit/src/aion_kit/template.gleam and gleam/aion_kit/test/template_test.gleam. Generalise the prompts.gleam composition primitives into pure module functions: join_blocks(blocks) joining sections with a blank line between them and dropping empty-string sections; join_lines(lines) joining with single newlines and dropping empty-string lines; bulleted(items) rendering each item as a '- item' line joined by newlines; kv(key, value) rendering a single 'key: value' line (the generalisation of files_line/reference_line's key-value shape). Add render(template, bindings): substitute every '{name}' placeholder in the template string from a list of (name, value) bindings; a placeholder with no matching binding is left verbatim (no invented default — ADR-001, C12); every occurrence of a bound name is substituted. The behaviour must match what prompts.gleam relies on exactly (empty-section dropping, empty-line dropping). In scope: the template module, its tests, and the purity guarantee for the file this brief adds (re-verifying C17/C18's properties for template.gleam, which KIT-001 owns as cluster checklist items — split noted). Out of scope: payload (KIT-001), json wrangling (KIT-003), and any reshape of brief_dev's prompts.gleam (RM-023). aion_kit/template does not depend on prompts.gleam and does not import it; it is the standalone generalisation prompts.gleam will later be reshaped to consume.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Section and line joiners",
+      "spec": "In gleam/aion_kit/src/aion_kit/template.gleam, define join_blocks and join_lines. WHEN join_blocks(blocks) is called, THE SYSTEM SHALL drop every empty-string block and join the remainder with a blank line (\\n\\n) between sections. WHEN join_lines(lines) is called, THE SYSTEM SHALL drop every empty-string line and join the remainder with a single newline (\\n). THE SYSTEM SHALL NOT collapse, trim, or reformat non-empty content, and SHALL NOT emit a leading or trailing separator. The module SHALL NOT import aion/workflow, aion/activity, aion/query, aion/signal, or examples/stacked-dev/prompts.gleam, and SHALL perform no IO.",
+      "acceptance": [
+        "join_blocks([\"a\", \"\", \"b\"]) == \"a\\n\\nb\".",
+        "join_blocks([]) == \"\" and join_blocks([\"\", \"\"]) == \"\".",
+        "join_lines([\"x\", \"\", \"y\", \"z\"]) == \"x\\ny\\nz\".",
+        "join_lines([\"only\"]) == \"only\" with no surrounding newlines.",
+        "cd gleam/aion_kit && gleam test runs template_test and the joiner cases pass."
+      ],
+      "files": {
+        "create": [
+          "gleam/aion_kit/src/aion_kit/template.gleam",
+          "gleam/aion_kit/test/template_test.gleam"
+        ],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C9"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Bulleted lists and key-value lines",
+      "spec": "Add bulleted and kv to gleam/aion_kit/src/aion_kit/template.gleam. WHEN bulleted(items) is called, THE SYSTEM SHALL render each item as a line prefixed with '- ' and join the lines with single newlines. WHEN kv(key, value) is called, THE SYSTEM SHALL return the single line '<key>: <value>'. THE SYSTEM SHALL NOT drop, sort, or deduplicate items in bulleted (order is preserved verbatim), and SHALL NOT trim the key or value in kv. bulleted([]) SHALL return the empty string.",
+      "acceptance": [
+        "bulleted([\"one\", \"two\"]) == \"- one\\n- two\".",
+        "bulleted([]) == \"\".",
+        "kv(\"status\", \"pass\") == \"status: pass\".",
+        "bulleted preserves input order: bulleted([\"b\", \"a\"]) == \"- b\\n- a\".",
+        "cd gleam/aion_kit && gleam test runs template_test and the bulleted/kv cases pass."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "gleam/aion_kit/src/aion_kit/template.gleam",
+          "gleam/aion_kit/test/template_test.gleam"
+        ],
+        "delete": []
+      },
+      "checklist": ["C10"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Named-template render with explicit binding behaviour",
+      "spec": "Add render to gleam/aion_kit/src/aion_kit/template.gleam. WHEN render(template, bindings) is called, THE SYSTEM SHALL replace every occurrence of each '{name}' placeholder in the template with the value bound to name in the bindings list, leaving text containing no placeholder unchanged. IF a placeholder's name has no matching binding, THEN THE SYSTEM SHALL leave that placeholder verbatim in the output and SHALL NOT substitute an invented empty or default value (ADR-001, C12). IF a binding's name does not occur in the template, THEN THE SYSTEM SHALL leave the output otherwise unchanged (an unused binding is not an error). THE SYSTEM SHALL substitute every occurrence of a bound placeholder, not only the first.",
+      "acceptance": [
+        "render(\"Hello {who}, run {n} times\", [(\"who\", \"world\"), (\"n\", \"3\")]) == \"Hello world, run 3 times\".",
+        "render(\"no placeholders here\", [(\"x\", \"y\")]) == \"no placeholders here\".",
+        "render(\"keep {missing} as is\", []) == \"keep {missing} as is\" (unmatched placeholder left verbatim).",
+        "render(\"{x} and {x}\", [(\"x\", \"q\")]) == \"q and q\" (every occurrence substituted).",
+        "cd gleam/aion_kit && gleam test runs template_test and the render cases (including the unmatched-placeholder case) pass."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "gleam/aion_kit/src/aion_kit/template.gleam",
+          "gleam/aion_kit/test/template_test.gleam"
+        ],
+        "delete": []
+      },
+      "checklist": ["C11", "C12"],
+      "stories": ["S2", "S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT create or modify aion_kit/payload.gleam or aion_kit/json.gleam — those are KIT-001 and KIT-003.",
+    "SHALL NOT import or modify examples/stacked-dev/src/stacked_dev/prompts.gleam — template is the standalone generalisation; reshaping prompts.gleam to consume it is RM-023.",
+    "SHALL NOT add a templating expression/logic language (conditionals, loops, filters) to render — only named '{name}' substitution; control flow stays ordinary Gleam in the caller (design non-goal).",
+    "SHALL NOT add a default value, escaping policy, or limit for unmatched placeholders beyond leaving them verbatim (ADR-001).",
+    "SHALL NOT import aion/workflow, aion/activity, aion/query, aion/signal, or perform any IO (CN2)."
+  ],
+  "verification": [
+    "cd gleam/aion_kit && gleam build && gleam test && gleam format --check all exit 0 (template suite runs).",
+    "grep -E 'import aion/(workflow|activity|query|signal)' gleam/aion_kit/src/aion_kit/template.gleam produces no matches.",
+    "grep -E 'panic|let assert' gleam/aion_kit/src/aion_kit/template.gleam produces no matches in library code (re-verifying C18's purity for the file this brief adds; C18 is owned by KIT-001).",
+    "grep -F 'prompts' gleam/aion_kit/src/aion_kit/template.gleam produces no matches (template imports nothing from the example).",
+    "gleam/aion_kit/src/aion_kit/template.gleam is at or under 500 code lines (excluding comments and whitespace)."
+  ]
+}

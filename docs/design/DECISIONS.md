@@ -2,7 +2,7 @@
 
 _Updated: 2026-06-13_
 
-## Decided (9)
+## Decided (12)
 
 ### ADR-001 — No arbitrary limits, no assumed defaults
 
@@ -136,3 +136,52 @@ _Updated: 2026-06-13_
 - Re-runs after rejection start from the authored brief again (failed runs are terminal, ADR-005)
 - The execution block is written before land so the landed commit contains its own provenance
 - The execution block cannot contain its own landing commit hash (a commit cannot name itself): landed_commit stays empty in the riding record; the workflow's event history and the merge itself carry the hash
+
+### ADR-010 — The reviewer prompt excludes the scout
+
+- **Scope:** brief-dev · **Date:** 2026-06-13 · **Decided by:** Tom
+
+**Context.** The review stage projects a prompt for the adversarial reviewer. As first built it rendered the scout findings alongside the dev record per requirement (the original C9). The question Tom raised reviewing the projections: does the reviewer actually need the scout?
+
+**Decision.** The reviewer prompt renders the brief, the dev record per requirement, the dev attestation, and the measured check results — never the scout. The scout is the devs orientation, not the reviewers input; including it spends prompt budget and risks biasing the verification with the devs framing. The reviewer verifies the devs actual diff against the brief with fresh eyes (its own session, CN4).
+
+> the review it doesnt really need anything from the scout the reviewer needs the output of the dev step and the initial brief and that kind of stuff and it needs to be also formatted and laid out in a sensible way
+> — Tom, 2026-06-13
+
+**Consequences:**
+- review_prompt drops its scout parameter; brief_dev no longer threads the scout report into the review activity.
+- Checklist C9 amended: the review projection renders only the dev blocks, the attestation, and the measured checks.
+- A test asserts the scout approach text is absent from the review prompt.
+
+### ADR-011 — The standard library carries cross-cutting primitives only; runtime harnesses stay out
+
+- **Scope:** aion-kit · **Date:** 2026-06-13 · **Decided by:** Tom
+
+**Context.** Reshaping brief_dev surfaced a pile of plumbing — templating, data transformation, opaque pass-through, and the norn agent driver — that could be lifted into a worker standard library so future families cost a day, not a week. The fork: a batteries-included library that bundles the agent driver too, or a lean library of only what generalises. Tom drew the line at the agent driver: it is the norn runtime harness he wrote weeks ago, specific to one agent runtime, and a thing Meridian consumes rather than a universal primitive.
+
+**Decision.** aion_kit (the worker standard library) carries only primitives that apply across the board — data transformation/wrangling, rendering/templating, and the opaque payload — plus further cross-cutting primitives as they prove general. Runtime harnesses, the norn agent driver chief among them, stay as worker-side code that consumers (Meridian) own and integrate; they may live in a worker for convenience but never ship as standard-library surface. Rejected: bundling the norn/agent harness into the standard library — it couples a general toolkit to one runtime and ships a Meridian concern to every consumer.
+
+> Norn's too specific. Like it's Norn at the runtime, the agent harness, like I wrote that a couple of weeks ago. So like it's not even like I don't think we should ship that as part of the standard library. That would be more something that Meridian would consume.
+> — Tom, 2026-06-13
+
+**Consequences:**
+- aion_kit scope is template + json/data-wrangling + payload; new additions are judged by the across-the-board test, not convenience
+- The norn agent driver stays in the worker layer; Meridian consumes and integrates it, and is free to keep it somewhere nice and easy
+- The dev-pipeline template (RM-023) parameterises the agent step rather than baking a runtime into the toolkit
+
+### ADR-012 — Workflow code stays thin: large activity results ride as opaque payloads
+
+- **Scope:** project · **Date:** 2026-06-13 · **Decided by:** Tom
+
+**Context.** The brief_dev pipeline decoded full structured stage reports (a 12KB scout report) and rendered prompts inside the deterministic workflow process. That re-decodes on every replay, bloats the workflow heap, and — via a latent beamr put_list/put_tuple2 heap-reservation bug, fixed in beamr 0.6.1 — crashed a real dogfood run with a silent heap-full right after scout. The fork: keep the heavy decode/render in workflow code where the data already sits (convenient, single place), or push it out to the worker.
+
+**Decision.** Workflow code stays thin. Large activity results ride between stages as opaque sealed payloads the workflow never opens; the workflow decodes only a small facts projection — the few fields it needs to route control flow (pass/fail, changed files, blocked, drift). Decoding and prompt rendering happen in the consuming activity on the worker, which has a full heap and runs the work once rather than on every replay. Rejected: decoding and rendering full reports in workflow code — it puts the determinism boundary's heavy lifting in the wrong place and was the regression that exposed the beamr crash.
+
+> we're not changing the output of the agents right we're still keeping all of that which is not decoding it all within the workflow so it also stays packaged up and then it passes out to the worker the worker unpacks it and provides the prompt to the agent
+> — Tom, 2026-06-13
+
+**Consequences:**
+- aion_flow gains an opaque pass-through payload type a workflow can hold without decoding (RM-022); aion_kit gains payload helpers (seal / raw / peek)
+- brief_dev is reshaped to thread sealed payloads plus thin facts, and prompt rendering moves into the activity bodies (RM-023)
+- Replay cost drops — no per-replay re-decode or re-render — and the workflow heap stays small regardless of report size
+- New agentic families inherit the thin pattern by default through the dev-pipeline template

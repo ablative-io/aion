@@ -1,0 +1,125 @@
+{
+  "id": "OBS-001",
+  "cluster": "aion-observability",
+  "title": "Loud server/worker logging of workflow-process exits",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C16", "C17", "C18"],
+  "stories": ["S1", "S2", "S3", "S8", "S9"],
+  "design_anchor": ["ADR-003", "ADR-005"],
+  "purpose": "Closes the half of the dogfood observability gap where a workflow-process crash recorded a terminal WorkflowFailed but logged nothing — the silent path that made a crash look like a hang (see design problem; RM-024 provenance). It makes every workflow-process exit loud at the moment it happens: at the engine's single exit funnel (an info line on clean completion, an error line on failure carrying the VM message) and on the server log surface (an error line whenever a terminal-failure event is appended, including timeouts and failed children). All logging reads the already-recorded terminal — status stays a projection (CN1), no new event type is added (CN3), and the log is a pure side effect that never alters control flow (CN5/P5). OBS-002 builds on the same recorded terminals to surface a failed child to the parent and watchers; this brief owns the exit-logging itself and the cluster's shared invariant/gate items (C16-C18).",
+  "task": "Make workflow-process exits loud in the engine and server logs by adding tracing calls that read the existing recorded terminal outcomes — no new events, no status field, no control-flow change. Three surfaces: (1) The engine exit funnel crates/aion/src/lifecycle/completion.rs::handle_process_exit_async — add the exit log on the three live branches (Completed → info; Failed → error; the monitor-failure Err arm → error), each carrying workflow id, run id, workflow type, and (on failure) the WorkflowError.message. The replay branch (terminal already in history) must NOT log a failure — recovery reconciling an already-announced terminal stays quiet (C4/P4). (2) The server surface crates/aion-server/src/observability/instrumented_store.rs::record_events — add an error-level log next to the existing metrics counters on WorkflowFailed, WorkflowTimedOut, and ChildWorkflowFailed, carrying namespace + workflow id + (where present) the recorded error message. (3) The worker: confirm crates/aion-worker already logs at error the failures it is first to observe (activity input-decode failure, handler panic) and record in this brief's verification that the worker hosts no workflow process, so no untruthful workflow-process-exit log is added there. Scope boundary — in: the tracing calls on the three surfaces above plus tests asserting them, and the cluster's shared invariant/gate items C16-C18. Out: the child-failure propagation log in nif_child_watch.rs and the describe-timeline/watcher-stream verification (OBS-002); any change to the WorkflowError message format or runtime/outcome.rs; any new event, status field, or push path. Split-item note: C16, C17, C18 are cluster-wide invariant/gate items shared with OBS-002 — both briefs must satisfy the invariants and pass the gate; this brief verifies them across its own diff and OBS-002 re-verifies across its diff at the cluster landing commit.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Loud exit log at the engine's process-exit funnel",
+      "spec": "WHEN handle_process_exit_async observes a workflow-process exit whose terminal is not already present in history, THE SYSTEM SHALL emit one tracing call before the existing completion notification: at error level for WorkflowProcessOutcome::Failed and for the Err(error) monitor-failure arm, at info level for WorkflowProcessOutcome::Completed. The error-level calls SHALL include the workflow id, run id, workflow type, and the WorkflowError.message (the VM/exit-reason text from runtime/outcome.rs) verbatim. IF the run's terminal is already present in history (the idempotent-replay branch that returns early), THEN THE SYSTEM SHALL NOT emit a failure log. THE SYSTEM SHALL NOT change any recorded event, completion notification, registry reconciliation, or return value, and SHALL NOT reformat or truncate the WorkflowError.message (CN5, CN6).",
+      "acceptance": [
+        "On the WorkflowProcessOutcome::Failed branch, a tracing event at ERROR level is emitted that includes the workflow_id, the run_id, the workflow_type, and the WorkflowError.message string — asserted by a test using tracing-test (or an equivalent capturing subscriber) that drives handle_process_exit_async with Ok(WorkflowProcessOutcome::Failed(WorkflowError{message: \"process crashed: heap full\", ..})) and finds an ERROR record containing \"process crashed: heap full\".",
+        "On the Err(error) monitor-failure arm, an ERROR-level tracing event is emitted whose message text contains the 'workflow process monitor failed' WorkflowError.message.",
+        "On the WorkflowProcessOutcome::Completed branch, an INFO-level (not ERROR) tracing event is emitted carrying workflow_id, run_id, and workflow_type, and no ERROR record is produced.",
+        "When handle_process_exit_async is driven with a Failed outcome against a history that already holds a WorkflowFailed for the run, no ERROR-level tracing record is emitted (the replay branch is silent) while the existing notify-from-history behaviour is unchanged.",
+        "The existing tests normal_exit_records_completed_reconciles_and_notifies and abnormal_exit_records_failed_reconciles_and_notifies still pass with their recorded-history and notified-outcome assertions unchanged."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C1", "C2", "C3", "C4", "C6"],
+      "stories": ["S1", "S9"]
+    },
+    {
+      "id": "R2",
+      "title": "Confirm both monitor wirings route through the one funnel",
+      "spec": "THE SYSTEM SHALL route every workflow-process-exit observation — for freshly started runs via install_completion_monitor in crates/aion/src/lifecycle/start.rs and for recovered runs via install_recovered_completion_monitor in crates/aion/src/engine/startup.rs — through handle_process_exit, so the R1 log at the funnel covers both paths. THE SYSTEM SHALL NOT add a second exit-log site at either wiring location (that would risk drift and double-logging); the wiring sites SHALL retain only their existing 'monitor completion failed' error log for the case where handle_process_exit itself returns Err. This is a structural/verification requirement (no behavioural code change): the deliverable is the confirmation, captured in the brief's verification, that both callbacks call handle_process_exit and add no competing exit log.",
+      "acceptance": [
+        "install_completion_monitor in crates/aion/src/lifecycle/start.rs calls handle_process_exit(completion_context, completion_handle, outcome) inside its monitor callback and contains no other workflow-exit tracing call beyond the existing 'workflow process monitor completion failed' error log.",
+        "install_recovered_completion_monitor in crates/aion/src/engine/startup.rs calls handle_process_exit(completion_context, completion_handle, outcome) inside its monitor callback and contains no other workflow-exit tracing call beyond the existing 'recovered workflow process monitor completion failed' error log.",
+        "grep across crates/aion/src for callers of handle_process_exit returns exactly the two wiring sites above, confirming the funnel is the sole exit-processing path the R1 log needs to cover.",
+        "No file other than the two wiring sites is changed by this requirement (it is verification only); the diff for R2 is empty of source edits."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C5"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "Error-level server log on terminal-failure events",
+      "spec": "WHEN InstrumentedEventStore::record_events in crates/aion-server/src/observability/instrumented_store.rs inspects an appended Event that is a terminal failure — Event::WorkflowFailed, Event::WorkflowTimedOut, or Event::ChildWorkflowFailed — THE SYSTEM SHALL emit an error-level tracing call carrying the namespace and the workflow id, including the recorded WorkflowError.message for WorkflowFailed and ChildWorkflowFailed and the child workflow id for ChildWorkflowFailed, in ADDITION to the existing metrics counter for that event. THE SYSTEM SHALL NOT remove, reorder, or alter any existing metrics counter, and SHALL NOT emit an error log for non-failure terminals (WorkflowCompleted, WorkflowCancelled, WorkflowContinuedAsNew). The log SHALL use the codebase field conventions (workflow id and error rendered via Display).",
+      "acceptance": [
+        "record_events emits an ERROR-level tracing event on Event::WorkflowFailed that includes the namespace, the workflow_id, and the recorded WorkflowError.message — asserted by a capturing-subscriber test that appends a WorkflowFailed event through the wrapper and finds the ERROR record with the message text.",
+        "record_events emits an ERROR-level tracing event on Event::WorkflowTimedOut carrying namespace and workflow_id.",
+        "record_events emits an ERROR-level tracing event on Event::ChildWorkflowFailed carrying namespace, the parent workflow_id, the child workflow id, and the recorded error message.",
+        "A WorkflowCompleted event produces no ERROR-level tracing record from record_events, and the workflow_completed(\"completed\") / workflow_completed(\"failed\") / workflow_completed(\"timed_out\") metric counters are still incremented exactly as before (existing metrics behaviour unchanged).",
+        "cargo test -p aion-server passes including the new record_events logging test."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/observability/instrumented_store.rs"],
+        "delete": []
+      },
+      "checklist": ["C7", "C8", "C9", "C10"],
+      "stories": ["S1", "S2", "S3"]
+    },
+    {
+      "id": "R4",
+      "title": "Confirm and document the worker failure surface",
+      "spec": "THE SYSTEM SHALL confirm that crates/aion-worker already logs at error level the failures the worker is the first surface to observe — activity input-decode failure and activity handler panic (crates/aion-worker/src/activity.rs) — with structured fields (activity_type, activity_id, attempt, error/panic). Because the worker serves activities and does NOT host the workflow process (the engine in crate aion does), THE SYSTEM SHALL NOT add a workflow-process-exit log to the worker: there is no workflow-process exit the worker observes, and a fabricated one would be an untruthful log. This requirement's deliverable is the confirmation recorded in the brief's verification; no worker source change is made.",
+      "acceptance": [
+        "crates/aion-worker/src/activity.rs contains an error!(...) call on the activity input-decode failure path with fields activity_type, activity_id, attempt, and error.",
+        "crates/aion-worker/src/activity.rs contains an error!(...) call on the activity handler panic path with fields activity_type, activity_id, attempt, and panic.",
+        "No file under crates/aion-worker/ is modified by this brief (the diff is empty for the worker crate), and the brief verification records that the worker hosts no workflow process and therefore adds no workflow-process-exit log.",
+        "A grep of crates/aion-worker/src for workflow-process-exit logging confirms none is added or expected there."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C11"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R5",
+      "title": "Cluster invariants and gate hold across the diff",
+      "spec": "THE SYSTEM SHALL introduce no new Event variant, no new Payload type, and no mutable status field, and SHALL derive status only via status_from_events (invariant 4, CN1); no code added by this brief SHALL call EventStore::append directly (invariant 3, CN4). The added logging SHALL be free of #[allow], #[expect], unwrap, and expect in non-test library code, and every touched source file SHALL remain under 500 LOC excluding tests (CN7). WHEN the cluster lands, cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite SHALL pass clean. THE SYSTEM SHALL add no timeout, rate limit, or cap (ADR-003, CN8). Split-item note: C16/C17/C18 are shared with OBS-002; this requirement verifies them across OBS-001's diff and OBS-002 re-verifies across its own.",
+      "acceptance": [
+        "git diff for the cluster introduces no new variant in the Event enum and no new Payload type; grep for a new status field added to any struct returns nothing.",
+        "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over the non-test lines of crates/aion/src/lifecycle/completion.rs and crates/aion-server/src/observability/instrumented_store.rs returns no matches introduced by this brief.",
+        "wc -l on every file this brief modifies shows under 500 lines excluding test modules.",
+        "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; the full workspace test suite passes.",
+        "No EventStore::append call is added by this brief (grep confirms the only append path remains the Recorder/InstrumentedEventStore decorator, not a new direct call)."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C16", "C17", "C18"],
+      "stories": ["S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add a tracing call in crates/aion/src/runtime/nif_child_watch.rs for the recorded ChildWorkflowFailed — that loud child-failure edge is OBS-002.",
+    "SHALL NOT verify or modify the describe timeline, payload encoding, or the event-stream/watcher push surface — OBS-002.",
+    "SHALL NOT introduce a new Event variant, a new Payload type, a mutable status field, or any second source of truth for status (CN1, CN3).",
+    "SHALL NOT call EventStore::append directly anywhere; the single-writer Recorder path is untouched (CN4).",
+    "SHALL NOT change the WorkflowError message format or the VM exit-reason formatting in crates/aion/src/runtime/outcome.rs — the message is surfaced verbatim (CN6).",
+    "SHALL NOT add a second exit-log site at install_completion_monitor or install_recovered_completion_monitor — the funnel log in handle_process_exit_async is the sole one (R2).",
+    "SHALL NOT add any timeout, deadline, rate limit, or cap (ADR-003, CN8).",
+    "SHALL NOT add a workflow-process-exit log to the worker, which hosts no workflow process (R4)."
+  ],
+  "verification": [
+    "cargo test -p aion -p aion-server passes, including the new tracing-capture tests for handle_process_exit_async (R1) and record_events (R3).",
+    "Run the engine funnel test for each branch: Failed and the Err monitor-failure arm produce ERROR records carrying the WorkflowError message; Completed produces an INFO record and no ERROR; the already-terminal replay produces no ERROR record.",
+    "grep -n 'handle_process_exit' across crates/aion/src shows exactly the two wiring sites (start.rs install_completion_monitor, engine/startup.rs install_recovered_completion_monitor) calling it, confirming the single funnel (R2).",
+    "Confirm crates/aion-worker/src/activity.rs retains its error! calls on the input-decode and panic paths and that no file under crates/aion-worker/ is in the diff (R4).",
+    "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both exit 0; grep for #[allow]/#[expect]/unwrap/expect in the modified non-test lib code returns nothing new (R5).",
+    "Diff review confirms no new Event variant, no new Payload type, no status field, and no direct EventStore::append call were introduced (R5, CN1/CN3/CN4)."
+  ]
+}

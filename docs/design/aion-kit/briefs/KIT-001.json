@@ -1,0 +1,151 @@
+{
+  "id": "KIT-001",
+  "cluster": "aion-kit",
+  "title": "Opaque payload and the aion_kit package skeleton",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C17", "C18"],
+  "stories": ["S3", "S5", "S6", "S7", "S8", "S10", "S11"],
+  "design_anchor": ["ADR-011", "ADR-012", "ADR-001", "ADR-002"],
+  "purpose": "Establishes the cluster's foundation and its keystone: the aion_kit Gleam package skeleton (manifest + declaration-only root) and the opaque sealed-payload mechanism that lets a deterministic workflow carry an activity result it never opens (ADR-012). The TYPE a workflow holds — Sealed — is added to the authoring SDK aion_flow (workflow code imports it); the HELPERS that produce and read it — seal, raw, peek — land in aion_kit/payload (worker-side primitives). The split is the design's central boundary call (see solution): hold-and-forward is workflow vocabulary, open-and-decode is activity vocabulary, and the line between them is the determinism boundary. This is the only intra-cluster dependency: KIT-002 (template) and KIT-003 (json) build on this skeleton. brief_dev is NOT reshaped here — that is RM-023; this brief ships and proves the mechanism with its own tests.",
+  "task": "Create the gleam/aion_kit package: gleam.toml (depending on aion_flow, gleam_stdlib, gleam_json; dev-dep gleeunit; matching the gleam/aion_flow manifest shape exactly — erlang target, licences array, github repository) and the declaration-only root module src/aion_kit.gleam (a PackageRoot marker, matching aion_flow.gleam and aion_client.gleam). Add the Sealed pass-through type to aion_flow at src/aion/payload.gleam: an opaque type wrapping a content-type tag (String) and the raw payload bytes (String — one binary, not a decoded structure), with a constructor and the two accessors content_type and raw_bytes, and NO accessor that returns a decoded view. Create src/aion_kit/payload.gleam with the helpers over aion_flow's Sealed: seal(value, encoder, content_type) building a Sealed from a typed value via a caller-supplied json encoder and explicit content-type (no default content-type — ADR-001); raw(sealed) returning the opaque bytes and content_type(sealed) returning the tag for a consuming activity to decode with its own decoder; peek(sealed, decoder) decoding ONLY a caller-supplied thin facts view (the ADR-012 facts projection over a Sealed), ignoring unnamed fields, returning Result(view, codec.DecodeError) — typed failure, never a panic. Write the tests: gleam/aion_flow/test/payload_test.gleam (Sealed construction, accessors, and the hold-without-decode property — seal a value, forward only raw bytes, decode on the far side) and gleam/aion_kit/test/payload_test.gleam (seal/raw/peek round-trip, and peeking a small facts view from a sealed report far larger than the view). In scope: the package skeleton, the Sealed type, the payload helpers, their tests, and the purity/boundary guarantees C17/C18 for the files this brief introduces. Out of scope: template (KIT-002), json wrangling (KIT-003), and any reshape of brief_dev or its prompts.gleam/enrich.gleam (RM-023).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "aion_kit package skeleton",
+      "spec": "Create gleam/aion_kit/gleam.toml and gleam/aion_kit/src/aion_kit.gleam. THE SYSTEM SHALL declare the package name 'aion_kit', target 'erlang', licences [\"MIT\", \"Apache-2.0\"], and the github repository { type, user: \"tomWhiting\", repo: \"aion\" }, matching the gleam/aion_flow manifest shape. THE SYSTEM SHALL list dependencies gleam_stdlib (>= 0.34.0 and < 2.0.0), gleam_json (>= 2.0.0 and < 4.0.0), and aion_flow, and dev-dependency gleeunit (>= 1.0.0 and < 2.0.0). The root module SHALL contain only module documentation and a declaration-only PackageRoot marker type — no functions, no re-exports of submodules. THE SYSTEM SHALL NOT add a dependency on any worker crate, the norn driver, or any agent/process-spawning runtime (ADR-011).",
+      "acceptance": [
+        "gleam/aion_kit/gleam.toml sets name = \"aion_kit\" and target = \"erlang\".",
+        "The [dependencies] table lists gleam_stdlib, gleam_json, and aion_flow; the [dev-dependencies] table lists gleeunit; no other dependency is present.",
+        "src/aion_kit.gleam defines exactly one public type PackageRoot with a single PackageRoot constructor and no public functions.",
+        "grep -i 'norn' gleam/aion_kit/gleam.toml produces no matches.",
+        "cd gleam/aion_kit && gleam build exits 0."
+      ],
+      "files": {
+        "create": [
+          "gleam/aion_kit/gleam.toml",
+          "gleam/aion_kit/src/aion_kit.gleam"
+        ],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C1", "C2"],
+      "stories": ["S8", "S10"]
+    },
+    {
+      "id": "R2",
+      "title": "The Sealed pass-through type in aion_flow",
+      "spec": "Create gleam/aion_flow/src/aion/payload.gleam defining the Sealed type a workflow holds and threads between activities without decoding. THE SYSTEM SHALL model Sealed as an opaque type carrying a content-type tag (String) and the raw payload bytes (String). THE SYSTEM SHALL expose a constructor that takes a content-type and bytes, an accessor content_type returning the tag, and an accessor raw_bytes returning the bytes. THE SYSTEM SHALL NOT expose any accessor, method, or field that returns a decoded structured view of the bytes — holding a Sealed costs one binary on the workflow heap, never a decoded nested structure (ADR-012, CN3). The module SHALL NOT import aion/workflow, aion/activity, aion/query, or aion/signal, SHALL NOT perform IO, and SHALL contain no panic, assert, or let-assert.",
+      "acceptance": [
+        "src/aion/payload.gleam defines an opaque Sealed type; for s = the constructor called with content_type \"application/json\" and bytes \"{\\\"k\\\":1}\", content_type(s) == \"application/json\" and raw_bytes(s) == \"{\\\"k\\\":1}\".",
+        "The module exposes no function returning a decoded view of the bytes (only content_type and raw_bytes read the contents, both returning String).",
+        "grep -E 'import aion/(workflow|activity|query|signal)' gleam/aion_flow/src/aion/payload.gleam produces no matches.",
+        "grep -E 'panic|let assert|assert ' gleam/aion_flow/src/aion/payload.gleam produces no matches in library code.",
+        "cd gleam/aion_flow && gleam build exits 0."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/src/aion/payload.gleam"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C4"],
+      "stories": ["S5", "S11"]
+    },
+    {
+      "id": "R3",
+      "title": "seal, raw, and content_type helpers",
+      "spec": "In gleam/aion_kit/src/aion_kit/payload.gleam, build the construction and forwarding helpers over aion_flow's Sealed. WHEN seal(value, encoder, content_type) is called, THE SYSTEM SHALL encode value to a JSON string via the caller-supplied encoder and wrap it in a Sealed tagged with the caller-supplied content_type. THE SYSTEM SHALL NOT supply a default content-type — the caller passes it explicitly (ADR-001). WHEN raw(sealed) is called, THE SYSTEM SHALL return the Sealed's opaque bytes so a consuming activity decodes them with its own typed decoder; content_type(sealed) SHALL return the tag. THE SYSTEM SHALL NOT decode the bytes inside seal or raw. The module SHALL NOT import aion/workflow, aion/activity, aion/query, or aion/signal, and SHALL contain no panic, assert, or let-assert.",
+      "acceptance": [
+        "For a value encoded by a json encoder producing \"{\\\"hello\\\":\\\"world\\\"}\", seal(value, encoder, \"application/json\") yields a Sealed s with raw(s) == \"{\\\"hello\\\":\\\"world\\\"}\" and content_type(s) == \"application/json\".",
+        "A round-trip test seals a value, takes raw(s), decodes that String with the matching decoder, and recovers the original value — proving the activity-to-activity forwarding path (S3).",
+        "seal takes the content-type as an explicit argument; there is no overload or branch that fills in a content-type when one is not provided.",
+        "grep -E 'import aion/(workflow|activity|query|signal)' gleam/aion_kit/src/aion_kit/payload.gleam produces no matches.",
+        "cd gleam/aion_kit && gleam test runs the payload suite and the seal/raw round-trip case passes."
+      ],
+      "files": {
+        "create": ["gleam/aion_kit/src/aion_kit/payload.gleam"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C6", "C7"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R4",
+      "title": "peek: a thin facts view from a Sealed",
+      "spec": "Add peek to gleam/aion_kit/src/aion_kit/payload.gleam. WHEN peek(sealed, decoder) is called, THE SYSTEM SHALL decode ONLY the caller-supplied thin facts view from the Sealed's bytes and SHALL ignore every field the view's decoder does not name (the ADR-012 facts projection over a Sealed: the workflow reads the few fields it needs to route control flow — pass/fail, blocked, changed files, drift — without materialising the whole report). IF the bytes do not satisfy the thin decoder, THEN THE SYSTEM SHALL return a typed codec.DecodeError and SHALL NOT panic. peek SHALL NOT materialise or return any field outside the supplied view, and SHALL be pure (no IO, no clock, no entropy) so a workflow may call it across the determinism boundary (P3, invariant 2).",
+      "acceptance": [
+        "Given a Sealed whose bytes are a JSON object with ten fields, peek(sealed, decoder) where decoder names only two of them returns Ok of a two-field view and the other eight fields are absent from the result.",
+        "peek(sealed, decoder) on bytes that are not valid JSON, or that lack a field the decoder requires, returns Error(codec.DecodeError(...)) — verified by asserting the Error branch, with no panic.",
+        "A test seals a report value far larger than the facts view (e.g. a record with a long string field and a list) and peeks a small facts view (e.g. a single boolean and one string) successfully (C8, S6).",
+        "grep -E 'panic|let assert' gleam/aion_kit/src/aion_kit/payload.gleam produces no matches.",
+        "cd gleam/aion_kit && gleam test runs the payload suite and the peek-ignores-the-rest case passes."
+      ],
+      "files": {
+        "create": ["gleam/aion_kit/test/payload_test.gleam"],
+        "modify": ["gleam/aion_kit/src/aion_kit/payload.gleam"],
+        "delete": []
+      },
+      "checklist": ["C8"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R5",
+      "title": "Hold-without-decode property test on the aion_flow side",
+      "spec": "Create gleam/aion_flow/test/payload_test.gleam proving the Sealed type's hold-and-forward property from the workflow's vantage. THE SYSTEM SHALL construct a Sealed, read its content_type and raw_bytes, and demonstrate that forwarding the Sealed (or its bytes) to a decoder on the far side recovers the value — WITHOUT the Sealed type exposing a decoded view at any point. THE SYSTEM SHALL assert that the only contents-reading surface is content_type and raw_bytes (both String-returning). The test SHALL NOT import aion_kit (the aion_flow package must prove its own type without depending downward).",
+      "acceptance": [
+        "The test constructs a Sealed with bytes \"{\\\"changed\\\":3}\", asserts raw_bytes equals that string and content_type equals the tag, then decodes the bytes with a json decoder and asserts the recovered value — the Sealed never yielding a decoded view itself.",
+        "grep -E 'import aion_kit' gleam/aion_flow/test/payload_test.gleam produces no matches.",
+        "cd gleam/aion_flow && gleam test runs payload_test and it passes.",
+        "cd gleam/aion_flow && gleam format --check reports no changes for the new module and test."
+      ],
+      "files": {
+        "create": ["gleam/aion_flow/test/payload_test.gleam"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C5"],
+      "stories": ["S5", "S7"]
+    },
+    {
+      "id": "R6",
+      "title": "Skeleton builds, gates clean, and the boundary holds",
+      "spec": "Wire the package so it builds, tests, and formats clean, and verify the cluster-wide purity and boundary guarantees for the files this brief introduces. THE SYSTEM SHALL ensure cd gleam/aion_kit && gleam build, gleam test, and gleam format --check all succeed against the aion_flow dependency. THE SYSTEM SHALL ensure no file in gleam/aion_kit/src nor gleam/aion_flow/src/aion/payload.gleam imports aion/workflow, aion/activity, aion/query, aion/signal, references 'norn', or spawns any process/port (CN1, ADR-011), and SHALL ensure library code in those files contains no panic, assert, or let-assert and reads no wall clock, entropy, or IO (CN2, CN7). This requirement carries C17 and C18 for the cluster; KIT-002 and KIT-003 re-verify the same properties for the files they add via their own verification steps (split noted in this task and theirs).",
+      "acceptance": [
+        "cd gleam/aion_kit && gleam build && gleam test && gleam format --check all exit 0.",
+        "grep -rE 'import aion/(workflow|activity|query|signal)' gleam/aion_kit/src gleam/aion_flow/src/aion/payload.gleam produces no matches.",
+        "grep -ri 'norn' gleam/aion_kit/src gleam/aion_flow/src/aion/payload.gleam produces no matches.",
+        "grep -rE 'panic|let assert|spawn|erlang:open_port|process' gleam/aion_kit/src gleam/aion_flow/src/aion/payload.gleam produces no matches in library code (test modules excluded).",
+        "Each source file under gleam/aion_kit/src and gleam/aion_flow/src/aion/payload.gleam is at or under 500 code lines (excluding comments and whitespace)."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "gleam/aion_kit/gleam.toml",
+          "gleam/aion_kit/src/aion_kit.gleam",
+          "gleam/aion_kit/src/aion_kit/payload.gleam"
+        ],
+        "delete": []
+      },
+      "checklist": ["C3", "C17", "C18"],
+      "stories": ["S7", "S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT create aion_kit/template.gleam or any text-composition primitive — that is KIT-002.",
+    "SHALL NOT create aion_kit/json.gleam or any project/merge/pluck helper — that is KIT-003.",
+    "SHALL NOT modify, reshape, or rewire examples/stacked-dev (brief_dev, prompts.gleam, enrich.gleam, activities, locals) — consuming the toolkit is RM-023.",
+    "SHALL NOT re-export, wrap, or alias aion_client's Payload or brief_dev's bespoke helpers — aion_kit is the replacement, not a shim (ADR-002).",
+    "SHALL NOT add a default content-type, a size or depth cap, or any hardcoded bound to Sealed, seal, raw, or peek (ADR-001).",
+    "SHALL NOT add an accessor or function that returns a decoded structured view of a Sealed's bytes (CN3) — only raw, content_type, and the caller-decoder peek read the contents.",
+    "SHALL NOT add a dependency on a worker crate, the norn driver, or any agent/process-spawning runtime (ADR-011)."
+  ],
+  "verification": [
+    "cd gleam/aion_kit && gleam build && gleam test && gleam format --check all exit 0.",
+    "cd gleam/aion_flow && gleam build && gleam test && gleam format --check all exit 0 (the new src/aion/payload.gleam and test/payload_test.gleam build and run).",
+    "grep -rE 'import aion/(workflow|activity|query|signal)' gleam/aion_kit/src gleam/aion_flow/src/aion/payload.gleam produces no matches.",
+    "grep -ri 'norn' gleam/aion_kit/src gleam/aion_flow/src/aion/payload.gleam produces no matches.",
+    "The Sealed type exposes only content_type and raw_bytes as contents-reading surface; peek lives in aion_kit/payload and takes the decoder from the caller (no decoded view escapes the type).",
+    "A round-trip test proves seal -> raw -> caller-decode recovers the original value, and a peek test proves a small view decodes out of a far larger sealed report."
+  ]
+}

@@ -402,7 +402,7 @@
         "RM-016",
         "RM-017"
       ],
-      "notes": ""
+      "notes": "First real parallel batch (2026-06-13): RM-022/023/024 authored as parallel-runnable clusters. Parallel-safe waves — Wave 1: KIT-001 (foundation). Wave 2: KIT-002, KIT-003, OBS-001, OBS-002 (disjoint files, concurrent — the capacity stress test). Wave 3: WT-001..003 (serial, after aion_kit lands). Triggered as concurrent independent runs, since single-dispatch fan-out is serial pending RM-001 (parent-close)."
     },
     {
       "id": "RM-019",
@@ -469,7 +469,90 @@
       "depends_on": [
         "RM-017"
       ],
-      "notes": "Distinct from RM-003 (CLI input ergonomics) — this is family-authoring cost, not dispatch cost. Candidate to design right after the RM-011 pilot, informed by what the pilot proves painful."
+      "notes": "Distinct from RM-003 (CLI input ergonomics) — this is family-authoring cost, not dispatch cost. Candidate to design right after the RM-011 pilot, informed by what the pilot proves painful. RM-022 (aion_kit) and RM-023 (dev-pipeline template) are the first concretisations of this; the generator work (worker handlers, manifests, harness skeleton) remains."
+    },
+    {
+      "id": "RM-022",
+      "title": "aion_kit: the worker standard library",
+      "status": "briefed",
+      "kind": "feature",
+      "summary": "A lean, runtime-agnostic toolkit that ships with the worker so authoring a new family is prompts + schemas + gate, not re-derived plumbing. Three cross-cutting primitives: rendering/templating (text composition + named templates, generalised from prompts.gleam), data transformation/wrangling (project, merge, pluck over JSON), and the opaque payload (seal / raw / peek) plus the aion_flow pass-through type a workflow can hold without decoding. Excludes runtime harnesses (ADR-011); the payload is the keystone of thin-workflow (ADR-012).",
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "what I think we should keep the standard library to are things that are genuinely to genuinely apply like across the board kind of thing. So, you know, yeah, data transformations, wrangling. Rendering, templating, that kind of stuff.",
+        "context": "Reshaping brief_dev surfaced a pile of reusable plumbing built bespoke; Tom scoped a worker standard library to cross-cutting primitives and explicitly excluded the norn agent harness (ADR-011)."
+      },
+      "links": {
+        "cluster": "aion-kit",
+        "decisions": [
+          "ADR-011",
+          "ADR-012"
+        ],
+        "briefs": [
+          "KIT-001",
+          "KIT-002",
+          "KIT-003"
+        ],
+        "commits": []
+      },
+      "depends_on": [],
+      "notes": "Foundation for RM-023's thin reshape. KIT-001 (opaque payload + package skeleton + the aion_flow pass-through type) is the only intra-cluster dependency; KIT-002 (template) and KIT-003 (json/transform) are disjoint files, parallel-runnable after it. Advances RM-021."
+    },
+    {
+      "id": "RM-023",
+      "title": "Thin-workflow reshape + dev-pipeline toolkit",
+      "status": "briefed",
+      "kind": "feature",
+      "summary": "Reshape brief_dev to ADR-012 — thread sealed payloads plus thin facts, move prompt rendering and report decoding out of the deterministic workflow process into the activity bodies (via aion_kit) — then extract the reusable worker-harness (provision / warm-build / scoped+full checks / land via yg) and the dev-pipeline template (scout → dev → verify → review → harden, parameterised by prompts + schemas + gate) so a new agentic family is configuration, not bespoke code. Re-dogfood after the reshape to prove the lighter pipeline still runs.",
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "I don't want every workload to take that long. Like do we need more sort of like out of box packages of workers or something like that to run with it to take the pain off",
+        "context": "brief_dev took a full brief-set to author and most of that was reusable plumbing built bespoke. The thin reshape (ADR-012) plus the extracted harness and template make the next family cheap."
+      },
+      "links": {
+        "cluster": "workflow-toolkit",
+        "decisions": [
+          "ADR-012",
+          "ADR-008"
+        ],
+        "briefs": [
+          "WT-001",
+          "WT-002",
+          "WT-003"
+        ],
+        "commits": []
+      },
+      "depends_on": [
+        "RM-022",
+        "RM-017"
+      ],
+      "notes": "Depends on aion_kit (RM-022). The WT briefs all touch examples/stacked-dev, so they run SERIALLY within the cluster, after aion_kit lands. The outer stacked-dev contracts stay immutable (brief-dev CN8). Advances RM-021."
+    },
+    {
+      "id": "RM-024",
+      "title": "No silent workflow-process failures: surface crashes loudly",
+      "status": "briefed",
+      "kind": "fix",
+      "summary": "A workflow-process crash (e.g. the brief_dev heap-full before beamr 0.6.1) recorded a terminal WorkflowFailed event but logged nothing in the server or the worker — to an operator it looked like a hang, especially with no default timeouts (ADR-003). Surface workflow-process exits and crashes at error level in the server log (workflow id, type, the VM message), and propagate a child's terminal failure visibly to the parent run and to watchers (describe / dashboard), so a crash never again masquerades as a hang.",
+      "provenance": {
+        "requested_by": "Tom",
+        "date": "2026-06-13",
+        "quote": "there's no indication in the server logs that it failed. There was no indication on the worker that it failed... it would look like it was hanging if I didn't go in and actually investigate. We need to do something about that.",
+        "context": "Finding 2 of the brief_dev real-norn dogfood (2026-06-13). The crash class itself is fixed (beamr 0.6.1); this closes the observability gap that made it look like a hang."
+      },
+      "links": {
+        "cluster": "aion-observability",
+        "decisions": [],
+        "briefs": [
+          "OBS-001",
+          "OBS-002"
+        ],
+        "commits": []
+      },
+      "depends_on": [],
+      "notes": "Disjoint from RM-022/023 (Rust: aion-server + engine + worker), so a clean concurrent run alongside them — part of the parallel stress batch."
     }
   ]
 }
