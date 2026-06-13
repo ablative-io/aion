@@ -51,7 +51,7 @@
         },
         {
           "id": "C9",
-          "text": "The dev projection renders scout blocks inline per requirement; the review projection renders scout and dev blocks, the dev attestation, and the measured check results.",
+          "text": "The dev projection renders scout blocks inline per requirement; the review projection renders the dev blocks, the dev attestation, and the measured check results — never the scout (ADR-010: the reviewer verifies the dev diff against the brief with fresh eyes).",
           "done": true
         }
       ]

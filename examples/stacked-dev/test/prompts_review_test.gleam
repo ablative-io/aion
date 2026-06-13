@@ -14,7 +14,6 @@ fn fixture_prompt() -> String {
   prompts.review_prompt(
     prompt_fixture.fixture_document(),
     prompt_fixture.fixture_context(),
-    prompt_fixture.fixture_scout(),
     prompt_fixture.fixture_dev(),
     prompt_fixture.fixture_check(),
   )
@@ -58,7 +57,6 @@ pub fn attestation_and_failing_checks_both_render_as_divergence_test() {
     prompts.review_prompt(
       prompt_fixture.fixture_document(),
       prompt_fixture.fixture_context(),
-      prompt_fixture.fixture_scout(),
       prompt_fixture.fixture_dev(),
       failing,
     )
@@ -72,8 +70,14 @@ pub fn review_prompt_inlines_dev_blocks_per_requirement_test() {
   let assert Ok(#(r1_section, r2_section)) =
     string.split_once(prompt, "R2 — Schema drift gate")
   string.contains(r1_section, "FIXTURE-DEV-DEVIATION-R1") |> should.be_true
-  string.contains(r1_section, "FIXTURE-SCOUT-APPROACH-R1") |> should.be_true
   string.contains(r2_section, "FIXTURE-DEV-DEVIATION-R2") |> should.be_true
+}
+
+pub fn review_prompt_excludes_the_scout_test() {
+  // The reviewer is never handed the scout's orientation (ADR-010); only the
+  // dev record, attestation, and measured checks reach it.
+  string.contains(fixture_prompt(), "FIXTURE-SCOUT-APPROACH-R1")
+  |> should.be_false
 }
 
 pub fn review_prompt_carries_every_verification_step_test() {

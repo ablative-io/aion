@@ -161,6 +161,24 @@
       ],
       "supersedes": [],
       "superseded_by": ""
+    },
+    {
+      "id": "ADR-010",
+      "title": "The reviewer prompt excludes the scout",
+      "status": "decided",
+      "scope": "brief-dev",
+      "date": "2026-06-13",
+      "decided_by": "Tom",
+      "context": "The review stage projects a prompt for the adversarial reviewer. As first built it rendered the scout findings alongside the dev record per requirement (the original C9). The question Tom raised reviewing the projections: does the reviewer actually need the scout?",
+      "decision": "The reviewer prompt renders the brief, the dev record per requirement, the dev attestation, and the measured check results — never the scout. The scout is the devs orientation, not the reviewers input; including it spends prompt budget and risks biasing the verification with the devs framing. The reviewer verifies the devs actual diff against the brief with fresh eyes (its own session, CN4).",
+      "quote": "the review it doesnt really need anything from the scout the reviewer needs the output of the dev step and the initial brief and that kind of stuff and it needs to be also formatted and laid out in a sensible way",
+      "consequences": [
+        "review_prompt drops its scout parameter; brief_dev no longer threads the scout report into the review activity.",
+        "Checklist C9 amended: the review projection renders only the dev blocks, the attestation, and the measured checks.",
+        "A test asserts the scout approach text is absent from the review prompt."
+      ],
+      "supersedes": [],
+      "superseded_by": ""
     }
   ]
 }

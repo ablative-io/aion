@@ -96,17 +96,17 @@ pub fn dev_prompt(
 pub fn review_prompt(
   document: BriefDocument,
   context: ResolvedContext,
-  scout: stage_io.ScoutReport,
   dev: stage_io.DevReport,
   check: CheckResult,
 ) -> String {
+  // The reviewer verifies the dev's diff against the brief with fresh eyes; it
+  // is handed the brief, the dev record, the dev attestation, and the measured
+  // checks — never the scout (that is the dev's orientation, not the reviewer's
+  // input, and would only bias the verification). Decision: ADR-010.
   join_blocks([
     orientation(document, context, review_instructions),
     requirements_section(document.requirements, context, fn(requirement) {
-      join_lines([
-        scout_block(scout, requirement.id),
-        dev_block(dev, requirement.id),
-      ])
+      dev_block(dev, requirement.id)
     }),
     attestation_section(dev.attestation),
     measured_section(check),

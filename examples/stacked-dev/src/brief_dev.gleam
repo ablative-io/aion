@@ -266,7 +266,6 @@ fn review_stage(
         prompt: prompts.review_prompt(
           input.document,
           input.context,
-          scout_report,
           dev_report,
           check,
         ),
