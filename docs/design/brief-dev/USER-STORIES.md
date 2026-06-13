@@ -1,8 +1,8 @@
 # Brief-Dev — User Stories
 
-## Tom — Dispatching and steering waves of work
+## Tom — Approving and steering work others dispatch
 
-**S1.** As Tom, I want to dispatch a wave of briefed roadmap items with one aion start so that getting work done means approving documents, not babysitting terminals.
+**S1.** As Tom, I want a wave dispatched by anyone — usually an AI team member — to reach me only at its review gates so that getting work done means approving documents, not babysitting terminals.
 
 **S2.** As Tom, I want each brief's review to arrive as a meridian DM with the workflow parked until I signal so that I stay the decision point without being the bottleneck for everything else.
 
@@ -29,6 +29,16 @@
 **S10.** As a reviewer agent, I want the dev's attestation alongside the measured check results so that I can treat their divergence as a signal about where to dig.
 
 **S11.** As a reviewer agent, I want a fresh session separate from the dev's so that I verify the diff with my own eyes instead of inheriting the dev's framing.
+
+## AI Team Member — Initiating, monitoring, and chaining workflows
+
+**S14.** As an AI team member, I want to assemble and dispatch a wave end to end — ledger read, reference resolution, aion start — without a human in the loop so that briefed work starts the moment its dependencies land.
+
+**S15.** As an AI team member, I want dispatch to return machine-readable per-brief outcomes so that I can file follow-up roadmap items for failures and chain the next wave without human triage.
+
+**S16.** As an AI orchestrator, I want to watch a wave through status queries by workflow id so that I can start dependent work the moment a prerequisite brief lands rather than polling git.
+
+**S17.** As an AI team member, I want the dispatcher to refuse a stale or coverage-broken brief at assembly time so that I cannot accidentally start a run against documents that drifted since authoring.
 
 ## Future Maintainer — Reading landed work months later
 

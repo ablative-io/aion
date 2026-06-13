@@ -3,9 +3,9 @@
   "personas": [
     {
       "name": "Tom",
-      "role": "Dispatching and steering waves of work",
+      "role": "Approving and steering work others dispatch",
       "stories": [
-        { "id": "S1", "text": "As Tom, I want to dispatch a wave of briefed roadmap items with one aion start so that getting work done means approving documents, not babysitting terminals." },
+        { "id": "S1", "text": "As Tom, I want a wave dispatched by anyone — usually an AI team member — to reach me only at its review gates so that getting work done means approving documents, not babysitting terminals." },
         { "id": "S2", "text": "As Tom, I want each brief's review to arrive as a meridian DM with the workflow parked until I signal so that I stay the decision point without being the bottleneck for everything else." },
         { "id": "S3", "text": "As Tom, I want a dispatch run to survive kill -9 of the server at any point so that a long multi-brief wave never restarts from scratch." },
         { "id": "S4", "text": "As Tom, I want a wave to refuse briefs whose dependencies haven't landed so that ordering mistakes are caught at dispatch, not discovered as broken builds." }
@@ -34,6 +34,16 @@
       "stories": [
         { "id": "S10", "text": "As a reviewer agent, I want the dev's attestation alongside the measured check results so that I can treat their divergence as a signal about where to dig." },
         { "id": "S11", "text": "As a reviewer agent, I want a fresh session separate from the dev's so that I verify the diff with my own eyes instead of inheriting the dev's framing." }
+      ]
+    },
+    {
+      "name": "AI Team Member",
+      "role": "Initiating, monitoring, and chaining workflows",
+      "stories": [
+        { "id": "S14", "text": "As an AI team member, I want to assemble and dispatch a wave end to end — ledger read, reference resolution, aion start — without a human in the loop so that briefed work starts the moment its dependencies land." },
+        { "id": "S15", "text": "As an AI team member, I want dispatch to return machine-readable per-brief outcomes so that I can file follow-up roadmap items for failures and chain the next wave without human triage." },
+        { "id": "S16", "text": "As an AI orchestrator, I want to watch a wave through status queries by workflow id so that I can start dependent work the moment a prerequisite brief lands rather than polling git." },
+        { "id": "S17", "text": "As an AI team member, I want the dispatcher to refuse a stale or coverage-broken brief at assembly time so that I cannot accidentally start a run against documents that drifted since authoring." }
       ]
     },
     {
