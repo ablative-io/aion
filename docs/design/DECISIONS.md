@@ -131,3 +131,4 @@ _Updated: 2026-06-13_
 - A failed/rejected run leaves NO enrichment on main — its record lives only in the workflow's durable event history (describe), which is the correct asymmetry: main carries the record of what landed
 - Re-runs after rejection start from the authored brief again (failed runs are terminal, ADR-005)
 - The execution block is written before land so the landed commit contains its own provenance
+- The execution block cannot contain its own landing commit hash (a commit cannot name itself): landed_commit stays empty in the riding record; the workflow's event history and the merge itself carry the hash

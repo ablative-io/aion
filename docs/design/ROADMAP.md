@@ -2,7 +2,22 @@
 
 _Updated: 2026-06-13_
 
-## Designed (3)
+## Briefed (1)
+
+### RM-017 — brief_dev + dispatch workflow family
+
+- **Kind:** feature
+
+The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand gate with fix-until-clean resume → adversarial review → harden → re-gate, progressive in-place enrichment, deterministic sessions), composed under stacked_dev, plus a dispatcher workflow that selects briefed work from roadmap.json, orders by dependencies, fans out children with explicit parent-close (ADR-004), serializes lands.
+
+> I would love it if you could write a workflow that that were not just right I mean write a workflow that sort of handles the pattern so goes through like and we try to do it all as much as we could with norn via the workflow.
+> — Tom, 2026-06-13
+
+- **Links:** cluster `brief-dev`; decisions ADR-008, ADR-009; briefs BD-001, BD-002, BD-003, BD-004, BD-005, BD-006, BD-007
+- **Depends on:** RM-016
+- **Notes:** Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 PROPOSED, awaiting Tom — BD-003/004/005 carry them in blocked_by. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Dispatch implementation next.
+
+## Designed (2)
 
 ### RM-001 — Implement parent-close policy
 
@@ -21,19 +36,6 @@ Reviewers vote via meridian review complete; the Meridian coordinator applies qu
 
 - **Links:** decisions ADR-006
 - **Notes:** Implementation lives in the yggdrasil/Meridian repo and rides their re-pin to published aion 0.6.0 + hex aion_flow 0.4.0 (pins currently 88 commits behind at rev 489be454).
-
-### RM-017 — brief_dev + dispatch workflow family
-
-- **Kind:** feature
-
-The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand gate with fix-until-clean resume → adversarial review → harden → re-gate, progressive in-place enrichment, deterministic sessions), composed under stacked_dev, plus a dispatcher workflow that selects briefed work from roadmap.json, orders by dependencies, fans out children with explicit parent-close (ADR-004), serializes lands.
-
-> I would love it if you could write a workflow that that were not just right I mean write a workflow that sort of handles the pattern so goes through like and we try to do it all as much as we could with norn via the workflow.
-> — Tom, 2026-06-13
-
-- **Links:** cluster `brief-dev`; decisions ADR-008, ADR-009
-- **Depends on:** RM-016
-- **Notes:** Cluster designed 2026-06-13; ADR-008 (replace onatopp_dev in place) and ADR-009 (enrichment rides the worktree branch) PROPOSED, awaiting Tom. Briefs next.
 
 ## Idea (16)
 

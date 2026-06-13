@@ -1,0 +1,157 @@
+{
+  "id": "BD-007",
+  "cluster": "brief-dev",
+  "title": "Hermetic coverage, live e2e, and the template mirror",
+  "depends_on": ["BD-005", "BD-006"],
+  "blocked_by": [],
+  "checklist": ["C33", "C34", "C35", "C36", "C37", "C38"],
+  "stories": ["S3", "S7"],
+  "design_anchor": ["ADR-002", "ADR-003"],
+  "purpose": "Prove the family and ship it: the hermetic in-process suite covers every v2 stage outcome with fake-CLI shims emitting captured real norn envelopes, a hermetic dispatch test exercises a two-brief wave with a dependency edge and both halt_on_failure behaviours, the live e2e extends to the dispatch arc against real binaries — including a kill -9 of the server mid-wave to prove durable resume (S3) — and the dev-pipeline template mirrors every family change so `aion new` scaffolds the v2 pipeline. The cluster lands only behind the full gate set (C38). ADR-002 governs the mirror (the template is replaced in place, no parallel template) and ADR-003 governs every test input (no default timeouts anywhere — each scenario states its caps and deadlines).",
+  "task": "Four fronts, tests and packaging only — no production module under examples/stacked-dev/src/ changes in this brief; a defect exposed here is filed against the owning brief, not patched here. (1) Shims: extend test/support/shims.gleam so the norn shim answers scout and review invocations with captured real completion envelopes ({\"output\": <report>, ...} as recorded live 2026-06-13 — never invented shapes, P4) and offers per-scenario report variants (scout failure, dev blocked, review drift unfixed, review with fixes, harden regression). (2) Scenarios: extend test/aion_stacked_dev_test.gleam with the seven pipeline outcomes of C33 plus the two-brief dispatch wave of C35 — both live in this one module because the cluster structure pins a single suite module and the exclusive-PATH harness is VM-global under gleeunit's sequential runner (CN9); argv logs prove the '<branch>-scout' / '<branch>' / '<branch>-review' session discipline and that diagnostics and review notes travel intact (C34). (3) Live e2e: extend crates/aion-cli/tests/stacked_dev_live_e2e.rs to deploy all four archives, dispatch a one-brief wave, kill -9 the server while the run is parked in review and reboot it (S3 — scope-forward beyond the checklist text, justified: S3 is assigned here and durable resume is this family's reason to exist), drive the review signal, and assert the enriched brief in the merged result. (4) Template: mirror every family change into crates/aion-cli/templates/dev_pipeline/ with {{name}} placeholders, replacing the old inner-dev shape rather than adding alongside (ADR-002), with the rendered worker's gates green. The final R# states the landing gate set (C38) — note the worker crate is NOT a workspace member and is gated explicitly. Out of scope: any change to workflow/activity/codec/type/schema sources in examples/stacked-dev/src/ or schemas/ (BD-001..BD-006 own those), the design-system canon, and check-schema-drift.sh itself (BD-001 ships it; this brief only runs it).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Norn stage shims with captured real envelopes",
+      "spec": "Extend test/support/shims.gleam: the norn shim SHALL distinguish scout, dev, resume, and review invocations by their argv (the scout and review session ids end \"-scout\" and \"-review\"; dev uses --session-id with the bare branch; resume uses --resume) and SHALL answer scout and review invocations with the full captured real norn completion envelope — the schema-constrained report under \"output\" alongside the usage/model/session_id/events keys recorded live 2026-06-13 — exercising the envelope arm of the two-shape parser; the dev/resume replies stay bare DevResult shapes, exercising the bare arm. Provide per-scenario writers: a passing scout report, a scout failure (non-zero exit with stderr), a dev report with a blocked requirement, review reports with alignment \"drifted\" (empty fixes), with non-empty fixes and all \"fixed\", and a harden-regression pairing (non-empty fixes while the yg shim fails the post-harden scoped check). Every reply report SHALL validate against its stage contract schema. THE SYSTEM SHALL NOT invent envelope shapes or reuse the dev envelope for scout/review (P4), and the shim skeleton (argv logging to <root>/norn.log, exclusive PATH) stays as-is.",
+      "acceptance": [
+        "The scout and review shim replies are JSON objects with an \"output\" key whose value is the stage report, plus the captured envelope's sibling keys — not a bare report.",
+        "Each shim writer's canned report validates against the corresponding package stage schema (scout_report.json / dev_report.json / review_report.json) when checked in a test.",
+        "The shim distinguishes the three norn sessions purely from argv, with no environment-variable side channel: a \"-scout\" session id selects the scout reply, \"-review\" the review reply.",
+        "Existing shim helpers (write_meridian, write_git, write_yg_*) are extended, not forked — one shim harness serves the whole suite."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["examples/stacked-dev/test/support/shims.gleam"],
+        "delete": []
+      },
+      "checklist": ["C34"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Hermetic scenarios: every stage outcome and the dispatch wave",
+      "spec": "Extend test/aion_stacked_dev_test.gleam. Pipeline scenarios (each stating every cap, backoff, and deadline explicitly — ADR-003, CN2): (a) scout failure fails the run with the typed error naming the scout stage; (b) a dev report with a blocked requirement fails the run with the typed dev-block error; (c) verify exhaustion surfaces rounds and diagnostics (existing scenario, kept green against brief_dev); (d) a review report leaving any requirement \"drifted\" with empty fixes fails the run with the typed error listing the drifted R# ids and their issues; (e) a review report with non-empty fixes triggers a scoped_checks re-run and a passing re-verify converges the run; (f) a harden regression — non-empty fixes with the post-harden scoped check failing — fails the run with the typed error naming the review stage; (g) the full happy path lands, and the worktree brief file under <root>/.yggdrasil-worktrees/<branch>/docs/design/.../briefs/ carries a scout, dev, and review block on every requirement plus an execution block whose gate and attestation are distinct objects with status \"landed\", while its authored subset is byte-identical to the fixture brief (the hermetic proxy for \"on the landed branch\": git and yg are shims, so the worktree file the land step committed is the observable). Session discipline (C34): the norn argv log SHALL show \"-scout\", bare-branch, and \"-review\" session ids in that order, scoped-check diagnostics SHALL appear verbatim in the resumed dev argv, and a distinguishable review-note string SHALL appear verbatim in the post-review feedback argv. S7: after the drifted-review failure (d), the worktree brief file still carries the scout and dev blocks written before the failure — a failed run's enrichment-so-far is preserved and post-mortemable. Dispatch scenarios (C35): against a fixture design_dir under the shim root holding two schema-valid briefs with a depends_on edge, (h) a wave listing them dependency-last still runs the dependency's child first (observable by branch order in the yg argv log) and returns two landed outcomes in assembled order; (i) with the first child forced to fail and halt_on_failure true, the result is [failed, skipped] and the yg log shows no provision for the second; (j) the same wave with halt_on_failure false runs both and returns [failed, landed]. THE SYSTEM SHALL NOT mark any scenario ignored or gate it behind an env var, and SHALL NOT move the suite off gleeunit's sequential runner (CN9).",
+      "acceptance": [
+        "Scenarios (a)–(g) each exist as a test function and `cd examples/stacked-dev && gleam test` passes with all of them included.",
+        "The happy-path test reads the worktree brief file and asserts: scout/dev/review blocks present on every requirement, execution.gate and execution.attestation distinct objects, execution.status == \"landed\", and the authored-subset encoding byte-identical to the fixture's.",
+        "The drifted-review test asserts the typed error carries the drifted R# id and an issue string emitted by the review shim, verbatim.",
+        "The session-discipline assertions check the norn log for \"--session-id\" values ending \"-scout\" and \"-review\" and a bare-branch dev session, and the harden-regression test asserts the run fails with the review stage named.",
+        "After scenario (d), the test asserts the worktree brief file contains the scout and dev blocks and no review block — the failure preserved everything written before it.",
+        "Dispatch tests (h), (i), (j) assert assembled ordering, the exact outcome sequences [landed, landed], [failed, skipped], and [failed, landed], and that halt suppresses the second child's provisioning."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["examples/stacked-dev/test/aion_stacked_dev_test.gleam"],
+        "delete": []
+      },
+      "checklist": ["C33", "C34", "C35"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R3",
+      "title": "Live e2e: the dispatch arc with a kill -9 resume",
+      "spec": "Extend crates/aion-cli/tests/stacked_dev_live_e2e.rs (keeping the existing ChildGuard/flock/port-reservation harness). THE TEST SHALL build and deploy all four family archives (stacked-dev, brief-dev, gate, dispatch — CN6: deployed as a unit), extend the shim set with the R1 scout/review envelope replies and a fixture design_dir containing one schema-valid brief, start a dispatch run with a one-brief wave (every cap and deadline stated in the input JSON; review_deadline_ms sized in days — the engine imposes no bound of its own, ADR-003), and wait for the child to park in_review. THEN it SHALL kill the server with SIGKILL (kill -9), reboot `aion server` from the same config and store, wait for liveness, and confirm via describe that the run is still Running — and that recovery did not re-execute completed activities, observable as exactly one \"branch add\" line in the yg shim log across the whole test (S3). THEN it SHALL drive the review_verdict approve signal, wait for completion, and assert: the dispatch result in the recorded history carries one landed outcome with the branch and merged_into, and the enriched brief file exists in the merged result — the worktree brief file carries scout/dev/review blocks and the execution block (the shims intercept git/yg, so the committed worktree file is the merged result's observable). THE TEST SHALL NOT use SIGTERM for the mid-run kill (graceful drain would not prove crash durability) and SHALL NOT lower any deadline to force timing.",
+      "acceptance": [
+        "The test deploys four archives and the deploy assertions name dispatch.aion with workflow type \"dispatch\".",
+        "A SIGKILL is delivered to the server process mid-run (after in_review, before the signal), the server is rebooted from the same aion.db, and a subsequent describe reports status Running.",
+        "After completion, the yg shim log contains exactly one \"branch add\" invocation — provisioning was not re-executed across the crash.",
+        "The completed history contains a landed outcome for the wave's brief id, and the test reads the worktree brief file asserting the execution block is present with status \"landed\".",
+        "The final shutdown remains the existing graceful SIGTERM path asserting exit code 0."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-cli/tests/stacked_dev_live_e2e.rs"],
+        "delete": []
+      },
+      "checklist": ["C36"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R4",
+      "title": "Mirror the family into the dev-pipeline template",
+      "spec": "Mirror every family change into crates/aion-cli/templates/dev_pipeline/ with {{name}} placeholders, replacing in place (ADR-002 — no parallel template, no leftover onatopp-shaped code): project_dev.gleam becomes the v2 inner pipeline ({{name}}_dev keeps its entry-module slot, mirroring brief_dev); project_dispatch.gleam, support/prompts.gleam, and support/enrich.gleam are created mirroring dispatch.gleam, prompts.gleam, and enrich.gleam; support/types.gleam, activities.gleam, locals.gleam, codecs_core.gleam, codecs_flow.gleam, codecs_workflows.gleam, and errors.gleam mirror their example counterparts; schemas/ gains the stage-contract copies (scout_report.json, dev_report.json, review_report.json — content identical to the example's drift-gated copies) and dispatch_input.json/dispatch_output.json, with input.json, dev_input.json, and dev_output.json reshaped; workflow.toml gains the {{name}}_dispatch entry and the updated activities lists; worker/ (handlers.rs, types.rs, main.rs, tests/wire_compat.rs, tests/handlers_shims.rs) mirrors the worker changes; test/project_test.gleam and test/shims.gleam mirror the hermetic suite including the R1 envelope shims; README.md describes the v2 family. Where the example embeds aion-repo specifics (the docs/design-system canon path, check-schema-drift.sh), the template SHALL omit them rather than ship a broken reference — a rendered project has no canon directory to drift against; this is the one deliberate non-mirror, stated in the template README. THE RENDERED OUTPUT SHALL pass its gates: scaffold a project from the template and run cargo fmt --check, cargo clippy --all-targets -- -D warnings, and cargo test in its worker, and gleam test in the package.",
+      "acceptance": [
+        "`grep -rn \"onatopp\" crates/aion-cli/templates/dev_pipeline/` returns nothing, and the template contains project_dispatch.gleam, support/prompts.gleam, and support/enrich.gleam.",
+        "The template workflow.toml has four [[workflow]] entries ({{name}}, {{name}}_dev, {{name}}_gate, {{name}}_dispatch) whose activities lists match the example's entries name-for-name.",
+        "The template's scout_report.json, dev_report.json, and review_report.json are byte-identical to examples/stacked-dev/schemas/' copies.",
+        "Scaffolding a project from the template and running the rendered worker's `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` and the rendered package's `gleam test` all exit 0 (via the repo's existing template-rendering gate or a fresh `aion new` scaffold).",
+        "The template README names the deliberate non-mirror (no schema-drift gate in rendered projects) and the four-archive deploy-as-a-unit requirement."
+      ],
+      "files": {
+        "create": [
+          "crates/aion-cli/templates/dev_pipeline/project_dispatch.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/prompts.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/enrich.gleam",
+          "crates/aion-cli/templates/dev_pipeline/schemas/scout_report.json",
+          "crates/aion-cli/templates/dev_pipeline/schemas/dev_report.json",
+          "crates/aion-cli/templates/dev_pipeline/schemas/review_report.json",
+          "crates/aion-cli/templates/dev_pipeline/schemas/dispatch_input.json",
+          "crates/aion-cli/templates/dev_pipeline/schemas/dispatch_output.json"
+        ],
+        "modify": [
+          "crates/aion-cli/templates/dev_pipeline/workflow.toml",
+          "crates/aion-cli/templates/dev_pipeline/project.gleam",
+          "crates/aion-cli/templates/dev_pipeline/project_dev.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/types.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/activities.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/locals.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/codecs_core.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/codecs_flow.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/codecs_workflows.gleam",
+          "crates/aion-cli/templates/dev_pipeline/support/errors.gleam",
+          "crates/aion-cli/templates/dev_pipeline/schemas/input.json",
+          "crates/aion-cli/templates/dev_pipeline/schemas/dev_input.json",
+          "crates/aion-cli/templates/dev_pipeline/schemas/dev_output.json",
+          "crates/aion-cli/templates/dev_pipeline/worker/handlers.rs",
+          "crates/aion-cli/templates/dev_pipeline/worker/types.rs",
+          "crates/aion-cli/templates/dev_pipeline/worker/main.rs",
+          "crates/aion-cli/templates/dev_pipeline/worker/tests/wire_compat.rs",
+          "crates/aion-cli/templates/dev_pipeline/worker/tests/handlers_shims.rs",
+          "crates/aion-cli/templates/dev_pipeline/test/project_test.gleam",
+          "crates/aion-cli/templates/dev_pipeline/test/shims.gleam",
+          "crates/aion-cli/templates/dev_pipeline/README.md"
+        ],
+        "delete": []
+      },
+      "checklist": ["C37"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "The landing gate set",
+      "spec": "Structural, cross-cutting, file-less: the cluster's landing commit passes every gate. From the repo root: cargo fmt --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace. The standalone worker crate is NOT a workspace member, so additionally from examples/stacked-dev/worker: cargo fmt --check, cargo clippy --all-targets -- -D warnings, and cargo test. From examples/stacked-dev: gleam test, and scripts/check-schema-drift.sh (shipped by BD-001) exits 0. THE LANDING SHALL NOT use #[allow], #[expect], #[ignore], _var renames, or cfg dead-code hiding to satisfy any gate — a firing lint is fixed in the code, and a test needing a runtime resource gates at runtime and reports its skip.",
+      "acceptance": [
+        "`cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` all exit 0 at the landing commit.",
+        "`cd examples/stacked-dev/worker && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` exits 0.",
+        "`cd examples/stacked-dev && gleam test` exits 0 and `examples/stacked-dev/scripts/check-schema-drift.sh` exits 0.",
+        "`grep -rn \"#\\[ignore\\]\" examples/stacked-dev/worker crates/aion-cli/tests/stacked_dev_live_e2e.rs` returns nothing introduced by this cluster."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C38"],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "THE BRIEF SHALL NOT modify any module under examples/stacked-dev/src/ or any file under examples/stacked-dev/schemas/ — a defect a scenario exposes is reported against the owning brief (BD-001..BD-006), never patched from the test suite.",
+    "THE BRIEF SHALL NOT modify the design-system canon under docs/design-system/ or the package drift gate script (BD-001 ships check-schema-drift.sh; this brief only executes it).",
+    "THE BRIEF SHALL NOT invent norn envelope or report shapes — every shim reply is the captured real envelope shape or a stage-schema-valid report (P4).",
+    "THE BRIEF SHALL NOT move the hermetic suite off gleeunit's sequential runner, parallelise shim-PATH tests, or run e2e suites concurrently with gleam builds in the same checkout (CN9).",
+    "THE BRIEF SHALL NOT introduce a default timeout, cap, or deadline anywhere — every scenario and the e2e input state every bound explicitly (ADR-003, CN2).",
+    "THE BRIEF SHALL NOT keep a parallel old-shape template or compatibility scaffolding — the dev-pipeline template is replaced in place (ADR-002).",
+    "THE BRIEF SHALL NOT add dispatch concurrency scenarios — serial-only is the design's delivery shape until parent-close (RM-001/ADR-004) lands."
+  ],
+  "verification": [
+    "Run `cd examples/stacked-dev && gleam test` — every C33 scenario and the three C35 dispatch tests appear in the run output and pass.",
+    "Run `grep -n \\\"output\\\" examples/stacked-dev/test/support/shims.gleam` and confirm the scout and review shim replies are envelopes with sibling captured keys, while dev/resume replies remain bare — both parser arms exercised.",
+    "Run the live e2e (`cargo test -p aion-cli --test stacked_dev_live_e2e`) and confirm in its output the SIGKILL/reboot sequence and the single-provision assertion.",
+    "Run `grep -rn \"onatopp\" crates/aion-cli/templates/dev_pipeline/` — empty; run the template-rendering gate and confirm the rendered worker and package gates pass.",
+    "Run `diff examples/stacked-dev/schemas/scout_report.json crates/aion-cli/templates/dev_pipeline/schemas/scout_report.json` (and the dev/review pair) — byte-identical.",
+    "Execute the full R5 gate list at the landing commit and record each exit code — all zero.",
+    "Confirm no file under examples/stacked-dev/src/ or examples/stacked-dev/schemas/ changed in this brief's diff."
+  ]
+}

@@ -89,6 +89,25 @@ Evolve the stacked-dev family in place (no parallel family — ADR-002, ADR-008 
 | `examples/stacked-dev/test/aion_stacked_dev_test.gleam` | Existing hermetic pipeline suite: new stage outcomes covered |  |
 | `examples/stacked-dev/test/support/shims.gleam` | Existing CLI shim builders: norn scout/review envelopes join |  |
 | `examples/stacked-dev/scripts/check-schema-drift.sh` | Asserts package schemas byte-identical to design-system canon |  |
+| `examples/stacked-dev/src/stacked_dev/codecs_brief.gleam` | Hand-written brief document + resolved-context codecs |  |
+| `examples/stacked-dev/src/onatopp_dev.gleam` | DELETED with the replacement (ADR-008): brief_dev takes its slot |  |
+| `examples/stacked-dev/schemas/onatopp_input.json` | Interim: $defs inlined for codegen cleanliness; DELETED with the module |  |
+| `examples/stacked-dev/schemas/onatopp_output.json` | DELETED with the module |  |
+| `examples/stacked-dev/onatopp-dev.aion` | Stale committed archive — DELETED with the module |  |
+| `examples/stacked-dev/schemas/input.json` | stacked_dev input schema (existing): reshaped for the v2 brief document |  |
+| `examples/stacked-dev/worker/src/main.rs` | Existing worker entry: SERVED_ACTIVITIES grows with the new activities |  |
+| `examples/stacked-dev/test/schema_drift_test.gleam` | Wires the drift gate into the test suite |  |
+| `examples/stacked-dev/test/brief_codecs_test.gleam` | Brief document codec round-trip tests |  |
+| `examples/stacked-dev/test/brief_dev_codecs_test.gleam` | brief_dev workflow IO codec tests |  |
+| `examples/stacked-dev/test/stage_schema_test.gleam` | Stage report payloads validate against the generated codecs |  |
+| `examples/stacked-dev/test/prompts_render_test.gleam` | Shared projection rendering assertions |  |
+| `examples/stacked-dev/test/prompts_scout_test.gleam` | Scout projection content + budget pin |  |
+| `examples/stacked-dev/test/prompts_dev_test.gleam` | Dev projection content + budget pin |  |
+| `examples/stacked-dev/test/prompts_review_test.gleam` | Review projection content + budget pin |  |
+| `examples/stacked-dev/test/prompts_resume_test.gleam` | Resume feedback projection tests |  |
+| `examples/stacked-dev/test/support/fixtures.gleam` | Shared brief-document fixture loading |  |
+| `examples/stacked-dev/test/support/fixtures_ffi.erl` | Erlang FFI for fixture file access in tests |  |
+| `examples/stacked-dev/test/support/prompt_fixture.gleam` | Canonical enriched-brief fixture for projection pins |  |
 | `crates/aion-cli/templates/dev_pipeline/` | Template mirror of every family change ({{name}} placeholders) |  |
 | `crates/aion-cli/tests/stacked_dev_live_e2e.rs` | Existing live e2e: extended to cover the dispatch arc |  |
 

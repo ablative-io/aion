@@ -4,7 +4,7 @@
 
 **S1.** As Tom, I want a wave dispatched by anyone — usually an AI team member — to reach me only at its review gates so that getting work done means approving documents, not babysitting terminals.
 
-**S2.** As Tom, I want each brief's review to arrive as a meridian DM with the workflow parked until I signal so that I stay the decision point without being the bottleneck for everything else.
+**S2.** As Tom, I want each brief's review gate to DM its assigned reviewers — usually AI leads, me for design-level calls — with the workflow parked until the verdict signal so that the decision point is explicit without me being the bottleneck.
 
 **S3.** As Tom, I want a dispatch run to survive kill -9 of the server at any point so that a long multi-brief wave never restarts from scratch.
 
@@ -45,3 +45,9 @@
 **S12.** As a future maintainer, I want the landed brief to carry what was asked, what the scout found, what the dev did and why, and what review proved so that provenance is one file away from the code.
 
 **S13.** As a future maintainer, I want gate results and agent attestations recorded separately in the execution block so that I can tell measured truth from believed claims.
+
+## AI Lead — Reviewing code at the review gate
+
+**S18.** As an AI lead reviewing code at the review gate, I want the review request and the enriched brief on the branch to carry everything a rigorous review needs — per-criterion acceptance evidence, measured gate results, attestation divergence — so that I can let nothing through without re-deriving context.
+
+**S19.** As an AI lead, I want the review_verdict signal to be sender-agnostic so that my verdict, cast through the Meridian coordinator, decides the run exactly as a human's would.

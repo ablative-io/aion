@@ -1,0 +1,132 @@
+{
+  "id": "BD-002",
+  "cluster": "brief-dev",
+  "title": "Stage prompt projection",
+  "depends_on": ["BD-001"],
+  "blocked_by": [],
+  "checklist": ["C6", "C7", "C8", "C9"],
+  "stories": ["S8"],
+  "design_anchor": ["ADR-001", "ADR-007"],
+  "purpose": "Delivers the projection layer (P2): every stage prompt becomes a budgeted pure function of the brief document and its pre-resolved context, unit-tested like a codec. This is how resolved requirement texts, anchored decisions, and the humans' verbatim words reach a norn agent that has never seen the ledgers (S8, P6), and how prompt size stays bounded by filtering instead of forwarding — the budgets are review criteria for the functions themselves. BD-003's pipeline calls these functions from deterministic workflow code; nothing here performs IO or touches an unresolved reference (P5).",
+  "task": "Create src/stacked_dev/prompts.gleam: pure projection functions over the BD-001 types (BriefDocument, ResolvedContext from stacked_dev/types; ScoutReport/DevReport from the generated aion_stacked_dev_io; CheckResult from stacked_dev/types) plus their unit tests. Signatures — a declared deviation from C6's literal 'taking only the enriched brief document and resolved context': scout_prompt(document, context); dev_prompt(document, context, scout: ScoutReport); review_prompt(document, context, scout: ScoutReport, dev: DevReport, check: CheckResult); resume_feedback(document, diagnostics: String). Rationale: the in-document merge of stage reports belongs to BD-004's enrich.gleam (this brief must not reach into it), the measured check results C9 demands are not part of the document at all, and fix-round diagnostics arrive per round — so the stage reports and diagnostics ride as explicit value arguments, which keeps the functions pure and total while honouring PROMPTING.md's 'projection of the enriched brief' (the scout/dev blocks rendered are exactly the blocks BD-004 will append). Rendering discipline per PROMPTING.md: static per-stage instructions (~500 chars, imperative — scout: read-only, 2-5 files per R# with line ranges, conventions, concrete approach, gotchas; dev: implement every R#, declare deviations, the workflow runs the real gate afterwards so do not burn the session on the full suite; review: verify the actual diff, never the report, one verdict per acceptance criterion with evidence, fix everything found); decision context as 'id: title — decision' lines from the context's resolved ADRs in design_anchor order; verbatim quotes as quoted words with speaker attribution (adr.decided_by, provenance.requested_by), never paraphrased; design context (intention, constraint lines, the design_path as a reference — never design prose); requirements with their resolved C#/S# texts inline per R#; the brief's boundaries in EVERY stage prompt, no stage exempt. Budgets are the checklist's numbers (scout 6000 / dev 9000 / review 12000 chars — PROMPTING.md's ~5K/7K/9K are the v1 reference points; the checklist governs), pinned against the seeded fixture docs/design/brief-dev/briefs/BD-001.json. Because no captured real norn envelope exists yet for the v2 stage contracts, the fixture's ScoutReport/DevReport/CheckResult values are constructed schema-valid values built in a shared test-support module (P4's captured-real-envelope rule binds BD-007's CLI shims, not these pure-function fixtures; noted here so the reviewer does not flag it as an undeclared invention). The test files and test/support/prompt_fixture.gleam are not in the design.json structure array (which pins only prompts.gleam for this work); per CLAUDE.md the brief is authoritative. Out of scope: any workflow or activity change (BD-003), enrichment (BD-004), worker (BD-005), dispatch (BD-006), hermetic pipeline suite (BD-007).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Projection module with shared rendering and per-stage instructions",
+      "spec": "Create src/stacked_dev/prompts.gleam with public rendering helpers the four projections share, plus the static per-stage instruction constants. WHEN rendering decision context, THE SYSTEM SHALL emit one line per resolved ADR in the order given, formatted exactly '<id>: <title> — <decision>', and SHALL NOT include ADR context or consequences prose (budget discipline). WHEN a resolved ADR's quote is non-empty, THE SYSTEM SHALL emit a following attribution line formatted exactly '<decided_by>: \"<quote>\"' with the quote text verbatim; WHEN the quote is empty, THE SYSTEM SHALL NOT emit an attribution line. The same quoted-words-with-speaker rule applies to the roadmap provenance quote using provenance.requested_by. THE SYSTEM SHALL NOT paraphrase, truncate, or re-punctuate any quote (P6). WHEN rendering a requirement, THE SYSTEM SHALL inline each of the requirement's C#/S# references with its resolved text from the context as '<id> — <text>' and SHALL NOT render the full checklist or stories documents. Every projection output SHALL include the brief's boundaries verbatim and the context's design_path as a file reference; THE SYSTEM SHALL NOT inline design.json prose beyond the context's intention string and constraint lines. The module SHALL NOT import aion/workflow, aion/activity, aion/query, aion/signal, stacked_dev/cli, stacked_dev/locals, or stacked_dev/activities, and SHALL NOT perform any IO — pure functions of their arguments only (P2, P5).",
+      "acceptance": [
+        "For ResolvedAdr(id: \"ADR-003\", title: \"No default timeouts anywhere in the engine\", decision: <the ledger's decision text>, quote: \"we shouldn't have a default timeout, the agent steps can take well over an hour\", decided_by: \"Tom\"), the rendered decision block's first line starts with 'ADR-003: No default timeouts anywhere in the engine — The engine imposes no activity time bound of its own.'",
+        "The same input renders the attribution line 'Tom: \"we shouldn't have a default timeout, the agent steps can take well over an hour\"' immediately after the decision line.",
+        "A ResolvedAdr with quote == \"\" renders exactly one line (no attribution line, no empty quotes).",
+        "Each of the three instruction constants is non-empty and at most 900 characters; the scout instructions contain 'read-only', the dev instructions state the workflow runs the real gate afterwards, and the review instructions direct verifying the actual diff rather than the dev report.",
+        "grep -E 'import (aion/(workflow|activity|query|signal)|stacked_dev/(cli|locals|activities))' src/stacked_dev/prompts.gleam produces no matches."
+      ],
+      "files": {
+        "create": [
+          "examples/stacked-dev/src/stacked_dev/prompts.gleam",
+          "examples/stacked-dev/test/prompts_render_test.gleam"
+        ],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C7"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "Scout projection with budget pin and shared fixture",
+      "spec": "WHEN scout_prompt(document, context) is called, THE SYSTEM SHALL return a single string containing: the scout instructions, the decision lines and quote attributions (R1 rules), the provenance quote with speaker when non-empty, the context's intention and constraint lines, every requirement rendered with id, title, spec, acceptance criteria, files, and its resolved C#/S# texts inline, the brief's boundaries, and the design_path reference. THE SYSTEM SHALL NOT render scout, dev, or review enrichment blocks (none exist before the scout stage) and SHALL NOT read any file. Create test/support/prompt_fixture.gleam: loads docs/design-system seeded fixture ../../docs/design/brief-dev/briefs/BD-001.json through test/support/fixtures.gleam (BD-001), decodes it with codecs_brief, and exposes deterministic constructed values — a ResolvedContext carrying the verbatim ADR-002 and ADR-007 ledger texts and the RM-017 provenance quote attributed to Tom, a ScoutReport and DevReport with one enrichment per fixture requirement, and a passing CheckResult — for all four projection test modules to share.",
+      "acceptance": [
+        "string.length(scout_prompt(fixture_document, fixture_context)) <= 6000.",
+        "The scout prompt contains the substring 'BD-001', the line starting 'ADR-002: No backwards compatibility during the build', and every string from the fixture document's boundaries array.",
+        "The scout prompt contains the resolved C1 text from the fixture context inline (the substring 'byte-identical to their docs/design-system/schemas/ canon files').",
+        "The scout prompt does not contain the substring 'enrichments' and contains no rendered scout/dev/review block headers.",
+        "cd examples/stacked-dev && gleam test runs prompts_scout_test and it passes."
+      ],
+      "files": {
+        "create": [
+          "examples/stacked-dev/test/prompts_scout_test.gleam",
+          "examples/stacked-dev/test/support/prompt_fixture.gleam"
+        ],
+        "modify": ["examples/stacked-dev/src/stacked_dev/prompts.gleam"],
+        "delete": []
+      },
+      "checklist": ["C6", "C8"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "Dev projection inlining scout blocks per requirement",
+      "spec": "WHEN dev_prompt(document, context, scout) is called, THE SYSTEM SHALL render everything the scout projection renders for orientation (instructions are the dev set, decision lines, quotes, design context, boundaries, design_path) and additionally, per requirement, the scout enrichment whose id matches that R# — files, context findings, approach, and notes rendered inline under the requirement (C9). IF the scout report has no enrichment for an R#, THEN THE SYSTEM SHALL render an explicit 'scout: none recorded' marker for that requirement and SHALL NOT omit the requirement. The dev instructions SHALL direct the agent to declare any deviation from the scouted approach in the dev report's deviation field and SHALL state that the workflow measures the real gate afterwards; THE SYSTEM SHALL NOT instruct the dev to run the full workspace suite (PROMPTING.md dev stage).",
+      "acceptance": [
+        "string.length(dev_prompt(fixture_document, fixture_context, fixture_scout)) <= 9000.",
+        "For the fixture, the dev prompt contains the fixture scout report's approach string for R1 within the R1 requirement section (substring match on a sentinel approach string the fixture sets, e.g. 'FIXTURE-SCOUT-APPROACH-R1').",
+        "With a scout report missing the R2 enrichment, the dev prompt still contains the R2 requirement title and contains 'scout: none recorded'.",
+        "The dev prompt contains the word 'deviation' in its instruction block.",
+        "cd examples/stacked-dev && gleam test runs prompts_dev_test and it passes."
+      ],
+      "files": {
+        "create": ["examples/stacked-dev/test/prompts_dev_test.gleam"],
+        "modify": ["examples/stacked-dev/src/stacked_dev/prompts.gleam"],
+        "delete": []
+      },
+      "checklist": ["C6", "C8", "C9"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R4",
+      "title": "Review projection with attestation and measured results",
+      "spec": "WHEN review_prompt(document, context, scout, dev, check) is called, THE SYSTEM SHALL render, per requirement: the requirement (id, title, spec, every acceptance criterion verbatim, files, resolved C#/S# texts), its scout block, and its dev block (status, files_changed, how, deviation, per-C#/S# claims) inline; plus the dev report's attestation under a label naming it the dev's claim, the measured CheckResult (verdict, checked_scope, and diagnostics when failed) under a label naming it measured, and the brief's verification steps. THE SYSTEM SHALL render attestation and measured results as two distinct labelled sections so the reviewer can read their divergence as signal (S10, P1), and SHALL NOT present the attestation as a gate outcome. The review instructions SHALL direct the reviewer to verify the actual diff (never the dev report), return one verdict per acceptance criterion with file:line or test-name evidence, and fix everything found (the harden pass) — there are no minor issues. THE SYSTEM SHALL NOT instruct the reviewer to resume or reuse the dev session (CN4 lives in BD-003; the prompt must not undermine it).",
+      "acceptance": [
+        "string.length(review_prompt(fixture_document, fixture_context, fixture_scout, fixture_dev, fixture_check)) <= 12000.",
+        "The review prompt contains every acceptance criterion string of the fixture document's R1 verbatim.",
+        "The review prompt contains both a section labelled as the dev's attestation and a separately labelled measured-checks section, and with a fixture attestation of tests_pass: True alongside a failing CheckResult both renderings appear (divergence visible).",
+        "The review prompt contains the fixture dev report's deviation sentinel string (e.g. 'FIXTURE-DEV-DEVIATION-R1') inside the R1 section, and every string of the fixture document's verification array.",
+        "cd examples/stacked-dev && gleam test runs prompts_review_test and it passes."
+      ],
+      "files": {
+        "create": ["examples/stacked-dev/test/prompts_review_test.gleam"],
+        "modify": ["examples/stacked-dev/src/stacked_dev/prompts.gleam"],
+        "delete": []
+      },
+      "checklist": ["C6", "C8", "C9"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R5",
+      "title": "Resume feedback projection",
+      "spec": "WHEN resume_feedback(document, diagnostics) is called, THE SYSTEM SHALL return a fix-round prompt containing the brief id, an imperative instruction to fix the reported failures and return a full replacement dev report against the dev-report schema (PROMPTING.md: amendment is wholesale replacement, never a field merge), the diagnostics verbatim, and the brief's boundaries. THE SYSTEM SHALL NOT re-render the requirements or scout blocks (the resumed session already holds them — resuming the same session is the point, S9 context economy) and SHALL NOT truncate or reformat the diagnostics text.",
+      "acceptance": [
+        "resume_feedback(fixture_document, \"error[E0308]: mismatched types\") contains the exact substring 'error[E0308]: mismatched types'.",
+        "The output contains 'BD-001' and every string from the fixture document's boundaries array.",
+        "The output does not contain the fixture's R1 spec text (requirements are not re-rendered).",
+        "cd examples/stacked-dev && gleam test runs prompts_resume_test and it passes."
+      ],
+      "files": {
+        "create": ["examples/stacked-dev/test/prompts_resume_test.gleam"],
+        "modify": ["examples/stacked-dev/src/stacked_dev/prompts.gleam"],
+        "delete": []
+      },
+      "checklist": ["C6"],
+      "stories": ["S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify brief_dev/onatopp_dev/stacked_dev/gate workflow modules, activities.gleam, locals.gleam, workflow.toml, or any schema — the pipeline rebuild is BD-003; this brief only adds prompts.gleam and its tests.",
+    "SHALL NOT create or modify enrich.gleam or implement any merge of stage reports into the brief document — enrichment is BD-004; this brief renders reports it is handed.",
+    "SHALL NOT touch examples/stacked-dev/worker/ — BD-005.",
+    "SHALL NOT create dispatch.gleam or any dispatcher logic — BD-006.",
+    "SHALL NOT modify test/aion_stacked_dev_test.gleam, test/support/shims.gleam, stacked_dev_test_ffi.erl, the dev-pipeline template, or the live e2e — BD-007.",
+    "SHALL NOT introduce IO, CLI calls, or engine imports into prompts.gleam — projections are pure functions; only the test support modules read the fixture file.",
+    "SHALL NOT hand-edit src/aion_stacked_dev_io.gleam or any file under docs/design-system/.",
+    "SHALL NOT invent its own character budgets or defaults beyond the checklist's 6000/9000/12000 (ADR-001: the numbers come from the design documents, not the implementation)."
+  ],
+  "verification": [
+    "cd examples/stacked-dev && gleam build && gleam test both exit 0 (render, scout, dev, review, and resume projection suites all run).",
+    "grep -E 'import (aion/(workflow|activity|query|signal)|stacked_dev/(cli|locals|activities))' examples/stacked-dev/src/stacked_dev/prompts.gleam produces no matches — the module is pure.",
+    "grep -n '6000' examples/stacked-dev/test/prompts_scout_test.gleam, grep -n '9000' examples/stacked-dev/test/prompts_dev_test.gleam, and grep -n '12000' examples/stacked-dev/test/prompts_review_test.gleam each match — the budget pins exist with the checklist's numbers.",
+    "Search prompts.gleam for any paraphrase of the ADR-003 or RM-017 quotes: the only quote text present in the module is none (quotes flow from ResolvedContext values at call time; the module hardcodes no ledger text).",
+    "The diff touches only src/stacked_dev/prompts.gleam and new test files (prompts_render_test, prompts_scout_test, prompts_dev_test, prompts_review_test, prompts_resume_test, support/prompt_fixture) — no workflow module, no schema, no worker file, no generated module.",
+    "bash examples/stacked-dev/scripts/check-schema-drift.sh still exits 0 (no stage-contract schema was touched)."
+  ]
+}
