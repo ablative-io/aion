@@ -157,22 +157,22 @@
         {
           "id": "C26",
           "text": "src/dispatch.gleam exists as a third entry module with workflow.toml entry and input/output schemas; its input names the wave (brief ids) plus required design_dir, repo_root, base_ref, reviewers, caps, and deadlines — the assemble_wave activity produces the ordered, fully resolved wave before any workflow logic sees it.",
-          "done": false
+          "done": true
         },
         {
           "id": "C27",
           "text": "A dispatcher activity assembles the wave outside workflow code: reads roadmap.json and the cluster documents, resolves all references, orders by depends_on, and refuses briefs whose depends_on have not landed or whose coverage check fails.",
-          "done": false
+          "done": true
         },
         {
           "id": "C28",
           "text": "dispatch runs stacked_dev children serially in input order, records a per-brief outcome (landed with branch and commit, or failed with the typed error), and continues or halts on failure according to a required halt_on_failure input.",
-          "done": false
+          "done": true
         },
         {
           "id": "C29",
           "text": "dispatch re-registers a status query per child transition answering current brief id, position, and per-brief outcomes so far.",
-          "done": false
+          "done": true
         }
       ]
     },
