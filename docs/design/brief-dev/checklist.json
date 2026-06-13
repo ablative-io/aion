@@ -37,22 +37,22 @@
         {
           "id": "C6",
           "text": "prompts.gleam exposes pure functions scout_prompt, dev_prompt, review_prompt, and resume_feedback over the brief document, resolved context, and explicit stage inputs (prior stage reports, the attestation, measured diagnostics) — no filesystem access, no ambient state.",
-          "done": false
+          "done": true
         },
         {
           "id": "C7",
           "text": "Each projection renders anchored ADRs as 'id: title — decision' lines and verbatim quotes as quoted words with speaker attribution, never paraphrased.",
-          "done": false
+          "done": true
         },
         {
           "id": "C8",
           "text": "Unit tests pin each projection's output for a fixture brief and assert character budgets: scout ≤ 6000, dev ≤ 9000, review ≤ 12000.",
-          "done": false
+          "done": true
         },
         {
           "id": "C9",
           "text": "The dev projection renders scout blocks inline per requirement; the review projection renders scout and dev blocks, the dev attestation, and the measured check results.",
-          "done": false
+          "done": true
         }
       ]
     },
