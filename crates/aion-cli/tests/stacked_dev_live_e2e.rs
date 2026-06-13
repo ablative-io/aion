@@ -515,6 +515,33 @@ fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), T
         if !worktree.is_dir() {
             return Err(format!("provision never created {}", worktree.display()).into());
         }
+
+        // The landed brief must carry its FULL provenance, not just the
+        // execution record (C21): enrich_brief wrote scout, dev, review, and
+        // execution into the worktree brief in turn. Assert markers from each
+        // stage survived — the scout's approach, the dev's deviation, the
+        // review's alignment, and the execution status — so a regression that
+        // drops a stage (e.g. reverts to writing only the execution block) fails
+        // here.
+        let brief_path = worktree.join("docs/design/brief-dev/briefs/brief-7.json");
+        let landed = std::fs::read_to_string(&brief_path)?;
+        for marker in [
+            r#""scout":"#,
+            r#""approach":"#,
+            r#""dev":"#,
+            r#""review":"#,
+            r#""alignment":"aligned""#,
+            r#""execution":"#,
+            r#""status":"landed""#,
+        ] {
+            if !landed.contains(marker) {
+                return Err(format!(
+                    "landed brief {} is missing enrichment marker {marker}: {landed}",
+                    brief_path.display()
+                )
+                .into());
+            }
+        }
         Ok(())
     })();
 

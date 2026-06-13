@@ -47,18 +47,19 @@ import stacked_dev/codecs_workflows
 import stacked_dev/errors
 import stacked_dev/types.{
   type AttestationBlock, type BriefDevResult, type BriefDocument, type DevResult,
-  type ExecutionBlock, type GateResult, type ReviewVerdict, type StackedDevError,
-  type StackedDevInput, type StackedDevResult, type Workspace, Approve,
-  AttestationBlock, BriefDevInput, BriefDevResult, BriefDevStageFailed,
-  DevBlocked, DevBlockedInChild, DevFailed, DevResult, EnrichInput,
-  ExecutionBlock, ExecutionEnrichment, ExecutionLanded, GateBlock, GateFail,
-  GateInput, GatePass, GateRejected, GateResult, HardenRegressed,
-  HardenRegressedInChild, LandFailed, LandInput, ProvisionFailed, ProvisionInput,
-  Reject, RequestChanges, ResumeInput, ReviewCapExhausted, ReviewDrifted,
-  ReviewDriftedInChild, ReviewRejected, ReviewRequest, ReviewTimedOut,
-  ReviewVerdict, ScoutFailed, ScoutFailedInChild, StackedDevResult,
-  StackedDevStatus, StageFailed, VerdictApproved, VerifyExhausted,
-  VerifyFixExhausted, WorkspaceWide,
+  type Enrichment, type ExecutionBlock, type GateResult, type ReviewVerdict,
+  type StackedDevError, type StackedDevInput, type StackedDevResult,
+  type Workspace, Approve, AttestationBlock, BriefDevInput, BriefDevResult,
+  BriefDevStageFailed, DevBlocked, DevBlockedInChild, DevEnrichment, DevFailed,
+  DevResult, EnrichInput, ExecutionBlock, ExecutionEnrichment, ExecutionLanded,
+  GateBlock, GateFail, GateInput, GatePass, GateRejected, GateResult,
+  HardenRegressed, HardenRegressedInChild, LandFailed, LandInput,
+  ProvisionFailed, ProvisionInput, Reject, RequestChanges, ResumeInput,
+  ReviewCapExhausted, ReviewDrifted, ReviewDriftedInChild, ReviewEnrichment,
+  ReviewRejected, ReviewRequest, ReviewTimedOut, ReviewVerdict, ScoutEnrichment,
+  ScoutFailed, ScoutFailedInChild, StackedDevResult, StackedDevStatus,
+  StageFailed, VerdictApproved, VerifyExhausted, VerifyFixExhausted,
+  WorkspaceWide,
 }
 
 /// Name of the human/SDK review-verdict signal this workflow waits on.
@@ -425,12 +426,18 @@ fn fix_and_regate(
   }
 }
 
-/// The Approve path: write the execution block into the worktree brief, then
-/// land. The enrich_brief run sits strictly between the Approve receive and
-/// the land activity so the landed merge carries the brief's own provenance
-/// (C25). The execution block records the MEASURED gate and the BELIEVED
-/// attestation as two distinct sources (P1) and leaves `landed_commit` empty —
-/// a commit cannot name itself (ADR-009).
+/// The Approve path: write the brief's full provenance into the worktree, then
+/// land. Each enrich_brief run sits strictly between the Approve receive and
+/// the land activity so the landed merge carries the brief's own record (C25).
+/// The four stages are written in order — scout findings, the dev record, the
+/// review verdicts, then the execution block — so the landed brief carries what
+/// was asked, what the scout found, what the dev did, and what the review proved
+/// (S12/C21), not just the execution record. enrich_brief merges into the HANDED
+/// document, so each call threads the merged result into the next (passing the
+/// original brief every time would overwrite prior stages). The execution block
+/// records the MEASURED gate and the BELIEVED attestation as two distinct
+/// sources (P1) and leaves `landed_commit` empty — a commit cannot name itself
+/// (ADR-009).
 fn enrich_then_land(
   input: StackedDevInput,
   workspace: Workspace,
@@ -448,7 +455,26 @@ fn enrich_then_land(
       brief_dev_result,
       completed_at,
     )
-  use _ <- result_try(enrich_execution(workspace, input.brief_document, block))
+  use after_scout <- result_try(run_enrich(
+    workspace,
+    input.brief_document,
+    ScoutEnrichment(report: brief_dev_result.scout),
+  ))
+  use after_dev <- result_try(run_enrich(
+    workspace,
+    after_scout,
+    DevEnrichment(report: brief_dev_result.dev),
+  ))
+  use after_review <- result_try(run_enrich(
+    workspace,
+    after_dev,
+    ReviewEnrichment(report: brief_dev_result.review),
+  ))
+  use _ <- result_try(run_enrich(
+    workspace,
+    after_review,
+    ExecutionEnrichment(block: block),
+  ))
   land(input, workspace, dev_result, brief_dev_result, round)
 }
 
@@ -502,21 +528,24 @@ fn attestation_block(
 /// Run the `enrich_brief` activity with the execution block. The activity
 /// stamps `completed_at` itself; the workflow's projection here is overridden
 /// by the activity, so the value passed is irrelevant to the on-disk record.
-fn enrich_execution(
+/// Run the `enrich_brief` activity for one stage and return the merged
+/// document. The activity merges into the HANDED document (not the on-disk
+/// file), so a multi-stage chain must thread each result into the next.
+fn run_enrich(
   workspace: Workspace,
   document: BriefDocument,
-  block: ExecutionBlock,
-) -> Result(Nil, StackedDevError) {
+  enrichment: Enrichment,
+) -> Result(BriefDocument, StackedDevError) {
   case
     workflow.run(
       activities.enrich_brief(EnrichInput(
         workspace: workspace,
         document: document,
-        enrichment: ExecutionEnrichment(block: block),
+        enrichment: enrichment,
       )),
     )
   {
-    Ok(_merged) -> Ok(Nil)
+    Ok(merged) -> Ok(merged)
     Error(activity_error) ->
       Error(StageFailed(
         stage: "enrich_brief",

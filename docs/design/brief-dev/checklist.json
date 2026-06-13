@@ -122,7 +122,7 @@
         {
           "id": "C21",
           "text": "Enrichment is written into the worktree brief file after scout, after dev convergence, and after review; the execution block (gate, attestation, review_verdict, branch, session, status, landed fields) is written before land.",
-          "done": false
+          "done": true
         },
         {
           "id": "C22",
