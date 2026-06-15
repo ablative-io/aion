@@ -22,10 +22,19 @@ use anyhow::{Context, bail};
 use stacked_dev_worker::handlers;
 use stacked_dev_worker::shell::Shell;
 
-/// Parse the sole flag: `--endpoint <url>`, required, no default baked in.
-fn endpoint_from_args() -> anyhow::Result<String> {
+/// Parsed CLI arguments.
+struct Args {
+    /// gRPC server endpoint.
+    endpoint: String,
+    /// Maximum concurrent activity executions.
+    concurrency: usize,
+}
+
+/// Parse CLI flags: `--endpoint <url>` (required), `--concurrency <n>` (optional).
+fn parse_args() -> anyhow::Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut endpoint = None;
+    let mut concurrency = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--endpoint" => {
@@ -34,12 +43,30 @@ fn endpoint_from_args() -> anyhow::Result<String> {
                     .context("--endpoint requires a value, e.g. http://127.0.0.1:50051")?;
                 endpoint = Some(value);
             }
+            "--concurrency" => {
+                let value = args
+                    .next()
+                    .context("--concurrency requires a number")?;
+                concurrency = Some(
+                    value
+                        .parse::<usize>()
+                        .context("--concurrency must be a positive integer")?,
+                );
+            }
             other => {
-                bail!("unknown argument `{other}`\nusage: stacked-dev-worker --endpoint <grpc-url>")
+                bail!(
+                    "unknown argument `{other}`\nusage: stacked-dev-remote-worker \
+                     --endpoint <grpc-url> [--concurrency <n>]"
+                )
             }
         }
     }
-    endpoint.context("missing required --endpoint <grpc-url> (the server's [server] grpc_address)")
+    Ok(Args {
+        endpoint: endpoint.context(
+            "missing required --endpoint <grpc-url> (the server's [server] grpc_address)",
+        )?,
+        concurrency: concurrency.unwrap_or(4),
+    })
 }
 
 /// Adapt a synchronous, blocking handler body onto the worker SDK's async
@@ -100,13 +127,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let endpoint = endpoint_from_args()?;
+    let cli = parse_args()?;
     let shell = Shell::inherited();
 
     tracing::info!(
-        endpoint = %endpoint,
+        endpoint = %cli.endpoint,
+        concurrency = cli.concurrency,
         activities = ?SERVED_ACTIVITIES,
-        "stacked-dev-worker starting; connection failures will be logged \
+        "stacked-dev-remote-worker starting; connection failures will be logged \
          with reconnect backoff — a quiet worker is a connected worker"
     );
 
@@ -117,10 +145,10 @@ async fn main() -> anyhow::Result<()> {
     // 5s for as long as it runs. The published SDK cannot express "unbounded"
     // yet; usize::MAX is the honest spelling of that intent.
     let config = WorkerConfig::builder()
-        .endpoint(endpoint)
+        .endpoint(cli.endpoint)
         .task_queue("default")
-        .identity("stacked-dev-worker-1")
-        .max_concurrency(4)
+        .identity("stacked-dev-remote-worker-1")
+        .max_concurrency(cli.concurrency)
         .reconnect_initial_backoff(Duration::from_millis(100))
         .reconnect_max_backoff(Duration::from_secs(5))
         .reconnect_max_attempts(usize::MAX)
