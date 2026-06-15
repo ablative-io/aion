@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use aion_proto::{ProtoActivityTask, ProtoRegisterWorker};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 use crate::error::ServerError;
 use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
@@ -94,10 +94,21 @@ impl Default for RegistryState {
 }
 
 /// Cloneable registry of currently connected worker streams.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ConnectedWorkerRegistry {
     inner: Arc<Mutex<RegistryState>>,
     metrics: Option<Metrics>,
+    worker_arrived: Arc<Notify>,
+}
+
+impl Default for ConnectedWorkerRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RegistryState::default())),
+            metrics: None,
+            worker_arrived: Arc::new(Notify::new()),
+        }
+    }
 }
 
 impl ConnectedWorkerRegistry {
@@ -107,6 +118,7 @@ impl ConnectedWorkerRegistry {
         Self {
             inner: Arc::new(Mutex::new(RegistryState::default())),
             metrics: Some(metrics),
+            worker_arrived: Arc::new(Notify::new()),
         }
     }
 
@@ -170,6 +182,8 @@ impl ConnectedWorkerRegistry {
             metrics.worker_connected(&namespace);
         }
 
+        self.worker_arrived.notify_waiters();
+
         Ok(WorkerRegistration {
             registry: self.clone(),
             parts: Some(WorkerRegistrationParts {
@@ -178,6 +192,15 @@ impl ConnectedWorkerRegistry {
                 activity_types,
             }),
         })
+    }
+
+    /// Wait until at least one new worker registers.
+    ///
+    /// Returns immediately if a registration occurred since the last call.
+    /// Callers should re-check the registry after waking — the newly arrived
+    /// worker may not serve the namespace or activity type the caller needs.
+    pub async fn wait_for_worker(&self) {
+        self.worker_arrived.notified().await;
     }
 
     /// Return a snapshot of workers registered for the namespace and activity

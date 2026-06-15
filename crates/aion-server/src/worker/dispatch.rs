@@ -86,19 +86,24 @@ impl ActivityDispatcher {
         let span_fields = span.clone();
 
         async {
-            self.drain_state
-                .ensure_accepting(&activity.namespace, &activity.activity_type)?;
-            let workers = self
-                .registry
-                .workers_for(&activity.namespace, &activity.activity_type)?;
-
-            if workers.is_empty() {
-                return Err(ServerError::worker_dispatch(
-                    activity.namespace.clone(),
-                    activity.activity_type.clone(),
-                    "no connected worker for activity type",
-                ));
-            }
+            let workers = loop {
+                self.drain_state
+                    .ensure_accepting(&activity.namespace, &activity.activity_type)?;
+                let candidates = self
+                    .registry
+                    .workers_for(&activity.namespace, &activity.activity_type)?;
+                if !candidates.is_empty() {
+                    break candidates;
+                }
+                tracing::info!(
+                    namespace = %activity.namespace,
+                    activity_type = %activity.activity_type,
+                    workflow_id = %activity.workflow_id,
+                    activity_id = %activity.activity_id,
+                    "no connected worker; waiting for a matching worker to register"
+                );
+                self.registry.wait_for_worker().await;
+            };
 
             for worker in workers {
                 self.drain_state
@@ -314,8 +319,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_without_matching_worker_reports_unplaced() -> Result<(), ServerError> {
-        let dispatcher = ActivityDispatcher::new(ConnectedWorkerRegistry::default());
+    async fn dispatch_waits_for_worker_then_delivers() -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let dispatcher = ActivityDispatcher::new(registry.clone());
         let scheduled = ScheduledActivity {
             namespace: String::from("tenant-a"),
             activity_type: String::from("charge-card"),
@@ -325,8 +331,21 @@ mod tests {
             attempt: 1,
         };
 
-        let result = dispatcher.dispatch(&scheduled).await;
-        assert!(matches!(result, Err(ServerError::WorkerDispatch { .. })));
+        let dispatch_handle = tokio::spawn({
+            let dispatcher = dispatcher.clone();
+            let scheduled = scheduled.clone();
+            async move { dispatcher.dispatch(&scheduled).await }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!dispatch_handle.is_finished(), "dispatch should be waiting");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let activity_types = [String::from("charge-card")];
+        let _registration = registry.register("tenant-a", activity_types.iter(), tx)?;
+
+        dispatch_handle.await??;
+        assert!(rx.recv().await.is_some());
         Ok(())
     }
 

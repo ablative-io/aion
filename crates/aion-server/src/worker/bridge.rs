@@ -267,43 +267,57 @@ impl WorkerActivityDispatcher {
             })
     }
 
-    fn select_worker(
+    /// Select a worker for the namespace and activity type, waiting if none is
+    /// currently available. Blocks until a matching worker registers or the
+    /// server begins draining.
+    fn select_worker_or_wait(
         &self,
         namespace: &str,
         activity_type: &str,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<WorkerHandle, String> {
-        self.registry
-            .select_worker(namespace, activity_type)
-            .map_err(|error| {
-                let reason = format!("registry error: {error}");
-                log_worker_error(
-                    "WorkerRegistry",
-                    namespace,
-                    activity_type,
-                    workflow_id,
-                    activity_id,
-                    None,
-                    &reason,
-                );
-                reason
-            })?
-            .ok_or_else(|| {
-                let reason = format!(
-                    "no connected worker for activity type '{activity_type}' in namespace '{namespace}'"
-                );
-                log_worker_error(
-                    "WorkerUnavailable",
-                    namespace,
-                    activity_type,
-                    workflow_id,
-                    activity_id,
-                    None,
-                    &reason,
-                );
-                reason
-            })
+        loop {
+            match self.registry.select_worker(namespace, activity_type) {
+                Ok(Some(worker)) => return Ok(worker),
+                Ok(None) => {
+                    self.ensure_accepting(namespace, activity_type, workflow_id, activity_id, None)?;
+                    tracing::info!(
+                        namespace,
+                        activity_type,
+                        workflow_id = %workflow_id,
+                        activity_id = %activity_id,
+                        "no connected worker; waiting for a matching worker to register"
+                    );
+                    match &self.tokio_handle {
+                        Some(handle) => {
+                            handle.block_on(self.registry.wait_for_worker());
+                        }
+                        None => match tokio::runtime::Handle::try_current() {
+                            Ok(handle) => {
+                                handle.block_on(self.registry.wait_for_worker());
+                            }
+                            Err(_) => {
+                                std::thread::sleep(Duration::from_millis(500));
+                            }
+                        },
+                    }
+                }
+                Err(error) => {
+                    let reason = format!("registry error: {error}");
+                    log_worker_error(
+                        "WorkerRegistry",
+                        namespace,
+                        activity_type,
+                        workflow_id,
+                        activity_id,
+                        None,
+                        &reason,
+                    );
+                    return Err(reason);
+                }
+            }
+        }
     }
 
     fn track_worker_task(
@@ -539,7 +553,7 @@ impl WorkerActivityDispatcher {
         let activity_id = ActivityId::from_sequence_position(sequence);
         let workflow_id = WorkflowId::new_v4();
         self.ensure_accepting(namespace, name, &workflow_id, &activity_id, None)?;
-        let worker = self.select_worker(namespace, name, &workflow_id, &activity_id)?;
+        let worker = self.select_worker_or_wait(namespace, name, &workflow_id, &activity_id)?;
         let worker_id = worker.id();
         let span = info_span!(
             "activity_dispatch",
@@ -773,17 +787,21 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_returns_error_when_no_worker_registered() {
+    fn dispatcher_fails_immediately_when_draining_without_workers() {
         let registry = ConnectedWorkerRegistry::default();
-        let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker());
+        let drain = DrainState::default();
+        let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker())
+            .with_drain_state(drain.clone());
+
+        let _ = drain.begin();
 
         let result = dispatcher.dispatch("default", "greet", "{}", "{}", 1);
 
         assert!(result.is_err());
         let err = result.err().unwrap_or_default();
         assert!(
-            err.contains("no connected worker"),
-            "unexpected error: {err}"
+            err.contains("drain"),
+            "expected drain rejection, got: {err}"
         );
     }
 
