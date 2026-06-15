@@ -125,7 +125,14 @@ pub(super) fn collect_step(
     )
     .map_err(|error| error.error_reason())?;
     let pin = pin_or_allocate(state, &context, pid, kind, count)?;
-    dispatch_unscheduled(deps, &context, specs, pin.base_ordinal, pin.first_arrival, label)?;
+    dispatch_unscheduled(
+        deps,
+        &context,
+        specs,
+        pin.base_ordinal,
+        pin.first_arrival,
+        label,
+    )?;
     match kind {
         CollectKind::All => settle_all(state, deps, &context, pid, pin.base_ordinal, count),
         CollectKind::Race => settle_race(state, deps, &context, pid, pin.base_ordinal, count),

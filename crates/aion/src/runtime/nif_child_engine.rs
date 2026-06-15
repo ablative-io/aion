@@ -259,10 +259,11 @@ impl EngineHandle for NifChildEngine {
         let child = self
             .bridge
             .tokio_handle
-            .block_on(
-                self.bridge
-                    .start_child_under_recorded_id(&parent_workflow_id, &parent_namespace, request),
-            )
+            .block_on(self.bridge.start_child_under_recorded_id(
+                &parent_workflow_id,
+                &parent_namespace,
+                request,
+            ))
             .map_err(|error| EngineSeamError::ChildSpawn {
                 reason: error.to_string(),
             })?;

@@ -281,7 +281,13 @@ impl WorkerActivityDispatcher {
             match self.registry.select_worker(namespace, activity_type) {
                 Ok(Some(worker)) => return Ok(worker),
                 Ok(None) => {
-                    self.ensure_accepting(namespace, activity_type, workflow_id, activity_id, None)?;
+                    self.ensure_accepting(
+                        namespace,
+                        activity_type,
+                        workflow_id,
+                        activity_id,
+                        None,
+                    )?;
                     tracing::info!(
                         namespace,
                         activity_type,
