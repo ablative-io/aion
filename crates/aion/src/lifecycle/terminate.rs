@@ -228,6 +228,7 @@ mod tests {
             run_id: run_id.clone(),
             pid,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: ContentHash::from_bytes([9; 32]),
             cached_status: WorkflowStatus::Running,
             residency: HandleResidency::Resident,

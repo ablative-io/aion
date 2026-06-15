@@ -160,6 +160,7 @@ async fn child_workflow_runs_end_to_end_through_nif_path() -> TestResult {
             PARENT_MODULE,
             parent_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let result = engine
@@ -195,6 +196,7 @@ async fn restart_after_child_completed_replays_recorded_child_without_respawn() 
             PARENT_MODULE,
             parent_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let workflow_id = handle.workflow_id().clone();
@@ -348,6 +350,7 @@ async fn continue_as_new_scopes_child_correlation_to_each_run() -> TestResult {
             PARENT_MODULE,
             parent_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let workflow_id = first_run.workflow_id().clone();
@@ -417,6 +420,7 @@ async fn signal_between_spawns_preserves_child_identities_across_restart() -> Te
             PARENT_MODULE,
             parent_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let workflow_id = handle.workflow_id().clone();

@@ -32,7 +32,12 @@ async fn signal_records_history_and_delivers_mailbox_marker()
         .await?;
     let input = input_payload()?;
     let handle = engine
-        .start_workflow(FIXTURE_MODULE, input, std::collections::HashMap::new())
+        .start_workflow(
+            FIXTURE_MODULE,
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     let sent_payload = payload(&json!({ "wake": true }))?;
 
@@ -88,6 +93,7 @@ async fn signal_to_killed_run_returns_terminal_without_appending()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     engine.runtime().cancel_pid(handle.pid())?;
@@ -143,6 +149,7 @@ async fn terminal_and_unknown_signals_return_errors_without_appending_events()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let mut recorder = Recorder::resume_at(handle.workflow_id().clone(), Arc::clone(&store), 1);
@@ -214,6 +221,7 @@ async fn non_resident_signal_records_defers_and_resume_delivers()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     engine.registry().replace_residency(
@@ -272,6 +280,7 @@ async fn deferred_signal_router_returns_runtime_error() -> Result<(), Box<dyn st
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let sent_payload = payload(&json!({ "ignored": true }))?;

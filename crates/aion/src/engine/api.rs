@@ -216,6 +216,7 @@ impl Engine {
         workflow_type: &str,
         input: Payload,
         search_attributes: HashMap<String, SearchAttributeValue>,
+        namespace: String,
     ) -> Result<WorkflowHandle, EngineError> {
         let operation = self.shutdown_gate.begin_start()?;
         let result = start::start_workflow_with_options(
@@ -233,6 +234,7 @@ impl Engine {
             workflow_type,
             input,
             start::StartWorkflowOptions {
+                namespace: Some(namespace),
                 search_attributes,
                 ..start::StartWorkflowOptions::default()
             },
@@ -627,6 +629,7 @@ mod tests {
             run_id: run_id.clone(),
             pid,
             workflow_type: workflow_type.to_owned(),
+            namespace: String::from("default"),
             loaded_version: ContentHash::from_bytes([9; 32]),
             cached_status: WorkflowStatus::Running,
             residency: HandleResidency::Resident,
@@ -646,7 +649,12 @@ mod tests {
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
         let handle = engine
-            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .start_workflow(
+                "checkout",
+                payload("input")?,
+                HashMap::new(),
+                String::from("default"),
+            )
             .await?;
 
         engine
@@ -677,7 +685,12 @@ mod tests {
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
         let handle = engine
-            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .start_workflow(
+                "checkout",
+                payload("input")?,
+                HashMap::new(),
+                String::from("default"),
+            )
             .await?;
         let result_payload = payload("result")?;
 
@@ -703,7 +716,12 @@ mod tests {
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
         let handle = engine
-            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .start_workflow(
+                "checkout",
+                payload("input")?,
+                HashMap::new(),
+                String::from("default"),
+            )
             .await?;
         let error = workflow_error("workflow failed");
 
@@ -762,7 +780,12 @@ mod tests {
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
         let running = insert_active_handle(&engine, Arc::clone(&store), "checkout").await?;
         let completed = engine
-            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .start_workflow(
+                "checkout",
+                payload("input")?,
+                HashMap::new(),
+                String::from("default"),
+            )
             .await?;
         terminate::complete(
             termination_context(&engine),
@@ -801,7 +824,12 @@ mod tests {
         let engine =
             engine_with_loaded_workflow(Arc::clone(&store), "checkout", "checkout_deployed")?;
         let handle = engine
-            .start_workflow("checkout", payload("input")?, HashMap::new())
+            .start_workflow(
+                "checkout",
+                payload("input")?,
+                HashMap::new(),
+                String::from("default"),
+            )
             .await?;
         terminate::complete(
             termination_context(&engine),
@@ -813,7 +841,12 @@ mod tests {
 
         engine.shutdown()?;
         let result = engine
-            .start_workflow("checkout", payload("after-shutdown")?, HashMap::new())
+            .start_workflow(
+                "checkout",
+                payload("after-shutdown")?,
+                HashMap::new(),
+                String::from("default"),
+            )
             .await;
 
         assert!(matches!(result, Err(EngineError::ShuttingDown)));

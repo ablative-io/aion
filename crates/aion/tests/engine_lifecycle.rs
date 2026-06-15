@@ -39,6 +39,7 @@ async fn start_appends_registers_and_lists_workflow() -> Result<(), Box<dyn std:
             FIXTURE_MODULE,
             input.clone(),
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
 

@@ -205,6 +205,7 @@ async fn start_continuation_replacement(
             loaded_version: None,
             // Recorded attributes carry into the replacement run's projection.
             search_attributes: std::collections::HashMap::new(),
+            namespace: Some(handle.namespace().to_owned()),
         },
     )
     .await?;
@@ -341,6 +342,7 @@ mod tests {
             run_id: run_id.clone(),
             pid: 1,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: ContentHash::from_bytes([9; 32]),
             cached_status: WorkflowStatus::Running,
             residency: HandleResidency::Resident,

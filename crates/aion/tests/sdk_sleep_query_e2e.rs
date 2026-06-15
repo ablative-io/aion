@@ -47,7 +47,12 @@ async fn start_sleeper(
 ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let input = Payload::from_json(&json!({ "sleep_ms": sleep_ms }))?;
     let handle = engine
-        .start_workflow("sleep_query", input, std::collections::HashMap::new())
+        .start_workflow(
+            "sleep_query",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))
 }

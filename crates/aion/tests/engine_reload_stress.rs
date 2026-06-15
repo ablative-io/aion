@@ -47,7 +47,12 @@ async fn parallel_starters_racing_sequential_loads_stay_version_consistent() -> 
             let mut runs = Vec::new();
             for _ in 0..STARTS_PER_TASK {
                 let handle = engine
-                    .start_workflow(RELOAD_MODULE, input()?, HashMap::new())
+                    .start_workflow(
+                        RELOAD_MODULE,
+                        input()?,
+                        HashMap::new(),
+                        String::from("default"),
+                    )
                     .await?;
                 runs.push((
                     handle.workflow_id().clone(),

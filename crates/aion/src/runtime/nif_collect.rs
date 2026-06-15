@@ -229,6 +229,7 @@ fn dispatch_unscheduled(
             )
             .map_err(|error| error.error_reason())?;
     }
+    let namespace = context.workflow_handle().namespace().to_owned();
     for (ordinal, spec) in fresh {
         spawn_completion_task(
             &deps.tokio_handle,
@@ -242,6 +243,7 @@ fn dispatch_unscheduled(
                 config: spec.config.clone(),
                 attempt: FIRST_DELIVERY_ATTEMPT,
             },
+            namespace.clone(),
         );
     }
     Ok(())
@@ -633,6 +635,7 @@ mod tests {
                 run_id: run_id.clone(),
                 pid,
                 workflow_type: "collect-parent".to_owned(),
+                namespace: String::from("default"),
                 loaded_version: ContentHash::from_bytes([5; 32]),
                 cached_status: WorkflowStatus::Running,
                 residency: HandleResidency::Resident,

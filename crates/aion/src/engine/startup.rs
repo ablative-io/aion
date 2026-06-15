@@ -215,6 +215,7 @@ async fn register_recovered_resident(
         run_id: run_id.clone(),
         pid,
         workflow_type: workflow_type.to_owned(),
+        namespace: String::from("default"),
         loaded_version,
         cached_status: projected_status,
         residency: HandleResidency::Resident,

@@ -122,6 +122,7 @@ mod tests {
             run_id,
             pid: 42,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: hash(3),
             cached_status: status,
             residency: Residency::Resident,

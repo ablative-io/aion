@@ -244,18 +244,19 @@ impl WorkerActivityDispatcher {
 impl WorkerActivityDispatcher {
     fn ensure_accepting(
         &self,
+        namespace: &str,
         activity_type: &str,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
         worker_id: Option<WorkerId>,
     ) -> Result<(), String> {
         self.drain_state
-            .ensure_accepting(&self.namespace, activity_type)
+            .ensure_accepting(namespace, activity_type)
             .map_err(|error| {
                 let reason = error.to_string();
                 log_worker_error(
                     "WorkerDispatch",
-                    &self.namespace,
+                    namespace,
                     activity_type,
                     workflow_id,
                     activity_id,
@@ -268,17 +269,18 @@ impl WorkerActivityDispatcher {
 
     fn select_worker(
         &self,
+        namespace: &str,
         activity_type: &str,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<WorkerHandle, String> {
         self.registry
-            .select_worker(&self.namespace, activity_type)
+            .select_worker(namespace, activity_type)
             .map_err(|error| {
                 let reason = format!("registry error: {error}");
                 log_worker_error(
                     "WorkerRegistry",
-                    &self.namespace,
+                    namespace,
                     activity_type,
                     workflow_id,
                     activity_id,
@@ -289,12 +291,11 @@ impl WorkerActivityDispatcher {
             })?
             .ok_or_else(|| {
                 let reason = format!(
-                    "no connected worker for activity type '{activity_type}' in namespace '{}'",
-                    self.namespace
+                    "no connected worker for activity type '{activity_type}' in namespace '{namespace}'"
                 );
                 log_worker_error(
                     "WorkerUnavailable",
-                    &self.namespace,
+                    namespace,
                     activity_type,
                     workflow_id,
                     activity_id,
@@ -479,6 +480,7 @@ impl WorkerActivityDispatcher {
 impl ActivityDispatcher for WorkerActivityDispatcher {
     fn dispatch(
         &self,
+        namespace: &str,
         name: &str,
         input: &str,
         config: &str,
@@ -494,7 +496,7 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
                     // run — otherwise it is trapped in this worker's
                     // non-stealable LIFO slot for as long as we block.
                     tokio::task::block_in_place(|| {
-                        self.dispatch_blocking(name, input, config, attempt)
+                        self.dispatch_blocking(namespace, name, input, config, attempt)
                     })
                 }
                 flavor => Err(format!(
@@ -507,7 +509,7 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
             // No tokio context: a beamr scheduler thread or other plain OS
             // thread. Blocking here is the designed contract and cannot starve
             // the server runtime.
-            Err(_) => self.dispatch_blocking(name, input, config, attempt),
+            Err(_) => self.dispatch_blocking(namespace, name, input, config, attempt),
         }
     }
 }
@@ -525,6 +527,7 @@ impl WorkerActivityDispatcher {
     /// this with `tokio::task::block_in_place`.
     fn dispatch_blocking(
         &self,
+        namespace: &str,
         name: &str,
         input: &str,
         config: &str,
@@ -535,20 +538,20 @@ impl WorkerActivityDispatcher {
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
         let activity_id = ActivityId::from_sequence_position(sequence);
         let workflow_id = WorkflowId::new_v4();
-        self.ensure_accepting(name, &workflow_id, &activity_id, None)?;
-        let worker = self.select_worker(name, &workflow_id, &activity_id)?;
+        self.ensure_accepting(namespace, name, &workflow_id, &activity_id, None)?;
+        let worker = self.select_worker(namespace, name, &workflow_id, &activity_id)?;
         let worker_id = worker.id();
         let span = info_span!(
             "activity_dispatch",
             operation = "activity_dispatch",
-            namespace = %self.namespace,
+            namespace = %namespace,
             workflow_id = %workflow_id,
             activity_id = %activity_id,
             activity_type = %name,
             worker_id = ?worker_id,
         );
         let _span_guard = span.enter();
-        self.ensure_accepting(name, &workflow_id, &activity_id, Some(worker_id))?;
+        self.ensure_accepting(namespace, name, &workflow_id, &activity_id, Some(worker_id))?;
 
         let task = activity_task(name, input, &workflow_id, &activity_id, attempt);
         let rx = self
@@ -557,7 +560,7 @@ impl WorkerActivityDispatcher {
         self.track_worker_task(worker_id, name, &workflow_id, &activity_id)?;
         self.send_activity_task(&worker, task, name, &workflow_id, &activity_id)?;
         let context = ActivityDispatchContext {
-            namespace: &self.namespace,
+            namespace,
             activity_type: name,
             worker_id,
             workflow_id: &workflow_id,
@@ -774,7 +777,7 @@ mod tests {
         let registry = ConnectedWorkerRegistry::default();
         let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker());
 
-        let result = dispatcher.dispatch("greet", "{}", "{}", 1);
+        let result = dispatcher.dispatch("default", "greet", "{}", "{}", 1);
 
         assert!(result.is_err());
         let err = result.err().unwrap_or_default();
@@ -840,7 +843,7 @@ mod tests {
         // Invoke the sync dispatch inside the first poll of a spawned task:
         // the worst-case calling context for the `block_in_place` guard.
         let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-            dispatcher.dispatch("greet", "{}", "{}", 1)
+            dispatcher.dispatch("default", "greet", "{}", "{}", 1)
         }));
         let result = dispatch_task.await.map_err(|error| error.to_string())?;
         let elapsed = started.elapsed();
@@ -869,7 +872,7 @@ mod tests {
         let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker());
 
         let started = Instant::now();
-        let result = dispatcher.dispatch("greet", "{}", "{}", 1);
+        let result = dispatcher.dispatch("default", "greet", "{}", "{}", 1);
         let elapsed = started.elapsed();
 
         let err = result.err().ok_or("expected dispatch to fail")?;

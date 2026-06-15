@@ -110,7 +110,12 @@ fn input() -> Result<Payload, aion_core::PayloadError> {
 
 async fn start(engine: &Engine) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let handle = engine
-        .start_workflow(RELOAD_MODULE, input()?, HashMap::new())
+        .start_workflow(
+            RELOAD_MODULE,
+            input()?,
+            HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))
 }
@@ -207,7 +212,12 @@ async fn route_flip_under_concurrent_starts_is_atomic() -> TestResult {
             let mut runs = Vec::new();
             for _ in 0..40 {
                 let handle = engine
-                    .start_workflow(RELOAD_MODULE, input()?, HashMap::new())
+                    .start_workflow(
+                        RELOAD_MODULE,
+                        input()?,
+                        HashMap::new(),
+                        String::from("default"),
+                    )
                     .await?;
                 runs.push((handle.workflow_id().clone(), handle.run_id().clone()));
                 tokio::time::sleep(Duration::from_millis(2)).await;

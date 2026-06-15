@@ -916,6 +916,7 @@ mod tests {
             run_id: run_id.clone(),
             pid: engine.runtime().spawn_test_process_with_trap_exit(true)?,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: aion_package::ContentHash::from_bytes([2; 32]),
             cached_status: WorkflowStatus::Running,
             residency: crate::registry::HandleResidency::Resident,

@@ -164,7 +164,7 @@ async fn rust_worker_sdk_handshakes_serves_and_rides_through_drain() -> Result<(
     // observe exactly the stamped value, proving the wire field end to end.
     let dispatch = Arc::clone(&dispatcher);
     let result = tokio::task::spawn_blocking(move || {
-        dispatch.dispatch(ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}", 3)
+        dispatch.dispatch(NAMESPACE, ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}", 3)
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -185,7 +185,7 @@ async fn rust_worker_sdk_handshakes_serves_and_rides_through_drain() -> Result<(
     // leave the worker this healthy this quickly).
     let dispatch = Arc::clone(&dispatcher);
     let result = tokio::task::spawn_blocking(move || {
-        dispatch.dispatch(ACTIVITY_TYPE, r#"{"name":"again"}"#, "{}", 1)
+        dispatch.dispatch(NAMESPACE, ACTIVITY_TYPE, r#"{"name":"again"}"#, "{}", 1)
     })
     .await
     .map_err(|error| error.to_string())?;

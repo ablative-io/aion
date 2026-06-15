@@ -35,6 +35,7 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     /// worker rejection, decode failure, timeout, or activity body error.
     fn dispatch(
         &self,
+        namespace: &str,
         name: &str,
         input: &str,
         config: &str,
@@ -53,6 +54,7 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     /// Returns the same errors as [`Self::dispatch`].
     fn dispatch_from_process(
         &self,
+        namespace: &str,
         name: &str,
         input: &str,
         config: &str,
@@ -60,7 +62,7 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
         caller_pid: Option<u64>,
     ) -> Result<String, String> {
         let _ = caller_pid;
-        self.dispatch(name, input, config, attempt)
+        self.dispatch(namespace, name, input, config, attempt)
     }
 
     /// Dispatch the named activity from a Tokio task.
@@ -82,6 +84,7 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     /// panics.
     fn dispatch_async_from_process(
         self: Arc<Self>,
+        namespace: String,
         name: String,
         input: String,
         config: String,
@@ -90,7 +93,7 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     ) -> BoxFuture<'static, Result<String, String>> {
         Box::pin(async move {
             let blocking = tokio::task::spawn_blocking(move || {
-                self.dispatch_from_process(&name, &input, &config, attempt, caller_pid)
+                self.dispatch_from_process(&namespace, &name, &input, &config, attempt, caller_pid)
             });
             match blocking.await {
                 Ok(result) => result,
@@ -112,6 +115,7 @@ mod tests {
     impl ActivityDispatcher for Echo {
         fn dispatch(
             &self,
+            _namespace: &str,
             _name: &str,
             input: &str,
             _config: &str,
@@ -130,7 +134,7 @@ mod tests {
         assert_eq!(
             dispatcher
                 .as_ref()
-                .and_then(|d| d.dispatch("test", "hello", "{}", 1).ok()),
+                .and_then(|d| d.dispatch("default", "test", "hello", "{}", 1).ok()),
             Some("hello".to_owned())
         );
     }

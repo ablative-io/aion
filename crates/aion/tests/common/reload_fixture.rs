@@ -101,7 +101,12 @@ pub fn input() -> Result<Payload, aion_core::PayloadError> {
 
 pub async fn start(engine: &Engine) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let handle = engine
-        .start_workflow(RELOAD_MODULE, input()?, HashMap::new())
+        .start_workflow(
+            RELOAD_MODULE,
+            input()?,
+            HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))
 }

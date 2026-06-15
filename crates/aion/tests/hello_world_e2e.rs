@@ -25,6 +25,7 @@ struct GreetDispatcher;
 impl ActivityDispatcher for GreetDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         _config: &str,
@@ -56,7 +57,12 @@ async fn hello_world_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>>
 
     let input = Payload::from_json(&json!({ "name": "Ada" }))?;
     let handle = engine
-        .start_workflow("hello_world", input, std::collections::HashMap::new())
+        .start_workflow(
+            "hello_world",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
 

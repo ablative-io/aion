@@ -177,6 +177,7 @@ fn dispatch_activity_with_context(
     let key = CorrelationKey::Activity(ordinal);
     let activity_id = ActivityId::from_sequence_position(ordinal);
     let correlation = correlation_id(ordinal);
+    let namespace = context.workflow_handle().namespace().to_owned();
     match context
         .resolve_command(Command::RunActivity {
             key,
@@ -204,6 +205,7 @@ fn dispatch_activity_with_context(
                 context.pid(),
                 correlation.clone(),
                 call,
+                namespace,
             );
             Ok(ok_result_term(ctx, correlation.as_bytes()).unwrap_or(Term::NIL))
         }
@@ -217,9 +219,11 @@ pub(super) fn spawn_completion_task(
     workflow_pid: u64,
     correlation_id: String,
     call: ActivityCall,
+    namespace: String,
 ) {
     let future = dispatcher
         .dispatch_async_from_process(
+            namespace,
             call.name,
             call.input,
             call.config,
@@ -479,6 +483,7 @@ mod tests {
                 run_id: run_id.clone(),
                 pid,
                 workflow_type: "awaiter".to_owned(),
+                namespace: String::from("default"),
                 loaded_version: ContentHash::from_bytes([7; 32]),
                 cached_status: WorkflowStatus::Running,
                 residency: HandleResidency::Resident,
@@ -734,6 +739,7 @@ mod tests {
     impl ActivityDispatcher for GatedDispatcher {
         fn dispatch(
             &self,
+            _namespace: &str,
             _name: &str,
             input: &str,
             _config: &str,
@@ -785,6 +791,7 @@ mod tests {
                     config: "{}".to_owned(),
                     attempt: FIRST_DELIVERY_ATTEMPT,
                 },
+                String::from("default"),
             );
             // The release runs as a task on this same single-threaded
             // runtime, spawned AFTER the completion task: it can only

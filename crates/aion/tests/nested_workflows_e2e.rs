@@ -137,6 +137,7 @@ impl LeafDispatcher {
 impl ActivityDispatcher for LeafDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         _config: &str,
@@ -205,7 +206,12 @@ async fn start(
     input: Payload,
 ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let handle = engine
-        .start_workflow(workflow_type, input, HashMap::new())
+        .start_workflow(
+            workflow_type,
+            input,
+            HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))
 }

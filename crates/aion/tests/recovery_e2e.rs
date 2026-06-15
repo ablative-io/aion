@@ -24,6 +24,7 @@ struct GreetDispatcher;
 impl ActivityDispatcher for GreetDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         _config: &str,

@@ -156,6 +156,7 @@ impl SagaDispatcher {
 impl ActivityDispatcher for SagaDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         config: &str,
@@ -266,6 +267,7 @@ async fn start_order(
             PARENT_TYPE,
             order_input(order_id, approval_timeout_ms)?,
             HashMap::new(),
+            String::from("default"),
         )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))

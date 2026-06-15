@@ -48,7 +48,12 @@ pub async fn start(
         scoped
             .engine()
             .map_err(|error| log_server_error("start", Some(&namespace), None, &error))?
-            .start_workflow(&request.workflow_type, input, search_attributes)
+            .start_workflow(
+                &request.workflow_type,
+                input,
+                search_attributes,
+                namespace.clone(),
+            )
             .await
             .map_err(|error| map_start_error(error, &request.workflow_type))
     }

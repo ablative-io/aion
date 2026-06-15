@@ -85,6 +85,7 @@ struct GatedItemDispatcher {
 impl ActivityDispatcher for GatedItemDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         _config: &str,
@@ -161,6 +162,7 @@ async fn start_batch(engine: &Engine) -> Result<(WorkflowId, RunId), Box<dyn std
             "batch_orchestrator",
             batch_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))

@@ -66,6 +66,7 @@ struct PipelineDispatcher;
 impl ActivityDispatcher for PipelineDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         _config: &str,
@@ -131,7 +132,12 @@ async fn data_pipeline_example_runs_end_to_end() -> Result<(), Box<dyn std::erro
         "urls": ["https://example.com/a", "https://example.com/b"]
     }))?;
     let handle = engine
-        .start_workflow("data_pipeline", input, std::collections::HashMap::new())
+        .start_workflow(
+            "data_pipeline",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
     let payload = result.map_err(|error| format!("pipeline failed: {error:?}"))?;
@@ -178,6 +184,7 @@ impl RecordingDispatcher {
 impl ActivityDispatcher for RecordingDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         input: &str,
         _config: &str,
@@ -242,7 +249,12 @@ async fn approval_gate_signal_drives_publication() -> Result<(), Box<dyn std::er
         "timeout_minutes": 5
     }))?;
     let handle = engine
-        .start_workflow("approval_gate", input, std::collections::HashMap::new())
+        .start_workflow(
+            "approval_gate",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
 
     // The workflow arms its deadline and suspends in the signal receive; the
@@ -313,7 +325,12 @@ async fn subscription_bills_after_deadline_with_signaled_plan_and_rotates()
         "cycles_in_run": 0
     }))?;
     let handle = engine
-        .start_workflow("subscription", input, std::collections::HashMap::new())
+        .start_workflow(
+            "subscription",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
 
     // A plan change lands mid-period: the signal wins the with_timeout race

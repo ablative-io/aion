@@ -591,6 +591,7 @@ mod tests {
             run_id,
             pid: engine.runtime().spawn_test_process_with_trap_exit(true)?,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: ContentHash::from_bytes([1; 32]),
             cached_status: WorkflowStatus::Running,
             residency: HandleResidency::Resident,

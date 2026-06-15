@@ -103,6 +103,8 @@ pub struct WorkflowHandleParts {
     pub pid: u64,
     /// Logical workflow type selected by the caller.
     pub workflow_type: String,
+    /// Namespace that owns this workflow execution.
+    pub namespace: String,
     /// Loaded package version selected by the loader.
     pub loaded_version: ContentHash,
     /// Cached projection status initialized from the start event.
@@ -127,6 +129,7 @@ pub struct WorkflowHandle {
     run_id: RunId,
     pid: u64,
     workflow_type: String,
+    namespace: String,
     loaded_version: ContentHash,
     cached_status: WorkflowStatus,
     residency: Residency,
@@ -149,6 +152,7 @@ impl WorkflowHandle {
             run_id: parts.run_id,
             pid: parts.pid,
             workflow_type: parts.workflow_type,
+            namespace: parts.namespace,
             loaded_version: parts.loaded_version,
             cached_status: parts.cached_status,
             residency: parts.residency,
@@ -298,6 +302,12 @@ impl WorkflowHandle {
         &self.workflow_type
     }
 
+    /// Returns the namespace that owns this workflow execution.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
     /// Returns the loaded workflow package version identifier.
     #[must_use]
     pub const fn loaded_version(&self) -> &ContentHash {
@@ -354,6 +364,7 @@ impl std::fmt::Debug for WorkflowHandle {
             .field("run_id", &self.run_id)
             .field("pid", &self.pid)
             .field("workflow_type", &self.workflow_type)
+            .field("namespace", &self.namespace)
             .field("loaded_version", &self.loaded_version)
             .field("cached_status", &self.cached_status)
             .field("residency", &self.residency)
@@ -368,6 +379,7 @@ impl PartialEq for WorkflowHandle {
             && self.run_id == other.run_id
             && self.pid == other.pid
             && self.workflow_type == other.workflow_type
+            && self.namespace == other.namespace
             && self.loaded_version == other.loaded_version
             && self.cached_status == other.cached_status
             && self.residency == other.residency

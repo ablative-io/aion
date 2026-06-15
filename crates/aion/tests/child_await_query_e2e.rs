@@ -50,7 +50,12 @@ async fn start_parent(
 ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let input = Payload::from_json(&json!({ "sleep_ms": child_sleep_ms }))?;
     let handle = engine
-        .start_workflow("parent_query", input, std::collections::HashMap::new())
+        .start_workflow(
+            "parent_query",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))
 }

@@ -65,6 +65,8 @@ pub struct StartWorkflowOptions {
     pub loaded_version: Option<ContentHash>,
     /// Initial search attributes recorded atomically with `WorkflowStarted`.
     pub search_attributes: HashMap<String, SearchAttributeValue>,
+    /// Namespace that owns this workflow execution; defaults to `"default"`.
+    pub namespace: Option<String>,
 }
 
 /// Starts a loaded workflow execution and returns its active handle.
@@ -180,6 +182,7 @@ pub async fn start_workflow_with_options(
         run_id: run_id.clone(),
         pid,
         workflow_type: loaded.workflow_type().to_owned(),
+        namespace: options.namespace.unwrap_or_else(|| String::from("default")),
         loaded_version: loaded.version().clone(),
         cached_status: WorkflowStatus::Running,
         residency: HandleResidency::Resident,

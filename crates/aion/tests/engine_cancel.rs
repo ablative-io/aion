@@ -31,6 +31,7 @@ async fn cancel_records_event_deregisters_and_kills_workflow()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
 
@@ -70,6 +71,7 @@ async fn cancel_propagates_kill_to_linked_activity() -> Result<(), Box<dyn std::
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let deployed_module = engine

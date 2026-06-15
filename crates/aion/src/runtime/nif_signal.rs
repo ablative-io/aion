@@ -703,6 +703,7 @@ mod tests {
                 run_id: run_id.clone(),
                 pid,
                 workflow_type: "receiver".to_owned(),
+                namespace: String::from("default"),
                 loaded_version: ContentHash::from_bytes([5; 32]),
                 cached_status: WorkflowStatus::Running,
                 residency: HandleResidency::Resident,

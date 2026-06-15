@@ -353,6 +353,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
             parent_run_id: Some(parent_run_id.clone()),
             loaded_version: None,
             search_attributes: std::collections::HashMap::new(),
+            namespace: None,
         },
     )
     .await?;

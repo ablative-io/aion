@@ -123,6 +123,7 @@ pub async fn continue_as_new(
             // Attributes already recorded in this workflow's history carry into
             // the replacement run's projection; nothing new is recorded here.
             search_attributes: std::collections::HashMap::new(),
+            namespace: Some(handle.namespace().to_owned()),
         },
     )
     .await?;
@@ -319,6 +320,7 @@ mod tests {
             run_id: run_id.clone(),
             pid,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: ContentHash::from_bytes([3; 32]),
             cached_status: WorkflowStatus::Running,
             residency: HandleResidency::Resident,

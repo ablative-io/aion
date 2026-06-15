@@ -63,6 +63,7 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
                 &request.workflow_type,
                 input,
                 std::collections::HashMap::new(),
+                String::from("default"),
             )
             .await
             .map_err(|error| map_engine_error(&error))?;

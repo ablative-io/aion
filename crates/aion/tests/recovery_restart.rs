@@ -22,6 +22,7 @@ async fn restart_recovers_active_workflow_without_duplicate_replay_events()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let workflow_id = handle.workflow_id().clone();

@@ -85,6 +85,7 @@ async fn start(engine: &Engine) -> Result<(WorkflowId, RunId), Box<dyn std::erro
             QUERY_MODULE,
             fixture_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))

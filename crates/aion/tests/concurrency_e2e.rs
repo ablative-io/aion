@@ -101,6 +101,7 @@ struct GatedDispatcher {
 impl ActivityDispatcher for GatedDispatcher {
     fn dispatch(
         &self,
+        _namespace: &str,
         name: &str,
         _input: &str,
         _config: &str,
@@ -180,6 +181,7 @@ async fn start_parent(engine: &Engine) -> Result<(WorkflowId, RunId), Box<dyn st
             COLLECT_MODULE,
             parent_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))

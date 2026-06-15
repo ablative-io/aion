@@ -186,6 +186,7 @@ mod tests {
             run_id,
             pid,
             workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
             loaded_version: hash(version_byte),
             cached_status: status,
             residency: HandleResidency::Resident,

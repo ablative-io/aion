@@ -117,7 +117,12 @@ async fn start_parent(
     module: &str,
 ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let handle = engine
-        .start_workflow(module, parent_input()?, std::collections::HashMap::new())
+        .start_workflow(
+            module,
+            parent_input()?,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
         .await?;
     Ok((handle.workflow_id().clone(), handle.run_id().clone()))
 }
@@ -804,6 +809,7 @@ async fn await_child_follows_continue_as_new_chain_and_survives_restart() -> Tes
             PLAIN_PARENT_MODULE,
             parent_input()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let workflow_id = handle.workflow_id().clone();

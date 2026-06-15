@@ -16,6 +16,7 @@ async fn completing_workflow_records_and_returns_result() -> Result<(), Box<dyn 
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let expected = payload(&json!(42))?;

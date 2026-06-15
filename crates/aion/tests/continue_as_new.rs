@@ -19,6 +19,7 @@ async fn continue_as_new_records_terminal_old_run_and_running_replacement()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let old_workflow_id = handle.workflow_id().clone();
@@ -83,6 +84,7 @@ async fn recovery_active_listing_contains_only_current_continuation_run()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let untouched = engine
@@ -90,6 +92,7 @@ async fn recovery_active_listing_contains_only_current_continuation_run()
             FIXTURE_MODULE,
             carried_payload("untouched")?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let old_run_id = continued.run_id().clone();
@@ -186,6 +189,7 @@ async fn read_run_chain_returns_parent_links_in_chronological_order()
             FIXTURE_MODULE,
             input_payload()?,
             std::collections::HashMap::new(),
+            String::from("default"),
         )
         .await?;
     let second = engine
