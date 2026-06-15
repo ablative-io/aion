@@ -9,6 +9,7 @@
 -export([
     dispatch_activity/3,
     await_activity_result/1,
+    workflow_id/0,
     now/0,
     random/0,
     random_int/2,
@@ -55,6 +56,9 @@ await_activity_result(CorrelationId) ->
         undefined -> {error, <<"terminal:unknown activity correlation">>};
         Result -> Result
     end.
+
+workflow_id() ->
+    {ok, <<"test-workflow-id">>}.
 
 now() ->
     Current = clock_now(),

@@ -124,12 +124,19 @@ pub(super) fn collect_step(
         deps.runtime.signal_delivery(),
     )
     .map_err(|error| error.error_reason())?;
-    let base_ordinal = pin_or_allocate(state, &context, pid, kind, count)?;
-    dispatch_unscheduled(deps, &context, specs, base_ordinal, label)?;
+    let pin = pin_or_allocate(state, &context, pid, kind, count)?;
+    dispatch_unscheduled(deps, &context, specs, pin.base_ordinal, pin.first_arrival, label)?;
     match kind {
-        CollectKind::All => settle_all(state, deps, &context, pid, base_ordinal, count),
-        CollectKind::Race => settle_race(state, deps, &context, pid, base_ordinal, count),
+        CollectKind::All => settle_all(state, deps, &context, pid, pin.base_ordinal, count),
+        CollectKind::Race => settle_race(state, deps, &context, pid, pin.base_ordinal, count),
     }
+}
+
+/// Pin result: the base ordinal and whether this is the first arrival in
+/// this engine epoch (recovery or fresh run).
+struct PinResult {
+    base_ordinal: u64,
+    first_arrival: bool,
 }
 
 /// Reuse the pinned ordinal base, or allocate and pin one at first arrival.
@@ -139,7 +146,7 @@ fn pin_or_allocate(
     pid: u64,
     kind: CollectKind,
     count: u64,
-) -> Result<u64, String> {
+) -> Result<PinResult, String> {
     match state.pending_awaits.get(&pid).map(|entry| entry.clone()) {
         Some(PendingAwait::Collect {
             base_ordinal,
@@ -152,7 +159,10 @@ fn pin_or_allocate(
                      (pinned {pinned_kind:?} of {pinned_count}, called {kind:?} of {count})"
                 ));
             }
-            Ok(base_ordinal)
+            Ok(PinResult {
+                base_ordinal,
+                first_arrival: false,
+            })
         }
         Some(PendingAwait::Sleep { .. }) => {
             Err("process is pinned to a pending sleep await".to_owned())
@@ -176,7 +186,10 @@ fn pin_or_allocate(
                     kind,
                 },
             );
-            Ok(base_ordinal)
+            Ok(PinResult {
+                base_ordinal,
+                first_arrival: true,
+            })
         }
     }
 }
@@ -184,14 +197,21 @@ fn pin_or_allocate(
 /// Record `Scheduled`+`Started` and dispatch every member the run segment
 /// has no `ActivityScheduled` for; verify determinism at the anchor for the
 /// members it does.
+///
+/// On first arrival after recovery (`first_arrival` is true), activities
+/// that ARE scheduled but lack a terminal event are re-dispatched without
+/// re-recording — the original completion task died with the previous
+/// engine process.
 fn dispatch_unscheduled(
     deps: &CollectDeps,
     context: &NifContext,
     specs: &[ActivitySpec],
     base_ordinal: u64,
+    first_arrival: bool,
     label: &str,
 ) -> Result<(), String> {
     let mut fresh: Vec<(u64, &ActivitySpec)> = Vec::new();
+    let mut stale: Vec<(u64, &ActivitySpec)> = Vec::new();
     for (offset, spec) in specs.iter().enumerate() {
         let ordinal = base_ordinal + offset_to_u64(offset)?;
         match scheduled_activity_type(context.history(), ordinal) {
@@ -203,18 +223,24 @@ fn dispatch_unscheduled(
                         spec.name
                     ));
                 }
+                if first_arrival && recorded_terminal(context.history(), ordinal)?.is_none() {
+                    stale.push((ordinal, spec));
+                }
             }
             None => fresh.push((ordinal, spec)),
         }
     }
-    if fresh.is_empty() {
+    if fresh.is_empty() && stale.is_empty() {
         return Ok(());
     }
     let Some(dispatcher) = deps.dispatcher.as_ref() else {
-        return Err(
-            "no activity dispatcher configured — set one via EngineBuilder::activity_dispatcher"
-                .to_owned(),
-        );
+        if !fresh.is_empty() {
+            return Err(
+                "no activity dispatcher configured — set one via EngineBuilder::activity_dispatcher"
+                    .to_owned(),
+            );
+        }
+        return Ok(());
     };
     // Record the whole batch first so the Scheduled range stays contiguous,
     // then dispatch; completions land in the runtime maps keyed by ordinal.
@@ -230,13 +256,13 @@ fn dispatch_unscheduled(
             .map_err(|error| error.error_reason())?;
     }
     let namespace = context.workflow_handle().namespace().to_owned();
-    for (ordinal, spec) in fresh {
+    for (ordinal, spec) in fresh.iter().chain(stale.iter()) {
         spawn_completion_task(
             &deps.tokio_handle,
             Arc::clone(&deps.runtime),
             Arc::clone(dispatcher),
             context.pid(),
-            super::nif_activity::correlation_id(ordinal),
+            super::nif_activity::correlation_id(*ordinal),
             ActivityCall {
                 name: spec.name.clone(),
                 input: spec.input.clone(),

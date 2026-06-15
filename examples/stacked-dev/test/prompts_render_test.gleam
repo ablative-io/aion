@@ -78,10 +78,7 @@ pub fn scout_instructions_declare_the_stage_read_only_test() {
 }
 
 pub fn dev_instructions_defer_the_gate_to_the_workflow_test() {
-  string.contains(
-    prompts.dev_instructions,
-    "the workflow runs the real gate afterwards",
-  )
+  string.contains(prompts.dev_instructions, "Stay inside the boundaries")
   |> should.be_true
   string.contains(prompts.dev_instructions, "deviation") |> should.be_true
 }
