@@ -371,14 +371,14 @@ fn request_review(
   dev_result: DevResult,
   gate_result: GateResult,
 ) -> Result(Nil, StackedDevError) {
-  let wf_id = case workflow.id() {
-    Ok(id) -> id
-    Error(engine_error) ->
-      return Error(StageFailed(
+  use wf_id <- result_try(case workflow.id() {
+    Ok(id) -> Ok(id)
+    Error(error.EngineFailure(message: reason)) ->
+      Error(StageFailed(
         stage: "request_review",
-        message: "workflow.id() failed: " <> engine_error.message,
+        message: "workflow.id() failed: " <> reason,
       ))
-  }
+  })
   case
     workflow.run(
       activities.request_review(ReviewRequest(

@@ -327,6 +327,7 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
       reviewers: ["sample-reviewer"],
       dev_result: dev_result,
       gate_result: GateResult(verdict: GatePass),
+      workflow_id: "test-workflow-id",
     )),
   )
   register_activity(
