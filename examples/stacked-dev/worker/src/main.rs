@@ -21,6 +21,7 @@ use aion_worker::{ActivityContext, ActivityFailure, HandlerFuture, Worker, Worke
 use anyhow::{Context, bail};
 use stacked_dev_worker::handlers;
 use stacked_dev_worker::shell::Shell;
+use stacked_dev_worker::types::ReviewRequest;
 
 /// Parsed CLI arguments.
 struct Args {
@@ -186,7 +187,9 @@ async fn main() -> anyhow::Result<()> {
         )?
         .register_activity(
             "request_review",
-            blocking(shell.clone(), handlers::request_review),
+            blocking(shell.clone(), |shell, input: ReviewRequest| {
+                handlers::request_review(shell, &input)
+            }),
         )?
         .register_activity("land", blocking(shell.clone(), handlers::land))?
         .register_activity("scout", blocking(shell.clone(), handlers::scout))?

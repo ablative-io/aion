@@ -544,27 +544,22 @@ fn full_checks_affected_closure_scope_is_a_terminal_seam() -> TestResult {
 
 // --- request_review / land -------------------------------------------------------
 
-/// The meridian shim from the Gleam suite: review request acks only —
-/// landing is `yg branch merge` now.
-const MERIDIAN_SHIM: &str = r#"case "$1" in
-  review)
-    printf '%s' '{"branch":"stacked-dev-brief-7","reviewers":[{"name":"sample-reviewer","dm_status":"sent"}],"pending_reviewers_persisted":true}'
-    ;;
-  *)
-    echo "unknown meridian subcommand: $1" >&2
-    exit 64
-    ;;
-esac"#;
+/// Collective shim: accepts any send command, exits zero with a JSON result.
+const COLLECTIVE_SHIM: &str = r#"printf '%s' '{"results":[{"status":"ok"}]}'"#;
+
+/// Aion list shim: returns an empty running workflow list (no match).
+const AION_LIST_SHIM: &str = r"printf '%s' '[]'";
 
 #[test]
-fn request_review_parses_the_request_id() -> TestResult {
+fn request_review_sends_collective_dm_to_each_reviewer() -> TestResult {
     let shims = Shims::new()?;
-    shims.write("meridian", MERIDIAN_SHIM)?;
+    shims.write("collective", COLLECTIVE_SHIM)?;
+    shims.write("aion", AION_LIST_SHIM)?;
     let workspace = workspace(shims.root_string());
 
     let acked = handlers::request_review(
         &shims.shell(),
-        ReviewRequest {
+        &ReviewRequest {
             workspace: workspace.clone(),
             brief_id: "brief-7".to_owned(),
             reviewers: vec!["sample-reviewer".to_owned()],
@@ -580,12 +575,13 @@ fn request_review_parses_the_request_id() -> TestResult {
     )
     .map_err(|failure| failure.message().to_owned())?;
 
-    assert_eq!(acked.request_id, "stacked-dev-brief-7");
-    let log = shims.log("meridian");
-    assert!(log.contains(&format!(
-        "review request {} --reviewer sample-reviewer --as Meridian",
-        workspace.branch
-    )));
+    assert_eq!(acked.request_id, workspace.branch);
+    let log = shims.log("collective");
+    assert!(log.contains("send"), "expected collective send, got: {log}");
+    assert!(
+        log.contains("sample-reviewer"),
+        "expected reviewer name in args, got: {log}"
+    );
     Ok(())
 }
 

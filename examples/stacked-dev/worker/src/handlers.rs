@@ -446,66 +446,98 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
     }
 }
 
-/// `request_review`: emit a review request. It only requests — the verdict
-/// arrives later on the `review_verdict` signal.
+/// `request_review`: notify reviewers via collective DM that work is ready
+/// for review. The verdict arrives later on the `review_verdict` signal.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `meridian` cannot run, exits non-zero,
-/// or answers without a parseable response envelope.
-pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
-    // CONFIRMED against the real CLI (live runs, 2026-06-13):
-    // `meridian review request <BRANCH> --reviewer <NAME>... --as Meridian`.
-    // The branch positional must come FIRST: `--reviewer` is greedy
-    // multi-value and swallows a trailing positional as another reviewer.
-    // `--as` names the requesting identity — always the Meridian system
-    // member (the CLI refuses to guess when the workspace has several
-    // members). The meridian workspace resolves from the CLI's own global
-    // config.
+/// Terminal [`ActivityFailure`] when the collective send command cannot run
+/// or any reviewer DM fails to send.
+pub fn request_review(shell: &Shell, input: &ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
     let ReviewRequest {
         workspace,
+        brief_id,
         reviewers,
-        ..
+        dev_result,
+        gate_result,
     } = input;
-    let mut args: Vec<String> = vec![
-        "review".to_owned(),
-        "request".to_owned(),
-        workspace.branch.clone(),
-    ];
-    for reviewer in &reviewers {
-        args.push("--reviewer".to_owned());
-        args.push(reviewer.clone());
+
+    let workflow_id = find_parent_workflow_id(shell, &workspace.branch);
+
+    let signal_cmd = match &workflow_id {
+        Some(id) => format!(
+            "aion signal {id} review_verdict --payload '{{\"decision\":\"approve\"}}'"
+        ),
+        None => "aion signal <WORKFLOW_ID> review_verdict --payload '{\"decision\":\"approve\"}'\n\
+             (find the workflow ID with: aion list --status running --pretty)".to_owned(),
+    };
+
+    let gate_status = match &gate_result.verdict {
+        GateVerdict::Pass => "passed",
+        GateVerdict::Fail { .. } => "failed",
+    };
+
+    let message = format!(
+        "Brief {brief_id} is ready for review.\n\n\
+         Branch: {branch}\n\
+         Worktree: {path}\n\
+         Summary: {summary}\n\
+         Files touched: {files}\n\
+         Gate: {gate_status}\n\n\
+         To approve:\n{signal_cmd}\n\n\
+         To request changes:\naion signal {wf_id} review_verdict --payload \
+         '{{\"decision\":\"request_changes\",\"notes\":[{{\"note\":\"your feedback here\"}}]}}'",
+        branch = workspace.branch,
+        path = workspace.path,
+        summary = dev_result.summary,
+        files = dev_result.files_touched.join(", "),
+        wf_id = workflow_id.as_deref().unwrap_or("<WORKFLOW_ID>"),
+    );
+
+    for reviewer in reviewers {
+        require_run(
+            shell,
+            "collective",
+            &[
+                "send",
+                "--as", "Meridian",
+                "--to", reviewer,
+                "--subject", &format!("Review: {brief_id}"),
+                "--message", &message,
+            ],
+            ".",
+            &format!("collective send to {reviewer}"),
+        )?;
     }
-    args.push("--as".to_owned());
-    args.push("Meridian".to_owned());
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let command_run = require_run(
-        shell,
-        "meridian",
-        &arg_refs,
-        &workspace.path,
-        "meridian review request",
-    )?;
-    // CONFIRMED against the real CLI (live run, 2026-06-13): the response
-    // envelope is `{"branch": .., "reviewers": [{"name", "dm_status", ..}],
-    // ..}` — there is no request id. The branch IS the request's identity
-    // (meridian persists `pending_reviewers` against the branch lifecycle),
-    // so the recorded ack carries it. Every requested reviewer must have
-    // been notified (`dm_status: "sent"`); anything else fails loudly.
-    let response: ReviewRequestResponse = require_json(&command_run, "meridian review request")?;
-    if let Some(unsent) = response
-        .reviewers
-        .iter()
-        .find(|reviewer| reviewer.dm_status != "sent")
-    {
-        return Err(ActivityFailure::terminal(format!(
-            "meridian review request did not notify reviewer {}: dm_status was {:?}",
-            unsent.name, unsent.dm_status
-        )));
-    }
+
     Ok(ReviewAck {
-        request_id: response.branch,
+        request_id: workspace.branch.clone(),
     })
+}
+
+/// Best-effort lookup of the parent `stacked_dev` workflow ID by searching
+/// running workflows. Returns `None` if the lookup fails — the DM will
+/// include manual instructions instead.
+fn find_parent_workflow_id(shell: &Shell, _branch: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct ListEntry {
+        workflow_id: String,
+        workflow_type: String,
+    }
+
+    let run = shell.run(
+        "aion",
+        &["list", "--status", "running"],
+        ".",
+    ).ok()?;
+    if !run.succeeded() {
+        return None;
+    }
+    let entries: Vec<ListEntry> = serde_json::from_str(&run.stdout).ok()?;
+    entries
+        .into_iter()
+        .find(|entry| entry.workflow_type == "stacked_dev")
+        .map(|entry| entry.workflow_id)
 }
 
 /// `land`: commit the dev rounds' files on the branch, then the yg-level
@@ -638,61 +670,30 @@ pub fn assemble_wave(
     crate::assemble::assemble_wave(input)
 }
 
-/// `teardown_workspace`: remove the workspace directory and clean up norn
-/// sessions. Runs on all error paths after provisioning succeeds.
+/// `teardown_workspace`: reclaim build cache from a provisioned workspace.
 ///
-/// For local worktrees, removes the worktree directory, the git branch, and
-/// the yg branch. For cloned workspaces, removes the entire temp directory.
+/// Preserves the worktree, git branch, and norn session logs so failed
+/// workflows leave their artifacts intact for inspection and diagnosis.
+/// Only runs `cargo clean` to free the build cache disk space.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] only if the workspace path cannot be removed
-/// and it still exists. Missing paths are already clean — not an error.
+/// Never fails terminally — a `cargo clean` failure is logged but not
+/// propagated, since the teardown is best-effort cleanup on an error path.
 pub fn teardown_workspace(
     shell: &Shell,
     input: TeardownInput,
 ) -> Result<TornDown, ActivityFailure> {
-    let workspace_path_owned = input.workspace.path;
     let branch = input.workspace.branch;
-    let repo_root = input.repo_root;
-    let workspace_path = std::path::Path::new(&workspace_path_owned);
 
-    let mut cleaned = false;
-
-    // Remove git worktree if it exists.
-    if workspace_path.exists() {
-        let _ = shell.run(
-            "git",
-            &["worktree", "remove", "--force", &workspace_path_owned],
-            &repo_root,
-        );
-        // If git worktree remove didn't clean it (e.g. not a worktree),
-        // fall back to rm -rf.
-        if workspace_path.exists() {
-            std::fs::remove_dir_all(workspace_path).map_err(|source| {
-                ActivityFailure::terminal(format!(
-                    "teardown: cannot remove workspace {workspace_path_owned}: {source}",
-                ))
-            })?;
-        }
-        cleaned = true;
+    if std::path::Path::new(&input.workspace.path).exists() {
+        let _ = shell.run("cargo", &["clean"], &input.workspace.path);
     }
 
-    // Remove the git branch.
-    let _ = shell.run("git", &["branch", "-D", &branch], &repo_root);
-
-    // Clean up norn sessions for this branch.
-    if let Some(home) = std::env::var_os("HOME") {
-        let sessions_dir = std::path::PathBuf::from(home).join(".norn/sessions");
-        if sessions_dir.is_dir() {
-            for suffix in &["", "-scout", "-review"] {
-                let session_file = sessions_dir.join(format!("{branch}{suffix}.jsonl"));
-                let _ = std::fs::remove_file(session_file);
-            }
-        }
-    }
-
-    Ok(TornDown { branch, cleaned })
+    Ok(TornDown {
+        branch,
+        cleaned: true,
+    })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -719,21 +720,6 @@ fn resolve_session_id(base: &str) -> String {
     }
 }
 
-/// The `meridian review request` response envelope — only the fields the
-/// handler consumes (extra fields tolerated, like the Gleam field decoder).
-#[derive(Deserialize)]
-struct ReviewRequestResponse {
-    branch: String,
-    reviewers: Vec<ReviewerNotification>,
-}
-
-/// One reviewer's notification outcome inside [`ReviewRequestResponse`].
-#[derive(Deserialize)]
-struct ReviewerNotification {
-    name: String,
-    dm_status: String,
-}
-
 /// Require a command to run AND exit zero; anything else is a terminal
 /// activity failure carrying the command's diagnostics. Wording identical to
 /// `locals.require_run`.
@@ -756,18 +742,6 @@ fn require_run(
             failure.message()
         ))),
     }
-}
-
-/// Decode a command's stdout as JSON; malformed output is a terminal
-/// activity failure carrying the raw text, like `locals.require_json`.
-fn require_json<T: serde::de::DeserializeOwned>(
-    command_run: &CliRun,
-    context: &str,
-) -> Result<T, ActivityFailure> {
-    let trimmed = command_run.stdout.trim();
-    serde_json::from_str(trimmed).map_err(|_| {
-        ActivityFailure::terminal(format!("{context} produced unparseable output: {trimmed}"))
-    })
 }
 
 /// Decode a norn command's stdout as a stage report, generic over the report
