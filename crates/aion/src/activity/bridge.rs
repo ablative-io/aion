@@ -7,23 +7,47 @@
 
 use std::sync::Arc;
 
+use aion_core::{ActivityId, WorkflowId};
 use futures::future::BoxFuture;
+
+/// A fully-resolved activity dispatch crossing the engine→transport seam.
+///
+/// The engine builds this once the durability layer has assigned the
+/// activity its ordinal, so it carries the *real* owning [`WorkflowId`] and
+/// the *real* per-workflow [`ActivityId`] recorded in history — not a
+/// transport-fabricated correlation token. A worker that logs these ids can
+/// therefore be correlated directly against the event store, and a result
+/// re-reported from a previous worker session keys to the exact execution it
+/// belongs to.
+///
+/// `input` and `config` are the JSON strings the Gleam SDK sends through the
+/// `aion_flow_ffi:dispatch_activity/3` binding; `attempt` is the one-based
+/// delivery attempt the engine stamps onto the transport (the worker wire's
+/// `ActivityTask.attempt`), so consumers distinguish retries without guessing.
+#[derive(Clone, Debug)]
+pub struct ActivityDispatch {
+    /// Namespace selected for worker matching.
+    pub namespace: String,
+    /// Real owning workflow id, recorded in history at `WorkflowStarted`.
+    pub workflow_id: WorkflowId,
+    /// Real per-workflow activity ordinal, recorded at `ActivityScheduled`.
+    pub activity_id: ActivityId,
+    /// Registered activity-type name to match against worker registrations.
+    pub name: String,
+    /// JSON-encoded activity input.
+    pub input: String,
+    /// JSON-encoded dispatch config (retry/timeout/heartbeat policy).
+    pub config: String,
+    /// One-based delivery attempt for this dispatch.
+    pub attempt: u32,
+}
 
 /// Executes an activity request originating from workflow code.
 ///
-/// Implementations receive the activity name, JSON-encoded input, and
-/// JSON-encoded config as strings — the same wire format that the Gleam SDK
-/// sends through the `aion_flow_ffi:dispatch_activity/3` binding — plus the
-/// one-based delivery attempt stamped by the engine. The return value is the
-/// JSON-encoded activity result or a prefixed error string matching the
-/// SDK's error-decoding convention.
+/// The return value is the JSON-encoded activity result or a prefixed error
+/// string matching the SDK's error-decoding convention.
 pub trait ActivityDispatcher: Send + Sync + 'static {
-    /// Dispatch the named activity and block until completion.
-    ///
-    /// `attempt` is the one-based delivery attempt for this dispatch; the
-    /// dispatcher stamps it onto whatever transport carries the task (the
-    /// worker wire's `ActivityTask.attempt`), so consumers can distinguish
-    /// retries without guessing.
+    /// Dispatch the activity and block until completion.
     ///
     /// Returns `Ok(encoded_output)` on success or `Err(error_string)` on
     /// failure. Both sides are strings matching the Gleam SDK's
@@ -33,68 +57,29 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
     ///
     /// Returns the error string surfaced by the activity execution path —
     /// worker rejection, decode failure, timeout, or activity body error.
-    fn dispatch(
-        &self,
-        namespace: &str,
-        name: &str,
-        input: &str,
-        config: &str,
-        attempt: u32,
-    ) -> Result<String, String>;
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String>;
 
-    /// Dispatch the named activity with the calling workflow process id when
-    /// the runtime can provide it.
+    /// Dispatch the activity from a Tokio task.
     ///
-    /// Implementations that need to correlate a raw NIF call back to an active
-    /// workflow handle can override this method. The default preserves the
-    /// original dispatcher contract for tests and non-workflow callers.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::dispatch`].
-    fn dispatch_from_process(
-        &self,
-        namespace: &str,
-        name: &str,
-        input: &str,
-        config: &str,
-        attempt: u32,
-        caller_pid: Option<u64>,
-    ) -> Result<String, String> {
-        let _ = caller_pid;
-        self.dispatch(namespace, name, input, config, attempt)
-    }
-
-    /// Dispatch the named activity from a Tokio task.
-    ///
-    /// The default runs the synchronous [`Self::dispatch_from_process`] on
-    /// the runtime's blocking pool via [`tokio::task::spawn_blocking`], so a
-    /// dispatcher implementation that blocks its calling thread cannot wedge
-    /// the engine's async workers (a single-threaded engine runtime keeps
-    /// servicing queries and completions while the dispatch waits).
-    /// Nonblocking dispatchers can override this method directly.
+    /// The default runs the synchronous [`Self::dispatch`] on the runtime's
+    /// blocking pool via [`tokio::task::spawn_blocking`], so a dispatcher that
+    /// blocks its calling thread cannot wedge the engine's async workers (a
+    /// single-threaded engine runtime keeps servicing queries and completions
+    /// while the dispatch waits). Nonblocking dispatchers can override this.
     ///
     /// Must be awaited inside a Tokio runtime context; the engine's
     /// completion task guarantees that.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::dispatch_from_process`], plus a
-    /// dispatch-failure reason when the blocking task itself is cancelled or
-    /// panics.
-    fn dispatch_async_from_process(
+    /// Returns the same errors as [`Self::dispatch`], plus a dispatch-failure
+    /// reason when the blocking task itself is cancelled or panics.
+    fn dispatch_async(
         self: Arc<Self>,
-        namespace: String,
-        name: String,
-        input: String,
-        config: String,
-        attempt: u32,
-        caller_pid: Option<u64>,
+        request: ActivityDispatch,
     ) -> BoxFuture<'static, Result<String, String>> {
         Box::pin(async move {
-            let blocking = tokio::task::spawn_blocking(move || {
-                self.dispatch_from_process(&namespace, &name, &input, &config, attempt, caller_pid)
-            });
+            let blocking = tokio::task::spawn_blocking(move || self.dispatch(request));
             match blocking.await {
                 Ok(result) => result,
                 Err(join_error) => Err(format!("activity dispatch task failed: {join_error}")),
@@ -107,21 +92,28 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
 mod tests {
     use std::sync::Arc;
 
-    use super::ActivityDispatcher;
+    use aion_core::{ActivityId, WorkflowId};
+
+    use super::{ActivityDispatch, ActivityDispatcher};
     use crate::runtime::EngineNifState;
 
     struct Echo;
 
     impl ActivityDispatcher for Echo {
-        fn dispatch(
-            &self,
-            _namespace: &str,
-            _name: &str,
-            input: &str,
-            _config: &str,
-            _attempt: u32,
-        ) -> Result<String, String> {
-            Ok(input.to_owned())
+        fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+            Ok(request.input)
+        }
+    }
+
+    fn echo_request(input: &str) -> ActivityDispatch {
+        ActivityDispatch {
+            namespace: "default".to_owned(),
+            workflow_id: WorkflowId::new_v4(),
+            activity_id: ActivityId::from_sequence_position(0),
+            name: "test".to_owned(),
+            input: input.to_owned(),
+            config: "{}".to_owned(),
+            attempt: 1,
         }
     }
 
@@ -134,7 +126,7 @@ mod tests {
         assert_eq!(
             dispatcher
                 .as_ref()
-                .and_then(|d| d.dispatch("default", "test", "hello", "{}", 1).ok()),
+                .and_then(|d| d.dispatch(echo_request("hello")).ok()),
             Some("hello".to_owned())
         );
     }

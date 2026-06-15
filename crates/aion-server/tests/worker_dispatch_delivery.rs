@@ -20,7 +20,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aion::ActivityDispatcher as _;
+use aion::{ActivityDispatch, ActivityDispatcher as _};
+use aion_core::{ActivityId, WorkflowId};
 use aion_proto::generated::worker_protocol_client::WorkerProtocolClient;
 use aion_proto::generated::{self, server_to_worker, worker_to_server};
 use aion_server::ServerState;
@@ -38,6 +39,21 @@ type TestError = Box<dyn std::error::Error>;
 
 const NAMESPACE: &str = "default";
 const ACTIVITY_TYPE: &str = "greet";
+
+/// A `greet` dispatch request carrying real (test-synthesized) ids, the
+/// engine-seam shape `WorkerActivityDispatcher::dispatch` consumes. The
+/// worker echoes these ids back on the wire, so completion keys correctly.
+fn greet_request(input: &str, attempt: u32) -> ActivityDispatch {
+    ActivityDispatch {
+        namespace: NAMESPACE.to_owned(),
+        workflow_id: WorkflowId::new_v4(),
+        activity_id: ActivityId::from_sequence_position(0),
+        name: ACTIVITY_TYPE.to_owned(),
+        input: input.to_owned(),
+        config: "{}".to_owned(),
+        attempt,
+    }
+}
 
 fn runtime_config() -> RuntimeConfig {
     RuntimeConfig {
@@ -232,7 +248,7 @@ async fn remote_dispatch_delivers_task_promptly_and_round_trips() -> Result<(), 
     // task: the worst-case calling context the `block_in_place` guard in
     // `dispatch` defends against.
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}", 3)
+        dispatcher.dispatch(greet_request(r#"{"name":"world"}"#, 3))
     }));
 
     let task = harness.next_task().await?;
@@ -289,7 +305,7 @@ async fn activity_completing_after_long_delay_round_trips() -> Result<(), TestEr
 
     let started = Instant::now();
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, "{}", "{}", 1)
+        dispatcher.dispatch(greet_request("{}", 1))
     }));
 
     // The worker receives the task promptly, then "works" for the delay.
@@ -328,7 +344,7 @@ async fn worker_death_mid_activity_fails_dispatch_with_retryable_lost_worker()
     let dispatcher = Arc::new(harness.dispatcher());
 
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, "{}", "{}", 1)
+        dispatcher.dispatch(greet_request("{}", 1))
     }));
     let task = harness.next_task().await?;
     assert_eq!(task.activity_type, ACTIVITY_TYPE);
@@ -393,7 +409,7 @@ async fn register_ack_is_first_frame_then_task() -> Result<(), TestError> {
 
     let dispatcher = Arc::new(harness.dispatcher());
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, "{}", "{}", 1)
+        dispatcher.dispatch(greet_request("{}", 1))
     }));
     let task = harness.next_task().await?;
     assert_eq!(task.activity_type, ACTIVITY_TYPE);
@@ -475,7 +491,7 @@ async fn result_frames_are_acked_including_duplicates() -> Result<(), TestError>
     let dispatcher = Arc::new(harness.dispatcher());
 
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, "{}", "{}", 1)
+        dispatcher.dispatch(greet_request("{}", 1))
     }));
     let task = harness.next_task().await?;
     let workflow_id = task.workflow_id.clone();
@@ -532,7 +548,7 @@ async fn malformed_result_gets_no_ack_and_stream_stays_healthy() -> Result<(), T
     // ack nor a stream teardown.
     let dispatcher = Arc::new(harness.dispatcher());
     let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, "{}", "{}", 1)
+        dispatcher.dispatch(greet_request("{}", 1))
     }));
     let task = harness.next_task().await?;
     let workflow_id = task.workflow_id.clone();
@@ -561,9 +577,8 @@ async fn drain_broadcast_reaches_worker_and_gates_dispatch() -> Result<(), TestE
     harness.next_drain().await?;
 
     let dispatcher = harness.dispatcher();
-    let dispatch_task = tokio::task::spawn_blocking(move || {
-        dispatcher.dispatch(NAMESPACE, ACTIVITY_TYPE, "{}", "{}", 1)
-    });
+    let dispatch_task =
+        tokio::task::spawn_blocking(move || dispatcher.dispatch(greet_request("{}", 1)));
     let result = dispatch_task.await.map_err(|error| error.to_string())?;
     let error = result.err().ok_or("post-drain dispatch must be rejected")?;
     assert!(

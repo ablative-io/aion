@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use aion::activity::bridge::ActivityDispatcher;
+use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, EngineError, QueryError, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload, RunId, WorkflowId};
@@ -99,14 +99,8 @@ struct GatedDispatcher {
 }
 
 impl ActivityDispatcher for GatedDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        _input: &str,
-        _config: &str,
-        _attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
         let result = if let Some(key) = name.strip_prefix("gated_ok:") {
             self.gates.wait(key).map(|()| format!("\"done-{key}\""))
         } else if let Some(key) = name.strip_prefix("gated_fail:") {

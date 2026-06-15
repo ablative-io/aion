@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use aion::activity::bridge::ActivityDispatcher;
+use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, EngineError, QueryError, RuntimeHandle, SignalRouter};
 use aion_core::{Payload, RunId, WorkflowId};
@@ -83,14 +83,9 @@ struct GatedItemDispatcher {
 }
 
 impl ActivityDispatcher for GatedItemDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        input: &str,
-        _config: &str,
-        _attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
+        let input = request.input.as_str();
         if name != "process-batch-item" {
             return Err(format!("terminal:unknown activity {name}"));
         }

@@ -30,12 +30,10 @@ use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Event, Payload};
 use chrono::Utc;
 use serde::Deserialize;
 
-use crate::activity::bridge::ActivityDispatcher;
+use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use crate::registry::Registry;
 use crate::runtime::RuntimeHandle;
-use crate::runtime::nif_activity_dispatch::{
-    ActivityCall, FIRST_DELIVERY_ATTEMPT, spawn_completion_task,
-};
+use crate::runtime::nif_activity_dispatch::{FIRST_DELIVERY_ATTEMPT, spawn_completion_task};
 use crate::runtime::nif_context::NifContext;
 use crate::runtime::nif_state::{CollectKind, EngineNifState, PendingAwait};
 use crate::runtime::nif_timeout::SCOPE_EXPIRED_MESSAGE;
@@ -263,6 +261,7 @@ fn dispatch_unscheduled(
             .map_err(|error| error.error_reason())?;
     }
     let namespace = context.workflow_handle().namespace().to_owned();
+    let workflow_id = context.workflow_id().clone();
     for (ordinal, spec) in fresh.iter().chain(stale.iter()) {
         spawn_completion_task(
             &deps.tokio_handle,
@@ -270,13 +269,15 @@ fn dispatch_unscheduled(
             Arc::clone(dispatcher),
             context.pid(),
             super::nif_activity::correlation_id(*ordinal),
-            ActivityCall {
+            ActivityDispatch {
+                namespace: namespace.clone(),
+                workflow_id: workflow_id.clone(),
+                activity_id: ActivityId::from_sequence_position(*ordinal),
                 name: spec.name.clone(),
                 input: spec.input.clone(),
                 config: spec.config.clone(),
                 attempt: FIRST_DELIVERY_ATTEMPT,
             },
-            namespace.clone(),
         );
     }
     Ok(())

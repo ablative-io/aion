@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::activity::bridge::ActivityDispatcher;
+use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::{
     activity_error, activity_id_from_correlation, context_error_term, correlation_id,
@@ -197,15 +197,29 @@ fn dispatch_activity_with_context(
                 )
                 .unwrap_or(Term::NIL));
             };
-            record_started(ctx, &context, activity_id, call.name.clone(), input_payload)?;
+            record_started(
+                ctx,
+                &context,
+                activity_id.clone(),
+                call.name.clone(),
+                input_payload,
+            )?;
+            let request = ActivityDispatch {
+                namespace,
+                workflow_id: context.workflow_id().clone(),
+                activity_id,
+                name: call.name,
+                input: call.input,
+                config: call.config,
+                attempt: call.attempt,
+            };
             spawn_completion_task(
                 tokio_handle,
                 runtime,
                 dispatcher,
                 context.pid(),
                 correlation.clone(),
-                call,
-                namespace,
+                request,
             );
             Ok(ok_result_term(ctx, correlation.as_bytes()).unwrap_or(Term::NIL))
         }
@@ -218,18 +232,10 @@ pub(super) fn spawn_completion_task(
     dispatcher: Arc<dyn ActivityDispatcher>,
     workflow_pid: u64,
     correlation_id: String,
-    call: ActivityCall,
-    namespace: String,
+    request: ActivityDispatch,
 ) {
     let future = dispatcher
-        .dispatch_async_from_process(
-            namespace,
-            call.name,
-            call.input,
-            call.config,
-            call.attempt,
-            Some(workflow_pid),
-        )
+        .dispatch_async(request)
         .map(move |result| {
             match result {
             Ok(payload) => {
@@ -437,11 +443,8 @@ mod tests {
     use aion_store::{EventStore, WriteToken};
     use serde_json::json;
 
-    use super::{
-        ActivityAwaitStep, ActivityCall, FIRST_DELIVERY_ATTEMPT, await_activity_step,
-        spawn_completion_task,
-    };
-    use crate::activity::bridge::ActivityDispatcher;
+    use super::{ActivityAwaitStep, await_activity_step, spawn_completion_task};
+    use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
     use crate::durability::Recorder;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
@@ -737,14 +740,7 @@ mod tests {
     }
 
     impl ActivityDispatcher for GatedDispatcher {
-        fn dispatch(
-            &self,
-            _namespace: &str,
-            _name: &str,
-            input: &str,
-            _config: &str,
-            _attempt: u32,
-        ) -> Result<String, String> {
+        fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
             let receiver = self
                 .release
                 .lock()
@@ -754,7 +750,7 @@ mod tests {
             receiver
                 .recv()
                 .map_err(|error| format!("release channel closed: {error}"))?;
-            Ok(input.to_owned())
+            Ok(request.input)
         }
     }
 
@@ -785,13 +781,15 @@ mod tests {
                 dispatcher,
                 pid,
                 super::correlation_id(0),
-                ActivityCall {
+                ActivityDispatch {
+                    namespace: String::from("default"),
+                    workflow_id: WorkflowId::new_v4(),
+                    activity_id: ActivityId::from_sequence_position(0),
                     name: "gated".to_owned(),
                     input: r#""r0""#.to_owned(),
                     config: "{}".to_owned(),
-                    attempt: FIRST_DELIVERY_ATTEMPT,
+                    attempt: super::FIRST_DELIVERY_ATTEMPT,
                 },
-                String::from("default"),
             );
             // The release runs as a task on this same single-threaded
             // runtime, spawned AFTER the completion task: it can only

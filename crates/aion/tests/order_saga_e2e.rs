@@ -21,7 +21,7 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use aion::activity::bridge::ActivityDispatcher;
+use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, EngineError, QueryError, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus, status_from_events};
@@ -154,14 +154,11 @@ impl SagaDispatcher {
 }
 
 impl ActivityDispatcher for SagaDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        input: &str,
-        config: &str,
-        attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
+        let input = request.input.as_str();
+        let config = request.config.as_str();
+        let attempt = request.attempt;
         let input_value: Value =
             serde_json::from_str(input).map_err(|e| format!("terminal:bad input: {e}"))?;
         let config_value: Value =

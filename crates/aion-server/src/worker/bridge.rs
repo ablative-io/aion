@@ -46,10 +46,9 @@
 //! `timeout_seconds` and by worker liveness — never by an engine constant.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use aion::ActivityDispatcher;
+use aion::{ActivityDispatch, ActivityDispatcher};
 use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
 use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
 use dashmap::DashMap;
@@ -66,23 +65,21 @@ type SyncReceiver = std::sync::mpsc::Receiver<Result<String, String>>;
 
 /// Execution-scoped key for an in-flight activity dispatch.
 ///
-/// Keying by bare [`ActivityId`] is unsafe across server restarts: the
-/// dispatcher fabricates activity ids from a process-local counter
-/// ([`WorkerActivityDispatcher::dispatch_blocking`]) that resets on restart,
-/// so a stale result re-reported from a worker's previous session would
-/// complete a *different* post-restart dispatch reusing the same sequence
-/// position. The wire (`ActivityResult`) already carries both ids, and the
-/// dispatcher fabricates a fresh `WorkflowId::new_v4()` per dispatch, so the
-/// pair is collision-safe across restarts — a v4 uuid from the old server
-/// life can never equal a fresh one.
+/// The engine seam ([`ActivityDispatch`]) carries the *real* workflow id and
+/// the *real* per-workflow activity ordinal recorded in history, so this pair
+/// uniquely and stably identifies one execution. Keying by bare [`ActivityId`]
+/// would be unsafe across server restarts — a stale result re-reported from a
+/// worker's previous session could complete a *different* post-restart
+/// dispatch reusing the same ordinal — but pairing it with the real workflow
+/// id closes that race: two different workflow executions never share a
+/// workflow id, so a stale `(workflow_id, activity_id)` from a previous server
+/// life can only ever match the exact execution it belongs to.
 ///
-/// The wire now carries an attempt discriminator (`ActivityTask.attempt`,
-/// stamped from the engine-seam dispatch parameter), but the pending key
-/// stays attempt-free: the dispatcher fabricates fresh ids per dispatch, so
-/// two attempts of one logical activity are distinct `(workflow_id,
-/// activity_id)` pairs here. When the engine passes *real* workflow ids,
-/// redelivery bookkeeping can widen this key with the attempt it already has
-/// on the wire — no further protocol change needed.
+/// The wire (`ActivityResult`) carries both ids, plus an attempt discriminator
+/// (`ActivityTask.attempt`). The pending key stays attempt-free for now: a
+/// retry re-dispatches under the same `(workflow_id, activity_id)` and the
+/// outstanding entry is the one awaiting completion. Redelivery bookkeeping
+/// can widen this key with the wire attempt later — no protocol change needed.
 type PendingActivityKey = (WorkflowId, ActivityId);
 
 /// Tracks in-flight activity dispatches waiting for worker results.
@@ -173,8 +170,6 @@ pub struct WorkerActivityDispatcher {
     pending: PendingActivities,
     heartbeat_tracker: HeartbeatTracker,
     drain_state: DrainState,
-    next_id: AtomicU64,
-    workflow_registry: Option<Arc<aion::Registry>>,
     tokio_handle: Option<tokio::runtime::Handle>,
 }
 
@@ -206,8 +201,6 @@ impl WorkerActivityDispatcher {
             pending: PendingActivities::default(),
             heartbeat_tracker,
             drain_state: DrainState::default(),
-            next_id: AtomicU64::new(1),
-            workflow_registry: None,
             tokio_handle: None,
         }
     }
@@ -223,13 +216,6 @@ impl WorkerActivityDispatcher {
     #[must_use]
     pub fn with_drain_state(mut self, drain_state: DrainState) -> Self {
         self.drain_state = drain_state;
-        self
-    }
-
-    /// Share the engine's active workflow registry for PID-to-handle correlation.
-    #[must_use]
-    pub fn with_workflow_registry(mut self, workflow_registry: Arc<aion::Registry>) -> Self {
-        self.workflow_registry = Some(workflow_registry);
         self
     }
 
@@ -498,14 +484,7 @@ impl WorkerActivityDispatcher {
 }
 
 impl ActivityDispatcher for WorkerActivityDispatcher {
-    fn dispatch(
-        &self,
-        namespace: &str,
-        name: &str,
-        input: &str,
-        config: &str,
-        attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => match handle.runtime_flavor() {
                 tokio::runtime::RuntimeFlavor::MultiThread => {
@@ -515,9 +494,7 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
                     // stream forwarder woken by our `try_send` can actually
                     // run — otherwise it is trapped in this worker's
                     // non-stealable LIFO slot for as long as we block.
-                    tokio::task::block_in_place(|| {
-                        self.dispatch_blocking(namespace, name, input, config, attempt)
-                    })
+                    tokio::task::block_in_place(|| self.dispatch_blocking(request))
                 }
                 flavor => Err(format!(
                     "activity dispatch blocks the calling thread until the worker responds; \
@@ -529,7 +506,7 @@ impl ActivityDispatcher for WorkerActivityDispatcher {
             // No tokio context: a beamr scheduler thread or other plain OS
             // thread. Blocking here is the designed contract and cannot starve
             // the server runtime.
-            Err(_) => self.dispatch_blocking(namespace, name, input, config, attempt),
+            Err(_) => self.dispatch_blocking(request),
         }
     }
 }
@@ -539,27 +516,31 @@ impl WorkerActivityDispatcher {
     /// responds, the worker is declared lost, or the server drains (see the
     /// module docs for the exhaustive termination list).
     ///
+    /// The request carries the *real* workflow and activity ids the engine
+    /// recorded in history, so the worker logs, the pending-completion key,
+    /// and the heartbeat tracker all correlate directly against the event
+    /// store. `config` is forwarded by the engine seam but not yet consumed
+    /// here (the retry executor that reads it is unbuilt).
+    ///
     /// Must never run while the calling thread still owns a tokio scheduler
     /// core: the response can only arrive after the runtime's stream
     /// forwarder flushes the queued [`WorkerMessage::ActivityTask`] to the
     /// worker, so the thread blocking here must not be the one responsible
     /// for polling that forwarder. [`ActivityDispatcher::dispatch`] enforces
     /// this with `tokio::task::block_in_place`.
-    fn dispatch_blocking(
-        &self,
-        namespace: &str,
-        name: &str,
-        input: &str,
-        config: &str,
-        attempt: u32,
-    ) -> Result<String, String> {
-        let _ = config;
+    fn dispatch_blocking(&self, request: ActivityDispatch) -> Result<String, String> {
+        let ActivityDispatch {
+            namespace,
+            workflow_id,
+            activity_id,
+            name,
+            input,
+            config: _,
+            attempt,
+        } = request;
         let started_at = Instant::now();
-        let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let activity_id = ActivityId::from_sequence_position(sequence);
-        let workflow_id = WorkflowId::new_v4();
-        self.ensure_accepting(namespace, name, &workflow_id, &activity_id, None)?;
-        let worker = self.select_worker_or_wait(namespace, name, &workflow_id, &activity_id)?;
+        self.ensure_accepting(&namespace, &name, &workflow_id, &activity_id, None)?;
+        let worker = self.select_worker_or_wait(&namespace, &name, &workflow_id, &activity_id)?;
         let worker_id = worker.id();
         let span = info_span!(
             "activity_dispatch",
@@ -571,17 +552,23 @@ impl WorkerActivityDispatcher {
             worker_id = ?worker_id,
         );
         let _span_guard = span.enter();
-        self.ensure_accepting(namespace, name, &workflow_id, &activity_id, Some(worker_id))?;
+        self.ensure_accepting(
+            &namespace,
+            &name,
+            &workflow_id,
+            &activity_id,
+            Some(worker_id),
+        )?;
 
-        let task = activity_task(name, input, &workflow_id, &activity_id, attempt);
+        let task = activity_task(&name, &input, &workflow_id, &activity_id, attempt);
         let rx = self
             .pending
             .insert(workflow_id.clone(), activity_id.clone());
-        self.track_worker_task(worker_id, name, &workflow_id, &activity_id)?;
-        self.send_activity_task(&worker, task, name, &workflow_id, &activity_id)?;
+        self.track_worker_task(worker_id, &name, &workflow_id, &activity_id)?;
+        self.send_activity_task(&worker, task, &name, &workflow_id, &activity_id)?;
         let context = ActivityDispatchContext {
-            namespace,
-            activity_type: name,
+            namespace: &namespace,
+            activity_type: &name,
             worker_id,
             workflow_id: &workflow_id,
             activity_id: &activity_id,
@@ -792,6 +779,20 @@ mod tests {
         HeartbeatTracker::new(Duration::from_secs(5))
     }
 
+    /// A `greet` dispatch request carrying real (test-synthesized) ids, the
+    /// engine-seam shape `WorkerActivityDispatcher::dispatch` now consumes.
+    fn greet_request() -> ActivityDispatch {
+        ActivityDispatch {
+            namespace: "default".to_owned(),
+            workflow_id: WorkflowId::new_v4(),
+            activity_id: ActivityId::from_sequence_position(0),
+            name: "greet".to_owned(),
+            input: "{}".to_owned(),
+            config: "{}".to_owned(),
+            attempt: 1,
+        }
+    }
+
     #[test]
     fn dispatcher_fails_immediately_when_draining_without_workers() {
         let registry = ConnectedWorkerRegistry::default();
@@ -801,7 +802,7 @@ mod tests {
 
         let _ = drain.begin();
 
-        let result = dispatcher.dispatch("default", "greet", "{}", "{}", 1);
+        let result = dispatcher.dispatch(greet_request());
 
         assert!(result.is_err());
         let err = result.err().unwrap_or_default();
@@ -825,7 +826,7 @@ mod tests {
     /// `ActivityCompletionSink`, and the sync dispatch invoked from a
     /// runtime worker task — the worst case the `block_in_place` guard in
     /// `dispatch` defends against (the engine itself now routes through
-    /// `dispatch_async_from_process`, off the async workers).
+    /// `dispatch_async`, off the async workers).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_inside_runtime_task_delivers_promptly_and_round_trips()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -867,7 +868,7 @@ mod tests {
         // Invoke the sync dispatch inside the first poll of a spawned task:
         // the worst-case calling context for the `block_in_place` guard.
         let dispatch_task = tokio::spawn(futures::future::lazy(move |_| {
-            dispatcher.dispatch("default", "greet", "{}", "{}", 1)
+            dispatcher.dispatch(greet_request())
         }));
         let result = dispatch_task.await.map_err(|error| error.to_string())?;
         let elapsed = started.elapsed();
@@ -896,7 +897,7 @@ mod tests {
         let dispatcher = WorkerActivityDispatcher::new(registry, "default", test_tracker());
 
         let started = Instant::now();
-        let result = dispatcher.dispatch("default", "greet", "{}", "{}", 1);
+        let result = dispatcher.dispatch(greet_request());
         let elapsed = started.elapsed();
 
         let err = result.err().ok_or("expected dispatch to fail")?;

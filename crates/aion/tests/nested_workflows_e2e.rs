@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use aion::activity::bridge::ActivityDispatcher;
+use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, EngineError, QueryError, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload, RunId, WorkflowId, WorkflowStatus, status_from_events};
@@ -135,14 +135,9 @@ impl LeafDispatcher {
 }
 
 impl ActivityDispatcher for LeafDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        input: &str,
-        _config: &str,
-        _attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
+        let input = request.input.as_str();
         if name != "leaf_work" {
             return Err(format!("terminal:unknown fixture activity {name}"));
         }

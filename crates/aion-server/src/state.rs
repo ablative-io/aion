@@ -109,7 +109,6 @@ impl ServerState {
         )
         .with_pending(pending_activities.clone())
         .with_drain_state(drain_state.clone())
-        .with_workflow_registry(active_registry.clone())
         .with_tokio_handle(tokio::runtime::Handle::current());
         let dispatcher = Arc::new(dispatcher);
 

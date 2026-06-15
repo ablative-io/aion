@@ -772,12 +772,9 @@ struct GatedDispatcher {
 impl aion::activity::bridge::ActivityDispatcher for GatedDispatcher {
     fn dispatch(
         &self,
-        _namespace: &str,
-        name: &str,
-        _input: &str,
-        _config: &str,
-        _attempt: u32,
+        request: aion::activity::bridge::ActivityDispatch,
     ) -> Result<String, String> {
+        let name = request.name.as_str();
         let result = if name == "gated_ok:a" {
             self.gate.wait().map(|()| "\"done-a\"".to_owned())
         } else {

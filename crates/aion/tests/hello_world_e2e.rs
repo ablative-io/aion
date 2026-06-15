@@ -15,7 +15,7 @@ mod example_build;
 use std::sync::Arc;
 
 use aion::EngineBuilder;
-use aion::activity::bridge::ActivityDispatcher;
+use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion_core::{Payload, WorkflowStatus};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
@@ -23,14 +23,9 @@ use serde_json::json;
 struct GreetDispatcher;
 
 impl ActivityDispatcher for GreetDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        input: &str,
-        _config: &str,
-        _attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
+        let input = request.input.as_str();
         if name != "greet" {
             return Err(format!("terminal:unknown activity {name}"));
         }

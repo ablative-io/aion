@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use aion::ActivityDispatcher as _;
+use aion::{ActivityDispatch, ActivityDispatcher as _};
+use aion_core::{ActivityId, WorkflowId};
 use aion_server::ServerState;
 use aion_server::api::worker_grpc::worker_service;
 use aion_server::config::{
@@ -30,6 +31,20 @@ type TestError = Box<dyn std::error::Error>;
 
 const NAMESPACE: &str = "default";
 const ACTIVITY_TYPE: &str = "greet";
+
+/// A `greet` dispatch request carrying real (test-synthesized) ids, the
+/// engine-seam shape `WorkerActivityDispatcher::dispatch` consumes.
+fn greet_request(input: &str, attempt: u32) -> ActivityDispatch {
+    ActivityDispatch {
+        namespace: NAMESPACE.to_owned(),
+        workflow_id: WorkflowId::new_v4(),
+        activity_id: ActivityId::from_sequence_position(0),
+        name: ACTIVITY_TYPE.to_owned(),
+        input: input.to_owned(),
+        config: "{}".to_owned(),
+        attempt,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GreetInput {
@@ -164,7 +179,7 @@ async fn rust_worker_sdk_handshakes_serves_and_rides_through_drain() -> Result<(
     // observe exactly the stamped value, proving the wire field end to end.
     let dispatch = Arc::clone(&dispatcher);
     let result = tokio::task::spawn_blocking(move || {
-        dispatch.dispatch(NAMESPACE, ACTIVITY_TYPE, r#"{"name":"world"}"#, "{}", 3)
+        dispatch.dispatch(greet_request(r#"{"name":"world"}"#, 3))
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -185,7 +200,7 @@ async fn rust_worker_sdk_handshakes_serves_and_rides_through_drain() -> Result<(
     // leave the worker this healthy this quickly).
     let dispatch = Arc::clone(&dispatcher);
     let result = tokio::task::spawn_blocking(move || {
-        dispatch.dispatch(NAMESPACE, ACTIVITY_TYPE, r#"{"name":"again"}"#, "{}", 1)
+        dispatch.dispatch(greet_request(r#"{"name":"again"}"#, 1))
     })
     .await
     .map_err(|error| error.to_string())?;

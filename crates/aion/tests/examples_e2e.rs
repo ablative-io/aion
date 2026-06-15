@@ -14,7 +14,7 @@ mod example_build;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aion::activity::bridge::ActivityDispatcher;
+use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload};
@@ -64,14 +64,9 @@ async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std
 struct PipelineDispatcher;
 
 impl ActivityDispatcher for PipelineDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        input: &str,
-        _config: &str,
-        _attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
+        let input = request.input.as_str();
         let value: serde_json::Value =
             serde_json::from_str(input).map_err(|e| format!("terminal:bad input: {e}"))?;
         match name {
@@ -182,14 +177,9 @@ impl RecordingDispatcher {
 }
 
 impl ActivityDispatcher for RecordingDispatcher {
-    fn dispatch(
-        &self,
-        _namespace: &str,
-        name: &str,
-        input: &str,
-        _config: &str,
-        _attempt: u32,
-    ) -> Result<String, String> {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        let name = request.name.as_str();
+        let input = request.input.as_str();
         let value: serde_json::Value =
             serde_json::from_str(input).map_err(|e| format!("terminal:bad input: {e}"))?;
         if let Ok(mut calls) = self.calls.lock() {
