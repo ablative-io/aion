@@ -1,0 +1,216 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "NB-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "NB-007",
+    "cluster": "aion-nif-bridge",
+    "title": "Child workflow NIFs (spawn_child, await_child)",
+    "depends_on": [
+      "NB-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C25",
+      "C26",
+      "C27"
+    ],
+    "stories": [
+      "S7"
+    ],
+    "purpose": "Implement the child workflow NIFs that workflow code calls to spawn subordinate workflows and await their results. Each NIF goes through the durability handoff: on replay, recorded child workflow events are returned without spawning real child processes; on live execution, the NIF delegates to AT's child workflow spawning service (D4) and records durable events through the Recorder. Child workflows enable hierarchical composition of complex workflows from simpler building blocks.",
+    "task": "Create nif_child.rs with production NIF implementations for spawn_child/3 and await_child/1. Each NIF constructs a NifContext (NB-001), builds the appropriate Command, calls resolve_or_execute_live. On replay, return the recorded result. On live, delegate to AT's child workflow spawning service (crate::child::spawn, spawn_and_wait), record events through the Recorder (CO2), and return the result. Replace the stubs in engine_nifs.rs.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "spawn_child/3 starts a child workflow and records ChildWorkflowStarted",
+        "spec": "WHEN spawn_child/3 is called on the live path, THE SYSTEM SHALL delegate to AT's child workflow spawn service, record ChildWorkflowStarted through the Recorder (CO2), and return the child workflow identifier to the BEAM process. WHEN called during replay, THE SYSTEM SHALL return the recorded child workflow identifier without spawning a real child process (C27).",
+        "acceptance": [
+          "nif_child.rs implements spawn_child_impl that takes a workflow type, input payload, and options, constructs a NifContext, resolves the spawn-child Command, and on ResumeLive delegates to crate::child::spawn.",
+          "On the live path, ChildWorkflowStarted is recorded with the child's WorkflowId, workflow type, and parent WorkflowId.",
+          "On the replay path, the recorded child WorkflowId is returned immediately without spawning.",
+          "A test runs the live path with a mock engine seam and asserts ChildWorkflowStarted is recorded; a replay test asserts the recorded child ID is returned without spawning."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/runtime/nif_child.rs"
+          ],
+          "modify": [
+            "crates/aion/src/runtime/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C25",
+          "C27"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "await_child/1 blocks until child completes and records terminal event",
+        "spec": "WHEN await_child/1 is called on the live path, THE SYSTEM SHALL block the dirty NIF thread until the child workflow completes or fails, record ChildWorkflowCompleted or ChildWorkflowFailed through the Recorder (CO2), and return the result or error to the BEAM process. WHEN called during replay, THE SYSTEM SHALL return the recorded outcome without waiting for a real child (C27).",
+        "acceptance": [
+          "nif_child.rs implements await_child_impl that takes a child WorkflowId, constructs a NifContext, resolves the await-child Command, and on ResumeLive delegates to crate::child::spawn_and_wait (or the await path of the child service).",
+          "On the live path, the NIF blocks via Handle::block_on until the child's completion notifier resolves, then records ChildWorkflowCompleted (success) or ChildWorkflowFailed (failure).",
+          "On success the NIF returns {ok, result_payload}; on failure {error, reason}.",
+          "On the replay path, the recorded outcome is returned immediately.",
+          "A test runs spawn + await on the live path and asserts both ChildWorkflowStarted and ChildWorkflowCompleted appear in the store."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_child.rs"
+          ]
+        },
+        "checklist": [
+          "C26",
+          "C27"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Child NIFs delegate to AT's spawn service, not reimplemented",
+        "spec": "THE SYSTEM SHALL delegate all child workflow spawning, lifecycle management, and completion waiting to AT's child workflow service (D4). THE SYSTEM SHALL NOT reimplement child process management in the NIF bridge.",
+        "acceptance": [
+          "nif_child.rs imports crate::child::{spawn, spawn_and_wait} (or equivalent) and calls them for live execution.",
+          "No process spawning, link management, or exit monitoring logic exists in nif_child.rs.",
+          "The child service handles all details including supervision tree placement and linked exit propagation."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_child.rs"
+          ]
+        },
+        "checklist": [
+          "C25",
+          "C26"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "engine_nifs.rs wiring for child workflow NIFs",
+        "spec": "THE SYSTEM SHALL replace the spawn_child/3 and await_child/1 stub entries in engine_nifs.rs with calls to nif_child.rs implementations.",
+        "acceptance": [
+          "The NIF functions registered in engine_nif_entries() for spawn_child/3 and await_child/1 delegate to nif_child implementations.",
+          "Both child NIFs are registered as dirty (spawn may involve engine coordination; await blocks until child completion).",
+          "The stub {error, not_yet_implemented} responses are removed for these two NIFs."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/engine_nifs.rs"
+          ]
+        },
+        "checklist": [
+          "C25",
+          "C26"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement child workflow spawning, supervision placement, or linked exit propagation \u2014 those are AT's child service (D4).",
+      "SHALL NOT bypass the Recorder to call EventStore::append directly (CO2).",
+      "SHALL NOT bypass the Resolver to skip replay checks (CO1).",
+      "SHALL NOT import beamr outside the runtime module (CO8).",
+      "SHALL NOT handle child workflow retry or restart \u2014 that is AT's machinery."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "Live path records ChildWorkflowStarted and ChildWorkflowCompleted/ChildWorkflowFailed events.",
+      "Replay path returns recorded results without spawning child processes.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C25",
+        "text": "spawn_child/3 NIF starts a child workflow and records ChildWorkflowStarted."
+      },
+      {
+        "id": "C26",
+        "text": "await_child/1 NIF blocks until the child completes and records ChildWorkflowCompleted or ChildWorkflowFailed."
+      },
+      {
+        "id": "C27",
+        "text": "Child NIFs on replay return recorded results without spawning real child processes."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As a workflow author, I want to spawn child workflows and await their results so that I can compose complex workflows from simpler building blocks."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Every NIF goes through resolve_or_execute_live (or its equivalent replay check). No NIF may execute a side effect without first checking recorded history."
+      },
+      {
+        "id": "CO2",
+        "text": "All event recording goes through the workflow's single-writer Recorder. No NIF calls EventStore::append directly."
+      },
+      {
+        "id": "CO3",
+        "text": "Deterministic execution: workflow.now returns recorded timestamp, workflow.random is seeded from WorkflowId+RunId. No wall clock or entropy source in NIF-visible paths."
+      },
+      {
+        "id": "CO4",
+        "text": "The aion crate remains transport-agnostic. Remote worker dispatch stays in aion-server's WorkerActivityDispatcher; the NIF bridge calls the ActivityDispatcher trait, not the concrete server type."
+      },
+      {
+        "id": "CO5",
+        "text": "unsafe_code = deny. No unsafe in any new code."
+      },
+      {
+        "id": "CO6",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses."
+      },
+      {
+        "id": "CO7",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO8",
+        "text": "Only the runtime module imports beamr. NIF bridge code uses RuntimeHandle, not beamr directly."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against InMemoryStore. No test requires a database or live server."
+      }
+    ],
+    "intention": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this cluster lands, a workflow that starts, runs activities on remote workers, sleeps, receives signals, spawns children, and completes produces a full, replayable event history \u2014 the Temporal developer expectation, not just for basic cases, but for all of them.",
+    "design_path": "docs/design/aion-nif-bridge",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

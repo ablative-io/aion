@@ -1,0 +1,204 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-011",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-011",
+    "cluster": "aion-server",
+    "title": "Remote-worker endpoint \u2014 registry and task dispatch",
+    "depends_on": [
+      "AW-007",
+      "AW-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C28",
+      "C29",
+      "C30"
+    ],
+    "stories": [
+      "S9"
+    ],
+    "purpose": "Implement the server side of the remote-worker protocol \u2014 the rendezvous between the engine's Tier-3 activity dispatch and the pool of connected out-of-process workers. A worker connects, advertises its activity types, receives pushed tasks, and reports results that flow back into the engine's activity contract.",
+    "task": "Implement the bidirectional gRPC worker endpoint: accept a worker's stream, record its RegisterWorker advertisement in a connected-worker registry keyed by namespace and activity type, push a scheduled Tier-3 activity to a matching worker as an ActivityTask, and feed the returned ActivityResult into the engine's activity contract so the engine records ActivityCompleted/ActivityFailed and resumes. The server records no activity events and decides no retries itself.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Connected-worker registry",
+        "spec": "THE SYSTEM SHALL accept a worker's bidirectional gRPC stream, validate its namespace via the guard, and record its RegisterWorker advertisement in a connected-worker registry keyed by namespace and activity type.",
+        "acceptance": [
+          "worker/mod.rs and registry.rs define a registry mapping (namespace, activity type) -> the set of connected workers offering it, with the stream handle to push tasks.",
+          "On connect, the worker's namespace is authorised via the AW-007 guard before registration (CO9, D8); registration in namespace A never makes the worker visible to namespace B.",
+          "On disconnect, the worker is removed from the registry (no stale entries).",
+          "Registry access handles lock poison explicitly as a typed ServerError (CO8); a test registers and deregisters workers across two namespaces and asserts isolation."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/worker/mod.rs",
+            "crates/aion-server/src/worker/registry.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/lib.rs",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [
+          "C28"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Push dispatch to a matching worker",
+        "spec": "THE SYSTEM SHALL match a scheduled Tier-3 activity to a registered worker for that activity type in that namespace and push it as an ActivityTask down the worker's stream; it SHALL NOT use polling.",
+        "acceptance": [
+          "dispatch.rs takes a scheduled-activity need (activity type, input Payload, WorkflowId/ActivityId, namespace) and selects a registered worker for that (namespace, activity type), pushing an ActivityTask down its stream (D7).",
+          "If no worker is registered for the (namespace, activity type), the dispatch surfaces this to the engine as an activity that cannot be placed (so the engine applies its retry/timeout policy); the server does not silently drop it.",
+          "Dispatch is push, not poll: there is no worker-initiated 'fetch task' RPC (per D7).",
+          "A test dispatches a task to a fake worker stream and asserts the ActivityTask is pushed with correct correlation."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/worker/dispatch.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/worker/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C29"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Feed results into the engine's activity contract",
+        "spec": "THE SYSTEM SHALL feed a returned ActivityResult into the engine's activity contract so the engine records ActivityCompleted/ActivityFailed and resumes; the server SHALL NOT record activity events or decide retries itself.",
+        "acceptance": [
+          "On receiving an ActivityResult, dispatch hands it (success Payload or ActivityError) to the engine's activity-completion path keyed by the WorkflowId/ActivityId correlation (D9).",
+          "The server appends no Event and makes no retry decision; recording ActivityCompleted/ActivityFailed and the retry-or-fail decision are the engine's (aion-engine D7, AT policy).",
+          "The ActivityError's retryable/terminal classification (from aion-core, carried in AW-005's ActivityResult) is preserved into the engine path unchanged.",
+          "A test returns both a success and an error ActivityResult and asserts the engine's activity path is invoked with the correct outcome (against a recording fake engine handle / InMemoryStore-backed engine)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/worker/dispatch.rs"
+          ]
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement heartbeat/lost-worker handling \u2014 that is AW-012.",
+      "SHALL NOT build any worker client \u2014 that is cluster AR.",
+      "SHALL NOT record activity events or decide retries; those stay in the engine (D9, CO6)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-server passes.",
+      "cargo fmt --check passes.",
+      "Tests run against InMemoryStore / a fake engine handle \u2014 no database.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C28",
+        "text": "The server accepts a worker's bidirectional gRPC stream, records its RegisterWorker advertisement in a connected-worker registry keyed by namespace and activity type."
+      },
+      {
+        "id": "C29",
+        "text": "A scheduled Tier-3 activity is matched to a registered worker for that activity type in that namespace and pushed as an ActivityTask; no Temporal-style polling."
+      },
+      {
+        "id": "C30",
+        "text": "A returned ActivityResult is fed into the engine's activity contract so the engine records ActivityCompleted/ActivityFailed and resumes; the server does not record activity events or decide retries itself."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As a remote worker, I want to connect once, advertise the activity types I implement, and have tasks pushed to me so that I run heavy work without polling."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

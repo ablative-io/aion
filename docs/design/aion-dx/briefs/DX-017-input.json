@@ -1,0 +1,131 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-017",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-017",
+    "cluster": "aion-dx",
+    "title": "CLI error message improvements for operator clarity",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "Several CLI and API commands return vague or misleading errors that force operators to guess what went wrong. A bad workflow type returns generic 'not found' instead of naming the unregistered type. A nonexistent workflow ID returns 'invalid argument' instead of 'workflow not found'. Signalling a completed workflow returns accepted:true instead of an error. Cancelling a completed workflow says 'process 0 is not live' instead of 'workflow has already completed'. These messages waste operator time and make the system harder to adopt.",
+    "task": "Improve error messages across the CLI commands and server API handlers so that each failure mode returns a specific, actionable message naming the entity involved and the reason for failure. Ensure terminal-state operations (signal, cancel on completed/failed/cancelled workflows) return clear errors rather than misleading success or cryptic internal messages.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Workflow type not found returns specific error",
+        "spec": "WHEN a user starts a workflow with a type that is not registered, THE SYSTEM SHALL return an error message of the form 'workflow type <name> is not registered' rather than a generic 'not found'.",
+        "acceptance": [
+          "CLI start with a nonexistent workflow type returns 'workflow type <name> is not registered'.",
+          "The error includes the exact type string the user provided.",
+          "The HTTP/gRPC response uses an appropriate status code (404 or INVALID_ARGUMENT)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/api/handlers.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Workflow not found returns specific error",
+        "spec": "WHEN a user describes, signals, queries, or cancels a workflow ID that does not exist, THE SYSTEM SHALL return 'workflow <id> not found' rather than 'invalid argument'.",
+        "acceptance": [
+          "CLI describe with a nonexistent workflow ID returns 'workflow <id> not found'.",
+          "CLI signal with a nonexistent workflow ID returns 'workflow <id> not found'.",
+          "CLI cancel with a nonexistent workflow ID returns 'workflow <id> not found'.",
+          "The error includes the workflow ID the user provided."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/api/handlers.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Signal on terminal workflow returns error",
+        "spec": "WHEN a user sends a signal to a workflow in a terminal state (Completed, Failed, Cancelled, TimedOut), THE SYSTEM SHALL return an error indicating the workflow has already reached terminal state rather than returning accepted:true.",
+        "acceptance": [
+          "CLI signal on a completed workflow returns an error mentioning the terminal status.",
+          "CLI signal on a failed workflow returns an error mentioning the terminal status.",
+          "The response does not return accepted:true for terminal workflows.",
+          "The error message includes the workflow ID and its current status."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/api/handlers.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Cancel on terminal workflow returns clear error",
+        "spec": "WHEN a user cancels a workflow that is already in a terminal state, THE SYSTEM SHALL return 'workflow <id> has already completed with status <status>' rather than 'process 0 is not live'.",
+        "acceptance": [
+          "CLI cancel on a completed workflow returns 'workflow <id> has already completed with status Completed'.",
+          "CLI cancel on a failed workflow returns a message including 'Failed' status.",
+          "No reference to 'process 0 is not live' appears in user-facing output.",
+          "The error message includes the workflow ID."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/api/handlers.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the CLI argument parsing or command structure.",
+      "SHALL NOT change the gRPC or HTTP protocol message schemas.",
+      "SHALL only modify error message content and status code mapping, not control flow.",
+      "SHALL NOT change the engine's internal error types \u2014 only the API-layer mapping to user-facing messages."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "cargo test --workspace passes.",
+      "Manual test: start with bad workflow type shows specific type name in error.",
+      "Manual test: describe nonexistent workflow ID shows 'workflow <id> not found'.",
+      "Manual test: signal a completed workflow returns error with terminal status.",
+      "Manual test: cancel a completed workflow returns error with status, not 'process 0 is not live'."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

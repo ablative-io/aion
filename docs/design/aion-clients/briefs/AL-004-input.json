@@ -1,0 +1,256 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AL-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AL-004",
+    "cluster": "aion-clients",
+    "title": "aion-client-python (PyPI): Client, handle, typed payloads, async stream, error hierarchy",
+    "depends_on": [
+      "AL-001"
+    ],
+    "blocked_by": [
+      "AW: aion-server API + aion-proto wire contract must be defined"
+    ],
+    "checklist": [
+      "C14",
+      "C15",
+      "C16",
+      "C17"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S4",
+      "S6",
+      "S8",
+      "S9"
+    ],
+    "purpose": "Build the Python caller SDK so Python services (the home of ML and data-science work) can drive Aion workflows idiomatically. It implements the AL-001 contract in Python idioms: a connect-and-operate Client, a WorkflowHandle, JSON/model-typed payloads with a bytes escape hatch, an async event iterator that resumes across disconnects, and an exception hierarchy that maps the shared error taxonomy. mypy --strict clean.",
+    "task": "Create the aion-client-python package (PyPI distribution name aion-client-python, import name aion_client). Implement an async Client that connects to an aion-server (auth + TLS), exposes start/signal/query/cancel/list/describe with start returning a WorkflowHandle, JSON-and-model typed payload helpers with a raw bytes escape hatch, a subscribe async iterator with sequence-based resumption, and an exception hierarchy over the shared taxonomy. Behaviour must match the AL-001 contract; this brief does not run the conformance suite (that is AL-007) but must be structured so the AL-007 harness can drive it.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Package scaffold and Client connection",
+        "spec": "THE SYSTEM SHALL create the aion_client package with an async Client that connects to an aion-server with an auth credential and TLS configuration. THE SYSTEM SHALL expose start, signal, query, cancel, list, and describe, with start returning a WorkflowHandle. THE SYSTEM SHALL NOT require reconnection per operation.",
+        "acceptance": [
+          "sdks/python/aion-client/pyproject.toml declares the distribution name aion-client-python, the import package aion_client, runtime dependencies, and the build backend.",
+          "Client(endpoint, *, auth=..., tls=...) (or a connect() classmethod/async factory) establishes a reusable connection.",
+          "Client exposes async start, signal, query, cancel, list, describe matching the contract's inputs and outputs; start returns a WorkflowHandle.",
+          "WorkflowHandle exposes signal/query/cancel/describe/subscribe bound to the workflow_id and run_id, defaulting to the latest run and targeting a specific run when given one.",
+          "A connection failure raises Unavailable; a rejected credential raises Unauthenticated."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-client/pyproject.toml",
+            "sdks/python/aion-client/aion_client/__init__.py",
+            "sdks/python/aion-client/aion_client/client.py",
+            "sdks/python/aion-client/aion_client/handle.py"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S1",
+          "S2",
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Error exception hierarchy",
+        "spec": "THE SYSTEM SHALL define an exception hierarchy mapping the shared taxonomy with a common base. THE SYSTEM SHALL NOT raise a bare Exception for a condition that has a specific type and SHALL NOT swallow server errors.",
+        "acceptance": [
+          "errors.py defines AionClientError (base) and subclasses NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, NamespaceDenied, InvalidArgument, and ServerError (carrying server detail).",
+          "A mapping function turns a server/transport failure into the correct subclass; a unit test asserts the NotFound, AlreadyExists, QueryTimeout, and Unavailable mappings.",
+          "Every public method's docstring lists the exceptions it can raise.",
+          "No code path catches and discards an exception without re-raising or converting it."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-client/aion_client/errors.py"
+          ],
+          "modify": [
+            "sdks/python/aion-client/aion_client/__init__.py"
+          ]
+        },
+        "checklist": [
+          "C17"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Typed payload helpers with bytes escape hatch",
+        "spec": "THE SYSTEM SHALL accept any JSON-serialisable value as input and optionally decode results into a target type or model, with a raw bytes escape hatch on every payload-bearing operation. THE SYSTEM SHALL NOT remove the raw path.",
+        "acceptance": [
+          "payload.py serialises a JSON-serialisable value to a JSON-content-type Payload and decodes a result Payload into a dict, a provided target type, or a Pydantic model when one is supplied.",
+          "start/signal/query accept a value (JSON-encoded) and also accept raw bytes plus a content-type for the escape hatch.",
+          "A non-serialisable input raises InvalidArgument; a decode failure raises a non-swallowed error.",
+          "A unit test round-trips a value and (separately) a model through encode/decode and asserts equality.",
+          "Type hints are complete enough that mypy --strict passes for the payload surface."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-client/aion_client/payload.py"
+          ],
+          "modify": [
+            "sdks/python/aion-client/aion_client/client.py",
+            "sdks/python/aion-client/aion_client/handle.py"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "subscribe async iterator with resumption",
+        "spec": "THE SYSTEM SHALL implement subscribe as an async iterator of decoded events. WHILE open, IF the connection drops transiently, THEN THE SYSTEM SHALL reconnect and resume from the last delivered sequence number with no gaps or duplicates. IF the subscription fails terminally, THEN THE SYSTEM SHALL raise rather than ending silently.",
+        "acceptance": [
+          "stream.py exposes an async iterator (async for event in handle.subscribe(): ...) yielding decoded events over the WebSocket transport.",
+          "The iterator tracks the last delivered sequence number and resumes from sequence+1 after a transient disconnect.",
+          "A test with a stub transport that drops mid-stream asserts each event is delivered exactly once across the reconnect.",
+          "A terminal failure raises the mapped exception out of the iterator; the iterator does not silently StopAsyncIteration on failure.",
+          "mypy --strict passes for the stream surface."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-client/aion_client/stream.py"
+          ],
+          "modify": [
+            "sdks/python/aion-client/aion_client/handle.py"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S8",
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the wire protocol or server endpoints (AW).",
+      "SHALL NOT depend on the Rust crate at runtime \u2014 it is an independent Python package over the same wire contract.",
+      "SHALL NOT implement the cross-language conformance harness \u2014 that is AL-007."
+    ],
+    "verification": [
+      "ruff check passes on clients/python.",
+      "mypy --strict passes on sdks/python/aion-client/aion_client.",
+      "pytest passes on sdks/python/aion-client/tests.",
+      "The package builds (python -m build) and exposes the seven operations from its public __init__.",
+      "No bare except: that discards an error; no operation returns None where the contract specifies a value or an exception."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C14",
+        "text": "Client connects to an aion-server endpoint with auth + TLS config and exposes start, signal, query, cancel, list, and describe; start returns a WorkflowHandle with per-workflow methods."
+      },
+      {
+        "id": "C15",
+        "text": "Payload helpers accept any JSON-serialisable value (and optionally a model / target type for results) with a raw bytes escape hatch on every payload-bearing operation."
+      },
+      {
+        "id": "C16",
+        "text": "subscribe yields an async iterator of decoded events that resumes from the last delivered sequence number across transient disconnects and raises on terminal failure rather than ending silently."
+      },
+      {
+        "id": "C17",
+        "text": "Errors form an exception hierarchy mapping the shared taxonomy (NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server) with a common base; mypy --strict passes."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an application developer, I want to add a client dependency, point it at a server URL, and start a workflow by type name with a typed input so that I can trigger durable work from my service without learning the engine internals."
+      },
+      {
+        "id": "S2",
+        "text": "As an application developer, I want start to return a handle that lets me signal, query, cancel, and describe the workflow I just started so that I do not have to plumb IDs through my own code."
+      },
+      {
+        "id": "S4",
+        "text": "As an application developer, I want a typed result back from a query and a typed input accepted by a signal so that my compiler catches payload-shape mistakes before runtime."
+      },
+      {
+        "id": "S6",
+        "text": "As an operator, I want to describe one workflow and read its status and history so that I can diagnose where it is stuck."
+      },
+      {
+        "id": "S8",
+        "text": "As a dashboard developer, I want to subscribe to a workflow's live event stream and have the client resume transparently across transient disconnects so that I render a gap-free, duplicate-free timeline without writing reconnection logic."
+      },
+      {
+        "id": "S9",
+        "text": "As a dashboard developer, I want a terminal stream failure to surface as an error through the stream rather than a silent end so that I can distinguish a finished subscription from a broken one."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Clients consume the aion-server API and aion-proto wire types; they SHALL NOT define their own wire formats, endpoints, or fields the server does not serve. The protocol is owned by AW."
+      },
+      {
+        "id": "CO2",
+        "text": "Clients SHALL NOT depend on engine internals (aion, aion-store, beamr). The Rust client may depend on aion-core (shared domain types) and aion-proto; the embedded constructor may depend on aion only behind a feature flag, never by default."
+      },
+      {
+        "id": "CO3",
+        "text": "All four SDKs expose the same seven operations with identical observable behaviour, verified by the shared conformance suite."
+      },
+      {
+        "id": "CO4",
+        "text": "Every SDK exposes both a typed payload surface (per language) and a raw-Payload escape hatch; neither is removable."
+      },
+      {
+        "id": "CO5",
+        "text": "Every SDK maps server failures to a documented, branchable error taxonomy. No swallowed errors, no single catch-all collapsing distinct failures."
+      },
+      {
+        "id": "CO6",
+        "text": "subscribe resumes transparently across transient disconnects using the per-event sequence number, delivering a gap-free duplicate-free stream; terminal failures surface through the stream, not as a silent end."
+      },
+      {
+        "id": "CO7",
+        "text": "start honours a caller-supplied idempotency key: a retried identical start returns the original handle; a conflicting reuse raises AlreadyExists."
+      },
+      {
+        "id": "CO8",
+        "text": "Per-ecosystem toolchain gates pass: Rust (clippy -D warnings, fmt --check, no allow/expect/ignore), Python (ruff + mypy --strict + pytest), TypeScript (tsc strict + eslint + tests), Gleam (gleam format --check + gleam check + gleam test). No-partial-implementation and no-silent-failure standards hold across all four."
+      },
+      {
+        "id": "CO9",
+        "text": "Each package is publishable to its registry (crates.io, PyPI, npm, Hex) with a README, a type-checked public surface, and a runnable example covering all seven operations."
+      }
+    ],
+    "intention": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-server deployment and exposes the same seven operations \u2014 connect, start, signal, query, cancel, list, describe, subscribe \u2014 in the idioms of its language. A developer who has never read the engine internals should add a dependency, point at a server URL, and start a workflow with full type-checking in their language within minutes; a frontend developer using the TypeScript client should never see beamr, Gleam, or Rust. The four SDKs must behave identically where behaviour is observable, proven by a shared language-neutral behavioural contract and a conformance suite that exercises every SDK against a real server.",
+    "design_path": "docs/design/aion-clients",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

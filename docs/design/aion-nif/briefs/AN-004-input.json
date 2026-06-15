@@ -1,0 +1,230 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AN-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AN-004",
+    "cluster": "aion-nif",
+    "title": "Nif descriptor, Determinism tag, and the deterministic_nif declaration surface",
+    "depends_on": [
+      "AN-002",
+      "AN-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C16",
+      "C17",
+      "C18",
+      "C19",
+      "C20",
+      "C21",
+      "C22"
+    ],
+    "stories": [
+      "S1",
+      "S3",
+      "S5"
+    ],
+    "purpose": "Define the Nif descriptor that carries a NIF's identity, native shim, dirty flag, and determinism tag, and the deterministic_nif declaration surface \u2014 the inline, never-recorded path. This is where the author's ordinary typed Rust function becomes a beamr NativeFn without the author ever touching a raw term.",
+    "task": "In descriptor.rs, define the Determinism enum (Pure | SideEffectful) and the Nif descriptor (module name, function name, arity, NativeFn, dirty flag, Determinism tag) with an accessor for the tag so the engine can choose binding mode. In declare.rs, implement deterministic_nif: a builder/macro that takes a Rust fn/closure whose arguments are FromTerm and whose return is IntoTerm, and generates the NativeFn shim performing arity check, per-argument typed decode (reporting the failing index), body invocation, IntoTerm return encoding, and panic containment. It produces a Nif tagged Determinism::Pure.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Determinism tag and Nif descriptor",
+        "spec": "THE SYSTEM SHALL define Determinism as an enum with exactly Pure and SideEffectful, and a Nif descriptor recording module name, function name, arity, the NativeFn shim, a dirty-scheduler flag, and a Determinism tag, with an accessor exposing the tag.",
+        "acceptance": [
+          "descriptor.rs defines enum Determinism { Pure, SideEffectful } deriving Clone, Copy, Debug, PartialEq, Eq.",
+          "descriptor.rs defines a Nif struct holding the module atom-name, function atom-name, arity (u8), the NativeFn (beamr's fn(&[Term], &mut ProcessContext) -> Result<Term, Term>), a dirty: bool flag, and a determinism: Determinism field.",
+          "Nif exposes accessors for determinism(), is_dirty(), and its module/function/arity identity, so the engine's registration path (AE) can choose inline-binding for Pure and activity-body for SideEffectful.",
+          "A doc comment states the engine reads the Determinism tag to decide binding mode and that a SideEffectful NIF is never bound inline."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/descriptor.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C16",
+          "C17",
+          "C18"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "deterministic_nif declaration",
+        "spec": "THE SYSTEM SHALL provide deterministic_nif, taking a Rust fn/closure with FromTerm arguments and an IntoTerm return, generating the NativeFn shim and producing a Nif tagged Determinism::Pure. The generated shim SHALL check arity, decode each argument by position, invoke the body, and encode the return, so author code never receives a raw &[Term].",
+        "acceptance": [
+          "declare.rs provides deterministic_nif (a declarative macro and/or generic builder) that, given a module name, function name, and a typed body, yields a Nif with determinism = Pure.",
+          "The generated shim verifies the received argument slice length matches the declared arity and returns a TermError-derived error term on mismatch.",
+          "Each argument is decoded via FromTerm by position; a decode failure reports the zero-based failing index (per AN-001 TermError) and short-circuits without calling the body.",
+          "The body's return value is encoded via IntoTerm through the raw seam; the author body signature is ordinary typed Rust (e.g. fn(u64, String) -> SomeSerializableType), never fn(&[Term], ...).",
+          "A unit test declares a pure helper (e.g. concatenating two decoded strings), invokes the generated NativeFn with term arguments through a ProcessContext, and asserts the decoded result and the Pure tag."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/declare.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C19",
+          "C20"
+        ],
+        "stories": [
+          "S1",
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Heap-safe return and panic containment",
+        "spec": "THE SYSTEM SHALL ensure the generated return encoding is heap-safe (uses the raw module's ProcessContext allocation path, never Box::leak in an author-reachable path) and SHALL contain a panic raised inside the author body, converting it to a typed NIF error term rather than unwinding across the FFI boundary.",
+        "acceptance": [
+          "Return encoding goes through the raw module's safe allocators; no Box::leak appears in the generated shim or any author-reachable path.",
+          "The generated shim wraps the body invocation so a panic is caught (catch_unwind at the FFI boundary) and converted to an error term carrying a descriptive message, never propagating a panic into beamr.",
+          "A unit test declares a helper whose body panics, invokes the NativeFn, and asserts it returns an error term (the VM/test does not abort).",
+          "A doc comment records that panic containment exists so a single buggy NIF cannot crash a scheduler thread."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/declare.rs"
+          ]
+        },
+        "checklist": [
+          "C21",
+          "C22"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement activity_nif (the SideEffectful path) \u2014 that is AN-005, though it reuses this descriptor and the same shim-generation machinery.",
+      "SHALL NOT implement NifSet / registration \u2014 that is AN-006.",
+      "SHALL NOT call beamr's BifRegistryImpl::register; deterministic_nif only produces a Nif descriptor."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-nif passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C16",
+        "text": "Determinism is an enum with exactly Pure and SideEffectful variants."
+      },
+      {
+        "id": "C17",
+        "text": "The Nif descriptor records module name, function name, arity, the NativeFn shim, a dirty-scheduler flag, and a Determinism tag."
+      },
+      {
+        "id": "C18",
+        "text": "The engine's registration path can read a Nif's Determinism tag to choose binding mode (inline for Pure, activity-body for SideEffectful)."
+      },
+      {
+        "id": "C19",
+        "text": "deterministic_nif takes a Rust fn/closure with FromTerm arguments and an IntoTerm return and produces a Nif tagged Determinism::Pure."
+      },
+      {
+        "id": "C20",
+        "text": "The generated shim checks arity, decodes each argument by position (reporting the failing index on mismatch), calls the body, and encodes the return \u2014 author code never sees raw &[Term]."
+      },
+      {
+        "id": "C21",
+        "text": "The generated return encoding is heap-safe (uses the ProcessContext allocation path) and does not Box::leak in any author-reachable path."
+      },
+      {
+        "id": "C22",
+        "text": "A panic raised inside the author body is caught and converted to a typed NIF error rather than unwinding across the FFI boundary."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an in-VM activity author, I want to declare a native function with ordinary typed Rust arguments and return value so that I never hand-write term decoding or encoding."
+      },
+      {
+        "id": "S3",
+        "text": "As an in-VM activity author, I want a panic in my NIF body to surface as a typed error rather than crash the VM so that a bug in one helper does not take down the scheduler."
+      },
+      {
+        "id": "S5",
+        "text": "As a workflow author, I want deterministic NIF helpers to be callable inline from my workflow so that pure transforms (JSON, templating, formatting) cost nothing extra and replay safely."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny at the crate root. Any unsafe is confined to raw.rs behind a single documented, audited module exception; every unsafe block carries a // SAFETY: comment. No unsafe outside raw.rs. Preferred state is zero unsafe (safe beamr APIs only)."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses anywhere, with the sole explicit exception of the documented #![allow(unsafe_code)] FFI seam in raw.rs (CO1). No other bypass of any kind."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-nif depends on beamr (term/NIF API) and aion-core (Payload, ActivityError) only. It does NOT depend on aion (the engine); it emits a descriptor set the engine consumes."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism is a typed property: the deterministic builder yields only Determinism::Pure, the activity builder yields only Determinism::SideEffectful. No untyped declaration path. A side-effectful NIF cannot be expressed as an inline deterministic helper."
+      },
+      {
+        "id": "CO7",
+        "text": "A side-effectful NIF's native body returns Result<T, ActivityError> (aion-core) so a failure carries the retryable/terminal classification AE/AT consult. It never returns a bare string error."
+      },
+      {
+        "id": "CO8",
+        "text": "Generated shims never expose raw &[Term] to author code, never Box::leak in author-reachable paths, and contain panics raised by the author body, converting them to a typed NIF error rather than unwinding across the FFI boundary."
+      },
+      {
+        "id": "CO9",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError, never silently overwrites."
+      },
+      {
+        "id": "CO10",
+        "text": "aion-nif registers nothing with beamr itself. It emits a descriptor set; AE's runtime module (the sole beamr boundary) performs the actual registration. aion-nif must not call BifRegistryImpl::register."
+      }
+    ],
+    "intention": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand-rolled MFA registration. The crate serves the Tier-2 in-VM band of the execution model, and its entire organisation keeps the two uses of that band apart. (1) Deterministic helpers \u2014 JSON transform, template render, parse, format, crypto, math \u2014 called inline from workflow code, not recorded, re-executed verbatim on replay, safe because the same inputs always produce the same output. (2) Light in-VM activities \u2014 small side-effectful operations that run on beamr's dirty scheduler and MUST be invoked through the engine's activity contract so the result is recorded once and returned from history on replay, never re-executed. The crate makes the right thing easy and the wrong thing hard to express: a side-effectful NIF is typed as an activity from the first line and cannot be wired as an inline deterministic helper. When done, a host hands its NIF set to EngineBuilder::register_nifs and its Gleam workflows call deterministic ones inline and side-effectful ones as recorded activities, with the determinism guarantee preserved.",
+    "design_path": "docs/design/aion-nif",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

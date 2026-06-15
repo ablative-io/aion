@@ -1,0 +1,243 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AN-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AN-001",
+    "cluster": "aion-nif",
+    "title": "aion-nif crate scaffold, error taxonomy, and FFI seam shell",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C30"
+    ],
+    "stories": [
+      "S7",
+      "S9"
+    ],
+    "purpose": "Create the aion-nif leaf-of-the-helper-tree crate, its typed error taxonomy, and the single isolated module that will hold any unsafe needed at the beamr term-construction boundary. This establishes the dependency boundaries and the audited unsafe seam before any conversion or declaration logic lands.",
+    "task": "Create the aion-nif crate as a workspace member depending only on beamr and aion-core. Add a thin lib.rs of declarations and re-exports. Define TermError and NifDeclError as thiserror enums. Create the raw module as the sole place permitted to use unsafe: it wraps beamr's process-heap term construction (cons cells, tuples, binaries) behind safe functions, preferring beamr's existing safe ProcessContext allocation APIs (alloc_cons, alloc_tuple) and using unsafe only where a return shape has no safe beamr path, each unsafe block documented with a // SAFETY: comment.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Crate scaffold and dependency boundary",
+        "spec": "THE SYSTEM SHALL create the aion-nif crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL declare dependencies on beamr and aion-core only and SHALL NOT depend on the aion engine crate.",
+        "acceptance": [
+          "crates/aion-nif exists and is registered in the workspace Cargo.toml members list.",
+          "aion-nif/Cargo.toml depends on beamr and aion-core (plus external crates such as serde, serde_json, thiserror) and has no aion (engine) dependency.",
+          "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+          "The crate sets unsafe_code = \"deny\" at the crate root and inherits the workspace clippy lints.",
+          "cargo check -p aion-nif passes."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/Cargo.toml",
+            "crates/aion-nif/src/lib.rs"
+          ],
+          "modify": [
+            "Cargo.toml"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C2",
+          "C3"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "TermError taxonomy",
+        "spec": "THE SYSTEM SHALL define TermError as a typed thiserror enum describing term-conversion failures, including a variant that records the failing argument index for argument-decode failures, rather than surfacing a bare badarg.",
+        "acceptance": [
+          "error.rs defines TermError with variants covering type mismatch (expected vs found kind), argument-position decode failure carrying the zero-based index, atom-resolution failure, and heap-allocation failure.",
+          "TermError implements std::error::Error and Display and derives Debug.",
+          "A doc comment explains that TermError replaces beamr's bare badarg so authors and the engine get a typed, descriptive failure.",
+          "A unit test constructs each variant and asserts its Display text."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C4"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "NifDeclError taxonomy",
+        "spec": "THE SYSTEM SHALL define NifDeclError as a typed thiserror enum describing NIF declaration and registration-set failures, including a duplicate (module, function, arity) declaration.",
+        "acceptance": [
+          "error.rs defines NifDeclError with at least a Duplicate variant carrying the conflicting module, function, and arity, and an InvalidArity variant for an out-of-range arity.",
+          "NifDeclError implements std::error::Error and Display and derives Debug.",
+          "A unit test constructs the Duplicate variant and asserts the conflicting identity appears in its Display text."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/error.rs",
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Isolated FFI seam module",
+        "spec": "THE SYSTEM SHALL create the raw module as the only module permitted to use unsafe. It SHALL expose safe wrapper functions for process-heap term construction (cons cell, tuple, binary), preferring beamr's existing safe ProcessContext allocation APIs and using unsafe only where a return shape has no safe beamr path. Any unsafe SHALL be confined to this module behind those wrappers, each block carrying a // SAFETY: comment.",
+        "acceptance": [
+          "raw.rs exposes safe functions to build a binary term, a tuple term, and a cons-list term from Rust values, returning TermError on allocation failure.",
+          "Where beamr's ProcessContext provides a safe allocation path (alloc_cons, alloc_tuple), raw uses it and contains no unsafe for that shape.",
+          "If any unsafe is required for a return shape with no safe beamr path, it appears only in raw.rs behind a single module-level documented #![allow(unsafe_code)] seam, and every unsafe block carries a // SAFETY: comment stating the invariant; no unsafe appears in any other module.",
+          "raw.rs does NOT use Box::leak: leaking the process heap per call is explicitly rejected (a doc comment records why, referencing the beamr-meridian limitation it supersedes).",
+          "A unit test builds a tuple and a small cons list through the safe wrappers and reads the values back.",
+          "cargo clippy --workspace --all-targets -- -D warnings passes, confirming no allow other than the documented raw.rs seam."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/raw.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the FromTerm/IntoTerm traits or any primitive conversions \u2014 those land in AN-002.",
+      "SHALL NOT reference aion-core::Payload here \u2014 the Payload bridge is AN-003.",
+      "SHALL NOT define the Nif descriptor, declaration macros, or NifSet \u2014 those are AN-004/005/006.",
+      "SHALL NOT call beamr's BifRegistryImpl::register \u2014 registration is performed by the engine (AE)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes (the only allow permitted is the documented raw.rs FFI seam, if unsafe is needed at all).",
+      "cargo test -p aion-nif passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code other than the single documented #![allow(unsafe_code)] in raw.rs."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "crates/aion-nif exists as a workspace member; Cargo.toml depends on beamr and aion-core only, with no dependency on the aion engine crate."
+      },
+      {
+        "id": "C2",
+        "text": "src/lib.rs contains only module declarations and re-exports, no logic."
+      },
+      {
+        "id": "C3",
+        "text": "The crate sets unsafe_code = \"deny\" at the root and inherits the workspace clippy lints."
+      },
+      {
+        "id": "C4",
+        "text": "TermError is a typed error enum (thiserror) describing a term-conversion failure, including the failing argument index where applicable, not a bare badarg."
+      },
+      {
+        "id": "C5",
+        "text": "NifDeclError is a typed error enum (thiserror) describing declaration/registration-set failures, including duplicate (module, function, arity)."
+      },
+      {
+        "id": "C30",
+        "text": "Any unsafe is confined to the raw module behind safe wrappers, each unsafe block carrying a // SAFETY: comment; no unsafe appears outside raw."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As an engine operator, I want to hand a single NIF set to register_nifs so that wiring native helpers into the engine is one call, not per-function boilerplate."
+      },
+      {
+        "id": "S9",
+        "text": "As a reviewer, I want all unsafe confined to one documented FFI module with SAFETY comments so that I can audit the entire native-boundary risk surface in one place."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny at the crate root. Any unsafe is confined to raw.rs behind a single documented, audited module exception; every unsafe block carries a // SAFETY: comment. No unsafe outside raw.rs. Preferred state is zero unsafe (safe beamr APIs only)."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses anywhere, with the sole explicit exception of the documented #![allow(unsafe_code)] FFI seam in raw.rs (CO1). No other bypass of any kind."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-nif depends on beamr (term/NIF API) and aion-core (Payload, ActivityError) only. It does NOT depend on aion (the engine); it emits a descriptor set the engine consumes."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism is a typed property: the deterministic builder yields only Determinism::Pure, the activity builder yields only Determinism::SideEffectful. No untyped declaration path. A side-effectful NIF cannot be expressed as an inline deterministic helper."
+      },
+      {
+        "id": "CO7",
+        "text": "A side-effectful NIF's native body returns Result<T, ActivityError> (aion-core) so a failure carries the retryable/terminal classification AE/AT consult. It never returns a bare string error."
+      },
+      {
+        "id": "CO8",
+        "text": "Generated shims never expose raw &[Term] to author code, never Box::leak in author-reachable paths, and contain panics raised by the author body, converting them to a typed NIF error rather than unwinding across the FFI boundary."
+      },
+      {
+        "id": "CO9",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError, never silently overwrites."
+      },
+      {
+        "id": "CO10",
+        "text": "aion-nif registers nothing with beamr itself. It emits a descriptor set; AE's runtime module (the sole beamr boundary) performs the actual registration. aion-nif must not call BifRegistryImpl::register."
+      }
+    ],
+    "intention": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand-rolled MFA registration. The crate serves the Tier-2 in-VM band of the execution model, and its entire organisation keeps the two uses of that band apart. (1) Deterministic helpers \u2014 JSON transform, template render, parse, format, crypto, math \u2014 called inline from workflow code, not recorded, re-executed verbatim on replay, safe because the same inputs always produce the same output. (2) Light in-VM activities \u2014 small side-effectful operations that run on beamr's dirty scheduler and MUST be invoked through the engine's activity contract so the result is recorded once and returned from history on replay, never re-executed. The crate makes the right thing easy and the wrong thing hard to express: a side-effectful NIF is typed as an activity from the first line and cannot be wired as an inline deterministic helper. When done, a host hands its NIF set to EngineBuilder::register_nifs and its Gleam workflows call deterministic ones inline and side-effectful ones as recorded activities, with the determinism guarantee preserved.",
+    "design_path": "docs/design/aion-nif",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

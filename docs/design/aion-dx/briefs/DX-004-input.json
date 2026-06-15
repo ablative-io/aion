@@ -1,0 +1,92 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-004",
+    "cluster": "aion-dx",
+    "title": "Differentiated auth error messages and header documentation",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "All four auth failure modes return the identical 'namespace access denied' message. A developer cannot tell if they're missing the Authorization header, have a wrong token, are missing x-aion-subject, or have a namespace mismatch. Additionally, required headers (x-aion-subject, x-aion-namespaces) are undocumented.",
+    "task": "Differentiate auth error responses by failure mode. Add documentation for required headers in the hello-world README and a root-level API reference.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Differentiated auth error messages",
+        "spec": "WHEN authentication fails, THE SYSTEM SHALL return a specific error message for each failure mode: missing Authorization header, invalid/expired bearer token, missing x-aion-subject header, namespace mismatch. THE SYSTEM SHALL NOT return the same generic message for all four cases.",
+        "acceptance": [
+          "No Authorization header \u2192 'missing Authorization header with Bearer token'.",
+          "Invalid token \u2192 'invalid or expired bearer token'.",
+          "Missing x-aion-subject \u2192 'missing required header: x-aion-subject'.",
+          "Namespace mismatch \u2192 'subject not authorized for namespace [name]'.",
+          "Each error includes a hint about what to fix."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/api/http.rs",
+            "crates/aion-server/src/state.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Document required headers and API conventions",
+        "spec": "THE SYSTEM SHALL document all required headers (x-aion-subject, x-aion-namespaces, Authorization) in: (1) the hello-world README's curl examples with explanatory comments, and (2) a root-level docs/API.md reference. THE SYSTEM SHALL explain what each header does and what values are valid.",
+        "acceptance": [
+          "hello-world README curl examples have inline comments explaining each header.",
+          "docs/API.md exists with a headers section listing all required/optional headers.",
+          "A developer reading only the README can construct valid requests."
+        ],
+        "files": {
+          "create": [
+            "docs/API.md"
+          ],
+          "modify": [
+            "examples/hello-world/README.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the auth enforcement logic \u2014 only the error messages.",
+      "SHALL NOT add new headers \u2014 only document existing ones."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "cargo test --workspace passes.",
+      "Each auth failure mode returns a distinct, actionable error message."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

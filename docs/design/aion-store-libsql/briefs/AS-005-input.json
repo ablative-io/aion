@@ -1,0 +1,240 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-005",
+    "cluster": "aion-store-libsql",
+    "title": "read_history, list_active, and query over libSQL",
+    "depends_on": [
+      "AS-004"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C18",
+      "C19",
+      "C20",
+      "C21"
+    ],
+    "stories": [
+      "S5",
+      "S6",
+      "S10"
+    ],
+    "purpose": "Implement the read side of the contract: reconstruct a workflow's history from stored blobs, list non-terminal workflows, and translate a WorkflowFilter into SQL returning summaries. Status and summaries must be derived from event rows via aion-core's projection \u2014 never a mutable stored status column \u2014 so the durable store cannot drift from the event log.",
+    "task": "Implement read_history, list_active, and query in read.rs. read_history range-scans the events table for a workflow and deserialises each blob in seq order. list_active and query derive WorkflowStatus and WorkflowSummary from the lifecycle event rows using aion-core's projection. query translates WorkflowFilter (type, status, time range, parent) into a WHERE clause. No mutable status table.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "read_history",
+        "spec": "THE SYSTEM SHALL return a workflow's complete event history in ascending seq order, deserialising each stored blob into an Event.",
+        "acceptance": [
+          "read.rs implements read_history(&self, &WorkflowId) -> Result<Vec<Event>, StoreError> as an indexed range scan ordered by seq ascending.",
+          "Each row's event blob is deserialised via serde; deserialisation failure maps to StoreError::Serialization.",
+          "An unknown workflow returns the documented result from AC-005/AC-006 (empty history vs NotFound) \u2014 match the trait docs exactly and assert that behaviour in a test.",
+          "A test appends events then asserts read_history returns them in the order they were appended, byte-for-byte equal after round-trip."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/read.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs",
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Status projection from event rows",
+        "spec": "THE SYSTEM SHALL derive WorkflowStatus for a workflow by projecting over its lifecycle event rows using aion-core's projection. THE SYSTEM SHALL NOT store or read a mutable status column.",
+        "acceptance": [
+          "read.rs derives status by reading the workflow's lifecycle events and applying aion-core's status projection (the last lifecycle event determines status), identical to how InMemoryStore derives it.",
+          "No schema column or in-memory field holds a mutable status that is written independently of the events (design constraint CO7).",
+          "A test appends a WorkflowStarted then a WorkflowCompleted and asserts the derived status is Completed; a test with only WorkflowStarted asserts Running.",
+          "The projection logic is shared between list_active and query (single derivation path, not duplicated)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/read.rs"
+          ]
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "list_active",
+        "spec": "THE SYSTEM SHALL return the WorkflowIds whose projected status is non-terminal (Running).",
+        "acceptance": [
+          "read.rs implements list_active(&self) -> Result<Vec<WorkflowId>, StoreError> returning workflows whose projected status is Running.",
+          "Workflows with a terminal lifecycle event (Completed/Failed/Cancelled/TimedOut) are excluded.",
+          "A test creates running and terminal workflows and asserts list_active returns exactly the running ones.",
+          "The implementation reads only what it needs to project status (does not deserialise full histories for every workflow when a targeted lifecycle-row query suffices)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/read.rs"
+          ]
+        },
+        "checklist": [
+          "C19"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "query \u2014 WorkflowFilter to SQL and summaries",
+        "spec": "THE SYSTEM SHALL translate a WorkflowFilter (workflow type, status, time range, parent) into a SQL WHERE clause and return matching WorkflowSummary values, each derived from lifecycle event rows.",
+        "acceptance": [
+          "read.rs implements query(&self, &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> building the WHERE clause from the filter's set fields; an empty/default filter imposes no constraints and returns all workflows.",
+          "Filtering by workflow type matches WorkflowStarted's recorded type; by status matches the projected status; by time range matches against recorded_at / start time; by parent matches the parent workflow id recorded for child workflows.",
+          "Each returned WorkflowSummary carries workflow id, type, status, start time, and end time, derived from the WorkflowStarted row and the terminal event row (status via the projection from R2).",
+          "Query parameters are bound (parameterised SQL), not string-interpolated, so values cannot break the query; a test asserts a filter value containing SQL metacharacters is handled safely.",
+          "The secondary index defined in AS-002 R3 is now validated against the concrete query/list_active plan: if the finalised WHERE/ORDER columns differ from what AS-002 indexed, this brief amends schema.rs to match (schema.rs is in this requirement's modify set for exactly that reason \u2014 do not leave a wrong or unused index).",
+          "Tests cover each filter dimension individually and a combined filter, matching the equivalent assertions the AC-007 conformance suite makes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/read.rs",
+            "crates/aion-store-libsql/src/schema.rs"
+          ]
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement append (AS-004) or timer methods (AS-006).",
+      "SHALL NOT introduce a mutable status column or workflow record \u2014 status and summaries are projections over event rows.",
+      "SHALL NOT interpret payloads \u2014 only the columns the store filters/orders on are first-class; payloads stay opaque (D2).",
+      "SHALL NOT string-interpolate filter values into SQL \u2014 parameters must be bound."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "A reviewer confirms no mutable status column exists and that status derivation matches aion-core's projection used by InMemoryStore.",
+      "A reviewer confirms query uses bound parameters, not string interpolation.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C18",
+        "text": "read_history returns a workflow's complete event history in ascending seq order, deserialised from the stored blobs."
+      },
+      {
+        "id": "C19",
+        "text": "list_active returns the WorkflowIds whose projected status (via aion-core's projection) is non-terminal (Running)."
+      },
+      {
+        "id": "C20",
+        "text": "query translates a WorkflowFilter (workflow type, status, time range, parent) into a SQL WHERE clause and returns matching WorkflowSummary values."
+      },
+      {
+        "id": "C21",
+        "text": "WorkflowStatus and WorkflowSummary fields are derived from lifecycle event rows via aion-core's projection; there is no mutable stored status column."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As the engine, I want a workflow's complete history to survive process restarts so that I can replay it from durable storage after a crash or reboot."
+      },
+      {
+        "id": "S6",
+        "text": "As the engine, I want to list active workflows and durable timers from storage on startup so that I know what to replay and which timers are due after downtime."
+      },
+      {
+        "id": "S10",
+        "text": "As an operator, I want to query durable workflows by type, status, and time range so that I can see what is running and what has failed without loading every full history."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

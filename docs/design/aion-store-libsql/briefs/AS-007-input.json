@@ -1,0 +1,196 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-007",
+    "cluster": "aion-store-libsql",
+    "title": "Conformance suite run and persistence-across-reopen tests",
+    "depends_on": [
+      "AS-004",
+      "AS-005",
+      "AS-006"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C24",
+      "C25"
+    ],
+    "stories": [
+      "S5",
+      "S7"
+    ],
+    "purpose": "Prove LibSqlStore is correct by running the shared AC-007 behavioural conformance suite against it, and prove it is durable \u2014 the one thing the in-memory oracle cannot demonstrate \u2014 by reopening a closed database and asserting state survived. These tests are the cluster's correctness gate.",
+    "task": "Add a conformance test that invokes the AC-007 run_event_store_suite with a factory yielding a fresh LibSqlStore over a temporary local file, run as a real (non-gated) test. Add persistence tests that append history and schedule timers, drop the store, reopen the same file, and assert read_history, list_active, and expired_timers all reflect the persisted state. These exercise the embedded path and need no external service.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Run the AC-007 conformance suite against LibSqlStore",
+        "spec": "THE SYSTEM SHALL run the shared aion-store conformance suite (run_event_store_suite) against LibSqlStore over a temporary local file, as a real runtime test that is not gated or ignored, and the suite SHALL pass.",
+        "acceptance": [
+          "tests/conformance.rs invokes run_event_store_suite (imported from aion-store's test-support surface) with an async factory closure that creates a fresh LibSqlStore over a unique tempfile path per invocation and returns it as Arc<dyn EventStore>.",
+          "The test runs under cargo test with no env gating (embedded mode needs no external service) and passes.",
+          "Each suite invocation gets a fresh database (a new tempfile), so scenarios do not contaminate each other.",
+          "The test is NOT marked #[ignore] and uses no #[allow]/#[expect]."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/tests/conformance.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Persistence across close-and-reopen",
+        "spec": "WHEN a store is closed (dropped) and reopened against the same file, THE SYSTEM SHALL return the previously appended history, the previously active workflows, and the previously scheduled timers unchanged.",
+        "acceptance": [
+          "tests/persistence.rs appends a multi-event history for one or more workflows and schedules one or more timers, then drops the LibSqlStore.",
+          "A new LibSqlStore is opened against the same file path; read_history returns the same events in the same order, list_active returns the same active workflows, and expired_timers returns the previously scheduled timers due as of an appropriate instant.",
+          "A workflow that was terminal before reopen is still absent from list_active after reopen (status projection survives because the events do).",
+          "The test asserts byte-for-byte event equality across the reopen, proving the blobs round-tripped through durable storage."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/tests/persistence.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Sequence guard survives reopen",
+        "spec": "WHEN a store is reopened against a file with existing history, THE SYSTEM SHALL compute the head sequence from the persisted events so that the expected-sequence guard continues correctly after a restart.",
+        "acceptance": [
+          "tests/persistence.rs appends a batch, drops the store, reopens, and then appends a further batch with the correct expected_seq (derived from the persisted head) and asserts it succeeds.",
+          "The same reopened store rejects an append with a stale expected_seq with SequenceConflict, proving the head was reconstructed from durable rows rather than reset to zero.",
+          "read_history after the second append shows the full combined history in contiguous seq order across the reopen boundary."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/tests/persistence.rs"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S5"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify the AC-007 conformance suite \u2014 it is consumed unchanged; if LibSqlStore fails it, the bug is in this crate.",
+      "SHALL NOT test embedded-replica sync \u2014 that is AS-008 (these tests are embedded local-file only and need no service).",
+      "SHALL NOT gate the conformance or persistence tests behind an env var or #[ignore] \u2014 embedded mode needs no external service.",
+      "SHALL NOT add backend behaviour \u2014 these are verification briefs only."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes, including the full conformance run and the persistence tests, with no test skipped.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "A reviewer confirms the conformance test imports the real AC-007 suite (not a reimplementation) and that no persistence/conformance test is #[ignore]d or env-gated.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C24",
+        "text": "The shared AC-007 conformance suite (run_event_store_suite) runs against LibSqlStore over a temporary local file as a real, non-gated runtime test and passes."
+      },
+      {
+        "id": "C25",
+        "text": "Persistence-across-reopen tests append history, drop the store, reopen the same file, and assert read_history, list_active, and timers are intact."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As the engine, I want a workflow's complete history to survive process restarts so that I can replay it from durable storage after a crash or reboot."
+      },
+      {
+        "id": "S7",
+        "text": "As a store author, I want this backend to pass the shared behavioural conformance suite unmodified so that I have objective proof it matches the in-memory oracle exactly."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

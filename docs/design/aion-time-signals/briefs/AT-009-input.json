@@ -1,0 +1,196 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-009",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-009",
+    "cluster": "aion-time-signals",
+    "title": "Concurrency correlation tokens and cancellation propagation",
+    "depends_on": [
+      "AT-008"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C27",
+      "C28",
+      "C29"
+    ],
+    "stories": [
+      "S10",
+      "S13"
+    ],
+    "purpose": "Provide the shared substrate that all/race/map (AT-010/011/012) build on: per-spawn correlation tokens that match arriving results to their spawn position deterministically, and cancellation that terminates losing/remaining linked children while recording the cancellation so replay reconstructs which children were started and which were cancelled.",
+    "task": "Implement a correlation module that derives a per-spawn correlation token deterministically from the spawning sequence position, carries it in each child's result message, and matches arriving results to spawn positions via selective receive even when many children of the same type run concurrently. Implement cancellation that kills losing/remaining linked children via their links and records the cancellation, relying on the workflow process trapping exits so child exits arrive as messages.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Deterministic per-spawn correlation token",
+        "spec": "THE SYSTEM SHALL derive a per-spawn correlation token deterministically from the spawning sequence position and carry it in the spawned child's result message.",
+        "acceptance": [
+          "correlation.rs defines a CorrelationToken derived deterministically from the workflow's spawning sequence position (e.g. base seq + index), so the same fan-out replays to the same tokens.",
+          "Each spawned child (activity or workflow) carries its token, echoed back in its result message.",
+          "Tokens are unique within a single fan-out batch (each spawn position gets a distinct token).",
+          "A test derives tokens for an N-element fan-out and asserts they are distinct and reproducible for the same starting sequence position."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/concurrency/correlation.rs"
+          ],
+          "modify": [
+            "crates/aion/src/concurrency/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Match results to spawn position by token",
+        "spec": "WHEN a child result arrives, THE SYSTEM SHALL match it to its spawn position by correlation token via selective receive, correctly even when many children of the same type run concurrently.",
+        "acceptance": [
+          "A collector helper selectively receives result messages and routes each to its spawn index by the carried correlation token.",
+          "Matching is by token, not by activity/workflow type, so identical-type children in one batch are disambiguated.",
+          "A test spawns three children of the SAME type, delivers their results out of order, and asserts each is placed at its correct spawn index by token.",
+          "A test asserts an unrelated mailbox message (e.g. a signal) is NOT consumed by the collector's selective receive (it leaves non-matching messages in the mailbox)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/concurrency/correlation.rs"
+          ]
+        },
+        "checklist": [
+          "C28"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Cancellation kills children and records it",
+        "spec": "WHEN remaining/losing children must be cancelled, THE SYSTEM SHALL terminate them via their links (exit signal) AND record the concrete cancellation event for each (ActivityCancelled for a cancelled in-VM activity child, ChildWorkflowCancelled for a cancelled child workflow \u2014 both defined in AC-002) so replay reconstructs started-vs-cancelled children; the workflow process SHALL trap exits so child exits arrive as messages.",
+        "acceptance": [
+          "A cancel_remaining helper terminates the named child processes via their links (seam-mediated kill / link exit) and records, via the workflow's single Recorder (engine-seam record method), the concrete cancellation event for each: ActivityCancelled(ActivityId) for an activity child, ChildWorkflowCancelled(child WorkflowId) for a child workflow (AC-002) \u2014 so replay knows the child was cancelled, not completed.",
+          "The workflow process is set to trap exits (documented requirement on the collector context) so a killed child's exit arrives as a message the collector can drain, not as a fatal signal to the parent.",
+          "A test cancels two of three in-flight children and asserts both linked children were terminated and the cancellation recorded for each.",
+          "A test asserts that after cancellation, a late result message from a cancelled child does not overwrite or resurrect its slot (the cancelled outcome stands)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/concurrency/correlation.rs"
+          ]
+        },
+        "checklist": [
+          "C29"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement all/race/map themselves \u2014 those are AT-010/011/012 and consume this substrate.",
+      "SHALL NOT define how the child is spawned/linked \u2014 that is AT-008's spawn (workflow children) and AE's activity spawn; this brief tokens, matches, and cancels.",
+      "SHALL NOT define replay of cancellation \u2014 AD reconstructs started-vs-cancelled from the recorded events this brief writes."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including same-type disambiguation and cancellation tests.",
+      "cargo fmt --check passes.",
+      "Selective receive leaves non-matching messages in the mailbox (verified by test).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C27",
+        "text": "Each spawned child in an all/race/map carries a per-spawn correlation token derived deterministically from the spawning sequence position, carried in its result message."
+      },
+      {
+        "id": "C28",
+        "text": "Selective receive matches an arriving result to its spawn position by correlation token, correctly even when many children of the same type run concurrently."
+      },
+      {
+        "id": "C29",
+        "text": "Cancellation terminates losing/remaining linked children via their links (exit signal) and records the cancellation so replay reconstructs started-vs-cancelled children; the workflow process traps exits so child exits arrive as messages."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S10",
+        "text": "As the engine, I want cancellation to terminate losing or remaining child processes and record it so that no orphaned children leak and replay reconstructs which children were cancelled."
+      },
+      {
+        "id": "S13",
+        "text": "As the replay engine, I want recorded events to carry exactly what I need (timer id + fire_at, signal name + payload, child id + result/error, spawn correlation) so that on restore I can return recorded observations deterministically without re-running live delivery."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

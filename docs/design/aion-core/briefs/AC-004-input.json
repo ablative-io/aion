@@ -1,0 +1,158 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AC-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AC-004",
+    "cluster": "aion-core",
+    "title": "Error taxonomy \u2014 activity and workflow errors",
+    "depends_on": [
+      "AC-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C21",
+      "C22"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "Define the domain error types that appear inside events. The retryable/terminal classification on activity errors is load-bearing for the engine's retry decisions.",
+    "task": "Define ActivityError carrying an explicit retryable-vs-terminal classification, a message, and an optional details Payload. Define WorkflowError as the terminal failure type of a workflow. Both are referenced by Event variants defined in AC-002.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ActivityError with retryable classification",
+        "spec": "THE SYSTEM SHALL define ActivityError carrying a classification that is explicitly Retryable or Terminal, a human-readable message, and optional structured details. The classification SHALL be a dedicated type, not a bool or string.",
+        "acceptance": [
+          "error.rs defines ActivityError with a kind: ActivityErrorKind { Retryable, Terminal } (or equivalent dedicated enum), a message: String, and details: Option<Payload>.",
+          "ActivityError exposes is_retryable() -> bool derived from the classification.",
+          "ActivityError derives Serialize, Deserialize, Clone, Debug, PartialEq and implements std::error::Error and Display.",
+          "A doc comment states that the engine consults is_retryable() to decide whether to apply the activity's retry policy or fail the workflow.",
+          "Unit tests construct a retryable and a terminal error and assert is_retryable()."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "WorkflowError",
+        "spec": "THE SYSTEM SHALL define WorkflowError as the terminal failure type of a workflow, carrying a message and optional structured details.",
+        "acceptance": [
+          "WorkflowError carries a message: String and details: Option<Payload>.",
+          "WorkflowError derives Serialize, Deserialize, Clone, Debug, PartialEq and implements std::error::Error and Display.",
+          "A From<ActivityError> conversion exists so an unrecovered activity failure can become the workflow's terminal error, preserving the message and details.",
+          "A unit test exercises the From conversion."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/error.rs"
+          ]
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define StoreError \u2014 that belongs to the aion-store crate in AC-005.",
+      "SHALL NOT implement retry policy logic \u2014 this defines the error type the engine's policy consults; the policy itself is engine work (cluster AE/AD)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-core passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C21",
+        "text": "ActivityError carries an explicit retryable-vs-terminal classification, not a string or bool."
+      },
+      {
+        "id": "C22",
+        "text": "WorkflowError is defined as the terminal failure type of a workflow."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As the engine, I want a failed activity's error to tell me whether it is retryable so that I apply the retry policy correctly instead of guessing."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-core and aion-store are leaf crates \u2014 they depend on no other Aion crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Every type that crosses the wire or the store derives Serialize + Deserialize (these are data types, not credentials)."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is always derivable from event history; no independent status mutation."
+      },
+      {
+        "id": "CO8",
+        "text": "InMemoryStore must pass the same behavioural test suite future durable backends are held to \u2014 it is the oracle, so it must be correct."
+      },
+      {
+        "id": "CO9",
+        "text": "Identifiers are newtypes; no bare Uuid or String in public signatures where an ID is meant."
+      }
+    ],
+    "intention": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a client lists running workflows, a store persists history, or a worker reports a result, they all use the types defined here. The types must make illegal states unrepresentable \u2014 a completed workflow cannot also be running, an activity result cannot exist without a preceding schedule. Nothing here depends on beamr, the engine, networking, or any storage backend. This is the still point at the centre: pure types and one trait, so the rest of Aion can be built against stable contracts.",
+    "design_path": "docs/design/aion-core",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a cl"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

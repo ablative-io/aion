@@ -1,0 +1,195 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AL-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AL-008",
+    "cluster": "aion-clients",
+    "title": "Packaging, publishing metadata, READMEs, and seven-operation examples for all four SDKs",
+    "depends_on": [
+      "AL-003",
+      "AL-004",
+      "AL-005",
+      "AL-006"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C29",
+      "C30"
+    ],
+    "stories": [
+      "S12"
+    ],
+    "purpose": "Make all four SDKs adoptable with a one-line dependency add. Each gets complete registry metadata, a README that teaches the seven operations, and a runnable example that exercises every operation against a server. Without this, the SDKs exist but no one can find, install, or learn them.",
+    "task": "Finalise packaging and documentation for aion-client (crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Hex). Each package: complete metadata (name, version, description, license, repository, keywords/categories, authors), a README walking through connect + the seven operations, and a runnable example program covering start/signal/query/cancel/list/describe/subscribe against a server. This brief does not change SDK behaviour; it packages and documents what AL-002..AL-006 built.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Registry metadata for all four packages",
+        "spec": "THE SYSTEM SHALL complete the publish metadata for each package so it is uploadable to its registry. THE SYSTEM SHALL NOT leave a placeholder version, description, license, or repository field.",
+        "acceptance": [
+          "crates/aion-client/Cargo.toml has name aion-client, a version, description, license, repository, keywords, and categories.",
+          "sdks/python/aion-client/pyproject.toml has distribution name aion-client-python, version, description, license, project URLs, and classifiers; the import package is aion_client.",
+          "sdks/typescript/aion-client/package.json has name aion-client-typescript, version, description, license, repository, main/module/types entry points, and a files allowlist.",
+          "gleam/aion_client/gleam.toml has name aion_client, version, description, licences, and repository links.",
+          "No metadata field is a TODO/placeholder; a dry-run publish/pack for each (cargo package, python -m build, npm pack, gleam build) succeeds."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-client/Cargo.toml",
+            "sdks/python/aion-client/pyproject.toml",
+            "sdks/typescript/aion-client/package.json",
+            "gleam/aion_client/gleam.toml"
+          ]
+        },
+        "checklist": [
+          "C29"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "READMEs teaching the seven operations",
+        "spec": "THE SYSTEM SHALL provide a README per package that shows connect plus each of the seven operations with a typed payload. THE SYSTEM SHALL NOT ship a README that omits any of the seven operations or the error-handling pattern.",
+        "acceptance": [
+          "Each README has an install line, a connect snippet, and a snippet per operation (start, signal, query, cancel, list, describe, subscribe) in that language.",
+          "Each README shows the typed payload path and mentions the raw escape hatch.",
+          "Each README shows catching/branching on at least two error-taxonomy variants idiomatically.",
+          "Each README links to the runnable example from R3 and states the server-URL prerequisite.",
+          "The Rust README is the crate-level doc (//! or README referenced from Cargo.toml) so it renders on docs.rs and crates.io."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-client/README.md",
+            "sdks/python/aion-client/README.md",
+            "sdks/typescript/aion-client/README.md",
+            "gleam/aion_client/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C29"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Runnable seven-operation examples",
+        "spec": "THE SYSTEM SHALL ship a runnable example per package that connects to a server and exercises all seven operations end to end. THE SYSTEM SHALL surface errors from the taxonomy rather than crashing opaquely.",
+        "acceptance": [
+          "crates/aion-client/examples/ has an example binary that connects, starts a workflow, signals it, queries it, lists, describes, cancels, and subscribes to its events, reading the server URL from an env var / arg.",
+          "sdks/python/aion-client/examples/ and sdks/typescript/aion-client/examples/ have the equivalent runnable scripts.",
+          "gleam/aion_client/test/example_test.gleam (or an examples module) provides the equivalent runnable Gleam flow.",
+          "Each example handles at least one error-taxonomy variant explicitly (e.g. prints a clear message on Unavailable) rather than panicking/throwing uncaught.",
+          "Each example is referenced from its README and runs against the AL-007 server fixture."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-client/examples/seven_operations.rs",
+            "sdks/python/aion-client/examples/seven_operations.py",
+            "sdks/typescript/aion-client/examples/seven-operations.ts",
+            "gleam/aion_client/test/example_test.gleam"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S12"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change SDK behaviour or public APIs \u2014 packaging and docs only.",
+      "SHALL NOT publish to the live registries as part of the brief \u2014 it makes the packages publishable (dry-run verified).",
+      "SHALL NOT introduce a fifth-language package."
+    ],
+    "verification": [
+      "cargo package -p aion-client succeeds; the crate README renders.",
+      "python -m build succeeds for clients/python; the long_description resolves to the README.",
+      "npm pack succeeds for clients/typescript and includes the README and built artefacts per the files allowlist.",
+      "gleam build succeeds for clients/gleam and the package docs build.",
+      "Each README demonstrates all seven operations and at least one error-handling branch; each example runs against the conformance server fixture."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C29",
+        "text": "aion-client (crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Hex) each carry complete package metadata, a README, and a type-checked public surface."
+      },
+      {
+        "id": "C30",
+        "text": "Each package ships a runnable example exercising all seven operations against a server, referenced from its README."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S12",
+        "text": "As a platform team, I want each client published to its native registry with a README and a runnable example so that adopting it is a one-line dependency add."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Clients consume the aion-server API and aion-proto wire types; they SHALL NOT define their own wire formats, endpoints, or fields the server does not serve. The protocol is owned by AW."
+      },
+      {
+        "id": "CO2",
+        "text": "Clients SHALL NOT depend on engine internals (aion, aion-store, beamr). The Rust client may depend on aion-core (shared domain types) and aion-proto; the embedded constructor may depend on aion only behind a feature flag, never by default."
+      },
+      {
+        "id": "CO3",
+        "text": "All four SDKs expose the same seven operations with identical observable behaviour, verified by the shared conformance suite."
+      },
+      {
+        "id": "CO4",
+        "text": "Every SDK exposes both a typed payload surface (per language) and a raw-Payload escape hatch; neither is removable."
+      },
+      {
+        "id": "CO5",
+        "text": "Every SDK maps server failures to a documented, branchable error taxonomy. No swallowed errors, no single catch-all collapsing distinct failures."
+      },
+      {
+        "id": "CO6",
+        "text": "subscribe resumes transparently across transient disconnects using the per-event sequence number, delivering a gap-free duplicate-free stream; terminal failures surface through the stream, not as a silent end."
+      },
+      {
+        "id": "CO7",
+        "text": "start honours a caller-supplied idempotency key: a retried identical start returns the original handle; a conflicting reuse raises AlreadyExists."
+      },
+      {
+        "id": "CO8",
+        "text": "Per-ecosystem toolchain gates pass: Rust (clippy -D warnings, fmt --check, no allow/expect/ignore), Python (ruff + mypy --strict + pytest), TypeScript (tsc strict + eslint + tests), Gleam (gleam format --check + gleam check + gleam test). No-partial-implementation and no-silent-failure standards hold across all four."
+      },
+      {
+        "id": "CO9",
+        "text": "Each package is publishable to its registry (crates.io, PyPI, npm, Hex) with a README, a type-checked public surface, and a runnable example covering all seven operations."
+      }
+    ],
+    "intention": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-server deployment and exposes the same seven operations \u2014 connect, start, signal, query, cancel, list, describe, subscribe \u2014 in the idioms of its language. A developer who has never read the engine internals should add a dependency, point at a server URL, and start a workflow with full type-checking in their language within minutes; a frontend developer using the TypeScript client should never see beamr, Gleam, or Rust. The four SDKs must behave identically where behaviour is observable, proven by a shared language-neutral behavioural contract and a conformance suite that exercises every SDK against a real server.",
+    "design_path": "docs/design/aion-clients",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

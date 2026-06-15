@@ -1,0 +1,226 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-004",
+    "cluster": "aion-store-libsql",
+    "title": "Atomic append with the expected-sequence guard",
+    "depends_on": [
+      "AS-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C14",
+      "C15",
+      "C16",
+      "C17"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "Implement the load-bearing operation of the crate: append a batch of events all-or-none, gated on an expected sequence, inside one libSQL transaction. This is what preserves replay integrity over durable storage; a partial write or a TOCTOU race here corrupts the entire system silently.",
+    "task": "Implement append in append.rs: open a libSQL transaction, read the workflow's current head seq, compare against the expected next sequence, and either insert every event in the batch with contiguous seq values and commit, or roll back and return StoreError::SequenceConflict writing nothing. Serialise each Event to the stored blob via the error boundary. The guard read and the inserts must be one transaction.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Transactional head read and guard comparison",
+        "spec": "WHEN append is called, THE SYSTEM SHALL, within a single libSQL transaction, read the current maximum seq for the workflow (the head) and compare the expected next sequence against it. THE SYSTEM SHALL NOT read the head outside the transaction that performs the insert.",
+        "acceptance": [
+          "append.rs opens a transaction and queries MAX(seq) for the workflow_id (treating no rows as head 0 / empty, matching the contract's first-append semantics from AC-005/AC-006).",
+          "The expected_seq argument is compared against the stored head; the comparison and the subsequent insert occur in the same transaction (no separate pre-check transaction).",
+          "The head-read and guard logic is covered by a unit/integration test that appends a first batch from the empty state successfully.",
+          "Any libsql error during the read maps to StoreError::Backend via the error boundary; the transaction is rolled back on error."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/append.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs",
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Atomic insert on match",
+        "spec": "WHEN the expected sequence matches the stored head, THE SYSTEM SHALL insert every event in the batch with contiguous seq values starting at the expected sequence and commit the transaction so all events become durable together.",
+        "acceptance": [
+          "On a matching expected_seq, each Event is serialised (via serde, errors mapped to StoreError::Serialization) and inserted with seq = expected_seq + offset and the event's recorded_at written to recorded_at.",
+          "The transaction commits only after all inserts succeed; the head advances by exactly the batch length.",
+          "A test appends a multi-event batch, then read_history (from AS-005, or a direct row count assertion if AS-005 not yet landed) shows all events present in contiguous seq order.",
+          "An empty batch is handled per the contract (no-op append that does not advance the head, or rejected \u2014 match the AC-005/AC-006 documented behaviour; note the chosen behaviour in the test)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/append.rs"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Conflict rollback writes nothing",
+        "spec": "IF the expected sequence does not match the stored head, THEN THE SYSTEM SHALL roll back the transaction, persist no events, and return StoreError::SequenceConflict { expected, found }.",
+        "acceptance": [
+          "On mismatch, the transaction is rolled back and no rows are inserted.",
+          "StoreError::SequenceConflict { expected, found } is returned with expected = the caller's expected_seq and found = the actual stored head.",
+          "A test appends a batch, then attempts a second append with a stale expected_seq, asserts SequenceConflict, and asserts via read_history / row count that no partial write occurred (head unchanged from the first successful append).",
+          "A mismatch mid-way (e.g. expected ahead of head) is also rejected, not partially applied."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/append.rs"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Concurrent append resolves to one winner",
+        "spec": "WHILE two appends race on the same expected sequence, THE SYSTEM SHALL resolve them to exactly one commit and one SequenceConflict, with no partial batch persisted by the loser.",
+        "acceptance": [
+          "A concurrency test launches two appends with the same expected_seq against the same store and asserts exactly one returns Ok and one returns SequenceConflict.",
+          "After the race, read_history shows only the winning batch's events (the loser wrote nothing).",
+          "The guarantee comes from libSQL transactional isolation on the (workflow_id, seq) primary key, not application-level locking; the test does not rely on timing luck (it asserts the invariant regardless of which append wins).",
+          "If the underlying isolation surfaces the loser as a constraint/backend error rather than a clean head-mismatch, append maps it to SequenceConflict (so callers see one uniform conflict signal); this normalisation is covered by the test."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/append.rs"
+          ]
+        },
+        "checklist": [
+          "C17"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement read_history/list_active/query \u2014 AS-005 (tests here may read rows directly or use read_history if already landed).",
+      "SHALL NOT implement timer methods \u2014 AS-006.",
+      "SHALL NOT introduce a mutable status column to detect conflicts \u2014 the guard is on the events table head seq.",
+      "SHALL NOT leave any path where a mismatch could persist a partial batch."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes, including the conflict and concurrency tests.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "A reviewer confirms the head read and inserts are in one transaction and that no code path writes a partial batch on conflict.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C14",
+        "text": "append reads the current head seq for the workflow and compares the expected next sequence inside one libSQL transaction."
+      },
+      {
+        "id": "C15",
+        "text": "On a matching expected sequence, all events in the batch are inserted with contiguous seq values and the transaction commits."
+      },
+      {
+        "id": "C16",
+        "text": "On a non-matching expected sequence, the transaction rolls back, no events are persisted, and StoreError::SequenceConflict { expected, found } is returned."
+      },
+      {
+        "id": "C17",
+        "text": "Two appends racing on the same expected sequence resolve to exactly one commit and one SequenceConflict, with no partial batch written."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As the engine, I want append to be atomic and gated on an expected sequence over durable storage, so that concurrent or duplicate writes are rejected and replay integrity is preserved across crashes."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

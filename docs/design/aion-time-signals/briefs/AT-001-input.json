@@ -1,0 +1,199 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-001",
+    "cluster": "aion-time-signals",
+    "title": "Engine seam and time/signal/query/child/concurrency module scaffolding",
+    "depends_on": [
+      "AE-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3"
+    ],
+    "stories": [
+      "S7"
+    ],
+    "purpose": "Establish the narrow engine-facing seam this cluster consumes (residency resolution, mailbox delivery, child-spawn request, timer-wheel arm/disarm, and recording through the target workflow's single Recorder) and the module skeleton for timers, signals, queries, child workflows, and concurrency. Every later brief builds against this seam; defining it first keeps the AE boundary explicit and lets the whole cluster be tested with a fake engine handle. The crate scaffold (lib.rs) is created by AE-001, which must land first; this brief adds its module lines to it.",
+    "task": "Define an engine-facing trait (the seam) inside the aion crate that exposes exactly five capabilities: resolve a WorkflowId to a live process handle (or report non-resident/terminal/unknown), deliver a message to a workflow process mailbox, request AE to spawn a child workflow execution as a linked process, arm/disarm a beamr timer-wheel entry for a given fire time, and record an event through the target workflow's single Recorder (so AT's asynchronous-arrival events go through the one per-workflow writer, AD CO6 \u2014 never EventStore::append directly). Provide the module declarations (mod.rs files containing only pub mod + pub use) for the time, signal, query, child, and concurrency modules. Provide an in-test fake implementation of the seam so subsequent briefs can test without AE. This brief defines no timer/signal/query/child behaviour itself.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "EngineHandle seam trait",
+        "spec": "THE SYSTEM SHALL define an EngineHandle trait exposing residency resolution, mailbox delivery, child-spawn request, timer-wheel arm/disarm, and recording through the target workflow's single Recorder. THE SYSTEM SHALL NOT expose workflow lifecycle, supervision, or module-loading operations on this trait.",
+        "acceptance": [
+          "engine_seam.rs defines a trait (e.g. EngineHandle) with methods to: resolve a WorkflowId to a process-handle result that distinguishes Resident(handle) / NonResident / Terminal / Unknown; deliver a message to a workflow process mailbox by handle; request a child workflow spawn (input: parent WorkflowId + child workflow_type + input Payload + RunId, returns the child's process handle + WorkflowId) linked to the parent; arm a timer-wheel entry (workflow process + TimerId + fire_at) and disarm one (workflow process + TimerId); and record an aion-core Event for a workflow through that workflow's single Recorder (the asynchronous-arrival append path), returning a typed error on failure.",
+          "The record-through-Recorder method is how AT's TimerFired / SignalReceived / ChildWorkflow* appends reach the single per-workflow writer (AD CO6); AT services never call EventStore::append directly.",
+          "The trait is Send + Sync so services holding it are usable across scheduler threads.",
+          "The trait carries no method that starts, supervises, or tears down a top-level workflow process \u2014 only the five seam capabilities (the residency-resolution, child-spawn, and record methods are requests into AE, not lifecycle ownership here).",
+          "Doc comments state that AE implements this trait and that this cluster never manages process lifecycle directly (CO6)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/engine_seam.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C2"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Module scaffolding for time/signal/query/child/concurrency",
+        "spec": "THE SYSTEM SHALL create the time, signal, query, child, and concurrency module trees with mod.rs files. Each mod.rs SHALL contain only pub mod declarations and pub use re-exports.",
+        "acceptance": [
+          "crates/aion/src/time/mod.rs, signal/mod.rs, query/mod.rs, child/mod.rs, concurrency/mod.rs exist and contain only pub mod declarations and pub use re-exports (no functions, types, traits) per CO3.",
+          "lib.rs declares the engine_seam, time, signal, query, child, and concurrency modules and re-exports the EngineHandle trait.",
+          "cargo check -p aion passes with the empty module files in place (placeholder named files may be declared as they are created by later briefs; an empty mod.rs that compiles is acceptable for modules whose contents land later).",
+          "No mod.rs exceeds declarations + re-exports."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/time/mod.rs",
+            "crates/aion/src/signal/mod.rs",
+            "crates/aion/src/query/mod.rs",
+            "crates/aion/src/child/mod.rs",
+            "crates/aion/src/concurrency/mod.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Fake engine handle for tests",
+        "spec": "THE SYSTEM SHALL provide a test-only fake implementation of EngineHandle so this cluster's tests can exercise delivery, residency, child spawn, and wheel arm/disarm without AE.",
+        "acceptance": [
+          "A fake EngineHandle (behind cfg(test) or a test-support module) records delivered mailbox messages, configurable residency answers per WorkflowId, requested child spawns, armed/disarmed wheel entries, and events appended through the record-through-Recorder method (so tests can assert AT recorded the right events), so tests can assert on them.",
+          "The fake lets a test set a WorkflowId to Resident / NonResident / Terminal / Unknown and observe how a service reacts.",
+          "The fake lets a test drive a wheel-entry fire (invoke the callback/path a real wheel would) so timer-firing logic is testable without real time passing.",
+          "A unit test constructs the fake, marks a workflow Resident, delivers a message, and asserts the message was captured."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/engine_seam.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement timer, signal, query, child, or concurrency behaviour \u2014 those land in AT-002 through AT-012.",
+      "SHALL NOT implement the real AE-side of the seam \u2014 AE owns that; this brief defines the trait and a test fake only.",
+      "SHALL NOT add HTTP/gRPC/WS transport \u2014 that is AW."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "All mod.rs files contain only declarations and re-exports (CO3).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "An engine-facing handle/trait (consumed, not owned, by this cluster) exposes: resolve a WorkflowId to a live process handle, deliver a message to a workflow process mailbox, request AE to spawn a child workflow, and arm/disarm a beamr timer-wheel entry."
+      },
+      {
+        "id": "C2",
+        "text": "The engine seam is an explicit trait (or handle type) so this cluster never manages workflow process lifecycle, supervision, or module loading directly."
+      },
+      {
+        "id": "C3",
+        "text": "The time/signal/query/child/concurrency modules live under the aion crate with mod.rs files containing only pub mod declarations and pub use re-exports."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As the engine, I want every timer firing, signal arrival, and child outcome recorded as an aion-core Event so that replay can return the same observation without re-waiting or re-spawning."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

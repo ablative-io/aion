@@ -1,0 +1,197 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-003",
+    "cluster": "aion-time-signals",
+    "title": "Timer recovery: startup sweep and periodic recovery tick",
+    "depends_on": [
+      "AT-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C8",
+      "C9",
+      "C10"
+    ],
+    "stories": [
+      "S8",
+      "S9"
+    ],
+    "purpose": "Build the recovery tier of the two-tier timer. A timer whose owning process slept across a VM restart was never armed on the live wheel; recovery polls the event store for elapsed timers and fires them. This is what makes a month-long sleep durable. It reuses AT-002's fire-once-guarded fire path so the live and recovery tiers never double-fire.",
+    "task": "Implement a recovery component that, on engine startup and on a periodic tick, polls EventStore::expired_timers(now) and fires each due timer that has not already been recorded as fired or cancelled, by delegating to the AT-002 fire path. The recovery-tick interval is supplied by engine configuration, never hardcoded. Recovery must be idempotent.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Startup recovery sweep",
+        "spec": "WHEN the engine starts, THE SYSTEM SHALL poll EventStore::expired_timers(now) once and, for each entry whose timer is not already terminal, fire it via the AT-002 fire path (record TimerFired + deliver).",
+        "acceptance": [
+          "recovery.rs defines a recover_on_startup(now) routine that calls expired_timers(now), filters out timers already recorded as TimerFired or TimerCancelled, and fires the remainder through the TimerService fire path.",
+          "Firing reuses AT-002's fire-once-guarded path so a startup sweep and any live wheel entry cannot double-fire.",
+          "A test schedules a timer with a past fire_at against InMemoryStore (simulating a timer elapsed while down), runs the startup sweep, and asserts TimerFired is recorded and delivered.",
+          "A test with a timer whose fire_at is in the future asserts the startup sweep does not fire it."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/time/recovery.rs"
+          ],
+          "modify": [
+            "crates/aion/src/time/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Periodic recovery tick",
+        "spec": "WHILE the engine is running, THE SYSTEM SHALL periodically re-poll expired_timers at an engine-configured interval and fire any newly-due, non-terminal timers, as a safety net for timers whose owning process was not resident on the wheel.",
+        "acceptance": [
+          "A recovery loop runs on an interval supplied by engine configuration (a Duration parameter / config field), NOT a hardcoded constant (CO10).",
+          "Each tick polls expired_timers(now) and fires due, non-terminal timers via the same fire path as R1.",
+          "The interval value is injected (constructor/config), and a test drives the tick logic directly with an injected clock rather than waiting real wall-clock time (CO9).",
+          "A test advances the injected clock past a timer's fire_at, triggers a tick, and asserts the timer fires exactly once."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/time/recovery.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Idempotent recovery",
+        "spec": "THE SYSTEM SHALL make recovery idempotent. WHEN recovery runs again over a timer already recorded as fired or cancelled, THE SYSTEM SHALL NOT fire it again and SHALL NOT deliver a duplicate message.",
+        "acceptance": [
+          "Running the startup sweep twice in a row over the same store fires each due timer exactly once total (the second run is a no-op for already-fired timers).",
+          "A timer recorded as TimerCancelled is never fired by recovery.",
+          "A test runs recovery twice and asserts exactly one TimerFired per due timer across both runs.",
+          "A test cancels a timer (TimerCancelled present), then runs recovery, and asserts no TimerFired is recorded."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/time/recovery.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S8"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement the fire path \u2014 it reuses AT-002's fire-once-guarded TimerService fire.",
+      "SHALL NOT hardcode the recovery-tick interval \u2014 it is engine-configured (CO10).",
+      "SHALL NOT spawn or own the OS/runtime task that drives the periodic tick at production cadence \u2014 the brief provides the tick logic and an injected interval; wiring the live driver into the engine runtime is AE's startup responsibility. (Note this split.)",
+      "SHALL NOT use wall-clock sleeps in tests \u2014 inject the clock (CO9)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including idempotency tests.",
+      "cargo fmt --check passes.",
+      "No hardcoded interval constant (CO10); the interval is injected.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C8",
+        "text": "On engine startup the timer service polls EventStore::expired_timers(now) and, for each entry whose TimerFired has not been recorded, records TimerFired and delivers it to the owning workflow process."
+      },
+      {
+        "id": "C9",
+        "text": "A periodic recovery tick (interval engine-configured, not hardcoded) re-polls expired_timers as a safety net for timers whose owning process was not resident on the wheel."
+      },
+      {
+        "id": "C10",
+        "text": "Recovery is idempotent: re-running it does not double-fire a timer already recorded as fired or cancelled."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S8",
+        "text": "As the engine, I want a timer fired exactly once whether it fires on the live wheel or via recovery so that replay sees one TimerFired, never two and never none."
+      },
+      {
+        "id": "S9",
+        "text": "As the engine, I want to recover elapsed timers on startup and on a periodic tick so that a workflow that slept across a restart wakes correctly."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

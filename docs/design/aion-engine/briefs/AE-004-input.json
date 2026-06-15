@@ -1,0 +1,239 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-004",
+    "cluster": "aion-engine",
+    "title": "Active-execution registry and WorkflowHandle",
+    "depends_on": [
+      "AE-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C9",
+      "C10",
+      "C11",
+      "C12"
+    ],
+    "stories": [
+      "S5",
+      "S7"
+    ],
+    "purpose": "Map a running workflow to its beamr process. The registry is the lookup path for cancel/signal/query and the source for list_workflows, and it keeps a cached status that is always reconciled against the authoritative event projection.",
+    "task": "Implement the registry module: WorkflowHandle (pid, workflow type, loaded version, cached status) and a concurrency-safe registry keyed by (WorkflowId, RunId) supporting insert/lookup/remove/list. Lock poison maps to EngineError::RegistryPoisoned. Provide a reconcile operation that takes the projected WorkflowStatus from aion-core and overwrites the cached status, with the projection winning. Scope is the registry data structure and reconciliation \u2014 lifecycle transitions that drive it are later briefs.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "WorkflowHandle type",
+        "spec": "THE SYSTEM SHALL define WorkflowHandle carrying the beamr pid, the workflow type, the loaded version identifier, and a cached WorkflowStatus.",
+        "acceptance": [
+          "handle.rs defines WorkflowHandle with fields for the beamr pid, the workflow type (the logical entry module name), the loaded version (content hash / version-record identifier from aion-package), and a cached aion_core WorkflowStatus.",
+          "WorkflowHandle is Clone and Debug; it stores no beamr runtime state, only the pid value.",
+          "registry/mod.rs contains only pub mod and pub use."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/registry/handle.rs",
+            "crates/aion/src/registry/mod.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Registry keyed by (WorkflowId, RunId)",
+        "spec": "THE SYSTEM SHALL implement a concurrency-safe registry mapping (WorkflowId, RunId) to a WorkflowHandle, supporting insert, lookup, remove, and list of live handles.",
+        "acceptance": [
+          "table.rs defines a Registry holding a map keyed by (WorkflowId, RunId) behind a lock (Mutex or RwLock), Default-constructible and Send + Sync.",
+          "insert((id, run), handle), get(&id, &run) -> Option<WorkflowHandle>, remove(&id, &run), and list() -> Vec<WorkflowHandle> are provided.",
+          "A test inserts two runs of the same WorkflowId and asserts both are retrievable and a stale run does not shadow a newer one.",
+          "list() returns a snapshot vector, not a guard, so callers do not hold the lock."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/registry/table.rs"
+          ],
+          "modify": [
+            "crates/aion/src/registry/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Explicit lock-poison handling",
+        "spec": "IF the registry lock is poisoned, THEN THE SYSTEM SHALL return EngineError::RegistryPoisoned. THE SYSTEM SHALL NOT call .unwrap() or .expect() on a lock guard.",
+        "acceptance": [
+          "Every lock acquisition maps a PoisonError to EngineError::RegistryPoisoned (registry methods return Result accordingly).",
+          "grep of registry/ shows no .unwrap()/.expect() on lock results.",
+          "A test simulates a poisoned lock (e.g. by panicking while holding the guard in a spawned thread) and asserts the next access returns RegistryPoisoned rather than panicking."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/registry/table.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Status reconciliation against the event projection",
+        "spec": "WHEN reconciling a handle's status, THE SYSTEM SHALL compute the WorkflowStatus by projecting over the workflow's event history using aion-core and SHALL overwrite the cached status with the projection. THE SYSTEM SHALL NOT set a handle's status from any source other than that projection.",
+        "acceptance": [
+          "table.rs (or handle.rs) provides reconcile(&id, &run, events: &[Event]) that recomputes status via aion-core's projection and updates the cached status on the handle.",
+          "No registry API mutates status with a caller-supplied status value; the only writer is the projection path.",
+          "A test builds an event history ending in WorkflowCompleted, reconciles, and asserts the cached status is Completed; a history ending in WorkflowCancelled reconciles to Cancelled.",
+          "A test asserts that if the cached status disagrees with the projection, reconcile makes the projection win."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/registry/table.rs",
+            "crates/aion/src/registry/handle.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT drive lifecycle transitions (start/cancel/complete) \u2014 the registry is updated by AE-009/AE-010.",
+      "SHALL NOT define WorkflowStatus or its projection \u2014 those are aion-core; this brief consumes them.",
+      "SHALL NOT query the store or run replay \u2014 reconcile takes the events it is given; loading them is AD's append/read path used by lifecycle."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "Lock poison maps to EngineError::RegistryPoisoned with no panic (CO9).",
+      "Status is only ever set from the aion-core projection (CO10).",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C9",
+        "text": "WorkflowHandle carries the beamr pid, the workflow type, the loaded version, and a cached WorkflowStatus."
+      },
+      {
+        "id": "C10",
+        "text": "The registry maps (WorkflowId, RunId) to a WorkflowHandle and supports insert, lookup, remove, and list of live handles."
+      },
+      {
+        "id": "C11",
+        "text": "The registry is concurrency-safe and lock poison is mapped to EngineError::RegistryPoisoned rather than panicking."
+      },
+      {
+        "id": "C12",
+        "text": "The cached status is reconciled against aion-core's event-history projection and the projection wins on disagreement; no code path sets status independently of events."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As a workflow caller, I want to start a workflow by type and get a handle so that I can later await its result or cancel it by ID."
+      },
+      {
+        "id": "S7",
+        "text": "As a workflow caller, I want to list and query workflows by type, status, and time so that I can see what is running and what has finished without loading full histories."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

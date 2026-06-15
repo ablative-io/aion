@@ -1,0 +1,191 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AH-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AH-003",
+    "cluster": "aion-history",
+    "title": "Engine continue_as_new lifecycle method with pending-work guard and atomic transition",
+    "depends_on": [
+      "AH-001",
+      "AH-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C4",
+      "C5",
+      "C7",
+      "C9"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S5"
+    ],
+    "purpose": "Implement the engine-level continue_as_new method that orchestrates the full transition: guard against pending work, record the terminal WorkflowContinuedAsNew event on the old run, deregister the old run, and start a new run under the same WorkflowId with a fresh RunId. The new run's WorkflowStarted carries parent_run_id for chain navigation. This is the core lifecycle method that makes unbounded-history workflows viable.",
+    "task": "Create aion::lifecycle::continue_as_new module with a continue_as_new function following the same pattern as terminate::cancel/complete/fail. The function takes a ContinueAsNewRequest (input payload, optional workflow_type override) and: (1) checks for pending in-flight activities or children, failing with a clear error if any exist; (2) records WorkflowContinuedAsNew with the current RunId as parent_run_id; (3) notifies completion; (4) deregisters the old run; (5) starts a new run with start_workflow using the carried input and the same WorkflowId. Add Engine::continue_as_new as the public API method. The new run's WorkflowStarted must carry parent_run_id.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Pending-work guard rejects continue-as-new with in-flight activities",
+        "spec": "THE SYSTEM SHALL reject continue_as_new with EngineError when the workflow has pending in-flight activities or child workflows. THE SYSTEM SHALL NOT auto-cancel pending work \u2014 the workflow author must handle it explicitly.",
+        "acceptance": [
+          "Calling continue_as_new on a workflow with a dispatched-but-not-completed activity returns an error.",
+          "Calling continue_as_new on a workflow with a started-but-not-completed child workflow returns an error.",
+          "The error message clearly identifies that pending work exists.",
+          "Calling continue_as_new on a workflow with no pending work succeeds."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/lifecycle/continue_as_new.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lifecycle/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Record terminal event and deregister old run",
+        "spec": "THE SYSTEM SHALL record a WorkflowContinuedAsNew event on the old run with the carried input payload, optional workflow type override, and the current RunId as parent_run_id. THE SYSTEM SHALL then deregister the old run from the registry, following the same pattern as cancel/complete/fail.",
+        "acceptance": [
+          "After continue_as_new, the old run's history ends with a WorkflowContinuedAsNew event.",
+          "The old run is no longer in the registry.",
+          "The old run's completion notifier is notified with a ContinuedAsNew outcome.",
+          "The event's parent_run_id matches the old run's RunId."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/continue_as_new.rs",
+            "crates/aion/src/registry.rs"
+          ]
+        },
+        "checklist": [
+          "C4",
+          "C7"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Start new run under same WorkflowId",
+        "spec": "THE SYSTEM SHALL start a new workflow run under the same WorkflowId with a fresh RunId, using the carried input payload as the new run's input. If a workflow_type override is specified, the new run SHALL use that type; otherwise the same workflow type at its latest version. The new run's WorkflowStarted event SHALL carry parent_run_id linking to the old run.",
+        "acceptance": [
+          "After continue_as_new, a new run exists under the same WorkflowId.",
+          "The new run has a different RunId from the old run.",
+          "The new run's WorkflowStarted event carries the input from the continue_as_new call.",
+          "The new run's WorkflowStarted event carries parent_run_id matching the old run's RunId.",
+          "If workflow_type was specified, the new run uses that type."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/continue_as_new.rs",
+            "crates/aion/src/lifecycle/start.rs"
+          ]
+        },
+        "checklist": [
+          "C4",
+          "C7",
+          "C9"
+        ],
+        "stories": [
+          "S1",
+          "S5"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Engine::continue_as_new public API",
+        "spec": "THE SYSTEM SHALL expose continue_as_new as a public async method on Engine, taking WorkflowId, RunId, input Payload, and optional workflow_type. THE SYSTEM SHALL gate the call through the shutdown gate, consistent with other lifecycle methods.",
+        "acceptance": [
+          "Engine::continue_as_new is a public async method.",
+          "The method is gated through shutdown_gate.begin_operation().",
+          "The method delegates to lifecycle::continue_as_new.",
+          "Unit test: continue_as_new on an unknown workflow returns WorkflowNotFound."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/api.rs"
+          ]
+        },
+        "checklist": [
+          "C4"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement SDK bindings \u2014 those are a separate brief under the aion_flow cluster.",
+      "SHALL NOT implement history chain navigation queries \u2014 that is AH-004.",
+      "SHALL NOT modify the WorkflowStarted event structure if parent_run_id can be added as an optional field; if it requires a breaking change, coordinate with AC.",
+      "SHALL NOT implement NIF-level continue-as-new dispatch \u2014 the engine method is called from the host side."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "Unit tests cover: successful continue-as-new, pending activity guard, pending child guard, workflow type migration, unknown workflow error."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "ContinuedAsNew is a terminal status with exactly one corresponding terminal event (WorkflowContinuedAsNew), consistent with the status-is-a-projection invariant."
+      },
+      {
+        "id": "CO2",
+        "text": "The new run's WorkflowStarted must carry parent_run_id so the continuation chain is navigable."
+      },
+      {
+        "id": "CO3",
+        "text": "Continue-as-new with pending activities or children is a hard error, not auto-cancellation."
+      },
+      {
+        "id": "CO4",
+        "text": "The carried payload is subject to the same size constraints as any workflow input."
+      },
+      {
+        "id": "CO5",
+        "text": "Recovery (list_active + replay) must never attempt to replay a ContinuedAsNew run."
+      },
+      {
+        "id": "CO6",
+        "text": "The engine must start the new run atomically with completing the old run \u2014 no window where neither exists."
+      }
+    ],
+    "intention": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration. Replay on recovery re-executes every recorded step from the beginning, so performance degrades linearly with history size. Without a mechanism to bound history, Aion cannot support long-lived workflows in production. This cluster adds continue-as-new: a workflow explicitly restarts itself with a fresh event log, carrying forward only the state it needs. The old execution completes as ContinuedAsNew (a terminal status), and a new execution begins immediately with the carried-over state as input. Replay of the new execution starts from its own WorkflowStarted event, not from the original. This is the same mechanism Temporal uses and it is the only sound approach \u2014 snapshotting with truncation would require the snapshot to be replay-correct, which is equivalent to re-executing anyway.",
+    "design_path": "docs/design/aion-history",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration."
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

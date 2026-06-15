@@ -1,0 +1,249 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "NB-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "NB-002",
+    "cluster": "aion-nif-bridge",
+    "title": "run_activity NIF wired through durability handoff",
+    "depends_on": [
+      "NB-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C6",
+      "C7",
+      "C8",
+      "C9"
+    ],
+    "stories": [
+      "S1",
+      "S13"
+    ],
+    "purpose": "Rewire the existing run_activity/3 NIF to go through the full durability handoff: Resolver checks recorded history (replay path), Recorder appends ActivityScheduled/ActivityStarted/ActivityCompleted or ActivityFailed events (live path), and the ActivityDispatcher trait executes the actual dispatch. After this brief, a workflow that runs activities on remote workers produces a complete, replayable activity event trail. On crash recovery, the recorded result is returned without re-dispatching.",
+    "task": "Create nif_activity.rs containing the production run_activity NIF implementation. Replace the current engine_nifs.rs run_activity body with a call into nif_activity. The NIF constructs a NifContext (NB-001), builds a Command::RunActivity, calls resolve_or_execute_live. On replay (Recorded), return the recorded result. On live (ResumeLive), record ActivityScheduled, dispatch through ActivityDispatcher, record ActivityCompleted or ActivityFailed, and return the result. The workflow_id in all activity events must come from the NifContext's resolved handle (C9), not a random UUID.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Replay path returns recorded result without dispatching",
+        "spec": "WHEN run_activity/3 is called during replay (the Resolver returns a Recorded resolution), THE SYSTEM SHALL return the recorded activity result to the BEAM process without calling the ActivityDispatcher (CO1). THE SYSTEM SHALL NOT record any new events on the replay path.",
+        "acceptance": [
+          "nif_activity.rs implements a run_activity_impl function that constructs a NifContext and calls resolve_command with a Command appropriate for the activity.",
+          "When the Resolver returns Recorded with a completed resolution, the NIF returns {ok, recorded_payload} as a BEAM term.",
+          "When the Resolver returns Recorded with a failed resolution, the NIF returns {error, recorded_error} as a BEAM term.",
+          "A test pre-populates a workflow history with ActivityScheduled + ActivityCompleted, constructs a NifContext over that history, and asserts the replay path returns the recorded result without touching the dispatcher."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/runtime/nif_activity.rs"
+          ],
+          "modify": [
+            "crates/aion/src/runtime/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Live path records ActivityScheduled and ActivityStarted before dispatch",
+        "spec": "WHEN run_activity/3 is called on the live path (Resolver returns ResumeLive), THE SYSTEM SHALL record ActivityScheduled and ActivityStarted through the single-writer Recorder (CO2) before dispatching to the ActivityDispatcher.",
+        "acceptance": [
+          "The live path calls Recorder::record_activity_scheduled and Recorder::record_activity_started (or the equivalent resolve_or_execute_live handoff that records both) before calling ActivityDispatcher::dispatch.",
+          "The ActivityId in the scheduled event is generated deterministically or uniquely for this activity invocation.",
+          "The workflow_id in the event envelope comes from the NifContext's resolved handle, not a new UUID (C9).",
+          "A test runs the live path with a mock dispatcher and asserts that ActivityScheduled and ActivityStarted events appear in the store before the dispatch call."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_activity.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C9"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Live path records ActivityCompleted or ActivityFailed after dispatch",
+        "spec": "WHEN the ActivityDispatcher returns success, THE SYSTEM SHALL record ActivityCompleted through the Recorder and return {ok, result} to the BEAM process. WHEN the dispatcher returns failure, THE SYSTEM SHALL record ActivityFailed through the Recorder and return {error, reason} to the BEAM process.",
+        "acceptance": [
+          "On dispatch success, ActivityCompleted is recorded with the result Payload and the NIF returns {ok, result_binary}.",
+          "On dispatch failure, ActivityFailed is recorded with the ActivityError and the NIF returns {error, reason_binary}.",
+          "The terminal activity event uses the same ActivityId as the scheduling event.",
+          "A test runs the live path with a dispatcher that succeeds and asserts ActivityCompleted is recorded; a second test uses a failing dispatcher and asserts ActivityFailed is recorded."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_activity.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "engine_nifs.rs delegates to nif_activity",
+        "spec": "THE SYSTEM SHALL replace the existing run_activity body in engine_nifs.rs with a call to the production implementation in nif_activity.rs. THE SYSTEM SHALL NOT leave the old bypass-durability implementation in place.",
+        "acceptance": [
+          "engine_nifs.rs run_activity function delegates to nif_activity::run_activity_impl (or equivalent) passing the ProcessContext and args.",
+          "The old direct ActivityDispatcher::dispatch_from_process call is removed.",
+          "The NIF entry in engine_nif_entries() still registers run_activity/3 as dirty.",
+          "All existing run_activity tests pass or are updated to cover the new durability-aware path."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/engine_nifs.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C7",
+          "C8"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R5",
+        "title": "ActivityDispatcher trait boundary preserved",
+        "spec": "THE SYSTEM SHALL call the ActivityDispatcher trait for live dispatch (CO4). THE SYSTEM SHALL NOT import or depend on aion-server's WorkerActivityDispatcher or any transport type.",
+        "acceptance": [
+          "nif_activity.rs imports crate::activity::bridge::ActivityDispatcher (or the trait's canonical location) and calls it for live dispatch.",
+          "No aion-server type, no gRPC type, and no HTTP type appears in nif_activity.rs imports.",
+          "The trait-based dispatch preserves transport-agnosticism: the same NIF code works with an in-memory test dispatcher and the production gRPC dispatcher."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_activity.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement the Resolver or Recorder \u2014 uses them as provided by NB-001's NifContext.",
+      "SHALL NOT implement retry policy or retry loops \u2014 retry is AT's machinery, consumed through resolve_or_execute_live.",
+      "SHALL NOT import aion-server or any transport dependency (CO4).",
+      "SHALL NOT bypass the Recorder to call EventStore::append directly (CO2).",
+      "SHALL NOT change the ActivityDispatcher trait \u2014 it is consumed as-is."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "Replay path returns recorded result without dispatching.",
+      "Live path records ActivityScheduled, ActivityStarted, and ActivityCompleted/ActivityFailed in correct order.",
+      "workflow_id in all activity events matches the NifContext's resolved workflow_id.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C6",
+        "text": "run_activity/3 NIF records ActivityScheduled and ActivityStarted events before dispatching."
+      },
+      {
+        "id": "C7",
+        "text": "run_activity/3 NIF records ActivityCompleted on success or ActivityFailed on terminal failure."
+      },
+      {
+        "id": "C8",
+        "text": "run_activity/3 on replay returns the recorded result without dispatching to a worker."
+      },
+      {
+        "id": "C9",
+        "text": "The workflow_id in activity events matches the actual workflow's WorkflowId, not a random UUID."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As a workflow author, I want my activity calls to be durable so that if the engine crashes and restarts, the activity result is returned from history instead of re-dispatching to the worker."
+      },
+      {
+        "id": "S13",
+        "text": "As a Temporal developer, I want the getting-started tutorial to demonstrate a complete workflow lifecycle (start, activity, complete, describe history) so that I can evaluate whether Aion meets my durability expectations."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Every NIF goes through resolve_or_execute_live (or its equivalent replay check). No NIF may execute a side effect without first checking recorded history."
+      },
+      {
+        "id": "CO2",
+        "text": "All event recording goes through the workflow's single-writer Recorder. No NIF calls EventStore::append directly."
+      },
+      {
+        "id": "CO3",
+        "text": "Deterministic execution: workflow.now returns recorded timestamp, workflow.random is seeded from WorkflowId+RunId. No wall clock or entropy source in NIF-visible paths."
+      },
+      {
+        "id": "CO4",
+        "text": "The aion crate remains transport-agnostic. Remote worker dispatch stays in aion-server's WorkerActivityDispatcher; the NIF bridge calls the ActivityDispatcher trait, not the concrete server type."
+      },
+      {
+        "id": "CO5",
+        "text": "unsafe_code = deny. No unsafe in any new code."
+      },
+      {
+        "id": "CO6",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses."
+      },
+      {
+        "id": "CO7",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO8",
+        "text": "Only the runtime module imports beamr. NIF bridge code uses RuntimeHandle, not beamr directly."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against InMemoryStore. No test requires a database or live server."
+      }
+    ],
+    "intention": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this cluster lands, a workflow that starts, runs activities on remote workers, sleeps, receives signals, spawns children, and completes produces a full, replayable event history \u2014 the Temporal developer expectation, not just for basic cases, but for all of them.",
+    "design_path": "docs/design/aion-nif-bridge",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

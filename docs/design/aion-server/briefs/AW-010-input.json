@@ -1,0 +1,210 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-010",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-010",
+    "cluster": "aion-server",
+    "title": "WebSocket event streaming over the engine broadcast",
+    "depends_on": [
+      "AW-007",
+      "AW-004"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C25",
+      "C26",
+      "C27"
+    ],
+    "stories": [
+      "S6",
+      "S7"
+    ],
+    "purpose": "Bridge the engine's event broadcast to remote clients over WebSocket. A client subscribes to a slice of the firehose (one workflow, a filtered class, or everything) and receives events as they happen \u2014 the first-class real-time feature that backs the dashboard. A slow consumer must never stall the engine.",
+    "task": "Implement the WebSocket endpoint: accept a connection and a SubscriptionRequest, validate the namespace scope via the AW-007 guard, map the request onto the engine's EventFilter and call engine.subscribe, then run a per-connection forward loop pushing serialised Event envelopes to the socket. Bound each connection's outbound buffer; drop a consumer that cannot keep up with a typed lag WireError; clean up the subscription on close. The engine broadcast is never back-pressured by a subscriber.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Subscription request to EventFilter mapping",
+        "spec": "THE SYSTEM SHALL accept a SubscriptionRequest, validate its namespace scope via the guard, and map it onto the engine's EventFilter (per-workflow, filtered, or firehose) before calling engine.subscribe.",
+        "acceptance": [
+          "subscribe.rs maps each SubscriptionRequest variant (AW-004) onto the corresponding EventFilter the engine exposes (per-workflow id, filtered by type/status/namespace, firehose).",
+          "The namespace is authorised via the AW-007 guard before subscribe; a firehose or filtered subscription is scoped to the caller's namespace so it cannot observe another namespace's events (CO9, D8).",
+          "engine.subscribe is called with the mapped EventFilter to obtain the stream tail; the server does not implement the broadcast itself (non-goal).",
+          "A unit test maps each SubscriptionRequest variant to the expected EventFilter and asserts a cross-namespace firehose is denied."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/stream/mod.rs",
+            "crates/aion-server/src/stream/subscribe.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Per-connection forward loop and cleanup",
+        "spec": "THE SYSTEM SHALL run a per-connection task forwarding events from the engine stream to the socket as serialised Event envelopes, until the client closes or the subscribed workflow terminates, then drop the subscription with no leak.",
+        "acceptance": [
+          "socket.rs runs a forward loop that reads from the engine subscription stream and writes serialised Event envelopes (AW-004) to the WebSocket.",
+          "On client close, socket error, or terminal event for a per-workflow subscription, the loop ends and the subscription stream is dropped (no task or subscription leak).",
+          "A test drives a per-workflow subscription against an InMemoryStore-backed engine, asserts events arrive, and asserts the subscription is dropped on close.",
+          "The forward loop holds no lock across an await that could poison or deadlock; any poison maps to a typed ServerError (CO8)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/stream/socket.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/stream/mod.rs",
+            "crates/aion-server/src/lib.rs",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Bounded buffers and lag handling",
+        "spec": "THE SYSTEM SHALL give each connection a bounded outbound buffer (size from config), close a consumer that cannot keep up with a typed lag WireError, and never apply backpressure from a subscriber to the engine broadcast.",
+        "acceptance": [
+          "Each connection's outbound buffer bound comes from config (AW-006), not a hardcoded default (CO11).",
+          "When a consumer lags past the bound (or the engine's broadcast tail reports lag), the connection is closed with a Lagged WireError so the client can resubscribe and re-read history (D6).",
+          "The engine broadcast is never back-pressured: a slow connection's buffer filling closes that connection only and does not block the engine or other subscribers (CO10).",
+          "A test simulates a slow consumer and asserts it is dropped with Lagged while a second, fast consumer continues to receive events uninterrupted."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/stream/socket.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the engine's event broadcast or subscribe \u2014 that is AE/AD; this brief tails it.",
+      "SHALL NOT serve the dashboard assets \u2014 that is AW-013 (which uses this feed).",
+      "SHALL NOT add a dashboard-specific event API; the feed is the same public contract every client uses (D10)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-server passes.",
+      "cargo fmt --check passes.",
+      "A test proves a slow consumer is dropped without stalling the engine or other subscribers (CO10).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C25",
+        "text": "A SubscriptionRequest is validated for namespace scope and mapped onto the engine's EventFilter, then engine.subscribe is called to obtain the stream tail."
+      },
+      {
+        "id": "C26",
+        "text": "A per-connection task forwards events from the engine stream to the socket until the client closes or the subscribed workflow terminates, then drops the subscription with no leak."
+      },
+      {
+        "id": "C27",
+        "text": "Each connection has a bounded outbound buffer; a consumer that cannot keep up is closed with a typed lag WireError, and the engine broadcast is never back-pressured by a subscriber."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As an observer, I want to open a WebSocket and subscribe to one workflow, a filtered class, or the whole firehose so that I see events as they happen."
+      },
+      {
+        "id": "S7",
+        "text": "As an observer on a slow connection, I want to be dropped with a clear lag signal so that my slowness never stalls the engine or other subscribers, and I know to resubscribe."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

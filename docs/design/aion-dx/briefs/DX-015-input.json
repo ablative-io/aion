@@ -1,0 +1,73 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-015",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-015",
+    "cluster": "aion-dx",
+    "title": "Fix Python worker namespace authorization",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The Python worker is immediately rejected with PERMISSION_DENIED when connecting to the dev server. The server requires x-aion-namespaces and x-aion-subject gRPC metadata on the worker stream, but the worker SDK doesn't send this metadata. The WorkerConfig has no namespace or subject fields. This blocks the entire hello-world tutorial at step 4.",
+    "task": "Add namespace and subject fields to the Python worker SDK's WorkerConfig. Send them as gRPC metadata (x-aion-namespaces, x-aion-subject) on the worker stream connection. Update the hello-world worker.py example to set these. Also update the Rust worker SDK if it has the same issue.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Worker SDK sends namespace authorization metadata",
+        "spec": "WHEN a Python worker connects to the server, THE SYSTEM SHALL send x-aion-namespaces and x-aion-subject gRPC metadata derived from WorkerConfig fields. Default namespace SHALL be 'default' and default subject SHALL be 'worker'. THE SYSTEM SHALL also check and fix the Rust worker SDK if it has the same issue.",
+        "acceptance": [
+          "Python worker connects without PERMISSION_DENIED when using default config.",
+          "Worker logs show 'Registered activities: greet' without namespace errors.",
+          "The hello-world workflow completes end-to-end: start via CLI, activity dispatched to worker, result returned.",
+          "WorkerConfig has namespace and subject fields with sensible defaults."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/worker.py",
+            "sdks/python/aion-worker/aion_worker/session.py",
+            "examples/hello-world/worker.py",
+            "crates/aion-worker/src/protocol/session.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the gRPC protocol definitions.",
+      "SHALL NOT change the server's namespace authorization logic.",
+      "SHALL use existing gRPC metadata headers (x-aion-namespaces, x-aion-subject)."
+    ],
+    "verification": [
+      "Python worker connects to dev server without PERMISSION_DENIED.",
+      "hello-world workflow completes end-to-end with the Python worker.",
+      "pip install still works without new dependencies."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

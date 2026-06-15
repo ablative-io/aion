@@ -1,0 +1,155 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AV-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AV-001",
+    "cluster": "aion-visibility",
+    "title": "Search attribute types, schema, and SearchAttributesUpdated event",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C9"
+    ],
+    "stories": [
+      "S3",
+      "S5"
+    ],
+    "purpose": "Define the core domain types for workflow visibility: search attribute type taxonomy, attribute schema registration, and the SearchAttributesUpdated event. These are the foundation the visibility store, engine integration, and SDK bindings build on.",
+    "task": "Add search attribute types to aion-core: SearchAttributeType enum (String, Int, Float, Bool, Datetime, KeywordList), SearchAttributeValue enum (typed values), SearchAttributeSchema (per-namespace registry of attribute name to type), and SearchAttributesUpdated event variant carrying a map of attribute name to SearchAttributeValue. Type mismatches on set are errors.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "SearchAttributeType and SearchAttributeValue",
+        "spec": "THE SYSTEM SHALL define SearchAttributeType with variants String, Int, Float, Bool, Datetime, KeywordList. THE SYSTEM SHALL define SearchAttributeValue as a typed enum with a variant per type carrying the concrete value.",
+        "acceptance": [
+          "SearchAttributeType has exactly six variants.",
+          "SearchAttributeValue has matching variants with concrete types (String, i64, f64, bool, DateTime<Utc>, Vec<String>).",
+          "Both round-trip through serde correctly."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/search.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "SearchAttributeSchema with type registration and validation",
+        "spec": "THE SYSTEM SHALL define SearchAttributeSchema as a per-namespace registry mapping attribute names to their declared SearchAttributeType. Setting an attribute with a value that doesn't match its declared type SHALL return a typed error.",
+        "acceptance": [
+          "SearchAttributeSchema::register(name, type) records the type for a name.",
+          "SearchAttributeSchema::validate(name, value) returns Ok if the value matches the declared type, Err otherwise.",
+          "Registering the same name with a different type returns an error.",
+          "Setting an unregistered attribute name returns an error."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/search.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "SearchAttributesUpdated event variant",
+        "spec": "THE SYSTEM SHALL add SearchAttributesUpdated to the Event enum carrying an EventEnvelope, workflow_id, and attributes (HashMap<String, SearchAttributeValue>). All exhaustive matches on Event SHALL handle the new variant.",
+        "acceptance": [
+          "Event::SearchAttributesUpdated exists with the specified fields.",
+          "The variant serializes and deserializes correctly.",
+          "All exhaustive matches in aion-core handle the new variant.",
+          "cargo clippy -p aion-core --all-targets -- -D warnings passes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/event.rs",
+            "crates/aion-core/src/filter.rs",
+            "crates/aion-core/src/status.rs"
+          ]
+        },
+        "checklist": [
+          "C2"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the VisibilityStore trait \u2014 that is AV-002.",
+      "SHALL NOT implement engine integration \u2014 that is AV-003.",
+      "SHALL NOT implement SDK bindings \u2014 that is AV-004."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-core passes.",
+      "cargo fmt --check passes."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "VisibilityStore is a trait in aion-store, not coupled to any specific backend."
+      },
+      {
+        "id": "CO2",
+        "text": "The libSQL implementation must support filtering by all standard fields and custom attribute predicates without full table scans."
+      },
+      {
+        "id": "CO3",
+        "text": "Search attribute types are registered per namespace; type mismatches are errors, not silent coercions."
+      },
+      {
+        "id": "CO4",
+        "text": "Visibility updates must not block the EventStore append path in server mode."
+      },
+      {
+        "id": "CO5",
+        "text": "WorkflowSummary must include enough data for dashboard rendering without per-workflow history reads."
+      },
+      {
+        "id": "CO6",
+        "text": "The search attribute event (SearchAttributesUpdated) is a recorded event subject to replay and determinism \u2014 it must be replayable."
+      }
+    ],
+    "intention": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running workflows of type Y. Without a query layer, the only access path is by WorkflowId \u2014 which requires knowing the ID up front. This cluster adds search attributes (user-defined key-value metadata on workflows) and a visibility index that supports filtered listing, full-text-like search on attributes, and time-range queries. This is the operational backbone that makes dashboards, alerting, and debugging possible at scale.",
+    "design_path": "docs/design/aion-visibility",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,160 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AV-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AV-005",
+    "cluster": "aion-visibility",
+    "title": "Server visibility endpoints and integration test",
+    "depends_on": [
+      "AV-001",
+      "AV-002",
+      "AV-003",
+      "AV-004"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C10",
+      "C12"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S4",
+      "S6"
+    ],
+    "purpose": "Expose visibility queries via gRPC and HTTP endpoints in aion-server, and provide an end-to-end integration test proving workflows can be found by custom search attributes.",
+    "task": "Add visibility query endpoints to aion-server: ListWorkflows (filtered) and CountWorkflows. Write an integration test that starts a workflow, sets custom search attributes from the engine, and verifies the workflow can be found by attribute value through the visibility store.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "gRPC visibility query endpoints",
+        "spec": "THE SYSTEM SHALL add gRPC service methods: ListWorkflows (takes filter, returns Vec<WorkflowSummary>) and CountWorkflows (takes filter, returns count).",
+        "acceptance": [
+          "Proto definitions exist for ListWorkflows and CountWorkflows.",
+          "Server handlers delegate to the VisibilityStore.",
+          "Filter fields are mappable from proto to ListWorkflowsFilter."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/src/lib.rs",
+            "crates/aion-server/src/grpc.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "HTTP visibility query endpoints",
+        "spec": "THE SYSTEM SHALL add HTTP endpoints: GET /workflows (list with query params for filters) and GET /workflows/count (count with query params).",
+        "acceptance": [
+          "GET /workflows returns a JSON array of WorkflowSummary.",
+          "Query params filter by type, status, time range, and custom attributes.",
+          "GET /workflows/count returns a JSON count.",
+          "Pagination via limit and offset query params."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/http.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Integration test: search by custom attributes",
+        "spec": "THE SYSTEM SHALL have an integration test that: starts a workflow, records SearchAttributesUpdated with a customer_id attribute, and verifies list_workflows with a customer_id filter returns the workflow.",
+        "acceptance": [
+          "Workflow with customer_id=12345 appears in list_workflows filtered by customer_id=12345.",
+          "Workflow does NOT appear when filtered by customer_id=99999.",
+          "Filtering by workflow_type + customer_id narrows results correctly.",
+          "count_workflows returns 1 for the matching filter."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/tests/visibility.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S1",
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement dashboard UI \u2014 that belongs in the dashboard cluster.",
+      "SHALL NOT implement WebSocket streaming for visibility updates.",
+      "SHALL NOT implement an Elasticsearch backend \u2014 libSQL is the default."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-server passes.",
+      "cargo test -p aion --test visibility passes.",
+      "cargo fmt --check passes."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "VisibilityStore is a trait in aion-store, not coupled to any specific backend."
+      },
+      {
+        "id": "CO2",
+        "text": "The libSQL implementation must support filtering by all standard fields and custom attribute predicates without full table scans."
+      },
+      {
+        "id": "CO3",
+        "text": "Search attribute types are registered per namespace; type mismatches are errors, not silent coercions."
+      },
+      {
+        "id": "CO4",
+        "text": "Visibility updates must not block the EventStore append path in server mode."
+      },
+      {
+        "id": "CO5",
+        "text": "WorkflowSummary must include enough data for dashboard rendering without per-workflow history reads."
+      },
+      {
+        "id": "CO6",
+        "text": "The search attribute event (SearchAttributesUpdated) is a recorded event subject to replay and determinism \u2014 it must be replayable."
+      }
+    ],
+    "intention": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running workflows of type Y. Without a query layer, the only access path is by WorkflowId \u2014 which requires knowing the ID up front. This cluster adds search attributes (user-defined key-value metadata on workflows) and a visibility index that supports filtered listing, full-text-like search on attributes, and time-range queries. This is the operational backbone that makes dashboards, alerting, and debugging possible at scale.",
+    "design_path": "docs/design/aion-visibility",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

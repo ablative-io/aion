@@ -1,0 +1,205 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-003",
+    "cluster": "aion-server",
+    "title": "Workflow-management wire service (start/signal/query/cancel/list/describe)",
+    "depends_on": [
+      "AW-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C8",
+      "C9",
+      "C10"
+    ],
+    "stories": [
+      "S1",
+      "S5"
+    ],
+    "purpose": "Define the gRPC service and request/response messages for the core workflow-management surface every caller uses. This is the wire form of the engine's start/signal/query/cancel/list/describe API \u2014 the contract client SDKs generate stubs from.",
+    "task": "Add workflow.proto declaring a service with StartWorkflow, Signal, Query, Cancel, ListWorkflows, and DescribeWorkflow RPCs and their request/response messages. Each request carries a namespace; inputs and results are aion-core Payload; ListWorkflows carries a WorkflowFilter and returns WorkflowSummary values; DescribeWorkflow returns a summary (and optionally history). Provide the serde request/response types and assert lossless proto<->serde round-trips.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Workflow service definition",
+        "spec": "THE SYSTEM SHALL define a gRPC service in workflow.proto with StartWorkflow, Signal, Query, Cancel, ListWorkflows, and DescribeWorkflow RPCs, each with a request and a response message.",
+        "acceptance": [
+          "workflow.proto defines a service exposing all six RPCs.",
+          "StartWorkflow request carries namespace, workflow type, and input Payload; response carries the assigned WorkflowId and RunId.",
+          "Signal request carries namespace, target WorkflowId, signal name, and payload Payload; Cancel request carries namespace, WorkflowId, and reason.",
+          "Query request carries namespace, WorkflowId, and query name; response carries a result Payload or a WireError.",
+          "tonic-build generates the service stub and the crate compiles."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-proto/proto/workflow.proto"
+          ],
+          "modify": [
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Namespace, Payload, Filter, and Summary on the wire",
+        "spec": "THE SYSTEM SHALL carry a namespace on every request, carry inputs/results as aion-core Payload, and carry ListWorkflows as a WorkflowFilter returning WorkflowSummary values.",
+        "acceptance": [
+          "Every request message in workflow.proto has a namespace field.",
+          "Inputs and results use the common Payload message (from AW-002), not bespoke byte fields.",
+          "ListWorkflows request carries a WorkflowFilter (via the AW-002 envelope/conversion) and its response carries a repeated WorkflowSummary.",
+          "DescribeWorkflow response carries a WorkflowSummary (history inclusion is optional and, if present, carried as repeated Event envelopes)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/proto/workflow.proto",
+            "crates/aion-proto/src/convert.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Serde types and round-trip",
+        "spec": "THE SYSTEM SHALL provide serde request/response types for the workflow-management messages that derive Serialize + Deserialize and round-trip losslessly to and from their proto form.",
+        "acceptance": [
+          "Each workflow-management request/response has a serde-deriving Rust type (the generated prost type or a hand-paired serde type per the crate's chosen pattern).",
+          "A unit test round-trips at least StartWorkflow, ListWorkflows, and Query request+response through serde_json and through proto encode/decode, asserting equality.",
+          "All wire data types here derive both Serialize and Deserialize (CO7) \u2014 none is Deserialize-only (these are data, not credentials)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/src/convert.rs",
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define event-streaming or worker messages \u2014 AW-004, AW-005.",
+      "SHALL NOT implement the server handlers that call the Engine \u2014 that is AW-008.",
+      "SHALL NOT add server-side orchestration semantics; this brief defines the wire shape only."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-proto passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C8",
+        "text": "workflow.proto defines a service with StartWorkflow, Signal, Query, Cancel, ListWorkflows, and DescribeWorkflow RPCs and their request/response messages."
+      },
+      {
+        "id": "C9",
+        "text": "Each request carries a namespace; inputs and results are carried as aion-core Payload, and ListWorkflows carries a WorkflowFilter and returns WorkflowSummary values."
+      },
+      {
+        "id": "C10",
+        "text": "Workflow-management wire messages have serde types deriving Serialize + Deserialize and round-trip losslessly to/from their proto form."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As a client SDK author, I want one published wire contract with gRPC service definitions so that I can generate stubs for my language instead of inventing my own request and response shapes."
+      },
+      {
+        "id": "S5",
+        "text": "As a workflow caller, I want to start, signal, query, cancel, list, and describe workflows over gRPC or HTTP so that I can drive the engine from any service without embedding it."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

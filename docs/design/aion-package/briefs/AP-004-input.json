@@ -1,0 +1,212 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AP-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AP-004",
+    "cluster": "aion-package",
+    "title": "Content-hash module namespacing scheme",
+    "depends_on": [
+      "AP-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C14",
+      "C15",
+      "C16"
+    ],
+    "stories": [
+      "S3",
+      "S4"
+    ],
+    "purpose": "Implement the namespacing scheme that makes each deployed workflow version a distinct, immutable module in beamr's registry. Deployed module names are derived from (logical module name, content hash), so version N and N+5 coexist without conflict and beamr's two-deep same-name limit never binds for workflow modules. This crate owns the transform; the engine applies it.",
+    "task": "Define a pure, total transform from (logical module name, ContentHash) to a deployed module name (e.g. order_workflow$<hash>), and its inverse that recovers the logical name from a deployed name. Prove the round-trip is a bijection. Guarantee that two packages with different content hashes produce disjoint deployed-name sets. Do not load anything into a VM \u2014 this is naming only.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Forward namespacing transform",
+        "spec": "THE SYSTEM SHALL define a deterministic function mapping (logical module name, ContentHash) to a deployed module name that embeds the content hash so distinct versions of the same logical module get distinct deployed names.",
+        "acceptance": [
+          "namespace.rs defines deployed_name(logical: &str, hash: &ContentHash) -> String (or a NamespacedName type) joining the logical name and the hash textual form with the literal '$' separator (logical$hash).",
+          "The '$' separator is mandated (CO13), exposed as a named constant, not a local literal: the engine (AE-005) must split on the identical character to recover logical names, and '$' is chosen because it cannot occur in a Gleam logical module name, keeping the boundary unambiguous.",
+          "The transform is pure and total: same inputs always yield the same output, every valid (name, hash) pair maps successfully.",
+          "The produced name is a valid beamr module-atom name (uses the hash textual form constrained in AP-003 R3).",
+          "A doc comment states this is the application-level versioning layered on top of beamr's VM-level dual-version hot-loading (D4)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/namespace.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Inverse transform and bijection round-trip",
+        "spec": "THE SYSTEM SHALL define an inverse function recovering the logical module name (and content hash) from a deployed module name, and the forward/inverse pair SHALL be a verified bijection.",
+        "acceptance": [
+          "namespace.rs defines a parse function returning the logical name and ContentHash from a deployed name, yielding a typed error (not a panic) for a malformed deployed name.",
+          "A unit test round-trips many (logical name, hash) pairs through forward-then-inverse and asserts equality (CO12).",
+          "A unit test round-trips deployed-then-inverse-then-forward and asserts the deployed name is recovered.",
+          "Separator choice guarantees the logical name and hash boundary is unambiguous even when the logical name contains the separator's neighbouring characters (a test covers a logical name with underscores/dollars as applicable)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/namespace.rs"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Disjoint name sets across versions",
+        "spec": "THE SYSTEM SHALL guarantee that two packages with different content hashes produce disjoint sets of deployed module names, so distinct versions never collide in the registry.",
+        "acceptance": [
+          "A function maps a whole BeamSet plus its ContentHash to the set of deployed module names for that package.",
+          "A unit test takes one logical beam set, derives deployed names under two different content hashes, and asserts the two name sets are disjoint.",
+          "A unit test asserts that the same logical module under the same hash always maps to the same deployed name (idempotent), proving versions coexist rather than swap (S3).",
+          "A doc comment states this is what sidesteps beamr's two-deep same-name version limit for workflow modules."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/namespace.rs"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT load or register modules into beamr \u2014 that is the engine (cluster AE). This brief produces names only.",
+      "SHALL NOT compute the content hash \u2014 it consumes the ContentHash from AP-003.",
+      "SHALL NOT touch the archive or the manifest."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-package passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C14",
+        "text": "A namespacing function maps (logical module name, content hash) to a deployed module name (e.g. order_workflow$<hash>) deterministically."
+      },
+      {
+        "id": "C15",
+        "text": "An inverse function recovers the logical module name from a deployed module name; the transform is a verified round-trip (bijection)."
+      },
+      {
+        "id": "C16",
+        "text": "Two packages with different content hashes produce disjoint deployed module-name sets, so distinct versions never collide in the registry."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S3",
+        "text": "As the engine, I want each deployed version's modules to have distinct, content-hash-namespaced names so that version N and version N+5 coexist and a months-long sleeping workflow never blocks a new deploy."
+      },
+      {
+        "id": "S4",
+        "text": "As the engine, I want a loaded package to hand me the namespaced module names directly so that I apply one agreed naming scheme rather than deriving names myself."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO7",
+        "text": "The content hash is computed over the canonical beam set only \u2014 never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."
+      },
+      {
+        "id": "CO8",
+        "text": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."
+      },
+      {
+        "id": "CO9",
+        "text": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."
+      },
+      {
+        "id": "CO10",
+        "text": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."
+      },
+      {
+        "id": "CO11",
+        "text": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."
+      },
+      {
+        "id": "CO12",
+        "text": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."
+      },
+      {
+        "id": "CO13",
+        "text": "The deployed-name separator is the literal '$' character (logical_name$hash). It is mandated, not illustrative: the engine (AE-005) must split on the identical character. '$' does not occur in Gleam logical module names, so the bijection stays unambiguous."
+      },
+      {
+        "id": "CO14",
+        "text": "The content hash is SHA-256 (via the sha2 crate). The algorithm is part of the format contract so packer and loader on different hosts agree."
+      }
+    ],
+    "intention": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+    "design_path": "docs/design/aion-package",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (w"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

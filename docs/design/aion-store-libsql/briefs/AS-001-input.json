@@ -1,0 +1,245 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-001",
+    "cluster": "aion-store-libsql",
+    "title": "aion-store-libsql crate scaffold, config, and error mapping",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5"
+    ],
+    "stories": [
+      "S3",
+      "S8",
+      "S9"
+    ],
+    "purpose": "Create the aion-store-libsql leaf-of-the-store-tree crate, its Deserialize-only configuration, and the boundary error mapping into StoreError. This is the foundation every other brief in the cluster builds on: the crate exists, depends only on aion-store, and can express its modes and its errors.",
+    "task": "Create the aion-store-libsql crate depending only on aion-store among Aion crates (plus libsql, serde, thiserror, chrono, and async support). Write a thin lib.rs. Define LibSqlConfig as a Deserialize-only type whose mode enum is Embedded { path } or EmbeddedReplica { path, primary_url, auth_token }, exposing libSQL durability/WAL/sync settings with no hardcoded defaults. Define the error-mapping surface that converts libsql and serde errors into StoreError. Do NOT implement EventStore here \u2014 that begins in AS-003.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Crate scaffold and workspace wiring",
+        "spec": "THE SYSTEM SHALL create the aion-store-libsql crate as a workspace member whose only Aion dependency is aion-store. THE SYSTEM SHALL NOT depend on the engine, beamr, or any other storage backend crate.",
+        "acceptance": [
+          "crates/aion-store-libsql exists and is registered in the workspace Cargo.toml members list.",
+          "Cargo.toml declares aion-store as the only aion-* dependency, plus external crates: libsql, serde (with derive), thiserror, chrono, and async-trait (or relies on native async-fn-in-trait consistent with how aion-store declares EventStore).",
+          "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+          "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+          "cargo check -p aion-store-libsql passes."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/Cargo.toml",
+            "crates/aion-store-libsql/src/lib.rs"
+          ],
+          "modify": [
+            "Cargo.toml"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C2"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "LibSqlConfig mode enum",
+        "spec": "THE SYSTEM SHALL define LibSqlConfig as a Deserialize-only configuration type whose mode is an enum with Embedded { path } and EmbeddedReplica { path, primary_url, auth_token } variants. THE SYSTEM SHALL NOT derive Serialize on LibSqlConfig.",
+        "acceptance": [
+          "config.rs defines LibSqlConfig deriving Deserialize and Debug but NOT Serialize.",
+          "The mode is an enum: Embedded { path: PathBuf } and EmbeddedReplica { path: PathBuf, primary_url: String, auth_token: String }.",
+          "A unit test deserialises a TOML or JSON fixture for each variant and asserts the parsed fields.",
+          "Embedded mode requires only a path; EmbeddedReplica additionally requires primary_url and auth_token (deserialising a replica config missing primary_url is an error)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/config.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Durability and sync settings, no assumed defaults",
+        "spec": "THE SYSTEM SHALL expose libSQL durability/WAL settings (and, for replica mode, a sync interval) on LibSqlConfig. THE SYSTEM SHALL NOT bake hardcoded default values for these tunables into the crate; values absent from config SHALL be represented as unset (Option) and left to libSQL's own behaviour or surfaced for the operator, not silently defaulted by this crate.",
+        "acceptance": [
+          "LibSqlConfig carries durability/WAL tunables (e.g. an Option for journal/WAL mode and an Option sync_interval used in replica mode) as Option fields, not bare values with crate-chosen defaults.",
+          "No literal default magic numbers for sync interval or WAL settings appear in the crate; absent config maps to None.",
+          "A unit test deserialises a config omitting the tunables and asserts the corresponding fields are None.",
+          "A doc comment states that operators set these; the crate does not assume values (per CLAUDE.md no-assumed-defaults)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/config.rs"
+          ]
+        },
+        "checklist": [
+          "C4"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Boundary error mapping into StoreError",
+        "spec": "THE SYSTEM SHALL provide a single boundary that maps libsql driver errors and serde (de)serialisation failures into StoreError. THE SYSTEM SHALL NOT allow any libsql or serde error type to appear in the public EventStore-facing surface.",
+        "acceptance": [
+          "error.rs defines conversions (From impls or helper fns) mapping libsql::Error into StoreError::Backend and serde_json errors into StoreError::Serialization.",
+          "The mapping preserves a human-readable message from the source error in the StoreError variant payload.",
+          "No public function signature in the crate returns or exposes a libsql or serde error type; all fallible store operations surface StoreError.",
+          "A unit test constructs a representative libsql error and a serde error and asserts each maps to the expected StoreError variant."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S8"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the EventStore trait \u2014 store wiring is AS-003.",
+      "SHALL NOT open a libSQL connection or create schema \u2014 that is AS-002.",
+      "SHALL NOT depend on any Aion crate other than aion-store.",
+      "SHALL NOT derive Serialize on LibSqlConfig \u2014 it is a Deserialize-only config type."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "grep confirms no Serialize derive on LibSqlConfig and no hardcoded default sync/WAL values.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "crates/aion-store-libsql exists, is a workspace member, and depends only on aion-store among Aion crates (plus external crates: libsql, serde, thiserror, chrono, async-trait or native async)."
+      },
+      {
+        "id": "C2",
+        "text": "src/lib.rs contains only module declarations and re-exports, no logic."
+      },
+      {
+        "id": "C3",
+        "text": "LibSqlConfig is a Deserialize-only type whose mode enum selects Embedded { path } or EmbeddedReplica { path, primary_url, auth_token }."
+      },
+      {
+        "id": "C4",
+        "text": "LibSqlConfig exposes libSQL durability/WAL settings (e.g. sync interval for replica mode, journal/WAL options) with no hardcoded default values baked into the crate."
+      },
+      {
+        "id": "C5",
+        "text": "A boundary error-mapping module maps every libsql driver error and serde (de)serialisation failure into StoreError (Backend, Serialization), so no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S3",
+        "text": "As an engine operator, I want to tune libSQL durability and sync settings through configuration with no values silently assumed for me, so that I control the durability-versus-throughput trade-off for my deployment."
+      },
+      {
+        "id": "S8",
+        "text": "As a store author, I want every libSQL and serialisation error mapped into the StoreError taxonomy so that the engine handles one uniform error surface regardless of backend."
+      },
+      {
+        "id": "S9",
+        "text": "As a store author, I want libSQL's internals to be swappable for the Turso-native engine later without touching the engine, so that adopting the production-ready rewrite is a drop-in change when it leaves beta."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

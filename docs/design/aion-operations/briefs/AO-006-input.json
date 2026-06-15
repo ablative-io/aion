@@ -1,0 +1,232 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AO-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AO-006",
+    "cluster": "aion-operations",
+    "title": "Feature-gated JWT authentication with namespace-scoped authorization",
+    "depends_on": [
+      "AO-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C27",
+      "C28",
+      "C29",
+      "C30",
+      "C31",
+      "C32"
+    ],
+    "stories": [
+      "S9",
+      "S10",
+      "S11"
+    ],
+    "purpose": "Enforce tenant isolation by validating JWT tokens against a JWKS endpoint and scoping all operations to the token's namespace claim. Without this, any client that can reach the port can operate in any namespace \u2014 a security gap for multi-tenant deployments.",
+    "task": "Implement a Tower middleware that extracts and validates Bearer tokens from HTTP Authorization headers and gRPC metadata. Validate against a cached JWKS endpoint. Extract the namespace claim and enforce it on all downstream operations. Feature-gate behind cfg(feature='auth') so the base binary stays lean. Health and metrics endpoints are exempt from auth.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Token extraction and validation middleware",
+        "spec": "WHEN auth.enabled=true, THE SYSTEM SHALL extract the Bearer token from the HTTP Authorization header (or gRPC authorization metadata) on every request except /health/* and /metrics. THE SYSTEM SHALL validate the token's signature against the configured JWKS endpoint. IF the token is missing, expired, or signature-invalid, THE SYSTEM SHALL reject the request with HTTP 401 / gRPC UNAUTHENTICATED before the request reaches any handler.",
+        "acceptance": [
+          "A request without Authorization header returns 401.",
+          "A request with an expired token returns 401.",
+          "A request with an invalid signature returns 401.",
+          "A request with a valid token passes through to the handler.",
+          "/health/live and /health/ready are accessible without a token.",
+          "/metrics is accessible without a token.",
+          "For long-lived worker streams, token validity is re-checked on each heartbeat; an expired token triggers a re-auth-required message and stream closure after one heartbeat-interval grace period (derived from existing heartbeat config, not hardcoded)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/auth/mod.rs",
+            "crates/aion-server/src/auth/middleware.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [
+          "C27",
+          "C31"
+        ],
+        "stories": [
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Namespace claim enforcement",
+        "spec": "THE SYSTEM SHALL extract the namespace claim from the validated token and scope all operations to that namespace. A token with namespace=A SHALL NOT be able to start, signal, query, cancel, list, or stream workflows in namespace B. IF the request body includes a namespace field that differs from the token's namespace claim, THE SYSTEM SHALL reject the request with 403/PERMISSION_DENIED (not silently override). THE SYSTEM SHALL pass the authenticated namespace to the existing NamespaceGuard mechanism.",
+        "acceptance": [
+          "A token with namespace='tenant-a' can start workflows in tenant-a.",
+          "The same token cannot list workflows in tenant-b (returns 403/PERMISSION_DENIED).",
+          "Worker connections are scoped to the token's namespace for task dispatch.",
+          "The namespace from the token overrides any namespace field in the request body."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/auth/middleware.rs",
+            "crates/aion-server/src/api/handlers.rs"
+          ]
+        },
+        "checklist": [
+          "C28",
+          "C29"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "JWKS caching with configurable refresh",
+        "spec": "THE SYSTEM SHALL fetch and cache JWKS keys from the configured URL at startup and refresh them on a configurable interval. WHEN a token references an unknown key ID (kid), THE SYSTEM SHALL attempt one immediate refresh before rejecting. Key rotation SHALL NOT require server restart.",
+        "acceptance": [
+          "JWKS keys are fetched at startup from auth.jwks_url.",
+          "A token signed with a rotated key validates after automatic refresh.",
+          "The refresh interval is configurable (not hardcoded).",
+          "A JWKS endpoint that is temporarily unavailable uses cached keys (does not reject all requests).",
+          "An unknown kid triggers one immediate refresh attempt before 401."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/auth/jwks.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/auth/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Feature gate and conditional compilation",
+        "spec": "THE SYSTEM SHALL compile the auth module only when cfg(feature='auth') is active. THE SYSTEM SHALL NOT add jsonwebtoken, reqwest, or JWKS-related dependencies to the default feature set. IF auth.enabled=true in config but the auth feature is not compiled in, THE SYSTEM SHALL emit a startup error and exit with code 2 (message: 'auth.enabled=true but binary compiled without auth feature'). WHEN the feature is inactive and auth.enabled is false or absent, the server behaves normally without authentication.",
+        "acceptance": [
+          "cargo build (without --features auth) succeeds and produces a binary without auth dependencies.",
+          "cargo build --features auth adds the auth module and its dependencies.",
+          "With the auth feature active and auth.enabled=false in config, no authentication is enforced.",
+          "With the auth feature inactive, setting auth.enabled=true in config is silently ignored (no panic)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/Cargo.toml",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [
+          "C32"
+        ],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement token issuance \u2014 the server validates, not issues.",
+      "SHALL NOT implement OAuth2 flows (authorization code, PKCE, etc.) \u2014 tokens arrive pre-issued.",
+      "SHALL NOT add auth dependencies to the aion engine crate (CO4).",
+      "SHALL NOT implement per-endpoint granular permissions beyond namespace scoping \u2014 all operations within a namespace are permitted.",
+      "SHALL NOT implement user/role management \u2014 that is the identity provider's domain."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo clippy --workspace --all-targets --features auth -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "cargo test --workspace passes.",
+      "cargo test --workspace --features auth passes.",
+      "With auth enabled, unauthenticated requests return 401.",
+      "With auth enabled, cross-namespace requests return 403."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C27",
+        "text": "When auth.enabled=true, requests without a valid Bearer token are rejected with HTTP 401 / gRPC UNAUTHENTICATED before reaching any handler."
+      },
+      {
+        "id": "C28",
+        "text": "The token's namespace claim scopes all operations; a token for namespace A cannot start, signal, query, cancel, or list workflows in namespace B."
+      },
+      {
+        "id": "C29",
+        "text": "Worker connections authenticate with the same token mechanism; the token's namespace determines which activity tasks the worker receives."
+      },
+      {
+        "id": "C30",
+        "text": "JWKS keys are cached with configurable refresh interval; a key rotation does not require server restart."
+      },
+      {
+        "id": "C31",
+        "text": "When auth.enabled=false (default), no authentication is required and the namespace is taken from request metadata (existing NamespaceGuard behaviour)."
+      },
+      {
+        "id": "C32",
+        "text": "The auth module compiles only when cfg(feature='auth') is active; the base binary has no jsonwebtoken or JWKS dependencies."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As a security engineer, I want namespace-scoped JWT authentication so that tenants cannot access each other's workflows or activity tasks."
+      },
+      {
+        "id": "S10",
+        "text": "As a security engineer, I want requests without valid tokens to be rejected before reaching any handler so that unauthenticated traffic never touches business logic."
+      },
+      {
+        "id": "S11",
+        "text": "As a security engineer, I want JWKS key rotation without server restart so that credential rotation does not cause downtime."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No execution logic in the server. Signal wiring (AO-001) is an engine change. The server never makes durability decisions."
+      },
+      {
+        "id": "CO2",
+        "text": "No arbitrary defaults for operator-configurable values. Thread counts, timeouts, drain durations come from config."
+      },
+      {
+        "id": "CO3",
+        "text": "Feature-gated auth. The auth module is behind cfg(feature='auth'). Base binary compiles without auth dependencies."
+      },
+      {
+        "id": "CO4",
+        "text": "No new dependencies in the engine crate. Observability and config live in aion-server."
+      },
+      {
+        "id": "CO5",
+        "text": "Structured output only. No println, no unstructured log lines. Everything through tracing with structured fields."
+      }
+    ],
+    "intention": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, point Prometheus at, wire into their alerting stack, and trust with real workloads.",
+    "design_path": "docs/design/aion-operations",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, p"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

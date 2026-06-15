@@ -1,0 +1,74 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-014",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-014",
+    "cluster": "aion-dx",
+    "title": "Fix CLI run_id resolution and list request construction",
+    "depends_on": [
+      "DX-008"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "Every CLI command except 'start' is broken. 'list' returns 'invalid argument', and describe/signal/cancel/query all fail with 'run id is missing'. The CLI passes None for run_id but the server rejects requests without one. The CLI should resolve the latest run automatically \u2014 a developer should never need to know or provide a run_id for basic operations.",
+    "task": "Fix the CLI so that describe, signal, cancel, and query commands work with just a workflow_id by auto-resolving the latest run_id from the server. Fix the list command's request construction. If the server requires a run_id, the client should fetch it first via describe or list, then use it. If the server can be changed to accept None as 'latest run', that's even better.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "CLI commands work with workflow_id alone",
+        "spec": "WHEN a developer runs 'aion describe <workflow_id>' without specifying a run_id, THE SYSTEM SHALL resolve the latest run and return the description. The same applies to signal, cancel, and query. THE SYSTEM SHALL accept an optional --run-id flag for cases where a specific run is needed.",
+        "acceptance": [
+          "'aion list' returns workflow summaries without error.",
+          "'aion describe <workflow_id>' returns the workflow description with history.",
+          "'aion signal <workflow_id> <name> --payload {}' succeeds against a running workflow.",
+          "'aion cancel <workflow_id>' succeeds against a running workflow.",
+          "An optional --run-id flag is accepted by describe/signal/cancel/query."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-cli/src/main.rs",
+            "crates/aion-cli/src/payload.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the gRPC protocol definitions.",
+      "MAY change server handler code if needed to accept None as 'use latest run'.",
+      "SHALL NOT require the developer to look up or provide run_id for basic operations."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "The hello-world tutorial can be completed end-to-end using only aion-cli commands."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

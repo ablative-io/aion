@@ -1,0 +1,137 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-001",
+    "cluster": "aion-integration",
+    "title": "Wire production crash-recovery seam in aion-server",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3"
+    ],
+    "stories": [
+      "S1"
+    ],
+    "purpose": "The replay machinery exists (command/history resolution, single-writer Recorder) but the production hook DeferredActiveWorkflowRecovery in crates/aion/src/durability/recovery.rs errors for any non-coordinator active workflow. aion-server never installs a real recovery seam. A server restart with any in-flight workflow fails to boot. This is the #1 gap between 'replay library' and 'durable engine.'",
+    "task": "Implement a production-ready ActiveWorkflowRecoverySeam that uses the existing AD replay infrastructure to recover active workflows on server startup. Install it in aion-server's EngineBuilder configuration.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Production recovery seam implementation",
+        "spec": "THE SYSTEM SHALL implement ActiveWorkflowRecoverySeam that recovers active workflows by replaying their event history through the durability executor, restoring process state including the loaded workflow version, run ID, and process PID.",
+        "acceptance": [
+          "An ActiveWorkflowRecoverySeam struct exists that implements the recovery trait.",
+          "Recovery replays event history through the existing durability executor.",
+          "Restored process state includes the loaded workflow version, run ID, and process PID.",
+          "Recovery does not violate the single-writer Recorder invariant.",
+          "Recovery handles the case where a workflow completed while the server was down (no process to restore)."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Server builder integration",
+        "spec": "THE SYSTEM SHALL install the production recovery seam in aion-server's engine builder so that server restart with in-flight workflows succeeds instead of erroring.",
+        "acceptance": [
+          "aion-server's EngineBuilder configuration installs ActiveWorkflowRecoverySeam.",
+          "Server startup with pre-existing active workflows in the store boots cleanly.",
+          "The DeferredActiveWorkflowRecovery stub is no longer the default in production paths."
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Recovery verification",
+        "spec": "THE SYSTEM SHALL include an integration test that starts a workflow, stops the engine, creates a new engine with the same store, and verifies the workflow resumes from its last recorded state.",
+        "acceptance": [
+          "An integration test starts a multi-step workflow and advances it partway.",
+          "The test stops the engine cleanly.",
+          "The test creates a new engine using the same event store.",
+          "The test verifies the workflow resumes from its last recorded state and completes.",
+          "The test verifies no duplicate events are recorded during recovery replay."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify the EventStore trait or conformance suite.",
+      "SHALL NOT change the Recorder's single-writer invariant.",
+      "SHALL NOT add backwards compatibility shims."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test passes for the recovery module and the integration test.",
+      "cargo fmt --check passes.",
+      "Server boots cleanly with pre-existing active workflows in the store.",
+      "Integration test demonstrates crash-resume behavior.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "A production ActiveWorkflowRecoverySeam is implemented that recovers active workflows by replaying their event history through the durability executor, restoring process state including workflow version, run ID, and process PID."
+      },
+      {
+        "id": "C2",
+        "text": "aion-server's engine builder installs the production recovery seam so that server restart with in-flight workflows succeeds."
+      },
+      {
+        "id": "C3",
+        "text": "An integration test demonstrates crash-resume: start workflow, stop engine, create new engine with same store, verify workflow resumes from last recorded state."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an operator, I want the server to recover all in-flight workflows after a restart so that a crash or deploy does not lose running workflow state and I do not need manual intervention to resume work."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

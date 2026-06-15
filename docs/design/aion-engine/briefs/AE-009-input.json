@@ -1,0 +1,206 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-009",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-009",
+    "cluster": "aion-engine",
+    "title": "Cancel, complete, and fail lifecycle transitions",
+    "depends_on": [
+      "AE-008",
+      "AD-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C25",
+      "C26"
+    ],
+    "stories": [
+      "S6",
+      "S8"
+    ],
+    "purpose": "Implement the terminal transitions of a workflow's life: completion records the result and unblocks awaiters, failure records the terminal error, and cancellation kills the process (propagating to activity children) and records the reason. All recording goes through the workflow's single-writer Recorder. Together with start, this is the full terminal lifecycle.",
+    "task": "Implement lifecycle/terminate.rs: complete (append WorkflowCompleted through the Recorder, fulfil the completion notifier, deregister), fail (append WorkflowFailed through the Recorder, fulfil the notifier with the error, deregister), and cancel (kill the workflow process so links tear down activity children, append WorkflowCancelled through the Recorder, fulfil the notifier, deregister). Recording is via the handle's Recorder (AD-002) \u2014 never EventStore::append directly. Scope is the terminal transitions; suspend/resume are AE-010 and the Engine public methods are the engine surface.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Complete transition",
+        "spec": "WHEN a workflow function returns Ok, THE SYSTEM SHALL append WorkflowCompleted carrying the result Payload, deregister the handle, and unblock any awaiter of the workflow's result.",
+        "acceptance": [
+          "terminate.rs provides complete(id, run, result: Payload) that appends WorkflowCompleted through the handle's Recorder (which supplies the expected sequence); no direct EventStore::append.",
+          "Before the handle is removed, the completion notifier created at start (AE-008, stored on the WorkflowHandle) is fulfilled with the terminal outcome (the result Payload) so already-waiting result() callers wake; then the handle is removed from the registry.",
+          "Ownership of the result channel is fixed: it is created at start (AE-008) on the handle, fulfilled here, and consumed by Engine::result. Because the handle is deregistered on terminal, a result() call arriving AFTER completion finds no handle and instead reads the terminal WorkflowCompleted/WorkflowFailed from history (read_history) \u2014 so result() is correct whether called before or after completion.",
+          "A test completes a workflow and asserts the last event is WorkflowCompleted with the result, a pending awaiter is woken with the result, and the registry no longer holds the handle."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/lifecycle/terminate.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lifecycle/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Fail transition",
+        "spec": "WHEN a workflow function returns Err, THE SYSTEM SHALL append WorkflowFailed carrying the WorkflowError, deregister the handle, and resolve any awaiter with that error.",
+        "acceptance": [
+          "terminate.rs provides fail(id, run, error: WorkflowError) that appends WorkflowFailed through the handle's Recorder; no direct EventStore::append.",
+          "The completion notifier is fulfilled with the WorkflowError, then the handle is removed from the registry.",
+          "Any pending result() awaiter is resolved with the WorkflowError; a result() call after deregistration reads the terminal WorkflowFailed from history.",
+          "A test fails a workflow and asserts the last event is WorkflowFailed with the error and the handle is deregistered."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/terminate.rs"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Cancel transition with link propagation",
+        "spec": "WHEN cancel is requested for a workflow, THE SYSTEM SHALL kill the workflow process so its linked activity children are torn down by link propagation, append WorkflowCancelled carrying the reason, and deregister the handle. IF the workflow is not in the registry, THEN THE SYSTEM SHALL return EngineError::WorkflowNotFound.",
+        "acceptance": [
+          "terminate.rs provides cancel(id, run, reason) that looks up the handle, calls RuntimeHandle::cancel_pid on the workflow pid, appends WorkflowCancelled through the handle's Recorder (no direct EventStore::append), fulfils the completion notifier, and removes the handle.",
+          "Because activity children are linked (AE-006/AE-007), killing the workflow process terminates them with no per-child teardown loop.",
+          "Cancelling an unknown (id, run) returns EngineError::WorkflowNotFound.",
+          "A test starts a workflow with a linked activity child, cancels it, and asserts WorkflowCancelled is appended, the child is no longer alive, and the handle is deregistered."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/terminate.rs"
+          ]
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement suspend/resume \u2014 those are AE-010.",
+      "SHALL NOT decide retry or re-run a failed activity \u2014 failure here is workflow-terminal; activity retry is AT.",
+      "SHALL NOT define the Engine public cancel/result methods \u2014 those are the engine surface; this brief provides the transitions they call.",
+      "SHALL NOT append to the EventStore directly \u2014 all terminal events go through the Recorder (AD CO6).",
+      "SHALL NOT compute WorkflowStatus independently \u2014 terminal status follows from the appended event via the aion-core projection (CO10)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes against InMemoryStore.",
+      "cargo fmt --check passes.",
+      "Cancellation relies on link propagation, not a manual child loop (D5).",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C25",
+        "text": "Completion appends WorkflowCompleted with the result Payload, deregisters the handle, and unblocks result() awaiters; failure appends WorkflowFailed with the WorkflowError analogously."
+      },
+      {
+        "id": "C26",
+        "text": "cancel kills the workflow process (propagating to activity children), appends WorkflowCancelled with the reason, and deregisters the handle."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a workflow caller, I want to cancel a running workflow and have its in-flight activities torn down automatically so that cancellation leaves no orphaned work."
+      },
+      {
+        "id": "S8",
+        "text": "As a workflow caller, I want to await a workflow's result and receive either its output payload or its terminal error so that I can react to the outcome."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,91 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-012",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-012",
+    "cluster": "aion-dx",
+    "title": "Zero-config dev server mode with sensible defaults",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "A developer should be able to run 'cargo run -p aion-server' with zero flags and zero config files and get a working dev server. Temporal's 'temporal server start-dev' is the bar. Currently the server requires a TOML config file and manually editing workflow_packages. This brief makes the no-config path work with sensible dev defaults.",
+    "task": "Make aion-server start with sensible defaults when no config file is found: in-memory store, localhost:50051 gRPC + localhost:8080 HTTP, default namespace, no auth, metrics enabled. Auto-discover .aion package files in the current directory. Print a clear startup banner showing connection info and loaded packages. Add a --workflow-package CLI flag so packages can be loaded without editing config files.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Server starts with no config file",
+        "spec": "WHEN aion-server is started with no --config flag and no aion.toml in the working directory, THE SYSTEM SHALL start with: in-memory event store, gRPC on 127.0.0.1:50051, HTTP on 127.0.0.1:8080, namespace mode SharedEngine, default namespace 'default', auth disabled, metrics enabled. THE SYSTEM SHALL log a clear startup banner showing the listening addresses.",
+        "acceptance": [
+          "'cargo run -p aion-server' with no config file starts without error.",
+          "Startup log shows gRPC and HTTP addresses.",
+          "The CLI tool can connect and run 'aion list' against the default server."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/config/mod.rs",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Auto-discover workflow packages and --workflow-package flag",
+        "spec": "WHEN aion-server starts, THE SYSTEM SHALL scan the current directory for files matching *.aion and load them as workflow packages. THE SYSTEM SHALL accept --workflow-package PATH flags to load additional packages. Auto-discovered and CLI-specified packages SHALL be merged with any packages listed in the config file.",
+        "acceptance": [
+          "Placing hello-world.aion in the working directory and running aion-server loads it automatically.",
+          "'cargo run -p aion-server -- --workflow-package examples/hello-world/hello-world.aion' loads the package.",
+          "Startup log shows each loaded package name.",
+          "Config file workflow_packages and CLI --workflow-package are additive."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/config/mod.rs",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the config file format \u2014 only add defaults when no config is provided.",
+      "SHALL NOT remove support for explicit config files \u2014 they remain the production path.",
+      "SHALL NOT add database auto-creation or migration \u2014 in-memory is the dev default."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "'cargo run -p aion-server' with no config starts and accepts CLI connections.",
+      "'cargo run -p aion-server -- --workflow-package examples/hello-world/hello-world.aion' loads the package."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

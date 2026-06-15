@@ -1,0 +1,207 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-007",
+    "cluster": "aion-engine",
+    "title": "In-VM activity dispatch and outcome propagation",
+    "depends_on": [
+      "AE-002",
+      "AE-003",
+      "AE-006"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C21",
+      "C22",
+      "C23"
+    ],
+    "stories": [
+      "S11"
+    ],
+    "purpose": "Dispatch a Tier-2 in-VM activity as a linked child BEAM process and surface its outcome to the workflow process. This is the in-VM execution path; recording the activity events and deciding retry are seams owned by AD and AT, called from elsewhere.",
+    "task": "Implement the activity module: dispatch an in-VM activity as a child process linked to the workflow process, choosing the dirty scheduler when the activity's underlying NIF was registered dirty \u2014 the dirty flag is looked up from the NIF registration surface (AE-003), which records per (module, function) whether it was registered via register_dirty. Then surface the activity's outcome \u2014 a result Payload or an exit signal carrying an ActivityError \u2014 back to the workflow process through the link/mailbox. This brief performs no event recording and no retry decision; it provides the dispatch and outcome plumbing those seams build on.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Dispatch as a linked child process",
+        "spec": "WHEN an in-VM activity is dispatched, THE SYSTEM SHALL spawn it as a child BEAM process linked to the workflow process via the RuntimeHandle, running on the dirty scheduler when the activity's underlying NIF is flagged dirty.",
+        "acceptance": [
+          "dispatch.rs exposes dispatch_activity(parent_pid, deployed_module, function, input: Payload) -> Result<Pid, EngineError> that calls RuntimeHandle::spawn_activity to spawn-and-link.",
+          "The dirty flag is resolved by querying the NIF registration surface (AE-003) for (deployed_module, function): NIFs registered via register_dirty are recorded as dirty there, and dispatch consults that record \u2014 it does not guess or carry the flag separately. RuntimeHandle exposes an is_dirty(module, function) -> bool (or equivalent) lookup over the registered NIFs.",
+          "When the looked-up flag is dirty, the child runs on beamr's dirty scheduler pool; otherwise on the normal scheduler.",
+          "activity/mod.rs contains only pub mod and pub use.",
+          "A test dispatches a trivial in-VM activity from a workflow process and asserts the child is spawned and linked to the parent."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/activity/dispatch.rs",
+            "crates/aion/src/activity/mod.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Surface the outcome to the workflow process",
+        "spec": "WHEN an activity child completes, THE SYSTEM SHALL surface its result Payload to the workflow process; WHEN it exits abnormally, THE SYSTEM SHALL surface an exit signal carrying an ActivityError to the workflow process through the link/mailbox.",
+        "acceptance": [
+          "On success, the activity's result is delivered to the workflow process as a result Payload (via the mailbox / linked completion path).",
+          "On failure, the workflow process receives a trapped-exit message whose reason carries an aion_core ActivityError (preserving the retryable/terminal classification).",
+          "A test dispatches an activity that returns a value and asserts the workflow process receives the result Payload; a second test dispatches one that fails and asserts the workflow process receives an ActivityError-bearing exit."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/activity/dispatch.rs"
+          ]
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "No recording, no retry decision here",
+        "spec": "THE SYSTEM SHALL NOT append any Activity* event and SHALL NOT make any retry decision in the dispatch path; recording is delegated to the AD append path and the retry decision to AT's policy machinery.",
+        "acceptance": [
+          "dispatch.rs contains no call that appends ActivityScheduled/Started/Completed/Failed events and no RetryPolicy evaluation.",
+          "Module docs state that recording is AD's append path and retry is AT's machinery, and that dispatch only spawns, links, and propagates the outcome.",
+          "grep of activity/ shows no store append call and no retry-loop construct."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/activity/dispatch.rs"
+          ]
+        },
+        "checklist": [
+          "C23"
+        ],
+        "stories": [
+          "S11"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT record Activity* events \u2014 that is the AD append path.",
+      "SHALL NOT evaluate or apply RetryPolicy \u2014 that is AT's activity machinery, which consumes the ActivityError this brief surfaces.",
+      "SHALL NOT dispatch remote (Tier-3) activities \u2014 those ride aion-server's worker protocol (AW); this is the in-VM path only.",
+      "SHALL NOT set trap-exit or build the supervision tree \u2014 that is AE-006, on which this brief depends."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "Dispatch path performs no event recording and no retry decision (D7).",
+      "ActivityError's retryable/terminal classification is preserved through the exit reason.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C21",
+        "text": "An in-VM activity is dispatched as a child BEAM process linked to the workflow process, running on the dirty scheduler when the underlying NIF is flagged dirty."
+      },
+      {
+        "id": "C22",
+        "text": "The activity's outcome \u2014 a result Payload or an exit signal carrying an ActivityError \u2014 is surfaced back to the workflow process through the link/mailbox."
+      },
+      {
+        "id": "C23",
+        "text": "Activity dispatch performs no event recording and makes no retry decision itself; those are delegated to the AD append path and AT retry machinery."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S11",
+        "text": "As a reliability engineer, I want an activity crash to reach the workflow process as a trapped exit rather than killing it outright so that the workflow can apply its retry policy instead of dying."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

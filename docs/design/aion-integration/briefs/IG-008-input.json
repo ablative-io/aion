@@ -1,0 +1,110 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-008",
+    "cluster": "aion-integration",
+    "title": "Clean tracked process artifacts from repository",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The repo contains ~11 GB of .yggdrasil-worktrees/ plus tracked .meridian/.claude process files, a committed empty server.log, and a .commit-msg.tmp. These are development artifacts that shouldn't be in the repository \u2014 they bloat clones, leak process state, and confuse new contributors.",
+    "task": "Remove tracked development artifacts, add appropriate .gitignore entries, and document that worktrees and process files are local-only.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Gitignore coverage",
+        "spec": "THE SYSTEM SHALL add .gitignore entries for .yggdrasil-worktrees/, .meridian/, .claude/, server.log, .commit-msg.tmp, and any other development process artifacts.",
+        "acceptance": [
+          "git status shows no untracked process artifacts after the changes.",
+          "New worktrees and process files are automatically ignored.",
+          ".gitignore entries cover .yggdrasil-worktrees/, .meridian/, .claude/, server.log, and .commit-msg.tmp."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Remove tracked artifacts",
+        "spec": "THE SYSTEM SHALL remove currently tracked development artifacts from the repository index (git rm --cached) without deleting the local files.",
+        "acceptance": [
+          "git ls-files shows no .yggdrasil-worktrees entries.",
+          "git ls-files shows no .meridian entries.",
+          "git ls-files shows no .claude entries.",
+          "git ls-files shows no server.log or .commit-msg.tmp entries.",
+          "Local files remain on disk \u2014 only the git index is cleaned."
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Document development setup",
+        "spec": "THE SYSTEM SHALL add a CONTRIBUTING.md or development section noting that worktrees and process files are local-only and gitignored.",
+        "acceptance": [
+          "New developers understand that .yggdrasil-worktrees, .meridian, and .claude directories exist locally but aren't committed.",
+          "The documentation explains which directories are gitignored and why.",
+          "The documentation is discoverable from the root of the repository."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT rewrite git history (no git filter-branch or BFG).",
+      "SHALL NOT delete local working files \u2014 only untrack from git.",
+      "SHALL NOT modify .claude/settings.json or any configuration that affects Claude Code behavior."
+    ],
+    "verification": [
+      "git status is clean after the changes.",
+      ".gitignore covers all development process artifacts.",
+      "git ls-files shows no process files (.yggdrasil-worktrees, .meridian, .claude, server.log, .commit-msg.tmp).",
+      "Local development files remain on disk.",
+      "CONTRIBUTING.md or equivalent documentation exists and is accurate."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

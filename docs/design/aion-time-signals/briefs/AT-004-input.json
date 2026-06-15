@@ -1,0 +1,197 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-004",
+    "cluster": "aion-time-signals",
+    "title": "Named cancellable timers and anonymous sleeps",
+    "depends_on": [
+      "AT-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C11",
+      "C12",
+      "C13"
+    ],
+    "stories": [
+      "S1",
+      "S2"
+    ],
+    "purpose": "Provide the engine-side timer API the SDK binds to: start_timer for author-named, cancellable timers; cancel_timer to retire one; and sleep for anonymous delays with an engine-assigned TimerId. These are the verbs a workflow author reaches for (deadlines, SLAs, delays), built on the AT-002 TimerService.",
+    "task": "Implement start_timer, cancel_timer, and sleep on top of TimerService. start_timer takes an author-assigned TimerId and schedules a durable cancellable timer. cancel_timer disarms the wheel entry via the seam and records TimerCancelled, treating an already-fired timer as a no-op. sleep schedules an anonymous timer whose TimerId is engine-assigned from sequence position and is not separately cancellable.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "start_timer (named, cancellable)",
+        "spec": "WHEN start_timer is called with an author-assigned TimerId and a fire_at/duration, THE SYSTEM SHALL schedule a durable, cancellable timer via TimerService.",
+        "acceptance": [
+          "named.rs defines start_timer(workflow_id, timer_id, fire_at) that delegates to TimerService::schedule (record + arm).",
+          "The TimerId is the author-assigned one (named timer), preserved verbatim in the TimerStarted event and the schedule_timer record.",
+          "A test calls start_timer with a named TimerId and asserts a TimerStarted event with that exact id and the timer is retrievable via expired_timers at/after fire_at."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/time/named.rs"
+          ],
+          "modify": [
+            "crates/aion/src/time/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "cancel_timer",
+        "spec": "WHEN cancel_timer is called for a named timer that has not fired, THE SYSTEM SHALL disarm the wheel entry via the seam AND append a TimerCancelled event. IF the timer has already fired, THEN cancel_timer SHALL be a no-op and SHALL NOT return an error.",
+        "acceptance": [
+          "cancel_timer(workflow_id, timer_id) disarms the wheel entry (seam disarm) and appends TimerCancelled { timer_id }.",
+          "If the timer already has a recorded TimerFired, cancel_timer returns Ok without appending TimerCancelled and without disarming (no-op).",
+          "If the timer already has a recorded TimerCancelled, cancel_timer is an idempotent no-op.",
+          "A test starts a named timer, cancels it, and asserts a TimerCancelled event is recorded and the wheel entry was disarmed.",
+          "A test fires a timer then cancels it and asserts cancel is a no-op (no TimerCancelled, no error)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/time/named.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "sleep (anonymous, engine-assigned id)",
+        "spec": "WHEN sleep is called for a duration, THE SYSTEM SHALL schedule an anonymous durable timer with an engine-assigned TimerId derived from the workflow's sequence position, computing fire_at from the workflow's recorded time supplied by AD's DeterminismContext. THE SYSTEM SHALL NOT expose a separate cancel for an anonymous sleep.",
+        "acceptance": [
+          "sleep(workflow_id, duration, recorded_now) computes fire_at = recorded_now + duration, where recorded_now is the current recorded timestamp from AD's DeterminismContext (AD-006), supplied to sleep/start_timer by the workflow execution context \u2014 NOT read from the wall clock (so replay reproduces the same fire_at). It schedules via TimerService with an engine-assigned TimerId derived from sequence position (deterministic, so replay matches the same TimerId).",
+          "The anonymous TimerId derivation is deterministic given the workflow's sequence position (documented), so AD's replay reconstructs the same id.",
+          "No public cancel entrypoint accepts an anonymous-sleep timer specifically (cancelling a sleep is cancelling the workflow); doc comment states this.",
+          "A test calls sleep, asserts a TimerStarted event with an engine-derived id and the correct fire_at relative to the workflow's recorded time."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/time/named.rs"
+          ]
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement scheduling, arming, or firing \u2014 those are TimerService (AT-002).",
+      "SHALL NOT implement recovery \u2014 that is AT-003.",
+      "SHALL NOT define the Gleam workflow.sleep/start_timer/cancel_timer surface \u2014 that is AF; this brief is the engine-side mechanism it binds to.",
+      "SHALL NOT derive fire_at from the wall clock \u2014 it uses the workflow's recorded time from AD's DeterminismContext (AD-006), supplied by the caller, for determinism."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including the cancel no-op tests.",
+      "cargo fmt --check passes.",
+      "Anonymous TimerId derivation is deterministic (no random/UUID for anonymous sleeps).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C11",
+        "text": "start_timer takes an author-assigned (named) TimerId and schedules a durable, cancellable timer."
+      },
+      {
+        "id": "C12",
+        "text": "cancel_timer disarms the wheel entry and records a TimerCancelled event; cancelling an already-fired timer is a no-op, not an error."
+      },
+      {
+        "id": "C13",
+        "text": "sleep schedules an anonymous timer with an engine-assigned TimerId derived from sequence position; an anonymous sleep is not separately cancellable."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As a workflow author, I want my workflow to sleep for an arbitrary duration and resume after a VM restart so that long delays are durable, not lost on a crash."
+      },
+      {
+        "id": "S2",
+        "text": "As a workflow author, I want to start a named timer and cancel it later so that I can model deadlines and SLAs that may be retired before they elapse."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

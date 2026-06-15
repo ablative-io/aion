@@ -1,0 +1,235 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-003",
+    "cluster": "aion-durability",
+    "title": "History cursor and correlation keys",
+    "depends_on": [
+      "AD-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C11",
+      "C12",
+      "C13",
+      "C14",
+      "C15"
+    ],
+    "stories": [
+      "S2"
+    ],
+    "purpose": "Build the ordered, position-aware view over recorded history that replay consults to match each world-touching call to its recorded outcome. The correlation key is the deterministic identity that ties a call (the Nth activity, the timer named X, the kth signal of name Y) to the recorded event, so matching is exact rather than heuristic. The cursor is also the activity-result cache: there is no separate cache store.",
+    "task": "Define correlation keys (correlation.rs) and the HistoryCursor (cursor.rs). A CorrelationKey identifies a call: activity/child by scheduling ordinal (matching aion-core's ActivityId/child-WorkflowId derivation), timer by TimerId, signal by name in recorded order. The HistoryCursor wraps the Vec<Event> from read_history, walks it in sequence order, and resolves the next recorded event matching a requested family + key, advancing its position. It reports exhaustion distinctly from a mismatch, and walks past non-exhausting recorded ActivityFailed attempts so it lands on the eventual recorded outcome. Test against histories built from aion-core Events; no store needed beyond constructing the Vec.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Correlation key type and derivation",
+        "spec": "THE SYSTEM SHALL define a CorrelationKey identifying a world-touching call: an activity or child workflow by its scheduling ordinal (consistent with aion-core ActivityId / child WorkflowId derivation, AC decision D4), a timer by its TimerId, and a signal by its name paired with its zero-based occurrence index for that name.",
+        "acceptance": [
+          "correlation.rs defines CorrelationKey with variants Activity(ordinal), Child(ordinal), Timer(TimerId), Signal { name: String, index: usize }.",
+          "A function derives the CorrelationKey from a recorded Event for matchable variants (ActivityScheduled -> Activity(ordinal), TimerStarted -> Timer(id), SignalReceived -> Signal{name, index}, ChildWorkflowStarted -> Child(ordinal)).",
+          "The signal occurrence index is computed by counting prior SignalReceived events of the same name in sequence order.",
+          "CorrelationKey derives Clone, Debug, PartialEq, Eq, Hash.",
+          "A unit test derives keys from a constructed history including two signals of the same name and asserts indices 0 and 1."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/correlation.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "HistoryCursor construction and ordered walk",
+        "spec": "THE SYSTEM SHALL define HistoryCursor built from an ordered Vec<Event> (the read_history output) that walks the events in sequence order and tracks an internal position.",
+        "acceptance": [
+          "cursor.rs defines HistoryCursor holding the events and a current position index.",
+          "HistoryCursor::new(events) validates the events are in non-decreasing sequence order and returns DurabilityError::HistoryShape if not.",
+          "The cursor exposes its current position (the sequence it is about to resolve) for inclusion in NonDeterminismError.",
+          "A unit test builds a cursor from an in-order history and asserts the starting position is the first event's sequence."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/cursor.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Resolve next recorded event by family and key",
+        "spec": "WHEN asked for the next recorded outcome of a given event family and CorrelationKey, THE HistoryCursor SHALL return the matching recorded event and advance its position, OR report exhaustion if no further recorded events remain, OR report a mismatch if the next relevant recorded event differs in family or key.",
+        "acceptance": [
+          "The cursor exposes a method returning an enum: Matched(the recorded event(s)), Exhausted, or Mismatch { expected_key, found descriptor } \u2014 Exhausted and Mismatch are distinct outcomes (C14).",
+          "On a match, the position advances past the consumed event(s).",
+          "Exhausted is returned only when there is no further recorded event to consider for the requested family.",
+          "A unit test resolves an Activity(0) against a history whose next event is ActivityScheduled(0)+ActivityCompleted(0) and asserts Matched; a second call past the end asserts Exhausted; a call whose next recorded event is a different family asserts Mismatch."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/cursor.rs"
+          ]
+        },
+        "checklist": [
+          "C13",
+          "C14"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Walk past non-exhausting recorded retry attempts",
+        "spec": "WHILE resolving an activity outcome, THE HistoryCursor SHALL treat recorded ActivityFailed events that do not exhaust the retry sequence as part of the recorded attempt history and SHALL advance past them to the eventual recorded ActivityCompleted or exhausted ActivityFailed.",
+        "acceptance": [
+          "Given a recorded history ActivityScheduled(0), ActivityFailed(0, attempt 1), ActivityFailed(0, attempt 2), ActivityCompleted(0), resolving Activity(0) returns the ActivityCompleted outcome and advances past the intermediate failures.",
+          "Given a history ending in an exhausted ActivityFailed(0) (final attempt), resolving Activity(0) returns that terminal failure.",
+          "The discriminant for terminal-vs-non-final is concrete and read from history (the cursor never re-derives the retry policy): an ActivityFailed for an ordinal is non-final iff a later recorded event for the same ActivityId follows (another ActivityStarted/ActivityFailed/ActivityCompleted of that ordinal); it is terminal iff no such later event exists. The recorded ActivityError classification (Retryable vs Terminal, AC-004) and the attempt field (AC-002 R2: ActivityFailed carries attempt: u32) corroborate this \u2014 a Terminal-classified ActivityError is always the final attempt.",
+          "A unit test covers both the eventual-success and eventual-terminal-failure retry shapes, including a Terminal-classified ActivityError as the final attempt."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/cursor.rs"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT decide resume-live or invoke any LiveExecutor \u2014 the cursor only reports Matched/Exhausted/Mismatch; the Resolver (AD-004) interprets these.",
+      "SHALL NOT raise NonDeterminismError itself \u2014 it reports Mismatch as data; the Resolver converts a Mismatch into the typed error (AD-005).",
+      "SHALL NOT re-derive or apply the retry policy \u2014 it reads recorded attempt outcomes only."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes (cursor + correlation tests).",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C11",
+        "text": "A correlation key type identifies a world-touching call: activity/child by scheduling ordinal (matching ActivityId/child WorkflowId derivation), timer by TimerId, signal by name-in-recorded-order."
+      },
+      {
+        "id": "C12",
+        "text": "HistoryCursor is built from an ordered Vec<Event> (read_history output) and walks it in sequence order."
+      },
+      {
+        "id": "C13",
+        "text": "HistoryCursor resolves the next recorded event matching a given event family and correlation key, advancing its internal position."
+      },
+      {
+        "id": "C14",
+        "text": "HistoryCursor reports exhaustion (no further recorded events) distinctly from a family/key mismatch."
+      },
+      {
+        "id": "C15",
+        "text": "Recorded non-exhausting ActivityFailed attempts are walked past as part of the recorded retry sequence so the cursor lands on the eventual recorded outcome."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As the engine, I want to replay a workflow from its recorded history and have every activity, timer, signal, and child call return its recorded outcome so that I reconstruct the exact prior state without repeating side effects."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

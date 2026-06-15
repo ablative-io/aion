@@ -1,0 +1,140 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-005",
+    "cluster": "aion-integration",
+    "title": "Add continue_as_new SDK binding and NIF",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C13",
+      "C14",
+      "C15"
+    ],
+    "stories": [
+      "S3"
+    ],
+    "purpose": "The subscription lifecycle example (DX-024) calls workflow.continue_as_new which does not exist in the aion_flow SDK. Continue-as-new is essential for long-running workflows to bound event history growth \u2014 without it, workflows accumulate unbounded history.",
+    "task": "Add the continue_as_new binding to the aion_flow Gleam SDK and implement the backing NIF that records the ContinueAsNew event and terminates the current run.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "SDK binding",
+        "spec": "THE SYSTEM SHALL export continue_as_new(input: a) -> Result(Never, WorkflowError) from aion/workflow that serializes the input and calls the backing NIF.",
+        "acceptance": [
+          "aion_flow exports continue_as_new from the aion/workflow module.",
+          "The function signature is continue_as_new(input: a) -> Result(Never, WorkflowError).",
+          "The input is serialized before being passed to the NIF.",
+          "The function calls the backing continue_as_new NIF.",
+          "gleam build succeeds with the new binding."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "NIF implementation",
+        "spec": "THE SYSTEM SHALL implement continue_as_new as a NIF that records a ContinueAsNew event through the Recorder and signals the process to terminate with the continuation input.",
+        "acceptance": [
+          "A continue_as_new NIF is registered and callable from Gleam.",
+          "The NIF records a ContinueAsNew event through the Recorder.",
+          "The NIF signals the current workflow process to terminate.",
+          "The continuation input is preserved in the ContinueAsNew event payload.",
+          "The NIF does not allow continue_as_new from within an activity context."
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Engine handling",
+        "spec": "THE SYSTEM SHALL handle the ContinueAsNew termination by starting a new run of the same workflow type with the provided input and a fresh event history.",
+        "acceptance": [
+          "The engine detects ContinueAsNew process termination.",
+          "The engine starts a new run of the same workflow type.",
+          "The new run receives the continuation input from the ContinueAsNew event.",
+          "The new run starts with a fresh event history (no events from the previous run).",
+          "The previous run's events remain in the store for auditability.",
+          "The content-hash module namespacing invariant is preserved (same version module is used)."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the Event enum without updating the store conformance suite.",
+      "SHALL NOT allow continue_as_new from within an activity.",
+      "SHALL NOT break the content-hash module namespacing invariant."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test passes for the NIF and engine modules.",
+      "cargo fmt --check passes.",
+      "gleam build succeeds for the DX-024 subscription example.",
+      "Integration test demonstrates a workflow continuing as new with fresh history.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C13",
+        "text": "aion_flow exports continue_as_new(input: a) -> Result(Never, WorkflowError) that serializes the input and calls the backing NIF."
+      },
+      {
+        "id": "C14",
+        "text": "The continue_as_new NIF records a ContinueAsNew event through the Recorder and signals the process to terminate with the continuation input."
+      },
+      {
+        "id": "C15",
+        "text": "The engine handles ContinueAsNew termination by starting a new run of the same workflow type with the provided input and fresh event history."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S3",
+        "text": "As a workflow author, I want continue_as_new available in the SDK so that long-running subscription workflows can periodically reset their event history and avoid unbounded growth."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

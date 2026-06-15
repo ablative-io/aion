@@ -1,0 +1,198 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-005",
+    "cluster": "aion-durability",
+    "title": "Non-determinism violation detection",
+    "depends_on": [
+      "AD-004",
+      "AD-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C20",
+      "C21",
+      "C22"
+    ],
+    "stories": [
+      "S7"
+    ],
+    "purpose": "Complete the violation-detection path that makes Aion safe: when replayed workflow code issues a command that does not line up with recorded history, the Resolver must catch it at the point of mismatch and fail the workflow loudly with a typed error, never silently producing a wrong Resolution or corrupting state. This is the single most safety-critical behaviour in the cluster and is held to dedicated test coverage.",
+    "task": "Fill in the Resolver's Mismatch arm so a cursor Mismatch becomes a NonDeterminismError carrying the workflow id, the cursor's current sequence position, the expected command shape, and the found recorded-event shape. Wire the deterministic-failure consequence: a violation causes the workflow to fail deterministically, recording exactly one WorkflowFailed (via the Recorder from AD-002) classified as a non-determinism failure. Add the dedicated determinism-violation test file driving a recorded history that deliberately diverges from the replayed command stream. Test against InMemoryStore.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Mismatch -> typed NonDeterminismError",
+        "spec": "WHEN the HistoryCursor reports a Mismatch for an issued Command, THE Resolver SHALL raise a NonDeterminismError carrying the WorkflowId, the cursor's current sequence position, the expected command shape (family + correlation key), and the found recorded-event shape. THE Resolver SHALL NOT return any Resolution for that Command.",
+        "acceptance": [
+          "resolve(command) returns Err(NonDeterminismError{..}) when the cursor reports Mismatch.",
+          "The error's expected field names the issued Command's family and CorrelationKey; the found field names the recorded event's family and key.",
+          "The error's seq equals the cursor position at the point of mismatch.",
+          "There is no code path where a Mismatch yields Ok(Resolution) (CO10) \u2014 a test asserts the error is returned, not a guessed Resolution."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/resolver.rs"
+          ]
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Deterministic workflow failure on violation",
+        "spec": "WHEN a NonDeterminismError is raised during replay or live execution, THE SYSTEM SHALL fail the workflow deterministically by recording exactly one WorkflowFailed (via the Recorder) carrying a non-determinism failure classification, and SHALL NOT record more than one terminal failure for the same violation.",
+        "acceptance": [
+          "A function (e.g. fail_on_violation) takes the Recorder and the NonDeterminismError and records a single WorkflowFailed whose WorkflowError reflects the non-determinism classification.",
+          "Calling it is idempotent at the call site (it is invoked once per violation; a guard or single call-site ensures one terminal event).",
+          "A test seeds a workflow, triggers a violation, invokes the failure path, reads history, and asserts exactly one terminal WorkflowFailed event with the non-determinism classification.",
+          "The WorkflowError variant/message used for the non-determinism case is documented so AE surfaces it consistently."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/resolver.rs"
+          ]
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Dedicated divergence test suite",
+        "spec": "THE SYSTEM SHALL provide a dedicated test that drives a recorded history which deliberately diverges from the replayed command stream and asserts the typed NonDeterminismError with the correct expected and found shapes.",
+        "acceptance": [
+          "tests/determinism_violation.rs builds a recorded history (over InMemoryStore) and replays a command stream that diverges in two distinct ways: (a) wrong family (workflow issues a timer where history recorded an activity) and (b) wrong correlation key (workflow issues Activity(1) where history recorded Activity(0) next / a signal of the wrong name).",
+          "Each case asserts Err(NonDeterminismError) and asserts the expected and found descriptors and the sequence position.",
+          "The test is a real runtime test (not #[ignore], not env-gated) and passes under cargo test.",
+          "A control case in the same file replays a matching command stream and asserts no violation, proving the detector does not false-positive."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/tests/determinism_violation.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT weaken detection with tolerance or heuristic matching \u2014 detection is exact family + key comparison at the cursor position (CO10).",
+      "SHALL NOT swallow, log-and-continue, or retry past a violation.",
+      "SHALL NOT define the WorkflowError type itself (that is aion-core AC-004) \u2014 it selects/constructs the appropriate existing variant for the non-determinism case."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including tests/determinism_violation.rs.",
+      "cargo fmt --check passes.",
+      "Grep confirms no Mismatch arm returns Ok(Resolution) and no violation path is swallowed.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C20",
+        "text": "When the next recorded event differs in family or correlation key from the issued Command, the Resolver raises NonDeterminismError and never returns a Resolution for that command."
+      },
+      {
+        "id": "C21",
+        "text": "A non-determinism violation causes the workflow to fail deterministically: exactly one WorkflowFailed is recorded (via the Recorder) carrying the violation classification."
+      },
+      {
+        "id": "C22",
+        "text": "A dedicated test drives a recorded history that deliberately diverges from the replayed command stream (wrong activity family, wrong correlation key) and asserts the typed NonDeterminismError with correct expected/found shapes."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As an operator, I want a non-deterministic workflow to fail loudly with an error that names the workflow, the position, and what diverged so that I can find and fix the offending workflow code instead of debugging corrupted state."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

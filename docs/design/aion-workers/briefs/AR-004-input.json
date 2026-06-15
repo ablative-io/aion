@@ -1,0 +1,195 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-004",
+    "cluster": "aion-workers",
+    "title": "aion-worker (Rust) heartbeat and cooperative cancellation delivery",
+    "depends_on": [
+      "AR-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C13",
+      "C14"
+    ],
+    "stories": [
+      "S2"
+    ],
+    "purpose": "Connect the ActivityContext surfaces to the live session: a handler's ctx.heartbeat() reaches the engine, and an engine-issued cancellation flips the context's flag so a cooperative handler can stop. This is what keeps a long-running activity alive in the engine's eyes and lets it be cancelled without forced termination.",
+    "task": "Implement protocol/heartbeat.rs (heartbeat frame send + heartbeat-timeout bookkeeping) and wire the ActivityContext heartbeat seam and cancellation-flag setter from AR-003 to the WorkerSession. Heartbeats carry an optional opaque Payload of progress detail. Cancellation is delivered through the session and flips the context flag; the SDK never kills the handler task. Do not implement reconnect (AR-005).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Heartbeat frame send",
+        "spec": "WHEN a handler calls ctx.heartbeat(detail), THE SYSTEM SHALL send a heartbeat frame for the activity through the session carrying the optional opaque Payload detail. THE SYSTEM SHALL NOT heartbeat on the handler's behalf.",
+        "acceptance": [
+          "protocol/heartbeat.rs implements sending a heartbeat for an ActivityId via WorkerSession::send_heartbeat, carrying detail: Option<Payload>.",
+          "ctx.heartbeat() (the seam from AR-003) now routes to this send; the detail Payload's content-type tag is preserved per CO7.",
+          "No background timer or thread emits heartbeats automatically \u2014 only an explicit ctx.heartbeat() call sends one (per D4).",
+          "A test with the fake session asserts that a handler calling ctx.heartbeat(Some(detail)) twice results in two heartbeat frames for the correct ActivityId carrying the detail."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/protocol/heartbeat.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/protocol/mod.rs",
+            "crates/aion-worker/src/context.rs"
+          ]
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Heartbeat-timeout bookkeeping surface",
+        "spec": "THE SYSTEM SHALL track the last-heartbeat instant per in-flight activity so the worker can surface a locally-observable liveness view. THE SYSTEM SHALL NOT itself fail an activity for a missed heartbeat (the engine owns heartbeat-timeout enforcement).",
+        "acceptance": [
+          "heartbeat.rs records the last-heartbeat time per ActivityId, updated on each send.",
+          "The bookkeeping is exposed for observability/logging only; the SDK does not terminate or fail a handler on a missed local heartbeat \u2014 the engine enforces the heartbeat timeout (documented, per the boundary with AW).",
+          "A unit test asserts the last-heartbeat timestamp advances on each ctx.heartbeat() call."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/protocol/heartbeat.rs"
+          ]
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Cooperative cancellation delivery",
+        "spec": "WHEN the engine signals cancellation for an in-flight activity through the session, THE SYSTEM SHALL flip that activity's ActivityContext cancellation flag. THE SYSTEM SHALL NOT forcibly terminate the handler's task.",
+        "acceptance": [
+          "A cancellation signal received on the session (per the aion-proto cancel frame) sets the cancellation handle for the matching ActivityId, so ctx.is_cancelled() returns true and ctx.cancelled() resolves.",
+          "The handler task is not aborted, dropped, or killed by the SDK; it runs until it returns (cooperative only, per D5 / CO9).",
+          "If a handler ignores cancellation and returns Ok, the result is still reported; the engine discards it (documented \u2014 the SDK does not suppress the report).",
+          "A test signals cancellation mid-execution and asserts the handler observes ctx.is_cancelled() == true and is allowed to return on its own; assert the SDK issued no abort."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/context.rs",
+            "crates/aion-worker/src/runtime/loop_.rs"
+          ]
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT enforce heartbeat timeouts or activity timeouts \u2014 the engine owns that (AW/AT).",
+      "SHALL NOT forcibly kill, abort, or drop a running handler task \u2014 cooperative cancellation only (CO9).",
+      "SHALL NOT implement reconnect/re-report \u2014 AR-005."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-worker passes, including heartbeat and cooperative-cancellation tests.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "grep confirms no task abort/kill of a running handler (no JoinHandle::abort on the handler task)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C13",
+        "text": "ctx.heartbeat() sends a heartbeat frame carrying an optional opaque Payload of progress detail; the SDK never heartbeats on the handler's behalf."
+      },
+      {
+        "id": "C14",
+        "text": "When the engine signals cancellation for an in-flight activity, the SDK flips the ActivityContext cancellation flag; it never forcibly terminates the handler's task."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As a Python activity author, I want to heartbeat from a long-running inference job and observe cancellation so that the engine knows my job is alive and I can stop cleanly when the workflow is cancelled."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

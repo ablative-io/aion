@@ -1,0 +1,167 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-012",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-012",
+    "cluster": "aion-server",
+    "title": "Worker heartbeats and lost-worker handling",
+    "depends_on": [
+      "AW-011"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C31"
+    ],
+    "stories": [
+      "S10"
+    ],
+    "purpose": "Keep long-running remote activities alive and detect dead workers. A worker heartbeats over its stream so the engine knows its task is still running; a worker that goes silent or disconnects before reporting has its in-flight task surfaced to the engine as failed, leaving the retry decision to the engine.",
+    "task": "Implement heartbeat handling on the worker stream: track per-task liveness against a configured heartbeat window, accept Heartbeat messages (with optional progress), and when a worker misses its window or disconnects before reporting, mark it lost, remove it from the registry, and surface its in-flight task(s) to the engine as failed so the engine applies its retry policy. The window is configured, not hardcoded.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Heartbeat tracking",
+        "spec": "THE SYSTEM SHALL accept Heartbeat messages on the worker stream, recording per-task liveness against a configured heartbeat window, and SHALL accept optional progress in a heartbeat without treating it as a result.",
+        "acceptance": [
+          "heartbeat.rs tracks, per in-flight task, the time of the last heartbeat and the configured heartbeat window (from AW-006 config, no hardcoded default \u2014 CO11).",
+          "A received Heartbeat (AW-005) refreshes the task's liveness; optional progress is recorded for observability but is not an ActivityResult and does not complete the activity.",
+          "A test feeds heartbeats and asserts a task stays live across the window."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/worker/heartbeat.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/worker/mod.rs",
+            "crates/aion-server/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Lost-worker detection and failure surfacing",
+        "spec": "THE SYSTEM SHALL mark a worker lost when it misses its heartbeat window or disconnects before reporting, remove it from the registry, and surface its in-flight task(s) to the engine as failed, leaving the retry decision to the engine.",
+        "acceptance": [
+          "When a worker's last heartbeat is older than the configured window, or its stream disconnects with in-flight tasks, the worker is removed from the registry and each in-flight task is surfaced to the engine as a failed activity (D9).",
+          "The failure is surfaced via the engine's activity contract (as in AW-011 R3); the server makes no retry decision itself \u2014 the engine applies its retry/timeout policy (aion-engine D7, CO6).",
+          "The surfaced failure carries a terminal-or-retryable classification consistent with a lost worker (documented), so the engine's policy behaves correctly.",
+          "A test simulates both a missed-heartbeat timeout and an abrupt disconnect with an in-flight task, asserting the worker is deregistered and the engine's activity-failure path is invoked exactly once per in-flight task."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/worker/heartbeat.rs",
+            "crates/aion-server/src/worker/dispatch.rs"
+          ]
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT decide or perform activity retries \u2014 that is the engine's (D9, CO6).",
+      "SHALL NOT build the worker-side heartbeat sender \u2014 that is cluster AR.",
+      "SHALL NOT hardcode the heartbeat window (CO11)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-server passes.",
+      "cargo fmt --check passes.",
+      "Time-dependent tests inject the clock; no wall-clock sleeps in tests.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C31",
+        "text": "A worker that misses its heartbeat window or disconnects before reporting is marked lost and its in-flight task is surfaced to the engine as failed, leaving the retry decision to the engine."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S10",
+        "text": "As a remote worker running a long activity, I want to heartbeat so that the engine knows I am alive and does not treat my task as failed."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

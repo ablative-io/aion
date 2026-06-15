@@ -1,0 +1,230 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AP-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AP-002",
+    "cluster": "aion-package",
+    "title": "Manifest model and format versioning",
+    "depends_on": [
+      "AP-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C6",
+      "C7",
+      "C8",
+      "C9",
+      "C10"
+    ],
+    "stories": [
+      "S5",
+      "S8",
+      "S9"
+    ],
+    "purpose": "Define the manifest \u2014 the package's self-describing deployment descriptor \u2014 as a typed struct that serialises to and from manifest.json. The manifest tells the engine the entry point, the input/output shapes, the timeout, the declared activities, the content-hash version, and the format version of the .aion layout itself.",
+    "task": "Define the Manifest struct carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version (the content hash, as a value type), and format_version. Derive serde and verify lossless round-trip through manifest.json. Model declared activities and the JSON-Schema input/output descriptions as typed fields. Define the format_version constant and the surface that rejects an unknown value (the rejection itself fires in the read path, AP-006; this brief defines the field, the current value, and the check helper). Do not parse the archive or compute the hash here.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Manifest struct and serde round-trip",
+        "spec": "THE SYSTEM SHALL define Manifest as a typed struct carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version, and format_version, deriving Serialize and Deserialize, round-tripping losslessly through serde_json.",
+        "acceptance": [
+          "manifest.rs defines Manifest with fields: entry_module (logical module name), entry_function (String), input_schema, output_schema, timeout, activities, version, format_version.",
+          "Manifest derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+          "A unit test serialises a Manifest to JSON and deserialises it back, asserting equality (lossless round-trip).",
+          "Field names in the JSON form are stable and documented (the on-disk manifest.json key names are part of the format).",
+          "timeout is std::time::Duration (serde-serialised), not a bare integer with an undocumented unit."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/manifest.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C7"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Schemas and declared activities",
+        "spec": "THE SYSTEM SHALL model input_schema and output_schema as JSON-Schema descriptions of the workflow input and result Payload shapes, and SHALL model declared activities as a list where each entry identifies its activity type.",
+        "acceptance": [
+          "input_schema and output_schema hold JSON-Schema documents as serde_json::Value, describing the input and result Payload shapes (a JSON-Schema document is itself JSON, so serde_json::Value is the representation \u2014 no typed wrapper).",
+          "Declared activities are a list of entries, each carrying at least the activity type identifier the workflow invokes.",
+          "The activity-type identifiers use aion-core's conventions (no bare ad-hoc string type where aion-core provides a type).",
+          "A unit test constructs a Manifest with two declared activities and a non-trivial input/output schema and round-trips it."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/manifest.rs"
+          ]
+        },
+        "checklist": [
+          "C9",
+          "C10"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Format version field and check",
+        "spec": "THE SYSTEM SHALL define format_version identifying the .aion format schema version, expose the current supported value, and provide a check that returns the UnknownFormatVersion PackageError for any other value.",
+        "acceptance": [
+          "A constant defines the current supported format_version, and Manifest carries the field.",
+          "A function (e.g. Manifest::check_format_version) returns Ok for the supported value and Err(PackageError::UnknownFormatVersion { found }) otherwise.",
+          "A doc comment states that format_version lets a future layout change be detected rather than silently misread.",
+          "A unit test asserts the supported value passes and an unsupported value yields UnknownFormatVersion."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/manifest.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT open or parse the ZIP archive \u2014 that is the read path in AP-006.",
+      "SHALL NOT compute or set the content hash \u2014 AP-003 computes it; AP-005 stamps it into the version field.",
+      "SHALL NOT validate input Payloads against input_schema at runtime \u2014 schema validation is a consumer concern (engine/server), not the package format.",
+      "The UnknownFormatVersion rejection is invoked from the read path (AP-006); this brief defines the field, the constant, and the check helper only."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-package passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C6",
+        "text": "Manifest is a typed struct carrying entry_module, entry_function, input_schema, output_schema, timeout, declared activities, version (content hash), and format_version."
+      },
+      {
+        "id": "C7",
+        "text": "Manifest derives Serialize and Deserialize and round-trips losslessly through serde_json against manifest.json."
+      },
+      {
+        "id": "C8",
+        "text": "format_version identifies the .aion format schema version and an unknown value is rejected at load with the unknown-format_version PackageError variant."
+      },
+      {
+        "id": "C9",
+        "text": "input_schema and output_schema hold JSON-Schema descriptions of the workflow input and result Payload shapes."
+      },
+      {
+        "id": "C10",
+        "text": "Declared activities enumerate the activity types the workflow invokes, each identifying its activity type."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As a workflow author, I want to package my compiled beams and a manifest into a single .aion file so that deploying my workflow is copying one file."
+      },
+      {
+        "id": "S8",
+        "text": "As an operator, I want a .aion to be a plain ZIP with a readable manifest so that I can inspect what a package contains before deploying it."
+      },
+      {
+        "id": "S9",
+        "text": "As an operator, I want the package format version checked on load so that a future format change is detected and reported, not silently misread."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO7",
+        "text": "The content hash is computed over the canonical beam set only \u2014 never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."
+      },
+      {
+        "id": "CO8",
+        "text": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."
+      },
+      {
+        "id": "CO9",
+        "text": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."
+      },
+      {
+        "id": "CO10",
+        "text": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."
+      },
+      {
+        "id": "CO11",
+        "text": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."
+      },
+      {
+        "id": "CO12",
+        "text": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."
+      },
+      {
+        "id": "CO13",
+        "text": "The deployed-name separator is the literal '$' character (logical_name$hash). It is mandated, not illustrative: the engine (AE-005) must split on the identical character. '$' does not occur in Gleam logical module names, so the bijection stays unambiguous."
+      },
+      {
+        "id": "CO14",
+        "text": "The content hash is SHA-256 (via the sha2 crate). The algorithm is part of the format contract so packer and loader on different hosts agree."
+      }
+    ],
+    "intention": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+    "design_path": "docs/design/aion-package",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (w"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

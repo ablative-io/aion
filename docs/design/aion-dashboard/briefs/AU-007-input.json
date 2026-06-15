@@ -1,0 +1,187 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AU-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AU-007",
+    "cluster": "aion-dashboard",
+    "title": "App shell \u2014 routing, providers, layout",
+    "depends_on": [
+      "AU-004",
+      "AU-005",
+      "AU-006",
+      "AU-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C36",
+      "C37"
+    ],
+    "stories": [
+      "S12"
+    ],
+    "purpose": "Assemble the features into a coherent application: routes for the list and detail views and the provider stack (query client, namespace, websocket) they all depend on, with the whole bundle passing the house quality gates.",
+    "task": "Build the app shell: React Router routes for / (list) and /workflows/:id (detail), the provider stack (QueryClient, namespace, websocket), and the layout chrome (header with namespace selector and connection indicator). Bring the whole bundle to a clean Biome and tsc pass.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Routing and layout chrome",
+        "spec": "THE SYSTEM SHALL define routes for / (workflow list) and /workflows/:id (workflow detail) and a layout shell with a header carrying the namespace selector and the connection indicator.",
+        "acceptance": [
+          "src/app/routes.tsx defines / \u2192 WorkflowList and /workflows/:id \u2192 WorkflowDetail using React Router v7.",
+          "src/app/App.tsx renders the layout shell (header + routed content); the header includes NamespaceSelector and ConnectionIndicator.",
+          "Navigating from a list row to a detail route and back works in a render test.",
+          "Configurable base path from AU-001 is respected by the router."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/app/App.tsx",
+            "apps/aion-dashboard/src/app/routes.tsx"
+          ],
+          "modify": [
+            "apps/aion-dashboard/src/main.tsx"
+          ]
+        },
+        "checklist": [
+          "C36"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Provider stack",
+        "spec": "THE SYSTEM SHALL wire the provider stack \u2014 TanStack QueryClient, the namespace context, and the websocket connection \u2014 around the routed application.",
+        "acceptance": [
+          "src/app/providers.tsx nests QueryClientProvider \u2192 NamespaceProvider \u2192 (websocket connection lifecycle) around the router.",
+          "The websocket connects on mount and closes on unmount, and the QueryClient is configured consistently with apps/web's defaults.",
+          "A render test asserts the app mounts with all providers present and the list route renders."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/app/providers.tsx"
+          ],
+          "modify": [
+            "apps/aion-dashboard/src/app/App.tsx"
+          ]
+        },
+        "checklist": [
+          "C36"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "House quality gates clean",
+        "spec": "THE SYSTEM SHALL bring the whole dashboard bundle to a clean Biome check and a clean tsc --noEmit, with no lint-disable comments added to silence findings.",
+        "acceptance": [
+          "bun run check (Biome lint + format) passes clean across the app.",
+          "tsc --noEmit passes clean across the app.",
+          "bun run build produces the static bundle.",
+          "No biome-ignore or ts-ignore/ts-expect-error comments were added to silence findings."
+        ],
+        "files": {
+          "create": [],
+          "modify": []
+        },
+        "checklist": [
+          "C37"
+        ],
+        "stories": [
+          "S12"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement features \u2014 it composes WorkflowList, WorkflowDetail, NamespaceSelector, and ConnectionIndicator.",
+      "SHALL NOT define server endpoints, the WebSocket protocol, or asset hosting \u2014 that is cluster AW (the shell only respects the configurable base path)."
+    ],
+    "verification": [
+      "bun run check (Biome) passes clean.",
+      "tsc --noEmit passes clean.",
+      "bun run build produces a static bundle.",
+      "bun test passes for the shell render tests; no lint-disable comments added."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C36",
+        "text": "The app shell wires routing (/ list, /workflows/:id detail) and the QueryClient, namespace, and websocket providers."
+      },
+      {
+        "id": "C37",
+        "text": "bun run check (Biome lint + format) and tsc --noEmit pass clean with no lint-disable comments added to silence findings."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S12",
+        "text": "As a frontend maintainer, I want the dashboard built on the same stack and conventions as apps/web so that I can work on it without learning a new toolchain."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Match the apps/web stack exactly: React 19, TypeScript, Vite, Tailwind v4, Bun, Biome (100-char), shadcn/Radix primitives, TanStack Query. No new framework, styling system, or state library."
+      },
+      {
+        "id": "CO2",
+        "text": "Wire types come from the house generated-types pipeline (Rust #[derive(TS)] \u2192 src/types/generated/). The dashboard never hand-defines a type aion-core/aion-proto owns and never hand-edits a generated file."
+      },
+      {
+        "id": "CO3",
+        "text": "The dashboard consumes the AW API/WebSocket contract; it defines no server endpoint, no WebSocket protocol, and no asset-hosting mechanism. Not-yet-pinned contract details are isolated in the api module for a one-file change."
+      },
+      {
+        "id": "CO4",
+        "text": "Feature-folder convention from apps/web: each feature is components/ + hooks/ (+ context/lib as needed) + types.ts + index.ts. Barrels re-export; logic lives in named files."
+      },
+      {
+        "id": "CO5",
+        "text": "Server state goes through TanStack Query; live updates flow through the WebSocket manager and patch query caches or local view state. No bespoke fetch-into-useState for server data."
+      },
+      {
+        "id": "CO6",
+        "text": "Every async surface renders explicit loading, empty, and error states. No surface spins indefinitely or blanks on failure."
+      },
+      {
+        "id": "CO7",
+        "text": "The WebSocket manager reconnects with bounded backoff on drop and the active view resyncs (re-fetch history/query, or replay after last-seen sequence where supported). A connection indicator is always present; a dropped socket never leaves a silently stale view."
+      },
+      {
+        "id": "CO8",
+        "text": "The event timeline is ordered strictly by event sequence number and de-duplicates events arriving via both history fetch and live stream."
+      },
+      {
+        "id": "CO9",
+        "text": "Biome lint + format clean (bun run check) and tsc --noEmit clean. No lint-disable comments to silence findings."
+      },
+      {
+        "id": "CO10",
+        "text": "Namespace selection scopes every query and every subscription; switching namespace re-scopes both. No unscoped query when a namespace is selected."
+      }
+    ],
+    "intention": "Build the human-facing operational web UI for aion-server: a browser application that lets an operator see which workflows are running and which have failed, drill into a single execution's full event history rendered as a timeline, and watch events stream live as they happen. This cluster builds the frontend only. It consumes the HTTP/gRPC list/query/history API and the WebSocket event stream that the server (cluster AW) exposes and hosts as static assets; it does not run the engine, persist anything, or define the API. It must match the existing house frontend stack (React 19 + TypeScript + Vite + Tailwind v4 + Biome + Bun, shadcn/Radix, TanStack Query, a singleton WebSocket manager with reconnect, generated types from Rust) exactly, so it reads as part of the same codebase as apps/web. When done, an operator pointed at a running aion-server can observe every workflow in every namespace, drill into any execution's full history, and watch events stream in real time \u2014 with production-grade loading, empty, error, and reconnection behaviour throughout.",
+    "design_path": "docs/design/aion-dashboard",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the human-facing operational web UI for aion-server: a browser application that lets an operator see which workflows are running and which have failed, drill into a single execution's full event"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

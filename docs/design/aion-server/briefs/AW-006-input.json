@@ -1,0 +1,245 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-006",
+    "cluster": "aion-server",
+    "title": "aion-server crate scaffold, config, error, and shared state",
+    "depends_on": [
+      "AW-003",
+      "AW-004",
+      "AW-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C16",
+      "C17",
+      "C18",
+      "C19"
+    ],
+    "stories": [
+      "S11",
+      "S13"
+    ],
+    "purpose": "Create the standalone server binary that wraps a live Engine and exposes it over the network. Establish the crate skeleton: a thin main, Deserialize-only config (credential policy), a thiserror error taxonomy, and the shared state holding the engine handle and namespace resolver. Everything in AW-007..AW-013 builds on this.",
+    "task": "Create the aion-server crate as a workspace binary depending on aion, aion-proto, a store backend, tonic, axum, and tokio. Write a thin main.rs where anyhow is the only top-level error type. Define Deserialize-only config types (store DSN, listen ports, TLS, auth, dashboard asset path, namespace mode, worker heartbeat window, WebSocket buffer bound) with no hardcoded operational defaults. Define ServerError as a thiserror taxonomy used by the library modules. Define shared server state holding the engine handle and the NamespaceResolver, constructed once at startup.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Crate scaffold and thin main",
+        "spec": "THE SYSTEM SHALL create the aion-server crate as a workspace binary depending on aion, aion-proto, and a store backend (plus tonic, axum, tokio), with a thin main.rs in which anyhow is the only error type and a lib.rs that is declarations and re-exports only.",
+        "acceptance": [
+          "crates/aion-server exists, is registered in the workspace, and produces a binary target.",
+          "Cargo.toml declares aion, aion-proto, and a store backend among workspace deps and no other Aion crate beyond those needed.",
+          "main.rs is thin: it loads config, builds state, starts the transports, and returns anyhow::Result; anyhow appears nowhere else in the crate (CO8).",
+          "lib.rs contains only pub mod declarations and re-exports.",
+          "The crate sets unsafe_code = \"deny\"; cargo check -p aion-server passes."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/Cargo.toml",
+            "crates/aion-server/src/main.rs",
+            "crates/aion-server/src/lib.rs"
+          ],
+          "modify": [
+            "Cargo.toml"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Deserialize-only config types",
+        "spec": "THE SYSTEM SHALL define configuration types covering store DSN, listen ports, TLS material, auth, dashboard asset path, namespace mode, worker heartbeat window, and WebSocket buffer bound. Types that carry secrets SHALL derive Deserialize but NOT Serialize, and no operational value SHALL be a hardcoded default.",
+        "acceptance": [
+          "config.rs defines the config types loaded from file/env.",
+          "Secret-carrying config (store DSN, TLS key/cert material, auth token) derives Deserialize only \u2014 never Serialize (D4, CO7); a compile-time or review check confirms no Serialize derive on those types.",
+          "No operational value (port, heartbeat window, buffer bound, timeout) has a baked-in default in the crate; absence is a configuration error, and engine-owned defaults are deferred to the engine (CO11).",
+          "Loading invalid or incomplete config returns a typed ServerError, not a panic."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/config.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C17"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "ServerError taxonomy",
+        "spec": "THE SYSTEM SHALL define ServerError as a thiserror taxonomy used throughout the server's library modules, with no anyhow in library code, no unwrap/expect, and explicit lock/stream poison handling.",
+        "acceptance": [
+          "error.rs defines ServerError with thiserror, covering config, transport-bind, namespace, engine-call, and stream failures.",
+          "ServerError carries or maps to a WireError where a failure crosses the wire (per D3); internal-only failures stay ServerError.",
+          "No library module uses anyhow, .unwrap(), or .expect(); lock poison maps to a typed ServerError variant (CO8).",
+          "ServerError implements std::error::Error and Display and is Send + Sync."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Shared server state",
+        "spec": "THE SYSTEM SHALL define a shared server state holding the engine handle and the NamespaceResolver, constructed once at startup and shared across transports.",
+        "acceptance": [
+          "state.rs defines a state type holding an Arc<Engine> (or per-namespace engine access via the resolver) and the NamespaceResolver, plus the loaded config it needs.",
+          "State is constructed once in main from config and shared (cloneable Arc) into the gRPC, HTTP, WebSocket, and worker transports.",
+          "State construction validates that the engine built successfully and the store backend connected, returning ServerError on failure.",
+          "A unit test constructs state against an InMemoryStore-backed engine (per aion-engine CO13) with no database."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/state.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/lib.rs",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [
+          "C19"
+        ],
+        "stories": [
+          "S11"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the NamespaceResolver's authorisation logic \u2014 that is AW-007 (this brief declares the type and wires it into state).",
+      "SHALL NOT implement any request handler, WebSocket loop, or worker endpoint \u2014 AW-008 onward.",
+      "SHALL NOT add workflow execution logic of any kind (CO6).",
+      "SHALL NOT bake in operational defaults (CO11)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-server passes.",
+      "cargo fmt --check passes.",
+      "Inspection confirms anyhow appears only in main.rs and secret config types are Deserialize-only.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C16",
+        "text": "aion-server is a workspace member (binary) depending on aion, aion-proto, and a store backend, with a thin main.rs where anyhow is the only error type at the top level."
+      },
+      {
+        "id": "C17",
+        "text": "Config types (store DSN, listen ports, TLS, auth, dashboard asset path, namespace mode, worker heartbeat window, WebSocket buffer bound) derive Deserialize only \u2014 never Serialize \u2014 and no operational value is a hardcoded default."
+      },
+      {
+        "id": "C18",
+        "text": "ServerError is a thiserror taxonomy used throughout the server library modules; no unwrap/expect in library code and lock/stream poison is handled explicitly."
+      },
+      {
+        "id": "C19",
+        "text": "Shared server state holds the engine handle and the NamespaceResolver and is constructed once at startup."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S11",
+        "text": "As an operator, I want a single binary I point clients and workers at, configured by file/env with no baked-in defaults, so that I can run a managed deployment without embedding the engine in my own code."
+      },
+      {
+        "id": "S13",
+        "text": "As a security-conscious operator, I want credentials in config to be load-only so that a DSN, token, or TLS key can never be accidentally re-serialised into a log, error, or response."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

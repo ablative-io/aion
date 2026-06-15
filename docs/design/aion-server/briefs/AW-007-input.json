@@ -1,0 +1,176 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-007",
+    "cluster": "aion-server",
+    "title": "Namespace isolation \u2014 resolver and adapter-boundary guard",
+    "depends_on": [
+      "AW-006"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C20",
+      "C21"
+    ],
+    "stories": [
+      "S12"
+    ],
+    "purpose": "Implement multi-tenancy. A namespace isolates one tenant's workflows, events, and workers from another's. Enforcement happens at the adapter boundary before any Engine call, so no cross-namespace operation ever reaches the engine. This is a server-mode-only concern and the gate every handler passes through.",
+    "task": "Implement the NamespaceResolver that authorises a caller for a namespace and scopes an operation to it, abstracting whether namespaces map to separate engine/store instances or one shared engine with a namespace key (a deploy-time config choice). Implement a guard applied at the adapter boundary that authorises and scopes before any Engine call, rejecting cross-namespace access with a NamespaceDenied WireError.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "NamespaceResolver",
+        "spec": "THE SYSTEM SHALL implement a NamespaceResolver that authorises a caller for a requested namespace and yields a namespace-scoped engine access, abstracting the deploy-time mapping (separate engine/store per namespace vs one shared engine keyed by namespace).",
+        "acceptance": [
+          "resolver.rs defines NamespaceResolver with a method that takes the caller's credentials/identity and a requested namespace and returns either a namespace-scoped engine handle or a NamespaceDenied error.",
+          "The resolver hides whether the deployment uses per-namespace engines or one shared engine with a namespace dimension; callers see only a scoped handle (per D8).",
+          "The namespace mode is read from config (AW-006), not hardcoded.",
+          "A unit test exercises both an authorised and an unauthorised namespace request against a test resolver."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/namespace/mod.rs",
+            "crates/aion-server/src/namespace/resolver.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/lib.rs",
+            "crates/aion-server/src/state.rs"
+          ]
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Adapter-boundary guard",
+        "spec": "THE SYSTEM SHALL enforce namespace authorisation and scoping at the adapter boundary before any Engine call, so that no cross-namespace operation (start/signal/query/cancel/list/subscribe/worker dispatch) reaches the engine.",
+        "acceptance": [
+          "guard.rs provides a single entry the API handlers, the stream layer, and the worker endpoint call first, which authorises the namespace and returns the scoped handle (or NamespaceDenied) before any Engine method is invoked.",
+          "list/query/subscribe are scoped to the namespace; signal/query/cancel verify the target workflow belongs to the caller's namespace; a request that names a workflow in another namespace is rejected with NamespaceDenied and never reaches the engine.",
+          "A unit test asserts that a request scoped to namespace A cannot signal/query/cancel/list/subscribe a workflow in namespace B, and that the engine is not called on a denied request (verified against a recording fake engine handle).",
+          "The guard is the only path to a scoped engine handle; there is no way to obtain one that bypasses authorisation (CO9)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/namespace/guard.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/namespace/mod.rs",
+            "crates/aion-server/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S12"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the request handlers themselves \u2014 AW-008/AW-009 call the guard.",
+      "SHALL NOT implement worker dispatch partitioning beyond exposing the namespace scope the worker endpoint (AW-011) consumes.",
+      "SHALL NOT add workflow execution logic; the resolver only scopes and authorises access to the engine (CO6)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-server passes.",
+      "cargo fmt --check passes.",
+      "A test proves no cross-namespace operation reaches the engine (CO9).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C20",
+        "text": "A NamespaceResolver authorises a caller for a namespace and scopes an operation to it, abstracting whether namespaces map to separate engine/store instances or one shared engine with a namespace key."
+      },
+      {
+        "id": "C21",
+        "text": "Namespace authorisation and scoping happen at the adapter boundary before any Engine call; no cross-namespace operation (start/signal/query/cancel/list/subscribe/worker dispatch) reaches the engine."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S12",
+        "text": "As an operator running many tenants, I want each namespace isolated so that a caller or worker in one namespace can never touch another's workflows, events, or tasks."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,212 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AO-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AO-001",
+    "cluster": "aion-operations",
+    "title": "Wire non-resident signal delivery through residency-aware routing",
+    "depends_on": [
+      "AX-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4"
+    ],
+    "stories": [
+      "S7",
+      "S8"
+    ],
+    "purpose": "Complete the signal delivery contract so that signals to suspended workflows are recorded and delivered on resume, matching Temporal's guarantee that signals reach their target regardless of workflow residency state.",
+    "task": "Extend ConcreteSignalRouter to branch on workflow residency (Resident/NonResident/Terminal) and wire the existing SignalResumeHandoff for deferred delivery. Add a resume-transition hook in the engine that flushes deferred signals when a workflow becomes resident. The SignalResumeHandoff struct already exists, is tested, and is correct \u2014 only the wiring into the engine's signal flow and resume path is missing. IMPORTANT: 'non-resident' here means HandleResidency::Suspended \u2014 the WorkflowHandle still exists in the Registry (with its single-writer Recorder), but the BEAM process is not running. If the handle is entirely missing from the Registry, that is Unknown (WorkflowNotFound), not NonResident.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ConcreteSignalRouter branches on residency",
+        "spec": "WHEN Engine::signal() is called, THE SYSTEM SHALL resolve workflow residency and route accordingly: Resident records and delivers to mailbox, NonResident records and defers via SignalResumeHandoff, Terminal returns SignalRouterError::Terminal, Unknown returns EngineError::WorkflowNotFound. THE SYSTEM SHALL NOT deliver to a non-resident workflow's mailbox. THE SYSTEM SHALL NOT record an event for a terminal or unknown workflow.",
+        "acceptance": [
+          "Signalling a resident workflow records SignalReceived and delivers a mailbox marker (existing behaviour preserved).",
+          "Signalling a non-resident workflow records SignalReceived in the workflow's durable history and registers the signal in SignalResumeHandoff.",
+          "Signalling a terminal workflow returns a typed error and appends no event.",
+          "Signalling an unknown workflow returns WorkflowNotFound and appends no event.",
+          "The router does not call deliver_signal_received for non-resident targets."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/signal/router.rs",
+            "crates/aion/src/engine/delegated.rs"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C3"
+        ],
+        "stories": [
+          "S7",
+          "S8"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Engine holds SignalResumeHandoff and exposes it to the router",
+        "spec": "THE SYSTEM SHALL hold a shared SignalResumeHandoff instance in the Engine, accessible to the ConcreteSignalRouter for deferral and to the resume path for delivery. THE SYSTEM SHALL NOT create multiple handoff instances per engine lifecycle.",
+        "acceptance": [
+          "Engine struct has a field for Arc<SignalResumeHandoff>.",
+          "ConcreteSignalRouter receives the handoff reference at construction time.",
+          "EngineBuilder wires the handoff through signal_router_factory.",
+          "The same handoff instance is used by both the router and the resume path."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/api.rs",
+            "crates/aion/src/engine/builder.rs",
+            "crates/aion/src/signal/router.rs"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Resume transition flushes deferred signals",
+        "spec": "WHEN a workflow transitions from Suspended to Resident (handle re-registered after recovery or explicit resume), THE SYSTEM SHALL invoke SignalResumeHandoff::deliver_deferred() for that workflow, delivering all queued signals in FIFO order through the workflow's mailbox. THE SYSTEM SHALL NOT block the resume path on signal delivery failure \u2014 failed deliveries are logged and dropped (the signal is already recorded; replay will re-deliver).",
+        "acceptance": [
+          "After a workflow is made resident, all previously deferred signals are delivered to its mailbox.",
+          "Signals are delivered in the order they were deferred (FIFO).",
+          "A delivery failure for one signal does not prevent delivery of subsequent signals.",
+          "On engine restart, the handoff is empty \u2014 no stale signals carried across lifecycles."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/api.rs",
+            "crates/aion/src/lifecycle/start.rs"
+          ]
+        },
+        "checklist": [
+          "C2",
+          "C4"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Integration test for non-resident signal delivery",
+        "spec": "THE SYSTEM SHALL include an integration test that starts a workflow, suspends it (or simulates non-residency), sends a signal, verifies the signal is recorded but not delivered, then resumes the workflow and verifies the signal is delivered from the handoff.",
+        "acceptance": [
+          "Test creates a workflow, marks it non-resident in the registry.",
+          "Test signals the workflow and asserts SignalReceived event is in history.",
+          "Test asserts no mailbox message was delivered while non-resident.",
+          "Test makes the workflow resident again and asserts the signal is delivered.",
+          "cargo test -p aion --test engine_signal passes with the new test."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/tests/engine_signal.rs"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C2",
+          "C3"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement signal persistence beyond the existing event recording \u2014 durability is handled by AD replay, not by persisting the handoff queue.",
+      "SHALL NOT change the SignalResumeHandoff API \u2014 it is already correct and tested.",
+      "SHALL NOT implement non-resident signal delivery for the schedule coordinator workflow.",
+      "SHALL NOT add dependencies to the aion engine crate."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "cargo test --workspace passes.",
+      "Signalling a non-resident workflow records the event and defers delivery.",
+      "Resuming a workflow with deferred signals delivers them in order."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "Engine signal() branches on workflow residency: Resident delivers immediately, NonResident records and defers, Terminal returns typed error, Unknown returns WorkflowNotFound."
+      },
+      {
+        "id": "C2",
+        "text": "SignalResumeHandoff::deliver_deferred() is invoked when a workflow transitions from Suspended to Resident, delivering all queued signals in FIFO order."
+      },
+      {
+        "id": "C3",
+        "text": "A signal to a non-resident workflow appears in the workflow's durable history as a SignalReceived event even before the workflow resumes."
+      },
+      {
+        "id": "C4",
+        "text": "On engine restart, in-memory SignalResumeHandoff is empty; AD replay re-delivers recorded signals from history during deterministic replay (no double-delivery)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As a workflow author, I want signals sent to my workflow while it is suspended to be delivered when it resumes so that I do not lose coordination messages from external systems."
+      },
+      {
+        "id": "S8",
+        "text": "As a workflow author, I want a clear error when I signal a terminal workflow so that I can distinguish between 'not yet delivered' and 'permanently unreachable'."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No execution logic in the server. Signal wiring (AO-001) is an engine change. The server never makes durability decisions."
+      },
+      {
+        "id": "CO2",
+        "text": "No arbitrary defaults for operator-configurable values. Thread counts, timeouts, drain durations come from config."
+      },
+      {
+        "id": "CO3",
+        "text": "Feature-gated auth. The auth module is behind cfg(feature='auth'). Base binary compiles without auth dependencies."
+      },
+      {
+        "id": "CO4",
+        "text": "No new dependencies in the engine crate. Observability and config live in aion-server."
+      },
+      {
+        "id": "CO5",
+        "text": "Structured output only. No println, no unstructured log lines. Everything through tracing with structured fields."
+      }
+    ],
+    "intention": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, point Prometheus at, wire into their alerting stack, and trust with real workloads.",
+    "design_path": "docs/design/aion-operations",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, p"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

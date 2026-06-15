@@ -1,0 +1,200 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-008",
+    "cluster": "aion-engine",
+    "title": "Workflow start lifecycle transition",
+    "depends_on": [
+      "AE-004",
+      "AE-005",
+      "AE-006",
+      "AD-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C24"
+    ],
+    "stories": [
+      "S5"
+    ],
+    "purpose": "Implement the start of a workflow's life: assign its identifiers, create its single-writer Recorder, record WorkflowStarted through it, spawn its process under the right supervisor, register the handle (with its completion notifier), and return it. This is the entry point start_workflow drives.",
+    "task": "Implement lifecycle/start.rs: a start operation that takes a loaded workflow type and an input Payload, assigns a WorkflowId and RunId, creates the workflow's AD Recorder (AD-002) \u2014 the single writer for its history \u2014 appends WorkflowStarted through that Recorder (the Recorder owns the expected-sequence head; the engine never appends to the store directly, per AD CO6), resolves the deployed entry module/function via the loader record, spawns the workflow process under its per-type supervisor with trap-exit set, registers the WorkflowHandle (including a completion notifier and its Recorder), and returns it. Scope is start only \u2014 cancel/complete/fail are AE-009 and suspend/resume are AE-010.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Assign identifiers and append WorkflowStarted through the Recorder",
+        "spec": "WHEN starting a workflow, THE SYSTEM SHALL assign a fresh WorkflowId and RunId, create the workflow's single-writer Recorder (AD-002), and append WorkflowStarted (workflow type, input Payload, timestamp) through that Recorder, which owns the expected-sequence head for the new history.",
+        "acceptance": [
+          "start.rs assigns a new WorkflowId and RunId for the execution.",
+          "It creates the AD Recorder for the new workflow (initial sequence head 0) and appends WorkflowStarted (workflow type + input Payload) through it; the engine does not call EventStore::append directly and does not compute expected_seq itself \u2014 the Recorder is the single writer and the sequence-head authority (AD CO6/CO7).",
+          "A Recorder/append error surfaces as EngineError::Store (or EngineError::Durability) with no process spawned.",
+          "A test starts a workflow against InMemoryStore and asserts the first event in history is WorkflowStarted at sequence 0 with the given type and input."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/lifecycle/start.rs",
+            "crates/aion/src/lifecycle/mod.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Resolve deployed entry module and spawn under the supervisor",
+        "spec": "THE SYSTEM SHALL resolve the workflow type to its deployed entry module and function via the loader record and SHALL spawn the workflow process under its per-type supervisor with trap-exit set. IF the workflow type is not loaded, THEN THE SYSTEM SHALL return EngineError::WorkflowNotFound and append nothing.",
+        "acceptance": [
+          "start.rs looks up the LoadedWorkflow record (from AE-005) to get the deployed entry module/function and version.",
+          "It ensures the per-type supervisor (AE-006) and spawns the workflow process under it via RuntimeHandle::spawn_workflow, with trap-exit set per the supervision policy (AE-006).",
+          "An unloaded workflow type returns EngineError::WorkflowNotFound and produces no WorkflowStarted append (the type check precedes the append).",
+          "A test starts an unknown type and asserts WorkflowNotFound with an empty store."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/start.rs"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Register the handle (with completion notifier) and return it",
+        "spec": "WHEN the workflow process is spawned, THE SYSTEM SHALL register a WorkflowHandle keyed by (WorkflowId, RunId) with status Running and a freshly-created completion notifier, and SHALL return the handle to the caller.",
+        "acceptance": [
+          "On successful spawn, a WorkflowHandle (pid, type, version, status Running, residency Resident, the workflow's Recorder, and a completion notifier) is inserted into the registry under (WorkflowId, RunId).",
+          "The completion notifier is created here at start and stored on the handle; it is the channel a later result() awaiter blocks on and that the terminal transitions (AE-009) fulfil. A oneshot is insufficient (multiple awaiters); use a multi-consumer notifier (e.g. a watch/broadcast of the eventual TerminalOutcome) so any number of result() callers can observe completion.",
+          "start returns the WorkflowHandle to the caller.",
+          "A test starts a workflow and asserts the registry contains a Running, Resident handle with a completion notifier for the new (WorkflowId, RunId) and that the returned handle matches.",
+          "IF the registry lock is poisoned, the operation returns EngineError::RegistryPoisoned."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/start.rs"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S5"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement cancel/complete/fail \u2014 those are AE-009.",
+      "SHALL NOT implement suspend/resume \u2014 those are AE-010.",
+      "SHALL NOT implement the replay path used to re-create handles (and Recorders) on restart \u2014 that is AD (recovery, AD-009).",
+      "SHALL NOT define the Engine public method \u2014 start_workflow on Engine is the engine surface; this brief provides the lifecycle operation it calls.",
+      "SHALL NOT append to the EventStore directly \u2014 all appends go through the Recorder (AD CO6)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes against InMemoryStore.",
+      "cargo fmt --check passes.",
+      "WorkflowStarted is appended before the handle is registered; an unloaded type appends nothing.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C24",
+        "text": "start_workflow assigns a WorkflowId and RunId, appends WorkflowStarted via the store, spawns the workflow process for the loaded type, registers the handle, and returns a WorkflowHandle."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As a workflow caller, I want to start a workflow by type and get a handle so that I can later await its result or cancel it by ID."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

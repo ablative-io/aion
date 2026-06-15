@@ -1,0 +1,203 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AU-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AU-003",
+    "cluster": "aion-dashboard",
+    "title": "Aion event WebSocket manager with reconnect and resync",
+    "depends_on": [
+      "AU-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C10",
+      "C11",
+      "C12",
+      "C13",
+      "C14"
+    ],
+    "stories": [
+      "S3"
+    ],
+    "purpose": "Provide the live spine of the dashboard: a singleton WebSocket manager that subscribes to the server's event stream, parses typed events, and survives network drops with bounded reconnect and active-view resync.",
+    "task": "Build a singleton WebSocket manager modelled on apps/web's, specialised for the Aion event protocol: subscribe by filter (per-workflow, filtered, firehose), parse incoming frames into typed Event values, dispatch to handlers, reconnect with bounded backoff on drop, re-establish the active subscription and trigger a resync, and expose connection status to the UI.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Singleton manager and subscription protocol",
+        "spec": "THE SYSTEM SHALL implement a singleton WebSocket manager that connects to the server's event endpoint and supports subscribe-by-filter for per-workflow, filtered, and firehose subscriptions, parsing incoming frames into typed Event values and dispatching them to registered handlers.",
+        "acceptance": [
+          "src/lib/api/websocket.ts defines a singleton manager modelled on apps/web's (handler set, connect(), close(), subscribe()/unsubscribe()).",
+          "subscribe accepts a filter descriptor (per-workflow id, filtered by type/status/namespace, or firehose) and registers a handler; the manager sends the AW subscribe message for that filter.",
+          "Incoming frames are JSON-parsed into typed Event values and dispatched to the matching handlers; parse failures are logged, not thrown into the UI.",
+          "The subscribe-message shape and the event-frame shape are isolated in this module as the AW protocol surface (single place to update when AW pins it).",
+          "A unit test feeds synthetic frames through a mocked socket and asserts handlers receive typed events."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/lib/api/websocket.ts"
+          ],
+          "modify": [
+            "apps/aion-dashboard/src/lib/api/index.ts"
+          ]
+        },
+        "checklist": [
+          "C10",
+          "C11"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Bounded reconnect and resync on drop",
+        "spec": "WHEN the socket disconnects, THE SYSTEM SHALL reconnect with bounded backoff, re-establish the active subscription on reconnect, and signal a resync so the active view can re-fetch or replay after its last-seen sequence. THE SYSTEM SHALL notify connect/disconnect handlers throughout.",
+        "acceptance": [
+          "On unexpected close the manager retries with bounded backoff up to a configured attempt ceiling, then surfaces a disconnected state (no infinite tight-loop reconnect).",
+          "On successful reconnect the manager re-sends the active subscription message and fires a resync notification to subscribers.",
+          "Subscribers can supply a last-seen sequence so resync replays after_seq where the AW protocol supports it; otherwise resync falls back to a full re-fetch signal.",
+          "connect and disconnect handler sets are notified on each transition.",
+          "A unit test simulates a drop and asserts reconnect is attempted, the subscription is re-sent, and a resync is signalled."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "apps/aion-dashboard/src/lib/api/websocket.ts"
+          ]
+        },
+        "checklist": [
+          "C12",
+          "C13"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Connection status hook",
+        "spec": "THE SYSTEM SHALL expose a useConnectionStatus hook returning the live connection state (connected, reconnecting, disconnected) for the UI to render an indicator.",
+        "acceptance": [
+          "src/features/live-feed/hooks/useConnectionStatus.ts subscribes to the manager's connect/disconnect transitions and returns a connected | reconnecting | disconnected state.",
+          "The hook cleans up its subscription on unmount.",
+          "A test drives the manager through connect \u2192 drop \u2192 reconnect and asserts the hook reports the matching state sequence."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/features/live-feed/hooks/useConnectionStatus.ts"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the WebSocket endpoint or protocol \u2014 that is cluster AW; this brief implements a client for it.",
+      "SHALL NOT wire subscriptions into the list/detail views \u2014 that is AU-009.",
+      "SHALL NOT render the connection indicator component \u2014 that is AU-008 (this brief provides the status hook it consumes)."
+    ],
+    "verification": [
+      "bun run check (Biome) passes clean.",
+      "tsc --noEmit passes clean.",
+      "bun test passes for the manager and hook unit tests.",
+      "No lint-disable comments added; reconnect is bounded (no infinite tight loop)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C10",
+        "text": "A singleton WebSocket manager connects to the server's event stream and exposes subscribe-by-filter for per-workflow, filtered, and firehose subscriptions."
+      },
+      {
+        "id": "C11",
+        "text": "The manager parses incoming frames into typed Event values and dispatches them to registered handlers."
+      },
+      {
+        "id": "C12",
+        "text": "On disconnect the manager reconnects with bounded backoff and notifies connect/disconnect handlers driving a connection indicator."
+      },
+      {
+        "id": "C13",
+        "text": "On reconnect the active subscription is re-established and a resync is triggered (re-fetch or replay after last-seen sequence where the protocol supports it)."
+      },
+      {
+        "id": "C14",
+        "text": "A useConnectionStatus hook exposes connected/reconnecting/disconnected state for the UI."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S3",
+        "text": "As an on-call operator, I want a persistent connection indicator and automatic reconnection so that I always know whether what I am looking at is current, and the view resumes after a network blip."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Match the apps/web stack exactly: React 19, TypeScript, Vite, Tailwind v4, Bun, Biome (100-char), shadcn/Radix primitives, TanStack Query. No new framework, styling system, or state library."
+      },
+      {
+        "id": "CO2",
+        "text": "Wire types come from the house generated-types pipeline (Rust #[derive(TS)] \u2192 src/types/generated/). The dashboard never hand-defines a type aion-core/aion-proto owns and never hand-edits a generated file."
+      },
+      {
+        "id": "CO3",
+        "text": "The dashboard consumes the AW API/WebSocket contract; it defines no server endpoint, no WebSocket protocol, and no asset-hosting mechanism. Not-yet-pinned contract details are isolated in the api module for a one-file change."
+      },
+      {
+        "id": "CO4",
+        "text": "Feature-folder convention from apps/web: each feature is components/ + hooks/ (+ context/lib as needed) + types.ts + index.ts. Barrels re-export; logic lives in named files."
+      },
+      {
+        "id": "CO5",
+        "text": "Server state goes through TanStack Query; live updates flow through the WebSocket manager and patch query caches or local view state. No bespoke fetch-into-useState for server data."
+      },
+      {
+        "id": "CO6",
+        "text": "Every async surface renders explicit loading, empty, and error states. No surface spins indefinitely or blanks on failure."
+      },
+      {
+        "id": "CO7",
+        "text": "The WebSocket manager reconnects with bounded backoff on drop and the active view resyncs (re-fetch history/query, or replay after last-seen sequence where supported). A connection indicator is always present; a dropped socket never leaves a silently stale view."
+      },
+      {
+        "id": "CO8",
+        "text": "The event timeline is ordered strictly by event sequence number and de-duplicates events arriving via both history fetch and live stream."
+      },
+      {
+        "id": "CO9",
+        "text": "Biome lint + format clean (bun run check) and tsc --noEmit clean. No lint-disable comments to silence findings."
+      },
+      {
+        "id": "CO10",
+        "text": "Namespace selection scopes every query and every subscription; switching namespace re-scopes both. No unscoped query when a namespace is selected."
+      }
+    ],
+    "intention": "Build the human-facing operational web UI for aion-server: a browser application that lets an operator see which workflows are running and which have failed, drill into a single execution's full event history rendered as a timeline, and watch events stream live as they happen. This cluster builds the frontend only. It consumes the HTTP/gRPC list/query/history API and the WebSocket event stream that the server (cluster AW) exposes and hosts as static assets; it does not run the engine, persist anything, or define the API. It must match the existing house frontend stack (React 19 + TypeScript + Vite + Tailwind v4 + Biome + Bun, shadcn/Radix, TanStack Query, a singleton WebSocket manager with reconnect, generated types from Rust) exactly, so it reads as part of the same codebase as apps/web. When done, an operator pointed at a running aion-server can observe every workflow in every namespace, drill into any execution's full history, and watch events stream in real time \u2014 with production-grade loading, empty, error, and reconnection behaviour throughout.",
+    "design_path": "docs/design/aion-dashboard",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the human-facing operational web UI for aion-server: a browser application that lets an operator see which workflows are running and which have failed, drill into a single execution's full event"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

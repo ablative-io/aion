@@ -1,0 +1,110 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-005",
+    "cluster": "aion-dx",
+    "title": "Fix README status, add aion_flow README, and root-level getting started",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The root README says 'implementation not yet started' (false \u2014 135+ briefs are landed and working). The aion_flow SDK has no README. There are no root-level prerequisites or getting-started docs. New developers either think the project isn't built or can't find where to start.",
+    "task": "Update the root README status to reflect reality. Write a README for the aion_flow Gleam SDK explaining the API, types, and how to write a workflow. Add a root-level GETTING-STARTED.md with prerequisites and a quickstart path.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Fix root README status section",
+        "spec": "THE SYSTEM SHALL update the root README's Status section to accurately reflect: engine complete, server functional, worker SDKs available, three working examples. THE SYSTEM SHALL NOT claim features that don't work (e.g. don't claim dashboard is functional if it's an empty shell).",
+        "acceptance": [
+          "Status section says the engine is implemented and functional.",
+          "Status section lists what works and what's in progress honestly.",
+          "No claim of 'implementation not yet started' exists anywhere."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "README.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Write aion_flow SDK README",
+        "spec": "THE SYSTEM SHALL create a README.md in the aion_flow Gleam SDK directory explaining: what it is, how to define a workflow, how to declare activities, how to use signals/timers/queries, and a minimal example. THE SYSTEM SHALL reference the hello-world example for a complete working sample.",
+        "acceptance": [
+          "gleam/aion_flow/README.md exists.",
+          "README explains the core API: workflow definition, activity calls, signals.",
+          "README includes a minimal code example.",
+          "README links to the hello-world example for a full walkthrough."
+        ],
+        "files": {
+          "create": [
+            "gleam/aion_flow/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Root-level GETTING-STARTED.md",
+        "spec": "THE SYSTEM SHALL create a GETTING-STARTED.md at the repo root listing prerequisites (Rust, Gleam, Python for workers), the quickstart path (hello-world example), and links to deeper documentation. THE SYSTEM SHALL be copy-pasteable \u2014 a developer can go from clone to running workflow in the listed steps.",
+        "acceptance": [
+          "GETTING-STARTED.md exists at repo root.",
+          "Prerequisites listed: Rust toolchain, Gleam, Python (optional for workers).",
+          "Steps to run hello-world are complete and copy-pasteable.",
+          "Links to examples/, docs/API.md, and aion_flow README."
+        ],
+        "files": {
+          "create": [
+            "GETTING-STARTED.md"
+          ],
+          "modify": [
+            "README.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT rewrite the entire README \u2014 only fix the Status section and add links.",
+      "SHALL NOT document features that don't work yet (dashboard, some SDK features).",
+      "SHALL NOT duplicate the hello-world README \u2014 link to it instead."
+    ],
+    "verification": [
+      "Root README Status section is accurate.",
+      "gleam/aion_flow/README.md exists and is informative.",
+      "GETTING-STARTED.md exists with copy-pasteable quickstart.",
+      "No broken links in any of the documents."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,90 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-009",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-009",
+    "cluster": "aion-dx",
+    "title": "Fix Python worker connection lifecycle and reconnect",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The Python worker logs 'Connected successfully' before any TCP connection occurs (gRPC channels are lazy), then crashes on first real RPC if the server isn't running. The reconnect loop logs 'reconnecting' but immediately re-raises the exception, terminating the program. Both behaviors mislead developers and prevent production use.",
+    "task": "Fix the Python worker SDK so that (1) 'Connected' is logged only after a successful register handshake with the server, and (2) the reconnect loop actually retries with exponential backoff instead of crashing.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Defer connection success log until server handshake",
+        "spec": "WHEN the Python worker starts, THE SYSTEM SHALL NOT log 'Connected successfully' until the register request has been sent and acknowledged by the server. IF the server is unreachable, THE SYSTEM SHALL log an ERROR with the connection failure reason.",
+        "acceptance": [
+          "Starting the worker with no server running does NOT show 'Connected successfully'.",
+          "Starting the worker with no server running shows an error message with the address.",
+          "Starting the worker with a running server shows 'Connected' only after registration completes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/loop.py",
+            "sdks/python/aion-worker/aion_worker/session.py"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Fix reconnect loop to actually retry",
+        "spec": "WHEN a worker session fails, THE SYSTEM SHALL retry with exponential backoff using the ReconnectConfig parameters (initial_delay, max_delay, max_attempts). THE SYSTEM SHALL NOT immediately re-raise the exception. THE SYSTEM SHALL log each retry attempt with the delay and attempt number.",
+        "acceptance": [
+          "Worker reconnects after server restart without manual intervention.",
+          "Reconnect logs show 'Reconnecting in Xs (attempt N/M)'.",
+          "Worker exits cleanly after max_attempts is exceeded.",
+          "ReconnectConfig parameters (delays, max_attempts) are respected."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/loop.py",
+            "sdks/python/aion-worker/aion_worker/reconnect.py"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the worker gRPC protocol.",
+      "SHALL NOT add new Python dependencies.",
+      "SHALL NOT change the public WorkerConfig API."
+    ],
+    "verification": [
+      "Worker started without server shows error, not 'Connected successfully'.",
+      "Worker started with server shows 'Connected' after registration.",
+      "Worker survives server restart and reconnects automatically."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

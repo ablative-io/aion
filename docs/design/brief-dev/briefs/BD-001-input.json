@@ -1,0 +1,307 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "BD-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "BD-001",
+    "cluster": "brief-dev",
+    "title": "Stage contracts, brief document types, and generated codecs",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5"
+    ],
+    "stories": [
+      "S5"
+    ],
+    "design_anchor": [
+      "ADR-002",
+      "ADR-007"
+    ],
+    "purpose": "Lands the v2 stage contracts inside the stacked-dev package and makes the brief document itself a typed value the workflow family can carry. The three stage-contract schemas (scout-report, dev-report, review-report) are copied from the design-system canon, drift-gated byte-for-byte, and fed to aion codegen so the stage payload codecs are generated from the same schemas authors validate against (ADR-007, S5). The brief document and the pre-resolved reference context get hand-written Gleam types and codecs, round-tripped against this cluster's own seeded brief files, so every later brief (prompts, pipeline, enrichment, dispatch) builds on one typed vocabulary instead of unstructured document strings.",
+    "task": "Three strands of work in the examples/stacked-dev package. (1) Schemas: copy the three stage-contract canon files from docs/design-system/schemas/ into examples/stacked-dev/schemas/ under the package naming convention (canon uses hyphens and a .schema.json suffix: scout-report.schema.json becomes scout_report.json, dev-report.schema.json becomes dev_report.json, review-report.schema.json becomes review_report.json \u2014 codegen requires snake_case stems). Content is byte-identical; only the filename changes. A drift-gate script encodes exactly that rename mapping and runs from the gleeunit suite. (2) Codegen: aion codegen reads EVERY schemas/*.json in the project (verified against docs/guides/codegen.md and crates/aion-cli/src/codegen.rs) and fails the whole run on $ref/$defs. Of the six existing workflow-IO schemas, exactly one \u2014 schemas/onatopp_input.json \u2014 uses $ref/$defs; the other five are already inside the codegen v1 subset. So this brief inlines onatopp_input.json's $defs/workspace into its workspace property (a semantics-preserving rewrite; the file itself is retired later by BD-003, but C3 requires codegen --check green at THIS brief's landing, so the inline happens here \u2014 called out as a scope-forward edit). The generated module src/aion_stacked_dev_io.gleam (module name comes from gleam.toml name = aion_stacked_dev) will therefore also contain types for the six workflow-IO schemas; those are an unused byproduct kept in sync by --check \u2014 the workflow modules keep using the hand-written codecs in codecs_workflows.gleam, because workflow ERROR unions can never be generated (codegen v1 rejects unions; design non-goal). (3) Types and codecs: brief document types (authored fields, optional scout/dev/review blocks per requirement, optional execution block \u2014 mirroring docs/design-system/schemas/brief.schema.json field-for-field) and resolved-context types in src/stacked_dev/types.gleam, with hand-written codecs in a new module src/stacked_dev/codecs_brief.gleam (hand-written because the brief document is not a package dispatch schema; its canon lives in the design system \u2014 C4). Round-trip tests use docs/design/brief-dev/briefs/BD-001.json \u2014 this very file \u2014 as the seeded fixture (the checklist's 'seeded RM-011 brief files' phrasing predates the seeding; the brief-dev cluster's own briefs are the real seeded files). 'Byte-faithfully' is delivered as lossless-and-deterministic: decode loses nothing, encode is canonical and stable (decode-encode-decode yields an equal value and a byte-identical re-encode); reproducing the pretty-printed on-disk formatting is NOT required \u2014 on-disk writing belongs to BD-004's enrichment. Scope-forward additions, called out per BRIEF.md: ResolvedAdr carries decided_by beyond the minimal {id,title,decision,quote} so projections can attribute quotes to their speaker (P6/C7), and ResolvedContext carries intention, constraints, and design_path because PROMPTING.md's 'What Every Stage Gets' requires design context and the design file reference in every stage prompt \u2014 BD-002 consumes these. Note on C2/C3 wording: the drift gate 'runs as part of the test gate' via a gleeunit test in this brief; registering codegen --check 'in CI' beyond the command passing locally rides the cluster gates item C38 (BD-007). Coverage split: C4 and C5 are delivered across R4 (types), R5 (codecs), and R6 (round-trip tests). The new files codecs_brief.gleam, test/schema_drift_test.gleam, test/brief_codecs_test.gleam, and test/support/fixtures.* are not in the design.json structure array (the structure pins no unit-test or codec-module paths for this work); per CLAUDE.md the brief is authoritative over the structure annotation.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Copy the stage-contract canon into the package schemas",
+        "spec": "Structural. Create examples/stacked-dev/schemas/scout_report.json, dev_report.json, and review_report.json as byte-identical copies of docs/design-system/schemas/scout-report.schema.json, dev-report.schema.json, and review-report.schema.json respectively. Only the filename changes (hyphen to underscore, .schema.json suffix dropped); every byte of content is preserved. The copies SHALL NOT be reformatted, re-indented, or edited in any way.",
+        "acceptance": [
+          "diff docs/design-system/schemas/scout-report.schema.json examples/stacked-dev/schemas/scout_report.json exits 0.",
+          "diff docs/design-system/schemas/dev-report.schema.json examples/stacked-dev/schemas/dev_report.json exits 0.",
+          "diff docs/design-system/schemas/review-report.schema.json examples/stacked-dev/schemas/review_report.json exits 0.",
+          "python3 -c \"import json; print(json.load(open('examples/stacked-dev/schemas/scout_report.json'))['title'])\" prints 'Scout Report'."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/schemas/scout_report.json",
+            "examples/stacked-dev/schemas/dev_report.json",
+            "examples/stacked-dev/schemas/review_report.json"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Schema drift gate script wired into the test suite",
+        "spec": "WHEN examples/stacked-dev/scripts/check-schema-drift.sh is invoked, THE SYSTEM SHALL compare each package stage-contract schema byte-for-byte (cmp) against its canon file using the fixed rename mapping (scout_report.json vs scout-report.schema.json, dev_report.json vs dev-report.schema.json, review_report.json vs review-report.schema.json), resolving both paths from the script's own location so the script works from any cwd. IF any pair differs or either file is missing, THEN THE SYSTEM SHALL exit non-zero and print the name of every drifted or missing package schema. The script SHALL NOT rewrite either side, SHALL NOT compare the workflow-IO schemas (input.json, output.json, gate_input.json, gate_output.json \u2014 those are hand-owned, CN7 covers stage contracts only), and SHALL NOT exit zero while any pair differs. A gleeunit test (test/schema_drift_test.gleam) SHALL run the script through stacked_dev/cli.run from the package root and fail when the script exits non-zero, so the drift gate runs with the package test suite (C2).",
+        "acceptance": [
+          "On a clean tree, bash examples/stacked-dev/scripts/check-schema-drift.sh exits 0 and its output names all three pairs checked.",
+          "After appending one newline byte to examples/stacked-dev/schemas/scout_report.json, the script exits 1 and its output contains 'scout_report.json'; restoring the byte-identical copy makes it exit 0 again.",
+          "After deleting examples/stacked-dev/schemas/dev_report.json, the script exits 1 and its output contains 'dev_report.json' (restore afterwards).",
+          "cd examples/stacked-dev && gleam test runs schema_drift_test and it passes on a clean tree."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/scripts/check-schema-drift.sh",
+            "examples/stacked-dev/test/schema_drift_test.gleam"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C2"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Make schemas/ codegen-clean and generate the IO module",
+        "spec": "Structural, two steps. First: rewrite examples/stacked-dev/schemas/onatopp_input.json to inline its $defs/workspace definition directly into the workspace property and remove the $defs block \u2014 the inlined workspace object keeps the identical shape (required path/branch/placement/isolation, additionalProperties false, the same two enums), so dispatch-boundary validation behaviour is unchanged. This is required because aion codegen reads every schemas/*.json and fails loudly on $ref/$defs (codegen v1 subset), and onatopp_input.json is the only schema in the directory using them. Second: run cargo run -p aion-cli -- codegen examples/stacked-dev to generate src/aion_stacked_dev_io.gleam containing, per schema in filename order, a Gleam type plus <stem>_to_json and <stem>_decoder pairs \u2014 including ScoutReport, DevReport, and ReviewReport from the R1 copies. The generated module SHALL carry the do-not-edit header as its first line and SHALL NOT be edited by hand after generation; any schema change is followed by regeneration.",
+        "acceptance": [
+          "grep -F '\"$ref\"' examples/stacked-dev/schemas/*.json produces no matches, and grep -F '\"$defs\"' examples/stacked-dev/schemas/*.json produces no matches.",
+          "python3 -c \"import json; s=json.load(open('examples/stacked-dev/schemas/onatopp_input.json')); w=s['properties']['workspace']; assert w['required']==['path','branch','placement','isolation'] and w['additionalProperties'] is False\" exits 0.",
+          "cargo run -p aion-cli -- codegen examples/stacked-dev --check exits 0 from the repo root.",
+          "head -1 examples/stacked-dev/src/aion_stacked_dev_io.gleam is exactly '//// Generated by aion codegen \u2014 do not edit; regenerate from schemas/.'",
+          "src/aion_stacked_dev_io.gleam declares pub type ScoutReport, pub type DevReport, and pub type ReviewReport with scout_report_to_json/scout_report_decoder, dev_report_to_json/dev_report_decoder, and review_report_to_json/review_report_decoder pairs.",
+          "cd examples/stacked-dev && gleam build exits 0."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/src/aion_stacked_dev_io.gleam"
+          ],
+          "modify": [
+            "examples/stacked-dev/schemas/onatopp_input.json"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Brief document and resolved-context types",
+        "spec": "Structural. Add to src/stacked_dev/types.gleam, mirroring docs/design-system/schemas/brief.schema.json field-for-field: BriefDocument(id, cluster, title, depends_on: List(String), blocked_by: List(String), checklist: List(String), stories: List(String), design_anchor: List(String), purpose, task, requirements: List(BriefRequirement), boundaries: List(String), verification: List(String), execution: option.Option(ExecutionBlock)); BriefRequirement(id, title, spec, acceptance: List(String), files: RequirementFiles, checklist: List(String), stories: List(String), scout: option.Option(ScoutBlock), dev: option.Option(DevBlock), review: option.Option(ReviewBlock)); RequirementFiles(create: List(String), modify: List(String), delete: List(String)); ScoutBlock(files: List(String), context: List(String), approach: String, notes: String); DevBlock(status: DevStatus, files_changed: List(FileChange), how: String, deviation: String, checklist: List(ChecklistClaim), stories: List(StoryClaim)) with DevStatus = Implemented | Blocked; FileChange(path: String, change: ChangeKind, note: String) with ChangeKind = Created | Modified | Deleted; ChecklistClaim(id: String, done: Bool, note: String); StoryClaim(id: String, satisfied: Bool, note: String); ReviewBlock(alignment: Alignment, acceptance: List(AcceptanceVerdict), checklist: List(String), stories: List(String), issues: List(String), fixes: List(String)) with Alignment = Aligned | Drifted | Fixed; AcceptanceVerdict(criterion: String, met: Bool, evidence: String); ExecutionBlock(status: ExecutionStatus, workflow_id: String, branch: String, session_id: String, gate: GateBlock, attestation: AttestationBlock, review_verdict: ExecutionVerdict, landed_commit: String, merged_into: String, completed_at: String) with ExecutionStatus = ExecutionInFlight | ExecutionLanded | ExecutionFailed (prefixed because the module already defines a Landed constructor) and ExecutionVerdict = VerdictApproved | VerdictChangesRequested | VerdictRejected (prefixed because ReviewDecision already defines Approve/Reject); GateBlock(fmt: Bool, clippy: Bool, tests: Bool, fix_rounds: Int); AttestationBlock(no_panics: Bool, no_unsafe: Bool, boundaries_respected: Bool, tests_pass: Bool). Resolved-context types: ResolvedAdr(id, title, decision, quote, decided_by \u2014 all String); ResolvedItem(id: String, text: String); ResolvedProvenance(requested_by: String, quote: String); ResolvedContext(adrs: List(ResolvedAdr), checklist: List(ResolvedItem), stories: List(ResolvedItem), constraints: List(ResolvedItem), intention: String, design_path: String, provenance: ResolvedProvenance). Only the enrichment blocks (scout/dev/review) and the execution block are Option; every authored field is non-optional \u2014 emptiness is authored, never defaulted (ADR-007 plus the brief schema's required list).",
+        "acceptance": [
+          "BriefRequirement's scout, dev, and review fields and BriefDocument's execution field are option.Option types; no other BriefDocument or BriefRequirement field is an Option.",
+          "ExecutionStatus has exactly the constructors ExecutionInFlight, ExecutionLanded, ExecutionFailed, and ExecutionVerdict has exactly VerdictApproved, VerdictChangesRequested, VerdictRejected.",
+          "Every property name in brief.schema.json's root required list (id, cluster, title, depends_on, blocked_by, checklist, stories, design_anchor, purpose, task, requirements, boundaries, verification) has a same-named BriefDocument field.",
+          "ResolvedAdr has exactly the fields id, title, decision, quote, decided_by; ResolvedContext has exactly the fields adrs, checklist, stories, constraints, intention, design_path, provenance.",
+          "cd examples/stacked-dev && gleam build exits 0 with the new types in place."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/stacked-dev/src/stacked_dev/types.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C4",
+          "C5"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R5",
+        "title": "Hand-written codecs for the brief document and resolved context",
+        "spec": "Create src/stacked_dev/codecs_brief.gleam exposing brief_document_codec() -> codec.Codec(BriefDocument) and resolved_context_codec() -> codec.Codec(ResolvedContext), plus brief_document_to_json/brief_document_decoder and resolved_context_to_json/resolved_context_decoder pairs following the codecs_core conventions (codec.json_codec over gleam/json encoders and gleam/dynamic/decode decoders). WHEN encoding, THE SYSTEM SHALL emit wire keys exactly matching the brief.schema.json property names and SHALL omit the scout/dev/review/execution keys entirely when the value is None; enum wire strings are exactly implemented/blocked, created/modified/deleted, aligned/drifted/fixed, in_flight/landed/failed, and approved/changes_requested/rejected. WHEN decoding, IF any required authored field is missing, THEN THE SYSTEM SHALL fail with a codec.DecodeError naming the field path; THE SYSTEM SHALL NOT substitute a default for any missing field (ADR-001 discipline: emptiness is authored) and SHALL NOT accept enum strings outside the schema's sets. Resolved-context wire keys mirror the R4 field names (adrs, checklist, stories, constraints, intention, design_path, provenance with requested_by/quote). LOC note: the module is estimated near the 500-LOC cap; if the cap (excluding comments and whitespace) is breached during implementation, extract the enrichment-block encoders/decoders (scout/dev/review/execution) into src/stacked_dev/codecs_brief_blocks.gleam and declare the deviation in the dev report.",
+        "acceptance": [
+          "brief_document_codec().decode(\"{\\\"id\\\":\\\"BD-001\\\"}\") returns an Error whose reason names a missing required field (cluster is the first checked).",
+          "Encoding a BriefDocument whose requirements all have scout: None, dev: None, review: None and execution: None produces a JSON string containing no \"scout\" key, no \"dev\" key, no \"review\" key, and no \"execution\" key.",
+          "A DevBlock with status Implemented encodes status as the exact string \"implemented\" and decodes back to Implemented; the string \"half-done\" fails the DevStatus decode.",
+          "resolved_context_codec() round-trips a ResolvedContext holding ResolvedAdr(\"ADR-003\", ..., decided_by: \"Tom\") to an equal value.",
+          "cd examples/stacked-dev && gleam build exits 0."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/src/stacked_dev/codecs_brief.gleam"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C4",
+          "C5"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R6",
+        "title": "Round-trip tests against the seeded brief fixture",
+        "spec": "Create test/brief_codecs_test.gleam plus a file-reading test helper (test/support/fixtures.gleam wrapping a new test/support/fixtures_ffi.erl binding over Erlang file:read_file, returning Result(String, String)). WHEN the suite runs, THE SYSTEM SHALL read the seeded fixture at ../../docs/design/brief-dev/briefs/BD-001.json relative to the package root (gleam test runs from the package root), decode it with brief_document_codec(), and verify the lossless deterministic round-trip; the tests SHALL NOT use an invented brief shape as the primary fixture (the seeded authored file is the contract) and SHALL NOT write to the fixture.",
+        "acceptance": [
+          "Decoding the fixture succeeds; the decoded value has id \"BD-001\", cluster \"brief-dev\", and exactly 6 requirements, every one with scout == None, dev == None, review == None, and the document's execution == None.",
+          "Re-decoding brief_document_codec().encode(decoded) yields a value equal to the first decode.",
+          "Encoding is deterministic: encode(decode(encode(decoded))) is byte-identical to encode(decoded).",
+          "Decoding the literal \"{\\\"id\\\":\\\"BD-001\\\"}\" fails with a DecodeError.",
+          "resolved_context_codec() round-trips a ResolvedContext whose adrs list contains ADR-003 with quote \"we shouldn't have a default timeout, the agent steps can take well over an hour\" and decided_by \"Tom\" to an equal value.",
+          "cd examples/stacked-dev && gleam test passes."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/test/brief_codecs_test.gleam",
+            "examples/stacked-dev/test/support/fixtures.gleam",
+            "examples/stacked-dev/test/support/fixtures_ffi.erl"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C4",
+          "C5"
+        ],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify any file under docs/design-system/schemas/ \u2014 the canon is upstream; the package copies adapt to it, never the reverse.",
+      "SHALL NOT create or modify enrich.gleam, any enrich_brief activity, or any brief-file writing \u2014 enrichment is BD-004.",
+      "SHALL NOT create prompts.gleam or any prompt projection \u2014 BD-002.",
+      "SHALL NOT modify stacked_dev.gleam, onatopp_dev.gleam, gate.gleam, activities.gleam, locals.gleam, codecs_workflows.gleam, or workflow.toml \u2014 the pipeline rebuild is BD-003/BD-005; this brief's only edit outside its new files is the $defs inline in schemas/onatopp_input.json and the type additions in types.gleam.",
+      "SHALL NOT touch examples/stacked-dev/worker/ \u2014 worker handlers and wire_compat pins are BD-005.",
+      "SHALL NOT create dispatch.gleam or any dispatch/wave schema \u2014 BD-006.",
+      "SHALL NOT modify test/aion_stacked_dev_test.gleam, test/support/shims.gleam, stacked_dev_test_ffi.erl, crates/aion-cli/templates/dev_pipeline/, or crates/aion-cli/tests/stacked_dev_live_e2e.rs \u2014 hermetic/e2e suites and the template are BD-007.",
+      "SHALL NOT hand-edit src/aion_stacked_dev_io.gleam \u2014 schema change then regenerate is the only path.",
+      "SHALL NOT delete or rename any of the six existing workflow-IO schemas; the onatopp pair's retirement is BD-003's."
+    ],
+    "verification": [
+      "bash examples/stacked-dev/scripts/check-schema-drift.sh exits 0 on the landed tree.",
+      "diff docs/design-system/schemas/scout-report.schema.json examples/stacked-dev/schemas/scout_report.json; diff docs/design-system/schemas/dev-report.schema.json examples/stacked-dev/schemas/dev_report.json; diff docs/design-system/schemas/review-report.schema.json examples/stacked-dev/schemas/review_report.json \u2014 all three exit 0.",
+      "grep -F '\"$ref\"' examples/stacked-dev/schemas/*.json and grep -F '\"$defs\"' examples/stacked-dev/schemas/*.json both produce no matches.",
+      "cargo run -p aion-cli -- codegen examples/stacked-dev --check exits 0.",
+      "head -1 examples/stacked-dev/src/aion_stacked_dev_io.gleam prints the generated-module do-not-edit header.",
+      "cd examples/stacked-dev && gleam build && gleam test both exit 0 (includes the drift-gate test and the BD-001.json round-trip suite).",
+      "python3 docs/design-system/scripts/validate.py docs/design/brief-dev/briefs/BD-001.json reports OK \u2014 the fixture the round-trip suite reads is still schema-valid.",
+      "The diff touches no file owned by BD-002 through BD-007: no prompts.gleam, no enrich.gleam, no dispatch.gleam, nothing under worker/, no change to stacked_dev.gleam, onatopp_dev.gleam, workflow.toml, test/aion_stacked_dev_test.gleam, or test/support/shims.gleam.",
+      "grep -n 'onatopp_input' examples/stacked-dev/schemas/onatopp_input.json confirms the file still exists (this brief inlines its $defs; it is deleted only in BD-003)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-002",
+        "title": "No backwards compatibility during the build",
+        "decision": "Replace, don't add alongside. No compat shims, no zombie code, no #[deprecated] markers. Breaking changes are made cleanly and consumers move forward. Rejected: incremental deprecation cycles \u2014 they double the surface under test for an audience of zero.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-007",
+        "title": "Design system v2: JSON ledgers above clusters, enrichment in place",
+        "decision": "Two project ledgers (roadmap.json, decisions.json) above the clusters; stage contracts as first-class schemas inside the aion codegen subset; the brief is one living document \u2014 the pipeline appends scout/dev/review per requirement and an execution block per brief, in place, never touching authored fields. Rejected: a sibling runs/ ledger \u2014 the brief as a single spec-plus-record document was the original intent, and aion's event history already provides the append-only audit trail.",
+        "quote": "basically stuff is just depended to it so I would actually be happy to have it to have it saved back in place from where it came from",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "schemas/scout_report.json, dev_report.json, and review_report.json exist in the package and are byte-identical to their docs/design-system/schemas/ canon files."
+      },
+      {
+        "id": "C2",
+        "text": "scripts/check-schema-drift.sh fails loudly when any package stage-contract schema diverges from canon, and runs as part of the test gate."
+      },
+      {
+        "id": "C3",
+        "text": "src/aion_stacked_dev_io.gleam is generated by aion codegen from the package schemas, carries the do-not-edit header, and aion codegen --check passes clean in CI."
+      },
+      {
+        "id": "C4",
+        "text": "Brief document types (authored fields + optional scout/dev/review per requirement + optional execution block) are defined in Gleam with hand-written codecs that round-trip the cluster's own brief files (fixture: docs/design/brief-dev/briefs/BD-001.json) losslessly with deterministic encoding."
+      },
+      {
+        "id": "C5",
+        "text": "Resolved-context types (ADR texts for design_anchor, C#/S# texts, roadmap provenance quote) are defined with codecs; workflow code never sees an unresolved reference."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As Claude, I want stage payloads validated against the same schemas I author briefs against so that a malformed document breaks at dispatch with a pointer, not mid-run in an agent prompt."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Deterministic workflow code performs no filesystem reads, no ledger parsing, and no reference resolution: dispatcher activities resolve roadmap/decisions/checklist/stories references and assemble the brief context before any workflow logic sees it (P5)."
+      },
+      {
+        "id": "CN2",
+        "text": "Every cap, backoff, deadline, and concurrency limit is a required input field, schema-enforced with additionalProperties: false; the engine and the workflows impose no bound of their own (ADR-001, ADR-003)."
+      },
+      {
+        "id": "CN3",
+        "text": "enrich_brief is append-only: it refuses to alter any authored field (deep-compares the authored subset before writing) and fails terminally on divergence rather than silently overwriting."
+      },
+      {
+        "id": "CN4",
+        "text": "Stage sessions are deterministic and disjoint: '<branch>' for dev (existing), '<branch>-scout' for scout, '<branch>-review' for review. The reviewer NEVER shares the dev session \u2014 fresh eyes are the point of the stage (REVIEW.md)."
+      },
+      {
+        "id": "CN5",
+        "text": "Activity failure taxonomy: can't-execute is terminal failure; expected negative outcomes are successful results carrying data (P3). No retries of broken environments."
+      },
+      {
+        "id": "CN6",
+        "text": "The family deploys as a unit (shared content hash, child type = entry module name); all archives rebuilt and redeployed together on any change."
+      },
+      {
+        "id": "CN7",
+        "text": "Package stage-contract schemas are byte-identical to docs/design-system/schemas/ canon, enforced by a drift gate that runs with the test suite."
+      },
+      {
+        "id": "CN8",
+        "text": "The outer arc's live-proven CLI contracts are immutable in this cluster: request_review argv (branch positional first, --as Meridian), land = git commit in worktree then yg merge from repo_root, single review_verdict signal (ADR-006)."
+      },
+      {
+        "id": "CN9",
+        "text": "Hermetic tests run under gleeunit's sequential runner (exclusive PATH is VM-global); e2e suites never run concurrently with gleam builds in the same checkout."
+      }
+    ],
+    "intention": "Design-system v2 briefs become executable: an all-norn pipeline (scout \u2192 dev \u2192 verify-fix \u2192 adversarial review \u2192 harden) runs as a durable aion workflow, enriching the brief in place at every stage, composed under the live-proven stacked_dev outer arc (provision \u2192 dev \u2192 gate \u2192 human review \u2192 land), with a dispatcher above that selects briefed work from the roadmap ledger and fans it out. When this is done, 'do this roadmap item' means authoring documents and approving a DM \u2014 the workflow does the rest, every stage durable across crashes, every claim recorded next to what was actually measured. aion develops aion; the dogfood becomes the dev process.",
+    "design_path": "docs/design/brief-dev",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Design-system v2 briefs become executable: an all-norn pipeline (scout \u2192 dev \u2192 verify-fix \u2192 adversarial review \u2192 harden) runs as a durable aion workflow, enriching the brief in place at every stage, c"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

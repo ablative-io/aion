@@ -1,0 +1,212 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AP-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AP-003",
+    "cluster": "aion-package",
+    "title": "Content-hash versioning over the canonical beam set",
+    "depends_on": [
+      "AP-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C11",
+      "C12",
+      "C13"
+    ],
+    "stories": [
+      "S6",
+      "S2"
+    ],
+    "purpose": "Implement the content hash that IS the workflow's version. The hash is computed over the canonical beam set alone \u2014 module names and exact bytes in sorted order \u2014 so it is stable across compression, timestamps, and source inclusion, unforgeable, and usable both as a version identifier and as a module-name component. This is the heart of Aion's versioning answer.",
+    "task": "Define a ContentHash value type and a function that computes it over a BeamSet by hashing a canonical serialisation of (sorted logical name, exact bytes) for each module. Guarantee that insertion order does not affect the result and that any change to a name or byte changes the result. Give ContentHash a stable, documented textual form suitable for embedding in a version field and in a namespaced module name. Do not hash archive bytes, compression, timestamps, or source.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ContentHash type and computation",
+        "spec": "THE SYSTEM SHALL define ContentHash and a function computing it over a BeamSet by hashing a canonical serialisation of each module's logical name and exact bytes in canonical (sorted-by-name) order. THE SYSTEM SHALL NOT incorporate archive bytes, compression, timestamps, or source into the hash.",
+        "acceptance": [
+          "hash.rs defines ContentHash (a newtype over the digest) and content_hash(beams: &BeamSet) -> ContentHash.",
+          "The computation iterates modules in BeamSet canonical order, feeding each module's logical name and its exact bytes into the digest with an unambiguous framing (length-prefixed or delimited) so distinct (name, bytes) splits cannot collide.",
+          "ContentHash derives Clone, Debug, PartialEq, Eq, Hash and is Serialize + Deserialize.",
+          "A doc comment states the hash is computed over the canonical beam set only and is independent of compression, timestamps, and source inclusion (CO7).",
+          "The hash algorithm is SHA-256 via the sha2 crate (mandated by CO14 \u2014 part of the format contract so packer and loader agree across hosts), not an ad-hoc or implementer-chosen hash."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/hash.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Order-independence and sensitivity",
+        "spec": "THE SYSTEM SHALL produce identical ContentHashes for two BeamSets with identical modules and bytes regardless of insertion order, and SHALL produce a different ContentHash whenever any module's name or bytes change.",
+        "acceptance": [
+          "A unit test builds two BeamSets from the same modules in different insertion orders and asserts equal ContentHashes.",
+          "A unit test mutates one byte of one module and asserts the ContentHash changes.",
+          "A unit test renames one module and asserts the ContentHash changes.",
+          "A unit test asserts that two modules whose (name, bytes) framing would be ambiguous without delimiting (e.g. name+bytes boundary shifts) produce different hashes, proving the framing is unambiguous."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/hash.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Stable textual form",
+        "spec": "THE SYSTEM SHALL give ContentHash a stable, documented textual form usable as a version identifier and as a component of a deployed module name.",
+        "acceptance": [
+          "ContentHash implements Display and FromStr (or to_hex/from_hex) producing a stable lowercase textual form.",
+          "The textual form contains only characters valid in a BEAM module name component (so AP-004 can embed it), documented as such.",
+          "A unit test round-trips ContentHash through its textual form and asserts equality.",
+          "A doc comment states this textual form is the version identifier stored in the manifest and embedded in namespaced module names."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/hash.rs"
+          ]
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT build or read the archive \u2014 write path is AP-005, read path is AP-006.",
+      "SHALL NOT derive deployed module names \u2014 that is the namespacing transform in AP-004 (which consumes the textual form defined here).",
+      "SHALL NOT stamp the hash into the manifest \u2014 AP-005 does that during packing."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-package passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C11",
+        "text": "The content hash is computed over the canonical beam set only (sorted logical names plus exact bytes), never over archive bytes, compression, timestamps, or source inclusion."
+      },
+      {
+        "id": "C12",
+        "text": "Two BeamSets with identical modules and bytes produce identical content hashes regardless of insertion order; any change to a beam's name or bytes changes the hash."
+      },
+      {
+        "id": "C13",
+        "text": "The content hash has a stable, documented textual form usable as a version identifier and as a module-name component."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As the engine, I want the package to reject itself when its beams do not match its stored hash so that I never register a truncated or tampered workflow into the VM."
+      },
+      {
+        "id": "S6",
+        "text": "As a workflow author, I want the package version to be derived from my compiled code so that I never hand-maintain a version string that could lie about what is in the package."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO7",
+        "text": "The content hash is computed over the canonical beam set only \u2014 never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."
+      },
+      {
+        "id": "CO8",
+        "text": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."
+      },
+      {
+        "id": "CO9",
+        "text": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."
+      },
+      {
+        "id": "CO10",
+        "text": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."
+      },
+      {
+        "id": "CO11",
+        "text": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."
+      },
+      {
+        "id": "CO12",
+        "text": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."
+      },
+      {
+        "id": "CO13",
+        "text": "The deployed-name separator is the literal '$' character (logical_name$hash). It is mandated, not illustrative: the engine (AE-005) must split on the identical character. '$' does not occur in Gleam logical module names, so the bijection stays unambiguous."
+      },
+      {
+        "id": "CO14",
+        "text": "The content hash is SHA-256 (via the sha2 crate). The algorithm is part of the format contract so packer and loader on different hosts agree."
+      }
+    ],
+    "intention": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+    "design_path": "docs/design/aion-package",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (w"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

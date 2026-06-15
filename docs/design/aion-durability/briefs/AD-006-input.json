@@ -1,0 +1,226 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-006",
+    "cluster": "aion-durability",
+    "title": "Determinism context: recorded-now and seeded RNG",
+    "depends_on": [
+      "AD-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C23",
+      "C24",
+      "C25",
+      "C26"
+    ],
+    "stories": [
+      "S9"
+    ],
+    "purpose": "Supply the two non-deterministic inputs that workflow code is allowed to read \u2014 current time and randomness \u2014 in a form that is identical on every replay. workflow.now returns the recorded timestamp of the event currently being processed; workflow.random returns a value from an RNG seeded solely from the workflow identity. These are the engine-side behaviours the Gleam SDK bindings (AF) resolve to, and they are what make a workflow replay to exactly the same state.",
+    "task": "Implement DeterminismContext (determinism.rs). It holds the recorded timestamp of the event currently being applied, advanced as the Resolver consumes recorded events, exposed as the sole source for workflow.now. It holds a deterministic RNG seeded only from WorkflowId + RunId, exposed as the sole source for workflow.random. No code path in this cluster may call the wall clock or any entropy source to produce a workflow-visible value. Test that two contexts for the same run produce identical random sequences and that now reflects the advancing recorded timestamp.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Recorded-now source",
+        "spec": "THE SYSTEM SHALL define DeterminismContext exposing the recorded timestamp of the event currently being applied as the sole source for workflow.now. THE timestamp SHALL advance as the Resolver consumes recorded events and SHALL NOT be derived from the wall clock.",
+        "acceptance": [
+          "determinism.rs defines DeterminismContext with a current recorded timestamp (DateTime<Utc>) and a now() accessor returning it.",
+          "A method advances the current timestamp to a newly-applied event's recorded_at (called by the Resolver/replay driver as it consumes events).",
+          "Before any event is applied, now() returns the WorkflowStarted timestamp (the run's first recorded time).",
+          "A unit test applies a sequence of events with increasing timestamps and asserts now() returns each in turn."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/determinism.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C23"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "No wall-clock for workflow-visible values",
+        "spec": "THE SYSTEM SHALL NOT call SystemTime::now, Utc::now, or any wall-clock source anywhere in the durability module set to produce a value visible to workflow code.",
+        "acceptance": [
+          "A grep over crates/aion/src/durability/ finds no SystemTime::now or Utc::now used to produce a now()/random() value (the only permitted wall-clock read, if any, is the engine-supplied recovery as_of for expired_timers, which is not workflow-visible and is documented as such).",
+          "DeterminismContext::now derives strictly from the stored recorded timestamp.",
+          "A unit test confirms two DeterminismContexts seeded with the same recorded-event sequence return identical now() values at each step (no clock drift)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/determinism.rs"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Seeded deterministic RNG",
+        "spec": "THE SYSTEM SHALL provide, on DeterminismContext, a deterministic RNG seeded solely from WorkflowId + RunId as the sole source for workflow.random. THE RNG SHALL NOT consult any entropy source (OS RNG, time, thread id).",
+        "acceptance": [
+          "DeterminismContext constructs its RNG from a seed derived deterministically from WorkflowId and RunId (e.g. a stable hash of their bytes into the seed of a named, versioned PRNG such as ChaCha or a fixed PCG).",
+          "A next_random (or typed draw) method advances the RNG deterministically.",
+          "The PRNG algorithm is named and fixed (documented) so the sequence is stable across builds and platforms.",
+          "A unit test draws N values, reconstructs a fresh context for the same WorkflowId+RunId, draws N again, and asserts the sequences are identical."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/determinism.rs"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Cross-replay determinism guarantee",
+        "spec": "WHEN two DeterminismContexts are constructed for the same WorkflowId + RunId, THE SYSTEM SHALL produce identical random sequences from them. WHEN constructed for different RunIds, THE SYSTEM SHALL produce different sequences with overwhelming probability.",
+        "acceptance": [
+          "A test asserts byte-for-byte identical random sequences for two contexts of the same WorkflowId+RunId.",
+          "A test asserts the sequences differ for two contexts of the same WorkflowId but different RunId.",
+          "The seed derivation is total (no panic) for all WorkflowId/RunId values.",
+          "No unwrap/expect/panic in the seed-derivation or draw paths."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/determinism.rs"
+          ]
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the Gleam workflow.now / workflow.random functions \u2014 those are AF; this defines only the engine-side behaviour they bind to.",
+      "SHALL NOT generate the recorded timestamps written into events \u2014 that is the engine at record time (AD-002 takes the timestamp as input); this only reads recorded timestamps back during replay.",
+      "SHALL NOT use the system RNG or any non-seeded source."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes (determinism tests).",
+      "cargo fmt --check passes.",
+      "Grep over durability/ confirms no wall-clock or entropy source feeds a workflow-visible value (CO8, CO9).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C23",
+        "text": "DeterminismContext exposes the recorded timestamp of the event currently being applied as the sole source for workflow.now; it advances as the Resolver consumes recorded events."
+      },
+      {
+        "id": "C24",
+        "text": "No code path in this cluster calls the wall clock (SystemTime::now / Utc::now) to produce a workflow-visible value."
+      },
+      {
+        "id": "C25",
+        "text": "DeterminismContext provides a deterministic RNG seeded solely from WorkflowId + RunId as the sole source for workflow.random."
+      },
+      {
+        "id": "C26",
+        "text": "Two DeterminismContexts constructed for the same WorkflowId + RunId produce identical random sequences (asserted by test)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As a workflow author, I want workflow.now to return the recorded event time and workflow.random to return a workflow-seeded value so that my workflow replays to exactly the same state every time without me thinking about it."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

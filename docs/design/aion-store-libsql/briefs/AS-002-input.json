@@ -1,0 +1,238 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-002",
+    "cluster": "aion-store-libsql",
+    "title": "libSQL connection opening and idempotent schema",
+    "depends_on": [
+      "AS-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C6",
+      "C7",
+      "C8",
+      "C9",
+      "C10"
+    ],
+    "stories": [
+      "S1",
+      "S2"
+    ],
+    "purpose": "Open a libSQL connection in either embedded or embedded-replica mode from a LibSqlConfig, and create the events and timers schema idempotently on open. This is the substrate the EventStore impl reads and writes through.",
+    "task": "Build the connection module that turns a LibSqlConfig into a working libSQL connection \u2014 a local file in Embedded mode, a local replica syncing to a remote primary in EmbeddedReplica mode. Build the schema module with the events and timers table DDL and a migration function that creates them idempotently (CREATE TABLE IF NOT EXISTS). Do NOT implement EventStore methods here \u2014 only connection and schema.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Open an embedded (local file) connection",
+        "spec": "WHEN constructed from a LibSqlConfig in Embedded mode, THE SYSTEM SHALL open a libSQL connection to the local file at the configured path, applying the configured WAL/journal settings where present.",
+        "acceptance": [
+          "connection.rs provides an async function that, given an Embedded config, returns a libSQL connection (or database handle) to the local file.",
+          "Configured WAL/journal settings present on the config are applied to the connection; absent settings are not overridden by crate-chosen defaults (per AS-001 R3).",
+          "A test opens an embedded connection at a tempfile path and executes a trivial SELECT 1 successfully.",
+          "Any libsql error during open is mapped to StoreError via the AS-001 error boundary."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/connection.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Open an embedded-replica connection",
+        "spec": "WHEN constructed from a LibSqlConfig in EmbeddedReplica mode, THE SYSTEM SHALL open a local replica database configured to sync with the remote primary_url using the auth_token, honouring the configured sync interval where present.",
+        "acceptance": [
+          "connection.rs provides the replica open path using libSQL's embedded-replica builder with the local path, primary_url, and auth_token from the config.",
+          "The configured sync interval, when present, is applied; when absent, no crate-chosen interval is assumed.",
+          "The open path returns a connection usable identically to the embedded path (same downstream type), so the EventStore impl is mode-agnostic.",
+          "Connection-open failures (bad URL, auth) are mapped to StoreError::Backend via the error boundary; this requirement does NOT require a live primary to test the embedded-replica open call path's error mapping."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/connection.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "events and timers table DDL",
+        "spec": "THE SYSTEM SHALL define the DDL for an append-only events table and a durable timers table with the keys and indexes the store requires.",
+        "acceptance": [
+          "schema.rs defines the events table DDL: workflow_id TEXT, seq INTEGER, event BLOB, recorded_at TEXT, PRIMARY KEY (workflow_id, seq).",
+          "schema.rs defines a secondary index on events supporting query/list_active projection (e.g. on the lifecycle-event discriminant and recorded_at, or on workflow_id with the columns query needs). COORDINATION NOTE: the exact index columns depend on the query shapes finalised in AS-005 (query/list_active). Whoever implements AS-002 must coordinate with AS-005 \u2014 if the query plan needs different columns, AS-005 amends schema.rs (schema.rs is in AS-005's modify set for exactly this) rather than leaving a wrong index. Prefer settling the AS-005 query shapes before fixing this index.",
+          "schema.rs defines the timers table DDL: workflow_id TEXT, timer_id TEXT, fire_at TEXT, PRIMARY KEY (workflow_id, timer_id), plus an index on fire_at.",
+          "DDL statements use IF NOT EXISTS so they are idempotent."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/schema.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C9",
+          "C10"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Idempotent migration on open",
+        "spec": "WHEN a store is opened against a fresh or an existing database file, THE SYSTEM SHALL ensure the events and timers schema exists by running the idempotent DDL, arriving at the same schema in both cases with no external migration tool.",
+        "acceptance": [
+          "schema.rs provides an async ensure_schema(conn) that executes the events and timers DDL.",
+          "A test runs ensure_schema twice against the same connection and asserts the second run succeeds (idempotent, no error).",
+          "A test opens a fresh tempfile, runs ensure_schema, and asserts both tables and their indexes exist (e.g. via a query against sqlite_master / pragma).",
+          "Migration failures are mapped to StoreError::Backend via the error boundary."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/schema.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement append, read_history, list_active, query, or timer methods \u2014 those are AS-004, AS-005, AS-006.",
+      "SHALL NOT construct LibSqlStore or implement EventStore \u2014 that is AS-003.",
+      "SHALL NOT require a live remote primary to compile or to run its tests; replica open is built but live sync is exercised only in AS-008.",
+      "SHALL NOT introduce a mutable workflow/status table \u2014 summaries are derived from event rows (AS-005)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "A reviewer confirms the DDL uses IF NOT EXISTS and the keys/indexes match the design (events PK (workflow_id, seq); timers PK (workflow_id, timer_id); index on fire_at).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C6",
+        "text": "Opening in Embedded mode produces a working connection to a local file database."
+      },
+      {
+        "id": "C7",
+        "text": "Opening in EmbeddedReplica mode produces a local replica connection configured to sync with the remote primary URL using the auth token."
+      },
+      {
+        "id": "C8",
+        "text": "Opening a store runs idempotent DDL (CREATE TABLE IF NOT EXISTS) so a fresh file and an existing file both arrive at the same schema with no external migration tool."
+      },
+      {
+        "id": "C9",
+        "text": "The events table has columns workflow_id, seq, event (serialised blob), recorded_at, with primary key (workflow_id, seq) and a secondary index supporting query/list_active projections."
+      },
+      {
+        "id": "C10",
+        "text": "The timers table has columns workflow_id, timer_id, fire_at, with primary key (workflow_id, timer_id) and an index on fire_at."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an engine operator, I want a zero-infrastructure durable store I get by pointing at a file path, so that embedding Aion needs no database server to survive restarts."
+      },
+      {
+        "id": "S2",
+        "text": "As an engine operator, I want the same store crate to drive a distributed deployment via an embedded replica syncing to a remote primary, so that I do not have to learn or wire a second backend to scale out."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

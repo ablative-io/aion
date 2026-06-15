@@ -1,0 +1,173 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-015",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-015",
+    "cluster": "aion-engine",
+    "title": "Eliminate silent visibility store fallback in EngineBuilder",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "EngineBuilder silently falls back to an in-memory visibility store when none is configured. In production this means all visibility data is lost on restart with zero warning, violating the principle of no silent failures. This brief makes the missing visibility store an explicit error and adds an opt-in method for tests that intentionally want ephemeral visibility.",
+    "task": "Remove the silent InMemoryStore fallback from EngineBuilder::build(). When no visibility store is configured and in_memory_visibility() has not been called, build() returns EngineError::MissingVisibilityStore. Add an explicit in_memory_visibility() builder method that opts in to ephemeral visibility for test scenarios. Update all test code to call in_memory_visibility() instead of relying on the silent fallback.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "EngineBuilder returns error when no visibility store is configured",
+        "spec": "WHEN EngineBuilder::build() is called AND no visibility store has been configured AND in_memory_visibility() has not been called, THE SYSTEM SHALL return EngineError::MissingVisibilityStore instead of silently falling back to InMemoryStore.",
+        "acceptance": [
+          "EngineError has a MissingVisibilityStore variant with a descriptive message explaining what to do.",
+          "EngineBuilder::build() checks whether a visibility store was provided or in_memory_visibility() was called; if neither, it returns Err(EngineError::MissingVisibilityStore).",
+          "The error message names both the visibility_store() and in_memory_visibility() methods so the caller knows their options.",
+          "A test confirms that building without a visibility store returns the MissingVisibilityStore error."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/builder.rs",
+            "crates/aion/src/engine/mod.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Add explicit in_memory_visibility() opt-in method",
+        "spec": "THE SYSTEM SHALL expose an in_memory_visibility() method on EngineBuilder that explicitly configures an ephemeral in-memory visibility store. THIS method SHALL be the only path to get an in-memory visibility store; the silent fallback is removed.",
+        "acceptance": [
+          "EngineBuilder::in_memory_visibility(self) -> Self is a public method that sets the visibility store to InMemoryStore.",
+          "The method is documented as intended for test scenarios and explicitly warns that visibility data will not survive restarts.",
+          "Calling in_memory_visibility() followed by build() succeeds without error.",
+          "Calling visibility_store() after in_memory_visibility() (or vice versa) uses the last-set store, matching the builder's general last-write-wins semantics."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/builder.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Update all test code to use in_memory_visibility()",
+        "spec": "WHEN test code constructs an EngineBuilder, THE SYSTEM SHALL call in_memory_visibility() explicitly instead of relying on the removed silent fallback. All existing tests SHALL continue to pass after the migration.",
+        "acceptance": [
+          "Every test that previously relied on the silent InMemoryStore fallback now calls in_memory_visibility() on the builder.",
+          "No test breaks due to the fallback removal; cargo test -p aion passes.",
+          "A grep for EngineBuilder usage confirms every test-context builder calls either visibility_store() or in_memory_visibility().",
+          "No test uses #[ignore] or #[allow] to suppress the missing-store error."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/builder.rs",
+            "crates/aion/src/engine/mod.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL removing the silent InMemoryStore visibility fallback from EngineBuilder",
+      "SHALL adding MissingVisibilityStore error variant to EngineError",
+      "SHALL adding in_memory_visibility() opt-in builder method",
+      "SHALL updating all test code to use the explicit opt-in",
+      "SHALL NOT changing the event store builder pattern (event store already requires explicit configuration)",
+      "SHALL NOT visibility projection logic or crash-consistency (that is AV-006)",
+      "SHALL NOT adding new visibility store backends",
+      "SHALL NOT server-layer or wire-protocol changes"
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes with all tests calling in_memory_visibility() explicitly.",
+      "A test confirms EngineBuilder::build() without a visibility store returns EngineError::MissingVisibilityStore.",
+      "A test confirms in_memory_visibility() followed by build() succeeds.",
+      "Grep confirms no remaining call site relies on silent fallback.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "Error message on MissingVisibilityStore is actionable and names both configuration methods."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

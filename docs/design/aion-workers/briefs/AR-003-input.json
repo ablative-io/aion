@@ -1,0 +1,237 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-003",
+    "cluster": "aion-workers",
+    "title": "aion-worker (Rust) dispatch, payload codec, failure classification, and ActivityContext",
+    "depends_on": [
+      "AR-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C9",
+      "C10",
+      "C11",
+      "C12"
+    ],
+    "stories": [
+      "S6",
+      "S11"
+    ],
+    "purpose": "Fill the dispatch seam the loop calls: decode the input Payload to the handler's type, run the handler with an ActivityContext, encode its output back to a Payload, and report completion or a classified failure. This is where a task becomes a result and where the retryable/terminal contract is enforced.",
+    "task": "Implement runtime/dispatch.rs and the base ActivityContext in context.rs. Dispatch decodes the input Payload (JSON baseline, honouring the content-type tag), invokes the registered handler with an &ActivityContext, encodes the Ok output to a Payload, and reports completion; on Err it reports a failure carrying the ActivityFailure's retryable/terminal classification. Define ActivityFailure here. The context's heartbeat send and cancellation-flag wiring are stubbed to the seams AR-004 fills; this brief establishes the context's identity/attempt fields and the cancellation-observation surface.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ActivityContext base",
+        "spec": "THE SYSTEM SHALL define ActivityContext exposing the ActivityId, the attempt number, a heartbeat method, and cancellation observation (is_cancelled and an awaitable cancelled signal).",
+        "acceptance": [
+          "context.rs defines ActivityContext with activity_id(), attempt(), heartbeat(detail: Option<Payload>), is_cancelled() -> bool, and cancelled() returning an awaitable that resolves when cancellation is signalled.",
+          "The cancellation flag is backed by a shared atomic/notify the session can set (the setter wiring is completed in AR-004; this brief defines the observable surface and the internal handle).",
+          "heartbeat() in this brief routes to a seam (a no-op or channel send) that AR-004 connects to WorkerSession::send_heartbeat; the signature is final here.",
+          "A unit test constructs an ActivityContext, asserts activity_id/attempt, and asserts is_cancelled() flips to true after the internal cancellation handle is triggered."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/context.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "ActivityFailure with retryable/terminal classification",
+        "spec": "THE SYSTEM SHALL define ActivityFailure carrying an explicit retryable-vs-terminal classification (not a string or bool) plus a message and optional detail Payload. THE SYSTEM SHALL NOT infer classification from a Rust error type.",
+        "acceptance": [
+          "activity.rs (or a dedicated section thereof) defines ActivityFailure with a Classification enum { Retryable, Terminal }, a message, and an optional detail: Option<Payload>.",
+          "Constructors ActivityFailure::retryable(..) and ActivityFailure::terminal(..) exist; there is no path that guesses classification from a std::error::Error variant.",
+          "ActivityFailure maps onto the aion-proto failure message such that Retryable and Terminal are distinguishable on the wire (aligned with aion-core ActivityError per CO8).",
+          "A unit test builds a retryable and a terminal failure and asserts each maps to the expected wire classification."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/activity.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Payload decode/encode at the dispatch boundary",
+        "spec": "THE SYSTEM SHALL decode a task's input Payload to the handler's input type and encode the handler's output to a Payload using the content-type tag (JSON baseline). THE SYSTEM SHALL NOT change the content type on round-trip.",
+        "acceptance": [
+          "dispatch.rs decodes input: Payload to the handler's Input via the content-type tag (JSON baseline), returning WorkerError::Decode on failure.",
+          "The Ok output is encoded to a Payload carrying the same content-type tag class as the baseline codec (JSON), per CO7.",
+          "A decode failure of the input is reported as a terminal ActivityFailure (a payload the handler cannot parse will not parse on retry), with the cause logged.",
+          "A round-trip test: a typed input encodes, decodes to an equal value, the handler returns a typed output, and that output encodes to a Payload that decodes back equal."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/runtime/dispatch.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/runtime/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Dispatch invocation and completion/failure reporting",
+        "spec": "WHEN dispatch runs a handler, THE SYSTEM SHALL report completion with the encoded output Payload for the task's ActivityId on Ok, and SHALL report a failure carrying the retryable/terminal classification on Err.",
+        "acceptance": [
+          "dispatch invokes the registered handler for the task's activity type with the decoded input and an &ActivityContext (per R1).",
+          "On Ok(output), the encoded output Payload is reported via WorkerSession::report_result for the task's ActivityId.",
+          "On Err(ActivityFailure), the failure with its classification is reported via WorkerSession::report_failure for the task's ActivityId.",
+          "A panic inside a handler is caught and reported as a retryable ActivityFailure (a panic is treated as a transient fault, logged loudly), never crashing the worker loop.",
+          "Tests against the fake session assert: an Ok handler yields a completion with the expected Payload; a retryable Err yields a retryable failure; a terminal Err yields a terminal failure; a panicking handler yields a retryable failure and the loop survives."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/runtime/dispatch.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S11"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT connect heartbeat sending or the cancellation setter to the session \u2014 AR-004 wires those to the surfaces defined here.",
+      "SHALL NOT implement reconnect/re-report \u2014 AR-005.",
+      "SHALL NOT define the typed Activity registration trait or Worker builder beyond ActivityFailure \u2014 AR-006."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-worker passes, including the classification and panic-safety tests.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "grep confirms no code path infers retryable/terminal from a Rust error type (classification is always explicit)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C9",
+        "text": "Dispatch decodes the input Payload to the handler's input type using the content-type tag (JSON baseline) and encodes the handler's output back to a Payload without changing the content type."
+      },
+      {
+        "id": "C10",
+        "text": "On success the worker reports completion for the task's ActivityId carrying the encoded output Payload; on failure it reports a failure carrying the error and its retryable/terminal classification."
+      },
+      {
+        "id": "C11",
+        "text": "ActivityFailure carries an explicit retryable-vs-terminal classification (not a string or bool); a handler returns Result<Output, ActivityFailure>."
+      },
+      {
+        "id": "C12",
+        "text": "ActivityContext exposes the ActivityId, attempt number, a heartbeat method, and cancellation observation (is_cancelled and an awaitable cancelled signal)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a Rust activity author, I want to register an async handler returning Result<Output, ActivityFailure> on a Worker builder and call Worker::run() so that out-of-process Rust activities serve a running engine with full durability semantics."
+      },
+      {
+        "id": "S11",
+        "text": "As a workflow author, I want an activity served by any language to behave identically \u2014 same completion, same retryable/terminal classification, same recorded result \u2014 so that I never need to know which runtime served it."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

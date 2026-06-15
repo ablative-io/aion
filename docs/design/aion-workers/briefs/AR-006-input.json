@@ -1,0 +1,203 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-006",
+    "cluster": "aion-workers",
+    "title": "aion-worker (Rust) typed Activity registration and the Worker builder",
+    "depends_on": [
+      "AR-002",
+      "AR-003",
+      "AR-004",
+      "AR-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C17",
+      "C18"
+    ],
+    "stories": [
+      "S6",
+      "S10"
+    ],
+    "purpose": "Give the Rust author the public surface: define a typed async activity, register it by name on a Worker builder, and run the worker until graceful shutdown. This ties the session, loop, dispatch, heartbeat, and reconnect machinery into one ergonomic API and is the brief that completes the reference SDK.",
+    "task": "Implement the Activity registration trait/closure surface in activity.rs and the Worker builder + run() in worker.rs. An activity is an async handler over a typed Serialize/DeserializeOwned input, an &ActivityContext, returning Result<Output, ActivityFailure>. The Worker builder takes a WorkerConfig and registered activities, validates that every registered name has a handler (feeding AR-001's registration check), connects, runs the loop, and returns on a graceful shutdown signal after draining in-flight activities.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Typed activity registration",
+        "spec": "THE SYSTEM SHALL allow registering an activity as an async handler over a typed input (Serialize + DeserializeOwned) and an &ActivityContext, returning Result<Output, ActivityFailure> where Output is Serialize, keyed by an activity-type name.",
+        "acceptance": [
+          "activity.rs defines the registration surface (an Activity trait with a blanket impl for suitable async closures/fns, or an equivalent register_activity generic) binding Input: DeserializeOwned, Output: Serialize.",
+          "Registration stores an erased handler invocable by the dispatch path (AR-003) given an input Payload and an &ActivityContext, producing a result Payload or ActivityFailure.",
+          "Registering two handlers under the same activity-type name is rejected at build time with a clear error.",
+          "A test registers a typed activity, invokes it through the registry with an encoded input, and asserts the decoded output round-trips."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/activity.rs"
+          ]
+        },
+        "checklist": [
+          "C17"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Worker builder",
+        "spec": "THE SYSTEM SHALL provide a Worker builder taking a WorkerConfig and a set of registered activities, and SHALL validate before connecting that the activity-type names it will register all have handlers.",
+        "acceptance": [
+          "worker.rs defines a Worker builder accepting a WorkerConfig and accumulating registered activities (R1).",
+          "build() collects the registered activity-type names and supplies them to the session's registration (AR-001 R5), so a name without a handler cannot be registered.",
+          "The builder rejects an empty activity set with a clear error (a worker that serves nothing is a misconfiguration).",
+          "A test builds a Worker with two activities and asserts the registration name set equals the two registered names."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/worker.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Worker::run and graceful shutdown",
+        "spec": "WHEN Worker::run() is called, THE SYSTEM SHALL connect, register, and serve tasks until a shutdown signal is received, after which it SHALL stop pulling new tasks and drain in-flight activities before returning.",
+        "acceptance": [
+          "Worker::run() connects (AR-001), serves via the loop (AR-002) with dispatch (AR-003), heartbeat (AR-004), and reconnect (AR-005) all active.",
+          "run() accepts or exposes a shutdown signal (e.g. a CancellationToken / future); on signal it stops pulling new tasks and awaits in-flight activities to completion before returning (the drain hook from AR-002 R3).",
+          "Cooperative cancellation of in-flight activities on shutdown is offered to handlers via their ActivityContext (per AR-004) but not forced.",
+          "A test runs a worker against the fake session, feeds one slow task, triggers shutdown mid-task, and asserts run() returns only after the in-flight task completes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/worker.rs",
+            "crates/aion-worker/src/runtime/loop_.rs"
+          ]
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the wire contract or session abstraction \u2014 it composes AR-001..AR-005.",
+      "SHALL NOT add a macro/proc-macro for activity definition this round (plain trait/closure registration; ergonomic macros are a later, scope-forward addition).",
+      "SHALL NOT implement the Python or TS SDKs \u2014 AR-007..AR-010."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-worker passes, including the graceful-drain test.",
+      "cargo fmt --check passes.",
+      "An end-to-end test against the fake session registers a typed activity, serves a task, and asserts the recorded completion \u2014 proving the full Rust SDK path.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C17",
+        "text": "An Activity is definable as an async handler taking a typed input (Serialize/DeserializeOwned) and an &ActivityContext, returning Result<Output, ActivityFailure>, and registered by activity-type name."
+      },
+      {
+        "id": "C18",
+        "text": "A Worker builder accepts a WorkerConfig and registered activities; Worker::run() connects, serves, and returns on a graceful shutdown signal after draining in-flight activities."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a Rust activity author, I want to register an async handler returning Result<Output, ActivityFailure> on a Worker builder and call Worker::run() so that out-of-process Rust activities serve a running engine with full durability semantics."
+      },
+      {
+        "id": "S10",
+        "text": "As a worker operator, I want a worker to shut down gracefully, draining in-flight activities before exiting so that a deploy does not abandon running work."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

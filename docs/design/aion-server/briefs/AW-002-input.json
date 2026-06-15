@@ -1,0 +1,241 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-002",
+    "cluster": "aion-server",
+    "title": "Common wire types, proto<->core conversions, and the WireError taxonomy",
+    "depends_on": [
+      "AW-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C4",
+      "C5",
+      "C6",
+      "C7"
+    ],
+    "stories": [
+      "S2",
+      "S4"
+    ],
+    "purpose": "Define the shared primitives every other message family uses: the proto representations of aion-core's identifiers, payload, and status; the lossless conversions between proto and aion-core types; and the WireError taxonomy that turns the engine's and store's typed errors into stable, language-neutral codes.",
+    "task": "Add common.proto declaring proto messages for WorkflowId, RunId, ActivityId, TimerId, Payload, WorkflowStatus, and a thin envelope that wraps a serialised aion-core value with a namespace and request id. Write convert.rs giving infallible-where-possible, lossless conversions between these proto messages and aion-core types. Define WireError as a closed taxonomy with stable codes and write the mapping from aion's EngineError, aion-store's StoreError, and query/signal/namespace failures onto it. Reuse aion-core's Event/WorkflowFilter/WorkflowSummary directly via the envelope \u2014 do not clone them as wire structs.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Common proto messages and core conversions",
+        "spec": "THE SYSTEM SHALL define proto messages for WorkflowId, RunId, ActivityId, TimerId, Payload, and WorkflowStatus, and SHALL provide lossless conversion between each and its aion-core counterpart.",
+        "acceptance": [
+          "common.proto defines messages mirroring aion-core WorkflowId, RunId, ActivityId, TimerId, Payload, and WorkflowStatus.",
+          "convert.rs implements From/TryFrom both directions for each type; a unit test round-trips every type proto->core->proto and core->proto->core and asserts equality.",
+          "Payload conversion preserves the content-type tag and bytes exactly (lossless for all JSON value kinds, mirroring aion-core's Payload guarantee).",
+          "Conversions that cannot fail use From; conversions that can (malformed proto) use TryFrom returning a WireError."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-proto/proto/common.proto",
+            "crates/aion-proto/src/convert.rs"
+          ],
+          "modify": [
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C4"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Envelope reuses aion-core types; no wire clones",
+        "spec": "THE SYSTEM SHALL carry aion-core Event, WorkflowFilter, and WorkflowSummary across the wire via a thin envelope (namespace, request id, serialised aion-core value), NOT via re-declared wire-clone structs.",
+        "acceptance": [
+          "A WireEnvelope (or equivalent) carries a namespace, an optional request id, and a serialised aion-core value (e.g. a Payload-encoded or bytes-encoded core type).",
+          "Event, WorkflowFilter, and WorkflowSummary are serialised from aion-core's own serde derives, not from any wire-specific duplicate type.",
+          "A grep/inspection confirms aion-proto declares no struct that re-fields Event, WorkflowFilter, WorkflowSummary, or WorkflowStatus (per CO12).",
+          "A unit test round-trips an aion-core Event of at least one variant through the envelope and asserts equality."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/proto/common.proto",
+            "crates/aion-proto/src/convert.rs",
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "WireError closed taxonomy",
+        "spec": "THE SYSTEM SHALL define WireError as a closed taxonomy carrying a stable code and a human message, covering not-found, namespace-denied, sequence-conflict, unknown-query, query-timeout, not-running, lagged, and backend categories.",
+        "acceptance": [
+          "WireError has variants (with stable integer or string codes) for NotFound, NamespaceDenied, SequenceConflict, UnknownQuery, QueryTimeout, NotRunning, Lagged, and Backend.",
+          "WireError derives Serialize + Deserialize, implements std::error::Error and Display, and is Send + Sync.",
+          "Each code is documented as stable so client SDKs may branch on it; the human message is informational only.",
+          "WireError is representable as a proto message in common.proto and round-trips losslessly."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-proto/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-proto/proto/common.proto",
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Mapping engine and store errors onto WireError",
+        "spec": "THE SYSTEM SHALL map aion's EngineError, aion-store's StoreError, and query/signal/namespace failures onto WireError, never exposing Debug-formatted internals on the wire.",
+        "acceptance": [
+          "A documented mapping turns each EngineError and StoreError variant into a specific WireError code (e.g. StoreError::SequenceConflict -> WireError::SequenceConflict, EngineError unknown-workflow -> NotFound).",
+          "Namespace authorisation failures map to NamespaceDenied; query timeout and unknown-query map to QueryTimeout and UnknownQuery; a terminated/unknown workflow maps to NotRunning.",
+          "No mapping path forwards a Debug or Display of the underlying error verbatim as the code; the human message is the only free-text field (per D3).",
+          "A unit test asserts representative mappings for an EngineError and a StoreError variant.",
+          "The mapping lives in aion-proto and references aion-store's StoreError; it references aion's EngineError type only structurally \u2014 note that if EngineError is not reachable from a leaf crate, the mapping for engine errors is provided as a documented conversion the server (AW-008/AW-009) applies, and aion-proto owns only the StoreError + namespace + query/signal mappings. State which split is used."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/src/error.rs",
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the workflow, events, or worker service messages \u2014 AW-003, AW-004, AW-005.",
+      "SHALL NOT depend on aion (the engine crate); if EngineError mapping cannot live in a leaf crate, the engine-error mapping is applied server-side and documented as such (R4 records the split).",
+      "SHALL NOT re-declare Event/WorkflowFilter/WorkflowSummary/WorkflowStatus as wire-clone structs (CO12).",
+      "SHALL NOT implement any server handler or transport \u2014 those are AW-008 onward."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-proto passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "Inspection confirms no wire-clone of aion-core's Event/Filter/Summary/Status types exists."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C4",
+        "text": "common.proto and convert.rs define the proto<->aion-core mapping for WorkflowId, RunId, ActivityId, TimerId, Payload, and WorkflowStatus with lossless round-trip."
+      },
+      {
+        "id": "C5",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary reuse aion-core's types via a thin envelope (namespace, request id, serialised core payload); no wire clone of those types exists."
+      },
+      {
+        "id": "C6",
+        "text": "WireError is a closed taxonomy with stable codes covering not-found, namespace-denied, sequence-conflict, unknown-query, query-timeout, not-running, lagged, and backend categories."
+      },
+      {
+        "id": "C7",
+        "text": "WireError maps from aion's EngineError, aion-store's StoreError, and query/signal/namespace failures, with a documented mapping and no Debug-formatted internals on the wire."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As a client SDK author, I want failures to arrive as stable error codes so that my SDK can branch on 'workflow not found' versus 'namespace denied' without parsing strings."
+      },
+      {
+        "id": "S4",
+        "text": "As a worker SDK author, I want my build to depend only on the wire contract and the domain types, never the engine, so that my worker binary stays small and decoupled."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

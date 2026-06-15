@@ -1,0 +1,153 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "PK-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "PK-003",
+    "cluster": "aion-publish",
+    "title": "Publish order validation and automation script",
+    "depends_on": [
+      "PK-001",
+      "PK-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C12",
+      "C13",
+      "C14"
+    ],
+    "stories": [
+      "S4",
+      "S5"
+    ],
+    "purpose": "Document the correct crates.io publish order, validate it with dry-runs, and provide an automation script so the team can publish reliably.",
+    "task": "Derive the publish order from the dependency graph. Write a publish script (scripts/publish-crates.sh) that iterates crates in order, runs cargo publish --dry-run by default, and accepts a --live flag for actual publication. Validate the order with a full dry-run pass. Document the publish process in the repo.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Publish order derivation and documentation",
+        "spec": "THE SYSTEM SHALL document the leaf-first publish order based on the workspace dependency graph. The order SHALL be: aion-core, aion-store, aion-store-libsql, aion-package, aion-nif, aion, aion-proto, aion-server, aion-worker, aion-client, aion-cli.",
+        "acceptance": [
+          "Publish order is documented in scripts/publish-crates.sh and in the repo README.",
+          "The order matches the actual dependency graph (verified by cargo metadata).",
+          "No crate depends on a crate that appears later in the publish order."
+        ],
+        "files": {
+          "create": [
+            "scripts/publish-crates.sh"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Full dry-run validation",
+        "spec": "THE SYSTEM SHALL pass cargo publish --dry-run for every crate when executed in the documented publish order.",
+        "acceptance": [
+          "Running scripts/publish-crates.sh with no flags performs a dry-run of all crates.",
+          "All 11 crates pass dry-run without errors.",
+          "The script exits non-zero on the first failure."
+        ],
+        "files": {
+          "create": [],
+          "modify": []
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Publish automation script",
+        "spec": "THE SYSTEM SHALL provide scripts/publish-crates.sh that iterates all workspace crates in dependency order and runs cargo publish for each. Default mode is --dry-run. A --live flag publishes for real.",
+        "acceptance": [
+          "scripts/publish-crates.sh is executable.",
+          "Default invocation runs cargo publish --dry-run for each crate.",
+          "scripts/publish-crates.sh --live runs cargo publish (no --dry-run) for each crate.",
+          "The script logs each crate name and result as it proceeds.",
+          "The script stops on the first failure."
+        ],
+        "files": {
+          "create": [
+            "scripts/publish-crates.sh"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S5"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL create a publish script that handles the full ordered publish.",
+      "SHALL validate the dependency graph matches the publish order.",
+      "SHALL NOT actually publish to crates.io \u2014 this brief validates with --dry-run only.",
+      "SHALL NOT set up CI/CD publishing (that is an operational concern beyond this brief).",
+      "SHALL NOT change any crate code or dependencies (PK-001 handles that)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "scripts/publish-crates.sh runs successfully in dry-run mode.",
+      "All 11 crates report success from cargo publish --dry-run.",
+      "shellcheck scripts/publish-crates.sh passes (if shellcheck is available)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C12",
+        "text": "Publish order documented and validated against dependency graph"
+      },
+      {
+        "id": "C13",
+        "text": "cargo publish --dry-run succeeds for every crate in order"
+      },
+      {
+        "id": "C14",
+        "text": "Publish script or CI job automates the ordered publish"
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "I can run cargo publish --dry-run on any crate to verify it's publishable."
+      },
+      {
+        "id": "S5",
+        "text": "I can run a single script that publishes all crates in the correct dependency order."
+      }
+    ],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-publish",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

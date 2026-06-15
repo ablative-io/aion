@@ -1,0 +1,158 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-010",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-010",
+    "cluster": "aion-time-signals",
+    "title": "all: fan-out, ordered collect, fail-fast",
+    "depends_on": [
+      "AT-009"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C30"
+    ],
+    "stories": [
+      "S6"
+    ],
+    "purpose": "Implement the all primitive: spawn N children concurrently, collect every result, and return them in input order. Any child failure fails the whole all and cancels the rest. This is the fan-out workhorse for parallel activities and child workflows, built on the correlation/cancellation substrate from AT-009.",
+    "task": "Implement all over a fixed list of child specs. Spawn each as a linked child carrying its correlation token (AT-009), block in selective receive until all N results arrive, and return them ordered by input position. On the first child failure, fail the whole all and cancel the remaining in-flight children via the AT-009 cancel path.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Spawn N and collect in input order",
+        "spec": "WHEN all is called with N child specs, THE SYSTEM SHALL spawn N linked children, block until all N results arrive, and return the results in input order.",
+        "acceptance": [
+          "all.rs defines all(specs) that spawns each spec as a linked child tagged with its correlation token (AT-009 R1) and collects via the AT-009 matcher.",
+          "The returned collection preserves input order regardless of the order results arrive (verified by delivering results out of order in a test).",
+          "all blocks until exactly N results have arrived before returning success.",
+          "A test fans out 3 children, delivers results out of order, and asserts the returned list is in input order with the correct values."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/concurrency/all.rs"
+          ],
+          "modify": [
+            "crates/aion/src/concurrency/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Fail-fast: a child failure fails all and cancels the rest",
+        "spec": "IF any child fails, THEN THE SYSTEM SHALL fail the whole all with that child's error AND cancel the remaining in-flight children via the AT-009 cancel path.",
+        "acceptance": [
+          "On receiving a failure result for any child, all stops collecting, cancels the remaining in-flight children (AT-009 R3, recording their cancellation), and returns the failing child's error.",
+          "Children that already completed before the failure are not resurrected; the all result is the error.",
+          "A test fans out 3 children, delivers one failure while two are in flight, and asserts: all returns the failure error, and the two in-flight children were cancelled and their cancellation recorded.",
+          "A test asserts no panic and no partial success value is returned on failure."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/concurrency/all.rs"
+          ]
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement correlation, matching, or cancellation \u2014 those are AT-009.",
+      "SHALL NOT implement race or map \u2014 those are AT-011 and AT-012.",
+      "SHALL NOT define the Gleam workflow.all surface \u2014 that is AF."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including out-of-order ordering and fail-fast tests.",
+      "cargo fmt --check passes.",
+      "Remaining children are cancelled and recorded on failure (verified by test).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C30",
+        "text": "all spawns N linked children, blocks until all N results arrive, and returns them in input order; any child failure fails the whole all and cancels the remaining children."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a workflow author, I want to fan work out with all, race the fastest of several with race, and fan out dynamically from data with map so that I can express concurrency directly without writing a join runtime."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

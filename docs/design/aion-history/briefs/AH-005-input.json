@@ -1,0 +1,158 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AH-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AH-005",
+    "cluster": "aion-history",
+    "title": "Continue-as-new integration test with recovery",
+    "depends_on": [
+      "AH-001",
+      "AH-002",
+      "AH-003",
+      "AH-004"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C10"
+    ],
+    "stories": [
+      "S1",
+      "S3",
+      "S4"
+    ],
+    "purpose": "Prove end-to-end that a looping workflow can use continue-as-new to bound its history, and that recovery correctly replays only the current run. This is the integration-level verification that the entire AH cluster works together: the event, the status, the recorder, the engine method, list_active exclusion, and chain navigation.",
+    "task": "Write an integration test (in crates/aion/tests/) that: (1) starts a workflow that calls continue-as-new after a few iterations; (2) verifies the old run is terminal with ContinuedAsNew status; (3) verifies the new run is active with the carried input; (4) simulates recovery by rebuilding the engine from the store and verifying only the new run is replayed; (5) verifies the continuation chain is navigable via read_run_chain. Use InMemoryStore for the test.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Integration test: continue-as-new lifecycle",
+        "spec": "THE SYSTEM SHALL have an integration test that starts a workflow, triggers continue-as-new via Engine::continue_as_new, and verifies: the old run's status is ContinuedAsNew, the new run's status is Running, the new run's input matches the carried payload, and the new run's WorkflowStarted has parent_run_id matching the old run.",
+        "acceptance": [
+          "Test starts a workflow and calls engine.continue_as_new with a carried payload.",
+          "Old run's projected status is ContinuedAsNew.",
+          "New run exists under the same WorkflowId with a different RunId.",
+          "New run's history starts with WorkflowStarted carrying the carried payload.",
+          "New run's WorkflowStarted has parent_run_id = old run's RunId."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/tests/continue_as_new.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Integration test: recovery skips old runs",
+        "spec": "THE SYSTEM SHALL have an integration test that verifies list_active returns only the current (non-ContinuedAsNew) run after a continue-as-new. This proves recovery would replay only the current run.",
+        "acceptance": [
+          "After continue-as-new, list_active returns only the WorkflowId once (not twice).",
+          "The active run is the new run, not the old one.",
+          "A workflow that has not used continue-as-new still appears correctly in list_active."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/tests/continue_as_new.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Integration test: continuation chain navigation",
+        "spec": "THE SYSTEM SHALL have an integration test that calls continue-as-new twice and verifies read_run_chain returns three RunSummary entries in order with correct parent_run_id links.",
+        "acceptance": [
+          "After two continue-as-new calls, read_run_chain returns 3 entries.",
+          "First entry has parent_run_id = None.",
+          "Second entry has parent_run_id = first RunId.",
+          "Third entry has parent_run_id = second RunId.",
+          "Entries are in chronological order."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/tests/continue_as_new.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT test SDK-level workflow.continue_as_new \u2014 that requires Gleam fixtures and belongs in a separate brief.",
+      "SHALL NOT test server API endpoints \u2014 those belong in the aion-server cluster.",
+      "SHALL use InMemoryStore for all tests (no external dependencies)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion --test continue_as_new passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "ContinuedAsNew is a terminal status with exactly one corresponding terminal event (WorkflowContinuedAsNew), consistent with the status-is-a-projection invariant."
+      },
+      {
+        "id": "CO2",
+        "text": "The new run's WorkflowStarted must carry parent_run_id so the continuation chain is navigable."
+      },
+      {
+        "id": "CO3",
+        "text": "Continue-as-new with pending activities or children is a hard error, not auto-cancellation."
+      },
+      {
+        "id": "CO4",
+        "text": "The carried payload is subject to the same size constraints as any workflow input."
+      },
+      {
+        "id": "CO5",
+        "text": "Recovery (list_active + replay) must never attempt to replay a ContinuedAsNew run."
+      },
+      {
+        "id": "CO6",
+        "text": "The engine must start the new run atomically with completing the old run \u2014 no window where neither exists."
+      }
+    ],
+    "intention": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration. Replay on recovery re-executes every recorded step from the beginning, so performance degrades linearly with history size. Without a mechanism to bound history, Aion cannot support long-lived workflows in production. This cluster adds continue-as-new: a workflow explicitly restarts itself with a fresh event log, carrying forward only the state it needs. The old execution completes as ContinuedAsNew (a terminal status), and a new execution begins immediately with the carried-over state as input. Replay of the new execution starts from its own WorkflowStarted event, not from the original. This is the same mechanism Temporal uses and it is the only sound approach \u2014 snapshotting with truncation would require the snapshot to be replay-correct, which is equivalent to re-executing anyway.",
+    "design_path": "docs/design/aion-history",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration."
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

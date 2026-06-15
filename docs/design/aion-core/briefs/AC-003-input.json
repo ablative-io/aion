@@ -1,0 +1,205 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AC-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AC-003",
+    "cluster": "aion-core",
+    "title": "Workflow status, filters, and summaries",
+    "depends_on": [
+      "AC-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C16",
+      "C17",
+      "C18",
+      "C19",
+      "C20"
+    ],
+    "stories": [
+      "S9",
+      "S10"
+    ],
+    "purpose": "Define the derived, queryable view of a workflow: its status (a projection over event history) and the filter and summary types the query surface uses.",
+    "task": "Define WorkflowStatus as an enum and a projection function that computes it from an event history. Define WorkflowFilter (the query input) and WorkflowSummary (the lightweight query output). Status must never be a free-standing mutable field \u2014 it is always derived from events.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "WorkflowStatus and projection",
+        "spec": "THE SYSTEM SHALL define WorkflowStatus with variants Running, Completed, Failed, Cancelled, TimedOut. THE SYSTEM SHALL provide a function that computes WorkflowStatus from a slice of events by inspecting the terminal lifecycle event, defaulting to Running when none is present.",
+        "acceptance": [
+          "status.rs defines WorkflowStatus { Running, Completed, Failed, Cancelled, TimedOut } deriving Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq.",
+          "A function status_from_events(&[Event]) -> WorkflowStatus returns Running when no terminal event exists, and the matching terminal status otherwise.",
+          "WorkflowCompleted maps to Completed, WorkflowFailed to Failed, WorkflowCancelled to Cancelled, and WorkflowTimedOut to TimedOut \u2014 every terminal WorkflowStatus variant has exactly one corresponding terminal event (AC-002 R2), so the projection is total.",
+          "WorkflowStatus does not derive or implement Default and exposes no new()/constructor; status_from_events is the only function in aion-core that produces a WorkflowStatus from history, and a doc comment states that status must be obtained only by projection from event history, never assigned directly (enforces C18 / CO7).",
+          "Unit tests cover: empty history (Running), each terminal event including WorkflowTimedOut, and a history with events after start but before any terminal event (Running); a test asserts the projection is deterministic (the same history always yields the same status)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/status.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C16",
+          "C17",
+          "C18"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "WorkflowFilter",
+        "spec": "THE SYSTEM SHALL define WorkflowFilter supporting optional filtering by workflow type, status, time range, and parent workflow. An empty filter SHALL match all workflows.",
+        "acceptance": [
+          "filter.rs defines WorkflowFilter with optional fields: workflow_type, status, started_after, started_before, parent.",
+          "WorkflowFilter has a builder or a Default that yields a match-all filter.",
+          "A matches(&self, &WorkflowSummary) -> bool helper evaluates a summary against the filter (used by the in-memory store and as reference semantics for durable backends).",
+          "Unit tests cover match-all, single-field filters, and a combined filter."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/filter.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C19"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "WorkflowSummary",
+        "spec": "THE SYSTEM SHALL define WorkflowSummary as the lightweight projection of a workflow: id, type, status, start time, and optional end time.",
+        "acceptance": [
+          "WorkflowSummary carries workflow_id: WorkflowId, workflow_type: String, status: WorkflowStatus, started_at: DateTime<Utc>, ended_at: Option<DateTime<Utc>>.",
+          "WorkflowSummary derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+          "A constructor or helper builds a summary from a workflow's event history (start event plus projected status plus terminal timestamp).",
+          "A unit test builds a summary from a small history and asserts the fields."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/filter.rs"
+          ]
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the EventStore trait or query method \u2014 those are AC-005; this brief defines the types the query method uses.",
+      "SHALL NOT cache status anywhere; status is always computed from events here."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-core passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C16",
+        "text": "WorkflowStatus enum has variants Running, Completed, Failed, Cancelled, TimedOut."
+      },
+      {
+        "id": "C17",
+        "text": "WorkflowStatus is computed by projecting over event history (the last lifecycle event determines the status)."
+      },
+      {
+        "id": "C18",
+        "text": "No code path sets WorkflowStatus independently of the events that justify it."
+      },
+      {
+        "id": "C19",
+        "text": "WorkflowFilter supports filtering by workflow type, status, time range, and parent workflow."
+      },
+      {
+        "id": "C20",
+        "text": "WorkflowSummary carries workflow id, type, status, start time, and end time."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As an operator, I want to query workflows by type, status, and time range so that I can see what is running and what has failed."
+      },
+      {
+        "id": "S10",
+        "text": "As an operator, I want a lightweight summary per workflow so that listing many workflows does not require loading every full history."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-core and aion-store are leaf crates \u2014 they depend on no other Aion crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Every type that crosses the wire or the store derives Serialize + Deserialize (these are data types, not credentials)."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is always derivable from event history; no independent status mutation."
+      },
+      {
+        "id": "CO8",
+        "text": "InMemoryStore must pass the same behavioural test suite future durable backends are held to \u2014 it is the oracle, so it must be correct."
+      },
+      {
+        "id": "CO9",
+        "text": "Identifiers are newtypes; no bare Uuid or String in public signatures where an ID is meant."
+      }
+    ],
+    "intention": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a client lists running workflows, a store persists history, or a worker reports a result, they all use the types defined here. The types must make illegal states unrepresentable \u2014 a completed workflow cannot also be running, an activity result cannot exist without a preceding schedule. Nothing here depends on beamr, the engine, networking, or any storage backend. This is the still point at the centre: pure types and one trait, so the rest of Aion can be built against stable contracts.",
+    "design_path": "docs/design/aion-core",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a cl"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

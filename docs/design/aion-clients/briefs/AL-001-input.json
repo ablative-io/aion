@@ -1,0 +1,238 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AL-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AL-001",
+    "cluster": "aion-clients",
+    "title": "Shared client behavioural contract and conformance scenario set",
+    "depends_on": [],
+    "blocked_by": [
+      "AW: aion-server API + aion-proto wire types must be defined"
+    ],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C6",
+      "C26"
+    ],
+    "stories": [
+      "S10",
+      "S11"
+    ],
+    "purpose": "Pin down, language-neutrally, exactly what each of the seven client operations means before any SDK is written. This contract is the oracle every SDK is measured against; without it, four SDKs drift into four subtly different and subtly wrong clients. It also defines the shared conformance scenario set that becomes the executable agreement gate.",
+    "task": "Author CLIENT-CONTRACT.md: a prose specification of connect, start, signal, query, cancel, list, describe, and subscribe \u2014 their inputs, outputs, and errors \u2014 plus the precise semantics of the hard cases (start idempotency, run targeting, query timeout, cancellation-as-request, stream resumption) and the shared error taxonomy. Then author conformance/aion-clients/scenarios.json: a machine-readable scenario set encoding the happy path and the key edge cases, in a form each SDK's harness can drive. This brief writes documents and a data file only \u2014 no SDK code. It consumes the aion-server API and aion-proto types defined in AW; it does not redefine the wire format.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Operation catalogue",
+        "spec": "THE SYSTEM SHALL document the seven operations (connect, start, signal, query, cancel, list, describe, subscribe), each with its inputs, its return value, and the errors it can raise. THE SYSTEM SHALL NOT redefine the aion-proto wire format; it SHALL reference the AW-owned request/response types as the transport.",
+        "acceptance": [
+          "CLIENT-CONTRACT.md has one section per operation, each stating inputs, output, and possible errors.",
+          "connect documents endpoint, auth credential, and TLS configuration as its inputs and a reusable client as its output.",
+          "list documents the filter dimensions (type, status, time range, parent) and pagination; describe documents returning a summary plus status and optional history.",
+          "Each section names the aion-proto request/response type it maps to (by name) rather than restating its fields.",
+          "A reviewer can enumerate the full client surface from this document alone."
+        ],
+        "files": {
+          "create": [
+            "docs/design/aion-clients/CLIENT-CONTRACT.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Hard-case semantics",
+        "spec": "THE SYSTEM SHALL specify start idempotency, run targeting, query timeout, cancellation semantics, and subscribe resumption precisely enough that two independent implementations behave identically. THE SYSTEM SHALL state that cancellation is a recorded cooperative request, not an immediate kill, and SHALL NOT describe query as fire-and-forget.",
+        "acceptance": [
+          "Start idempotency: a retried start with the same idempotency key and identical request returns the original handle; same key with a different request raises AlreadyExists. Stated unambiguously with both outcomes.",
+          "Run targeting: signal, query, cancel, and describe target the latest run by default and a specific RunId when supplied.",
+          "Query: a synchronous round-trip bounded by a caller deadline; QueryTimeout when the deadline elapses, QueryFailed when the workflow's handler errors.",
+          "Cancellation: returns once the cancel request is recorded; the workflow stops cooperatively, so a returned cancel does not assert the workflow has already stopped.",
+          "Subscribe resumption: on transient disconnect the client resumes from the last delivered event's per-workflow sequence number, delivering no gaps and no duplicates; on terminal failure the stream surfaces an error rather than ending silently."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "docs/design/aion-clients/CLIENT-CONTRACT.md"
+          ]
+        },
+        "checklist": [
+          "C2",
+          "C3",
+          "C4",
+          "C5"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Shared error taxonomy",
+        "spec": "THE SYSTEM SHALL define the closed set of distinguishable client failures and the server condition each maps from, so every SDK renders the same set idiomatically.",
+        "acceptance": [
+          "The taxonomy lists exactly: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, NamespaceDenied, InvalidArgument, Server.",
+          "Each variant states the server/transport condition it maps from (e.g. AlreadyExists <- idempotency-key conflict; Unavailable <- transport/connection failure; Server <- unexpected server error carrying the server's detail).",
+          "The document states that no SDK may collapse distinct variants into one opaque error and no SDK may swallow an error.",
+          "Each variant is annotated with whether it is retryable in principle (e.g. Unavailable yes, InvalidArgument no)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "docs/design/aion-clients/CLIENT-CONTRACT.md"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Conformance scenario set",
+        "spec": "THE SYSTEM SHALL define a machine-readable scenario set encoding the happy path and the key edge cases in a form each SDK's harness can drive against a real aion-server.",
+        "acceptance": [
+          "scenarios.json encodes a happy-path sequence: start -> signal -> query -> list -> describe -> cancel -> subscribe, with the expected observable result of each step.",
+          "scenarios.json encodes edge cases: idempotency-conflict (start with reused key), query-timeout, not-found (operate on an unknown workflow), and disconnect-resume (subscribe across a forced reconnect).",
+          "Each scenario step names the operation, its inputs, and the expected output or error variant from the taxonomy in R3.",
+          "The structure is language-neutral data (no language-specific assertions) so all four harnesses can consume it.",
+          "scenarios.json is valid JSON and each referenced error variant exists in the R3 taxonomy."
+        ],
+        "files": {
+          "create": [
+            "conformance/aion-clients/scenarios.json"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define or redefine the aion-proto wire types or the aion-server endpoints \u2014 those are owned by AW; this brief references them.",
+      "SHALL NOT write any SDK code in any language \u2014 this brief produces a prose contract and a data file only.",
+      "SHALL NOT design the worker protocol or any activity-execution semantics (AR)."
+    ],
+    "verification": [
+      "CLIENT-CONTRACT.md covers all seven operations, all five hard cases, and the ten-variant error taxonomy.",
+      "scenarios.json parses as valid JSON (python3 -c 'import json,sys; json.load(open(sys.argv[1]))' on the file).",
+      "Every error variant referenced in scenarios.json appears in the contract's taxonomy.",
+      "A reader can reconstruct the full client surface and the conformance gate from these two files without reading any SDK code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "CLIENT-CONTRACT.md defines the seven operations (connect, start, signal, query, cancel, list, describe, subscribe) language-neutrally, each with inputs, outputs, and the errors it can raise."
+      },
+      {
+        "id": "C2",
+        "text": "The contract specifies start idempotency: a retried identical start (same idempotency key + request) returns the original handle; a conflicting reuse raises AlreadyExists."
+      },
+      {
+        "id": "C3",
+        "text": "The contract specifies run targeting: signal/query/cancel/describe target the latest run by default and a specific RunId when given one."
+      },
+      {
+        "id": "C4",
+        "text": "The contract specifies query as a synchronous deadline-bounded round-trip yielding QueryTimeout when the deadline elapses and QueryFailed when the handler errors."
+      },
+      {
+        "id": "C5",
+        "text": "The contract specifies cancellation as a recorded request (cooperative stop), not an immediate kill, and subscribe resumption from the last delivered per-event sequence number with no gaps or duplicates."
+      },
+      {
+        "id": "C6",
+        "text": "The contract defines the shared error taxonomy: NotFound, AlreadyExists, QueryFailed, QueryTimeout, Cancelled, Unavailable, Unauthenticated, InvalidArgument, Server."
+      },
+      {
+        "id": "C26",
+        "text": "A shared conformance scenario set encodes the start -> signal -> query -> list -> describe -> cancel -> subscribe happy path plus the idempotency-conflict, query-timeout, not-found, and disconnect-resume cases."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S10",
+        "text": "As a platform team, I want the Python, TypeScript, Gleam, and Rust clients to behave identically against the same server so that teams in different languages can reason about Aion the same way."
+      },
+      {
+        "id": "S11",
+        "text": "As a platform team, I want each client to map server failures to a documented, branchable error taxonomy so that my code can react differently to an idempotency conflict, a query timeout, and an auth failure."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Clients consume the aion-server API and aion-proto wire types; they SHALL NOT define their own wire formats, endpoints, or fields the server does not serve. The protocol is owned by AW."
+      },
+      {
+        "id": "CO2",
+        "text": "Clients SHALL NOT depend on engine internals (aion, aion-store, beamr). The Rust client may depend on aion-core (shared domain types) and aion-proto; the embedded constructor may depend on aion only behind a feature flag, never by default."
+      },
+      {
+        "id": "CO3",
+        "text": "All four SDKs expose the same seven operations with identical observable behaviour, verified by the shared conformance suite."
+      },
+      {
+        "id": "CO4",
+        "text": "Every SDK exposes both a typed payload surface (per language) and a raw-Payload escape hatch; neither is removable."
+      },
+      {
+        "id": "CO5",
+        "text": "Every SDK maps server failures to a documented, branchable error taxonomy. No swallowed errors, no single catch-all collapsing distinct failures."
+      },
+      {
+        "id": "CO6",
+        "text": "subscribe resumes transparently across transient disconnects using the per-event sequence number, delivering a gap-free duplicate-free stream; terminal failures surface through the stream, not as a silent end."
+      },
+      {
+        "id": "CO7",
+        "text": "start honours a caller-supplied idempotency key: a retried identical start returns the original handle; a conflicting reuse raises AlreadyExists."
+      },
+      {
+        "id": "CO8",
+        "text": "Per-ecosystem toolchain gates pass: Rust (clippy -D warnings, fmt --check, no allow/expect/ignore), Python (ruff + mypy --strict + pytest), TypeScript (tsc strict + eslint + tests), Gleam (gleam format --check + gleam check + gleam test). No-partial-implementation and no-silent-failure standards hold across all four."
+      },
+      {
+        "id": "CO9",
+        "text": "Each package is publishable to its registry (crates.io, PyPI, npm, Hex) with a README, a type-checked public surface, and a runnable example covering all seven operations."
+      }
+    ],
+    "intention": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-server deployment and exposes the same seven operations \u2014 connect, start, signal, query, cancel, list, describe, subscribe \u2014 in the idioms of its language. A developer who has never read the engine internals should add a dependency, point at a server URL, and start a workflow with full type-checking in their language within minutes; a frontend developer using the TypeScript client should never see beamr, Gleam, or Rust. The four SDKs must behave identically where behaviour is observable, proven by a shared language-neutral behavioural contract and a conformance suite that exercises every SDK against a real server.",
+    "design_path": "docs/design/aion-clients",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

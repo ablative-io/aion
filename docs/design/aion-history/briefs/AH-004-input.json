@@ -1,0 +1,153 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AH-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AH-004",
+    "cluster": "aion-history",
+    "title": "History chain navigation across continuation runs",
+    "depends_on": [
+      "AH-001",
+      "AH-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C8"
+    ],
+    "stories": [
+      "S3"
+    ],
+    "purpose": "Enable operators to navigate the full chain of continuations for a workflow. When a workflow continues-as-new multiple times, each run has its own event history. Querying by WorkflowId should return all runs in continuation order so operators can trace the complete execution history for debugging, compliance, and auditing.",
+    "task": "Add a read_run_chain method to the EventStore trait that, given a WorkflowId, returns the list of RunIds in continuation order (oldest to newest). Each entry carries the RunId, parent_run_id (None for the first run), and projected status. Add an Engine::describe_workflow method that returns the full chain with summary information. Implement in InMemoryStore and libSQL store.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "EventStore::read_run_chain returns all runs in continuation order",
+        "spec": "THE SYSTEM SHALL add a read_run_chain method to the EventStore trait that returns a Vec<RunSummary> for a given WorkflowId, ordered from oldest to newest run. Each RunSummary carries run_id, parent_run_id (Option<RunId>), status (WorkflowStatus), started_at (DateTime), and closed_at (Option<DateTime>).",
+        "acceptance": [
+          "EventStore trait has a read_run_chain method.",
+          "RunSummary type exists in aion-store with the specified fields.",
+          "For a workflow with 3 continuations, read_run_chain returns 3 RunSummary entries in order.",
+          "The first run has parent_run_id = None; subsequent runs have parent_run_id = previous run's RunId.",
+          "A workflow with no continuations returns a single RunSummary."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store/src/store.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "InMemoryStore read_run_chain implementation",
+        "spec": "THE SYSTEM SHALL implement read_run_chain for InMemoryStore by scanning all histories for the given WorkflowId, extracting RunId and parent_run_id from WorkflowStarted events, and ordering by continuation chain.",
+        "acceptance": [
+          "InMemoryStore::read_run_chain returns correct results for single-run and multi-run workflows.",
+          "Ordering is oldest-to-newest based on the parent_run_id chain.",
+          "An unknown WorkflowId returns an empty vec."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store/src/memory.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "libSQL read_run_chain implementation",
+        "spec": "THE SYSTEM SHALL implement read_run_chain for the libSQL store.",
+        "acceptance": [
+          "libSQL read_run_chain returns correct results for single-run and multi-run workflows.",
+          "The conformance suite includes a test for read_run_chain with continuations."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs",
+            "crates/aion-store/src/conformance.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT add server/HTTP/gRPC endpoints for chain navigation \u2014 those belong in the aion-server cluster.",
+      "SHALL NOT modify the existing read_history method \u2014 it continues to return events for a single WorkflowId (all runs combined).",
+      "SHALL NOT add dashboard UI for chain navigation \u2014 that belongs in the dashboard cluster."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes.",
+      "Conformance test covers: no continuations (single run), one continuation, multiple continuations, unknown WorkflowId."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "ContinuedAsNew is a terminal status with exactly one corresponding terminal event (WorkflowContinuedAsNew), consistent with the status-is-a-projection invariant."
+      },
+      {
+        "id": "CO2",
+        "text": "The new run's WorkflowStarted must carry parent_run_id so the continuation chain is navigable."
+      },
+      {
+        "id": "CO3",
+        "text": "Continue-as-new with pending activities or children is a hard error, not auto-cancellation."
+      },
+      {
+        "id": "CO4",
+        "text": "The carried payload is subject to the same size constraints as any workflow input."
+      },
+      {
+        "id": "CO5",
+        "text": "Recovery (list_active + replay) must never attempt to replay a ContinuedAsNew run."
+      },
+      {
+        "id": "CO6",
+        "text": "The engine must start the new run atomically with completing the old run \u2014 no window where neither exists."
+      }
+    ],
+    "intention": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration. Replay on recovery re-executes every recorded step from the beginning, so performance degrades linearly with history size. Without a mechanism to bound history, Aion cannot support long-lived workflows in production. This cluster adds continue-as-new: a workflow explicitly restarts itself with a fresh event log, carrying forward only the state it needs. The old execution completes as ContinuedAsNew (a terminal status), and a new execution begins immediately with the carried-over state as input. Replay of the new execution starts from its own WorkflowStarted event, not from the original. This is the same mechanism Temporal uses and it is the only sound approach \u2014 snapshotting with truncation would require the snapshot to be replay-correct, which is equivalent to re-executing anyway.",
+    "design_path": "docs/design/aion-history",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration."
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

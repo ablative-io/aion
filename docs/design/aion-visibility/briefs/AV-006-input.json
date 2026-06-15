@@ -1,0 +1,169 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AV-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AV-006",
+    "cluster": "aion-visibility",
+    "title": "Crash-consistency recovery for visibility projection",
+    "depends_on": [
+      "AV-001"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "Events are appended atomically but the visibility projection update happens after the append returns. A crash between the two leaves a workflow that exists in event history but is invisible to queries until the next engine restart -- and even then, only if a reconciliation pass runs. This brief closes that crash-consistency window with startup recovery, periodic background reconciliation, and warning-level logging on upsert failures.",
+    "task": "Add a startup reconciliation pass that scans event history for workflows missing from the visibility index and backfills them. Add a periodic background reconciliation task that detects and repairs history/visibility divergence. Ensure the Recorder logs a warning (but does not fail the append) when a visibility upsert fails. Write an integration test that simulates the crash-consistency gap and verifies recovery.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Startup recovery reconciles visibility store against event history",
+        "spec": "WHEN the engine starts, THE SYSTEM SHALL scan event history for workflows that have events in the store but are missing from (or stale in) the visibility index, and SHALL upsert their current projected state into the visibility store before accepting new workflow starts.",
+        "acceptance": [
+          "A reconcile_visibility function (or method on the engine/visibility module) reads all distinct workflow IDs from event history and compares them against the visibility index.",
+          "For each workflow present in history but missing from or stale in the visibility index, the function projects the current status from history and upserts it.",
+          "Reconciliation runs during engine startup, after the event store and visibility store are opened but before the engine begins accepting workflow starts.",
+          "A test seeds event history with a workflow that has no visibility entry, starts the engine, and asserts the workflow appears in visibility queries."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/builder.rs",
+            "crates/aion-store/src/visibility.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Periodic background reconciliation task",
+        "spec": "WHILE the engine is running, THE SYSTEM SHALL periodically execute a background reconciliation pass that detects and repairs divergence between event history and the visibility index. The interval SHALL be configurable via the engine builder.",
+        "acceptance": [
+          "A background task (spawned during engine startup) runs the same reconciliation logic as R1 on a configurable interval.",
+          "The interval is set via the engine builder; if not configured, no periodic reconciliation runs (no arbitrary default per CLAUDE.md).",
+          "The background task is cancelled on engine shutdown.",
+          "The reconciliation pass does not block in-flight workflow operations; it reads a snapshot and upserts asynchronously.",
+          "A test configures a short reconciliation interval, introduces a visibility gap after startup, and asserts the gap is repaired within the next reconciliation cycle."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/engine/builder.rs",
+            "crates/aion-store/src/visibility.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Recorder logs warning on visibility upsert failure",
+        "spec": "WHEN the Recorder appends events successfully but the subsequent visibility upsert fails, THE SYSTEM SHALL log a warning-level message identifying the workflow and the upsert error. THE SYSTEM SHALL NOT fail the append or return an error to the caller.",
+        "acceptance": [
+          "After a successful append, if the visibility upsert returns an error, the Recorder emits a tracing::warn! with the workflow ID, run ID, and the upsert error.",
+          "The append result returned to the caller is Ok, not Err -- the visibility failure is non-fatal.",
+          "The warning message explicitly names the crash-consistency window so operators know to investigate.",
+          "A test mocks a visibility store that returns an error on upsert, appends through the Recorder, and asserts the append succeeds and the warning is logged."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recorder.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Integration test simulating crash-consistency gap and recovery",
+        "spec": "THE SYSTEM SHALL include an integration test that simulates the crash-consistency window (events appended, visibility not updated) and verifies that startup reconciliation and/or background reconciliation repair the gap.",
+        "acceptance": [
+          "The test appends events directly to the event store for a workflow, intentionally skipping the visibility upsert, creating the crash-consistency gap.",
+          "The test then triggers startup reconciliation (or starts the engine) and asserts the workflow appears in visibility queries with the correct projected status.",
+          "The test covers at least: a Running workflow missing from visibility, and a Completed workflow missing from visibility.",
+          "The test runs against InMemoryStore and does not require external infrastructure."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store/src/visibility.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL startup reconciliation pass that backfills missing visibility entries from event history",
+      "SHALL configurable periodic background reconciliation task",
+      "SHALL warning-level logging on visibility upsert failure in Recorder",
+      "SHALL integration test simulating the crash-consistency gap",
+      "SHALL NOT transactional coupling of append and visibility upsert (they remain separate operations by design)",
+      "SHALL NOT visibility store trait splitting (that is AS-009 scope if applicable)",
+      "SHALL NOT distributed visibility consistency across multiple engine nodes",
+      "SHALL NOT changes to the event append path itself"
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including the crash-consistency gap integration test.",
+      "cargo test -p aion-store passes, including any new visibility reconciliation unit tests.",
+      "Startup reconciliation correctly backfills a workflow present in history but absent from visibility.",
+      "Background reconciliation repairs a gap introduced after startup within the configured interval.",
+      "Review that the reconciliation pass does not block in-flight workflow operations.",
+      "Confirm the Recorder warning log includes workflow ID, run ID, and error details.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "No arbitrary defaults for reconciliation interval -- must be explicitly configured."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "VisibilityStore is a trait in aion-store, not coupled to any specific backend."
+      },
+      {
+        "id": "CO2",
+        "text": "The libSQL implementation must support filtering by all standard fields and custom attribute predicates without full table scans."
+      },
+      {
+        "id": "CO3",
+        "text": "Search attribute types are registered per namespace; type mismatches are errors, not silent coercions."
+      },
+      {
+        "id": "CO4",
+        "text": "Visibility updates must not block the EventStore append path in server mode."
+      },
+      {
+        "id": "CO5",
+        "text": "WorkflowSummary must include enough data for dashboard rendering without per-workflow history reads."
+      },
+      {
+        "id": "CO6",
+        "text": "The search attribute event (SearchAttributesUpdated) is a recorded event subject to replay and determinism \u2014 it must be replayable."
+      }
+    ],
+    "intention": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running workflows of type Y. Without a query layer, the only access path is by WorkflowId \u2014 which requires knowing the ID up front. This cluster adds search attributes (user-defined key-value metadata on workflows) and a visibility index that supports filtered listing, full-text-like search on attributes, and time-range queries. This is the operational backbone that makes dashboards, alerting, and debugging possible at scale.",
+    "design_path": "docs/design/aion-visibility",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Once an engine runs more than a handful of workflows, operators need to find them: show me all failed order-processing workflows from the last hour, find the workflow for customer X, list all running "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

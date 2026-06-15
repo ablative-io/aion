@@ -1,0 +1,194 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AO-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AO-002",
+    "cluster": "aion-operations",
+    "title": "Graceful shutdown with activity drain on SIGTERM",
+    "depends_on": [
+      "AO-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C5",
+      "C6",
+      "C7",
+      "C8",
+      "C9",
+      "C10"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "Ensure rolling deploys lose zero in-flight work by implementing coordinated shutdown: stop accepting traffic, drain connected workers, await activity completion, then shutdown the engine cleanly.",
+    "task": "Implement a shutdown coordinator in aion-server that listens for SIGTERM/SIGINT, stops the listener, signals workers to drain, awaits in-flight activity completion up to a configurable timeout, then shuts down the engine. Activities that exceed the drain timeout surface as retryable failures via the existing LostWorkerReport path.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Signal handler triggers drain sequence",
+        "spec": "WHEN the process receives SIGTERM or SIGINT, THE SYSTEM SHALL initiate the drain sequence within 100ms: stop the TCP listener from accepting new connections and reject new workflow start requests with a 503/UNAVAILABLE status. THE SYSTEM SHALL NOT exit immediately on first signal receipt. IF a second SIGTERM or SIGINT arrives during drain, THE SYSTEM SHALL exit immediately with code 130 without waiting for in-flight activities.",
+        "acceptance": [
+          "SIGTERM triggers drain (verified by log output and behaviour).",
+          "New HTTP connections after drain starts receive connection refused or 503.",
+          "New gRPC calls after drain starts receive UNAVAILABLE status.",
+          "The process remains alive during drain to serve in-flight requests."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/shutdown.rs"
+          ],
+          "modify": [
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Worker drain signal and activity await",
+        "spec": "WHEN drain begins, THE SYSTEM SHALL send a DrainRequest message (a new message type in aion-proto's worker protocol) to all connected workers indicating no new tasks will be dispatched. THE SYSTEM SHALL await completion of all in-flight activities up to the configured drain timeout. THE SYSTEM SHALL NOT dispatch new activity tasks after drain begins.",
+        "acceptance": [
+          "Connected workers receive a drain message on their task stream.",
+          "No new ActivityTask messages are sent after drain starts.",
+          "In-flight activities that complete during drain are recorded normally.",
+          "The drain coordinator tracks the count of in-flight activities and resolves when it reaches zero."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/shutdown.rs",
+            "crates/aion-server/src/worker/dispatch.rs",
+            "crates/aion-server/src/worker/bridge.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C7"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Drain timeout surfaces retryable failures and exits",
+        "spec": "IF in-flight activities do not complete within the configured drain timeout, THEN THE SYSTEM SHALL surface remaining activities as retryable failures via LostWorkerReport, flush all pending event writes, shut down the engine, and exit with code 1. WHEN all activities complete before the timeout, THE SYSTEM SHALL shut down the engine and exit with code 0.",
+        "acceptance": [
+          "Activities exceeding the timeout are reported as retryable failures.",
+          "On restart, those activities are re-dispatched by the engine's retry policy.",
+          "No pending event writes are lost \u2014 the store connection closes only after flush.",
+          "Exit code is 0 for clean drain, 1 for timeout.",
+          "The drain timeout is configurable (not hardcoded)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/shutdown.rs",
+            "crates/aion-server/src/worker/heartbeat.rs"
+          ]
+        },
+        "checklist": [
+          "C8",
+          "C9",
+          "C10"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement distributed drain coordination \u2014 this is single-node shutdown only.",
+      "SHALL NOT add a drain timeout default \u2014 it must come from configuration (AO-003).",
+      "SHALL NOT modify the Engine's shutdown() method \u2014 the server coordinates around it.",
+      "SHALL NOT force-kill worker connections \u2014 workers are notified and given time to finish."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "cargo test --workspace passes.",
+      "Integration test: start server, dispatch activity, send SIGTERM, verify activity completes and process exits 0.",
+      "Integration test: start server, dispatch slow activity, send SIGTERM with short timeout, verify retryable failure and exit 1."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C5",
+        "text": "On SIGTERM or SIGINT, the server stops accepting new connections and new workflow starts within 100ms of signal receipt."
+      },
+      {
+        "id": "C6",
+        "text": "Connected workers receive a drain signal indicating no new tasks will be dispatched; workers finish in-flight tasks."
+      },
+      {
+        "id": "C7",
+        "text": "The server awaits completion of all in-flight activities up to the configured drain timeout before shutting down the engine."
+      },
+      {
+        "id": "C8",
+        "text": "Activities that exceed the drain timeout are surfaced as retryable failures via the existing LostWorkerReport path."
+      },
+      {
+        "id": "C9",
+        "text": "Clean drain exits with code 0; timeout-exceeded drain exits with code 1."
+      },
+      {
+        "id": "C10",
+        "text": "No event writes are lost during shutdown \u2014 the engine flushes all pending appends before the store connection closes."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As a platform operator, I want graceful shutdown on SIGTERM so that rolling deploys do not lose in-flight work or require manual intervention."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No execution logic in the server. Signal wiring (AO-001) is an engine change. The server never makes durability decisions."
+      },
+      {
+        "id": "CO2",
+        "text": "No arbitrary defaults for operator-configurable values. Thread counts, timeouts, drain durations come from config."
+      },
+      {
+        "id": "CO3",
+        "text": "Feature-gated auth. The auth module is behind cfg(feature='auth'). Base binary compiles without auth dependencies."
+      },
+      {
+        "id": "CO4",
+        "text": "No new dependencies in the engine crate. Observability and config live in aion-server."
+      },
+      {
+        "id": "CO5",
+        "text": "Structured output only. No println, no unstructured log lines. Everything through tracing with structured fields."
+      }
+    ],
+    "intention": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, point Prometheus at, wire into their alerting stack, and trust with real workloads.",
+    "design_path": "docs/design/aion-operations",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion deployable. Close the gap between 'tests pass' and 'production-ready'. When this cluster is done, aion-server is a production binary that a platform team can deploy behind a load balancer, p"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,178 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AU-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AU-008",
+    "cluster": "aion-dashboard",
+    "title": "Shared presentational components \u2014 badge, icon, states, indicator",
+    "depends_on": [
+      "AU-001",
+      "AU-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C35"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "Provide the small, reused presentational vocabulary the views depend on \u2014 status badge, event icon, the three async-state panels, and the connection indicator \u2014 so every view renders consistent loading, empty, error, and connection feedback.",
+    "task": "Build the shared components: StatusBadge (WorkflowStatus \u2192 badge), EventIcon (event kind \u2192 icon + colour), EmptyState, ErrorState (with retry), LoadingSkeleton, and ConnectionIndicator (driven by useConnectionStatus). These are the reusable building blocks AU-004, AU-005, and AU-007 consume.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Status badge and event icon",
+        "spec": "THE SYSTEM SHALL provide a StatusBadge mapping each WorkflowStatus to a labelled, colour-coded badge and an EventIcon mapping each event kind to an icon and colour.",
+        "acceptance": [
+          "StatusBadge renders a distinct colour/label for Running, Completed, Failed, Cancelled, and TimedOut.",
+          "EventIcon renders a distinct icon and colour for lifecycle, activity, timer, signal, and child-workflow kinds (lucide-react icons, matching apps/web).",
+          "A test asserts each WorkflowStatus and each event kind maps to a distinct rendering."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/components/StatusBadge.tsx",
+            "apps/aion-dashboard/src/components/EventIcon.tsx"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C35"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Empty, error, and loading state panels",
+        "spec": "THE SYSTEM SHALL provide reusable EmptyState (message + optional icon), ErrorState (cause message + retry affordance), and LoadingSkeleton (layout-reserving skeleton) components.",
+        "acceptance": [
+          "EmptyState renders a configurable message and optional icon.",
+          "ErrorState renders a cause message and a retry button that invokes a supplied callback.",
+          "LoadingSkeleton renders layout-reserving skeletons (configurable for list rows and timeline entries), not a bare spinner.",
+          "A test asserts ErrorState's retry invokes the callback and the three panels render distinctly."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/components/EmptyState.tsx",
+            "apps/aion-dashboard/src/components/ErrorState.tsx",
+            "apps/aion-dashboard/src/components/LoadingSkeleton.tsx"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C35"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Connection indicator",
+        "spec": "THE SYSTEM SHALL provide a ConnectionIndicator that renders the live connection state from useConnectionStatus (connected, reconnecting, disconnected).",
+        "acceptance": [
+          "ConnectionIndicator consumes useConnectionStatus and renders a distinct visual for connected, reconnecting, and disconnected.",
+          "It is always present in the layout (it does not disappear when connected; it shows a steady 'connected' affordance).",
+          "A test drives the three states and asserts the matching rendering."
+        ],
+        "files": {
+          "create": [
+            "apps/aion-dashboard/src/features/live-feed/components/ConnectionIndicator.tsx"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C35"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define useConnectionStatus \u2014 that is AU-003 (this brief consumes it).",
+      "SHALL NOT build the list or detail views \u2014 AU-004, AU-005 (this brief provides the components they consume)."
+    ],
+    "verification": [
+      "bun run check (Biome) passes clean.",
+      "tsc --noEmit passes clean.",
+      "bun test passes for the component tests; no lint-disable comments added."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C35",
+        "text": "Shared StatusBadge, EventIcon, EmptyState, ErrorState (with retry), LoadingSkeleton, and ConnectionIndicator components exist and are reused across views."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As an on-call operator, I want explicit empty and error states so that I can tell the difference between 'nothing matches' and 'the query failed', instead of staring at a spinner."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Match the apps/web stack exactly: React 19, TypeScript, Vite, Tailwind v4, Bun, Biome (100-char), shadcn/Radix primitives, TanStack Query. No new framework, styling system, or state library."
+      },
+      {
+        "id": "CO2",
+        "text": "Wire types come from the house generated-types pipeline (Rust #[derive(TS)] \u2192 src/types/generated/). The dashboard never hand-defines a type aion-core/aion-proto owns and never hand-edits a generated file."
+      },
+      {
+        "id": "CO3",
+        "text": "The dashboard consumes the AW API/WebSocket contract; it defines no server endpoint, no WebSocket protocol, and no asset-hosting mechanism. Not-yet-pinned contract details are isolated in the api module for a one-file change."
+      },
+      {
+        "id": "CO4",
+        "text": "Feature-folder convention from apps/web: each feature is components/ + hooks/ (+ context/lib as needed) + types.ts + index.ts. Barrels re-export; logic lives in named files."
+      },
+      {
+        "id": "CO5",
+        "text": "Server state goes through TanStack Query; live updates flow through the WebSocket manager and patch query caches or local view state. No bespoke fetch-into-useState for server data."
+      },
+      {
+        "id": "CO6",
+        "text": "Every async surface renders explicit loading, empty, and error states. No surface spins indefinitely or blanks on failure."
+      },
+      {
+        "id": "CO7",
+        "text": "The WebSocket manager reconnects with bounded backoff on drop and the active view resyncs (re-fetch history/query, or replay after last-seen sequence where supported). A connection indicator is always present; a dropped socket never leaves a silently stale view."
+      },
+      {
+        "id": "CO8",
+        "text": "The event timeline is ordered strictly by event sequence number and de-duplicates events arriving via both history fetch and live stream."
+      },
+      {
+        "id": "CO9",
+        "text": "Biome lint + format clean (bun run check) and tsc --noEmit clean. No lint-disable comments to silence findings."
+      },
+      {
+        "id": "CO10",
+        "text": "Namespace selection scopes every query and every subscription; switching namespace re-scopes both. No unscoped query when a namespace is selected."
+      }
+    ],
+    "intention": "Build the human-facing operational web UI for aion-server: a browser application that lets an operator see which workflows are running and which have failed, drill into a single execution's full event history rendered as a timeline, and watch events stream live as they happen. This cluster builds the frontend only. It consumes the HTTP/gRPC list/query/history API and the WebSocket event stream that the server (cluster AW) exposes and hosts as static assets; it does not run the engine, persist anything, or define the API. It must match the existing house frontend stack (React 19 + TypeScript + Vite + Tailwind v4 + Biome + Bun, shadcn/Radix, TanStack Query, a singleton WebSocket manager with reconnect, generated types from Rust) exactly, so it reads as part of the same codebase as apps/web. When done, an operator pointed at a running aion-server can observe every workflow in every namespace, drill into any execution's full history, and watch events stream in real time \u2014 with production-grade loading, empty, error, and reconnection behaviour throughout.",
+    "design_path": "docs/design/aion-dashboard",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the human-facing operational web UI for aion-server: a browser application that lets an operator see which workflows are running and which have failed, drill into a single execution's full event"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

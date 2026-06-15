@@ -1,0 +1,200 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-003",
+    "cluster": "aion-store-libsql",
+    "title": "LibSqlStore struct and EventStore impl wiring",
+    "depends_on": [
+      "AS-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C11",
+      "C12",
+      "C13"
+    ],
+    "stories": [
+      "S1"
+    ],
+    "purpose": "Define the LibSqlStore type and wire up its EventStore trait implementation skeleton, with a constructor that opens a connection and ensures the schema. The method bodies are filled in by AS-004 (append), AS-005 (reads/query), and AS-006 (timers); this brief establishes the type, the constructor, and the trait impl block they extend.",
+    "task": "Create store.rs defining LibSqlStore (holding the libSQL connection from AS-002) as a Send + Sync + 'static type, with an open/connect constructor that builds it from a LibSqlConfig and ensures the schema. Add the EventStore impl block for LibSqlStore wiring in the methods that AS-004/005/006 implement. Confirm object-safety via Arc<dyn EventStore>. Method bodies may delegate to the append/read/timer modules those briefs create.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "LibSqlStore type and constructor",
+        "spec": "THE SYSTEM SHALL define LibSqlStore as a Send + Sync + 'static type holding the libSQL connection. WHEN constructed from a LibSqlConfig, THE SYSTEM SHALL open the connection (embedded or replica per the config) and ensure the schema exists before returning the store.",
+        "acceptance": [
+          "store.rs defines struct LibSqlStore holding the connection/database handle from AS-002; the type is Send + Sync + 'static.",
+          "An async constructor (LibSqlStore::connect(config: LibSqlConfig) or equivalent) opens the connection and calls ensure_schema before returning.",
+          "A convenience LibSqlStore::open(path) constructs an Embedded config and delegates to the config constructor.",
+          "A test constructs a LibSqlStore at a tempfile path and asserts construction succeeds and the schema is present.",
+          "Connection/schema errors during construction surface as StoreError."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/store.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C11",
+          "C13"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "EventStore impl wiring and object-safety",
+        "spec": "THE SYSTEM SHALL implement the aion-store EventStore trait for LibSqlStore, with the impl block declaring every trait method, and the store SHALL be usable as Arc<dyn EventStore>.",
+        "acceptance": [
+          "store.rs contains impl EventStore for LibSqlStore declaring append, read_history, list_active, query, schedule_timer, and expired_timers, each delegating to the module that owns its logic (append.rs, read.rs, timer.rs) \u2014 those bodies are completed in AS-004/005/006 and may be minimal-but-compiling stubs returning a clearly-marked unimplemented-path StoreError here only if a later brief in this same cluster replaces them (note this split in the task).",
+          "A compile/integration test constructs an Arc<dyn EventStore> from a LibSqlStore, proving the trait is object-safe as implemented.",
+          "The impl forwards the connection handle to the per-method modules so AS-004/005/006 implement against a shared store surface.",
+          "No method body in this brief silently swallows an error or returns Ok without doing its work; any not-yet-filled method returns a StoreError that the cluster's later briefs replace with the real implementation (the split is recorded so review knows AS-004/005/006 complete C14-C23)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs",
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Shared connection access for per-method modules",
+        "spec": "THE SYSTEM SHALL expose, within the crate, an accessor or shared handle by which append.rs, read.rs, and timer.rs reach the libSQL connection, so the per-method logic in later briefs operates against one store without re-opening connections.",
+        "acceptance": [
+          "store.rs exposes a crate-internal way (e.g. a method returning &Connection or a cloned handle) for the per-method modules to obtain the connection.",
+          "Concurrency: the handle is shared safely (the store is Send + Sync); any interior lock is documented and lock poisoning is handled explicitly with no panicking unwrap.",
+          "A test confirms two sequential operations through the store reuse the same underlying database (e.g. a write then a read observe the same data) without opening a second connection."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement append's atomic body \u2014 that is AS-004 (this brief wires the method, AS-004 completes C14-C17).",
+      "SHALL NOT implement read_history/list_active/query bodies \u2014 that is AS-005 (completes C18-C21).",
+      "SHALL NOT implement schedule_timer/expired_timers bodies \u2014 that is AS-006 (completes C22-C23).",
+      "SHALL NOT add Serialize to config or introduce new Aion crate dependencies."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "A reviewer confirms LibSqlStore is Send + Sync + 'static and usable as Arc<dyn EventStore>, and that any interim method placeholders are tracked for completion by AS-004/005/006 (no swallowed errors, no permanent stub).",
+      "Mutex/RwLock poison handled explicitly where any interior lock exists.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C11",
+        "text": "LibSqlStore is a Send + Sync + 'static type holding the libSQL connection, constructed from a LibSqlConfig."
+      },
+      {
+        "id": "C12",
+        "text": "LibSqlStore implements the aion-store EventStore trait and is usable as Arc<dyn EventStore>."
+      },
+      {
+        "id": "C13",
+        "text": "An open/constructor associated function (e.g. LibSqlStore::open and/or LibSqlStore::connect) builds the store from a config and ensures the schema exists before returning."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an engine operator, I want a zero-infrastructure durable store I get by pointing at a file path, so that embedding Aion needs no database server to survive restarts."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

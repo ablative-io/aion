@@ -1,6 +1,7 @@
 {
   "project": "aion",
   "updated": "2026-06-13",
+  "repo_url": "https://github.com/tomWhiting/aion.git",
   "items": [
     {
       "id": "RM-001",
@@ -21,7 +22,11 @@
           "ADR-002",
           "ADR-004"
         ],
-        "briefs": ["PC-001", "PC-002", "PC-003"],
+        "briefs": [
+          "PC-001",
+          "PC-002",
+          "PC-003"
+        ],
         "commits": []
       },
       "depends_on": [],
@@ -37,7 +42,7 @@
         "requested_by": "Tom",
         "date": "2026-06-12",
         "quote": "",
-        "context": "The 'contemporary of Temporal' positioning conversation; plan agreed in docs/ROADMAP.md §2."
+        "context": "The 'contemporary of Temporal' positioning conversation; plan agreed in docs/ROADMAP.md \u00a72."
       },
       "links": {
         "cluster": "",
@@ -46,14 +51,14 @@
         "commits": []
       },
       "depends_on": [],
-      "notes": "Do not claim multi-node scale-out — we cannot demonstrate it."
+      "notes": "Do not claim multi-node scale-out \u2014 we cannot demonstrate it."
     },
     {
       "id": "RM-003",
       "title": "CLI JSON ergonomics: polymorphic --input, client-side validation, skeletons",
       "status": "idea",
       "kind": "feature",
-      "summary": "--input/--payload accept inline JSON or @file interchangeably; aion start validates input against the deployed package's schema client-side with RFC 6901 pointers before dispatch; aion input <workflow_type> emits a valid skeleton. A directory form (@dir/ assembling input by mapping schema fields to files) is wanted but needs explicit schema-driven mapping design — no inference magic (ADR-001).",
+      "summary": "--input/--payload accept inline JSON or @file interchangeably; aion start validates input against the deployed package's schema client-side with RFC 6901 pointers before dispatch; aion input <workflow_type> emits a valid skeleton. A directory form (@dir/ assembling input by mapping schema fields to files) is wanted but needs explicit schema-driven mapping design \u2014 no inference magic (ADR-001).",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
@@ -79,7 +84,7 @@
         "requested_by": "Tom",
         "date": "2026-06-12",
         "quote": "",
-        "context": "Authoring roadmap sequencing, docs/ROADMAP.md §3."
+        "context": "Authoring roadmap sequencing, docs/ROADMAP.md \u00a73."
       },
       "links": {
         "cluster": "",
@@ -116,7 +121,7 @@
       "title": "Worker task queues, routing, and affinity",
       "status": "idea",
       "kind": "feature",
-      "summary": "Named task queues, routing keys, worker affinity — the locality story for filesystem-coupled activity families (same-host worktrees) and the scale-out story for everything else. Confirmed wanted.",
+      "summary": "Named task queues, routing keys, worker affinity \u2014 the locality story for filesystem-coupled activity families (same-host worktrees) and the scale-out story for everything else. Confirmed wanted.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-12",
@@ -142,7 +147,7 @@
         "requested_by": "Tom",
         "date": "2026-06-12",
         "quote": "",
-        "context": "docs/ROADMAP.md §3."
+        "context": "docs/ROADMAP.md \u00a73."
       },
       "links": {
         "cluster": "",
@@ -158,12 +163,12 @@
       "title": "Elixir SDK",
       "status": "idea",
       "kind": "feature",
-      "summary": "BEAM-native polyglot authoring — the strategic counter to Temporal's client-runtime story; we never build client-side determinism cores.",
+      "summary": "BEAM-native polyglot authoring \u2014 the strategic counter to Temporal's client-runtime story; we never build client-side determinism cores.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-12",
         "quote": "",
-        "context": "docs/ROADMAP.md §3, from the Temporal comparison discussion."
+        "context": "docs/ROADMAP.md \u00a73, from the Temporal comparison discussion."
       },
       "links": {
         "cluster": "",
@@ -184,7 +189,7 @@
         "requested_by": "Tom",
         "date": "2026-06-12",
         "quote": "",
-        "context": "docs/ROADMAP.md §3."
+        "context": "docs/ROADMAP.md \u00a73."
       },
       "links": {
         "cluster": "",
@@ -205,7 +210,7 @@
         "requested_by": "Tom",
         "date": "2026-06-12",
         "quote": "",
-        "context": "docs/ROADMAP.md §3."
+        "context": "docs/ROADMAP.md \u00a73."
       },
       "links": {
         "cluster": "",
@@ -235,14 +240,14 @@
         "commits": []
       },
       "depends_on": [],
-      "notes": "Three small disjoint fixes — the pilot wave for RM-018."
+      "notes": "Three small disjoint fixes \u2014 the pilot wave for RM-018."
     },
     {
       "id": "RM-012",
       "title": "Mint-or-resume agent sessions in dev handlers",
       "status": "idea",
       "kind": "fix",
-      "summary": "Deterministic session ids exist; the dev handler should resume an existing norn session (sessions persist on disk, --resume exists) instead of always minting — making crash-resume reuse the SAME agent session.",
+      "summary": "Deterministic session ids exist; the dev handler should resume an existing norn session (sessions persist on disk, --resume exists) instead of always minting \u2014 making crash-resume reuse the SAME agent session.",
       "provenance": {
         "requested_by": "Claude",
         "date": "2026-06-13",
@@ -298,14 +303,14 @@
         "commits": []
       },
       "depends_on": [],
-      "notes": "Engine semantics — needs a short design pass (interaction with worker-loss delivery), not a direct brief."
+      "notes": "Engine semantics \u2014 needs a short design pass (interaction with worker-loss delivery), not a direct brief."
     },
     {
       "id": "RM-015",
       "title": "Multi-reviewer verdict coordinator",
       "status": "designed",
       "kind": "feature",
-      "summary": "Reviewers vote via meridian review complete; the Meridian coordinator applies quorum and fires the single review_verdict signal. aion-side contract already live-proven; the work is Meridian-side plus the branch→workflow-id mapping seam at review-request time.",
+      "summary": "Reviewers vote via meridian review complete; the Meridian coordinator applies quorum and fires the single review_verdict signal. aion-side contract already live-proven; the work is Meridian-side plus the branch\u2192workflow-id mapping seam at review-request time.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
@@ -353,12 +358,12 @@
       "title": "brief_dev + dispatch workflow family",
       "status": "briefed",
       "kind": "feature",
-      "summary": "The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand gate with fix-until-clean resume → adversarial review → harden → re-gate, progressive in-place enrichment, deterministic sessions), composed under stacked_dev, plus a dispatcher workflow that selects briefed work from roadmap.json, orders by dependencies, fans out children with explicit parent-close (ADR-004), serializes lands.",
+      "summary": "The all-norn inner dev pipeline as an aion workflow (scout \u2192 dev \u2192 firsthand gate with fix-until-clean resume \u2192 adversarial review \u2192 harden \u2192 re-gate, progressive in-place enrichment, deterministic sessions), composed under stacked_dev, plus a dispatcher workflow that selects briefed work from roadmap.json, orders by dependencies, fans out children with explicit parent-close (ADR-004), serializes lands.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
         "quote": "I would love it if you could write a workflow that that were not just right I mean write a workflow that sort of handles the pattern so goes through like and we try to do it all as much as we could with norn via the workflow.",
-        "context": "The onatopp-dev-norn rhai workflow is the ancestor; v2 stage contracts are its schemas done properly. Norn provider usage is much gentler than Anthropic — agents stages run norn wherever possible."
+        "context": "The onatopp-dev-norn rhai workflow is the ancestor; v2 stage contracts are its schemas done properly. Norn provider usage is much gentler than Anthropic \u2014 agents stages run norn wherever possible."
       },
       "links": {
         "cluster": "brief-dev",
@@ -380,7 +385,7 @@
       "depends_on": [
         "RM-016"
       ],
-      "notes": "Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 DECIDED by Tom same day — blocked_by on BD-003/004/005 cleared. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Implementation in flight."
+      "notes": "Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 DECIDED by Tom same day \u2014 blocked_by on BD-003/004/005 cleared. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Implementation in flight."
     },
     {
       "id": "RM-018",
@@ -404,7 +409,7 @@
         "RM-016",
         "RM-017"
       ],
-      "notes": "First real parallel batch (2026-06-13): RM-022/023/024 authored as parallel-runnable clusters. Parallel-safe waves — Wave 1: KIT-001 (foundation). Wave 2: KIT-002, KIT-003, OBS-001, OBS-002 (disjoint files, concurrent — the capacity stress test). Wave 3: WT-001..003 (serial, after aion_kit lands). Triggered as concurrent independent runs, since single-dispatch fan-out is serial pending RM-001 (parent-close)."
+      "notes": "First real parallel batch (2026-06-13): RM-022/023/024 authored as parallel-runnable clusters. Parallel-safe waves \u2014 Wave 1: KIT-001 (foundation). Wave 2: KIT-002, KIT-003, OBS-001, OBS-002 (disjoint files, concurrent \u2014 the capacity stress test). Wave 3: WT-001..003 (serial, after aion_kit lands). Triggered as concurrent independent runs, since single-dispatch fan-out is serial pending RM-001 (parent-close)."
     },
     {
       "id": "RM-019",
@@ -434,7 +439,7 @@
       "title": "Messaging bus on beamr (separate project; aion consumes)",
       "status": "idea",
       "kind": "design",
-      "summary": "NATS-class bus built on beamr as its own project: the actor model as the wire protocol — durable mailboxes, native request-reply (a reply capability rides the message; no inbox/reply-channel ceremony), subscriptions as durable cursors, schema'd subjects, per-message delivery policy (required, ADR-001), presence/monitors first-class, credit-based backpressure, embedded-first. aion's heartbeats (RM-005) and queues/affinity (RM-006) become bus consumers instead of engine features.",
+      "summary": "NATS-class bus built on beamr as its own project: the actor model as the wire protocol \u2014 durable mailboxes, native request-reply (a reply capability rides the message; no inbox/reply-channel ceremony), subscriptions as durable cursors, schema'd subjects, per-message delivery policy (required, ADR-001), presence/monitors first-class, credit-based backpressure, embedded-first. aion's heartbeats (RM-005) and queues/affinity (RM-006) become bus consumers instead of engine features.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
@@ -455,7 +460,7 @@
       "title": "Workflow authoring experience: declare activities once, generate the rest",
       "status": "idea",
       "kind": "design",
-      "summary": "Collapse new-family authoring to: schemas + one workflow module + one activities module. Everything that is today hand-mirrored gets generated — the Rust worker handlers (which must mirror locals invocation-for-invocation, i.e. a generator's job by definition), SERVED_ACTIVITIES, wire_compat pins, workflow.toml entries, locals/worker registration plumbing, and the hermetic-shim harness skeleton. Likely shape: `aion new workflow <name>` scaffolds inside an existing package; an activity declaration form (in Gleam or manifest) drives worker codegen the same way schemas already drive codec codegen. Evidence: in the brief-dev cluster, each activity exists in ~4 places that must agree byte-for-byte.",
+      "summary": "Collapse new-family authoring to: schemas + one workflow module + one activities module. Everything that is today hand-mirrored gets generated \u2014 the Rust worker handlers (which must mirror locals invocation-for-invocation, i.e. a generator's job by definition), SERVED_ACTIVITIES, wire_compat pins, workflow.toml entries, locals/worker registration plumbing, and the hermetic-shim harness skeleton. Likely shape: `aion new workflow <name>` scaffolds inside an existing package; an activity declaration form (in Gleam or manifest) drives worker codegen the same way schemas already drive codec codegen. Evidence: in the brief-dev cluster, each activity exists in ~4 places that must agree byte-for-byte.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
@@ -471,7 +476,7 @@
       "depends_on": [
         "RM-017"
       ],
-      "notes": "Distinct from RM-003 (CLI input ergonomics) — this is family-authoring cost, not dispatch cost. Candidate to design right after the RM-011 pilot, informed by what the pilot proves painful. RM-022 (aion_kit) and RM-023 (dev-pipeline template) are the first concretisations of this; the generator work (worker handlers, manifests, harness skeleton) remains."
+      "notes": "Distinct from RM-003 (CLI input ergonomics) \u2014 this is family-authoring cost, not dispatch cost. Candidate to design right after the RM-011 pilot, informed by what the pilot proves painful. RM-022 (aion_kit) and RM-023 (dev-pipeline template) are the first concretisations of this; the generator work (worker handlers, manifests, harness skeleton) remains."
     },
     {
       "id": "RM-022",
@@ -506,7 +511,7 @@
       "title": "Thin-workflow reshape + dev-pipeline toolkit",
       "status": "briefed",
       "kind": "feature",
-      "summary": "Reshape brief_dev to ADR-012 — thread sealed payloads plus thin facts, move prompt rendering and report decoding out of the deterministic workflow process into the activity bodies (via aion_kit) — then extract the reusable worker-harness (provision / warm-build / scoped+full checks / land via yg) and the dev-pipeline template (scout → dev → verify → review → harden, parameterised by prompts + schemas + gate) so a new agentic family is configuration, not bespoke code. Re-dogfood after the reshape to prove the lighter pipeline still runs.",
+      "summary": "Reshape brief_dev to ADR-012 \u2014 thread sealed payloads plus thin facts, move prompt rendering and report decoding out of the deterministic workflow process into the activity bodies (via aion_kit) \u2014 then extract the reusable worker-harness (provision / warm-build / scoped+full checks / land via yg) and the dev-pipeline template (scout \u2192 dev \u2192 verify \u2192 review \u2192 harden, parameterised by prompts + schemas + gate) so a new agentic family is configuration, not bespoke code. Re-dogfood after the reshape to prove the lighter pipeline still runs.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
@@ -537,7 +542,7 @@
       "title": "No silent workflow-process failures: surface crashes loudly",
       "status": "briefed",
       "kind": "fix",
-      "summary": "A workflow-process crash (e.g. the brief_dev heap-full before beamr 0.6.1) recorded a terminal WorkflowFailed event but logged nothing in the server or the worker — to an operator it looked like a hang, especially with no default timeouts (ADR-003). Surface workflow-process exits and crashes at error level in the server log (workflow id, type, the VM message), and propagate a child's terminal failure visibly to the parent run and to watchers (describe / dashboard), so a crash never again masquerades as a hang.",
+      "summary": "A workflow-process crash (e.g. the brief_dev heap-full before beamr 0.6.1) recorded a terminal WorkflowFailed event but logged nothing in the server or the worker \u2014 to an operator it looked like a hang, especially with no default timeouts (ADR-003). Surface workflow-process exits and crashes at error level in the server log (workflow id, type, the VM message), and propagate a child's terminal failure visibly to the parent run and to watchers (describe / dashboard), so a crash never again masquerades as a hang.",
       "provenance": {
         "requested_by": "Tom",
         "date": "2026-06-13",
@@ -554,7 +559,7 @@
         "commits": []
       },
       "depends_on": [],
-      "notes": "Disjoint from RM-022/023 (Rust: aion-server + engine + worker), so a clean concurrent run alongside them — part of the parallel stress batch."
+      "notes": "Disjoint from RM-022/023 (Rust: aion-server + engine + worker), so a clean concurrent run alongside them \u2014 part of the parallel stress batch."
     }
   ]
 }

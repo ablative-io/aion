@@ -1,0 +1,195 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-010",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-010",
+    "cluster": "aion-engine",
+    "title": "Suspend and resume lifecycle transitions",
+    "depends_on": [
+      "AE-008"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C27"
+    ],
+    "stories": [
+      "S5"
+    ],
+    "purpose": "Mark a workflow's residency Suspended when it blocks on a durable wait and Resident when woken. Residency is an engine-runtime liveness flag, ORTHOGONAL to the aion-core WorkflowStatus (which has no Suspended variant and stays Running until a terminal event). AE owns these transitions around a durable wait; the durable-wait mechanism itself (timers, signal arrival) is AT's. This brief is the seam where the two meet.",
+    "task": "Add a Residency field (Resident | Suspended) to the registry WorkflowHandle (registry/handle.rs) and implement lifecycle/transition.rs: suspend, which sets a registered handle's residency to Suspended when its workflow process blocks on a durable wait, and resume, which returns it to Resident when the awaited timer fires or signal arrives (or when AD replays it after restart). Residency is distinct from the handle's projected WorkflowStatus: suspend/resume NEVER change the projected status (a suspended workflow is still Running per the aion-core projection \u2014 there is no Suspended WorkflowStatus), and status reconciliation against the event projection (CO10) never touches residency, so there is no ordering race between them. Scope is the residency transitions only; the timer/signal machinery that triggers them is AT, the replay that re-creates a suspended workflow on restart is AD.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Suspend transition",
+        "spec": "WHEN a workflow process blocks on a durable wait, THE SYSTEM SHALL set its handle's residency to Suspended in the registry, leaving the projected WorkflowStatus unchanged. THE SYSTEM SHALL NOT remove the handle on suspend.",
+        "acceptance": [
+          "registry/handle.rs gains a residency: Residency field (Residency = Resident | Suspended), distinct from the handle's status: WorkflowStatus; Residency is engine-internal and is NOT an aion-core type.",
+          "transition.rs provides suspend(id, run) that sets the handle's residency to Suspended and keeps the handle in the registry; it does NOT change the projected WorkflowStatus (which remains Running \u2014 there is no Suspended WorkflowStatus variant, and CO10 forbids inventing one).",
+          "Status reconciliation against the event projection (D3/CO10) only ever corrects the projected WorkflowStatus and never reads or writes residency, so a reconcile running before AT records a timer/signal event cannot revert the suspension.",
+          "lifecycle/mod.rs contains only pub mod and pub use.",
+          "A test suspends a running handle and asserts it is still present with residency Suspended and projected status Running; a second test runs a reconcile after suspend and asserts residency stays Suspended.",
+          "IF the handle is absent, suspend returns EngineError::WorkflowNotFound."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/lifecycle/transition.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lifecycle/mod.rs",
+            "crates/aion/src/registry/handle.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Resume transition",
+        "spec": "WHEN the durable wait completes (timer fired or signal arrived) or the workflow is replayed after a restart, THE SYSTEM SHALL return the handle's residency to Resident, leaving the projected WorkflowStatus unchanged.",
+        "acceptance": [
+          "transition.rs provides resume(id, run) that sets the handle's residency back to Resident for a Suspended handle; it does not touch the projected WorkflowStatus.",
+          "resume is idempotent on an already-Resident handle (no error, no double effect).",
+          "A test suspends then resumes a handle and asserts the final residency is Resident.",
+          "IF the handle is absent, resume returns EngineError::WorkflowNotFound."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/transition.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Durable-wait mechanism delegated to AT",
+        "spec": "THE SYSTEM SHALL NOT implement the durable timer, signal-arrival, or replay mechanism that triggers suspend/resume; it SHALL only own the registry residency transition, documenting the AT (timers/signals) and AD (replay) seams.",
+        "acceptance": [
+          "transition.rs contains no timer-wheel scheduling, no signal-routing, and no replay logic.",
+          "Module docs state that suspend is invoked by AT when a workflow enters a durable wait and resume by AT/AD when the wait completes or the workflow is replayed.",
+          "grep of transition.rs shows no store-timer call and no mailbox/signal routing construct."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/lifecycle/transition.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S5"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement durable timers or signal routing \u2014 those are AT.",
+      "SHALL NOT implement replay/recovery-on-startup \u2014 that is AD (it calls resume after re-creating a suspended workflow).",
+      "SHALL NOT append events \u2014 suspend/resume are live-view transitions; the durable record of a wait is the timer/signal event AT appends."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "suspend/resume only mutate registry residency (never the projected WorkflowStatus); reconciliation never touches residency (CO10 preserved); no AT/AD mechanism is implemented here.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C27",
+        "text": "Suspend marks the handle Suspended when a workflow blocks on a durable wait, and resume returns it to Running when woken; the durable-wait mechanism itself is delegated to AT."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As a workflow caller, I want to start a workflow by type and get a handle so that I can later await its result or cancel it by ID."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,258 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AL-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AL-003",
+    "cluster": "aion-clients",
+    "title": "aion-client (Rust): WorkflowHandle, typed payloads, resuming event stream, embedded binding",
+    "depends_on": [
+      "AL-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C9",
+      "C10",
+      "C11",
+      "C13"
+    ],
+    "stories": [
+      "S2",
+      "S3",
+      "S4",
+      "S8",
+      "S9",
+      "S13"
+    ],
+    "purpose": "Complete the Rust SDK's ergonomics: a WorkflowHandle so a caller operates on what they started without re-plumbing IDs, serde-typed payload helpers over the raw Payload path, a subscribe Stream that resumes transparently across disconnects, and the embedded constructor that binds the same surface to an in-process engine. This is what makes the Rust client pleasant rather than merely functional.",
+    "task": "On top of the AL-002 core, add: WorkflowHandle (bundling WorkflowId + RunId with signal/query/cancel/describe/subscribe methods, plus a bare-ID constructor) and have start return one; serde-based typed payload helpers with a raw-Payload escape hatch on every payload-bearing operation; the subscribe Stream with sequence-based resumption; and an embedded constructor behind an off-by-default feature flag that targets an in-process aion engine through the same handle/payload machinery. Honour the start idempotency key from the AL-001 contract.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "WorkflowHandle and idempotent start",
+        "spec": "THE SYSTEM SHALL define WorkflowHandle bundling WorkflowId + RunId and exposing signal, query, cancel, describe, and subscribe as methods, and start SHALL return a WorkflowHandle. THE SYSTEM SHALL accept an optional idempotency key on start: a retried identical start returns the original handle and a conflicting reuse returns ClientError::AlreadyExists. THE SYSTEM SHALL also provide a bare-ID constructor for WorkflowHandle.",
+        "acceptance": [
+          "handle.rs defines WorkflowHandle { workflow_id, run_id } with methods signal/query/cancel/describe/subscribe delegating to the Client.",
+          "Client::start returns WorkflowHandle (replacing the AL-002 bare-tuple return) and accepts StartOptions carrying an optional idempotency_key.",
+          "A retried start with the same idempotency key and identical request returns a handle equal to the original; a reused key with a different request returns ClientError::AlreadyExists.",
+          "WorkflowHandle::from_ids(workflow_id, run) constructs a handle for a caller holding only an ID.",
+          "A unit test against the stub transport asserts the idempotent-retry and the conflict cases."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-client/src/handle.rs"
+          ],
+          "modify": [
+            "crates/aion-client/src/ops.rs",
+            "crates/aion-client/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S2",
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Typed payload helpers with raw escape hatch",
+        "spec": "THE SYSTEM SHALL provide typed convenience methods that serialise serde::Serialize inputs to a JSON Payload and deserialise results to serde::DeserializeOwned. THE SYSTEM SHALL keep a raw-Payload method on every payload-bearing operation. THE SYSTEM SHALL NOT remove the raw path.",
+        "acceptance": [
+          "payload.rs provides to_payload<T: Serialize>(value) -> Result<Payload, ClientError> producing a JSON content-type Payload and from_payload<T: DeserializeOwned>(payload) -> Result<T, ClientError>.",
+          "start_typed/signal_typed/query_typed convenience methods accept/return typed values; the raw start/signal/query from AL-002 remain available unchanged.",
+          "A serialisation failure returns ClientError::InvalidArgument; a result-deserialisation failure returns a distinct, non-swallowed error (InvalidArgument or Server with detail, documented which).",
+          "A unit test round-trips a typed struct through to_payload/from_payload and asserts equality.",
+          "query_typed::<R>(...) deserialises the reply Payload to R."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-client/src/payload.rs"
+          ],
+          "modify": [
+            "crates/aion-client/src/handle.rs",
+            "crates/aion-client/src/ops.rs",
+            "crates/aion-client/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Subscribe stream with resumption",
+        "spec": "THE SYSTEM SHALL implement subscribe returning a Stream of decoded Event values. WHILE the subscription is open, IF the transport disconnects transiently, THEN THE SYSTEM SHALL reconnect and resume from the last delivered event's sequence number, delivering no gaps and no duplicates. IF the subscription fails terminally, THEN THE SYSTEM SHALL yield an Err item rather than ending the stream silently.",
+        "acceptance": [
+          "stream.rs defines an event stream implementing futures::Stream<Item = Result<Event, ClientError>> over the WebSocket transport.",
+          "The stream tracks the last delivered per-workflow sequence number and re-subscribes from sequence+1 after a transient disconnect.",
+          "A test with a transport stub that drops mid-stream asserts the resumed stream contains every event exactly once across the reconnect (no gap, no duplicate).",
+          "A terminal failure (e.g. Unauthenticated, or a non-retryable transport error) yields a final Err item and then the stream ends; it never ends with Ok-then-silent-close on failure.",
+          "WorkflowHandle::subscribe and a filter/firehose subscribe entry point both return this stream type."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-client/src/stream.rs"
+          ],
+          "modify": [
+            "crates/aion-client/src/handle.rs",
+            "crates/aion-client/src/transport.rs",
+            "crates/aion-client/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S8",
+          "S9"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Embedded engine binding behind a feature flag",
+        "spec": "THE SYSTEM SHALL provide an embedded constructor that binds the same Client/WorkflowHandle surface to an in-process aion engine, gated behind an off-by-default feature. THE SYSTEM SHALL NOT pull aion into the dependency graph unless that feature is enabled.",
+        "acceptance": [
+          "Cargo.toml defines a feature (e.g. embedded) that adds aion as an optional dependency; the feature is off by default.",
+          "transport.rs (or a submodule) provides an embedded transport that calls the in-process engine API and is selected by Client::embedded(engine) under #[cfg(feature = \"embedded\")].",
+          "The embedded path reuses the same WorkflowHandle, payload helpers, error taxonomy, and Stream type as the network path \u2014 no duplicate operation surface.",
+          "cargo tree -p aion-client (default features) shows no aion dependency; cargo tree -p aion-client --features embedded shows aion.",
+          "cargo check -p aion-client --features embedded passes (against the engine's in-process API or a documented stub if AE is not yet landed, noted in the task)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-client/src/transport.rs",
+            "crates/aion-client/src/client.rs",
+            "crates/aion-client/Cargo.toml",
+            "crates/aion-client/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S13"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT alter the aion-proto wire types or the server API (AW).",
+      "SHALL NOT implement the conformance harness \u2014 that is AL-007.",
+      "SHALL NOT make the embedded feature a default; network is the default path."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes (with and without the embedded feature).",
+      "cargo test -p aion-client passes.",
+      "cargo fmt --check passes.",
+      "cargo tree -p aion-client confirms aion is absent by default and present only under the embedded feature.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C9",
+        "text": "start returns a WorkflowHandle bundling WorkflowId + RunId and offering signal/query/cancel/describe/subscribe as methods; a bare-ID constructor for WorkflowHandle also exists."
+      },
+      {
+        "id": "C10",
+        "text": "Typed payload helpers serialise serde::Serialize inputs to a JSON Payload and deserialise results to serde::DeserializeOwned, with a raw-Payload escape hatch on every payload-bearing operation."
+      },
+      {
+        "id": "C11",
+        "text": "subscribe returns a Stream of decoded events that resumes from the last delivered sequence number across transient disconnects and yields an Err item on terminal failure rather than ending silently."
+      },
+      {
+        "id": "C13",
+        "text": "An embedded constructor binds the same Client/WorkflowHandle surface to an in-process aion engine behind a feature flag, pulling aion only when that feature is enabled."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As an application developer, I want start to return a handle that lets me signal, query, cancel, and describe the workflow I just started so that I do not have to plumb IDs through my own code."
+      },
+      {
+        "id": "S3",
+        "text": "As an application developer, I want start to accept an idempotency key so that retrying a failed start from my own retry loop does not launch the workflow twice."
+      },
+      {
+        "id": "S4",
+        "text": "As an application developer, I want a typed result back from a query and a typed input accepted by a signal so that my compiler catches payload-shape mistakes before runtime."
+      },
+      {
+        "id": "S8",
+        "text": "As a dashboard developer, I want to subscribe to a workflow's live event stream and have the client resume transparently across transient disconnects so that I render a gap-free, duplicate-free timeline without writing reconnection logic."
+      },
+      {
+        "id": "S9",
+        "text": "As a dashboard developer, I want a terminal stream failure to surface as an error through the stream rather than a silent end so that I can distinguish a finished subscription from a broken one."
+      },
+      {
+        "id": "S13",
+        "text": "As an embedded integrator, I want the Rust client to work against an in-process aion engine through the same surface as the network client so that I can drive workflows without standing up a server, and without pulling the engine into network-only consumers."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Clients consume the aion-server API and aion-proto wire types; they SHALL NOT define their own wire formats, endpoints, or fields the server does not serve. The protocol is owned by AW."
+      },
+      {
+        "id": "CO2",
+        "text": "Clients SHALL NOT depend on engine internals (aion, aion-store, beamr). The Rust client may depend on aion-core (shared domain types) and aion-proto; the embedded constructor may depend on aion only behind a feature flag, never by default."
+      },
+      {
+        "id": "CO3",
+        "text": "All four SDKs expose the same seven operations with identical observable behaviour, verified by the shared conformance suite."
+      },
+      {
+        "id": "CO4",
+        "text": "Every SDK exposes both a typed payload surface (per language) and a raw-Payload escape hatch; neither is removable."
+      },
+      {
+        "id": "CO5",
+        "text": "Every SDK maps server failures to a documented, branchable error taxonomy. No swallowed errors, no single catch-all collapsing distinct failures."
+      },
+      {
+        "id": "CO6",
+        "text": "subscribe resumes transparently across transient disconnects using the per-event sequence number, delivering a gap-free duplicate-free stream; terminal failures surface through the stream, not as a silent end."
+      },
+      {
+        "id": "CO7",
+        "text": "start honours a caller-supplied idempotency key: a retried identical start returns the original handle; a conflicting reuse raises AlreadyExists."
+      },
+      {
+        "id": "CO8",
+        "text": "Per-ecosystem toolchain gates pass: Rust (clippy -D warnings, fmt --check, no allow/expect/ignore), Python (ruff + mypy --strict + pytest), TypeScript (tsc strict + eslint + tests), Gleam (gleam format --check + gleam check + gleam test). No-partial-implementation and no-silent-failure standards hold across all four."
+      },
+      {
+        "id": "CO9",
+        "text": "Each package is publishable to its registry (crates.io, PyPI, npm, Hex) with a README, a type-checked public surface, and a runnable example covering all seven operations."
+      }
+    ],
+    "intention": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-server deployment and exposes the same seven operations \u2014 connect, start, signal, query, cancel, list, describe, subscribe \u2014 in the idioms of its language. A developer who has never read the engine internals should add a dependency, point at a server URL, and start a workflow with full type-checking in their language within minutes; a frontend developer using the TypeScript client should never see beamr, Gleam, or Rust. The four SDKs must behave identically where behaviour is observable, proven by a shared language-neutral behavioural contract and a conformance suite that exercises every SDK against a real server.",
+    "design_path": "docs/design/aion-clients",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

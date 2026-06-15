@@ -1,0 +1,184 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AK-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AK-001",
+    "cluster": "aion-schedules",
+    "title": "Schedule core types, policies, and event family in aion-core",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4"
+    ],
+    "stories": [
+      "S5",
+      "S7"
+    ],
+    "purpose": "Define the core domain types for scheduling: ScheduleId, trigger specifications (cron expression or fixed interval), overlap policy, catch-up policy, and the schedule event family. These types are the foundation every other AK brief builds on. All types live in aion-core so they are available to the engine, store, and server crates.",
+    "task": "Add schedule types to aion-core: ScheduleId newtype (UUID-based, matching WorkflowId/RunId pattern), TriggerSpec enum (Cron with expression string, Interval with Duration), OverlapPolicy enum (Skip, BufferOne, CancelPrevious, AllowAll), CatchUpPolicy enum (All, One, Skip), and ScheduleConfig struct bundling them with target workflow type and input Payload. Add the schedule event family: ScheduleCreated, ScheduleUpdated, SchedulePaused, ScheduleResumed, ScheduleDeleted, ScheduleTriggered. Each event carries an EventEnvelope and schedule-specific fields.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ScheduleId newtype",
+        "spec": "THE SYSTEM SHALL define ScheduleId as a UUID-based newtype in aion-core, following the same pattern as WorkflowId and RunId (Display, FromStr, serde, Clone, Eq, Hash).",
+        "acceptance": [
+          "ScheduleId exists in aion-core with the same derives and trait implementations as WorkflowId.",
+          "ScheduleId::new_v4() generates a random UUID.",
+          "Round-trip serde serialization works correctly."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/schedule.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "TriggerSpec, OverlapPolicy, and CatchUpPolicy enums",
+        "spec": "THE SYSTEM SHALL define TriggerSpec as an enum with variants Cron { expression: String } and Interval { period: Duration }. THE SYSTEM SHALL define OverlapPolicy with variants Skip, BufferOne, CancelPrevious, AllowAll. THE SYSTEM SHALL define CatchUpPolicy with variants All, One, Skip. All enums SHALL derive Debug, Clone, PartialEq, Eq, Serialize, Deserialize.",
+        "acceptance": [
+          "TriggerSpec::Cron and TriggerSpec::Interval exist with the specified fields.",
+          "OverlapPolicy has exactly four variants: Skip, BufferOne, CancelPrevious, AllowAll.",
+          "CatchUpPolicy has exactly three variants: All, One, Skip.",
+          "All types round-trip through serde correctly."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/schedule.rs"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C3",
+          "C4"
+        ],
+        "stories": [
+          "S2",
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "ScheduleConfig configuration struct",
+        "spec": "THE SYSTEM SHALL define ScheduleConfig carrying: trigger (TriggerSpec), overlap_policy (OverlapPolicy), catch_up_policy (CatchUpPolicy), workflow_type (String), and input (Payload).",
+        "acceptance": [
+          "ScheduleConfig exists with all specified fields.",
+          "Default overlap_policy is Skip; default catch_up_policy is One.",
+          "ScheduleConfig derives Debug, Clone, Serialize, Deserialize."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/schedule.rs"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Schedule event family",
+        "spec": "THE SYSTEM SHALL add schedule events to the Event enum: ScheduleCreated { envelope, schedule_id, config }, ScheduleUpdated { envelope, schedule_id, config }, SchedulePaused { envelope, schedule_id }, ScheduleResumed { envelope, schedule_id }, ScheduleDeleted { envelope, schedule_id }, ScheduleTriggered { envelope, schedule_id, workflow_id, run_id }. All exhaustive matches on Event SHALL handle the new variants.",
+        "acceptance": [
+          "All six schedule event variants exist on Event with the specified fields.",
+          "Each variant carries an EventEnvelope.",
+          "ScheduleTriggered carries the workflow_id and run_id of the triggered execution.",
+          "All exhaustive matches in aion-core handle the new variants.",
+          "cargo clippy -p aion-core --all-targets -- -D warnings passes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/event.rs",
+            "crates/aion-core/src/filter.rs",
+            "crates/aion-core/src/status.rs"
+          ]
+        },
+        "checklist": [
+          "C2"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the ScheduleEvaluator or timer integration \u2014 that is AK-003.",
+      "SHALL NOT implement Engine schedule management methods \u2014 that is AK-004.",
+      "SHALL NOT implement cron expression parsing \u2014 that is AK-002.",
+      "SHALL NOT add server endpoints \u2014 that is AK-005."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-core passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Schedule state is projected from events, never stored as mutable fields."
+      },
+      {
+        "id": "CO2",
+        "text": "Schedule evaluation uses durable timers (AT infrastructure), not wall-clock polling."
+      },
+      {
+        "id": "CO3",
+        "text": "Overlap and catch-up policies are explicit per-schedule configuration, not implicit engine behavior."
+      },
+      {
+        "id": "CO4",
+        "text": "Recovery must reconstruct schedule state from events and re-arm timers for all active schedules."
+      },
+      {
+        "id": "CO5",
+        "text": "A deleted schedule's events are retained for audit but the schedule is no longer evaluated."
+      },
+      {
+        "id": "CO6",
+        "text": "Schedule mutations are serialized per ScheduleId to prevent concurrent modification races."
+      }
+    ],
+    "intention": "Production workflow engines must support time-triggered execution: run this billing workflow every midnight, check this API every 5 minutes, generate this report every Monday at 9am. Without built-in scheduling, every user must build their own cron-to-workflow bridge, duplicating coordination logic (overlap prevention, catch-up, pause/resume) that belongs in the engine. This cluster adds a Schedule resource to Aion: a persistent, durable configuration that starts workflow executions on a cron expression or fixed interval, with policies for overlap, catch-up on missed triggers, and pause/resume. Schedules are engine-level \u2014 they survive restarts, are queryable, and their trigger history is auditable.",
+    "design_path": "docs/design/aion-schedules",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Production workflow engines must support time-triggered execution: run this billing workflow every midnight, check this API every 5 minutes, generate this report every Monday at 9am. Without built-in "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

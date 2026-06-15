@@ -1,0 +1,98 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-006",
+    "cluster": "aion-integration",
+    "title": "Fix Gleam client dependency conflict",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The Gleam client (gleam/aion_client/) cannot resolve its dependencies due to a gleam_http version conflict. This makes the Gleam client unusable \u2014 it won't even compile. Until this is fixed, no Gleam consumer can programmatically interact with an aion-server.",
+    "task": "Fix the dependency version conflict in the Gleam client's gleam.toml so that gleam build succeeds and the client can be used to interact with an aion-server.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Dependency resolution",
+        "spec": "THE SYSTEM SHALL update gleam.toml dependency versions so that gleam build succeeds without version conflicts.",
+        "acceptance": [
+          "gleam build succeeds in gleam/aion_client/.",
+          "No version conflict errors during dependency resolution.",
+          "All transitive dependencies resolve without manual overrides."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Client functionality",
+        "spec": "THE SYSTEM SHALL verify that the client's public API (start_workflow, describe, list, signal) compiles and type-checks against the current aion-server wire contract.",
+        "acceptance": [
+          "All exported functions compile without errors.",
+          "Type signatures match the server's HTTP API contract.",
+          "gleam check passes with no warnings about the public API.",
+          "No functions reference removed or renamed server endpoints."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the aion-server wire protocol.",
+      "SHALL NOT add new client features \u2014 only fix what's broken.",
+      "SHALL NOT modify server-side code."
+    ],
+    "verification": [
+      "gleam build succeeds in gleam/aion_client/.",
+      "gleam check passes with no errors.",
+      "No version conflicts in gleam.toml.",
+      "The client's public API type-checks against the current server contract."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,137 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-003",
+    "cluster": "aion-integration",
+    "title": "Fix with_timeout NIF contract mismatch",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C7",
+      "C8",
+      "C9"
+    ],
+    "stories": [
+      "S2"
+    ],
+    "purpose": "The Gleam SDK passes a closure to with_timeout, but the Rust NIF (nif_timer.rs) decodes args[1] as a string. Both sides pass their own tests because each tests against its own fake. This is the clearest example of the integration-seam gap pattern.",
+    "task": "Align the NIF implementation with the Gleam SDK contract so that with_timeout correctly executes the operation closure with a deadline, returning the operation result or a timeout error. Use beamr's continuation trampoline pattern (ProcessContext::set_continuation_trampoline) to call the closure \u2014 NIFs cannot re-enter the interpreter directly. Reference maps_bifs.rs (bif_maps_fold) in beamr for the canonical pattern. The NIF sets up a trampoline to call the closure, returns Ok(Term::NIL), and the scheduler calls the closure; the continuation's resume function receives the result and applies timeout logic. Multi-step continuations can be chained via ContinuationStep::Call. A NativeContinuation variant must be added for Aion's timeout continuation.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "NIF accepts closure",
+        "spec": "THE SYSTEM SHALL decode the operation argument as a callable (Gleam function reference), not a string, matching the aion_flow SDK's with_timeout(operation: fn() -> Result(a, e), timeout_ms: Int) signature.",
+        "acceptance": [
+          "The with_timeout NIF decodes args[1] as a callable function reference.",
+          "The string-decoding path is removed.",
+          "The NIF argument types match the aion_flow SDK's published with_timeout signature.",
+          "Passing a non-callable value returns a clear argument-type error."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Operation execution with deadline",
+        "spec": "THE SYSTEM SHALL use beamr's continuation trampoline (ProcessContext::set_continuation_trampoline) to execute the operation closure, then apply timeout logic in the continuation's resume function. The NIF returns Ok(Term::NIL) and the scheduler calls the closure; the resume function races the result against a durable timer.",
+        "acceptance": [
+          "The operation closure is executed via the continuation trampoline pattern, not by re-entering the interpreter from the NIF.",
+          "A NativeContinuation variant is registered for the with_timeout continuation.",
+          "The continuation's resume function receives the closure result and applies timeout logic.",
+          "If the operation completes before the timeout, its result is returned.",
+          "If the timeout fires before the operation completes, a timeout error is returned.",
+          "The timeout duration is taken from args[0] as an integer milliseconds value."
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Replay compatibility",
+        "spec": "THE SYSTEM SHALL record the with_timeout outcome as a durability event so that replay returns the recorded result without re-executing the operation or re-waiting.",
+        "acceptance": [
+          "The with_timeout outcome (success or timeout) is recorded as a durability event through the Recorder.",
+          "On replay, with_timeout returns the recorded result without calling the operation closure.",
+          "On replay, with_timeout returns the recorded result without waiting for the timeout duration.",
+          "The recorded event distinguishes between operation-completed and timed-out outcomes."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the aion_flow SDK's public with_timeout signature.",
+      "SHALL NOT introduce wall-clock time into the determinism boundary."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test passes for the timer NIF module.",
+      "cargo fmt --check passes.",
+      "gleam build succeeds for a workflow using with_timeout.",
+      "Integration test demonstrates timeout firing and operation completing before timeout.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C7",
+        "text": "The with_timeout NIF decodes the operation argument as a callable (Gleam function reference), matching the aion_flow SDK's with_timeout(operation: fn() -> Result(a, e), timeout_ms: Int) signature."
+      },
+      {
+        "id": "C8",
+        "text": "The NIF executes the operation closure within a deadline race and returns either the operation's result or a timeout error."
+      },
+      {
+        "id": "C9",
+        "text": "The with_timeout outcome is recorded as a durability event so replay returns the recorded result without re-executing."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As a workflow author, I want timer-based sleeps to be durable and survive server restarts so that I can write workflows with long waits (hours, days, months) without worrying about the sleep being lost."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

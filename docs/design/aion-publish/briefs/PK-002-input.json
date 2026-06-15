@@ -1,0 +1,174 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "PK-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "PK-002",
+    "cluster": "aion-publish",
+    "title": "Per-crate README and API documentation for docs.rs",
+    "depends_on": [
+      "PK-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C8",
+      "C9",
+      "C10",
+      "C11"
+    ],
+    "stories": [
+      "S1",
+      "S3"
+    ],
+    "purpose": "Ensure every published Aion crate has a README.md and comprehensive API documentation so consumers can discover, evaluate, and use the crate from docs.rs.",
+    "task": "Write a README.md for each crate that does not have one. Add crate-level doc comments to each lib.rs with a brief description and usage example. Audit all public types and functions for doc comments. Fix cargo doc warnings.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Per-crate README files",
+        "spec": "THE SYSTEM SHALL have a README.md in each crate directory that describes what the crate does, its key types, and a minimal usage example.",
+        "acceptance": [
+          "Every crate directory contains a README.md.",
+          "Each README includes a one-paragraph description, key public types, and a code example.",
+          "Each Cargo.toml has readme = \"README.md\" set."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/README.md",
+            "crates/aion-store/README.md",
+            "crates/aion-store-libsql/README.md",
+            "crates/aion-package/README.md",
+            "crates/aion-nif/README.md",
+            "crates/aion/README.md",
+            "crates/aion-proto/README.md",
+            "crates/aion-server/README.md",
+            "crates/aion-worker/README.md",
+            "crates/aion-cli/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Crate-level doc comments with examples",
+        "spec": "THE SYSTEM SHALL have a crate-level doc comment (//! block) at the top of every lib.rs that describes the crate's purpose and includes a usage example.",
+        "acceptance": [
+          "Every lib.rs starts with a //! doc comment block.",
+          "Each doc comment includes at least one code example.",
+          "cargo doc --workspace --no-deps builds without doc warnings."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/lib.rs",
+            "crates/aion-store/src/lib.rs",
+            "crates/aion-store-libsql/src/lib.rs",
+            "crates/aion-package/src/lib.rs",
+            "crates/aion-nif/src/lib.rs",
+            "crates/aion/src/lib.rs",
+            "crates/aion-proto/src/lib.rs",
+            "crates/aion-server/src/lib.rs",
+            "crates/aion-worker/src/lib.rs",
+            "crates/aion-client/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Public API doc coverage",
+        "spec": "THE SYSTEM SHALL have doc comments on all public types, traits, functions, and modules. cargo doc SHALL build without missing_docs warnings.",
+        "acceptance": [
+          "cargo doc --workspace --no-deps builds with zero warnings.",
+          "All pub types have /// doc comments.",
+          "All pub functions have /// doc comments with # Errors sections where applicable."
+        ],
+        "files": {
+          "create": [],
+          "modify": []
+        },
+        "checklist": [
+          "C9",
+          "C11"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL create README.md files for crates that lack them.",
+      "SHALL add doc comments to all public API items.",
+      "SHALL NOT change any public API or functionality.",
+      "SHALL NOT add examples/ directories (that is a separate concern).",
+      "SHALL NOT document private or pub(crate) items beyond what already exists."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test --workspace passes.",
+      "cargo fmt --check passes.",
+      "cargo doc --workspace --no-deps builds without warnings.",
+      "Every crate directory contains a README.md file."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C8",
+        "text": "Every published crate has a README.md"
+      },
+      {
+        "id": "C9",
+        "text": "All public types and functions have doc comments"
+      },
+      {
+        "id": "C10",
+        "text": "Each crate lib.rs has a crate-level doc comment with usage example"
+      },
+      {
+        "id": "C11",
+        "text": "cargo doc --workspace --no-deps builds without warnings"
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "I can add aion-core to my Cargo.toml and use the event model and identifiers without pulling in the engine or beamr."
+      },
+      {
+        "id": "S3",
+        "text": "I can read docs.rs documentation for any Aion crate and find usage examples."
+      }
+    ],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-publish",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

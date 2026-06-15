@@ -1,0 +1,119 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-007",
+    "cluster": "aion-integration",
+    "title": "Audit and correct README claims against reality",
+    "depends_on": [
+      "IG-001",
+      "IG-002",
+      "IG-003",
+      "IG-004",
+      "IG-005"
+    ],
+    "blocked_by": [
+      "IG-001",
+      "IG-002",
+      "IG-003",
+      "IG-004",
+      "IG-005"
+    ],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The external review found that README and documentation claims outrun the current implementation \u2014 WebSocket streaming documented as shipped (but not routed), 'durable' timers that aren't durable, crash-resume claims that don't work in production. After the IG-001 through IG-005 fixes land, the README needs to accurately reflect what works and what's in progress.",
+    "task": "Audit the root README.md and crate-level READMEs against the current implementation state. Remove or qualify any claims that aren't yet true. Add honest status indicators for in-progress features.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Root README accuracy",
+        "spec": "THE SYSTEM SHALL audit README.md and ensure every claimed feature is either working in the current build or marked with a clear status indicator (e.g., 'In Progress', 'Planned').",
+        "acceptance": [
+          "No feature is documented as shipped or implied-working that isn't actually functional.",
+          "In-progress features are clearly marked with a status indicator.",
+          "The feature list matches the current state of the codebase after IG-001 through IG-005."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Getting-started guide validity",
+        "spec": "THE SYSTEM SHALL verify that every command in the getting-started guide works end-to-end and update any that don't.",
+        "acceptance": [
+          "A new user following the guide step-by-step reaches a working workflow.",
+          "All commands produce the documented output or the documentation matches actual output.",
+          "Prerequisites and environment setup steps are accurate and complete."
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "API documentation accuracy",
+        "spec": "THE SYSTEM SHALL audit API.md and docs/ for claims about WebSocket streaming, crash recovery, and durable timers, updating them to match post-IG reality.",
+        "acceptance": [
+          "No API endpoint is documented that doesn't exist.",
+          "Feature status matches implementation for WebSocket streaming, crash recovery, and durable timers.",
+          "Documented endpoint paths, methods, and payloads match the actual server routes."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT add new features.",
+      "SHALL NOT remove documentation for planned features \u2014 only add honest status markers.",
+      "SHALL NOT modify code \u2014 documentation only."
+    ],
+    "verification": [
+      "All commands in getting-started guide execute successfully.",
+      "No documentation claims a feature that doesn't work without a status qualifier.",
+      "Crate-level READMEs match their crate's current public API.",
+      "API.md endpoints match aion-server's actual route table."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

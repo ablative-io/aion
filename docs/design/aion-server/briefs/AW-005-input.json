@@ -1,0 +1,203 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-005",
+    "cluster": "aion-server",
+    "title": "Remote-worker protocol wire shape (register/task/result/heartbeat, bidi)",
+    "depends_on": [
+      "AW-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C13",
+      "C14",
+      "C15"
+    ],
+    "stories": [
+      "S3",
+      "S9"
+    ],
+    "purpose": "Define the wire contract for out-of-process Tier-3 activity workers \u2014 the protocol every worker SDK (cluster AR) generates stubs from. This is the bidirectional-streaming gRPC service: workers register, the server pushes tasks, workers report results and heartbeats.",
+    "task": "Add worker.proto declaring a bidirectional-streaming gRPC service with RegisterWorker, ActivityTask, ActivityResult, and Heartbeat messages. ActivityTask carries the activity type, input Payload, and the WorkflowId/ActivityId correlation; ActivityResult carries a result Payload or an ActivityError; Heartbeat carries liveness and optional progress; RegisterWorker carries the worker's namespace and the activity types it implements. Provide serde types and assert lossless round-trip. This brief defines the protocol; the server-side endpoint is AW-011/AW-012.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Bidirectional worker service",
+        "spec": "THE SYSTEM SHALL define a gRPC service in worker.proto using bidirectional streaming, where the server pushes ActivityTask messages down the stream and the worker pushes ActivityResult and Heartbeat messages up it, opened by a RegisterWorker handshake.",
+        "acceptance": [
+          "worker.proto defines a bidirectional-streaming RPC carrying a server->worker message (ActivityTask) and a worker->server message (RegisterWorker, ActivityResult, Heartbeat) as the two stream directions.",
+          "The transport is gRPC bidi streaming, not unary polling (per D7); the proto reflects push dispatch.",
+          "tonic-build generates the streaming service and the crate compiles."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-proto/proto/worker.proto"
+          ],
+          "modify": [
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C13"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Task, result, and heartbeat payloads",
+        "spec": "THE SYSTEM SHALL define ActivityTask carrying activity type, input Payload, and WorkflowId/ActivityId correlation; ActivityResult carrying a result Payload or an ActivityError; and Heartbeat carrying liveness and optional progress.",
+        "acceptance": [
+          "ActivityTask carries the activity type string, the input Payload, the owning WorkflowId, and the ActivityId for correlation.",
+          "ActivityResult carries either a success result Payload or an ActivityError (using aion-core's ActivityError shape via the AW-002 conversion, preserving the retryable/terminal classification).",
+          "Heartbeat carries the WorkflowId/ActivityId it concerns and an optional progress Payload.",
+          "A unit test round-trips ActivityTask, ActivityResult (both success and error), and Heartbeat through serde and proto encode/decode."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/proto/worker.proto",
+            "crates/aion-proto/src/convert.rs"
+          ]
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Worker registration advertisement",
+        "spec": "THE SYSTEM SHALL define RegisterWorker carrying the worker's namespace and the list of activity types it implements.",
+        "acceptance": [
+          "RegisterWorker carries a namespace and a repeated activity-type field.",
+          "RegisterWorker has a serde type deriving Serialize + Deserialize and round-trips losslessly.",
+          "The proto documents that registration scopes the worker to one namespace (server-side partitioning per D8 is AW-011)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/proto/worker.proto",
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the server-side worker registry, dispatch, or heartbeat handling \u2014 AW-011, AW-012.",
+      "SHALL NOT build any worker client \u2014 that is cluster AR.",
+      "SHALL NOT define how the engine surfaces a Tier-3 activity need \u2014 that is AE; this brief defines only the wire protocol."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-proto passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C13",
+        "text": "worker.proto defines a bidirectional-streaming service with RegisterWorker, ActivityTask, ActivityResult, and Heartbeat messages."
+      },
+      {
+        "id": "C14",
+        "text": "ActivityTask carries the activity type, input Payload, and the WorkflowId/ActivityId correlation; ActivityResult carries a result Payload or an ActivityError; Heartbeat carries liveness and optional progress."
+      },
+      {
+        "id": "C15",
+        "text": "RegisterWorker carries the worker's namespace and the activity types it implements."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S3",
+        "text": "As a worker SDK author, I want the worker protocol defined in the shared contract so that registration, task dispatch, results, and heartbeats are identical across every language."
+      },
+      {
+        "id": "S9",
+        "text": "As a remote worker, I want to connect once, advertise the activity types I implement, and have tasks pushed to me so that I run heavy work without polling."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

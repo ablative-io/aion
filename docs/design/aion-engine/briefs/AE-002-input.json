@@ -1,0 +1,234 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AE-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AE-002",
+    "cluster": "aion-engine",
+    "title": "beamr runtime embedding and RuntimeHandle",
+    "depends_on": [
+      "AE-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C5",
+      "C6",
+      "C7"
+    ],
+    "stories": [
+      "S2",
+      "S4"
+    ],
+    "purpose": "Embed the beamr runtime behind a single typed handle so the rest of aion never touches beamr directly. This is the sole beamr boundary (D1) and the place scheduler configuration (D2) is applied.",
+    "task": "Implement the runtime module: a config type carrying the builder-supplied scheduler thread count, and a RuntimeHandle that owns the embedded beamr scheduler and exposes typed operations to spawn a workflow process, spawn a linked activity child, register a module, cancel a process by pid, and shut the runtime down. Only this module may import beamr. Scope is the runtime boundary and its handle \u2014 NIF registration is AE-003, and lifecycle/supervision callers are later briefs.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Scheduler configuration from the builder",
+        "spec": "THE SYSTEM SHALL define a runtime config that carries an optional scheduler thread count. WHEN the count is set, THE SYSTEM SHALL configure beamr's scheduler with it. WHEN it is unset, THE SYSTEM SHALL pass None to beamr so beamr applies its own available_parallelism default. THE SYSTEM SHALL NOT hardcode any thread-count number in aion.",
+        "acceptance": [
+          "config.rs defines a RuntimeConfig with a thread_count: Option<usize> field and a constructor taking that option.",
+          "Building the runtime with Some(n) constructs beamr's SchedulerConfig with thread_count: Some(n).",
+          "Building with None constructs beamr's SchedulerConfig with thread_count: None (beamr then defaults to available_parallelism).",
+          "grep of aion shows no integer literal used as a scheduler thread count default."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/runtime/config.rs",
+            "crates/aion/src/runtime/mod.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "RuntimeHandle owning the embedded scheduler",
+        "spec": "THE SYSTEM SHALL define RuntimeHandle that constructs and owns an embedded beamr scheduler from a RuntimeConfig and is the only type in the crate that holds beamr runtime state.",
+        "acceptance": [
+          "handle.rs defines RuntimeHandle holding the beamr scheduler/runtime value, constructed from a RuntimeConfig.",
+          "RuntimeHandle is Send + Sync so it can be shared by the Engine across async tasks.",
+          "Construction failures from beamr map to EngineError::Runtime, never a panic.",
+          "runtime/mod.rs contains only pub mod and pub use; no logic."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/runtime/handle.rs"
+          ],
+          "modify": [
+            "crates/aion/src/runtime/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Typed runtime operations",
+        "spec": "THE SYSTEM SHALL expose on RuntimeHandle typed operations to spawn a workflow process for a namespaced module/function over an input, spawn an activity as a child process linked to a given workflow pid, register a module's beam bytes under a deployed name, cancel a process by pid, and shut the runtime down.",
+        "acceptance": [
+          "RuntimeHandle exposes spawn_workflow(deployed_module, function, input) -> Result<Pid, EngineError>, spawn_activity(parent_pid, deployed_module, function, input) -> Result<Pid, EngineError> that links the child to the parent, register_module(deployed_name, beam_bytes) -> Result<(), EngineError>, cancel_pid(pid) -> Result<(), EngineError>, and shutdown() -> Result<(), EngineError>.",
+          "spawn_activity establishes a beamr link from the spawned child to parent_pid so the parent's trap-exit can observe the child's exit.",
+          "Every beamr error returned by these operations is mapped into an EngineError variant; none is unwrapped.",
+          "A unit test constructs a RuntimeHandle with thread_count None, registers a trivial test module, spawns a process running it, and shuts the runtime down cleanly."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/handle.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Single beamr boundary",
+        "spec": "THE SYSTEM SHALL confine all use beamr imports to the runtime module. THE SYSTEM SHALL NOT import beamr from any other module in the crate.",
+        "acceptance": [
+          "grep for `use beamr` (or `beamr::`) across crates/aion/src returns matches only under crates/aion/src/runtime/.",
+          "Other modules that need to spawn/cancel/register go through RuntimeHandle, not beamr directly.",
+          "A note in runtime/mod.rs documents that runtime is the sole beamr boundary per D1."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement NIF registration \u2014 that is AE-003.",
+      "SHALL NOT implement the active-execution registry, lifecycle transitions, or supervision tree \u2014 those are AE-004, AE-009/010/011, and AE-007.",
+      "SHALL NOT add any networking dependency; the runtime embeds beamr only.",
+      "SHALL NOT record events or read the store \u2014 runtime is a VM boundary, not a persistence boundary."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "grep confirms beamr is imported only under runtime/.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests; lock/runtime errors mapped to EngineError."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C5",
+        "text": "Only the runtime module imports beamr; every other module reaches beamr exclusively through the RuntimeHandle."
+      },
+      {
+        "id": "C6",
+        "text": "The runtime is configured with a scheduler thread count taken from the builder; when unset, aion passes None so beamr applies its own default, and aion hardcodes no number."
+      },
+      {
+        "id": "C7",
+        "text": "RuntimeHandle exposes typed operations to spawn a workflow process, spawn a linked activity child, register a module, cancel a process by pid, and shut the runtime down."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As an engine operator, I want to set the scheduler thread count (and have a sensible runtime default when I don't) so that I tune concurrency to my host without the engine guessing a number for me."
+      },
+      {
+        "id": "S4",
+        "text": "As an engine operator, I want the engine to depend on no network stack so that I can run durable workflows in a CLI or single service with nothing but a file-backed store."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a runtime gate it at runtime, never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion depends only on aion-core, aion-store, aion-package, and beamr among workspace crates \u2014 no aion-server, no store backend crate, no networking crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Transport-agnostic: no HTTP, gRPC, or WebSocket dependency or code anywhere in the crate."
+      },
+      {
+        "id": "CO7",
+        "text": "Only the runtime module imports beamr; every other module uses the RuntimeHandle (per D1)."
+      },
+      {
+        "id": "CO8",
+        "text": "All library errors are thiserror EngineError variants; no anyhow in this library crate. No .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO9",
+        "text": "Mutex/RwLock poison handled explicitly and mapped to a typed EngineError; no .unwrap() on a lock guard."
+      },
+      {
+        "id": "CO10",
+        "text": "WorkflowStatus is read from aion-core's event projection; the registry's cached status is never the source of truth (per aion-core CO7)."
+      },
+      {
+        "id": "CO11",
+        "text": "aion hardcodes no scheduler thread count, no timeout, and no retry default; configurable values come from the builder or are deferred to beamr's own default."
+      },
+      {
+        "id": "CO12",
+        "text": "Module namespacing uses aion-package's transform unchanged; the engine never re-derives namespaced names (per D8)."
+      },
+      {
+        "id": "CO13",
+        "text": "Engine tests run against InMemoryStore; no test requires a database (per aion-core D8)."
+      }
+    ],
+    "intention": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows, runs each as a BEAM process on an embedded beamr runtime, supervises them through a three-level tree, dispatches their activities as linked child processes, and cancels or reports on them by ID. Starting a workflow is spawning a process; cancelling it is killing that process, which through links kills its activity children too; an activity crash propagates an exit signal the trapping workflow process receives as a message. The crate is transport-agnostic \u2014 no HTTP/gRPC/WebSocket \u2014 keeping the embedded path free of network dependencies. This cluster owns lifecycle, process management, supervision, and module loading; it defers durability/replay (AD) and time/signals/queries/children/concurrency (AT) to their owners, surfacing their entry points on Engine and stating the seams explicitly.",
+    "design_path": "docs/design/aion-engine",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the heart of the engine \u2014 the aion crate you embed. Given an EventStore, a set of loaded .aion workflow packages, and registered NIFs, EngineBuilder produces a live Engine that starts workflows,"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

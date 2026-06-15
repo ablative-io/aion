@@ -1,0 +1,169 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AN-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AN-003",
+    "cluster": "aion-nif",
+    "title": "Payload and JSON bridge \u2014 terms over aion-core Payload and serde structs",
+    "depends_on": [
+      "AN-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C13",
+      "C14",
+      "C15"
+    ],
+    "stories": [
+      "S2"
+    ],
+    "purpose": "Connect the term layer to the engine's value model. Workflow values cross the NIF boundary as aion-core::Payload; this bridge converts a Payload to and from a Term and lets a NIF author work directly over ordinary Serialize/Deserialize Rust structs instead of hand-marshalling JSON.",
+    "task": "In the payload module, implement Payload<->Term conversion via the JSON content-type (a term decodes to serde_json::Value through beamr's term_to_value, then into a Payload; and the reverse). Provide a blanket FromTerm/IntoTerm for any T: Serialize + DeserializeOwned routed through Payload, so a NIF can take and return its own structs. This module is the single place aion-nif references aion-core's Payload and ActivityError.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Payload <-> Term conversion",
+        "spec": "THE SYSTEM SHALL convert an aion-core Payload to a Term and a Term to a Payload via the JSON content-type, round-tripping losslessly. THE SYSTEM SHALL use beamr's term_to_value / value_to_term to bridge through serde_json::Value.",
+        "acceptance": [
+          "payload.rs converts a Term to a Payload by decoding the term to serde_json::Value (term_to_value) and constructing a JSON-tagged Payload (Payload::from_json), and converts a Payload to a Term by reading its JSON value (Payload::to_json) and encoding via value_to_term through the context.",
+          "A round-trip test (Payload -> Term -> Payload) holds for payloads wrapping null, bool, number, string, array, and object JSON values.",
+          "A non-JSON-content-type Payload is handled explicitly (documented behaviour: error or pass-through), not silently mis-decoded.",
+          "Conversion errors surface as TermError, not panics."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/payload.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C13",
+          "C15"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Serde blanket bridge",
+        "spec": "THE SYSTEM SHALL provide a way to decode any T: DeserializeOwned from a Term and encode any T: Serialize into a Term, routed through Payload, so a NIF body can be written over ordinary Rust structs without manual term or JSON handling.",
+        "acceptance": [
+          "payload.rs provides functions (or a wrapper type) from_term_via_payload::<T>(term, ctx) and into_term_via_payload::<T>(value, ctx) for T: Serialize + DeserializeOwned, implemented in terms of the Payload<->Term conversion from R1.",
+          "A deserialisation failure (term JSON does not match T) yields a TermError carrying the serde message, never a panic.",
+          "A unit test round-trips a small derived struct (a couple of fields of mixed types) through a Term and asserts equality.",
+          "A doc comment shows the intended use: an author writes a NIF taking and returning their own struct, and the declaration macros (AN-004) use this bridge to marshal it."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/payload.rs"
+          ]
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the Nif descriptor, Determinism tag, or declaration macros \u2014 those are AN-004.",
+      "SHALL NOT define ActivityError handling for side-effectful NIFs beyond importing the type \u2014 that is AN-005.",
+      "SHALL be the only module that imports aion-core::Payload; other modules use the term traits, not Payload directly."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-nif passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C13",
+        "text": "Payload (aion-core) converts to and from a Term via the JSON content-type (term_to_value to serde_json::Value to Payload and the reverse), round-tripping losslessly."
+      },
+      {
+        "id": "C14",
+        "text": "A blanket FromTerm/IntoTerm is provided for any T: Serialize + DeserializeOwned, routed through Payload, so a NIF can be written over ordinary Rust structs."
+      },
+      {
+        "id": "C15",
+        "text": "The payload module is the only place aion-nif references aion-core's Payload and ActivityError."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As an in-VM activity author, I want to write a NIF directly over my own Serialize/Deserialize structs so that workflow values marshal across the boundary without manual JSON glue."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny at the crate root. Any unsafe is confined to raw.rs behind a single documented, audited module exception; every unsafe block carries a // SAFETY: comment. No unsafe outside raw.rs. Preferred state is zero unsafe (safe beamr APIs only)."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses anywhere, with the sole explicit exception of the documented #![allow(unsafe_code)] FFI seam in raw.rs (CO1). No other bypass of any kind."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-nif depends on beamr (term/NIF API) and aion-core (Payload, ActivityError) only. It does NOT depend on aion (the engine); it emits a descriptor set the engine consumes."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism is a typed property: the deterministic builder yields only Determinism::Pure, the activity builder yields only Determinism::SideEffectful. No untyped declaration path. A side-effectful NIF cannot be expressed as an inline deterministic helper."
+      },
+      {
+        "id": "CO7",
+        "text": "A side-effectful NIF's native body returns Result<T, ActivityError> (aion-core) so a failure carries the retryable/terminal classification AE/AT consult. It never returns a bare string error."
+      },
+      {
+        "id": "CO8",
+        "text": "Generated shims never expose raw &[Term] to author code, never Box::leak in author-reachable paths, and contain panics raised by the author body, converting them to a typed NIF error rather than unwinding across the FFI boundary."
+      },
+      {
+        "id": "CO9",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError, never silently overwrites."
+      },
+      {
+        "id": "CO10",
+        "text": "aion-nif registers nothing with beamr itself. It emits a descriptor set; AE's runtime module (the sole beamr boundary) performs the actual registration. aion-nif must not call BifRegistryImpl::register."
+      }
+    ],
+    "intention": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand-rolled MFA registration. The crate serves the Tier-2 in-VM band of the execution model, and its entire organisation keeps the two uses of that band apart. (1) Deterministic helpers \u2014 JSON transform, template render, parse, format, crypto, math \u2014 called inline from workflow code, not recorded, re-executed verbatim on replay, safe because the same inputs always produce the same output. (2) Light in-VM activities \u2014 small side-effectful operations that run on beamr's dirty scheduler and MUST be invoked through the engine's activity contract so the result is recorded once and returned from history on replay, never re-executed. The crate makes the right thing easy and the wrong thing hard to express: a side-effectful NIF is typed as an activity from the first line and cannot be wired as an inline deterministic helper. When done, a host hands its NIF set to EngineBuilder::register_nifs and its Gleam workflows call deterministic ones inline and side-effectful ones as recorded activities, with the determinism guarantee preserved.",
+    "design_path": "docs/design/aion-nif",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

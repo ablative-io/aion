@@ -1,0 +1,172 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AW-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AW-004",
+    "cluster": "aion-server",
+    "title": "Event-streaming wire shape (SubscriptionRequest + streamed Event envelope)",
+    "depends_on": [
+      "AW-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C11",
+      "C12"
+    ],
+    "stories": [
+      "S6"
+    ],
+    "purpose": "Define the wire shape the WebSocket layer parses: how a client expresses what slice of the event firehose it wants, and how a streamed event is framed. This is the contract the server's stream module (AW-010) maps onto the engine's EventFilter.",
+    "task": "Add events.proto declaring a SubscriptionRequest with per-workflow, filtered (by type/status/namespace), and firehose variants, and the streamed Event envelope that carries an aion-core Event unmodified plus the owning namespace. Provide serde types and assert lossless round-trip. This brief defines the wire shape only; the server-side subscription loop is AW-010.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "SubscriptionRequest variants",
+        "spec": "THE SYSTEM SHALL define a SubscriptionRequest with three subscription models: per-workflow (a single WorkflowId), filtered (by workflow type, status, and/or namespace), and firehose (all events in the caller's namespace).",
+        "acceptance": [
+          "events.proto defines a SubscriptionRequest expressing the three models (e.g. a oneof or a tagged variant).",
+          "The per-workflow variant carries a WorkflowId; the filtered variant carries optional type, status, and namespace selectors; the firehose variant carries the caller's namespace.",
+          "Every variant carries the caller's namespace so the server can scope it before mapping to an EventFilter (per D8).",
+          "The SubscriptionRequest has a serde type deriving Serialize + Deserialize and round-trips losslessly."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-proto/proto/events.proto"
+          ],
+          "modify": [
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Streamed Event envelope",
+        "spec": "THE SYSTEM SHALL define the streamed event frame as an envelope carrying the aion-core Event unmodified plus the owning namespace, round-tripping losslessly.",
+        "acceptance": [
+          "The streamed frame carries the aion-core Event (via the AW-002 envelope, not a wire clone) plus the namespace it belongs to.",
+          "A unit test round-trips a streamed frame containing an Event of at least one variant and asserts equality with the source aion-core Event.",
+          "The frame derives Serialize + Deserialize (CO7).",
+          "Inspection confirms the Event is carried by aion-core's type, not re-declared (CO12)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-proto/proto/events.proto",
+            "crates/aion-proto/src/convert.rs",
+            "crates/aion-proto/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the WebSocket forward loop or the EventFilter mapping \u2014 that is AW-010.",
+      "SHALL NOT define how the engine produces or broadcasts events \u2014 that is AE/AD; this brief defines only the wire frame.",
+      "SHALL NOT define worker or workflow-management messages \u2014 AW-003, AW-005."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-proto passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C11",
+        "text": "events.proto defines a SubscriptionRequest with per-workflow, filtered (by type/status/namespace), and firehose variants, plus the streamed Event envelope."
+      },
+      {
+        "id": "C12",
+        "text": "The streamed Event envelope carries the aion-core Event unmodified plus the owning namespace, and round-trips losslessly."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As an observer, I want to open a WebSocket and subscribe to one workflow, a filtered class, or the whole firehose so that I see events as they happen."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md; tests needing a running server gate at runtime (a *_TEST_URL env var with a logged skip), never #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-proto is a leaf crate: it depends on aion-core and external crates only \u2014 no aion, no aion-server, no store backend. Structural; must hold (per D2)."
+      },
+      {
+        "id": "CO6",
+        "text": "aion-server depends on aion, aion-proto, and a store backend among workspace crates; it contains no workflow execution logic \u2014 it delegates every durable decision to the Engine (per D5)."
+      },
+      {
+        "id": "CO7",
+        "text": "Wire data types (proto messages, streamed events, summaries) derive Serialize + Deserialize; config types that carry secrets are Deserialize-only (D4, project credential policy)."
+      },
+      {
+        "id": "CO8",
+        "text": "Library errors use thiserror (WireError in proto, ServerError in server); anyhow appears only in aion-server's top-level main. No unwrap/expect in library code; lock/stream poison handled explicitly."
+      },
+      {
+        "id": "CO9",
+        "text": "No cross-namespace operation reaches the engine: namespace authorisation and scoping happen at the adapter boundary before any Engine call (per D8)."
+      },
+      {
+        "id": "CO10",
+        "text": "A slow or stalled WebSocket consumer is dropped with a typed lag error; per-connection buffers are bounded; the engine broadcast is never back-pressured by a subscriber (per D6)."
+      },
+      {
+        "id": "CO11",
+        "text": "No hardcoded operational defaults (ports, heartbeat window, buffer bound, timeouts): all from config; engine-owned defaults deferred to the engine (per CLAUDE.md 'no assumed defaults')."
+      },
+      {
+        "id": "CO12",
+        "text": "The wire Event/WorkflowFilter/WorkflowSummary/WorkflowStatus and ID types are aion-core's types, not re-declared wire clones (per D2)."
+      }
+    ],
+    "intention": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many services want a managed deployment: one binary clients and workers point at, that streams live workflow events to a dashboard, isolates tenants, and dispatches activity tasks to out-of-process workers in any language. That is aion-server, and the wire contract it speaks is aion-proto. aion-proto is a pure leaf-level contract \u2014 gRPC service definitions plus serde wire types \u2014 that the server, every client SDK (AL), and every worker SDK (AR) agree on, defined once so they never drift. aion-server is the deployable: it wraps a live Engine, translates wire requests into Engine calls, tails the engine's event broadcast to feed WebSocket subscribers, runs the server side of the remote-worker protocol, partitions everything by namespace, and serves the dashboard's API and static assets. It adds no execution logic \u2014 every durable decision still happens in aion.",
+    "design_path": "docs/design/aion-server",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Build the network skin of Aion. The aion engine crate is transport-agnostic by design \u2014 no HTTP, gRPC, or WebSocket \u2014 so a CLI embeds it with nothing but a file-backed store. Teams running many servic"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,195 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-005",
+    "cluster": "aion-time-signals",
+    "title": "Signal router: record-then-deliver to the workflow mailbox",
+    "depends_on": [
+      "AT-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C14",
+      "C15",
+      "C16"
+    ],
+    "stories": [
+      "S3",
+      "S7"
+    ],
+    "purpose": "Build the live signal path: an external signal is recorded durably as SignalReceived and delivered to the target workflow process's mailbox so the workflow's selective receive picks it up in microseconds. The record-before-deliver ordering is what makes a signal survive a crash between delivery and consumption.",
+    "task": "Implement a SignalRouter that, given an EngineHandle and an EventStore, records SignalReceived (signal name + Payload) and delivers the signal to the target workflow process's mailbox. Record before (or atomically with) delivery so a crash after delivery but before consumption is recoverable. Resolve the WorkflowId to a live process via the seam. Non-resident and terminal/unknown handling lands in AT-006; this brief covers the resident happy path and the record-ordering guarantee.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Record SignalReceived before delivery",
+        "spec": "WHEN a signal is routed to a workflow, THE SYSTEM SHALL append a SignalReceived event (signal name + Payload) BEFORE delivering the signal to the mailbox. THE SYSTEM SHALL NOT deliver a signal that has not been recorded.",
+        "acceptance": [
+          "router.rs defines SignalRouter holding an EngineHandle and an Arc<dyn EventStore>.",
+          "signal(workflow_id, name, payload) appends SignalReceived { name, payload } (with the expected-sequence guard) and only then delivers to the mailbox.",
+          "If the append fails, no delivery occurs and the error is returned (no silent delivery without a record, CO7).",
+          "A test routes a signal to a Resident workflow (fake seam) and asserts the SignalReceived event is appended before the mailbox message is recorded as delivered (ordering observable via the fake)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/signal/router.rs"
+          ],
+          "modify": [
+            "crates/aion/src/signal/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Deliver to the workflow mailbox",
+        "spec": "WHEN a signal has been recorded and the target workflow is resident, THE SYSTEM SHALL deliver the signal to the target workflow process's mailbox via the engine seam so selective receive picks it up without polling.",
+        "acceptance": [
+          "After recording, the router delivers a signal message (name + payload) to the resolved process handle's mailbox via the seam deliver method.",
+          "The delivered message carries the signal name so the workflow's selective receive can match by name.",
+          "A test routes a signal and asserts a mailbox message with the correct name + payload was delivered to the right process handle."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/signal/router.rs"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Resolve workflow via the seam, not lifecycle ownership",
+        "spec": "THE SYSTEM SHALL resolve a WorkflowId to a live process via the engine seam. THE SYSTEM SHALL NOT start, suspend, resume, or supervise a workflow process from the router.",
+        "acceptance": [
+          "The router calls the seam resolve method to obtain the process handle; it contains no process spawn/supervision/lifecycle code (CO6).",
+          "A test marks a WorkflowId Resident in the fake seam and asserts the router uses the returned handle for delivery.",
+          "No router code path constructs or tears down a workflow process."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/signal/router.rs"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S3"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT handle non-resident delivery or terminal/unknown targets \u2014 that is AT-006.",
+      "SHALL NOT define replay of SignalReceived \u2014 AD returns the recorded signal on restore; this brief only records and delivers live.",
+      "SHALL NOT define the network endpoint that receives an external signal \u2014 that is AW; this is the in-engine delivery it calls.",
+      "SHALL NOT define the Gleam workflow.receive surface \u2014 that is AF."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including the record-before-deliver ordering test.",
+      "cargo fmt --check passes.",
+      "Signal recording goes only through EventStore append (CO8); delivery only through the seam.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C14",
+        "text": "Delivering a signal records a SignalReceived event (signal name + Payload) before/atomically with delivery, so a crash after delivery but before consumption is recoverable."
+      },
+      {
+        "id": "C15",
+        "text": "The signal is delivered to the target workflow process's mailbox so the workflow's selective receive picks it up without polling."
+      },
+      {
+        "id": "C16",
+        "text": "Signal delivery resolves a WorkflowId to a live process via the engine seam; the router does not manage process lifecycle."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S3",
+        "text": "As a workflow author, I want to wait for a named signal and have it delivered the instant it arrives so that my workflow reacts to external events without polling."
+      },
+      {
+        "id": "S7",
+        "text": "As the engine, I want every timer firing, signal arrival, and child outcome recorded as an aion-core Event so that replay can return the same observation without re-waiting or re-spawning."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

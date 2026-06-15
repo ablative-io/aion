@@ -1,0 +1,166 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AF-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AF-008",
+    "cluster": "aion-flow",
+    "title": "Queries: typed read-only handler registration and reply",
+    "depends_on": [
+      "AF-007"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C28",
+      "C29"
+    ],
+    "stories": [
+      "S7"
+    ],
+    "purpose": "Let a workflow expose typed, read-only inspection of its state. A query handler registered for type a returns a; the engine's query service calls it and the SDK encodes the reply. No event is recorded for a query.",
+    "task": "Implement aion/query: query.handler(name, Codec(a), fn() -> a) registering a typed read-only handler bound to AT's query service via the ffi layer, with the reply encoded by the SDK and unknown-query handling returning a typed QueryError. A query records no event.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Typed query handler registration",
+        "spec": "THE SYSTEM SHALL define query.handler(name, Codec(a), fn() -> a) registering a read-only handler whose return type a is fixed at registration, with the reply encoded by the SDK.",
+        "acceptance": [
+          "query.gleam defines handler(name: String, Codec(a), reply: fn() -> a) registering the handler with AT's query service via the ffi layer; the return type a is fixed at registration.",
+          "When the engine dispatches a query, the SDK invokes the handler, encodes the returned value with the Codec, and replies on the engine's reply channel.",
+          "By type and by documented convention the handler returns a value and does not run an activity (it is read-only).",
+          "A harness test registers a handler returning a typed state value and asserts a dispatched query returns the decoded value."
+        ],
+        "files": {
+          "create": [
+            "gleam/aion_flow/src/aion/query.gleam"
+          ],
+          "modify": [
+            "gleam/aion_flow/src/aion/internal/ffi.gleam"
+          ]
+        },
+        "checklist": [
+          "C28"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "No-record guarantee and unknown-query handling",
+        "spec": "THE SYSTEM SHALL ensure a query records no event (binding to AT's read-only query service) and that an unknown query name yields a typed QueryError.",
+        "acceptance": [
+          "A doc comment states that a query records no Event (AT D6/CO7) and never blocks workflow progress.",
+          "Dispatching an unregistered query name returns a typed QueryError (unknown query), not a panic and not a fabricated answer.",
+          "A harness test asserts: a query produces no recorded observation in the env's capture, and an unknown query returns the typed QueryError."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src/aion/query.gleam"
+          ]
+        },
+        "checklist": [
+          "C29"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the query service, dispatch, timeout, or reply channel \u2014 those are AT-007. This brief binds to them.",
+      "SHALL NOT allow a query handler to record an event or run an activity.",
+      "SHALL NOT let a query return value cross the boundary without a Codec (CO9)."
+    ],
+    "verification": [
+      "gleam build passes.",
+      "gleam check passes.",
+      "gleam format --check passes.",
+      "gleam test passes for handler registration and unknown-query tests under the harness.",
+      "No panic/todo; queries record nothing in the harness capture."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C28",
+        "text": "query.handler(name, Codec(a), fn() -> a) registers a read-only handler whose return type a is fixed at registration; the reply is encoded by the SDK."
+      },
+      {
+        "id": "C29",
+        "text": "A query records no event (binds to AT's read-only query service); an unknown query name yields a typed QueryError."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As a workflow author, I want to wait for a typed signal and register typed query handlers so that external interaction and inspection are as type-safe as the rest of the workflow."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Pure Gleam package. No Rust, no engine code, no beamr dependency inside aion_flow. It publishes to Hex standalone (gleam_stdlib is its only runtime dependency, plus gleam_json for the default JSON codecs)."
+      },
+      {
+        "id": "CO2",
+        "text": "Every @external(erlang, ...) declaration lives in the single internal module aion/internal/ffi. No author-facing module declares an @external (per D1)."
+      },
+      {
+        "id": "CO3",
+        "text": "Module files contain logic; the package root and any mod-equivalent re-export aggregator stay declarations/re-exports only. No god files \u2014 split before a module exceeds ~500 lines of code (excluding comments/whitespace)."
+      },
+      {
+        "id": "CO4",
+        "text": "No partial implementations. Every public function is complete and total: no panic, no todo, no assert-as-control-flow; failure paths return typed Result errors. Gleam has no exceptions for control flow \u2014 every fallible binding returns Result."
+      },
+      {
+        "id": "CO5",
+        "text": "Type safety is enforced, not advisory: activity input/output, signal payload, query return, and child input/output types are static type parameters; an invalid composition fails `gleam build`. A type-safety test brief asserts representative invalid compositions are rejected (compile-fail expectations documented)."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism: the SDK exposes workflow.now/workflow.random bound to AD's determinism context and exposes NO binding to a wall clock or entropy source. Workflow-code documentation states the prohibition explicitly."
+      },
+      {
+        "id": "CO7",
+        "text": "The recorded/side-effectful boundary is structural: the only side-effect dispatch the SDK offers is workflow.run(activity) (and all/race/map over activities). There is no generic side_effect(fn) escape hatch (per D4)."
+      },
+      {
+        "id": "CO8",
+        "text": "No hardcoded defaults for configurable values: no default RetryPolicy, no default timeout, no default backoff numbers baked into the SDK. An activity without a retry decorator runs once; the author supplies all policy values (CLAUDE.md no-assumed-defaults)."
+      },
+      {
+        "id": "CO9",
+        "text": "User data crosses the boundary only through a Codec(a); a decode failure is a typed DecodeError, never a panic. No primitive silently swallows a decode error."
+      },
+      {
+        "id": "CO10",
+        "text": "aion_flow does not implement engine mechanics (timer firing, signal routing, replay) \u2014 those are AE/AD/AT, reached via @external. It does not author NIFs in Rust \u2014 that is AN. It is not packaged into .aion \u2014 that is AP. The cluster owns only the Gleam API surface and its binding declarations."
+      },
+      {
+        "id": "CO11",
+        "text": "All acceptance uses Gleam tooling: gleam build, gleam check, gleam format --check, gleam test must all pass clean. The test harness (aion/testing) runs under gleam test with no external services."
+      }
+    ],
+    "intention": "Define aion_flow, the Gleam package (published to Hex) that workflow authors import to write durable workflows. It is the human-facing surface of the entire engine: a workflow author writes a plain, statically-typed Gleam function \u2014 decisions, loops, data transformation \u2014 and reaches the outside world only through this SDK's activity, signal, query, timer, and child-workflow primitives. The package is pure Gleam with no engine code inside it; every primitive is a thin @external(erlang) binding that resolves at runtime, when beamr loads the compiled workflow and the engine has registered the matching NIFs (AE-004), to the engine-side mechanics in AE/AD/AT. The defining property is compile-time type safety: activity inputs and outputs, signal payloads, and query returns are all statically typed, so an invalid composition \u2014 passing a String where an activity expects an Order, awaiting a signal of the wrong type, returning the wrong type from a query handler \u2014 fails at `gleam build`, not three days into a long-running production workflow. This is the concrete advantage over Temporal's SDKs (Go weakly typed, TypeScript better but runtime-checked). The package also ships aion/testing, the Temporal-equivalent test harness: simulate time so a month-long sleep resolves instantly, mock activities to return canned results, and assert that a workflow replays to the same state \u2014 all in plain gleam test, with no engine, no beamr, and no store.",
+    "design_path": "docs/design/aion-flow",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define aion_flow, the Gleam package (published to Hex) that workflow authors import to write durable workflows. It is the human-facing surface of the entire engine: a workflow author writes a plain, s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

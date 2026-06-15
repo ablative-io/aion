@@ -1,0 +1,157 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-012",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-012",
+    "cluster": "aion-time-signals",
+    "title": "map: dynamic fan-out from a runtime list",
+    "depends_on": [
+      "AT-010"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C32"
+    ],
+    "stories": [
+      "S6"
+    ],
+    "purpose": "Implement the map primitive: apply a function to each element of a runtime list to produce the child specs (dynamic fan-out), then collect like all \u2014 ordered, fail-fast. This is how a workflow fans out work derived from data (e.g. one child per order item), built on the all collector from AT-010.",
+    "task": "Implement map over a runtime list and a spec-producing function. Apply the function to each element to build the child specs, then delegate collection to the all primitive (AT-010) so the result is ordered by input position and fails fast on any child failure (cancelling the rest).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Produce child specs from a runtime list",
+        "spec": "WHEN map is called with a runtime list and a spec-producing function, THE SYSTEM SHALL apply the function to each element to produce one child spec per element (dynamic fan-out).",
+        "acceptance": [
+          "map.rs defines map(items, f) that applies f to each element of items to produce a Vec of child specs, one per element, preserving element order.",
+          "An empty input list produces zero children and yields an empty result (documented and tested).",
+          "A test passes a 4-element list and asserts 4 child specs are produced in element order."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/concurrency/map.rs"
+          ],
+          "modify": [
+            "crates/aion/src/concurrency/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C32"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Collect like all (ordered, fail-fast)",
+        "spec": "WHEN the child specs are produced, THE SYSTEM SHALL collect them via the all primitive so results are returned in input order and any child failure fails the whole map and cancels the rest.",
+        "acceptance": [
+          "map delegates collection to all (AT-010) over the produced specs; it does not reimplement collection or cancellation.",
+          "The result list is ordered by input element position; a child failure fails the whole map and cancels remaining children (inherited from all).",
+          "A test fans out a list, delivers results out of order, and asserts ordered output.",
+          "A test delivers one failure mid-flight and asserts map returns the failure and remaining children are cancelled."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/concurrency/map.rs"
+          ]
+        },
+        "checklist": [
+          "C32"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement collection, ordering, or cancellation \u2014 it delegates to all (AT-010).",
+      "SHALL NOT implement all or race \u2014 those are AT-010 and AT-011.",
+      "SHALL NOT define the Gleam workflow.map surface \u2014 that is AF."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including empty-list, ordering, and fail-fast tests.",
+      "cargo fmt --check passes.",
+      "map delegates to all rather than duplicating its logic (verified by reading the implementation).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C32",
+        "text": "map applies a function to each element of a runtime list to produce child specs (dynamic fan-out), then collects like all (ordered, fail-fast)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a workflow author, I want to fan work out with all, race the fastest of several with race, and fan out dynamically from data with map so that I can express concurrency directly without writing a join runtime."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

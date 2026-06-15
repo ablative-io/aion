@@ -1,0 +1,207 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AN-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AN-006",
+    "cluster": "aion-nif",
+    "title": "NifSet registration value and end-to-end illustrative NIF set",
+    "depends_on": [
+      "AN-004",
+      "AN-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C27",
+      "C28",
+      "C29",
+      "C31"
+    ],
+    "stories": [
+      "S7",
+      "S8",
+      "S10"
+    ],
+    "purpose": "Produce the value the engine consumes (NifSet for EngineBuilder::register_nifs) and prove the whole crate end-to-end with a minimal illustrative NIF set \u2014 one deterministic helper and one side-effectful activity \u2014 exercised through the full declaration-to-descriptor path.",
+    "task": "In registry.rs, define the NifSet builder: it collects declared Nifs under a module name into the value EngineBuilder::register_nifs consumes, rejecting a duplicate (module, function, arity) at build time with a typed NifDeclError, and never calling beamr's BifRegistryImpl::register itself (the engine's runtime module does that). Then build a minimal illustrative NIF set \u2014 at least one Pure helper and one SideEffectful activity \u2014 and a test that builds the set and asserts the descriptors' identities, determinism tags, dirty flags, and dispatch shapes.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "NifSet builder",
+        "spec": "THE SYSTEM SHALL define NifSet, collecting declared Nifs under a module name and producing the value EngineBuilder::register_nifs (AE) consumes, exposing the per-NIF identity, NativeFn, dirty flag, and Determinism tag the engine needs to register and bind them.",
+        "acceptance": [
+          "registry.rs defines NifSet with a builder API (e.g. new(module_name), add(nif), build() -> Result<NifSet, NifDeclError>) and an accessor yielding the contained Nif descriptors.",
+          "The produced value carries, per NIF, the module/function/arity, the NativeFn, the dirty flag, and the Determinism tag, so AE's runtime registration can register each by MFA with the dirty flag and bind it inline (Pure) or as an activity body (SideEffectful).",
+          "A doc comment states NifSet is the argument shape for EngineBuilder::register_nifs and that aion-nif does not itself perform beamr registration.",
+          "A unit test builds a NifSet from a couple of declared NIFs and reads back their descriptors."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/registry.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C27",
+          "C29"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Duplicate rejection at build time",
+        "spec": "THE SYSTEM SHALL reject a duplicate (module, function, arity) triple when building a NifSet, returning a typed NifDeclError::Duplicate, and SHALL never silently overwrite an existing declaration.",
+        "acceptance": [
+          "Adding two NIFs with the same module, function name, and arity causes build() to return NifDeclError::Duplicate carrying the conflicting identity.",
+          "Two NIFs with the same name but different arity are allowed (distinct MFA), matching beamr's arity-keyed registry.",
+          "A unit test asserts the duplicate is rejected and that a same-name-different-arity pair builds successfully."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/registry.rs"
+          ]
+        },
+        "checklist": [
+          "C28"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "End-to-end illustrative NIF set",
+        "spec": "THE SYSTEM SHALL provide a minimal illustrative NIF set with at least one Determinism::Pure helper and one Determinism::SideEffectful activity, exercising the full declaration-to-descriptor path and asserting determinism tags and dispatch shapes.",
+        "acceptance": [
+          "A test (or a small examples module) declares a Pure helper (e.g. a JSON-field extract or string transform over the term/Payload bridge) and a SideEffectful activity (e.g. reading a temp file) and collects them into a NifSet.",
+          "The test asserts the Pure NIF carries Determinism::Pure and is not dirty, and the SideEffectful NIF carries Determinism::SideEffectful and is dirty.",
+          "The test invokes both generated NativeFns through a real ProcessContext: the Pure one returns its transformed value, the SideEffectful one returns its Ok value and (in a failure case) an encoded ActivityError preserving classification.",
+          "The test is a real runtime test, not gated out or ignored, and demonstrates the value is the shape EngineBuilder::register_nifs expects (constructed, not necessarily registered, since registration is AE)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/tests/end_to_end.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT call beamr's BifRegistryImpl::register \u2014 registration is AE's runtime module (the sole beamr boundary).",
+      "SHALL NOT ship domain-specific NIFs (run_step_norn, commit, ...) \u2014 those live in the Meridian tree using this crate; the illustrative set is minimal and generic.",
+      "SHALL NOT implement engine wiring, event recording, or retry \u2014 those are AE/AD/AT."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-nif passes, including the end-to-end test.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code other than the single documented #![allow(unsafe_code)] in raw.rs (from AN-001), if unsafe is needed at all."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C27",
+        "text": "NifSet collects declared Nifs under a module name and produces the value EngineBuilder::register_nifs consumes."
+      },
+      {
+        "id": "C28",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError and never silently overwrites."
+      },
+      {
+        "id": "C29",
+        "text": "aion-nif does not call beamr's BifRegistryImpl::register itself; the descriptor set is registered by the engine's runtime module."
+      },
+      {
+        "id": "C31",
+        "text": "A minimal illustrative NIF set (at least one Pure helper and one SideEffectful activity) exercises the full declaration-to-descriptor path and asserts the determinism tags and dispatch shapes."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As an engine operator, I want to hand a single NIF set to register_nifs so that wiring native helpers into the engine is one call, not per-function boilerplate."
+      },
+      {
+        "id": "S8",
+        "text": "As an engine operator, I want a duplicate NIF declaration to be rejected at build time so that a registration clash is caught before the engine runs rather than silently overwriting a function."
+      },
+      {
+        "id": "S10",
+        "text": "As a reviewer, I want the deterministic-vs-side-effectful distinction enforced by the type system so that I can trust the determinism invariant without reading every call site."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny at the crate root. Any unsafe is confined to raw.rs behind a single documented, audited module exception; every unsafe block carries a // SAFETY: comment. No unsafe outside raw.rs. Preferred state is zero unsafe (safe beamr APIs only)."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses anywhere, with the sole explicit exception of the documented #![allow(unsafe_code)] FFI seam in raw.rs (CO1). No other bypass of any kind."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-nif depends on beamr (term/NIF API) and aion-core (Payload, ActivityError) only. It does NOT depend on aion (the engine); it emits a descriptor set the engine consumes."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism is a typed property: the deterministic builder yields only Determinism::Pure, the activity builder yields only Determinism::SideEffectful. No untyped declaration path. A side-effectful NIF cannot be expressed as an inline deterministic helper."
+      },
+      {
+        "id": "CO7",
+        "text": "A side-effectful NIF's native body returns Result<T, ActivityError> (aion-core) so a failure carries the retryable/terminal classification AE/AT consult. It never returns a bare string error."
+      },
+      {
+        "id": "CO8",
+        "text": "Generated shims never expose raw &[Term] to author code, never Box::leak in author-reachable paths, and contain panics raised by the author body, converting them to a typed NIF error rather than unwinding across the FFI boundary."
+      },
+      {
+        "id": "CO9",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError, never silently overwrites."
+      },
+      {
+        "id": "CO10",
+        "text": "aion-nif registers nothing with beamr itself. It emits a descriptor set; AE's runtime module (the sole beamr boundary) performs the actual registration. aion-nif must not call BifRegistryImpl::register."
+      }
+    ],
+    "intention": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand-rolled MFA registration. The crate serves the Tier-2 in-VM band of the execution model, and its entire organisation keeps the two uses of that band apart. (1) Deterministic helpers \u2014 JSON transform, template render, parse, format, crypto, math \u2014 called inline from workflow code, not recorded, re-executed verbatim on replay, safe because the same inputs always produce the same output. (2) Light in-VM activities \u2014 small side-effectful operations that run on beamr's dirty scheduler and MUST be invoked through the engine's activity contract so the result is recorded once and returned from history on replay, never re-executed. The crate makes the right thing easy and the wrong thing hard to express: a side-effectful NIF is typed as an activity from the first line and cannot be wired as an inline deterministic helper. When done, a host hands its NIF set to EngineBuilder::register_nifs and its Gleam workflows call deterministic ones inline and side-effectful ones as recorded activities, with the determinism guarantee preserved.",
+    "design_path": "docs/design/aion-nif",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

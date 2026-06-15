@@ -1,0 +1,278 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-001",
+    "cluster": "aion-workers",
+    "title": "aion-worker (Rust) scaffold, config, error, and protocol session",
+    "depends_on": [],
+    "blocked_by": [
+      "aion-proto wire types and worker-endpoint RPC names (cluster AW) must be available to depend on; this brief targets that contract"
+    ],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C6"
+    ],
+    "stories": [
+      "S7",
+      "S8"
+    ],
+    "purpose": "Stand up the Rust worker SDK crate and its protocol session \u2014 the reference implementation of the worker-side protocol client that the Python and TS SDKs port. Establish connect, handshake, and activity-type registration against the aion-proto contract, isolated behind a session abstraction so the rest of the SDK is testable without a network.",
+    "task": "Create the aion-worker crate (crates.io target) depending on aion-proto and aion-core but not on the engine. Define WorkerConfig, WorkerError, the WorkerSession trait (the transport abstraction per D3), and a gRPC-backed implementation that connects to the engine's worker endpoint, performs the handshake (task queue + identity), and registers activity-type names. Reject registering a name with no handler before serving. Do not implement the task loop, dispatch, heartbeat, or reconnect here.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Crate scaffold and workspace wiring",
+        "spec": "THE SYSTEM SHALL create the aion-worker crate as a workspace member whose lib.rs contains only module declarations and re-exports. THE SYSTEM SHALL depend on aion-proto and aion-core and SHALL NOT depend on aion, aion-server, or aion-store.",
+        "acceptance": [
+          "crates/aion-worker exists and is registered in the workspace Cargo.toml members list.",
+          "Cargo.toml declares aion-proto and aion-core plus external crates (tonic or the aion-proto-selected gRPC stack, tokio, thiserror, serde, serde_json) and no aion / aion-server / aion-store dependency.",
+          "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+          "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+          "cargo check -p aion-worker passes."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/Cargo.toml",
+            "crates/aion-worker/src/lib.rs"
+          ],
+          "modify": [
+            "Cargo.toml"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "WorkerConfig",
+        "spec": "THE SYSTEM SHALL define WorkerConfig carrying the engine endpoint, task-queue name, worker identity, max concurrency, and a TLS/credentials passthrough. THE SYSTEM SHALL NOT supply a hardcoded default for max concurrency or any other tunable.",
+        "acceptance": [
+          "config.rs defines WorkerConfig { endpoint, task_queue, identity, max_concurrency, transport_credentials } with a builder or explicit constructor.",
+          "max_concurrency is a required field with no default value baked into the type (the operator must supply it), per D9 / CO10.",
+          "transport_credentials is an opaque passthrough the session forwards to the transport; the SDK defines no auth scheme of its own.",
+          "WorkerConfig derives Debug and Clone; the credentials field's Debug does not print secret material.",
+          "A unit test constructs a WorkerConfig and asserts the fields round-trip through the builder."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/config.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C2"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "WorkerError taxonomy",
+        "spec": "THE SYSTEM SHALL define WorkerError as a closed thiserror enum covering connection, handshake, registration, payload decode/encode, and transport failures.",
+        "acceptance": [
+          "error.rs defines WorkerError with variants for Connect, Handshake, Registration, Decode, Encode, and Transport (wrapping the underlying gRPC/transport error).",
+          "WorkerError implements std::error::Error and Display via thiserror and is Send + Sync + 'static.",
+          "No variant swallows an underlying cause; wrapping variants carry the source error.",
+          "cargo clippy -p aion-worker passes with the error module in place."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "WorkerSession trait",
+        "spec": "THE SYSTEM SHALL define a WorkerSession trait abstracting the transport: connect+handshake, register activity types, open the receive-task stream, report result/failure, and send heartbeat. THE SYSTEM SHALL ensure the execution machinery depends on this trait, not on generated gRPC stubs.",
+        "acceptance": [
+          "protocol/session.rs defines an async WorkerSession trait with methods to handshake (task queue + identity), register(activity_types), a receive-task stream accessor, report_result, report_failure, and send_heartbeat \u2014 signatures expressed in aion-proto wire types / aion-core types.",
+          "The trait is object-safe or generically usable such that a fake in-memory session can implement it for tests (per CO6).",
+          "Method docs reference the aion-proto RPCs they correspond to and note that AW owns the wire shapes (per CO5).",
+          "A trivial fake session implementing WorkerSession compiles in a test module (proving testability without a network)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/protocol/mod.rs",
+            "crates/aion-worker/src/protocol/session.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C4"
+        ],
+        "stories": [
+          "S7"
+        ]
+      },
+      {
+        "id": "R5",
+        "title": "gRPC-backed session: connect, handshake, register",
+        "spec": "THE SYSTEM SHALL implement WorkerSession over the aion-proto gRPC stubs: connect to the configured endpoint, perform the handshake declaring task queue and identity, and register the worker's activity-type names. IF a requested activity-type name has no registered handler, THEN THE SYSTEM SHALL reject it before serving begins.",
+        "acceptance": [
+          "The gRPC-backed WorkerSession connects to WorkerConfig.endpoint (forwarding transport_credentials) and performs the handshake RPC with task_queue and identity.",
+          "register sends the set of activity-type names to the engine per the aion-proto registration RPC.",
+          "Registering an activity-type name for which no handler is present returns WorkerError::Registration before any task is served (validated against the handler set the Worker supplies in AR-006).",
+          "A handshake or registration RPC error maps to WorkerError::Handshake / WorkerError::Registration with the source preserved.",
+          "An integration-style test against the in-memory fake session asserts handshake and registration are issued with the configured task queue, identity, and activity names."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/protocol/session.rs"
+          ]
+        },
+        "checklist": [
+          "C5",
+          "C6"
+        ],
+        "stories": [
+          "S8"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define or modify aion-proto wire types or the worker-endpoint RPCs \u2014 those are AW; this brief consumes them (CO5).",
+      "SHALL NOT implement the receive\u2192dispatch\u2192report task loop \u2014 that is AR-002.",
+      "SHALL NOT implement heartbeat (AR-004), reconnect (AR-005), or the typed Activity/Worker surface (AR-006).",
+      "SHALL NOT design an authentication or TLS scheme \u2014 credentials are an opaque passthrough."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-worker passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "grep confirms aion-worker has no dependency on aion, aion-server, or aion-store."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "aion-worker is a workspace member with unsafe_code = deny and a lib.rs containing only declarations and re-exports; it depends on aion-proto and aion-core but not on aion, aion-server, or aion-store."
+      },
+      {
+        "id": "C2",
+        "text": "WorkerConfig carries the engine endpoint, task-queue name, worker identity, max concurrency, and a TLS/credentials passthrough; no field has a hardcoded default concurrency or tunable."
+      },
+      {
+        "id": "C3",
+        "text": "WorkerError is a closed thiserror enum covering connection, handshake, registration, decode/encode, and transport failures, and is Send + Sync."
+      },
+      {
+        "id": "C4",
+        "text": "A WorkerSession trait abstracts the transport (connect+handshake, register activity types, receive-task stream, report result/failure, send heartbeat) so execution machinery never touches generated gRPC stubs directly."
+      },
+      {
+        "id": "C5",
+        "text": "A gRPC-backed WorkerSession implementation connects to the engine's worker endpoint, performs the handshake declaring task queue and identity, and registers a set of activity-type names per the aion-proto contract."
+      },
+      {
+        "id": "C6",
+        "text": "Registering an activity-type name for which no handler exists is rejected by the SDK before serving begins, not at dispatch time."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S7",
+        "text": "As a Rust activity author, I want the SDK to depend on the wire contract (aion-proto) but not on the engine internals so that my worker binary stays small and decoupled from the engine."
+      },
+      {
+        "id": "S8",
+        "text": "As a worker operator, I want to configure the engine endpoint, task queue, identity, and max concurrency so that I can point a worker at the right engine and scale it without editing code."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

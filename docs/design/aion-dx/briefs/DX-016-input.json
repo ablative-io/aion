@@ -1,0 +1,112 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-016",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-016",
+    "cluster": "aion-dx",
+    "title": "Rewrite hello-world to use aion_flow SDK",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The hello-world example currently calls raw_nif() directly, bypassing the typed Gleam SDK (aion_flow). The README claims the example uses aion_flow but the code never imports it. This mismatch misleads new developers and fails to demonstrate the recommended authoring path. The example should showcase workflow.define(), activity.new(), and workflow.run() from the aion_flow SDK so it serves as a correct, copy-pasteable starting point.",
+    "task": "Rewrite hello_world.gleam to import and use the aion_flow SDK: define the workflow with workflow.define(), declare activities with activity.new(), and execute them with workflow.run(). Update gleam.toml to add the aion_flow dependency if missing. Update the README to accurately reflect the code. Remove all raw_nif() calls from the example.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Use typed aion_flow SDK for workflow definition",
+        "spec": "WHEN a developer opens the hello-world example, THE SYSTEM SHALL define the workflow using workflow.define() from the aion_flow SDK. THE SYSTEM SHALL NOT call raw_nif() or any internal FFI functions directly.",
+        "acceptance": [
+          "hello_world.gleam imports from aion/workflow, aion/activity, or aion_flow.",
+          "The workflow is defined using workflow.define() with a named workflow type.",
+          "No calls to raw_nif() or aion/internal/ffi remain in the example source.",
+          "gleam.toml lists aion_flow as a dependency."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/hello-world/src/hello_world.gleam",
+            "examples/hello-world/gleam.toml"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Demonstrate typed Activity with input and output",
+        "spec": "THE SYSTEM SHALL declare at least one activity using activity.new() with explicit input and output types, so the example demonstrates the typed activity pattern end-to-end.",
+        "acceptance": [
+          "At least one activity is created via activity.new() with a descriptive name.",
+          "The activity has typed input (e.g. String) and typed output (e.g. String).",
+          "The activity is invoked within the workflow via workflow.run() or the equivalent SDK call.",
+          "The example compiles with gleam build without warnings."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/hello-world/src/hello_world.gleam"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "README matches the actual code",
+        "spec": "THE SYSTEM SHALL update the hello-world README so that every code snippet, import path, and description accurately reflects the rewritten hello_world.gleam source.",
+        "acceptance": [
+          "README references aion_flow SDK, not raw NIFs.",
+          "Any code snippets in the README compile and match the actual source.",
+          "The README does not mention raw_nif() or internal FFI functions.",
+          "Build and run instructions in the README still work."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/hello-world/README.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the aion_flow SDK itself \u2014 only consume it.",
+      "SHALL NOT change the worker SDK or server code.",
+      "SHALL NOT add new dependencies beyond aion_flow to the hello-world example.",
+      "SHALL preserve the existing hello-world worker.py so the Python worker side still works."
+    ],
+    "verification": [
+      "gleam build succeeds in the hello-world directory without warnings.",
+      "The .aion package can be built from the rewritten source.",
+      "hello-world workflow completes end-to-end when run against the dev server with the Python worker.",
+      "README code snippets match the actual source in hello_world.gleam.",
+      "No references to raw_nif() or aion/internal/ffi remain in the example directory."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,240 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "NB-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "NB-006",
+    "cluster": "aion-nif-bridge",
+    "title": "Query NIFs (register_query, reply_query, dispatch_query)",
+    "depends_on": [
+      "NB-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C22",
+      "C23",
+      "C24"
+    ],
+    "stories": [
+      "S6"
+    ],
+    "purpose": "Implement the query NIFs that workflow code calls to register query handlers, send query responses, and dispatch queries to other workflows. Queries are read-only inspections of workflow state \u2014 they do not modify history and are not replayed (they are evaluated against current in-memory state). The NIFs delegate to AT's QueryService (D4) for handler registration, response delivery, and cross-workflow dispatch.",
+    "task": "Create nif_query.rs with production NIF implementations for register_query/3, reply_query/2, and dispatch_query/2. register_query registers a handler function with the QueryService for the current workflow. reply_query sends a response to a pending query. dispatch_query sends a query to another workflow and blocks until the response arrives. Replace the stubs in engine_nifs.rs.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "register_query/3 registers a handler with QueryService",
+        "spec": "WHEN register_query/3 is called, THE SYSTEM SHALL register a query handler for the given query name on the current workflow through AT's QueryService (D4). THE SYSTEM SHALL associate the handler with the workflow's PID so incoming queries are routed to the correct process.",
+        "acceptance": [
+          "nif_query.rs implements register_query_impl that takes a query name, handler reference, and config, constructs a NifContext, and registers the handler with crate::query::QueryService.",
+          "The registration associates the query name with the workflow's PID (from NifContext) and the handler callback.",
+          "Duplicate registration for the same query name on the same workflow replaces the previous handler.",
+          "A test registers a query handler and asserts the QueryService knows about it for the workflow."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/runtime/nif_query.rs"
+          ],
+          "modify": [
+            "crates/aion/src/runtime/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "reply_query/2 sends a response to a pending query",
+        "spec": "WHEN reply_query/2 is called, THE SYSTEM SHALL deliver the response payload to the pending query caller through AT's QueryService (D4). IF no pending query exists for the given query ID, THEN THE SYSTEM SHALL return an error term.",
+        "acceptance": [
+          "nif_query.rs implements reply_query_impl that takes a query ID and response payload, constructs a NifContext, and delivers the response through crate::query::QueryService.",
+          "On success, the NIF returns {ok, replied} to the BEAM process.",
+          "On failure (no pending query), the NIF returns {error, reason} without panicking.",
+          "A test dispatches a query, calls reply_query from the handler side, and asserts the response is delivered."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_query.rs"
+          ]
+        },
+        "checklist": [
+          "C23"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "dispatch_query/2 sends a query and awaits the response",
+        "spec": "WHEN dispatch_query/2 is called, THE SYSTEM SHALL dispatch a query to the target workflow through AT's QueryService and block the dirty NIF thread until the response arrives (D4). IF the target workflow has no handler for the query name, THEN THE SYSTEM SHALL return an error term.",
+        "acceptance": [
+          "nif_query.rs implements dispatch_query_impl that takes a target workflow identifier and query name+payload, constructs a NifContext, and dispatches through crate::query::QueryService.",
+          "The NIF blocks via Handle::block_on until the query response is delivered.",
+          "On success, the NIF returns {ok, response_payload} to the BEAM process.",
+          "On failure (unknown workflow, unregistered handler, timeout), the NIF returns {error, reason}.",
+          "A test registers a handler on one workflow, dispatches a query from another, and asserts the response round-trips correctly."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_query.rs"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Queries are not recorded or replayed",
+        "spec": "THE SYSTEM SHALL NOT record query-related events in the durable event history. Queries are read-only state inspections evaluated against current in-memory state; they do not participate in the replay contract.",
+        "acceptance": [
+          "No query NIF calls Recorder::record_* methods.",
+          "No query NIF calls Resolver::resolve or resolve_or_execute_live.",
+          "No Query* event type appears in the store after query interactions.",
+          "A test verifies that register_query, reply_query, and dispatch_query produce no events in the store."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_query.rs"
+          ]
+        },
+        "checklist": [
+          "C22",
+          "C23",
+          "C24"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R5",
+        "title": "engine_nifs.rs wiring for query NIFs",
+        "spec": "THE SYSTEM SHALL replace the register_query/3, reply_query/2, and dispatch_query/2 stub entries in engine_nifs.rs with calls to nif_query.rs implementations.",
+        "acceptance": [
+          "The NIF functions registered in engine_nif_entries() for the three query NIFs delegate to nif_query implementations.",
+          "register_query/3 is registered as a normal NIF (no I/O). dispatch_query/2 and reply_query/2 are registered as dirty (they may block on service calls).",
+          "The stub {error, not_yet_implemented} responses are removed for these three NIFs."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/engine_nifs.rs"
+          ]
+        },
+        "checklist": [
+          "C22",
+          "C23",
+          "C24"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT record query events \u2014 queries are read-only and do not participate in replay.",
+      "SHALL NOT reimplement query routing, handler registration, or response delivery \u2014 those are AT's QueryService (D4).",
+      "SHALL NOT modify the QueryService type.",
+      "SHALL NOT import beamr outside the runtime module (CO8).",
+      "SHALL NOT use unsafe code (CO5)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo fmt --check passes.",
+      "Query interactions produce no events in the durable store.",
+      "dispatch_query round-trips a response correctly between two workflow contexts.",
+      "No #[allow], #[expect], or #[ignore]; no .unwrap()/.expect() outside tests."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C22",
+        "text": "register_query/3 NIF registers a query handler for the workflow."
+      },
+      {
+        "id": "C23",
+        "text": "reply_query/2 NIF sends a query response."
+      },
+      {
+        "id": "C24",
+        "text": "dispatch_query/2 NIF dispatches a query to a workflow and returns the response."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a workflow author, I want to register query handlers so that external callers can inspect my workflow's current state without modifying it."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Every NIF goes through resolve_or_execute_live (or its equivalent replay check). No NIF may execute a side effect without first checking recorded history."
+      },
+      {
+        "id": "CO2",
+        "text": "All event recording goes through the workflow's single-writer Recorder. No NIF calls EventStore::append directly."
+      },
+      {
+        "id": "CO3",
+        "text": "Deterministic execution: workflow.now returns recorded timestamp, workflow.random is seeded from WorkflowId+RunId. No wall clock or entropy source in NIF-visible paths."
+      },
+      {
+        "id": "CO4",
+        "text": "The aion crate remains transport-agnostic. Remote worker dispatch stays in aion-server's WorkerActivityDispatcher; the NIF bridge calls the ActivityDispatcher trait, not the concrete server type."
+      },
+      {
+        "id": "CO5",
+        "text": "unsafe_code = deny. No unsafe in any new code."
+      },
+      {
+        "id": "CO6",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses."
+      },
+      {
+        "id": "CO7",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO8",
+        "text": "Only the runtime module imports beamr. NIF bridge code uses RuntimeHandle, not beamr directly."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against InMemoryStore. No test requires a database or live server."
+      }
+    ],
+    "intention": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this cluster lands, a workflow that starts, runs activities on remote workers, sleeps, receives signals, spawns children, and completes produces a full, replayable event history \u2014 the Temporal developer expectation, not just for basic cases, but for all of them.",
+    "design_path": "docs/design/aion-nif-bridge",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Connect the last mile: the BEAM process calls aion_flow_ffi NIFs, and those NIFs go through the durability handoff so every side effect is recorded, replayed on recovery, and deterministic. When this "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

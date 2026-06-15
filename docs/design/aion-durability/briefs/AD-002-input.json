@@ -1,0 +1,242 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-002",
+    "cluster": "aion-durability",
+    "title": "Recorder and single-writer append path",
+    "depends_on": [
+      "AD-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C5",
+      "C6",
+      "C7",
+      "C8",
+      "C9",
+      "C10"
+    ],
+    "stories": [
+      "S1"
+    ],
+    "purpose": "Implement the single writer of a workflow's event history. The Recorder owns the per-workflow sequence head and is the only code path that appends to that workflow's log, structurally enforcing the single-writer discipline that keeps sequence numbers monotonic and gap-free. This is the recording half of durability.",
+    "task": "Build a sequence-head tracker (seq.rs) and the Recorder (recorder.rs). The tracker holds the current head sequence for one workflow and advances it only on a successful append. The Recorder is constructed for a single WorkflowId, computes expected_seq from the tracked head for every append, and exposes a recording method per event family (lifecycle, activity, timer, signal, child). A SequenceConflict from the store is a double-writer bug and is surfaced as a hard DurabilityError, never retried by re-reading the head. The Recorder can be initialised at a head implied by existing history so a recovered workflow continues at the right sequence. Test against InMemoryStore from aion-store.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Per-workflow sequence-head tracker",
+        "spec": "THE SYSTEM SHALL define a sequence-head tracker that holds the current head sequence for one workflow and advances it by the appended batch length only after EventStore::append succeeds. IF an append fails, THEN the head SHALL NOT advance.",
+        "acceptance": [
+          "seq.rs defines a tracker holding the current head (u64) for a single workflow.",
+          "On a successful append of N events, the head advances by exactly N.",
+          "On a failed append, the head is unchanged.",
+          "The tracker can be constructed with an explicit starting head (default 0 for a fresh workflow).",
+          "A unit test asserts the head advances on success and is unchanged on a simulated failure."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/seq.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Recorder construction and sequence authority",
+        "spec": "THE SYSTEM SHALL define Recorder, constructed for a single WorkflowId over a shared EventStore, owning the sequence-head tracker. THE Recorder SHALL compute expected_seq from its tracked head for every append and SHALL NOT read the head from outside itself nor guess it.",
+        "acceptance": [
+          "recorder.rs defines Recorder holding a WorkflowId, an Arc<dyn EventStore> (or equivalent shared handle), and the seq tracker.",
+          "Recorder::new(workflow_id, store) starts a fresh workflow at head 0; Recorder::resume_at(workflow_id, store, head) starts at a given head.",
+          "Every append uses expected_seq equal to the current tracked head; there is no public method to set the head other than via a successful append or resume_at.",
+          "A unit test appends two single-event batches and asserts the second used expected_seq advanced past the first."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/recorder.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C7"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Per-family recording methods",
+        "spec": "THE SYSTEM SHALL provide a Recorder method for each event family: workflow lifecycle (started/completed/failed/cancelled), activity (scheduled/started/completed/failed), timer (started/fired/cancelled), signal received, and child workflow (started/completed/failed). Each method SHALL construct the aion-core Event with the correct envelope (seq from the tracker, recorded timestamp, owning WorkflowId) and append it.",
+        "acceptance": [
+          "Recorder exposes one method per Event variant family listed above, each taking the variant's domain payload (e.g. ActivityId + result Payload for activity completed).",
+          "Each method builds the aion-core Event with envelope seq = current head and the owning WorkflowId, and appends a single-event batch.",
+          "The recorded timestamp written into the envelope is supplied by the caller (the engine) \u2014 the Recorder does not read the wall clock (defer the determinism source to the engine; see CO8 note in the design).",
+          "A unit test records an activity scheduled then completed and reads the history back via the store, asserting two events in sequence order with matching ActivityId."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recorder.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Sequence-conflict is a hard error; resume at existing head",
+        "spec": "WHEN EventStore::append returns StoreError::SequenceConflict, THE Recorder SHALL surface a hard DurabilityError and SHALL NOT retry by re-reading the head. THE SYSTEM SHALL support initialising a Recorder at a head derived from existing recorded history.",
+        "acceptance": [
+          "On SequenceConflict, the Recorder returns DurabilityError (the double-writer signal) and does not re-read or retry.",
+          "Recorder::resume_at sets the starting head so subsequent appends continue at the correct sequence for a recovered workflow.",
+          "A test pre-seeds InMemoryStore with K events for a workflow, constructs a Recorder via resume_at at head K, appends one event, and asserts it lands at sequence K (no conflict).",
+          "A test forces a SequenceConflict (by appending out from under the recorder via a second writer) and asserts the Recorder returns a DurabilityError rather than retrying."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recorder.rs"
+          ]
+        },
+        "checklist": [
+          "C9",
+          "C10"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT read history for replay or build a cursor \u2014 that is AD-003.",
+      "SHALL NOT decide recorded-vs-live or detect violations \u2014 that is AD-004/AD-005.",
+      "SHALL NOT generate the recorded timestamp from the wall clock; the timestamp is supplied by the caller (the determinism source is AD-006, the engine supplies it at record time)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes (recorder + seq tests against InMemoryStore).",
+      "cargo fmt --check passes.",
+      "No EventStore::append call site for a workflow exists outside the Recorder (CO6) \u2014 grep confirms.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C5",
+        "text": "A sequence-head tracker holds the current per-workflow head sequence and advances it only when an append succeeds."
+      },
+      {
+        "id": "C6",
+        "text": "Recorder is constructed for a single WorkflowId and is the only type that calls EventStore::append for that workflow."
+      },
+      {
+        "id": "C7",
+        "text": "Recorder computes expected_seq from its tracked head for every append; the head is never read from outside the Recorder nor guessed."
+      },
+      {
+        "id": "C8",
+        "text": "Recorder exposes recording methods for each event family: workflow lifecycle, activity (scheduled/started/completed/failed), timer (started/fired/cancelled), signal received, and child workflow (started/completed/failed)."
+      },
+      {
+        "id": "C9",
+        "text": "When EventStore::append returns SequenceConflict, the Recorder surfaces a hard DurabilityError (double-writer bug) and does not retry by re-reading the head."
+      },
+      {
+        "id": "C10",
+        "text": "A Recorder can be initialised with a starting head read from existing history (so a recovered workflow continues appending at the correct sequence)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As the engine, I want a single writer per workflow that owns the sequence head so that every event lands with the correct expected sequence and the log never races or develops gaps."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,174 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AH-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AH-002",
+    "cluster": "aion-history",
+    "title": "Recorder terminal recording and list_active exclusion for ContinuedAsNew",
+    "depends_on": [
+      "AH-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C3",
+      "C6"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "Enable the Recorder to record WorkflowContinuedAsNew as a terminal event, and ensure that list_active (used by recovery) skips workflows whose latest run has ContinuedAsNew status. Without list_active exclusion, recovery would attempt to replay terminated runs, violating the durability contract.",
+    "task": "Add record_workflow_continued_as_new to the Recorder, following the same pattern as record_workflow_completed and record_workflow_cancelled. Update the InMemoryStore and libSQL store list_active implementations to treat ContinuedAsNew as terminal (so workflows in this state are excluded from the active list). Update the conformance suite to cover the new terminal status in list_active tests.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Recorder records WorkflowContinuedAsNew",
+        "spec": "THE SYSTEM SHALL add a record_workflow_continued_as_new method to the Recorder that appends a WorkflowContinuedAsNew event with the carried input Payload, optional workflow type override, and parent_run_id. THE SYSTEM SHALL increment the sequence head and use the correct expected_seq, consistent with the single-writer discipline.",
+        "acceptance": [
+          "Recorder::record_workflow_continued_as_new exists with signature (timestamp, input, workflow_type, parent_run_id).",
+          "After recording, the event appears in read_history with the correct sequence number.",
+          "The Recorder's sequence head advances by one.",
+          "The recorded event's envelope has the correct recorded_at timestamp."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recorder.rs"
+          ]
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "InMemoryStore list_active excludes ContinuedAsNew",
+        "spec": "THE SYSTEM SHALL update InMemoryStore::list_active to treat WorkflowContinuedAsNew as a terminal event. A workflow whose history ends with WorkflowContinuedAsNew SHALL NOT appear in list_active results.",
+        "acceptance": [
+          "A workflow with history [WorkflowStarted, WorkflowContinuedAsNew] does not appear in list_active.",
+          "A workflow with history [WorkflowStarted] (no terminal event) still appears in list_active.",
+          "The existing list_active tests continue to pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store/src/memory.rs"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "libSQL store list_active excludes ContinuedAsNew",
+        "spec": "THE SYSTEM SHALL update the libSQL EventStore implementation to treat ContinuedAsNew as a terminal status in its list_active query.",
+        "acceptance": [
+          "The libSQL list_active query excludes workflows whose projected status is ContinuedAsNew.",
+          "The libSQL conformance suite passes with the updated query."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Conformance suite coverage for ContinuedAsNew in list_active",
+        "spec": "THE SYSTEM SHALL add a conformance test verifying that list_active excludes ContinuedAsNew workflows, following the same pattern as the existing terminal-status exclusion tests.",
+        "acceptance": [
+          "A conformance test appends WorkflowStarted then WorkflowContinuedAsNew and asserts the workflow is not in list_active.",
+          "The test runs against both InMemoryStore and libSQL.",
+          "cargo test -p aion-store passes.",
+          "cargo test -p aion-store-libsql passes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store/src/conformance.rs"
+          ]
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the Engine::continue_as_new orchestration \u2014 that is AH-003.",
+      "SHALL NOT implement history chain navigation \u2014 that is AH-004.",
+      "SHALL NOT modify the EventStore trait signature \u2014 only the implementations and conformance suite."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes.",
+      "cargo test -p aion-store passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "ContinuedAsNew is a terminal status with exactly one corresponding terminal event (WorkflowContinuedAsNew), consistent with the status-is-a-projection invariant."
+      },
+      {
+        "id": "CO2",
+        "text": "The new run's WorkflowStarted must carry parent_run_id so the continuation chain is navigable."
+      },
+      {
+        "id": "CO3",
+        "text": "Continue-as-new with pending activities or children is a hard error, not auto-cancellation."
+      },
+      {
+        "id": "CO4",
+        "text": "The carried payload is subject to the same size constraints as any workflow input."
+      },
+      {
+        "id": "CO5",
+        "text": "Recovery (list_active + replay) must never attempt to replay a ContinuedAsNew run."
+      },
+      {
+        "id": "CO6",
+        "text": "The engine must start the new run atomically with completing the old run \u2014 no window where neither exists."
+      }
+    ],
+    "intention": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration. Replay on recovery re-executes every recorded step from the beginning, so performance degrades linearly with history size. Without a mechanism to bound history, Aion cannot support long-lived workflows in production. This cluster adds continue-as-new: a workflow explicitly restarts itself with a fresh event log, carrying forward only the state it needs. The old execution completes as ContinuedAsNew (a terminal status), and a new execution begins immediately with the carried-over state as input. Replay of the new execution starts from its own WorkflowStarted event, not from the original. This is the same mechanism Temporal uses and it is the only sound approach \u2014 snapshotting with truncation would require the snapshot to be replay-correct, which is equivalent to re-executing anyway.",
+    "design_path": "docs/design/aion-history",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Long-running workflows accumulate unbounded event histories. A workflow that loops forever \u2014 processing orders, monitoring a sensor, managing a subscription \u2014 grows its event log with every iteration."
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

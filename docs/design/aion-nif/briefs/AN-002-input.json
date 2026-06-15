@@ -1,0 +1,240 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AN-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AN-002",
+    "cluster": "aion-nif",
+    "title": "FromTerm / IntoTerm conversion traits and primitive impls",
+    "depends_on": [
+      "AN-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C6",
+      "C7",
+      "C8",
+      "C9",
+      "C10",
+      "C11",
+      "C12"
+    ],
+    "stories": [
+      "S1"
+    ],
+    "purpose": "Define the typed conversion layer between beamr terms and Rust values. This is the foundation every declared NIF stands on: arguments decode via FromTerm, return values encode via IntoTerm, and a mismatch is a typed TermError instead of a runtime badarg.",
+    "task": "Define FromTerm (decode a Term into a Rust type, using ProcessContext for atom resolution) and IntoTerm (encode a Rust value into a Term, allocating through ProcessContext via the raw seam). Implement both for the primitives the design enumerates \u2014 integers, floats, bools, binaries, atoms \u2014 and for the structural shapes \u2014 Option, Result-tuple, homogeneous lists, and string-keyed maps. Build on beamr's Binary, Tuple, the raw module's safe allocators, and the atom table on the context.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "FromTerm and IntoTerm traits",
+        "spec": "THE SYSTEM SHALL define FromTerm with a method decoding a Term into Self given the ProcessContext, returning TermError on mismatch, and IntoTerm with a method encoding Self into a Term given the ProcessContext, returning TermError on allocation failure.",
+        "acceptance": [
+          "term.rs defines trait FromTerm { fn from_term(term: Term, ctx: &ProcessContext) -> Result<Self, TermError> } (or equivalent signature giving access to the atom table for resolution).",
+          "term.rs defines trait IntoTerm { fn into_term(self, ctx: &mut ProcessContext) -> Result<Term, TermError> } encoding through the raw module's safe allocators.",
+          "A doc comment states FromTerm is used to decode NIF arguments and IntoTerm to encode NIF return values, and that neither exposes raw term internals to the caller.",
+          "Both traits are object-safe-where-needed or documented as static-dispatch-only, consistent with how the declaration macros in AN-004 use them."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/term.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C7"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Primitive impls \u2014 integers, floats, bools, binaries, atoms",
+        "spec": "THE SYSTEM SHALL implement FromTerm and IntoTerm for signed and unsigned integer types, floats, booleans, binary types (Vec<u8> and String), and atoms via a dedicated atom-name newtype.",
+        "acceptance": [
+          "FromTerm/IntoTerm hold for at least i64, u64, f64, and bool (bool decoding the true/false atoms).",
+          "FromTerm/IntoTerm hold for Vec<u8> and String over beamr binary terms, using the raw module's safe binary builder for encoding.",
+          "A dedicated atom-name newtype (e.g. AtomName(String) or similar) implements FromTerm/IntoTerm, interning/resolving through the context's atom table; decoding a non-atom term yields TermError.",
+          "Decoding a term of the wrong kind (e.g. a binary where an integer is expected) returns a TermError type-mismatch variant, never a panic."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/term.rs"
+          ]
+        },
+        "checklist": [
+          "C8",
+          "C9"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Structural impls \u2014 option, result, list, map",
+        "spec": "THE SYSTEM SHALL implement FromTerm and IntoTerm for Option<T> (atom nil for None, the encoded value for Some), a Result-shaped {ok, T} / {error, E} tuple, homogeneous lists (Vec<T>) over proper cons lists, and string-keyed maps (BTreeMap<String, T>), each generic over T: FromTerm/IntoTerm.",
+        "acceptance": [
+          "term_collection.rs implements Option<T>: None encodes to the nil atom, Some(v) encodes the inner value; decoding nil yields None, any other term yields Some after inner decode.",
+          "A Result-shaped conversion encodes Ok(v) as {ok, v} and Err(e) as {error, e} and decodes the two-tuple back, rejecting other tuple shapes with TermError.",
+          "Vec<T> encodes to a proper cons list (via the raw cons builder) and decodes a proper list element-by-element; an improper list yields TermError.",
+          "BTreeMap<String, T> encodes to a beamr map term and decodes it back, preserving keys and values; a non-map term yields TermError.",
+          "Element/value decode failures propagate the inner TermError rather than collapsing to a generic error."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/term_collection.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C10",
+          "C11"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Round-trip conformance",
+        "spec": "THE SYSTEM SHALL verify that for every implemented type, encoding a representative value with IntoTerm and decoding it back with FromTerm yields an equal value.",
+        "acceptance": [
+          "A test module round-trips representative values for each primitive (i64, u64, f64, bool, String, Vec<u8>, atom-name) and asserts equality.",
+          "A test round-trips Option (both None and Some), the Result-tuple (both Ok and Err), a non-empty Vec<T>, and a non-empty BTreeMap<String, T>.",
+          "Round-trip tests run against a real beamr ProcessContext with an atom table, exercising the actual allocation path, not a mock."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/term.rs",
+            "crates/aion-nif/src/term_collection.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the Payload bridge or the serde blanket impl \u2014 those are AN-003.",
+      "SHALL NOT define the Nif descriptor or declaration macros \u2014 those are AN-004.",
+      "SHALL NOT introduce any unsafe outside the raw module from AN-001; all heap allocation goes through raw's safe wrappers."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-nif passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C6",
+        "text": "FromTerm decodes a Term (with ProcessContext for atom resolution) into a Rust type, returning TermError on type mismatch."
+      },
+      {
+        "id": "C7",
+        "text": "IntoTerm encodes a Rust value into a Term, allocating on the process heap through the ProcessContext, returning TermError on allocation failure."
+      },
+      {
+        "id": "C8",
+        "text": "FromTerm and IntoTerm are implemented for signed and unsigned integers, floats, and booleans."
+      },
+      {
+        "id": "C9",
+        "text": "FromTerm and IntoTerm are implemented for binaries (Vec<u8> and String) and for atoms via a dedicated atom-name newtype."
+      },
+      {
+        "id": "C10",
+        "text": "FromTerm and IntoTerm are implemented for Option<T> (atom nil for None, the value for Some) and for a Result-shaped {ok, T} / {error, E} tuple."
+      },
+      {
+        "id": "C11",
+        "text": "FromTerm and IntoTerm are implemented for homogeneous lists (Vec<T>) over proper cons lists, and for string-keyed maps (BTreeMap<String, T>)."
+      },
+      {
+        "id": "C12",
+        "text": "A round-trip test (encode then decode) holds for every implemented type across representative values."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an in-VM activity author, I want to declare a native function with ordinary typed Rust arguments and return value so that I never hand-write term decoding or encoding."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny at the crate root. Any unsafe is confined to raw.rs behind a single documented, audited module exception; every unsafe block carries a // SAFETY: comment. No unsafe outside raw.rs. Preferred state is zero unsafe (safe beamr APIs only)."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses anywhere, with the sole explicit exception of the documented #![allow(unsafe_code)] FFI seam in raw.rs (CO1). No other bypass of any kind."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-nif depends on beamr (term/NIF API) and aion-core (Payload, ActivityError) only. It does NOT depend on aion (the engine); it emits a descriptor set the engine consumes."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism is a typed property: the deterministic builder yields only Determinism::Pure, the activity builder yields only Determinism::SideEffectful. No untyped declaration path. A side-effectful NIF cannot be expressed as an inline deterministic helper."
+      },
+      {
+        "id": "CO7",
+        "text": "A side-effectful NIF's native body returns Result<T, ActivityError> (aion-core) so a failure carries the retryable/terminal classification AE/AT consult. It never returns a bare string error."
+      },
+      {
+        "id": "CO8",
+        "text": "Generated shims never expose raw &[Term] to author code, never Box::leak in author-reachable paths, and contain panics raised by the author body, converting them to a typed NIF error rather than unwinding across the FFI boundary."
+      },
+      {
+        "id": "CO9",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError, never silently overwrites."
+      },
+      {
+        "id": "CO10",
+        "text": "aion-nif registers nothing with beamr itself. It emits a descriptor set; AE's runtime module (the sole beamr boundary) performs the actual registration. aion-nif must not call BifRegistryImpl::register."
+      }
+    ],
+    "intention": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand-rolled MFA registration. The crate serves the Tier-2 in-VM band of the execution model, and its entire organisation keeps the two uses of that band apart. (1) Deterministic helpers \u2014 JSON transform, template render, parse, format, crypto, math \u2014 called inline from workflow code, not recorded, re-executed verbatim on replay, safe because the same inputs always produce the same output. (2) Light in-VM activities \u2014 small side-effectful operations that run on beamr's dirty scheduler and MUST be invoked through the engine's activity contract so the result is recorded once and returned from history on replay, never re-executed. The crate makes the right thing easy and the wrong thing hard to express: a side-effectful NIF is typed as an activity from the first line and cannot be wired as an inline deterministic helper. When done, a host hands its NIF set to EngineBuilder::register_nifs and its Gleam workflows call deterministic ones inline and side-effectful ones as recorded activities, with the determinism guarantee preserved.",
+    "design_path": "docs/design/aion-nif",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

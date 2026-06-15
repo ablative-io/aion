@@ -1,0 +1,208 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AF-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AF-001",
+    "cluster": "aion-flow",
+    "title": "Package scaffold, public root, and the @external binding layer",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5"
+    ],
+    "stories": [
+      "S12",
+      "S14"
+    ],
+    "purpose": "Stand up the aion_flow Gleam package and the single internal module that owns every @external(erlang) binding to the engine NIFs. This is the foundation every other brief builds on: a pure-Gleam, Hex-publishable package with one auditable binding seam.",
+    "task": "Create the gleam/aion_flow package with a gleam.toml declaring gleam_stdlib and gleam_json as the only runtime dependencies. Create the top-level aion_flow.gleam package-doc / re-export module. Create aion/internal/ffi.gleam holding every @external(erlang, \"aion_flow_ffi\", \"<fn>\") declaration the SDK needs, each with the type-erased string/Result signature the engine NIFs expose. No other module in the package declares an @external. The package must build, check, and format clean with no engine present.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Package scaffold",
+        "spec": "THE SYSTEM SHALL create a valid Gleam package at gleam/aion_flow whose gleam.toml declares the package name, version, and Hex metadata with gleam_stdlib and gleam_json as the only runtime dependencies.",
+        "acceptance": [
+          "gleam/aion_flow/gleam.toml declares name = \"aion_flow\", a version, a description, and a licences/repository field set for Hex publication.",
+          "Dependencies are exactly gleam_stdlib and gleam_json (plus dev-dependency gleeunit for tests); no Rust, beamr, or engine dependency appears.",
+          "gleam build, gleam check, and gleam format --check pass clean for the package.",
+          "The package has no Rust source and no build-script dependency on the engine crates."
+        ],
+        "files": {
+          "create": [
+            "gleam/aion_flow/gleam.toml",
+            "gleam/aion_flow/.gitignore"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C1",
+          "C2"
+        ],
+        "stories": [
+          "S14"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "The @external binding layer",
+        "spec": "THE SYSTEM SHALL define aion/internal/ffi as the single module declaring every @external(erlang, \"aion_flow_ffi\", \"<fn>\") binding to the engine NIFs. No other module SHALL declare an @external.",
+        "acceptance": [
+          "aion/internal/ffi.gleam declares the @external bindings the SDK needs (activity dispatch, now, random, sleep/start_timer/cancel_timer, signal receive/send, query register/reply, child spawn/await, concurrency collectors), each using the Erlang module name \"aion_flow_ffi\".",
+          "Each binding's Gleam signature uses the type-erased ffi form (String payloads, Result(String, String) returns) \u2014 the typed wrappers live in the author-facing modules.",
+          "A doc comment states that \"aion_flow_ffi\" is the engine's NIF registry namespace registered via EngineBuilder::register_nifs (AE-004), resolved by beamr at runtime, and that gleam build type-checks the signatures with no engine present.",
+          "No author-facing module anywhere in the package declares an @external (verified by inspection / a grep-style check in review)."
+        ],
+        "files": {
+          "create": [
+            "gleam/aion_flow/src/aion/internal/ffi.gleam"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C3",
+          "C4"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Public root module",
+        "spec": "THE SYSTEM SHALL provide aion_flow.gleam as the top-level package-doc module that re-exports the curated public surface and contains no @external and no business logic.",
+        "acceptance": [
+          "aion_flow.gleam carries a module doc comment describing the package and the recorded/deterministic discipline at a high level.",
+          "It re-exports (or documents the import paths for) the author-facing modules; it contains no @external declaration and no logic beyond re-exports.",
+          "gleam build passes with the root module present."
+        ],
+        "files": {
+          "create": [
+            "gleam/aion_flow/src/aion_flow.gleam"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S14"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement any engine NIF \u2014 the native side is AE/AN. This brief declares the Gleam @external signatures only.",
+      "SHALL NOT define the typed author-facing wrappers (activity, workflow, signal, etc.) \u2014 those are later briefs; this brief only declares the raw ffi bindings they will call.",
+      "SHALL NOT add a Rust crate or beamr dependency to the package."
+    ],
+    "verification": [
+      "gleam build passes for gleam/aion_flow.",
+      "gleam check passes.",
+      "gleam format --check passes.",
+      "Only aion/internal/ffi.gleam contains @external declarations.",
+      "No todo, panic, or placeholder is left in any module."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "gleam/aion_flow is a valid Gleam package: gleam.toml declares the package name, version, and Hex metadata, with gleam_stdlib and gleam_json as the only runtime dependencies."
+      },
+      {
+        "id": "C2",
+        "text": "gleam build, gleam check, and gleam format --check all pass clean for the package with no engine present."
+      },
+      {
+        "id": "C3",
+        "text": "Every @external(erlang, ...) declaration lives in the single internal module aion/internal/ffi; no author-facing module declares an @external."
+      },
+      {
+        "id": "C4",
+        "text": "All ffi bindings use the Erlang module name \"aion_flow_ffi\" (the engine's NIF registry namespace registered via AE-004)."
+      },
+      {
+        "id": "C5",
+        "text": "aion_flow.gleam is a top-level package-doc module re-exporting the curated public surface; it contains no @external and no business logic."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S12",
+        "text": "As the engine, I want every SDK primitive to bind to a NIF in one known registry namespace (aion_flow_ffi) so that I can register the native implementations in one place and have compiled workflows resolve against them."
+      },
+      {
+        "id": "S14",
+        "text": "As the package maintainer, I want aion_flow to be pure Gleam with no Rust or engine dependency so that it publishes to Hex standalone and type-checks with no engine present."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Pure Gleam package. No Rust, no engine code, no beamr dependency inside aion_flow. It publishes to Hex standalone (gleam_stdlib is its only runtime dependency, plus gleam_json for the default JSON codecs)."
+      },
+      {
+        "id": "CO2",
+        "text": "Every @external(erlang, ...) declaration lives in the single internal module aion/internal/ffi. No author-facing module declares an @external (per D1)."
+      },
+      {
+        "id": "CO3",
+        "text": "Module files contain logic; the package root and any mod-equivalent re-export aggregator stay declarations/re-exports only. No god files \u2014 split before a module exceeds ~500 lines of code (excluding comments/whitespace)."
+      },
+      {
+        "id": "CO4",
+        "text": "No partial implementations. Every public function is complete and total: no panic, no todo, no assert-as-control-flow; failure paths return typed Result errors. Gleam has no exceptions for control flow \u2014 every fallible binding returns Result."
+      },
+      {
+        "id": "CO5",
+        "text": "Type safety is enforced, not advisory: activity input/output, signal payload, query return, and child input/output types are static type parameters; an invalid composition fails `gleam build`. A type-safety test brief asserts representative invalid compositions are rejected (compile-fail expectations documented)."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism: the SDK exposes workflow.now/workflow.random bound to AD's determinism context and exposes NO binding to a wall clock or entropy source. Workflow-code documentation states the prohibition explicitly."
+      },
+      {
+        "id": "CO7",
+        "text": "The recorded/side-effectful boundary is structural: the only side-effect dispatch the SDK offers is workflow.run(activity) (and all/race/map over activities). There is no generic side_effect(fn) escape hatch (per D4)."
+      },
+      {
+        "id": "CO8",
+        "text": "No hardcoded defaults for configurable values: no default RetryPolicy, no default timeout, no default backoff numbers baked into the SDK. An activity without a retry decorator runs once; the author supplies all policy values (CLAUDE.md no-assumed-defaults)."
+      },
+      {
+        "id": "CO9",
+        "text": "User data crosses the boundary only through a Codec(a); a decode failure is a typed DecodeError, never a panic. No primitive silently swallows a decode error."
+      },
+      {
+        "id": "CO10",
+        "text": "aion_flow does not implement engine mechanics (timer firing, signal routing, replay) \u2014 those are AE/AD/AT, reached via @external. It does not author NIFs in Rust \u2014 that is AN. It is not packaged into .aion \u2014 that is AP. The cluster owns only the Gleam API surface and its binding declarations."
+      },
+      {
+        "id": "CO11",
+        "text": "All acceptance uses Gleam tooling: gleam build, gleam check, gleam format --check, gleam test must all pass clean. The test harness (aion/testing) runs under gleam test with no external services."
+      }
+    ],
+    "intention": "Define aion_flow, the Gleam package (published to Hex) that workflow authors import to write durable workflows. It is the human-facing surface of the entire engine: a workflow author writes a plain, statically-typed Gleam function \u2014 decisions, loops, data transformation \u2014 and reaches the outside world only through this SDK's activity, signal, query, timer, and child-workflow primitives. The package is pure Gleam with no engine code inside it; every primitive is a thin @external(erlang) binding that resolves at runtime, when beamr loads the compiled workflow and the engine has registered the matching NIFs (AE-004), to the engine-side mechanics in AE/AD/AT. The defining property is compile-time type safety: activity inputs and outputs, signal payloads, and query returns are all statically typed, so an invalid composition \u2014 passing a String where an activity expects an Order, awaiting a signal of the wrong type, returning the wrong type from a query handler \u2014 fails at `gleam build`, not three days into a long-running production workflow. This is the concrete advantage over Temporal's SDKs (Go weakly typed, TypeScript better but runtime-checked). The package also ships aion/testing, the Temporal-equivalent test harness: simulate time so a month-long sleep resolves instantly, mock activities to return canned results, and assert that a workflow replays to the same state \u2014 all in plain gleam test, with no engine, no beamr, and no store.",
+    "design_path": "docs/design/aion-flow",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define aion_flow, the Gleam package (published to Hex) that workflow authors import to write durable workflows. It is the human-facing surface of the entire engine: a workflow author writes a plain, s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

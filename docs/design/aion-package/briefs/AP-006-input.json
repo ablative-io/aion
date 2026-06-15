@@ -1,0 +1,245 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AP-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AP-006",
+    "cluster": "aion-package",
+    "title": "Package::load \u2014 the read path and integrity check",
+    "depends_on": [
+      "AP-002",
+      "AP-003",
+      "AP-004",
+      "AP-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C20",
+      "C21",
+      "C22",
+      "C23",
+      "C24"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S4",
+      "S8",
+      "S9"
+    ],
+    "purpose": "Implement loading a .aion: open the ZIP, parse and check the manifest, extract the beam set, recompute the content hash and reject any mismatch, and expose a validated Package with its namespaced deployed module names ready for the engine to register. Loading is total \u2014 every malformed-input case maps to a distinct typed error, never a panic or a partial result.",
+    "task": "Define Package and Package::load (from a path and from a byte buffer). Open the ZIP, read and parse manifest.json, check format_version, extract the beam set and optional source. Recompute the content hash over the extracted beams and compare it to the manifest version \u2014 mismatch is IntegrityMismatch. Verify the entry module exists. Expose accessors for the manifest, beam set, source, and the derived namespaced deployed module names (via AP-004). Map every failure mode to its distinct PackageError variant.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Open, parse manifest, check format version",
+        "spec": "THE SYSTEM SHALL load a .aion from a filesystem path and from an in-memory byte buffer, open the ZIP, read and parse manifest.json, and check format_version.",
+        "acceptance": [
+          "package.rs defines Package and Package::load_from_path and Package::load_from_bytes.",
+          "A non-ZIP or truncated input yields PackageError::ArchiveRead; an archive lacking manifest.json yields MissingManifest; an unparseable manifest yields ManifestParse.",
+          "format_version is checked via the AP-002 helper; an unknown value yields UnknownFormatVersion { found }.",
+          "A unit test exercises each of these failure paths and asserts the exact variant returned (no panic)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/package.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S8",
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Extract beams and verify integrity",
+        "spec": "THE SYSTEM SHALL extract the BeamSet and optional source from the archive, recompute the content hash over the extracted beams, and reject the package with IntegrityMismatch when the recomputed hash does not equal the manifest version.",
+        "acceptance": [
+          "Load reads each beam/ entry into a BeamModule and assembles a BeamSet; a malformed/undecodable beam entry yields MalformedBeamEntry { entry }.",
+          "Load recomputes content_hash over the extracted BeamSet and compares it to the manifest version; inequality yields IntegrityMismatch { expected, computed } before any further use (CO9, D7).",
+          "The entry module named in the manifest is confirmed present in the extracted BeamSet; absence yields MissingEntryModule { module }.",
+          "An integration test loads a builder-produced package and asserts success; another test corrupts one beam byte in the archive and asserts IntegrityMismatch.",
+          "No partial Package is returned on any error path (CO10)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/package.rs"
+          ]
+        },
+        "checklist": [
+          "C21",
+          "C22",
+          "C23"
+        ],
+        "stories": [
+          "S1",
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Validated Package accessors and namespaced names",
+        "spec": "THE SYSTEM SHALL expose on a loaded Package the manifest, the BeamSet, the optional source, and the derived namespaced deployed module names produced via the AP-004 transform, ready for the engine to register.",
+        "acceptance": [
+          "Package exposes accessors for manifest(), beams(), source(), and content_hash().",
+          "Package exposes deployed_modules() returning, for each beam, its (deployed namespaced name, bytes) using namespace::deployed_name with the package's content hash (AP-004).",
+          "Package exposes the deployed name of the entry module specifically, so the engine knows which module/function to invoke.",
+          "An integration test loads a package and asserts the deployed names match namespace::deployed_name(logical, content_hash) for every module.",
+          "A doc comment states the engine performs the actual VM registration; this crate only supplies the names (CO11)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/package.rs"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT register modules into beamr or run anything \u2014 that is the engine (cluster AE).",
+      "SHALL NOT write to the event store or produce the version record \u2014 AP-007 produces the record; the store writes it (AC/AS/AX).",
+      "SHALL NOT recompile or validate source \u2014 source is extracted verbatim if present."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-package passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C20",
+        "text": "Package::load reads a .aion from a path and from an in-memory byte buffer, opening the ZIP and parsing manifest.json."
+      },
+      {
+        "id": "C21",
+        "text": "Load checks format_version and extracts the BeamSet (and optional source) from the archive entries."
+      },
+      {
+        "id": "C22",
+        "text": "Load recomputes the content hash over the extracted beams and rejects with the integrity-mismatch PackageError variant when it does not equal the manifest version."
+      },
+      {
+        "id": "C23",
+        "text": "Load is total: a truncated/non-ZIP input, a missing manifest, a missing entry module, and a malformed beam entry each map to their distinct PackageError variant with no panic and no partial result."
+      },
+      {
+        "id": "C24",
+        "text": "A loaded Package exposes the manifest, the BeamSet, the optional source, and the derived namespaced deployed module names ready for the engine to register."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As the engine, I want to load a .aion from a path or byte buffer and get a validated package so that I can register its modules without trusting loose files on disk."
+      },
+      {
+        "id": "S2",
+        "text": "As the engine, I want the package to reject itself when its beams do not match its stored hash so that I never register a truncated or tampered workflow into the VM."
+      },
+      {
+        "id": "S4",
+        "text": "As the engine, I want a loaded package to hand me the namespaced module names directly so that I apply one agreed naming scheme rather than deriving names myself."
+      },
+      {
+        "id": "S8",
+        "text": "As an operator, I want a .aion to be a plain ZIP with a readable manifest so that I can inspect what a package contains before deploying it."
+      },
+      {
+        "id": "S9",
+        "text": "As an operator, I want the package format version checked on load so that a future format change is detected and reported, not silently misread."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO7",
+        "text": "The content hash is computed over the canonical beam set only \u2014 never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."
+      },
+      {
+        "id": "CO8",
+        "text": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."
+      },
+      {
+        "id": "CO9",
+        "text": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."
+      },
+      {
+        "id": "CO10",
+        "text": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."
+      },
+      {
+        "id": "CO11",
+        "text": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."
+      },
+      {
+        "id": "CO12",
+        "text": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."
+      },
+      {
+        "id": "CO13",
+        "text": "The deployed-name separator is the literal '$' character (logical_name$hash). It is mandated, not illustrative: the engine (AE-005) must split on the identical character. '$' does not occur in Gleam logical module names, so the bijection stays unambiguous."
+      },
+      {
+        "id": "CO14",
+        "text": "The content hash is SHA-256 (via the sha2 crate). The algorithm is part of the format contract so packer and loader on different hosts agree."
+      }
+    ],
+    "intention": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+    "design_path": "docs/design/aion-package",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (w"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

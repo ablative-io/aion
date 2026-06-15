@@ -1,0 +1,246 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-008",
+    "cluster": "aion-durability",
+    "title": "Replay driver and activity-result caching",
+    "depends_on": [
+      "AD-004",
+      "AD-006",
+      "AD-007"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C30",
+      "C31",
+      "C32",
+      "C33"
+    ],
+    "stories": [
+      "S2",
+      "S3",
+      "S4",
+      "S10"
+    ],
+    "purpose": "Assemble the parts into the replay engine: given a workflow's history, build a Resolver and a DeterminismContext, drive a freshly-created execution forward satisfying every world-touching command from recorded history, and return the resume point so the engine continues live execution from exactly there. Activity results are served from history (the cursor is the cache), so a completed activity is never dispatched twice. Replay is invisible to workflow code.",
+    "task": "Implement the replay driver (replay.rs). It takes a WorkflowId, the read_history output, and the collaborators (Resolver over a HistoryCursor, DeterminismContext, Recorder, LiveExecutor). It drives the execution by repeatedly accepting the next Command the workflow issues and resolving it: recorded Resolutions are returned and the DeterminismContext timestamp advances; the first Exhausted is the resume point. Activity-result caching falls out of the Resolver (matched ActivityCompleted -> recorded Payload; matched exhausted ActivityFailed -> recorded terminal error). Add a behavioural test file over InMemoryStore. Note: replay does not itself run the Gleam workflow function (AE drives the BEAM process); replay provides the resolution loop AE feeds commands into and consumes the resume point from.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Replay driver assembly",
+        "spec": "THE SYSTEM SHALL provide a replay entry point that, given a WorkflowId and its recorded history, constructs a HistoryCursor, a Resolver, and a DeterminismContext, and drives command resolution forward until the cursor is exhausted.",
+        "acceptance": [
+          "replay.rs defines a Replay (or replay function) taking the WorkflowId, the Vec<Event> history, and the Recorder + LiveExecutor handles.",
+          "It builds the DeterminismContext seeded from the WorkflowId+RunId in the history's WorkflowStarted and initialises its recorded-now to that start timestamp.",
+          "It exposes a step that accepts the next Command from the (engine-driven) workflow and returns the Resolution / ResumeLive / error from the Resolver, advancing the DeterminismContext timestamp on each consumed recorded event.",
+          "A unit test drives a sequence of commands matching a recorded history and asserts each Resolution and that the DeterminismContext now() advanced to each event's recorded timestamp."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/replay.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C30"
+        ],
+        "stories": [
+          "S2",
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Activity-result caching from history",
+        "spec": "WHILE replaying, WHEN a RunActivity command matches a recorded ActivityCompleted, THE SYSTEM SHALL return the recorded result Payload without invoking the LiveExecutor; WHEN it matches a recorded exhausted-retry ActivityFailed, THE SYSTEM SHALL return the recorded terminal ActivityError.",
+        "acceptance": [
+          "A matched ActivityCompleted yields Resolution::ActivityCompleted with the exact recorded Payload and zero LiveExecutor calls.",
+          "A matched exhausted ActivityFailed yields Resolution::ActivityFailedTerminal with the exact recorded ActivityError and zero LiveExecutor calls.",
+          "There is no separate cache structure; the result comes from the HistoryCursor (the history is the cache).",
+          "A test asserts a recorded activity is served from cache and the mock LiveExecutor is never called for it."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/replay.rs"
+          ]
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Resume point reporting",
+        "spec": "THE SYSTEM SHALL return the resume point \u2014 the first Command whose recorded event is absent (the first ResumeLive) \u2014 so the engine can continue live execution from exactly there.",
+        "acceptance": [
+          "When the cursor exhausts mid-stream, the driver signals ResumeLive for that command and the engine takes over (via the AD-007 handoff) from that command onward.",
+          "A fully-recorded terminal history (ending in WorkflowCompleted/Failed/Cancelled) drives to completion with no ResumeLive \u2014 the resume point is 'terminal', reported distinctly.",
+          "A test asserts: a partial history reports ResumeLive at the correct command index; a complete history reports terminal with no ResumeLive."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/replay.rs"
+          ]
+        },
+        "checklist": [
+          "C32"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Replay behavioural test suite",
+        "spec": "THE SYSTEM SHALL provide behavioural tests over InMemoryStore proving: a fully-recorded history replays to its recorded terminal state with zero live calls; a partial history replays to the correct resume point; and activity results are returned from cache.",
+        "acceptance": [
+          "tests/replay_behaviour.rs records a multi-step workflow (activities + a timer + a signal) via the Recorder into InMemoryStore, then replays it and asserts the full Resolution sequence matches the recorded outcomes in order.",
+          "A case replays a fully-recorded terminal history with a mock LiveExecutor that fails if called, and asserts zero live calls.",
+          "A case replays a partial history and asserts the resume point command index and that the DeterminismContext now() at the resume point equals the last recorded event's timestamp.",
+          "The tests are real runtime tests (not #[ignore], not env-gated) and pass under cargo test."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/tests/replay_behaviour.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C33"
+        ],
+        "stories": [
+          "S2",
+          "S3",
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT spawn or drive the BEAM workflow process \u2014 AE owns the process; replay provides the resolution loop AE feeds commands into.",
+      "SHALL NOT implement live timer/signal/child semantics \u2014 those are AT, reached via the LiveExecutor after the resume point.",
+      "SHALL NOT iterate the active-workflow set or run on startup \u2014 that is recovery, AD-009."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including tests/replay_behaviour.rs.",
+      "cargo fmt --check passes.",
+      "A test proves zero live calls when replaying a fully-recorded history (CO11) and activity results come from cache.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C30",
+        "text": "replay builds a Resolver from read_history and a DeterminismContext, and drives a freshly-created execution forward, satisfying each command from the cursor until exhaustion."
+      },
+      {
+        "id": "C31",
+        "text": "On replay a matched ActivityCompleted returns its recorded result Payload without dispatching the activity; a matched exhausted-retry ActivityFailed returns the recorded terminal ActivityError."
+      },
+      {
+        "id": "C32",
+        "text": "replay returns a resume point (the first command whose recorded event is absent) so the engine can continue live execution from there."
+      },
+      {
+        "id": "C33",
+        "text": "Behavioural tests over InMemoryStore assert: a fully-recorded history replays to its recorded terminal state with zero live calls; a partial history replays to the correct resume point; activity results are returned from cache."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As the engine, I want to replay a workflow from its recorded history and have every activity, timer, signal, and child call return its recorded outcome so that I reconstruct the exact prior state without repeating side effects."
+      },
+      {
+        "id": "S3",
+        "text": "As the engine, I want replay to tell me the resume point so that I know precisely where live execution should continue."
+      },
+      {
+        "id": "S4",
+        "text": "As the engine, I want activity results served from recorded history during replay so that a completed activity is never dispatched a second time."
+      },
+      {
+        "id": "S10",
+        "text": "As a workflow author, I want replay to be invisible so that I write a normal deterministic function and never code differently for the replay case."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

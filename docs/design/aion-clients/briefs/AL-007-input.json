@@ -1,0 +1,194 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AL-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AL-007",
+    "cluster": "aion-clients",
+    "title": "Cross-language conformance harnesses against a live aion-server",
+    "depends_on": [
+      "AL-001",
+      "AL-002",
+      "AL-003",
+      "AL-004",
+      "AL-005",
+      "AL-006"
+    ],
+    "blocked_by": [
+      "AW: a runnable aion-server fixture must be available to test against"
+    ],
+    "checklist": [
+      "C27",
+      "C28"
+    ],
+    "stories": [
+      "S10"
+    ],
+    "purpose": "Turn the AL-001 contract into an executable agreement gate. Each SDK gets a harness that drives the shared scenario set against a real aion-server and asserts the observable results match the contract, and the four are compared so identical behaviour is proven, not assumed. This is what keeps the four clients from drifting.",
+    "task": "Implement a conformance harness in each ecosystem (Rust, Python, TypeScript, Gleam) that loads conformance/aion-clients/scenarios.json, runs each scenario through that SDK against a live aion-server fixture, and asserts each step's observable result (returned value or error variant) matches the scenario's expectation. Provide a runner doc describing how to bring up the server fixture and run all four harnesses. Assert cross-SDK equivalence on the shared scenarios. These tests connect to a real server via a runtime env-gate (read a server-URL env var; emit a skip log and pass trivially when unset) \u2014 no #[ignore], no feature-gated skips.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Scenario loader and assertion model",
+        "spec": "THE SYSTEM SHALL provide, in each ecosystem, a loader that reads scenarios.json and an assertion model that compares an executed step's observable result against the scenario's expected value or error variant. THE SYSTEM SHALL NOT hardcode scenarios in any single language \u2014 the data file is the source of truth.",
+        "acceptance": [
+          "Each harness reads conformance/aion-clients/scenarios.json (not a per-language copy) and iterates its scenarios and steps.",
+          "For each step the harness records the observable result: the returned value (normalised to JSON for comparison) or the error variant name from the shared taxonomy.",
+          "An assertion compares the recorded result to the scenario's expected result and fails the test with the scenario id and step on mismatch.",
+          "Adding a scenario to scenarios.json causes all four harnesses to exercise it with no per-language code change."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-client/tests/conformance.rs",
+            "sdks/python/aion-client/tests/conformance/test_conformance.py",
+            "sdks/typescript/aion-client/test/conformance/conformance.test.ts",
+            "gleam/aion_client/test/conformance_test.gleam"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Happy-path and edge-case execution against a live server",
+        "spec": "WHILE a server-URL environment variable is set, THE SYSTEM SHALL run the full happy path (start -> signal -> query -> list -> describe -> cancel -> subscribe) and the edge cases (idempotency-conflict, query-timeout, not-found, disconnect-resume) against the live aion-server and assert the contract's expected results. WHILE the variable is unset, THE SYSTEM SHALL emit a skip log and pass trivially.",
+        "acceptance": [
+          "Each harness reads a documented env var (e.g. AION_SERVER_TEST_URL); when set it connects and runs all scenarios, when unset it logs a skip line and returns success without failing.",
+          "The happy path asserts: start yields a handle; signal is accepted; query returns the expected reply; list includes the workflow; describe shows the expected status; cancel is accepted; subscribe yields the expected lifecycle events.",
+          "idempotency-conflict asserts a reused key with a different request yields the AlreadyExists variant; query-timeout asserts QueryTimeout; not-found asserts NotFound.",
+          "disconnect-resume forces a reconnect and asserts the event stream is gap-free and duplicate-free across it.",
+          "No test uses #[ignore], a feature-gated skip, or an _-prefixed unused binding to suppress execution \u2014 the env-gate is the only gating mechanism."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-client/tests/conformance.rs",
+            "sdks/python/aion-client/tests/conformance/test_conformance.py",
+            "sdks/typescript/aion-client/test/conformance/conformance.test.ts",
+            "gleam/aion_client/test/conformance_test.gleam"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S10"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Cross-SDK equivalence and runner documentation",
+        "spec": "THE SYSTEM SHALL document how to run all four harnesses against one server fixture and SHALL establish that the four SDKs produce identical observable results for every shared scenario. THE SYSTEM SHALL NOT declare conformance passed for a scenario unless all four SDKs agree on its result.",
+        "acceptance": [
+          "conformance/aion-clients/README.md documents bringing up the server fixture, setting the env var, and the command to run each of the four harnesses.",
+          "The README states the equivalence requirement: a scenario is conformant only when all four SDKs produce the same observable result for it.",
+          "Each harness emits its per-scenario observable results in a normalised form (JSON value or error-variant name) so the four runs can be compared step-by-step.",
+          "The README names how a divergence is reported (which SDK diverged on which scenario step)."
+        ],
+        "files": {
+          "create": [
+            "conformance/aion-clients/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C28"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify SDK behaviour to make a scenario pass \u2014 a divergence is fixed in the offending SDK's own brief follow-up, not papered over here.",
+      "SHALL NOT define new operations or error variants beyond the AL-001 contract.",
+      "SHALL NOT stand up the aion-server itself (AW) \u2014 it consumes a server fixture."
+    ],
+    "verification": [
+      "With the server-URL env var unset, every harness skips cleanly and the per-ecosystem test command passes (cargo test, pytest, the TS test runner, gleam test).",
+      "With a live server, the happy path and all four edge cases pass in every ecosystem.",
+      "No harness uses #[ignore], feature-gated skips, or _-prefixed suppression; the env-gate is the only gating mechanism.",
+      "The README lets a reviewer reproduce all four runs against one server.",
+      "All per-ecosystem lint/format gates still pass for the test code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C27",
+        "text": "Each SDK has a conformance harness that runs the shared scenarios against a real aion-server fixture and asserts the observable results match the contract."
+      },
+      {
+        "id": "C28",
+        "text": "The four SDKs produce identical observable behaviour for every shared scenario (same effect, same returned values, same error variant)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S10",
+        "text": "As a platform team, I want the Python, TypeScript, Gleam, and Rust clients to behave identically against the same server so that teams in different languages can reason about Aion the same way."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "Clients consume the aion-server API and aion-proto wire types; they SHALL NOT define their own wire formats, endpoints, or fields the server does not serve. The protocol is owned by AW."
+      },
+      {
+        "id": "CO2",
+        "text": "Clients SHALL NOT depend on engine internals (aion, aion-store, beamr). The Rust client may depend on aion-core (shared domain types) and aion-proto; the embedded constructor may depend on aion only behind a feature flag, never by default."
+      },
+      {
+        "id": "CO3",
+        "text": "All four SDKs expose the same seven operations with identical observable behaviour, verified by the shared conformance suite."
+      },
+      {
+        "id": "CO4",
+        "text": "Every SDK exposes both a typed payload surface (per language) and a raw-Payload escape hatch; neither is removable."
+      },
+      {
+        "id": "CO5",
+        "text": "Every SDK maps server failures to a documented, branchable error taxonomy. No swallowed errors, no single catch-all collapsing distinct failures."
+      },
+      {
+        "id": "CO6",
+        "text": "subscribe resumes transparently across transient disconnects using the per-event sequence number, delivering a gap-free duplicate-free stream; terminal failures surface through the stream, not as a silent end."
+      },
+      {
+        "id": "CO7",
+        "text": "start honours a caller-supplied idempotency key: a retried identical start returns the original handle; a conflicting reuse raises AlreadyExists."
+      },
+      {
+        "id": "CO8",
+        "text": "Per-ecosystem toolchain gates pass: Rust (clippy -D warnings, fmt --check, no allow/expect/ignore), Python (ruff + mypy --strict + pytest), TypeScript (tsc strict + eslint + tests), Gleam (gleam format --check + gleam check + gleam test). No-partial-implementation and no-silent-failure standards hold across all four."
+      },
+      {
+        "id": "CO9",
+        "text": "Each package is publishable to its registry (crates.io, PyPI, npm, Hex) with a README, a type-checked public surface, and a runnable example covering all seven operations."
+      }
+    ],
+    "intention": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-server deployment and exposes the same seven operations \u2014 connect, start, signal, query, cancel, list, describe, subscribe \u2014 in the idioms of its language. A developer who has never read the engine internals should add a dependency, point at a server URL, and start a workflow with full type-checking in their language within minutes; a frontend developer using the TypeScript client should never see beamr, Gleam, or Rust. The four SDKs must behave identically where behaviour is observable, proven by a shared language-neutral behavioural contract and a conformance suite that exercises every SDK against a real server.",
+    "design_path": "docs/design/aion-clients",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Ship the caller-side SDKs for the workflow-caller role: aion-client (Rust, crates.io), aion-client-python (PyPI), aion-client-typescript (npm), and aion_client (Gleam, Hex). Each connects to an aion-s"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,109 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-007",
+    "cluster": "aion-dx",
+    "title": "Fix server config file and all README startup instructions",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The entire getting-started path is broken. dev-config.json is JSON but the server only parses TOML (changed by AO-003). The file is passed as a positional arg but the CLI requires --config. The field names don't match ServerConfig. All three example READMEs reference this broken file. No developer can get past 'start the server' without reading source code.",
+    "task": "Replace dev-config.json with a valid dev-config.toml that matches the ServerConfig struct. Update every README and GETTING-STARTED.md to use the correct --config flag and the new file. Document the aion.toml auto-discovery feature. Ensure a developer can copy-paste the startup commands and have the server running.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Replace dev-config.json with valid TOML config",
+        "spec": "THE SYSTEM SHALL provide a dev-config.toml at the repo root whose fields match the ServerConfig struct exactly. The file SHALL use memory store backend, default namespace, and listen on 127.0.0.1:50051 (gRPC) and 127.0.0.1:8080 (HTTP). THE SYSTEM SHALL delete the broken dev-config.json.",
+        "acceptance": [
+          "dev-config.toml exists at repo root and is valid TOML.",
+          "cargo run -p aion-server -- --config dev-config.toml starts the server without error.",
+          "dev-config.json no longer exists.",
+          "The config includes workflow_packages pointing to examples/hello-world/hello-world.aion if the file exists."
+        ],
+        "files": {
+          "create": [
+            "dev-config.toml"
+          ],
+          "modify": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Fix all README startup commands",
+        "spec": "WHEN a developer follows GETTING-STARTED.md or any example README, THE SYSTEM SHALL provide copy-pasteable commands that work without modification. All references to dev-config.json SHALL be replaced with dev-config.toml and the --config flag.",
+        "acceptance": [
+          "GETTING-STARTED.md server start command works when copy-pasted.",
+          "examples/hello-world/README.md server start command works when copy-pasted.",
+          "examples/order-saga/README.md references the correct config file.",
+          "examples/agent-orchestration/README.md references the correct config file.",
+          "No file in the repo references dev-config.json."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "GETTING-STARTED.md",
+            "examples/hello-world/README.md",
+            "examples/order-saga/README.md",
+            "examples/agent-orchestration/README.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Document aion.toml auto-discovery",
+        "spec": "GETTING-STARTED.md SHALL mention that the server auto-loads aion.toml from the working directory when --config is not provided.",
+        "acceptance": [
+          "GETTING-STARTED.md mentions aion.toml auto-discovery.",
+          "A developer placing aion.toml in the working directory can start the server with no flags."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "GETTING-STARTED.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the server CLI parser or config parsing logic \u2014 only fix the config file and docs.",
+      "SHALL NOT add new config features \u2014 only align existing docs with existing code."
+    ],
+    "verification": [
+      "cargo run -p aion-server -- --config dev-config.toml starts without error.",
+      "grep -r 'dev-config.json' returns zero matches.",
+      "All README startup commands work when copy-pasted."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

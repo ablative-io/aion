@@ -1,0 +1,232 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "KIT-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "KIT-002",
+    "cluster": "aion-kit",
+    "title": "aion_kit/template: composition primitives and named-template render",
+    "depends_on": [
+      "KIT-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C9",
+      "C10",
+      "C11",
+      "C12"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S9"
+    ],
+    "design_anchor": [
+      "ADR-011",
+      "ADR-001",
+      "ADR-002"
+    ],
+    "purpose": "Delivers the text/prompt rendering module: the composition primitives and a named-template render, generalised from the prompts.gleam join_blocks/join_lines/bulleted helpers and its key-value lines (files_line/reference_line). This is how a family composes prompt text from parts \u2014 joining sections, lines, bullets, and key-value pairs while dropping the empties \u2014 without re-deriving the joiners (S1), and how a static prompt skeleton can carry its holes as named placeholders (S2). Pure and deterministic (CN2): safe to call from workflow or activity code. Depends on KIT-001 only for the package skeleton; it shares no files with KIT-003 and is parallel-runnable with it once KIT-001 lands.",
+    "task": "Create gleam/aion_kit/src/aion_kit/template.gleam and gleam/aion_kit/test/template_test.gleam. Generalise the prompts.gleam composition primitives into pure module functions: join_blocks(blocks) joining sections with a blank line between them and dropping empty-string sections; join_lines(lines) joining with single newlines and dropping empty-string lines; bulleted(items) rendering each item as a '- item' line joined by newlines; kv(key, value) rendering a single 'key: value' line (the generalisation of files_line/reference_line's key-value shape). Add render(template, bindings): substitute every '{name}' placeholder in the template string from a list of (name, value) bindings; a placeholder with no matching binding is left verbatim (no invented default \u2014 ADR-001, C12); every occurrence of a bound name is substituted. The behaviour must match what prompts.gleam relies on exactly (empty-section dropping, empty-line dropping). In scope: the template module, its tests, and the purity guarantee for the file this brief adds (re-verifying C17/C18's properties for template.gleam, which KIT-001 owns as cluster checklist items \u2014 split noted). Out of scope: payload (KIT-001), json wrangling (KIT-003), and any reshape of brief_dev's prompts.gleam (RM-023). aion_kit/template does not depend on prompts.gleam and does not import it; it is the standalone generalisation prompts.gleam will later be reshaped to consume.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Section and line joiners",
+        "spec": "In gleam/aion_kit/src/aion_kit/template.gleam, define join_blocks and join_lines. WHEN join_blocks(blocks) is called, THE SYSTEM SHALL drop every empty-string block and join the remainder with a blank line (\\n\\n) between sections. WHEN join_lines(lines) is called, THE SYSTEM SHALL drop every empty-string line and join the remainder with a single newline (\\n). THE SYSTEM SHALL NOT collapse, trim, or reformat non-empty content, and SHALL NOT emit a leading or trailing separator. The module SHALL NOT import aion/workflow, aion/activity, aion/query, aion/signal, or examples/stacked-dev/prompts.gleam, and SHALL perform no IO.",
+        "acceptance": [
+          "join_blocks([\"a\", \"\", \"b\"]) == \"a\\n\\nb\".",
+          "join_blocks([]) == \"\" and join_blocks([\"\", \"\"]) == \"\".",
+          "join_lines([\"x\", \"\", \"y\", \"z\"]) == \"x\\ny\\nz\".",
+          "join_lines([\"only\"]) == \"only\" with no surrounding newlines.",
+          "cd gleam/aion_kit && gleam test runs template_test and the joiner cases pass."
+        ],
+        "files": {
+          "create": [
+            "gleam/aion_kit/src/aion_kit/template.gleam",
+            "gleam/aion_kit/test/template_test.gleam"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C9"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Bulleted lists and key-value lines",
+        "spec": "Add bulleted and kv to gleam/aion_kit/src/aion_kit/template.gleam. WHEN bulleted(items) is called, THE SYSTEM SHALL render each item as a line prefixed with '- ' and join the lines with single newlines. WHEN kv(key, value) is called, THE SYSTEM SHALL return the single line '<key>: <value>'. THE SYSTEM SHALL NOT drop, sort, or deduplicate items in bulleted (order is preserved verbatim), and SHALL NOT trim the key or value in kv. bulleted([]) SHALL return the empty string.",
+        "acceptance": [
+          "bulleted([\"one\", \"two\"]) == \"- one\\n- two\".",
+          "bulleted([]) == \"\".",
+          "kv(\"status\", \"pass\") == \"status: pass\".",
+          "bulleted preserves input order: bulleted([\"b\", \"a\"]) == \"- b\\n- a\".",
+          "cd gleam/aion_kit && gleam test runs template_test and the bulleted/kv cases pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_kit/src/aion_kit/template.gleam",
+            "gleam/aion_kit/test/template_test.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Named-template render with explicit binding behaviour",
+        "spec": "Add render to gleam/aion_kit/src/aion_kit/template.gleam. WHEN render(template, bindings) is called, THE SYSTEM SHALL replace every occurrence of each '{name}' placeholder in the template with the value bound to name in the bindings list, leaving text containing no placeholder unchanged. IF a placeholder's name has no matching binding, THEN THE SYSTEM SHALL leave that placeholder verbatim in the output and SHALL NOT substitute an invented empty or default value (ADR-001, C12). IF a binding's name does not occur in the template, THEN THE SYSTEM SHALL leave the output otherwise unchanged (an unused binding is not an error). THE SYSTEM SHALL substitute every occurrence of a bound placeholder, not only the first.",
+        "acceptance": [
+          "render(\"Hello {who}, run {n} times\", [(\"who\", \"world\"), (\"n\", \"3\")]) == \"Hello world, run 3 times\".",
+          "render(\"no placeholders here\", [(\"x\", \"y\")]) == \"no placeholders here\".",
+          "render(\"keep {missing} as is\", []) == \"keep {missing} as is\" (unmatched placeholder left verbatim).",
+          "render(\"{x} and {x}\", [(\"x\", \"q\")]) == \"q and q\" (every occurrence substituted).",
+          "cd gleam/aion_kit && gleam test runs template_test and the render cases (including the unmatched-placeholder case) pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_kit/src/aion_kit/template.gleam",
+            "gleam/aion_kit/test/template_test.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C11",
+          "C12"
+        ],
+        "stories": [
+          "S2",
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT create or modify aion_kit/payload.gleam or aion_kit/json.gleam \u2014 those are KIT-001 and KIT-003.",
+      "SHALL NOT import or modify examples/stacked-dev/src/stacked_dev/prompts.gleam \u2014 template is the standalone generalisation; reshaping prompts.gleam to consume it is RM-023.",
+      "SHALL NOT add a templating expression/logic language (conditionals, loops, filters) to render \u2014 only named '{name}' substitution; control flow stays ordinary Gleam in the caller (design non-goal).",
+      "SHALL NOT add a default value, escaping policy, or limit for unmatched placeholders beyond leaving them verbatim (ADR-001).",
+      "SHALL NOT import aion/workflow, aion/activity, aion/query, aion/signal, or perform any IO (CN2)."
+    ],
+    "verification": [
+      "cd gleam/aion_kit && gleam build && gleam test && gleam format --check all exit 0 (template suite runs).",
+      "grep -E 'import aion/(workflow|activity|query|signal)' gleam/aion_kit/src/aion_kit/template.gleam produces no matches.",
+      "grep -E 'panic|let assert' gleam/aion_kit/src/aion_kit/template.gleam produces no matches in library code (re-verifying C18's purity for the file this brief adds; C18 is owned by KIT-001).",
+      "grep -F 'prompts' gleam/aion_kit/src/aion_kit/template.gleam produces no matches (template imports nothing from the example).",
+      "gleam/aion_kit/src/aion_kit/template.gleam is at or under 500 code lines (excluding comments and whitespace)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "No arbitrary limits, no assumed defaults",
+        "decision": "Configurable values come from the builder/author or are deferred to the layer that owns them (e.g. beamr's own defaults). No caps, rate limits, or hardcoded defaults invented at the aion layer. Values are discussed before implementation. Rejected: convenience defaults \u2014 they are decisions made for the user without telling them.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-002",
+        "title": "No backwards compatibility during the build",
+        "decision": "Replace, don't add alongside. No compat shims, no zombie code, no #[deprecated] markers. Breaking changes are made cleanly and consumers move forward. Rejected: incremental deprecation cycles \u2014 they double the surface under test for an audience of zero.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-011",
+        "title": "The standard library carries cross-cutting primitives only; runtime harnesses stay out",
+        "decision": "aion_kit (the worker standard library) carries only primitives that apply across the board \u2014 data transformation/wrangling, rendering/templating, and the opaque payload \u2014 plus further cross-cutting primitives as they prove general. Runtime harnesses, the norn agent driver chief among them, stay as worker-side code that consumers (Meridian) own and integrate; they may live in a worker for convenience but never ship as standard-library surface. Rejected: bundling the norn/agent harness into the standard library \u2014 it couples a general toolkit to one runtime and ships a Meridian concern to every consumer.",
+        "quote": "Norn's too specific. Like it's Norn at the runtime, the agent harness, like I wrote that a couple of weeks ago. So like it's not even like I don't think we should ship that as part of the standard library. That would be more something that Meridian would consume.",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C9",
+        "text": "aion_kit/template.join_blocks joins sections with a blank line between them and drops empty-string sections; join_lines joins with single newlines and drops empty-string lines \u2014 reproducing the prompts.gleam behaviour exactly."
+      },
+      {
+        "id": "C10",
+        "text": "aion_kit/template.bulleted renders each item as a '- item' line joined by newlines, and kv renders a single 'key: value' line."
+      },
+      {
+        "id": "C11",
+        "text": "aion_kit/template.render substitutes every '{name}' placeholder in a template string from a list of (name, value) bindings, leaving text with no placeholder unchanged and substituting every occurrence of a bound name."
+      },
+      {
+        "id": "C12",
+        "text": "render's behaviour for a placeholder with no matching binding is explicit and tested (the unmatched placeholder is left verbatim, never replaced with an invented empty or default value), per ADR-001."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an activity author, I want composition primitives that join sections, lines, bullets, and key-value pairs and drop the empty ones so that I can build a prompt from parts without re-deriving the joiners or hand-handling blank gaps every family."
+      },
+      {
+        "id": "S2",
+        "text": "As an activity author, I want a named-template render that fills '{name}' placeholders from explicit bindings so that a static prompt skeleton can carry its holes visibly instead of being assembled by string concatenation."
+      },
+      {
+        "id": "S9",
+        "text": "As a future maintainer, I want every primitive's negative cases (an absent projection field, a merge leaf conflict, a missing path, an unmatched placeholder) covered by tests with typed results so that I can change an implementation and trust the suite to catch a regression."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Runtime-agnostic: no module in aion_kit or the aion_flow payload module imports or references the norn agent driver, any agent/process-spawning runtime, or engine-runtime internals; grep for 'norn' and for process/port spawning in the package finds nothing (ADR-011)."
+      },
+      {
+        "id": "CN2",
+        "text": "Pure and deterministic: every public function in aion_kit/template, aion_kit/json, aion_kit/payload, and every aion_flow Sealed accessor reads no wall clock, draws no entropy, and performs no IO \u2014 they are total functions of their arguments and safe to call from workflow code or activity code (invariant 2)."
+      },
+      {
+        "id": "CN3",
+        "text": "Hold-without-decode: the Sealed type exposes no API that returns a decoded structured view of its contents; the only reads are raw (the opaque bytes) and peek (a caller-supplied thin decoder). Holding a Sealed on the workflow heap costs one binary, never a decoded nested structure (ADR-012)."
+      },
+      {
+        "id": "CN4",
+        "text": "No imported wire schemas and no $ref/$defs/oneOf/anyOf/default in anything this cluster introduces; aion_kit ships no JSON schema files, and the json module is value-level wrangling, not schema validation (ADR-007)."
+      },
+      {
+        "id": "CN5",
+        "text": "No arbitrary defaults or limits: no module supplies a default content-type, a default merge policy, a size or depth cap, or any hardcoded bound; absent input (a missing projection field, a missing pluck path, a decode failure) is returned as a typed result the caller handles (ADR-001)."
+      },
+      {
+        "id": "CN6",
+        "text": "No backwards-compatibility shims: aion_kit does not re-export, wrap, or alias brief_dev's bespoke prompts.gleam/enrich.gleam helpers or aion_client's Payload; it is the replacement those call sites move to under RM-023, not a parallel path (ADR-002)."
+      },
+      {
+        "id": "CN7",
+        "text": "Each source file stays at or under 500 code lines (excluding tests, comments, whitespace); no #[allow]-equivalent suppression, and no Gleam panic/assert/let-assert in library code \u2014 decode and lookup failures are returned as Result/Option values."
+      }
+    ],
+    "intention": "Authoring a new aion workflow family should be writing prompts, schemas, and a gate \u2014 not re-deriving the data plumbing underneath every one. When this lands, the plumbing that brief_dev hand-rolled inside one example (text composition for prompts, JSON wrangling for reports and enrichment, and a way to carry an activity result a workflow never wants to open) is a small, well-tested package that ships with the worker, so the next family inherits all of it for free. aion_kit is a toolbox of cross-cutting primitives, deliberately lean: it carries only what genuinely applies across the board, and it stays out of the determinism boundary's way by being pure. The norn agent driver and every other runtime harness stay where they belong \u2014 in the worker layer that consumers own (ADR-011) \u2014 so the standard library couples to no particular agent runtime and ships no consumer-specific concern.",
+    "design_path": "docs/design/aion-kit",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Authoring a new aion workflow family should be writing prompts, schemas, and a gate \u2014 not re-deriving the data plumbing underneath every one. When this lands, the plumbing that brief_dev hand-rolled i"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

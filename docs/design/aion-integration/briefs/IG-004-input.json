@@ -1,0 +1,135 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "IG-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "IG-004",
+    "cluster": "aion-integration",
+    "title": "Mount WebSocket event streaming route",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C10",
+      "C11",
+      "C12"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "WebSocket event streaming is fully implemented server-side (handle_subscription_socket in stream/socket.rs), documented in README and API.md as shipped, and three client surfaces implement the client half (dashboard live feed, Python stream.py, TS stream.ts). But the handler is never mounted on any HTTP route.",
+    "task": "Mount the WebSocket subscription handler on the appropriate route in the HTTP router, making the already-implemented server and client code actually connected.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "WebSocket route registration",
+        "spec": "THE SYSTEM SHALL mount handle_subscription_socket on /api/v1/workflows/subscribe (or the documented path) in the HTTP router alongside existing REST routes.",
+        "acceptance": [
+          "handle_subscription_socket is registered as a route handler in the HTTP router.",
+          "The route path matches the path documented in the API documentation.",
+          "The route is registered alongside existing REST routes in the same router configuration.",
+          "The route accepts HTTP upgrade requests for the WebSocket protocol."
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Configuration integration",
+        "spec": "THE SYSTEM SHALL use the existing WebSocketConfig for connection parameters (ping interval, max connections).",
+        "acceptance": [
+          "The mounted route uses WebSocketConfig for ping interval.",
+          "The mounted route uses WebSocketConfig for max connections.",
+          "No hardcoded connection parameters bypass the WebSocketConfig."
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Client compatibility",
+        "spec": "THE SYSTEM SHALL verify that the mounted route accepts WebSocket upgrade requests and streams events in the format the existing client implementations expect.",
+        "acceptance": [
+          "A WebSocket upgrade request to the route succeeds and establishes a connection.",
+          "Events are streamed in the format the existing client implementations (dashboard, Python, TypeScript) expect.",
+          "A test client connects and receives at least one streamed event.",
+          "The connection respects the ping/pong keepalive from WebSocketConfig."
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify the existing WebSocket handler implementation.",
+      "SHALL NOT change the event streaming format.",
+      "SHALL NOT add authentication beyond what other API routes use."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test passes for the server HTTP module.",
+      "cargo fmt --check passes.",
+      "WebSocket upgrade to the route succeeds.",
+      "A test client receives streamed events.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C10",
+        "text": "handle_subscription_socket is mounted on the documented API path in the HTTP router alongside existing REST routes."
+      },
+      {
+        "id": "C11",
+        "text": "The mounted route uses the existing WebSocketConfig for connection parameters."
+      },
+      {
+        "id": "C12",
+        "text": "A test client can upgrade to WebSocket on the route and receive streamed events."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As a dashboard user, I want real-time workflow event streaming over WebSocket so that the dashboard live feed shows events as they happen without polling."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "No modifications to the EventStore trait or conformance suite except where continue_as_new requires a new event variant."
+      },
+      {
+        "id": "CO2",
+        "text": "The Recorder's single-writer invariant is never violated."
+      },
+      {
+        "id": "CO3",
+        "text": "No backwards compatibility shims \u2014 replace, don't add alongside."
+      },
+      {
+        "id": "CO4",
+        "text": "No arbitrary limits or hardcoded defaults for configurable values."
+      },
+      {
+        "id": "CO5",
+        "text": "The determinism boundary is preserved: workflow.now remains the recorded event timestamp, no wall-clock time in workflow-visible paths."
+      },
+      {
+        "id": "CO6",
+        "text": "Content-hash module namespacing invariant is preserved across continue_as_new."
+      }
+    ],
+    "intention": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in isolation but are not wired together: crash recovery is stubbed, timers are in-memory-only, NIF contracts mismatch the SDK, the WebSocket route is unmounted, and continue_as_new is missing from the SDK.",
+    "design_path": "docs/design/aion-integration",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Fix the seam gaps identified in the external code review that prevent the engine from functioning as a production durable workflow system. Each brief addresses a specific gap where components exist in"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

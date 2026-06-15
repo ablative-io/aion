@@ -1,0 +1,187 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-006",
+    "cluster": "aion-time-signals",
+    "title": "Non-resident signal delivery and terminal/unknown handling",
+    "depends_on": [
+      "AT-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C17",
+      "C18"
+    ],
+    "stories": [
+      "S4"
+    ],
+    "purpose": "Make signals durable regardless of whether the target process is currently resident. A signal sent while a workflow is momentarily suspended or being restored must still be recorded and delivered once the workflow is resident again \u2014 no external event is silently dropped. A signal to a terminal or unknown workflow must fail cleanly with a typed error.",
+    "task": "Extend the SignalRouter so that when the target process is NonResident, the signal is still recorded as SignalReceived and queued for delivery on resume via the engine seam; and when the target is Terminal or Unknown, the router records nothing and returns a typed error. Implement the resume handoff path so a recorded-but-undelivered signal reaches the mailbox once AE makes the process resident.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Record-and-defer for non-resident targets",
+        "spec": "WHEN a signal targets a workflow whose process is NonResident, THE SYSTEM SHALL still append SignalReceived AND register the signal for delivery to the mailbox once AE makes the process resident.",
+        "acceptance": [
+          "resume.rs handles the NonResident branch: the SignalReceived event is recorded via the workflow's single Recorder (the engine-seam record method, AT-001 \u2014 never direct EventStore::append) so it is durable / replayable, and the signal is registered with the seam for delivery-on-resume.",
+          "The router does not fail or drop the signal when the target is NonResident (CO7 \u2014 no silent drop).",
+          "A test marks a workflow NonResident, routes a signal, asserts SignalReceived is appended and the signal is registered for resume delivery (observable via the fake seam).",
+          "A follow-up in the same test transitions the workflow to Resident, drives the resume handoff, and asserts the mailbox receives the deferred signal."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/signal/resume.rs"
+          ],
+          "modify": [
+            "crates/aion/src/signal/mod.rs",
+            "crates/aion/src/signal/router.rs"
+          ]
+        },
+        "checklist": [
+          "C17"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Resume handoff delivers deferred signals in order",
+        "spec": "WHEN AE makes a previously non-resident workflow resident, THE SYSTEM SHALL deliver any recorded-but-undelivered signals to its mailbox, in the order they were recorded.",
+        "acceptance": [
+          "The resume handoff delivers deferred signals to the mailbox in recorded order (the SignalReceived sequence order).",
+          "The deferred-delivery tracking (which recorded-but-undelivered signals remain) is IN-MEMORY engine-runtime state, not a durable structure: durability is already provided by the recorded SignalReceived event in the store. Within one engine lifetime the in-memory set prevents a second live delivery; ACROSS a restart the in-memory set is discarded and is not relied upon \u2014 a restored workflow re-reaches its receive through AD replay, which returns the recorded SignalReceived from history. A doc comment states this so no one mistakes the in-memory set for the durability mechanism.",
+          "Once delivered live, a deferred signal is not delivered a second time on a subsequent resume within the same engine lifetime; on a full replay after restart, AD \u2014 not this path \u2014 returns the recorded signal.",
+          "A test defers two signals for a NonResident workflow, marks it Resident, runs the handoff, and asserts both arrive in recorded order exactly once."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/signal/resume.rs"
+          ]
+        },
+        "checklist": [
+          "C17"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Terminal/unknown target returns a typed error, records nothing",
+        "spec": "IF a signal targets a workflow that is Terminal or Unknown, THEN THE SYSTEM SHALL return a typed error AND SHALL NOT append any SignalReceived event.",
+        "acceptance": [
+          "Routing to a Terminal workflow returns a typed SignalError (e.g. WorkflowTerminal) and appends nothing.",
+          "Routing to an Unknown workflow returns a typed SignalError (e.g. WorkflowNotFound) and appends nothing.",
+          "The error type is a thiserror enum in this module's error surface (no anyhow, CO5).",
+          "Tests assert: terminal target -> typed error + zero events appended; unknown target -> typed error + zero events appended."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/signal/router.rs"
+          ]
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT manage workflow residency/lifecycle itself \u2014 it reacts to seam-reported residency and registers deferred delivery; AE owns the transition to Resident.",
+      "SHALL NOT implement replay of deferred signals \u2014 AD returns recorded signals on a full restore; this brief covers live resume handoff only.",
+      "SHALL NOT change the resident happy-path delivery from AT-005 beyond adding the non-resident/terminal/unknown branches."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including non-resident and terminal/unknown tests.",
+      "cargo fmt --check passes.",
+      "No SignalReceived is appended for terminal/unknown targets (verified by test).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C17",
+        "text": "Signalling a workflow whose process is not currently resident still records SignalReceived; the signal is delivered to the mailbox once AE makes the process resident."
+      },
+      {
+        "id": "C18",
+        "text": "Signalling a terminal or unknown workflow returns a typed error and records nothing."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As a workflow author, I want a signal sent while my workflow was momentarily not resident to still reach me so that no external event is silently dropped."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

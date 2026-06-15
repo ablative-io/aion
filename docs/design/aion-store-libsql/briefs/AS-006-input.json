@@ -1,0 +1,170 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AS-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AS-006",
+    "cluster": "aion-store-libsql",
+    "title": "Durable timers \u2014 schedule_timer and expired_timers",
+    "depends_on": [
+      "AS-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C22",
+      "C23"
+    ],
+    "stories": [
+      "S6"
+    ],
+    "purpose": "Implement the durable timer substrate over the timers table: persist scheduled timers idempotently and retrieve those due to fire as of a given instant. This is what lets a workflow sleep for months and have the engine, on restart, discover which timers are due.",
+    "task": "Implement schedule_timer and expired_timers in timer.rs against the timers table from AS-002. schedule_timer upserts a TimerEntry keyed by (workflow_id, timer_id) so re-scheduling replaces (idempotent under replay). expired_timers(as_of) range-scans fire_at <= as_of. The store returns due timers; it does not fire them.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "schedule_timer (idempotent upsert)",
+        "spec": "THE SYSTEM SHALL persist a durable timer keyed by (workflow_id, timer_id). WHEN the same timer id is scheduled again, THE SYSTEM SHALL replace the prior row rather than insert a duplicate, so scheduling is idempotent under replay.",
+        "acceptance": [
+          "timer.rs implements schedule_timer(&self, &WorkflowId, &TimerId, fire_at: DateTime<Utc>) -> Result<(), StoreError> as an INSERT ... ON CONFLICT(workflow_id, timer_id) DO UPDATE (upsert), writing fire_at as RFC3339.",
+          "Re-scheduling the same (workflow_id, timer_id) with a new fire_at updates the row to the new fire_at and does not create a second row.",
+          "A test schedules a timer, re-schedules it with a different fire_at, and asserts exactly one row exists with the latest fire_at.",
+          "libsql errors map to StoreError::Backend; serialisation of the timestamp is lossless and round-trips."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-store-libsql/src/timer.rs"
+          ],
+          "modify": [
+            "crates/aion-store-libsql/src/store.rs",
+            "crates/aion-store-libsql/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "expired_timers (due-as-of range scan)",
+        "spec": "THE SYSTEM SHALL return all timers whose fire_at is less than or equal to a given instant, and SHALL NOT return timers whose fire_at is after that instant.",
+        "acceptance": [
+          "timer.rs implements expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> as an indexed range scan on fire_at <= as_of.",
+          "Each returned TimerEntry carries workflow_id, timer_id, and fire_at reconstructed from the row.",
+          "A test schedules timers at distinct instants (past, exactly-as_of, future) and asserts expired_timers returns exactly the due ones (<= as_of), excluding the future one.",
+          "The boundary is inclusive at as_of (a timer with fire_at == as_of is returned), matching the AC-005/AC-006 contract; the test asserts the boundary case."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-store-libsql/src/timer.rs"
+          ]
+        },
+        "checklist": [
+          "C23"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT fire timers or schedule wall-clock callbacks \u2014 the store returns due timers; firing is the engine (AE) and durability/replay (AD).",
+      "SHALL NOT implement append/read/query \u2014 AS-004, AS-005.",
+      "SHALL NOT store timers in the events table \u2014 they live in the dedicated timers table from AS-002.",
+      "SHALL NOT create duplicate rows for a re-scheduled timer id."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-store-libsql passes.",
+      "cargo fmt --check passes.",
+      "ast-grep scan passes.",
+      "A reviewer confirms re-scheduling is an upsert (no duplicate rows) and the expired_timers boundary is inclusive at as_of.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C22",
+        "text": "schedule_timer persists a TimerEntry into the timers table keyed by (workflow_id, timer_id); re-scheduling the same timer id replaces the prior row (idempotent under replay)."
+      },
+      {
+        "id": "C23",
+        "text": "expired_timers(as_of) returns all timers with fire_at <= as_of and excludes timers not yet due."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As the engine, I want to list active workflows and durable timers from storage on startup so that I know what to replay and which timers are due after downtime."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny. No unsafe in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses per CLAUDE.md. Tests needing a remote primary use a runtime env-gate, not #[ignore]."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only; logic lives in named modules."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace). The EventStore impl is split across append, read, and timer modules."
+      },
+      {
+        "id": "CO5",
+        "text": "Depends only on aion-store (and transitively aion-core) among Aion crates \u2014 no dependency on the engine, beamr, or any other backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Raw SQL is permitted here because this crate IS a storage backend (the storage layer). No other crate issues SQL against this store; they go through the EventStore trait."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is derived from event history via aion-core's projection. No mutable stored status field; a cached projection must never diverge from the events."
+      },
+      {
+        "id": "CO8",
+        "text": "LibSqlStore must pass the shared AC-007 conformance suite unmodified \u2014 the same behavioural standard as the oracle."
+      },
+      {
+        "id": "CO9",
+        "text": "append's sequence guard and event inserts execute in a single libSQL transaction; a mismatch writes nothing and returns SequenceConflict \u2014 no partial batch is ever persisted."
+      },
+      {
+        "id": "CO10",
+        "text": "LibSqlConfig is Deserialize-only and carries no hardcoded durability/WAL defaults; tunable values are surfaced for the operator to set, per CLAUDE.md no-assumed-defaults."
+      },
+      {
+        "id": "CO11",
+        "text": "All libsql and serde errors are mapped into the StoreError taxonomy at the crate boundary; no foreign error type leaks across the EventStore surface."
+      }
+    ],
+    "intention": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the distributed path \u2014 the local file becomes an embedded replica syncing to a remote primary \u2014 without the operator learning a second backend. The in-memory reference store (cluster AC) proves the contract but forgets on restart; LibSqlStore makes durability the easy default, held to the identical behavioural standard as the oracle. A workflow that sleeps for months and resumes needs its history to survive every crash and reboot in between. When this cluster is done, an operator writes LibSqlStore::open(\"app.db\") and has a production-grade durable event store the engine cannot tell apart from the oracle except that it remembers; the shared AC-007 conformance suite passes against it unchanged, plus a durability-specific suite proving state survives close-and-reopen.",
+    "design_path": "docs/design/aion-store-libsql",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an engine operator embeds Aion and writes no storage configuration, this is the store they get: a single file on disk, zero external infrastructure, full durability. The same crate serves the dis"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,233 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AC-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AC-002",
+    "cluster": "aion-core",
+    "title": "Event model",
+    "depends_on": [
+      "AC-001",
+      "AC-004"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C6",
+      "C7",
+      "C8",
+      "C9",
+      "C10",
+      "C11",
+      "C12",
+      "C15"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S8"
+    ],
+    "purpose": "Define the Event enum \u2014 the spine of the event-sourcing system. Every recorded fact in a workflow's life is an Event variant. Events are type-erased: they carry Payload values (from AC-001) and error types (from AC-004), never a generic type parameter.",
+    "task": "Define the event envelope (per-workflow sequence number, recorded timestamp, owning WorkflowId) and the Event enum with all lifecycle, activity, timer, signal, and child-workflow variants. User data is carried as Payload (AC-001); failure variants carry ActivityError / WorkflowError (AC-004). The enum SHALL NOT take a generic type parameter.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Event envelope",
+        "spec": "THE SYSTEM SHALL define an event envelope carrying a monotonic per-workflow sequence number, a recorded UTC timestamp, and the owning WorkflowId. Every event SHALL carry this envelope.",
+        "acceptance": [
+          "event.rs defines an envelope (a struct field group or wrapper) with seq: u64, recorded_at: DateTime<Utc>, and workflow_id: WorkflowId.",
+          "The envelope is part of every Event value, accessible via accessors regardless of variant.",
+          "The recorded_at timestamp is the documented determinism source for workflow.now (a doc comment states this).",
+          "A unit test constructs an event and reads back its seq, recorded_at, and workflow_id."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/event.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C11"
+        ],
+        "stories": [
+          "S1",
+          "S8"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Event variants",
+        "spec": "THE SYSTEM SHALL define the Event enum with workflow-lifecycle, activity, timer, signal, and child-workflow variants. Variants carrying user data SHALL carry it as Payload, failure variants SHALL carry the AC-004 error types, and the enum SHALL NOT take a generic type parameter.",
+        "acceptance": [
+          "Workflow lifecycle: WorkflowStarted (workflow_type + input Payload), WorkflowCompleted (result Payload), WorkflowFailed (WorkflowError), WorkflowCancelled (reason), WorkflowTimedOut (a timeout descriptor \u2014 a message or timeout-kind identifying which timeout elapsed).",
+          "Activity: ActivityScheduled (ActivityId + activity_type + input Payload), ActivityStarted (ActivityId), ActivityCompleted (ActivityId + result Payload), ActivityFailed (ActivityId + ActivityError + attempt: u32), ActivityCancelled (ActivityId).",
+          "ActivityFailed's attempt field plus the ActivityError classification (Retryable vs Terminal, from AC-004) are the discriminant the replay cursor uses to distinguish a retryable interim failure (followed by a later ActivityStarted/ActivityCompleted/ActivityFailed for the same ActivityId) from a terminal one \u2014 a doc comment states this so AD replay has the data it needs.",
+          "Timer: TimerStarted (TimerId + fire_at), TimerFired (TimerId), TimerCancelled (TimerId).",
+          "Signal: SignalReceived (name + payload Payload).",
+          "Child workflow: ChildWorkflowStarted (child WorkflowId + workflow_type + input), ChildWorkflowCompleted (child WorkflowId + result), ChildWorkflowFailed (child WorkflowId + WorkflowError), ChildWorkflowCancelled (child WorkflowId).",
+          "Cancellation is modelled as distinct events (ActivityCancelled, ChildWorkflowCancelled), symmetric with WorkflowCancelled and TimerCancelled, so the engine (AT-009) records a concrete cancellation event rather than overloading the failure variants.",
+          "Event has no generic type parameter; all user data is Payload, all failure data is ActivityError/WorkflowError.",
+          "The terminal lifecycle variants (WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowTimedOut) are exactly the events the AC-003 status projection maps to terminal statuses."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/event.rs"
+          ]
+        },
+        "checklist": [
+          "C6",
+          "C7",
+          "C8",
+          "C9",
+          "C10",
+          "C15"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Event serialisation round-trip",
+        "spec": "THE SYSTEM SHALL derive Serialize and Deserialize on Event and all its variants. Serialising an Event and deserialising it back SHALL produce an equal value.",
+        "acceptance": [
+          "Event derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+          "A unit test round-trips at least one event of every variant through serde_json and asserts equality.",
+          "Enum representation is explicit (tagged) so the wire form is stable and forward-readable."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/event.rs"
+          ]
+        },
+        "checklist": [
+          "C12"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define Payload \u2014 it is the value carrier defined in AC-001 (a hard dependency of this brief).",
+      "SHALL NOT define ActivityError or WorkflowError \u2014 they are defined in AC-004 (a hard dependency of this brief, so the real error types are always available; there are no placeholders).",
+      "SHALL NOT compute WorkflowStatus from events \u2014 that is AC-003.",
+      "SHALL NOT define any storage trait."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-core passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C6",
+        "text": "Event enum has workflow-lifecycle variants: WorkflowStarted, WorkflowCompleted, WorkflowFailed, WorkflowCancelled, WorkflowTimedOut."
+      },
+      {
+        "id": "C7",
+        "text": "Event enum has activity variants: ActivityScheduled, ActivityStarted, ActivityCompleted, ActivityFailed (with attempt), ActivityCancelled."
+      },
+      {
+        "id": "C8",
+        "text": "Event enum has timer variants: TimerStarted, TimerFired, TimerCancelled."
+      },
+      {
+        "id": "C9",
+        "text": "Event enum has a SignalReceived variant carrying signal name and payload."
+      },
+      {
+        "id": "C10",
+        "text": "Event enum has child-workflow variants: ChildWorkflowStarted, ChildWorkflowCompleted, ChildWorkflowFailed, ChildWorkflowCancelled."
+      },
+      {
+        "id": "C11",
+        "text": "Every event carries an envelope with a monotonic per-workflow sequence number, a recorded timestamp, and the owning WorkflowId."
+      },
+      {
+        "id": "C12",
+        "text": "Event derives Serialize and Deserialize and round-trips losslessly through serde_json."
+      },
+      {
+        "id": "C15",
+        "text": "Activity inputs/results, signal payloads, and workflow inputs are stored as Payload; Event carries no generic type parameter."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As the engine, I want to append a batch of events atomically with an expected sequence so that concurrent or duplicate writes are detected and replay integrity is preserved."
+      },
+      {
+        "id": "S2",
+        "text": "As the engine, I want to read a workflow's complete ordered history so that I can replay it to reconstruct the workflow's state."
+      },
+      {
+        "id": "S8",
+        "text": "As a workflow author, I want time and identifiers to be deterministic so that my workflow replays to exactly the same state every time."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-core and aion-store are leaf crates \u2014 they depend on no other Aion crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Every type that crosses the wire or the store derives Serialize + Deserialize (these are data types, not credentials)."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is always derivable from event history; no independent status mutation."
+      },
+      {
+        "id": "CO8",
+        "text": "InMemoryStore must pass the same behavioural test suite future durable backends are held to \u2014 it is the oracle, so it must be correct."
+      },
+      {
+        "id": "CO9",
+        "text": "Identifiers are newtypes; no bare Uuid or String in public signatures where an ID is meant."
+      }
+    ],
+    "intention": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a client lists running workflows, a store persists history, or a worker reports a result, they all use the types defined here. The types must make illegal states unrepresentable \u2014 a completed workflow cannot also be running, an activity result cannot exist without a preceding schedule. Nothing here depends on beamr, the engine, networking, or any storage backend. This is the still point at the centre: pure types and one trait, so the rest of Aion can be built against stable contracts.",
+    "design_path": "docs/design/aion-core",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a cl"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

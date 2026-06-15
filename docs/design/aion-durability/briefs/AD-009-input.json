@@ -1,0 +1,232 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-009",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-009",
+    "cluster": "aion-durability",
+    "title": "Recovery on startup",
+    "depends_on": [
+      "AD-008",
+      "AD-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C34",
+      "C35",
+      "C36",
+      "C37"
+    ],
+    "stories": [
+      "S6",
+      "S8"
+    ],
+    "purpose": "Make crash recovery complete and automatic. On engine startup, every non-terminal workflow must be replayed from its full history and resumed at its resume point, with each workflow's Recorder initialised at the correct head so post-recovery appends continue cleanly. A failure recovering one workflow (e.g. a non-determinism violation) must be reported without silently dropping that workflow or aborting recovery of the others.",
+    "task": "Implement the recovery routine (recovery.rs). It calls EventStore::list_active and, for each WorkflowId, reads its history, builds a Recorder via resume_at at the head implied by that history, and replays the workflow to its resume point (delegating to AD-008's replay). It collects per-workflow outcomes \u2014 recovered-to-resume-point, recovered-to-terminal, or failed \u2014 so one bad workflow cannot abort the rest. Test by seeding InMemoryStore with multiple active and terminal workflows (including one with a divergent history) and asserting recover handles exactly the active ones correctly and reports the failure for the bad one.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "List-active and per-workflow replay",
+        "spec": "WHEN recover is invoked, THE SYSTEM SHALL call EventStore::list_active and, for each returned WorkflowId, read its history and replay it to its resume point.",
+        "acceptance": [
+          "recovery.rs defines recover taking the store and LiveExecutor handles.",
+          "It calls list_active, then for each id calls read_history and drives AD-008 replay to the resume point.",
+          "Terminal workflows are not returned by list_active (per AC contract) and so are not replayed; recover does not re-derive activeness itself.",
+          "A unit test with a store stub returning two active ids asserts both are read and replayed."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/recovery.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C34"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Recorder initialised at the existing head",
+        "spec": "WHILE recovering a workflow, THE SYSTEM SHALL initialise its Recorder at the head implied by its existing recorded history (via Recorder::resume_at) so that appends after recovery continue at the correct sequence.",
+        "acceptance": [
+          "For a workflow with K recorded events, recover constructs its Recorder at head K.",
+          "A test recovers a workflow with K events, then drives one live step post-recovery and asserts the new event lands at sequence K (no SequenceConflict).",
+          "The head is derived from the read history length/last sequence, not guessed."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recovery.rs"
+          ]
+        },
+        "checklist": [
+          "C35"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Per-workflow failure isolation",
+        "spec": "IF replaying one workflow during recovery fails (e.g. a NonDeterminismError or a HistoryShape error), THEN THE SYSTEM SHALL record/report that workflow's failure and SHALL continue recovering the remaining workflows; it SHALL NOT abort the whole recovery or silently drop the failed workflow.",
+        "acceptance": [
+          "recover returns a per-workflow outcome report (e.g. Vec of {WorkflowId, RecoveryOutcome}) where RecoveryOutcome is Resumed{resume_point} | Terminal | Failed(DurabilityError).",
+          "A workflow that diverges on replay yields Failed(NonDeterminismError) in the report and the workflow is failed deterministically per AD-005 (one WorkflowFailed recorded), while other workflows still recover.",
+          "A test seeds three workflows \u2014 two clean active, one divergent \u2014 and asserts the report contains two Resumed and one Failed, and that the two clean ones reached their resume points.",
+          "recover itself returns Ok with the report for partial-failure cases; it returns Err only for a store-level failure that prevents listing at all."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recovery.rs"
+          ]
+        },
+        "checklist": [
+          "C36"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Recovery test with mixed workflow set",
+        "spec": "THE SYSTEM SHALL provide a test seeding InMemoryStore with multiple active and terminal workflows and asserting recover replays exactly the active ones to their correct resume points.",
+        "acceptance": [
+          "A test seeds InMemoryStore with two active workflows (partial histories with distinct resume points) and one terminal workflow (ending in WorkflowCompleted).",
+          "recover is invoked and the report shows the two active workflows Resumed at their correct resume points and does not include the terminal workflow as Resumed.",
+          "The test is a real runtime test (not #[ignore], not env-gated) and passes under cargo test.",
+          "Post-recovery, a live step on one recovered workflow appends at the correct next sequence (ties R2 into an end-to-end assertion)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/tests/replay_behaviour.rs"
+          ]
+        },
+        "checklist": [
+          "C37"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT spawn the BEAM workflow processes or wire into the engine's supervision tree \u2014 AE invokes recover and owns process creation.",
+      "SHALL NOT re-implement active-vs-terminal classification \u2014 it trusts EventStore::list_active (AC contract).",
+      "SHALL NOT execute live timers/signals during recovery beyond the resume-point handoff \u2014 live behaviour is AT/AE post-resume."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes (recovery tests over InMemoryStore).",
+      "cargo fmt --check passes.",
+      "A test proves one divergent workflow does not abort recovery of the others (S8).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C34",
+        "text": "recover calls EventStore::list_active and, for each returned WorkflowId, reads its history and replays it to its resume point."
+      },
+      {
+        "id": "C35",
+        "text": "recover initialises each workflow's Recorder at the head implied by its existing history so post-recovery appends continue at the correct sequence."
+      },
+      {
+        "id": "C36",
+        "text": "recover surfaces a per-workflow failure (e.g. a NonDeterminismError during replay) without silently dropping the workflow or aborting recovery of the others."
+      },
+      {
+        "id": "C37",
+        "text": "A test seeds InMemoryStore with multiple active and terminal workflows and asserts recover replays exactly the active ones to their correct resume points."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As an operator, I want every active workflow to be replayed and resumed automatically on engine startup so that no in-flight workflow is silently lost after a restart."
+      },
+      {
+        "id": "S8",
+        "text": "As an operator, I want a failure recovering one workflow not to abort recovery of the others so that one bad workflow cannot take down the whole engine restart."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

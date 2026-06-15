@@ -1,0 +1,418 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "PC-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "PC-001",
+    "cluster": "parent-close",
+    "title": "ParentClosePolicy type, event field, command field, and recorder threading",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C6",
+      "C7",
+      "C8",
+      "C27",
+      "C29",
+      "C30",
+      "C31"
+    ],
+    "stories": [
+      "S4",
+      "S5",
+      "S10",
+      "S13"
+    ],
+    "design_anchor": [
+      "ADR-001",
+      "ADR-002",
+      "ADR-004"
+    ],
+    "purpose": "Establishes the type foundation for parent-close policy (RM-001, ADR-004). ParentClosePolicy becomes a first-class domain type in aion-core, the ChildWorkflowStarted event carries the chosen policy as a durable field, Command::SpawnChild carries it as a required parameter, and the Recorder, executor, resolver, and correlation modules are threaded to handle it. This brief is pure type plumbing: it does not add engine propagation behaviour (PC-002) or SDK surface changes (PC-003). At the end of PC-001, the Rust crates compile with the policy threaded from command issuance through live execution to event recording and replay resolution, and every existing test that constructs a ChildWorkflowStarted or Command::SpawnChild is updated to supply the policy field.",
+    "task": "Add ParentClosePolicy (RequestCancel, Terminate, Abandon) to aion-core and thread it through the engine's durability layer \u2014 no new behaviour, no SDK change, no propagation logic. Six touch points: (1) Define the enum in crates/aion-core/src/event.rs alongside the Event variants it annotates, with Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize derives and doc comments. (2) Re-export it from crates/aion-core/src/lib.rs. (3) Add a policy: ParentClosePolicy field to Event::ChildWorkflowStarted. (4) Add a policy: ParentClosePolicy field to Command::SpawnChild in crates/aion/src/durability/command.rs. (5) Add a policy parameter to Recorder::record_child_workflow_started in crates/aion/src/durability/recorder.rs and thread it into the Event it appends. (6) Update resolve_or_execute_live in crates/aion/src/durability/executor.rs to extract the policy from Command::SpawnChild and pass it to record_child_workflow_started. (7) Update the resolver to pass through the policy when replaying ChildWorkflowStarted from history. (8) Verify that correlation.rs CorrelationKey derivation for ChildWorkflowStarted is unaffected (correlation is by spawn ordinal, not policy). (9) Update all existing tests in command.rs, recorder.rs, executor.rs, resolver.rs, and correlation.rs that construct ChildWorkflowStarted or Command::SpawnChild to supply the policy field. Scope boundary \u2014 in: the type definition, the event field, the command field, the recorder parameter, the executor threading, the resolver pass-through, existing test updates. Out: engine propagation on parent terminal (PC-002); SDK spawn signature change (PC-003); any behavioural change to how the engine handles a parent's terminal or a child's lifecycle.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ParentClosePolicy enum in aion-core",
+        "spec": "THE SYSTEM SHALL define a ParentClosePolicy enum in crates/aion-core/src/event.rs with three variants: RequestCancel (the engine sends a cancellation request to the child, letting it handle shutdown gracefully), Terminate (the engine records an immediate terminal failure for the child), and Abandon (the engine takes no action; the child continues running). THE SYSTEM SHALL derive Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize on the enum. Each variant SHALL have a doc comment explaining its semantics. THE SYSTEM SHALL NOT provide a Default impl (ADR-001: no arbitrary defaults).",
+        "acceptance": [
+          "ParentClosePolicy is defined in crates/aion-core/src/event.rs with exactly three variants: RequestCancel, Terminate, Abandon.",
+          "The enum derives Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize \u2014 verified by constructing each variant and asserting Clone, Debug, PartialEq, Serialize, Deserialize round-trip in a unit test.",
+          "No Default impl exists for ParentClosePolicy \u2014 verified by a compile-time check (a test that would fail if Default were derived).",
+          "Each variant has a doc comment that explains its engine behaviour."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/event.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S4",
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Re-export from aion-core lib.rs",
+        "spec": "THE SYSTEM SHALL re-export ParentClosePolicy from crates/aion-core/src/lib.rs via the existing event module re-export line, so downstream crates import it as aion_core::ParentClosePolicy.",
+        "acceptance": [
+          "aion_core::ParentClosePolicy resolves to the enum defined in event.rs \u2014 verified by a use statement in the aion crate that imports aion_core::ParentClosePolicy and compiles.",
+          "The existing re-exports (Event, EventEnvelope, WithTimeoutOutcome) are unchanged."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C2"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Policy field on ChildWorkflowStarted event",
+        "spec": "THE SYSTEM SHALL add a field policy: ParentClosePolicy to the Event::ChildWorkflowStarted variant in crates/aion-core/src/event.rs, after the package_version field. THE SYSTEM SHALL include a doc comment on the field: 'Parent-close policy selected by the spawning parent at child.spawn time.' WHEN an Event::ChildWorkflowStarted is pattern-matched anywhere in the codebase (event.rs display/serialization arms, correlation.rs key derivation, status.rs, any handler), THE SYSTEM SHALL update the pattern to include the policy field or use '..' to ignore it where the policy is not consumed.",
+        "acceptance": [
+          "Event::ChildWorkflowStarted has a policy: ParentClosePolicy field \u2014 verified by constructing the variant in a test with all fields including policy.",
+          "Every pattern match on Event::ChildWorkflowStarted in aion-core and the aion crate compiles (no missing-field errors) \u2014 verified by cargo build --workspace.",
+          "The policy field has a doc comment.",
+          "Serialization/deserialization of Event::ChildWorkflowStarted round-trips the policy value \u2014 verified by a serde test that serializes a ChildWorkflowStarted with policy: Terminate and deserializes it back to the same value."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/event.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S5",
+          "S13"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Policy field on Command::SpawnChild",
+        "spec": "THE SYSTEM SHALL add a field policy: ParentClosePolicy to the Command::SpawnChild variant in crates/aion/src/durability/command.rs, after the input field, with a doc comment 'Parent-close policy to record and enforce when the parent terminates.' THE SYSTEM SHALL update Command::key() and any pattern matches on SpawnChild to include the policy field. THE SYSTEM SHALL update the existing test command_keys_round_trip_for_cursor_matched_variants to supply the policy field when constructing Command::SpawnChild.",
+        "acceptance": [
+          "Command::SpawnChild has a policy: aion_core::ParentClosePolicy field \u2014 verified by constructing the variant in a test.",
+          "Command::key() returns the correlation key for SpawnChild with the policy field present \u2014 the existing test passes with the policy added.",
+          "The existing test command_keys_round_trip_for_cursor_matched_variants compiles and passes with the policy field added to the SpawnChild construction."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/command.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C4"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R5",
+        "title": "Recorder gains policy parameter on record_child_workflow_started",
+        "spec": "THE SYSTEM SHALL add a policy: ParentClosePolicy parameter to Recorder::record_child_workflow_started in crates/aion/src/durability/recorder.rs, between the package_version parameter and the function body. THE SYSTEM SHALL thread the policy into the Event::ChildWorkflowStarted the method constructs via append_with. THE SYSTEM SHALL update all existing callers and tests of record_child_workflow_started to supply the policy.",
+        "acceptance": [
+          "record_child_workflow_started accepts a policy: ParentClosePolicy parameter \u2014 verified by the method signature.",
+          "The Event::ChildWorkflowStarted constructed inside the method carries the supplied policy value \u2014 verified by a test that calls record_child_workflow_started with policy: Terminate and reads back the recorded event to assert policy == Terminate.",
+          "All existing tests of record_child_workflow_started compile and pass with the policy parameter added."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/recorder.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R6",
+        "title": "Executor threads policy from Command through to Recorder",
+        "spec": "WHEN resolve_or_execute_live in crates/aion/src/durability/executor.rs handles a Command::SpawnChild, THE SYSTEM SHALL extract the policy field from the command and pass it to recorder.record_child_workflow_started alongside the existing workflow_type, input, child_workflow_id, and package_version arguments. THE SYSTEM SHALL update the destructuring pattern on Command::SpawnChild to bind the policy field.",
+        "acceptance": [
+          "The Command::SpawnChild arm in resolve_or_execute_live destructures the policy field and passes it to record_child_workflow_started \u2014 verified by code inspection and by the executor's existing tests compiling and passing.",
+          "A test that drives resolve_or_execute_live with a Command::SpawnChild carrying policy: RequestCancel produces a recorded ChildWorkflowStarted event with policy: RequestCancel."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/executor.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C6"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R7",
+        "title": "Resolver passes through policy on replay",
+        "spec": "WHEN the resolver in crates/aion/src/durability/resolver.rs replays a ChildWorkflowStarted event from recorded history, THE SYSTEM SHALL preserve the policy field in the replayed event and in the Resolution::ChildStarted it returns, so that downstream consumers (including PC-002's propagation logic) can read the recorded policy without re-querying history. IF the resolver does not currently inspect the policy field (it produces Resolution::ChildStarted(child_workflow_id) which carries only the id), THE SYSTEM SHALL ensure the policy is accessible from the replayed event for PC-002's consumption \u2014 either by extending Resolution::ChildStarted to carry the policy or by documenting that PC-002 reads the policy from history directly.",
+        "acceptance": [
+          "The resolver compiles with the policy field present on ChildWorkflowStarted \u2014 all pattern matches updated.",
+          "A replay of a ChildWorkflowStarted with policy: Terminate produces a Resolution::ChildStarted that either carries or does not obscure the policy \u2014 verified by a resolver test.",
+          "If Resolution::ChildStarted is not extended (PC-002 reads policy from history), a design note in this brief's verification documents that decision for PC-002's reference."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/resolver.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R8",
+        "title": "Correlation key derivation unaffected",
+        "spec": "THE SYSTEM SHALL NOT change the CorrelationKey::Child(u64) derivation in crates/aion/src/durability/correlation.rs: the child spawn ordinal is determined by counting prior ChildWorkflowStarted events, and the policy field does not participate in this count. WHEN correlation.rs pattern-matches on Event::ChildWorkflowStarted, THE SYSTEM SHALL update the pattern to include policy (or '..' to ignore it) so the code compiles, but SHALL NOT use the policy in the ordinal calculation.",
+        "acceptance": [
+          "correlation.rs compiles with the policy field on ChildWorkflowStarted \u2014 verified by cargo build.",
+          "The existing correlation tests (key_for_event with ChildWorkflowStarted events) pass unchanged in their assertions on Child(0), Child(1) ordinals, with the policy field added to the test event construction.",
+          "No CorrelationKey variant is changed or added."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/correlation.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R9",
+        "title": "Cluster invariants and gate hold across the PC-001 diff",
+        "spec": "THE SYSTEM SHALL introduce no new Event variant (the policy is a field on ChildWorkflowStarted, not a new event), no new terminal status variant, and no Default impl for ParentClosePolicy (CN4, ADR-001). THE SYSTEM SHALL NOT introduce #[allow], #[expect], unwrap, or expect in non-test library code. Every touched file SHALL remain under 500 LOC excluding tests. WHEN PC-001 lands, cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and cargo test --workspace SHALL pass clean.",
+        "acceptance": [
+          "git diff for PC-001 introduces no new variant in the Event enum beyond the policy field addition \u2014 grep confirms.",
+          "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over non-test lines added by this brief returns no matches.",
+          "wc -l on every file this brief modifies shows under 500 lines excluding test modules.",
+          "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; cargo test --workspace passes.",
+          "ParentClosePolicy has no Default impl \u2014 a grep for 'impl Default for ParentClosePolicy' returns nothing."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C27",
+          "C29",
+          "C30",
+          "C31"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT add propagation logic (walking children on parent terminal) \u2014 that is PC-002.",
+      "SHALL NOT change the SDK spawn/spawn_and_wait signatures in Gleam \u2014 that is PC-003.",
+      "SHALL NOT add a Default impl for ParentClosePolicy (ADR-001: no arbitrary defaults).",
+      "SHALL NOT introduce a new Event variant; the policy is a field on the existing ChildWorkflowStarted variant (CN3, invariant 1).",
+      "SHALL NOT call EventStore::append directly; the recorder method is the sole append path (invariant 3).",
+      "SHALL NOT change CorrelationKey derivation logic; the policy does not participate in spawn ordinal computation.",
+      "SHALL NOT add any timeout, rate limit, or cap (ADR-001).",
+      "SHALL NOT add #[allow], #[expect], unwrap, or expect in non-test library code."
+    ],
+    "verification": [
+      "cargo build --workspace compiles clean with the policy field threaded through event.rs, command.rs, recorder.rs, executor.rs, resolver.rs, and correlation.rs.",
+      "cargo test --workspace passes, including updated tests in command.rs (command_keys_round_trip adds policy to SpawnChild), recorder.rs (record_child_workflow_started with policy), executor.rs (resolve_or_execute_live with SpawnChild carrying policy), resolver.rs (replay of ChildWorkflowStarted preserves policy), and correlation.rs (ordinal derivation unchanged).",
+      "A new unit test in event.rs constructs ParentClosePolicy::{RequestCancel, Terminate, Abandon}, clones, debugs, and serde round-trips each variant.",
+      "aion_core::ParentClosePolicy resolves from a downstream crate import \u2014 verified by the aion crate compiling with use aion_core::ParentClosePolicy.",
+      "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both exit 0.",
+      "grep for #[allow]/#[expect]/unwrap/expect in modified non-test lib code returns nothing new.",
+      "grep for 'impl Default for ParentClosePolicy' returns nothing \u2014 no default exists."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "No arbitrary limits, no assumed defaults",
+        "decision": "Configurable values come from the builder/author or are deferred to the layer that owns them (e.g. beamr's own defaults). No caps, rate limits, or hardcoded defaults invented at the aion layer. Values are discussed before implementation. Rejected: convenience defaults \u2014 they are decisions made for the user without telling them.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-002",
+        "title": "No backwards compatibility during the build",
+        "decision": "Replace, don't add alongside. No compat shims, no zombie code, no #[deprecated] markers. Breaking changes are made cleanly and consumers move forward. Rejected: incremental deprecation cycles \u2014 they double the surface under test for an audience of zero.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-004",
+        "title": "Parent-close policy: required per spawn, RequestCancel | Terminate | Abandon",
+        "decision": "Temporal-style per-spawn parent-close policy \u2014 RequestCancel (graceful cascade), Terminate (immediate kill), Abandon (child hands off and keeps running past the parent's terminal; today's behaviour made explicit) \u2014 as a REQUIRED argument on child.spawn / spawn_and_wait. Rejected: defaulting to any of the three (ADR-001).",
+        "quote": "And I'll accept your recommendation for the parent clothes policy that means that if I'm understanding you correctly that you can decide whether a child workflows stays running if the parent workflow stops running as in like a cannibal almost like it hands off is that right?",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "ParentClosePolicy enum with variants RequestCancel, Terminate, and Abandon is defined in crates/aion-core/src/event.rs with derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize) and doc comments explaining each variant's semantics."
+      },
+      {
+        "id": "C2",
+        "text": "ParentClosePolicy is re-exported from crates/aion-core/src/lib.rs so downstream crates (aion, aion-server) import it as aion_core::ParentClosePolicy."
+      },
+      {
+        "id": "C3",
+        "text": "Event::ChildWorkflowStarted gains a policy: ParentClosePolicy field, recorded alongside child_workflow_id, workflow_type, input, and package_version."
+      },
+      {
+        "id": "C4",
+        "text": "Command::SpawnChild in crates/aion/src/durability/command.rs gains a policy: ParentClosePolicy field alongside key, workflow_type, and input."
+      },
+      {
+        "id": "C5",
+        "text": "record_child_workflow_started in crates/aion/src/durability/recorder.rs gains a policy: ParentClosePolicy parameter and threads it into the Event::ChildWorkflowStarted it appends."
+      },
+      {
+        "id": "C6",
+        "text": "resolve_or_execute_live in crates/aion/src/durability/executor.rs threads the policy from Command::SpawnChild through to record_child_workflow_started after a live spawn."
+      },
+      {
+        "id": "C7",
+        "text": "The resolver in crates/aion/src/durability/resolver.rs passes through the policy field when replaying a ChildWorkflowStarted from recorded history, preserving it for any downstream consumer that inspects the replayed event."
+      },
+      {
+        "id": "C8",
+        "text": "CorrelationKey derivation in crates/aion/src/durability/correlation.rs is unchanged: the policy field on ChildWorkflowStarted does not alter the Child(ordinal) correlation key because correlation is by spawn position, not by policy."
+      },
+      {
+        "id": "C27",
+        "text": "No new Event variant is introduced (the policy is a field on ChildWorkflowStarted, not a new event); no new terminal status variant is added; status_from_events derives status from the same event types as before (invariant 4, CN1)."
+      },
+      {
+        "id": "C29",
+        "text": "No #[allow], #[expect], unwrap, or expect appears in non-test library code added by any brief; every touched source file stays under 500 LOC excluding tests (CN6)."
+      },
+      {
+        "id": "C30",
+        "text": "cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite pass clean at the cluster's landing commit."
+      },
+      {
+        "id": "C31",
+        "text": "No arbitrary default for the policy: omitting the policy parameter is a compile-time error in both Gleam and Rust (CN4, ADR-001)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As an AI team member, I want the policy to be required at compile time so that I cannot accidentally spawn a child with no declared lifecycle relationship \u2014 the omission is a build error, not a runtime surprise."
+      },
+      {
+        "id": "S5",
+        "text": "As an AI lead reviewing a workflow design, I want the parent-close policy visible in the recorded ChildWorkflowStarted event so that I can audit from the event history what lifecycle contract the author intended for each child."
+      },
+      {
+        "id": "S10",
+        "text": "As a workflow author, I want the policy choice to be per-spawn, not per-workflow-type, so that the same child workflow type can be spawned with RequestCancel in one context and Abandon in another."
+      },
+      {
+        "id": "S13",
+        "text": "As a future maintainer, I want the policy recorded in the ChildWorkflowStarted event (not in a separate table or configuration) so that the propagation logic reads one source of truth \u2014 the event history \u2014 and I can trace the policy from spawn to dispatch without cross-referencing runtime state."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Status stays a projection (invariant 4): the policy propagation for Terminate records a WorkflowFailed and for RequestCancel records a WorkflowCancelled \u2014 both through the existing terminal event types. No new terminal event type or status variant is introduced; status_from_events derives status from the same events as before."
+      },
+      {
+        "id": "CN2",
+        "text": "Single-writer Recorder respected (invariant 3): policy propagation records child terminals through the child's own Recorder under its lock. The parent does not append events to the child's history directly via EventStore::append."
+      },
+      {
+        "id": "CN3",
+        "text": "Type-erased events (invariant 1): ParentClosePolicy is a field on ChildWorkflowStarted, not a new Event variant. The Event/Payload contract is extended by a field, not a new family."
+      },
+      {
+        "id": "CN4",
+        "text": "No arbitrary defaults (ADR-001): the policy parameter is required at every spawn call site. The engine never infers or defaults a policy. A missing policy is a compile-time error in Gleam and a missing-field error in the Rust Command construction."
+      },
+      {
+        "id": "CN5",
+        "text": "No backwards compatibility (ADR-002): the spawn signature changes are breaking. Old call sites that do not supply the policy will not compile. There is no compatibility shim, no deprecated overload, and no migration path beyond updating the call."
+      },
+      {
+        "id": "CN6",
+        "text": "Library-code purity: no #[allow], #[expect], unwrap, or expect in non-test lib code; clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; every touched file stays under 500 LOC excluding tests."
+      },
+      {
+        "id": "CN7",
+        "text": "Propagation covers all terminals: the engine dispatches the policy not only when the parent is cancelled but also when it completes, fails, or times out. The parent's terminal kind determines only THAT propagation happens, not WHETHER to propagate; the child's recorded policy determines WHAT action to take."
+      },
+      {
+        "id": "CN8",
+        "text": "Recovery completeness: if the engine crashes between a parent's terminal event and the policy dispatch for one or more children, recovery at startup re-walks the parent's ChildWorkflowStarted events, checks each child's current status, and dispatches any policy that was not yet applied. No propagation is lost to a crash."
+      },
+      {
+        "id": "CN9",
+        "text": "Determinism boundary respected (invariant 2): the policy is a recorded field on ChildWorkflowStarted and is replayed deterministically. Recovery reads the policy from history, not from configuration or wall-clock state."
+      }
+    ],
+    "intention": "When an author spawns a child workflow, they state \u2014 at spawn time, as a required argument \u2014 what the engine does with that child if the parent reaches a terminal state. The three policies are RequestCancel (graceful cascade: send the child a cancellation request and let it handle it), Terminate (immediate kill: the child is terminated without a chance to clean up), and Abandon (the child hands off and keeps running past the parent's death \u2014 today's implicit behaviour made explicit). When this is done, no child workflow ever outlives or dies with its parent by accident: the relationship is declared, durable, recursive, and re-armed on recovery. The engine propagates the chosen policy on ALL parent terminals \u2014 completed, failed, cancelled, timed out \u2014 not just cancellation, because a parent that completed successfully still leaves descendants that may or may not have a reason to keep running, and that decision belongs to the author, not the engine.",
+    "design_path": "docs/design/parent-close",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an author spawns a child workflow, they state \u2014 at spawn time, as a required argument \u2014 what the engine does with that child if the parent reaches a terminal state. The three policies are Request"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

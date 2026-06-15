@@ -1,0 +1,182 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-013",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-013",
+    "cluster": "aion-time-signals",
+    "title": "Fix signal delivery failure on beamr 0.3.15",
+    "depends_on": [
+      "AT-003"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "The signal_records_history_and_delivers_mailbox_marker integration test fails on beamr 0.3.15 because enqueue_atom_message returns false when delivering a signal to a workflow process. Process scheduling semantics changed in beamr 0.3.15 and the signal delivery path does not handle the case where the target process is not yet ready to receive. This brief fixes the delivery path to be robust against process scheduling timing and ensures signal integration tests pass reliably.",
+    "task": "Investigate why enqueue_atom_message returns false on beamr 0.3.15 (likely the target process is not yet scheduled/ready). Fix the signal delivery path to handle this case -- either by adding a process-ready check before delivery, retry with backoff, or adapting to the new scheduling semantics. Ensure deliver_signal_received propagates or retries on delivery failure rather than silently dropping the signal. Verify the signal integration test passes reliably.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Investigate and fix signal delivery path for beamr 0.3.15 compatibility",
+        "spec": "WHEN deliver_signal_received attempts to deliver a signal to a workflow process via enqueue_atom_message and the call returns false, THE SYSTEM SHALL handle the failure rather than silently dropping the signal. The fix SHALL be compatible with beamr 0.3.15 process scheduling semantics.",
+        "acceptance": [
+          "The root cause of enqueue_atom_message returning false on beamr 0.3.15 is identified and documented in a code comment.",
+          "The signal delivery path in the runtime handle is updated to handle the false return from enqueue_atom_message.",
+          "The fix does not introduce busy-waiting or unbounded retries.",
+          "Signal delivery succeeds for processes that are alive but not yet scheduled (the common 0.3.15 case)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/handle.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "deliver_signal_received handles enqueue failure with retry or typed error",
+        "spec": "WHEN enqueue_atom_message returns false, THE SYSTEM SHALL either retry delivery with bounded backoff or propagate a typed SignalError explaining that the target process could not accept the message. THE SYSTEM SHALL NOT silently drop the signal.",
+        "acceptance": [
+          "If retry strategy is chosen: delivery retries with bounded exponential backoff (configurable max attempts), and returns a typed error after exhausting retries.",
+          "If error propagation strategy is chosen: a SignalError::DeliveryFailed (or equivalent) variant is returned with the process ID and reason.",
+          "The signal router logs a warning on delivery failure with the workflow ID, signal name, and process ID.",
+          "The Recorder still records the SignalReceived event in history regardless of delivery outcome (the event is durable; delivery is best-effort to the live process)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/signal/router.rs",
+            "crates/aion/src/runtime/handle.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Signal integration test passes reliably on beamr 0.3.15",
+        "spec": "THE SYSTEM SHALL ensure signal_records_history_and_delivers_mailbox_marker and all other signal integration tests pass reliably on beamr 0.3.15 without timing-dependent flakiness.",
+        "acceptance": [
+          "signal_records_history_and_delivers_mailbox_marker passes on beamr 0.3.15.",
+          "The test does not rely on immediate process scheduling -- it waits for the process to be ready or uses the retry mechanism from R1/R2.",
+          "Running the signal test suite 10 times in a row produces zero failures.",
+          "No #[ignore] or timing-based skip logic is added to the test."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/tests/engine_signal.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Process-ready check before signal delivery",
+        "spec": "BEFORE delivering a signal via enqueue_atom_message, THE SYSTEM SHALL verify that the target process is alive and schedulable. IF the process is not ready, THE SYSTEM SHALL wait (bounded) for it to become ready rather than delivering to a not-yet-scheduled process.",
+        "acceptance": [
+          "A process-ready check (using beamr's process status API or equivalent) gates signal delivery.",
+          "If the process is alive but not yet scheduled, the delivery path waits with bounded timeout for it to become schedulable.",
+          "If the process is dead or the wait times out, the delivery returns a typed error (not a panic or silent drop).",
+          "The ready-check does not introduce a TOCTOU race that is worse than the current failure mode -- the subsequent enqueue failure is still handled by R2."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/handle.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL fixing signal delivery to work with beamr 0.3.15 process scheduling semantics",
+      "SHALL adding retry or error propagation for enqueue_atom_message failure",
+      "SHALL process-ready gating before signal delivery",
+      "SHALL making signal integration tests reliable",
+      "SHALL NOT changing beamr's process scheduling implementation",
+      "SHALL NOT modifying the signal event-sourcing model (SignalReceived is still recorded regardless of delivery)",
+      "SHALL NOT timer delivery (separate mechanism, separate brief if affected)",
+      "SHALL NOT query delivery (separate mechanism)"
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including all signal integration tests.",
+      "signal_records_history_and_delivers_mailbox_marker passes reliably on beamr 0.3.15.",
+      "A test verifies that delivery failure after retry exhaustion returns a typed error, not a panic.",
+      "A test verifies that SignalReceived is recorded in history even when live delivery fails.",
+      "Run the signal test suite 10 times consecutively to verify no flakiness.",
+      "Review that the fix does not introduce unbounded retries or busy-waiting.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

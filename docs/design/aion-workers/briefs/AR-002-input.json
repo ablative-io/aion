@@ -1,0 +1,202 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-002",
+    "cluster": "aion-workers",
+    "title": "aion-worker (Rust) task receive loop and bounded concurrency",
+    "depends_on": [
+      "AR-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C7",
+      "C8"
+    ],
+    "stories": [
+      "S6",
+      "S8"
+    ],
+    "purpose": "Build the heart of the Rust worker: the loop that pulls tasks off the server-streamed receive call, decodes the task envelope, dispatches each to a bounded pool of concurrent executions, and feeds results back to the session for reporting. This is the runtime that turns a connected session into a serving worker.",
+    "task": "Implement the worker loop in runtime/loop_.rs and the task envelope decode in protocol/task.rs. The loop consumes the WorkerSession receive stream, decodes each ActivityTask (activity type, ActivityId, attempt, input Payload), and spawns its execution onto a bounded pool sized by WorkerConfig.max_concurrency, applying backpressure on the stream when the pool is saturated. Do not implement handler invocation/classification (AR-003), heartbeat (AR-004), or reconnect (AR-005) here \u2014 the loop calls into a dispatch seam those briefs fill.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ActivityTask envelope decode",
+        "spec": "THE SYSTEM SHALL decode a received task into an ActivityTask exposing the activity-type name, ActivityId, attempt number, and the input Payload with its content-type tag.",
+        "acceptance": [
+          "protocol/task.rs defines an ActivityTask struct (or thin wrapper over the aion-proto task message) exposing activity_type, activity_id (aion-core ActivityId), attempt: u32, and input: Payload.",
+          "Decoding preserves the Payload content-type tag exactly (no coercion), per CO7.",
+          "A malformed task message maps to WorkerError::Decode with the cause preserved.",
+          "A unit test decodes a representative aion-proto task message into an ActivityTask and asserts every field, including the content-type tag."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/protocol/task.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/protocol/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Worker loop: receive and dispatch seam",
+        "spec": "WHILE the session is connected, THE SYSTEM SHALL consume the receive-task stream, decode each task, and hand it to a dispatch seam for execution, collecting results to report through the session.",
+        "acceptance": [
+          "runtime/loop_.rs defines the loop that drives the WorkerSession receive stream to completion (or until shutdown).",
+          "Each received task is decoded (R1) and passed to a dispatch entry point whose implementation lands in AR-003 (the loop depends on a trait/fn seam, not a concrete handler invoker).",
+          "Completed and failed outcomes from dispatch are routed back through WorkerSession::report_result / report_failure.",
+          "A test using the in-memory fake session feeds two tasks and asserts both are dispatched and their outcomes reported in correspondence to their ActivityIds.",
+          "The loop logs (via tracing) each task received and reported without logging payload contents."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/runtime/mod.rs",
+            "crates/aion-worker/src/runtime/loop_.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C7"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Bounded concurrency and backpressure",
+        "spec": "THE SYSTEM SHALL execute at most WorkerConfig.max_concurrency activities simultaneously and SHALL apply backpressure on the receive stream when the pool is saturated. THE SYSTEM SHALL NOT spawn executions unbounded.",
+        "acceptance": [
+          "The loop limits in-flight executions to max_concurrency using a semaphore or equivalent bounded primitive.",
+          "When max_concurrency executions are in flight, the loop stops pulling new tasks from the stream until a slot frees (backpressure), rather than buffering unboundedly.",
+          "A test sets max_concurrency = 2, feeds 5 slow tasks, and asserts no more than 2 execute concurrently (e.g. via a shared atomic gauge with an asserted peak of 2).",
+          "On shutdown, no new task is pulled and the bounded pool drains before the loop returns (drain semantics finalised in AR-006; the loop exposes the drain hook)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/runtime/loop_.rs"
+          ]
+        },
+        "checklist": [
+          "C8"
+        ],
+        "stories": [
+          "S8"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT invoke typed handlers or classify failures \u2014 that is AR-003 (the loop calls a dispatch seam).",
+      "SHALL NOT send heartbeats (AR-004) or implement reconnect (AR-005).",
+      "SHALL NOT define the Worker builder or shutdown signal source \u2014 AR-006 (the loop exposes a drain hook AR-006 wires)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-worker passes, including the concurrency-cap test.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C7",
+        "text": "The worker receives tasks via the server-streamed receive call; each task exposes activity type, ActivityId, attempt number, and the input Payload with its content-type tag."
+      },
+      {
+        "id": "C8",
+        "text": "The worker loop serves up to the configured max-concurrency activities at once and applies backpressure on the receive stream when the pool is full (no unbounded spawning)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a Rust activity author, I want to register an async handler returning Result<Output, ActivityFailure> on a Worker builder and call Worker::run() so that out-of-process Rust activities serve a running engine with full durability semantics."
+      },
+      {
+        "id": "S8",
+        "text": "As a worker operator, I want to configure the engine endpoint, task queue, identity, and max concurrency so that I can point a worker at the right engine and scale it without editing code."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

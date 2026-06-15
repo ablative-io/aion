@@ -1,0 +1,194 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-001",
+    "cluster": "aion-durability",
+    "title": "Durability module scaffold and error taxonomy",
+    "depends_on": [
+      "AE-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4"
+    ],
+    "stories": [],
+    "purpose": "Establish the aion::durability module subtree and the error types every other brief in the cluster returns. The taxonomy is foundational: the Recorder, Resolver, replay, and recovery all surface failures through DurabilityError, and the NonDeterminismError shape is the contract the violation-detection path fills in.",
+    "task": "Create the durability module under the aion crate (crates/aion/src/durability/) with a mod.rs that only declares submodules and re-exports. Define the error taxonomy in error.rs: a DurabilityError thiserror enum and a distinct NonDeterminismError carrying enough context to locate the offending workflow code. Wire pub mod durability into the aion crate's lib.rs. This brief defines types and module structure only \u2014 no recording, replay, or resolution logic. Coordinate with AE (which owns aion's lib.rs and the rest of the crate): add only the pub mod durability declaration, do not modify unrelated engine wiring.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Durability module scaffold",
+        "spec": "THE SYSTEM SHALL create the durability module subtree under crates/aion/src/durability/. THE mod.rs SHALL contain only pub mod declarations and pub use re-exports and SHALL NOT contain any type, function, or trait definition.",
+        "acceptance": [
+          "crates/aion/src/durability/mod.rs declares submodules seq, recorder, correlation, cursor, command, resolver, error, determinism, executor, replay, recovery (declarations may be added incrementally by later briefs, but error is declared here).",
+          "mod.rs contains no fn, struct, enum, trait, or impl item \u2014 only pub mod and pub use.",
+          "crates/aion/src/lib.rs (created by AE-001, which must land first \u2014 the crate scaffold) gains exactly one new line, pub mod durability;, and nothing else in this brief; AD-001 and AT-001 add their single module line to the AE-001 lib.rs and must not conflict with each other or with engine wiring.",
+          "cargo build -p aion succeeds with the new empty/partial module tree (placeholder submodules declared by later briefs are not required to exist yet beyond error)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/mod.rs"
+          ],
+          "modify": [
+            "crates/aion/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "DurabilityError taxonomy",
+        "spec": "THE SYSTEM SHALL define DurabilityError as a thiserror enum covering append/sequence failure (wrapping aion_store::StoreError), non-determinism violation (wrapping NonDeterminismError), and history-shape errors. THE SYSTEM SHALL NOT construct any DurabilityError by panicking or via unwrap/expect.",
+        "acceptance": [
+          "error.rs defines DurabilityError with at least: Store(#[from] StoreError), NonDeterminism(NonDeterminismError), and a HistoryShape variant for malformed/inconsistent recorded history (e.g. a result event with no preceding schedule).",
+          "DurabilityError derives Debug and implements Display + std::error::Error via thiserror.",
+          "No unwrap, expect, panic, todo, or unimplemented appears in error.rs.",
+          "A unit test formats one value of each variant via Display and asserts the message is non-empty and mentions the underlying cause."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/error.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C2",
+          "C4"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "NonDeterminismError shape",
+        "spec": "THE SYSTEM SHALL define NonDeterminismError as a typed error carrying the WorkflowId, the sequence position of the mismatch, a description of the expected command shape, and a description of the found recorded-event shape.",
+        "acceptance": [
+          "NonDeterminismError carries workflow_id: WorkflowId, seq: u64 (the cursor position of the mismatch), expected: String (or a small enum) naming the command family + correlation key the workflow issued, and found: String (or a small enum) naming the recorded event family + key.",
+          "NonDeterminismError derives Debug, implements Display via thiserror, and its Display includes the workflow id, the position, and both shapes.",
+          "NonDeterminismError derives Clone and PartialEq so tests can assert exact expected/found shapes.",
+          "A unit test constructs a NonDeterminismError and asserts its Display string contains the workflow id, the sequence position, the expected, and the found descriptors."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/error.rs"
+          ]
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement the Recorder, Resolver, cursor, replay, recovery, or determinism context \u2014 those are AD-002 through AD-010.",
+      "SHALL NOT modify any engine logic in the aion crate beyond adding pub mod durability to lib.rs.",
+      "SHALL NOT define the EventStore trait or any aion-core type \u2014 those are consumed from aion-store and aion-core."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes (the error unit tests).",
+      "cargo fmt --check passes.",
+      "mod.rs contains only declarations and re-exports (CO3).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "crates/aion/src/durability/mod.rs declares the durability submodules and re-exports the public surface, containing no logic."
+      },
+      {
+        "id": "C2",
+        "text": "DurabilityError is a thiserror enum covering at least sequence/append failure (wrapping StoreError), non-determinism violation, and history-shape errors, with no panics or unwrap in its construction paths."
+      },
+      {
+        "id": "C3",
+        "text": "NonDeterminismError is a distinct typed error carrying the WorkflowId, the sequence position of the mismatch, the expected command shape, and the found recorded-event shape."
+      },
+      {
+        "id": "C4",
+        "text": "DurabilityError implements std::error::Error and Display via thiserror, and no library code path constructs an error by panicking."
+      }
+    ],
+    "stories": [],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

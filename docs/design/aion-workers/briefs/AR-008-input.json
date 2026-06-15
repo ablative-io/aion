@@ -1,0 +1,250 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-008",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-008",
+    "cluster": "aion-workers",
+    "title": "aion-worker-python: @activity decorator, context, error classification, and Worker",
+    "depends_on": [
+      "AR-007"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C23",
+      "C24",
+      "C25",
+      "C26"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S3",
+      "S10"
+    ],
+    "purpose": "Give the Python author the native surface: decorate a function with @activity, let type hints drive serialisation, heartbeat and observe cancellation through a context, classify failures as retryable or terminal, and run a Worker that serves until graceful shutdown. This completes the Python SDK and is the brief a data scientist actually touches.",
+    "task": "Implement activity.py (the @activity decorator, type-hint-driven Payload codec, and the activity registry), context.py (heartbeat + cancellation observation), errors.py (RetryableError / TerminalError and the unclassified-defaults-to-retryable rule), and worker.py (the Worker object + async run with graceful drain and a pool escape hatch for blocking/CPU-bound handlers). Fill the dispatch seam AR-007's loop calls.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "@activity decorator and type-hint codec",
+        "spec": "THE SYSTEM SHALL provide an @activity(name=...) decorator registering an async (or pool-run sync) function as an activity, using the function's type hints to encode/decode the input and output Payload (JSON baseline). THE SYSTEM SHALL NOT change the content type on round-trip.",
+        "acceptance": [
+          "activity.py defines @activity(name=...) that registers the function in a registry keyed by the activity-type name.",
+          "Argument and return type hints drive JSON Payload decode/encode; the Payload content-type tag is preserved (CO7).",
+          "Registering two activities under the same name raises a clear error at decoration/registration time.",
+          "The dispatch seam (called by AR-007's loop) decodes the input Payload, invokes the handler with a context, and encodes the result Payload.",
+          "A test registers an activity with typed hints, dispatches an encoded input through the registry, and asserts the output Payload decodes to the expected value."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/activity.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/__init__.py",
+            "sdks/python/aion-worker/aion_worker/loop.py"
+          ]
+        },
+        "checklist": [
+          "C23"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Activity context: heartbeat and cancellation",
+        "spec": "THE SYSTEM SHALL pass a context to each handler exposing heartbeat(detail) and cancellation observation (is_cancelled() and an awaitable cancelled()). THE SYSTEM SHALL NOT heartbeat on the handler's behalf and SHALL NOT forcibly cancel the handler.",
+        "acceptance": [
+          "context.py defines a context object with activity_id, attempt, heartbeat(detail=None) routing to the session's heartbeat, is_cancelled() and an awaitable cancelled().",
+          "An engine cancellation flips the context's cancellation flag; the handler coroutine is not cancelled out from under it (cooperative only, per D5 / CO9).",
+          "heartbeat sends only on explicit call (per D4); no background heartbeat task exists.",
+          "A test signals cancellation mid-handler and asserts is_cancelled() becomes true while the handler is allowed to return on its own."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/context.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/loop.py"
+          ]
+        },
+        "checklist": [
+          "C24"
+        ],
+        "stories": [
+          "S2"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Error classification",
+        "spec": "THE SYSTEM SHALL provide RetryableError and TerminalError base classes for handlers to raise. IF an unclassified exception escapes a handler, THEN THE SYSTEM SHALL classify the failure as retryable and SHALL log it as unclassified.",
+        "acceptance": [
+          "errors.py defines RetryableError and TerminalError; a handler raising one yields the corresponding wire classification (aligned with aion-core ActivityError per CO8).",
+          "An unclassified exception escaping a handler is reported as a retryable failure and logged at warning level as unclassified (never silent, per D6 / CO8).",
+          "The reported failure carries the exception message and, where available, a detail Payload.",
+          "Tests assert: RetryableError \u2192 retryable wire failure; TerminalError \u2192 terminal wire failure; a bare ValueError \u2192 retryable wire failure plus an emitted unclassified warning."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/errors.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/activity.py"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Worker object, run, and pool escape hatch",
+        "spec": "THE SYSTEM SHALL provide a Worker object that registers decorated activities and, on await worker.run(), connects and serves until graceful shutdown, draining in-flight activities. THE SYSTEM SHALL run blocking/CPU-bound handlers on a thread/process pool so they do not block the event loop.",
+        "acceptance": [
+          "worker.py defines a Worker taking a WorkerConfig and the registered activities; await worker.run() connects (AR-007), serves, and on a shutdown signal stops pulling new tasks and drains in-flight ones before returning.",
+          "A handler declared/synchronous-and-blocking is dispatched on a thread or process pool (configured) so the asyncio loop is not blocked; an async handler runs directly on the loop.",
+          "A test runs a Worker against the fake session, feeds a slow task, triggers shutdown mid-task, and asserts run() returns only after the in-flight task completes.",
+          "A test asserts a blocking sync handler does not stall concurrent async handlers (the pool offload works)."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/worker.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/__init__.py"
+          ]
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S10"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT re-implement the session/loop/reconnect \u2014 those are AR-007; this brief fills the dispatch seam and the author surface.",
+      "SHALL NOT change the content type of a payload on round-trip (CO7).",
+      "SHALL NOT forcibly cancel a running handler (CO9)."
+    ],
+    "verification": [
+      "ruff check passes.",
+      "mypy --strict passes (no blanket type: ignore).",
+      "pytest passes, including classification, cancellation, and graceful-drain tests.",
+      "An end-to-end test against the fake session decorates an activity, serves a task, and asserts the recorded completion \u2014 proving the full Python SDK path.",
+      "No # noqa / # type: ignore blanket suppressions in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C23",
+        "text": "An @activity(name=...) decorator registers an async (or pool-run sync) function as an activity; type hints on its arguments and return drive Payload encode/decode (JSON baseline)."
+      },
+      {
+        "id": "C24",
+        "text": "A context object passed to the handler exposes heartbeat(detail) and cancellation observation (is_cancelled() and an awaitable cancelled())."
+      },
+      {
+        "id": "C25",
+        "text": "RetryableError and TerminalError base classes classify failures; an unclassified exception escaping a handler defaults to retryable and is logged as unclassified (never silent)."
+      },
+      {
+        "id": "C26",
+        "text": "A Worker object registers decorated activities and await worker.run() connects, serves, and shuts down gracefully draining in-flight activities; a thread/process-pool escape hatch handles blocking/CPU-bound handlers."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As a Python activity author, I want to decorate a normal async function with @activity and have its type hints drive input/output serialisation so that I can serve durable activities without learning Gleam, Rust, or the wire format."
+      },
+      {
+        "id": "S2",
+        "text": "As a Python activity author, I want to heartbeat from a long-running inference job and observe cancellation so that the engine knows my job is alive and I can stop cleanly when the workflow is cancelled."
+      },
+      {
+        "id": "S3",
+        "text": "As a Python activity author, I want to raise RetryableError or TerminalError so that the engine retries transient failures but does not retry a permanent one \u2014 and I want an unclassified exception to be treated as retryable so a network blip never permanently fails a workflow."
+      },
+      {
+        "id": "S10",
+        "text": "As a worker operator, I want a worker to shut down gracefully, draining in-flight activities before exiting so that a deploy does not abandon running work."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

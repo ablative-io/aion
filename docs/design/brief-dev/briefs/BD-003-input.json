@@ -1,0 +1,393 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "BD-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "BD-003",
+    "cluster": "brief-dev",
+    "title": "The brief_dev pipeline workflow",
+    "depends_on": [
+      "BD-001",
+      "BD-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C10",
+      "C11",
+      "C12",
+      "C13",
+      "C14",
+      "C15",
+      "C16",
+      "C17",
+      "C18"
+    ],
+    "stories": [
+      "S6",
+      "S9",
+      "S10",
+      "S11"
+    ],
+    "design_anchor": [
+      "ADR-001",
+      "ADR-003",
+      "ADR-008"
+    ],
+    "purpose": "Replaces the scout-less, review-less onatopp_dev inner child with brief_dev: the v2 all-norn pipeline (scout \u2192 concurrent warm-build+dev \u2192 verify-fix loop \u2192 adversarial review \u2192 harden re-verify) as a durable workflow over the BD-001 types and BD-002 projections (ADR-008 \u2014 evolve in place, no parallel family). Every stage runs in its own deterministic norn session ('<branch>-scout' / '<branch>' / '<branch>-review', CN4), every negative outcome is either recorded data or a typed error per the C18 taxonomy, and every cap and backoff is a required input the engine never bounds (ADR-001, ADR-003, CN2). This is the workflow that makes attestation-never-the-gate executable: the reviewer sees the dev's claims next to measured check results and verifies the diff itself (P1, S10).",
+    "task": "Replace src/onatopp_dev.gleam with src/brief_dev.gleam and rebuild the inner-child contract around the brief document. Stage flow: scout activity (read-only norn, session '<branch>-scout', scout-report output schema) \u2192 concurrent warm_build + dev preserved via the existing tagged StartupTask/StartupResult envelope through workflow.all (dev session stays '<branch>') \u2192 the onatopp verify-fix loop preserved verbatim in shape (scoped_checks, then on CheckFail a durable round_backoff_ms sleep and dev_resume with projected feedback, bounded by required verify_fix_cap) \u2192 dev_review activity (norn reviewer, session '<branch>-review', review-report output schema, NEVER the dev session) \u2192 if any review enrichment is left 'drifted', fail typed listing the drifted R# ids and their issues \u2192 if review fixes are non-empty, re-run scoped_checks and fail typed on regression \u2192 converge. Activity contract reshapes that follow from the design ('all reused as-is except dev/dev_resume prompts now come from prompts.gleam projections' and stage outputs are the stage-contract reports): DevInput becomes (workspace, prompt) \u2014 the projected prompt is built in workflow code from BD-002's pure functions, so locals.dev drops its internal prompt assembly; the dev and dev_resume activities now return the dev-report shape (StartupResult's Developed carries a DevReport; fix rounds return a FULL replacement report per PROMPTING.md), with files_touched for scoped_checks derived in workflow code as the deduplicated files_changed paths of the latest report's enrichments, and the dev session id remaining deterministic from the branch. The DevResult type and its codec are KEPT \u2014 the outer arc's request_review/land payloads still use them until BD-005 reshapes the outer arc. Deletions: src/onatopp_dev.gleam, its workflow.toml entry, schemas/onatopp_input.json + onatopp_output.json, the stale onatopp-dev.aion archive, the Onatopp* types and codecs. New manifest entry brief_dev with schemas/brief_dev_input.json + brief_dev_output.json written inside the codegen v1 subset (no $ref/$defs/oneOf \u2014 codegen reads every schemas/*.json, so these must generate; the input schema inlines the brief-document and resolved-context shapes with additionalProperties false throughout; the generated BriefDevInput* types are an unused byproduct, the workflow keeps the hand-written codecs); timeout_seconds 86400 is carried over from the retired onatopp entry \u2014 an author-chosen budget from the live family, not a new invented default (ADR-001 note). Error taxonomy note: C18 names five categories (scout failure, dev block, verify exhaustion, review drift, stage failure); C15 additionally mandates a typed error for a harden pass that breaks verification, so BriefDevError carries a sixth variant HardenRegressed \u2014 a deliberate, declared addition, with startup fan-out failure folded into the stage-failure variant. Enrichment call sites (writing scout/dev/review blocks into the worktree brief file, C19-C22) are NOT here \u2014 BD-004 inserts enrich_brief calls into this module after it lands; brief_dev returns the three reports in its result so the parent and BD-004 have everything they need. SEQUENCING HAZARD, read before dispatch: src/stacked_dev.gleam imports the deleted onatopp_dev module and consumes dev_resume's old DevResult output, and this brief is barred from touching it (the outer-arc rewiring is BD-005's C23/C24). Between this brief's landing and BD-005's, gleam build fails in stacked_dev.gleam ONLY \u2014 this brief and BD-005 must ride one deployment wave (CN6: the family redeploys as a unit), and this brief's suite-level verification is completed at the BD-005 tip. Any build error outside stacked_dev.gleam is this brief's defect.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "brief_dev workflow types replace the onatopp types",
+        "spec": "Structural, in src/stacked_dev/types.gleam. Delete OnatoppInput, OnatoppResult, OnatoppError, and OnatoppStatus (ADR-002/ADR-008: replace, never alongside). Add: BriefDevInput(workspace: Workspace, document: BriefDocument, context: ResolvedContext, verify_fix_cap: Int, round_backoff_ms: Int) \u2014 both loop parameters required, no defaults (CN2); BriefDevResult(scout: ScoutReport, dev: DevReport, review: ReviewReport, verify_rounds: Int, build_warm: BuildWarm) using the generated report types from aion_stacked_dev_io (C18); DriftedRequirement(id: String, issues: List(String)); BriefDevError with exactly six constructors \u2014 ScoutFailed(message: String), DevBlocked(requirement_ids: List(String)), VerifyFixExhausted(rounds: Int, diagnostics: String), ReviewDrifted(drifted: List(DriftedRequirement)), HardenRegressed(diagnostics: String), BriefDevStageFailed(stage: String, message: String); BriefDevStatus(phase: String, round: Int); ScoutInput(workspace: Workspace, prompt: String); ReviewInput(workspace: Workspace, prompt: String). Reshape DevInput to DevInput(workspace: Workspace, prompt: String) and StartupResult's Developed variant to Developed(dev_report: DevReport). The DevResult type SHALL NOT be deleted (ReviewRequest and LandInput still carry it for the outer arc until BD-005).",
+        "acceptance": [
+          "grep -c 'Onatopp' examples/stacked-dev/src/stacked_dev/types.gleam returns 0.",
+          "BriefDevError has exactly the six constructors ScoutFailed, DevBlocked, VerifyFixExhausted, ReviewDrifted, HardenRegressed, BriefDevStageFailed.",
+          "DevInput has exactly two labelled fields, workspace and prompt; StartupResult is WarmTask-mirroring Warmed(build_warm: BuildWarm) and Developed(dev_report: DevReport).",
+          "BriefDevInput has exactly the fields workspace, document, context, verify_fix_cap, round_backoff_ms; BriefDevResult has exactly scout, dev, review, verify_rounds, build_warm.",
+          "DevResult is still defined and still referenced by ReviewRequest and LandInput."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/stacked-dev/src/stacked_dev/types.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C12",
+          "C18"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Workflow and stage-payload codecs",
+        "spec": "In src/stacked_dev/codecs_workflows.gleam (primary): delete onatopp_input_codec, onatopp_result_codec, onatopp_error_codec, and onatopp_status_codec; add brief_dev_input_codec (composing codecs_brief.brief_document_to_json/decoder and resolved_context_to_json/decoder with the workspace and the two required ints), brief_dev_result_codec (composing the generated scout_report/dev_report/review_report pairs from aion_stacked_dev_io with verify_rounds and build_warm), brief_dev_error_codec, and brief_dev_status_codec. WHEN encoding BriefDevError, THE SYSTEM SHALL use the wire tags scout_failed, dev_blocked, verify_fix_exhausted, review_drifted, harden_regressed, and stage_failed under the existing 'error' key convention; WHEN decoding an unknown tag, THE SYSTEM SHALL fail naming the expected tags, and SHALL NOT map an unknown tag onto any variant. In codecs_core.gleam: update startup_task_codec/startup_result_codec for the reshaped DevInput and Developed(DevReport); add scout_input codec; replace the DevResult-specific norn envelope decode with a generic report-envelope helper that, given an inner decoder, accepts the bare report shape or the real {\"output\": ...} envelope only (C31's parsing rule lives in locals; this helper is its codec seam). dev_result_codec SHALL NOT be removed. In codecs_flow.gleam: add the review_input codec.",
+        "acceptance": [
+          "brief_dev_error_codec().encode(ReviewDrifted([DriftedRequirement(\"R2\", [\"acceptance 3 unmet\"])])) == \"{\\\"error\\\":\\\"review_drifted\\\",\\\"drifted\\\":[{\\\"id\\\":\\\"R2\\\",\\\"issues\\\":[\\\"acceptance 3 unmet\\\"]}]}\".",
+          "brief_dev_error_codec().encode(HardenRegressed(\"diag\")) == \"{\\\"error\\\":\\\"harden_regressed\\\",\\\"diagnostics\\\":\\\"diag\\\"}\".",
+          "Decoding \"{\\\"error\\\":\\\"bogus_tag\\\"}\" with brief_dev_error_codec() returns an Error.",
+          "brief_dev_input_codec() round-trips a BriefDevInput built from the BD-001 fixture document to an equal value.",
+          "grep -c 'onatopp' examples/stacked-dev/src/stacked_dev/codecs_workflows.gleam returns 0."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/stacked-dev/src/stacked_dev/codecs_workflows.gleam",
+            "examples/stacked-dev/src/stacked_dev/codecs_core.gleam",
+            "examples/stacked-dev/src/stacked_dev/codecs_flow.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "scout and dev_review activity definitions",
+        "spec": "In src/stacked_dev/activities.gleam: add pub const scout_name = \"scout\" and pub const dev_review_name = \"dev_review\"; add scout(input: ScoutInput) -> activity.Activity(ScoutInput, ScoutReport) and dev_review(input: ReviewInput) -> activity.Activity(ReviewInput, ReviewReport), each binding codec.json_codec over the generated stage-report pairs (aion_stacked_dev_io.scout_report_to_json/scout_report_decoder, review_report_to_json/review_report_decoder) and the locals implementations \u2014 stage payloads validate against exactly the schemas the canon defines (ADR-007). Update dev and dev_resume to the reshaped DevInput and the DevReport output codec. THE SYSTEM SHALL NOT alter the names, codecs, or locals bindings of provision_workspace, warm_build, scoped_checks, full_checks, request_review, or land (CN8: the live-proven contracts are immutable in this cluster), and SHALL NOT define a reviewer activity that shares the dev activity's session derivation (CN4 \u2014 fresh eyes are the point, S11).",
+        "acceptance": [
+          "activities.scout_name == \"scout\" and activities.dev_review_name == \"dev_review\".",
+          "scout's output codec is the generated scout_report pair and dev_review's is the generated review_report pair (grep shows aion_stacked_dev_io references in both definitions).",
+          "dev_resume's output codec is the generated dev_report pair, not dev_result_codec.",
+          "The eight pre-existing activity name constants are byte-identical to their values before this brief (provision_workspace, warm_build, dev, scoped_checks, dev_resume, full_checks, request_review, land)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/stacked-dev/src/stacked_dev/activities.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C11",
+          "C14"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Local implementations: scout, dev_review, reshaped dev/dev_resume",
+        "spec": "In src/stacked_dev/locals.gleam, mirroring the live-proven dev pattern invocation-for-invocation. WHEN locals.scout runs, THE SYSTEM SHALL invoke norn with argv [\"--print\", \"--session-id\", workspace.branch <> \"-scout\", \"--workspace-root\", workspace.path, \"--output-schema\", scout_output_schema(), \"--output-format\", \"json\", prompt] in workspace.path. WHEN locals.dev_review runs, THE SYSTEM SHALL invoke norn identically with session id workspace.branch <> \"-review\" and review_output_schema(). THE SYSTEM SHALL NOT derive the scout or review session id from anything but the branch plus its stage suffix, and SHALL NOT reuse the bare dev session id ('<branch>') for either stage (CN4, S9, S11). locals.dev SHALL use input.prompt as the positional prompt (its internal dev_prompt assembly and the old DevResult output schema are deleted) and keep session id = workspace.branch (C12); locals.dev_resume SHALL keep [\"--print\", \"--resume\", session_id, ...] and both SHALL pass dev_output_schema(), now the dev-report shape. Output parsing for all four norn-backed locals SHALL accept the bare report shape or the real {\"output\": ...} envelope only, and SHALL NOT accept any other wrapper; a norn invocation that cannot run or exits non-zero is a Terminal activity failure carrying diagnostics (CN5 \u2014 never a silent skip). The three schema-text constants (scout_output_schema, dev_output_schema, review_output_schema) are Gleam string constants; create test/stage_schema_test.gleam asserting each parses as JSON and is structurally equal (Erlang term equality of parsed Dynamics) to schemas/scout_report.json, schemas/dev_report.json, and schemas/review_report.json read from the package root \u2014 pinning the inline constants to the drift-gated package schemas.",
+        "acceptance": [
+          "For Workspace(branch: \"stacked-dev-BD-009\", ...), the scout invocation's --session-id argument is exactly \"stacked-dev-BD-009-scout\" and the dev_review invocation's is exactly \"stacked-dev-BD-009-review\" (observable in the argv construction and in BD-007's later shim logs).",
+          "locals.dev passes input.prompt as the final positional argument and no longer concatenates brief/design/checklist/stories strings; grep -n 'dev_prompt' examples/stacked-dev/src/stacked_dev/locals.gleam returns no definition.",
+          "Parsing accepts {\"output\": <report>} and the bare <report> for scout, dev, dev_resume, and dev_review, and a third wrapper shape fails with a Terminal error whose message names both accepted shapes.",
+          "cd examples/stacked-dev && gleam test runs stage_schema_test and all three schema-constant equality assertions pass.",
+          "grep -c 'onatopp' examples/stacked-dev/src/stacked_dev/locals.gleam returns 0."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/test/stage_schema_test.gleam"
+          ],
+          "modify": [
+            "examples/stacked-dev/src/stacked_dev/locals.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C11",
+          "C12",
+          "C14"
+        ],
+        "stories": [
+          "S9",
+          "S11"
+        ]
+      },
+      {
+        "id": "R5",
+        "title": "The brief_dev workflow module",
+        "spec": "Create src/brief_dev.gleam (deleting src/onatopp_dev.gleam \u2014 brief_dev takes its slot, ADR-008) with pub const workflow_type = \"brief_dev\", pub const status_query_name = \"brief_dev_status\", definition() binding the R2 codecs to execute, and run() mirroring the existing raw-input entry convention. Flow: WHEN execution starts, THE SYSTEM SHALL register status (\"scouting\", 0) and run the scout activity with prompts.scout_prompt(document, context); IF scout fails, THEN THE SYSTEM SHALL fail with ScoutFailed (C11). WHEN scout succeeds, THE SYSTEM SHALL register (\"developing\", 0) and dispatch workflow.all([activities.warm_build(workspace), activities.dev(DevInput(workspace, prompts.dev_prompt(document, context, scout_report)))]) \u2014 the tagged StartupTask fan-out preserved, results in input order, a shape violation failing as BriefDevStageFailed(stage: \"startup\") (C12). IF the dev report contains any enrichment with status blocked, THEN THE SYSTEM SHALL fail with DevBlocked listing those R# ids (C18). WHILE verifying, THE SYSTEM SHALL register (\"verifying\", round) and run scoped_checks over the deduplicated files_changed paths of the latest dev report; on CheckPass proceed to review; on CheckFail, IF round >= verify_fix_cap THEN fail with VerifyFixExhausted(rounds, diagnostics), ELSE register (\"fixing\", round), durably sleep round_backoff_ms, run dev_resume(ResumeInput(session_id: workspace.branch, feedback: prompts.resume_feedback(document, diagnostics))) for a full replacement DevReport, and recurse with round + 1 (C13 \u2014 onatopp semantics preserved, both bounds are required inputs, no default anywhere, ADR-001/ADR-003). WHEN verification converges, THE SYSTEM SHALL register (\"reviewing\", round) and run dev_review with prompts.review_prompt(document, context, scout_report, latest_dev_report, converged_check_result) \u2014 the reviewer sees the attestation AND the measured result (S10) in its own session (C14). IF any review enrichment has alignment drifted, THEN THE SYSTEM SHALL fail with ReviewDrifted carrying every drifted enrichment's id and issues (C16). IF any review enrichment's fixes list is non-empty, THEN THE SYSTEM SHALL register (\"hardening\", round) and re-run scoped_checks with the same files_touched; IF that re-run fails, THEN THE SYSTEM SHALL fail with HardenRegressed(diagnostics) (C15). WHEN converged, THE SYSTEM SHALL register (\"converged\", round) and return BriefDevResult(scout, final dev report, review report, verify_rounds, build_warm). The status handler is re-registered at every transition with exactly the phases scouting, developing, verifying, fixing, reviewing, hardening, converged (C17, S6). THE SYSTEM SHALL NOT read the filesystem, write the brief file, or call any enrichment (CN1/P5 \u2014 BD-004 inserts enrich_brief call sites later), SHALL NOT impose any cap, backoff, or deadline beyond the two required inputs, and SHALL NOT dispatch any activity other than scout, warm_build, dev, scoped_checks, dev_resume, and dev_review. LOC note: the module is estimated above 300 lines; its behavioural tests live in BD-007's hermetic suite by design, and its codec tests in R7 \u2014 no test code in this module.",
+        "acceptance": [
+          "src/brief_dev.gleam exists with workflow_type == \"brief_dev\" and status_query_name == \"brief_dev_status\"; src/onatopp_dev.gleam does not exist.",
+          "grep -o 'set_status(\"[a-z]*\"' examples/stacked-dev/src/brief_dev.gleam (or equivalent) yields exactly the seven phases scouting, developing, verifying, fixing, reviewing, hardening, converged.",
+          "The only activities module calls in brief_dev.gleam are activities.scout, activities.warm_build, activities.dev, activities.scoped_checks, activities.dev_resume, activities.dev_review.",
+          "The drift check (alignment == drifted -> ReviewDrifted) is evaluated before the fixes-non-empty harden re-verify, so a drifted-and-fixed-elsewhere report still fails with ReviewDrifted.",
+          "The dev_resume feedback argument is prompts.resume_feedback output and the dev prompt argument is prompts.dev_prompt output \u2014 grep shows both call sites; no string-concatenated prompt is built in this module outside the prompts module.",
+          "workflow.sleep appears exactly once, with duration.milliseconds(input.round_backoff_ms); no other duration literal exists in the module."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/src/brief_dev.gleam"
+          ],
+          "modify": [],
+          "delete": [
+            "examples/stacked-dev/src/onatopp_dev.gleam"
+          ]
+        },
+        "checklist": [
+          "C10",
+          "C11",
+          "C12",
+          "C13",
+          "C15",
+          "C16",
+          "C17"
+        ],
+        "stories": [
+          "S6",
+          "S9",
+          "S10",
+          "S11"
+        ]
+      },
+      {
+        "id": "R6",
+        "title": "Manifest entry, dispatch schemas, regenerated IO module",
+        "spec": "Structural. In workflow.toml: delete the onatopp_dev [[workflow]] entry and add a brief_dev entry \u2014 entry_module \"brief_dev\", entry_function \"run\", timeout_seconds 86400 (carried over from the retired onatopp entry, an author-chosen budget, not a new default), input_schema \"schemas/brief_dev_input.json\", output_schema \"schemas/brief_dev_output.json\", activities [\"scout\", \"warm_build\", \"dev\", \"scoped_checks\", \"dev_resume\", \"dev_review\"], output \"brief-dev.aion\". Delete schemas/onatopp_input.json, schemas/onatopp_output.json, and the stale onatopp-dev.aion archive. Create schemas/brief_dev_input.json (required: workspace, document, context, verify_fix_cap, round_backoff_ms \u2014 the document sub-schema inlining the brief.schema.json authored+enrichment+execution shape and the context sub-schema mirroring ResolvedContext, additionalProperties false at every object level, CN2) and schemas/brief_dev_output.json (required: scout, dev, review, verify_rounds, build_warm \u2014 the three report sub-schemas mirroring the stage-contract canon shapes). Both SHALL stay inside the codegen v1 subset: no $ref, no $defs, no oneOf/anyOf/allOf, no const, no default, no type unions \u2014 aion codegen reads every schemas/*.json and a single violation fails the whole generation. Re-run cargo run -p aion-cli -- codegen examples/stacked-dev so src/aion_stacked_dev_io.gleam reflects the deletion and the two new schemas; the regenerated module SHALL NOT be hand-edited.",
+        "acceptance": [
+          "grep -c 'onatopp' examples/stacked-dev/workflow.toml returns 0, and the brief_dev entry lists exactly the six activity names scout, warm_build, dev, scoped_checks, dev_resume, dev_review.",
+          "examples/stacked-dev/schemas/ contains brief_dev_input.json and brief_dev_output.json and contains neither onatopp_input.json nor onatopp_output.json; examples/stacked-dev/onatopp-dev.aion does not exist.",
+          "python3 -c \"import json; s=json.load(open('examples/stacked-dev/schemas/brief_dev_input.json')); assert s['additionalProperties'] is False and sorted(s['required'])==sorted(['workspace','document','context','verify_fix_cap','round_backoff_ms']); d=s['properties']['document']; assert d['additionalProperties'] is False and 'requirements' in d['required']\" exits 0.",
+          "grep -F '\"$ref\"' examples/stacked-dev/schemas/*.json and grep -F '\"oneOf\"' examples/stacked-dev/schemas/*.json produce no matches.",
+          "cargo run -p aion-cli -- codegen examples/stacked-dev --check exits 0, and src/aion_stacked_dev_io.gleam contains a BriefDevInput type and no Onatopp-derived type."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/schemas/brief_dev_input.json",
+            "examples/stacked-dev/schemas/brief_dev_output.json"
+          ],
+          "modify": [
+            "examples/stacked-dev/workflow.toml",
+            "examples/stacked-dev/src/aion_stacked_dev_io.gleam"
+          ],
+          "delete": [
+            "examples/stacked-dev/schemas/onatopp_input.json",
+            "examples/stacked-dev/schemas/onatopp_output.json",
+            "examples/stacked-dev/onatopp-dev.aion"
+          ]
+        },
+        "checklist": [
+          "C10"
+        ],
+        "stories": []
+      },
+      {
+        "id": "R7",
+        "title": "brief_dev IO codec unit tests",
+        "spec": "Create test/brief_dev_codecs_test.gleam: round-trip and wire-pin tests for the R2 codecs. WHEN the suite runs, THE SYSTEM SHALL round-trip a BriefDevInput built from the seeded BD-001.json fixture (via test/support/fixtures.gleam and codecs_brief), round-trip a BriefDevResult holding constructed schema-valid ScoutReport/DevReport/ReviewReport values, pin the exact encoded JSON of every BriefDevError variant (all six tags), and round-trip BriefDevStatus for each of the seven phases. The tests SHALL NOT invent report shapes outside the stage-contract schemas and SHALL NOT touch the network, the norn CLI, or the workflow engine \u2014 pure codec tests. NOTE: this suite is runnable only once the package compiles again at the BD-005 tip (see the task's sequencing hazard); the reviewer completes this requirement's verification there.",
+        "acceptance": [
+          "Each of the six BriefDevError variants encodes to its pinned JSON string (tags scout_failed, dev_blocked, verify_fix_exhausted, review_drifted, harden_regressed, stage_failed) and decodes back to an equal value.",
+          "A BriefDevResult round-trips to an equal value with all three reports intact (every enrichment id preserved).",
+          "BriefDevStatus(phase: \"hardening\", round: 3) round-trips to an equal value.",
+          "cd examples/stacked-dev && gleam test runs brief_dev_codecs_test and it passes (executed at the BD-005 tip)."
+        ],
+        "files": {
+          "create": [
+            "examples/stacked-dev/test/brief_dev_codecs_test.gleam"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C18"
+        ],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify src/stacked_dev.gleam \u2014 the outer arc's input reshape, brief_dev spawn, and error lifting are BD-005's C23/C24; the dangling onatopp_dev import left there is BD-005's documented seam, not yours to fix.",
+      "SHALL NOT create enrich.gleam, define an enrich_brief activity, or add any brief-file read/write to brief_dev.gleam or locals.gleam \u2014 enrichment (C19-C22) is BD-004; brief_dev returns reports, it does not persist them.",
+      "SHALL NOT touch examples/stacked-dev/worker/ (handlers, types, wire_compat, shims suites) \u2014 worker mirroring is BD-005.",
+      "SHALL NOT create dispatch.gleam, dispatcher activities, or wave schemas \u2014 BD-006.",
+      "SHALL NOT modify test/aion_stacked_dev_test.gleam, test/support/shims.gleam, stacked_dev_test_ffi.erl, crates/aion-cli/templates/dev_pipeline/, or crates/aion-cli/tests/stacked_dev_live_e2e.rs \u2014 hermetic stage-outcome coverage, shim envelopes, template, and live e2e are BD-007.",
+      "SHALL NOT alter the live-proven CLI contracts of the eight existing activities (provision argv, scoped/full check invocations, request_review argv with branch positional first and --as Meridian, land's commit-then-merge-from-repo_root) beyond the dev/dev_resume prompt-and-report reshape this brief specifies (CN8).",
+      "SHALL NOT introduce any default cap, backoff, deadline, retry count, or timeout \u2014 verify_fix_cap and round_backoff_ms are required inputs and the only bounds in the module (ADR-001, ADR-003, CN2).",
+      "SHALL NOT delete the DevResult type, dev_result_codec, or the gate/request_review/land payload types \u2014 the outer arc still consumes them until BD-005.",
+      "SHALL NOT hand-edit src/aion_stacked_dev_io.gleam or any file under docs/design-system/, and SHALL NOT modify the three stage-contract package schemas (drift-gated against canon)."
+    ],
+    "verification": [
+      "Confirm ADR-008's status is 'decided' in docs/design/decisions.json before dispatching this brief \u2014 it is 'proposed' at authoring time (blocked_by).",
+      "grep -rn 'onatopp' examples/stacked-dev/schemas examples/stacked-dev/workflow.toml produces no matches, and grep -rln 'onatopp' examples/stacked-dev/src lists exactly one file: src/stacked_dev.gleam (the documented BD-005 seam). Any other hit is stale work.",
+      "test -f examples/stacked-dev/src/brief_dev.gleam && test ! -f examples/stacked-dev/src/onatopp_dev.gleam && test ! -f examples/stacked-dev/onatopp-dev.aion \u2014 all hold.",
+      "cargo run -p aion-cli -- codegen examples/stacked-dev --check exits 0.",
+      "bash examples/stacked-dev/scripts/check-schema-drift.sh exits 0 (stage contracts untouched).",
+      "cd examples/stacked-dev && gleam build: at this brief's tip the ONLY acceptable failures are unresolved references to onatopp_dev/DevResult shapes inside src/stacked_dev.gleam; an error in any other module is a finding. At the BD-005 tip, gleam build and gleam test must both exit 0 including brief_dev_codecs_test and stage_schema_test \u2014 re-run this step there and record both results.",
+      "Phases audit: grep 'set_status' examples/stacked-dev/src/brief_dev.gleam shows exactly the seven phases scouting/developing/verifying/fixing/reviewing/hardening/converged and no others.",
+      "Session audit: grep -n '\\-scout\\|\\-review' examples/stacked-dev/src/stacked_dev/locals.gleam shows the suffix derivations from workspace.branch, and grep confirms no scout/review code path passes the bare branch as --session-id.",
+      "Boundary audit: grep -n 'enrich' examples/stacked-dev/src/brief_dev.gleam produces no matches; the diff contains no change under examples/stacked-dev/worker/ or to src/stacked_dev.gleam."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "No arbitrary limits, no assumed defaults",
+        "decision": "Configurable values come from the builder/author or are deferred to the layer that owns them (e.g. beamr's own defaults). No caps, rate limits, or hardcoded defaults invented at the aion layer. Values are discussed before implementation. Rejected: convenience defaults \u2014 they are decisions made for the user without telling them.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-003",
+        "title": "No default timeouts anywhere in the engine",
+        "decision": "The engine imposes no activity time bound of its own. Activity waits are unbounded, terminated only by completion, worker loss, server shutdown, or a workflow-level timeout the author explicitly chose. Rejected: a bigger default \u2014 agentic activities legitimately run for over an hour, and any number we picked would be ADR-001 violated.",
+        "quote": "we shouldn't have a default timeout, the agent steps can take well over an hour",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-008",
+        "title": "brief_dev replaces onatopp_dev inside the stacked-dev family",
+        "decision": "Evolve in place: onatopp_dev.gleam is deleted and brief_dev.gleam takes its slot as stacked_dev's inner child; the outer arc keeps its live-proven contracts. Rejected: a parallel brief-dev family \u2014 two families serving one purpose is the zombie-code pattern ADR-002 prohibits, and the outer arc's provision/gate/review/land contracts took a full dogfood night to prove against real CLIs; duplicating them duplicates that risk.",
+        "quote": "so brief Dev replacing on a top Dev in the stacked dev family. I guess that's fine but like I also don't mind sort of holding onto both for the time being",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C10",
+        "text": "src/brief_dev.gleam exists as the inner-child entry module and src/onatopp_dev.gleam is deleted along with its workflow.toml entry and schemas (no parallel family)."
+      },
+      {
+        "id": "C11",
+        "text": "The scout stage runs the scout activity (read-only norn, session '<branch>-scout', scout-report output schema) before any dev work."
+      },
+      {
+        "id": "C12",
+        "text": "The dev stage preserves the concurrent warm_build + dev fan-out via the tagged StartupTask envelope and the dev session id remains '<branch>'."
+      },
+      {
+        "id": "C13",
+        "text": "The verify-fix loop preserves onatopp_dev semantics: scoped_checks then dev_resume with diagnostics, bounded by required verify_fix_cap with required round_backoff_ms sleeps."
+      },
+      {
+        "id": "C14",
+        "text": "The review stage runs the dev_review activity (norn reviewer, session '<branch>-review', review-report output schema) after verify convergence, never sharing the dev session."
+      },
+      {
+        "id": "C15",
+        "text": "When the review report's fixes are non-empty, the pipeline re-runs scoped_checks; a harden pass that breaks verification fails the run with a typed error naming the review stage."
+      },
+      {
+        "id": "C16",
+        "text": "Any requirement left with alignment 'drifted' in the review report fails the run with a typed error listing the drifted R# ids and their issues."
+      },
+      {
+        "id": "C17",
+        "text": "brief_dev re-registers its status query at every stage transition with phases: scouting, developing, verifying, fixing, reviewing, hardening, converged."
+      },
+      {
+        "id": "C18",
+        "text": "BriefDevResult carries the scout, dev, and review reports plus verify_rounds and build_warm; BriefDevError covers scout failure, dev block, verify exhaustion, review drift, harden regression, and stage failure."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As Claude, I want the live status query to name the current stage and round so that I can watch a run without parsing event histories."
+      },
+      {
+        "id": "S9",
+        "text": "As a norn agent resuming after a crash or a fix round, I want my same session resumed by deterministic id so that I keep my context instead of rediscovering the codebase."
+      },
+      {
+        "id": "S10",
+        "text": "As a reviewer agent, I want the dev's attestation alongside the measured check results so that I can treat their divergence as a signal about where to dig."
+      },
+      {
+        "id": "S11",
+        "text": "As a reviewer agent, I want a fresh session separate from the dev's so that I verify the diff with my own eyes instead of inheriting the dev's framing."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Deterministic workflow code performs no filesystem reads, no ledger parsing, and no reference resolution: dispatcher activities resolve roadmap/decisions/checklist/stories references and assemble the brief context before any workflow logic sees it (P5)."
+      },
+      {
+        "id": "CN2",
+        "text": "Every cap, backoff, deadline, and concurrency limit is a required input field, schema-enforced with additionalProperties: false; the engine and the workflows impose no bound of their own (ADR-001, ADR-003)."
+      },
+      {
+        "id": "CN3",
+        "text": "enrich_brief is append-only: it refuses to alter any authored field (deep-compares the authored subset before writing) and fails terminally on divergence rather than silently overwriting."
+      },
+      {
+        "id": "CN4",
+        "text": "Stage sessions are deterministic and disjoint: '<branch>' for dev (existing), '<branch>-scout' for scout, '<branch>-review' for review. The reviewer NEVER shares the dev session \u2014 fresh eyes are the point of the stage (REVIEW.md)."
+      },
+      {
+        "id": "CN5",
+        "text": "Activity failure taxonomy: can't-execute is terminal failure; expected negative outcomes are successful results carrying data (P3). No retries of broken environments."
+      },
+      {
+        "id": "CN6",
+        "text": "The family deploys as a unit (shared content hash, child type = entry module name); all archives rebuilt and redeployed together on any change."
+      },
+      {
+        "id": "CN7",
+        "text": "Package stage-contract schemas are byte-identical to docs/design-system/schemas/ canon, enforced by a drift gate that runs with the test suite."
+      },
+      {
+        "id": "CN8",
+        "text": "The outer arc's live-proven CLI contracts are immutable in this cluster: request_review argv (branch positional first, --as Meridian), land = git commit in worktree then yg merge from repo_root, single review_verdict signal (ADR-006)."
+      },
+      {
+        "id": "CN9",
+        "text": "Hermetic tests run under gleeunit's sequential runner (exclusive PATH is VM-global); e2e suites never run concurrently with gleam builds in the same checkout."
+      }
+    ],
+    "intention": "Design-system v2 briefs become executable: an all-norn pipeline (scout \u2192 dev \u2192 verify-fix \u2192 adversarial review \u2192 harden) runs as a durable aion workflow, enriching the brief in place at every stage, composed under the live-proven stacked_dev outer arc (provision \u2192 dev \u2192 gate \u2192 human review \u2192 land), with a dispatcher above that selects briefed work from the roadmap ledger and fans it out. When this is done, 'do this roadmap item' means authoring documents and approving a DM \u2014 the workflow does the rest, every stage durable across crashes, every claim recorded next to what was actually measured. aion develops aion; the dogfood becomes the dev process.",
+    "design_path": "docs/design/brief-dev",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Design-system v2 briefs become executable: an all-norn pipeline (scout \u2192 dev \u2192 verify-fix \u2192 adversarial review \u2192 harden) runs as a durable aion workflow, enriching the brief in place at every stage, c"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

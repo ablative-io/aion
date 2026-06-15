@@ -1,0 +1,196 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-005",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-005",
+    "cluster": "aion-workers",
+    "title": "aion-worker (Rust) reconnect, re-registration, and un-acked result re-reporting",
+    "depends_on": [
+      "AR-003"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C15",
+      "C16"
+    ],
+    "stories": [
+      "S9"
+    ],
+    "purpose": "Make a worker survive a disconnect without losing completed work. On a dropped session the SDK reconnects with backoff, re-registers its activity types, and \u2014 before serving any new task \u2014 re-reports results it computed but the engine never acknowledged. This is the guarantee that a network blip never drops a finished activity or re-runs a side effect.",
+    "task": "Implement protocol/reconnect.rs: a bounded exponential-backoff reconnect that re-establishes the session (handshake + register, reusing AR-001), and an un-acked result tracker that records every result/failure reported until the engine acknowledges it. On reconnect, re-report all un-acked results before the loop resumes serving. Rely on the engine de-duplicating by ActivityId (AW owns idempotent ingest).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Un-acked result tracking",
+        "spec": "WHEN the SDK reports a completion or failure, THE SYSTEM SHALL retain that report keyed by ActivityId until the engine acknowledges it, and SHALL drop it once acknowledged.",
+        "acceptance": [
+          "reconnect.rs (or a tracker it owns) records each reported result/failure keyed by ActivityId on report and removes it on the engine's acknowledgement.",
+          "The tracker is the single source of un-acked reports; report paths from AR-003 funnel through it.",
+          "A unit test reports two completions, acknowledges one, and asserts exactly one un-acked report remains, keyed by the un-acked ActivityId."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-worker/src/protocol/reconnect.rs"
+          ],
+          "modify": [
+            "crates/aion-worker/src/protocol/mod.rs",
+            "crates/aion-worker/src/runtime/dispatch.rs"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Backoff reconnect and re-registration",
+        "spec": "WHEN the session drops, THE SYSTEM SHALL reconnect using bounded exponential backoff and SHALL re-perform the handshake and activity-type registration before serving new tasks.",
+        "acceptance": [
+          "On a session error/disconnect, reconnect.rs retries the connection with exponential backoff and a configured cap (cap drawn from WorkerConfig, not hardcoded, per CO10).",
+          "Each reconnect re-runs the AR-001 handshake (task queue + identity) and re-registers the worker's activity types.",
+          "Reconnect backoff and failure are logged via tracing; a permanently-unreachable endpoint surfaces WorkerError without busy-looping at zero delay.",
+          "A test using a fake session that fails once then succeeds asserts the worker reconnects, re-registers, and resumes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/protocol/reconnect.rs",
+            "crates/aion-worker/src/runtime/loop_.rs"
+          ]
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Re-report un-acked results before serving",
+        "spec": "WHEN a session is re-established, THE SYSTEM SHALL re-report all un-acked results before pulling any new task from the receive stream.",
+        "acceptance": [
+          "After re-registration and before the first new-task pull, the worker re-reports every un-acked result/failure from the tracker (R1).",
+          "Re-reporting relies on engine-side de-duplication by ActivityId (AW idempotent ingest); the SDK re-reports unconditionally rather than guessing what the engine retained (per D7).",
+          "A test: report a completion, simulate a disconnect before acknowledgement, reconnect, and assert the completion is re-reported before any new task is dispatched.",
+          "Ordering: no new task outcome is reported until the un-acked backlog has been re-sent."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-worker/src/protocol/reconnect.rs",
+            "crates/aion-worker/src/runtime/loop_.rs"
+          ]
+        },
+        "checklist": [
+          "C16"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement engine-side de-duplication or idempotent ingest \u2014 that is AW.",
+      "SHALL NOT persist un-acked results to disk \u2014 in-memory tracking only this round (a crashed worker process loses its in-memory backlog; the engine retries via the activity policy).",
+      "SHALL NOT define the Worker builder / shutdown \u2014 AR-006."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-worker passes, including the disconnect-before-ack re-report test.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code.",
+      "The reconnect path is exercised entirely against the fake session (no live engine required), per CO6."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C15",
+        "text": "On session drop the SDK reconnects with bounded exponential backoff and re-registers its activity types before serving new tasks."
+      },
+      {
+        "id": "C16",
+        "text": "The SDK tracks results computed locally but not yet acknowledged, and on reconnect re-reports those un-acked results before serving any new task."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As a worker operator, I want a worker to reconnect automatically after a network drop and re-report any work it already finished so that a disconnect never loses a completed activity or double-runs a side effect."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

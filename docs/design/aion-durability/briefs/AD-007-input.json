@@ -1,0 +1,200 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AD-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AD-007",
+    "cluster": "aion-durability",
+    "title": "Live executor seam and resume-live handoff",
+    "depends_on": [
+      "AD-004",
+      "AD-002"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C27",
+      "C28",
+      "C29"
+    ],
+    "stories": [
+      "S5"
+    ],
+    "purpose": "Define the single seam between durability (AD) and the engine (AE): the LiveExecutor trait that AE implements to actually run an activity, start a timer, await a signal, or spawn a child. The handoff rule is the load-bearing invariant \u2014 the LiveExecutor is invoked only after the resume point, never during replay \u2014 and after a live action its resulting event is recorded through the Recorder. This is how replay performs no side effect and live execution is cleanly separated.",
+    "task": "Define the LiveExecutor trait (executor.rs) with one operation per world-touching command family. Implement the handoff glue: a function that, given a Command and a Resolver, returns the recorded Resolution when the cursor satisfies it, and otherwise (ResumeLive) invokes the LiveExecutor for that command and records the resulting event(s) through the Recorder, producing a live Resolution. The invariant is that the LiveExecutor is never touched while the cursor can satisfy a command. Test with a recording mock LiveExecutor over InMemoryStore that asserts zero live calls during replay and exactly the expected live calls after resume.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "LiveExecutor trait",
+        "spec": "THE SYSTEM SHALL define a LiveExecutor trait, implemented by the engine (AE), with one async operation per world-touching family: run an activity, start a timer, await a signal, and spawn a child workflow. Each operation SHALL return the live outcome that AD will both return and record.",
+        "acceptance": [
+          "executor.rs defines trait LiveExecutor: Send + Sync with methods run_activity, start_timer, await_signal, spawn_child taking the relevant Command payload and returning the live outcome (Payload / fired / signal payload / child result or error).",
+          "The trait is object-safe (usable as &dyn LiveExecutor) or generic \u2014 pick one and document it; the choice must let AE supply a beamr-backed implementation without AD depending on beamr.",
+          "AD provides no production implementation of LiveExecutor (that is AE's); it provides only the trait and a test mock.",
+          "Doc comments state the AD/AE boundary: AD calls this only on resume-live."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/executor.rs"
+          ],
+          "modify": [
+            "crates/aion/src/durability/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "No live call while the cursor can satisfy a command",
+        "spec": "WHILE the HistoryCursor can satisfy a Command (the Resolver returns a recorded Resolution), THE SYSTEM SHALL NOT invoke any LiveExecutor operation.",
+        "acceptance": [
+          "The handoff function returns the recorded Resolution from the Resolver without touching the LiveExecutor when the cursor matches.",
+          "A test replays a fully-recorded history through the handoff with a mock LiveExecutor that panics if any method is called, and the replay completes with zero panics (proving no live call) (CO11).",
+          "The test asserts each returned Resolution equals the recorded outcome."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/executor.rs"
+          ]
+        },
+        "checklist": [
+          "C28"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Resume-live handoff records the live outcome",
+        "spec": "WHEN the Resolver returns ResumeLive for a Command, THE SYSTEM SHALL invoke the corresponding LiveExecutor operation and SHALL record the command-issued event(s) through the Recorder, then return the live outcome as a Resolution.",
+        "acceptance": [
+          "The handoff records the COMMAND-ISSUED events for each family on ResumeLive, via the Recorder: RunActivity -> ActivityScheduled then ActivityStarted/Completed (or Failed); StartTimer -> TimerStarted (and LiveExecutor::start_timer arms the wheel + persists via EventStore::schedule_timer); SpawnChild -> ChildWorkflowStarted; CompleteWorkflow -> WorkflowCompleted. This resolves the ownership question: the timer/signal/child command-issued events are recorded by the AD handoff, not by AT.",
+          "The ASYNCHRONOUS-ARRIVAL events that are NOT workflow-issued commands \u2014 TimerFired (wheel/recovery), SignalReceived (external sender), ChildWorkflowCompleted/Failed (child terminates later) \u2014 are recorded by the AT services when they occur, through the SAME per-workflow Recorder. A doc comment states this split so neither side double-records.",
+          "Single-writer is by single Recorder INSTANCE, not single call site: exactly one Recorder exists per workflow and it is the sole sequence-head authority; both the AD handoff and the AT services append through that one (internally-synchronized) Recorder, so all appends are serialized and a SequenceConflict signals a double-Recorder bug (AD D2/CO6). No path calls EventStore::append directly.",
+          "A test replays a partial history to its resume point, then drives one live RunActivity with a mock LiveExecutor returning a known Payload, and asserts: the LiveExecutor was called once, the new ActivityCompleted is in the store at the next sequence, and the returned Resolution carries the live Payload.",
+          "Re-reading the store after the live step and replaying again returns the now-recorded outcome from cache with zero further live calls (proving the live result was durably recorded)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/durability/executor.rs"
+          ]
+        },
+        "checklist": [
+          "C29"
+        ],
+        "stories": [
+          "S5"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement a real (beamr-backed) LiveExecutor \u2014 that is AE; AD provides the trait and a test mock only.",
+      "SHALL NOT execute timers/signals/children's live semantics itself \u2014 the trait delegates to AE/AT; AD only orchestrates the call-and-record handoff.",
+      "SHALL NOT append events outside the Recorder (CO6)."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes (handoff tests with the mock LiveExecutor).",
+      "cargo fmt --check passes.",
+      "A test proves zero LiveExecutor calls during replay of a fully-recorded history (CO11).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C27",
+        "text": "A LiveExecutor trait defines the engine-implemented operations AD invokes only on resume-live: run an activity, start a timer, await a signal, spawn a child workflow."
+      },
+      {
+        "id": "C28",
+        "text": "While the cursor can satisfy a command, the LiveExecutor is never invoked (replay performs no live side effect)."
+      },
+      {
+        "id": "C29",
+        "text": "After ResumeLive, the handoff glue invokes the LiveExecutor and records the resulting event(s) through the Recorder."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S5",
+        "text": "As the engine, I want a single seam (LiveExecutor) that is called only after the resume point so that replay performs no live side effect and live execution is cleanly separated."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the whole module set."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] bypasses; tests use InMemoryStore in-process, never env-gated skips."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs holds only pub mod declarations and re-exports; logic lives in named files."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace); split the Resolver and replay driver before they exceed it."
+      },
+      {
+        "id": "CO5",
+        "text": "aion::durability depends only on aion-core and aion-store (plus an RNG crate and chrono); no AT, AF, networking, or direct beamr \u2014 runtime concerns are reached only through the LiveExecutor trait."
+      },
+      {
+        "id": "CO6",
+        "text": "Single-writer discipline is structural: only a Recorder appends to a workflow's history, exactly one Recorder per active workflow; no other path calls EventStore::append for a workflow with a live Recorder."
+      },
+      {
+        "id": "CO7",
+        "text": "Every append states an expected_seq from the Recorder's tracked head; the head is never guessed or read from outside the Recorder, and a SequenceConflict is surfaced as a hard error (double-writer bug), not retried by re-reading."
+      },
+      {
+        "id": "CO8",
+        "text": "workflow.now derives only from the recorded event timestamp in the DeterminismContext; no code path here calls the wall clock to produce a workflow-visible value. The recovery wall time for expired_timers is explicitly not workflow-visible."
+      },
+      {
+        "id": "CO9",
+        "text": "workflow.random derives only from the seed (WorkflowId + RunId); no entropy source is consulted; same run -> identical random sequence."
+      },
+      {
+        "id": "CO10",
+        "text": "A non-determinism violation is always raised as a typed NonDeterminismError at the point of mismatch; never swallowed, never guessed past, never allowed to produce a Resolution."
+      },
+      {
+        "id": "CO11",
+        "text": "Replay never invokes a live side effect: while the cursor can satisfy a command the LiveExecutor is not called; it is called only after ResumeLive."
+      },
+      {
+        "id": "CO12",
+        "text": "Determinism-violation detection has dedicated test coverage: a recorded history that deliberately diverges from the replayed command stream asserts the typed error."
+      }
+    ],
+    "intention": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, sleep for three months and resume in the same logical state, and run as if it ran once even after five replays. It does three things: it records (every externally-observable engine action becomes an Event appended to the EventStore under a single-writer-per-workflow discipline with an expected-sequence guard); it replays (re-runs the workflow function from the start, and for every world-touching call consults recorded history and returns the recorded outcome instead of acting again); and it enforces determinism (supplies the recorded timestamp for workflow.now, a workflow-seeded value for workflow.random, and detects when a replay diverges from recorded history \u2014 failing loudly rather than corrupting state silently). When done, the engine (AE) spawns a workflow process and hands it a resolver that transparently answers every world-touching call from history during replay and falls through to live execution at the resume point; recovery becomes list_active, replay each, resume. The workflow author writes a plain deterministic function and never knows whether a call executed for real or returned a cached result.",
+    "design_path": "docs/design/aion-durability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make Aion durable. Everything else in the engine is mechanics a non-durable orchestrator could also have; this layer is what lets a workflow crash on step nine of ten and resume exactly where it was, "
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

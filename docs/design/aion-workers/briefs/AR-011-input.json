@@ -1,0 +1,231 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-011",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-011",
+    "cluster": "aion-workers",
+    "title": "Cross-SDK worker protocol conformance suite",
+    "depends_on": [
+      "AR-006",
+      "AR-008",
+      "AR-010"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C35",
+      "C36",
+      "C37"
+    ],
+    "stories": [
+      "S11",
+      "S12"
+    ],
+    "purpose": "Prove the three SDKs are interchangeable. A language-agnostic scenario set defines the protocol behaviours every worker must exhibit; a fake worker-endpoint harness drives those scenarios; each SDK is run against it and must produce identical observable wire behaviour. This is the guarantee that catches drift between the Rust reference and its Python and TS ports.",
+    "task": "Define the conformance scenarios (scenarios.json) covering register, complete, fail-retryable, fail-terminal, heartbeat, cancellation, reconnect-and-re-report, and backpressure. Build a fake worker-endpoint harness (fake_engine/) that plays each scenario against a connected worker and records the worker's observable behaviour. Wire a thin per-SDK runner (a small worker built with each SDK serving fixed conformance activities) and assert all three produce the same outcomes. Add JSON payload round-trip parity checks across the three languages.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Language-agnostic scenario set",
+        "spec": "THE SYSTEM SHALL define the protocol-conformance scenarios as language-agnostic data: register, receive+complete, receive+fail-retryable, receive+fail-terminal, heartbeat, cancellation, reconnect-and-re-report, and backpressure under full concurrency.",
+        "acceptance": [
+          "scenarios.json enumerates each scenario with its inputs (tasks to dispatch, signals to send) and its expected observable worker behaviour (reports emitted, classification, re-reports, peak concurrency).",
+          "The expected behaviour for fail-retryable vs fail-terminal is distinct and asserts the wire classification.",
+          "The reconnect scenario specifies a disconnect-before-ack and the expected re-report of the un-acked result before any new task.",
+          "The backpressure scenario specifies a max-concurrency of 2 with 5 tasks and an expected peak concurrency of 2.",
+          "A README documents how a new SDK is added to the suite."
+        ],
+        "files": {
+          "create": [
+            "conformance/aion-workers/scenarios.json",
+            "conformance/aion-workers/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C35"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Fake worker-endpoint harness",
+        "spec": "THE SYSTEM SHALL provide a fake worker-endpoint harness that speaks the aion-proto worker protocol, plays a scenario against a connected worker, and records the worker's observable behaviour for assertion.",
+        "acceptance": [
+          "fake_engine/ implements the worker-endpoint side of the aion-proto protocol enough to run every scenario (handshake, register, dispatch tasks, accept results/failures/heartbeats, simulate cancellation and disconnect).",
+          "The harness records, per scenario, the registration set, the result/failure reports with classification, heartbeats received, re-reports after reconnect, and observed peak concurrency.",
+          "The harness can drive a worker process regardless of its implementation language (it talks the wire, not an SDK API).",
+          "A self-test runs the harness against the Rust SDK conformance runner and asserts every scenario's recorded behaviour matches scenarios.json."
+        ],
+        "files": {
+          "create": [
+            "conformance/aion-workers/fake_engine/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C36"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Per-SDK runners and three-way equivalence",
+        "spec": "THE SYSTEM SHALL run each of the three SDKs (Rust, Python, TypeScript) against the harness and SHALL assert all three produce identical observable behaviour for every scenario.",
+        "acceptance": [
+          "A thin conformance worker is built with each SDK, registering the same fixed conformance activities (an echo activity, a retryable-fail activity, a terminal-fail activity, a heartbeating slow activity, a cancellation-observing activity).",
+          "The suite runs all three workers through every scenario in scenarios.json and asserts the recorded behaviour is identical across languages (same reports, same classification, same re-report on reconnect, same peak concurrency).",
+          "A drift in any one SDK (e.g. a mis-classified failure or a missing re-report) fails the suite with a clear per-scenario, per-language diff.",
+          "The suite runs without a live engine \u2014 only the fake harness \u2014 and is gated to skip cleanly if an SDK's toolchain is unavailable in the environment (logged skip, per CO6)."
+        ],
+        "files": {
+          "create": [
+            "conformance/aion-workers/fake_engine/runners.md"
+          ],
+          "modify": [
+            "conformance/aion-workers/README.md"
+          ]
+        },
+        "checklist": [
+          "C36"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "JSON payload round-trip parity",
+        "spec": "THE SYSTEM SHALL verify that the same input value encodes to an equivalent JSON Payload and decodes back to an equal value in each of the three SDKs.",
+        "acceptance": [
+          "A fixed set of representative values (nested object, array, numbers, booleans, null, unicode string) is encoded and decoded by each SDK's codec.",
+          "The encoded Payload content-type tag is the JSON baseline in all three (CO7), and the byte/string form is equivalent modulo insignificant whitespace.",
+          "Decoding the other SDK's encoding yields an equal value (Rust decodes Python's encoding, etc.), proving cross-language interchange.",
+          "The parity check fails if any SDK alters the content-type tag or loses a field on round-trip."
+        ],
+        "files": {
+          "create": [
+            "conformance/aion-workers/payload_parity.md"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C37"
+        ],
+        "stories": [
+          "S11"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT exercise a real aion-server or engine \u2014 the harness is a fake worker-endpoint per CO6.",
+      "SHALL NOT modify the SDKs to pass \u2014 a conformance failure is a bug fixed in the offending SDK's brief, not patched here.",
+      "SHALL NOT define new protocol behaviour \u2014 it asserts the behaviour AR-001..AR-010 implement against the AW contract."
+    ],
+    "verification": [
+      "The conformance suite runs all three SDKs against the fake harness and passes every scenario.",
+      "JSON payload round-trip parity passes across all three SDKs, including cross-language decode.",
+      "A deliberately-broken SDK build (e.g. flipping a classification) is shown to fail the suite (negative check documented).",
+      "Each SDK's own toolchain gates still pass (Rust clippy/fmt/test; Python ruff/mypy/pytest; TS tsc/eslint/vitest).",
+      "No lint-bypass directives in any language (CO2)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C35",
+        "text": "A language-agnostic scenario set defines the protocol behaviours every SDK must exhibit: register, receive+complete, receive+fail-retryable, receive+fail-terminal, heartbeat, cancellation, reconnect-and-re-report, and backpressure under full concurrency."
+      },
+      {
+        "id": "C36",
+        "text": "A fake worker-endpoint harness drives the scenarios, and each of the three SDKs is run against it producing identical observable wire behaviour (same completion/failure classification, same re-report on reconnect)."
+      },
+      {
+        "id": "C37",
+        "text": "JSON payload round-trip parity is verified across all three SDKs: the same input value encodes to an equivalent Payload and decodes back to an equal value in each language."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S11",
+        "text": "As a workflow author, I want an activity served by any language to behave identically \u2014 same completion, same retryable/terminal classification, same recorded result \u2014 so that I never need to know which runtime served it."
+      },
+      {
+        "id": "S12",
+        "text": "As an SDK maintainer, I want a cross-SDK conformance suite that drives all three SDKs against a fake engine harness so that I can prove they exhibit identical protocol behaviour and catch any drift between languages."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

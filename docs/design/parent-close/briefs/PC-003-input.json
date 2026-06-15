@@ -1,0 +1,427 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "PC-003",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "PC-003",
+    "cluster": "parent-close",
+    "title": "SDK spawn signature update, call-site migration, and e2e policy tests",
+    "depends_on": [
+      "PC-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C20",
+      "C21",
+      "C22",
+      "C23",
+      "C24",
+      "C25",
+      "C26",
+      "C27",
+      "C29",
+      "C30",
+      "C31"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S8",
+      "S9",
+      "S10"
+    ],
+    "design_anchor": [
+      "ADR-001",
+      "ADR-002",
+      "ADR-004"
+    ],
+    "purpose": "Surfaces the ParentClosePolicy (established by PC-001, enforced by PC-002) in the Gleam authoring SDK and updates every call site. child.spawn and child.spawn_and_wait gain a required policy parameter \u2014 no default, per ADR-001 \u2014 and spawn_config encodes the policy into the JSON config crossing the NIF boundary. Every existing spawn call site (stacked-dev's stacked_dev.gleam and dispatch.gleam, the nested_chain test fixture's level_one/level_two/level_self.gleam, the child_query fixture's parent_query.gleam) is updated with an explicit policy choice. An e2e test proves each of the three policies: RequestCancel cascades a cancellation, Terminate kills the child immediately, and Abandon lets the child survive the parent's terminal. This is a breaking change per ADR-002 (no backwards compatibility): call sites that omit the policy will not compile.",
+    "task": "Update the Gleam SDK spawn/spawn_and_wait signatures and migrate all call sites. Five areas: (1) Define a ParentClosePolicy type in the Gleam SDK (either in aion/child.gleam as a type local to the child module, or in a new aion/policy.gleam if the file size warrants \u2014 the type is a three-variant enum matching the Rust side: RequestCancel, Terminate, Abandon). (2) Add the required policy parameter to child.spawn in gleam/aion_flow/src/aion/child.gleam \u2014 it goes after the name parameter and before workflow_fn, matching the position a user reads first ('what is this child called, what is its lifecycle contract, what does it do'). Update spawn_config to encode the policy as a JSON field in the config string passed to ffi.spawn_child. (3) Add the same parameter to child.spawn_and_wait, forwarded to spawn. (4) Add the parameter to the forwarding wrappers workflow.spawn and workflow.spawn_and_wait in gleam/aion_flow/src/aion/workflow.gleam. (5) Update every call site: stacked_dev.gleam (2 sites), dispatch.gleam (1 site), nested_chain level_one.gleam (1 site), level_two.gleam (1 site), level_self.gleam (1 site), child_query parent_query.gleam (1 site). For the stacked-dev and dispatch call sites, use RequestCancel \u2014 these are parent-child compositions where the parent wants the child to clean up if the parent is cancelled. For the test fixtures, use Terminate \u2014 these are short-lived test workflows where immediate teardown is correct. (6) Write an e2e test (or extend the existing nested_chain test) proving each policy: spawn a parent with three children (one per policy), terminate the parent, and assert the outcomes. Scope boundary \u2014 in: the Gleam type, the spawn/spawn_and_wait signature changes, spawn_config encoding, all call-site updates, and the e2e test. Out: the Rust-side type definition and event field (PC-001); the engine propagation and recovery re-arm (PC-002); any changes to the NIF bridge Rust code that decodes the spawn_config on the engine side (PC-001/PC-002 own the Rust decode if needed, or the NIF bridge may already pass the config through opaquely).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "ParentClosePolicy Gleam type",
+        "spec": "THE SYSTEM SHALL define a ParentClosePolicy type in the aion_flow Gleam SDK with three variants: RequestCancel, Terminate, and Abandon, matching the Rust-side enum (PC-001). THE SYSTEM SHALL place the type in gleam/aion_flow/src/aion/child.gleam (or in a dedicated aion/policy.gleam if child.gleam would exceed readability bounds) and export it for use by workflow authors. THE SYSTEM SHALL NOT provide a default constructor or a 'recommended' variant \u2014 the author must choose explicitly (ADR-001).",
+        "acceptance": [
+          "ParentClosePolicy is a public Gleam type with exactly three variants: RequestCancel, Terminate, Abandon.",
+          "The type is importable from the aion_flow package \u2014 a test module that imports and constructs each variant compiles.",
+          "No default or 'recommended' function exists for the type \u2014 grep for 'default' or 'recommended' in the policy type file returns nothing.",
+          "gleam build succeeds for the aion_flow package."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src/aion/child.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S4",
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "child.spawn gains required policy parameter",
+        "spec": "THE SYSTEM SHALL add a required policy: ParentClosePolicy parameter to the child.spawn function in gleam/aion_flow/src/aion/child.gleam. The parameter SHALL be placed after the name parameter and before the workflow_fn parameter: spawn(name, policy, workflow_fn, input, input_codec, output_codec, error_codec). THE SYSTEM SHALL update spawn_config to accept the policy and encode it as a JSON field (e.g., {\"parent_close_policy\": \"request_cancel\"}) in the config string passed to ffi.spawn_child. THE SYSTEM SHALL NOT change the semantics of the other parameters or the return type.",
+        "acceptance": [
+          "child.spawn requires 7 arguments (up from 6), with policy as the second parameter \u2014 verified by the function signature.",
+          "spawn_config encodes the policy as a JSON string field \u2014 verified by inspecting the spawn_config implementation.",
+          "A call to child.spawn that omits the policy parameter fails at compile time \u2014 verified by a deliberate omission test (the Gleam compiler rejects it).",
+          "A call to child.spawn with policy: RequestCancel compiles and runs through to ffi.spawn_child \u2014 verified by a test or the existing nested_chain fixture.",
+          "gleam build succeeds for the aion_flow package."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src/aion/child.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "child.spawn_and_wait gains required policy parameter",
+        "spec": "THE SYSTEM SHALL add the same required policy: ParentClosePolicy parameter to child.spawn_and_wait in gleam/aion_flow/src/aion/child.gleam, in the same position (after name, before workflow_fn): spawn_and_wait(name, policy, workflow_fn, input, input_codec, output_codec, error_codec). THE SYSTEM SHALL forward the policy to the underlying spawn call.",
+        "acceptance": [
+          "child.spawn_and_wait requires 7 arguments (up from 6), with policy as the second parameter.",
+          "The policy is forwarded to child.spawn \u2014 verified by code inspection.",
+          "A call to child.spawn_and_wait that omits the policy fails at compile time.",
+          "gleam build succeeds."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src/aion/child.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "workflow.spawn and workflow.spawn_and_wait gain policy parameter",
+        "spec": "THE SYSTEM SHALL add the required policy parameter to workflow.spawn and workflow.spawn_and_wait in gleam/aion_flow/src/aion/workflow.gleam, in the same position as in child.gleam (after name, before workflow_fn). THE SYSTEM SHALL forward the policy to the underlying child.spawn and child.spawn_and_wait calls.",
+        "acceptance": [
+          "workflow.spawn requires 7 arguments with policy as the second parameter \u2014 verified by the function signature.",
+          "workflow.spawn_and_wait requires 7 arguments with policy as the second parameter.",
+          "Both forward the policy to child.spawn / child.spawn_and_wait \u2014 verified by code inspection.",
+          "gleam build succeeds."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src/aion/workflow.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R5",
+        "title": "stacked-dev call sites updated",
+        "spec": "THE SYSTEM SHALL update both workflow.spawn_and_wait call sites in examples/stacked-dev/src/stacked_dev.gleam and the one workflow.spawn_and_wait call site in examples/stacked-dev/src/dispatch.gleam to include a ParentClosePolicy argument. THE SYSTEM SHALL use RequestCancel for these call sites: stacked-dev composes parent-child workflows where the parent wants the child to clean up gracefully if the parent is cancelled.",
+        "acceptance": [
+          "Both spawn_and_wait calls in stacked_dev.gleam include the policy argument child.RequestCancel (or the equivalent import path) \u2014 verified by code inspection.",
+          "The spawn_and_wait call in dispatch.gleam includes the policy argument child.RequestCancel.",
+          "gleam build succeeds for the stacked-dev example.",
+          "The stacked-dev example runs to completion in the test bed with the policy argument present."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/stacked-dev/src/stacked_dev.gleam",
+            "examples/stacked-dev/src/dispatch.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C23",
+          "C24"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R6",
+        "title": "Test fixture call sites updated",
+        "spec": "THE SYSTEM SHALL update all child.spawn and child.spawn_and_wait call sites in the test fixtures to include a ParentClosePolicy argument: nested_chain/src/level_one.gleam (1 child.spawn call), nested_chain/src/level_two.gleam (1 child.spawn call), nested_chain/src/level_self.gleam (1 child.spawn_and_wait call), child_query/src/parent_query.gleam (1 child.spawn call). THE SYSTEM SHALL use Terminate for these test fixtures: they are short-lived test workflows where immediate teardown is appropriate and clean shutdown logic is not exercised.",
+        "acceptance": [
+          "level_one.gleam child.spawn call includes child.Terminate \u2014 verified by code inspection.",
+          "level_two.gleam child.spawn call includes child.Terminate.",
+          "level_self.gleam child.spawn_and_wait call includes child.Terminate.",
+          "parent_query.gleam child.spawn call includes child.Terminate.",
+          "gleam build succeeds for both test fixture packages.",
+          "The existing nested_chain and child_query integration tests pass with the updated fixtures."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/tests/fixtures/nested_chain/src/level_one.gleam",
+            "crates/aion/tests/fixtures/nested_chain/src/level_two.gleam",
+            "crates/aion/tests/fixtures/nested_chain/src/level_self.gleam",
+            "crates/aion/tests/fixtures/child_query/src/parent_query.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R7",
+        "title": "E2e test exercising all three policies",
+        "spec": "THE SYSTEM SHALL include an end-to-end test that exercises all three ParentClosePolicy variants. The test SHALL spawn a parent workflow that starts three children \u2014 one with RequestCancel, one with Terminate, and one with Abandon. The parent SHALL then reach a terminal state (the test MAY use any terminal kind; Failed is sufficient to demonstrate). WHEN the parent terminates, THE SYSTEM SHALL assert: (a) the RequestCancel child receives a WorkflowCancelled event in its history, (b) the Terminate child receives a WorkflowFailed event with a message containing 'parent-close policy', and (c) the Abandon child has no new terminal event and is still running (or completes on its own terms). The test MAY be a new Gleam test fixture or an extension of the existing nested_chain fixture.",
+        "acceptance": [
+          "The e2e test spawns a parent with three children, each with a different policy, and the parent reaches a terminal.",
+          "The RequestCancel child's history contains a WorkflowCancelled event after the parent's terminal.",
+          "The Terminate child's history contains a WorkflowFailed event with a message referencing parent-close policy after the parent's terminal.",
+          "The Abandon child has no parent-policy-induced terminal event \u2014 it either continues running or completes on its own.",
+          "The test passes in the test bed: cargo test or the equivalent integration test runner succeeds."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/tests/parent_close_e2e.rs"
+          ],
+          "modify": [
+            "crates/aion/tests/nested_workflows_e2e.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S1",
+          "S2",
+          "S3",
+          "S9"
+        ]
+      },
+      {
+        "id": "R8",
+        "title": "Cluster invariants and gate hold across PC-003 diff",
+        "spec": "THE SYSTEM SHALL introduce no new Event variant and no new status variant (CN1). The policy parameter SHALL have no default \u2014 omitting it is a compile-time error in Gleam (CN4, ADR-001). THE SYSTEM SHALL NOT add #[allow], #[expect], unwrap, or expect in non-test library code on the Rust side (if any Rust test harness code is modified), and every touched file SHALL remain under 500 LOC excluding tests. WHEN PC-003 lands (on top of PC-001), gleam build for all Gleam packages, cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and cargo test --workspace SHALL pass clean.",
+        "acceptance": [
+          "gleam build succeeds for aion_flow, stacked-dev, nested_chain, and child_query packages.",
+          "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; cargo test --workspace passes.",
+          "No new Event variant is introduced \u2014 the diff is Gleam-side and test-harness only, no aion-core changes.",
+          "The policy parameter has no default \u2014 a Gleam file that calls child.spawn with 6 arguments (omitting policy) fails to compile.",
+          "Every touched file stays under 500 LOC (Gleam files are measured by line count)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C27",
+          "C29",
+          "C30",
+          "C31"
+        ],
+        "stories": [
+          "S4"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define or modify the Rust-side ParentClosePolicy type or the event/command field additions \u2014 that is PC-001.",
+      "SHALL NOT implement engine propagation logic or recovery re-arm \u2014 that is PC-002.",
+      "SHALL NOT provide a default, recommended, or fallback policy value \u2014 ADR-001 requires explicit choice at every call site.",
+      "SHALL NOT add backwards-compatible overloads (spawn with 6 params alongside spawn with 7 params) \u2014 ADR-002 prohibits compatibility shims.",
+      "SHALL NOT introduce a new Event variant or status variant on the Rust side.",
+      "SHALL NOT modify the NIF bridge Rust decode logic for spawn_config unless the opaque pass-through cannot carry the policy field \u2014 if modification is needed, it is scoped to adding a field read, not structural NIF changes."
+    ],
+    "verification": [
+      "gleam build succeeds for aion_flow, the stacked-dev example, the nested_chain fixture, and the child_query fixture \u2014 all call sites compile with the policy argument.",
+      "cargo test --workspace passes, including the existing nested_chain and child_query integration tests running against the updated fixtures.",
+      "The e2e policy test passes: RequestCancel child receives cancellation, Terminate child receives immediate failure, Abandon child survives.",
+      "A deliberate omission test: removing the policy argument from one call site and running gleam build produces a compile error (verified manually during implementation, not a persistent test).",
+      "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both exit 0.",
+      "grep for 'default' or 'recommended' in the ParentClosePolicy type definition returns nothing.",
+      "Every modified Gleam file stays under 500 LOC."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "No arbitrary limits, no assumed defaults",
+        "decision": "Configurable values come from the builder/author or are deferred to the layer that owns them (e.g. beamr's own defaults). No caps, rate limits, or hardcoded defaults invented at the aion layer. Values are discussed before implementation. Rejected: convenience defaults \u2014 they are decisions made for the user without telling them.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-002",
+        "title": "No backwards compatibility during the build",
+        "decision": "Replace, don't add alongside. No compat shims, no zombie code, no #[deprecated] markers. Breaking changes are made cleanly and consumers move forward. Rejected: incremental deprecation cycles \u2014 they double the surface under test for an audience of zero.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-004",
+        "title": "Parent-close policy: required per spawn, RequestCancel | Terminate | Abandon",
+        "decision": "Temporal-style per-spawn parent-close policy \u2014 RequestCancel (graceful cascade), Terminate (immediate kill), Abandon (child hands off and keeps running past the parent's terminal; today's behaviour made explicit) \u2014 as a REQUIRED argument on child.spawn / spawn_and_wait. Rejected: defaulting to any of the three (ADR-001).",
+        "quote": "And I'll accept your recommendation for the parent clothes policy that means that if I'm understanding you correctly that you can decide whether a child workflows stays running if the parent workflow stops running as in like a cannibal almost like it hands off is that right?",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C20",
+        "text": "child.spawn in gleam/aion_flow/src/aion/child.gleam gains a required policy parameter (a Gleam type representing the three variants) before the codec parameters, and spawn_config encodes the policy into the JSON config passed to the NIF boundary."
+      },
+      {
+        "id": "C21",
+        "text": "child.spawn_and_wait in gleam/aion_flow/src/aion/child.gleam gains the same required policy parameter, forwarded to spawn."
+      },
+      {
+        "id": "C22",
+        "text": "workflow.spawn and workflow.spawn_and_wait in gleam/aion_flow/src/aion/workflow.gleam gain the required policy parameter, forwarding to child.spawn and child.spawn_and_wait."
+      },
+      {
+        "id": "C23",
+        "text": "Both spawn_and_wait call sites in examples/stacked-dev/src/stacked_dev.gleam are updated with an explicit ParentClosePolicy argument."
+      },
+      {
+        "id": "C24",
+        "text": "The spawn_and_wait call site in examples/stacked-dev/src/dispatch.gleam is updated with an explicit ParentClosePolicy argument."
+      },
+      {
+        "id": "C25",
+        "text": "All child.spawn and child.spawn_and_wait call sites in the test fixtures (nested_chain level_one.gleam, level_two.gleam, level_self.gleam; child_query parent_query.gleam) are updated with explicit policy arguments."
+      },
+      {
+        "id": "C26",
+        "text": "An e2e test exercises all three policies: a parent that terminates with a RequestCancel child verifies the child receives a cancellation; a parent with a Terminate child verifies the child is immediately failed; a parent with an Abandon child verifies the child continues running after the parent's terminal."
+      },
+      {
+        "id": "C27",
+        "text": "No new Event variant is introduced (the policy is a field on ChildWorkflowStarted, not a new event); no new terminal status variant is added; status_from_events derives status from the same event types as before (invariant 4, CN1)."
+      },
+      {
+        "id": "C29",
+        "text": "No #[allow], #[expect], unwrap, or expect appears in non-test library code added by any brief; every touched source file stays under 500 LOC excluding tests (CN6)."
+      },
+      {
+        "id": "C30",
+        "text": "cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite pass clean at the cluster's landing commit."
+      },
+      {
+        "id": "C31",
+        "text": "No arbitrary default for the policy: omitting the policy parameter is a compile-time error in both Gleam and Rust (CN4, ADR-001)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As an AI team member dispatching a parent workflow with long-running children, I want to declare at spawn time what happens to each child if the parent terminates so that a cancelled parent does not leave orphaned children consuming resources indefinitely."
+      },
+      {
+        "id": "S2",
+        "text": "As an AI team member, I want Abandon as an explicit policy choice so that I can intentionally hand off a child to outlive its parent \u2014 the fire-and-forget pattern \u2014 without relying on undocumented implicit behaviour."
+      },
+      {
+        "id": "S3",
+        "text": "As an AI team member running a fan-out dispatch workflow, I want RequestCancel on my children so that if the dispatch is cancelled, each child gets a chance to clean up before stopping, rather than being killed mid-operation."
+      },
+      {
+        "id": "S4",
+        "text": "As an AI team member, I want the policy to be required at compile time so that I cannot accidentally spawn a child with no declared lifecycle relationship \u2014 the omission is a build error, not a runtime surprise."
+      },
+      {
+        "id": "S8",
+        "text": "As a workflow author, I want the policy parameter on child.spawn and child.spawn_and_wait so that I state the parent-child lifecycle contract in the same expression where I state the child's type and input."
+      },
+      {
+        "id": "S9",
+        "text": "As a workflow author, I want Terminate available for children that must not outlive the parent under any circumstances so that a parent's failure immediately kills the child without waiting for a graceful shutdown that may never come."
+      },
+      {
+        "id": "S10",
+        "text": "As a workflow author, I want the policy choice to be per-spawn, not per-workflow-type, so that the same child workflow type can be spawned with RequestCancel in one context and Abandon in another."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Status stays a projection (invariant 4): the policy propagation for Terminate records a WorkflowFailed and for RequestCancel records a WorkflowCancelled \u2014 both through the existing terminal event types. No new terminal event type or status variant is introduced; status_from_events derives status from the same events as before."
+      },
+      {
+        "id": "CN2",
+        "text": "Single-writer Recorder respected (invariant 3): policy propagation records child terminals through the child's own Recorder under its lock. The parent does not append events to the child's history directly via EventStore::append."
+      },
+      {
+        "id": "CN3",
+        "text": "Type-erased events (invariant 1): ParentClosePolicy is a field on ChildWorkflowStarted, not a new Event variant. The Event/Payload contract is extended by a field, not a new family."
+      },
+      {
+        "id": "CN4",
+        "text": "No arbitrary defaults (ADR-001): the policy parameter is required at every spawn call site. The engine never infers or defaults a policy. A missing policy is a compile-time error in Gleam and a missing-field error in the Rust Command construction."
+      },
+      {
+        "id": "CN5",
+        "text": "No backwards compatibility (ADR-002): the spawn signature changes are breaking. Old call sites that do not supply the policy will not compile. There is no compatibility shim, no deprecated overload, and no migration path beyond updating the call."
+      },
+      {
+        "id": "CN6",
+        "text": "Library-code purity: no #[allow], #[expect], unwrap, or expect in non-test lib code; clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; every touched file stays under 500 LOC excluding tests."
+      },
+      {
+        "id": "CN7",
+        "text": "Propagation covers all terminals: the engine dispatches the policy not only when the parent is cancelled but also when it completes, fails, or times out. The parent's terminal kind determines only THAT propagation happens, not WHETHER to propagate; the child's recorded policy determines WHAT action to take."
+      },
+      {
+        "id": "CN8",
+        "text": "Recovery completeness: if the engine crashes between a parent's terminal event and the policy dispatch for one or more children, recovery at startup re-walks the parent's ChildWorkflowStarted events, checks each child's current status, and dispatches any policy that was not yet applied. No propagation is lost to a crash."
+      },
+      {
+        "id": "CN9",
+        "text": "Determinism boundary respected (invariant 2): the policy is a recorded field on ChildWorkflowStarted and is replayed deterministically. Recovery reads the policy from history, not from configuration or wall-clock state."
+      }
+    ],
+    "intention": "When an author spawns a child workflow, they state \u2014 at spawn time, as a required argument \u2014 what the engine does with that child if the parent reaches a terminal state. The three policies are RequestCancel (graceful cascade: send the child a cancellation request and let it handle it), Terminate (immediate kill: the child is terminated without a chance to clean up), and Abandon (the child hands off and keeps running past the parent's death \u2014 today's implicit behaviour made explicit). When this is done, no child workflow ever outlives or dies with its parent by accident: the relationship is declared, durable, recursive, and re-armed on recovery. The engine propagates the chosen policy on ALL parent terminals \u2014 completed, failed, cancelled, timed out \u2014 not just cancellation, because a parent that completed successfully still leaves descendants that may or may not have a reason to keep running, and that decision belongs to the author, not the engine.",
+    "design_path": "docs/design/parent-close",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When an author spawns a child workflow, they state \u2014 at spawn time, as a required argument \u2014 what the engine does with that child if the parent reaches a terminal state. The three policies are Request"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

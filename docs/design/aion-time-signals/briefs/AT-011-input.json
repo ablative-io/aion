@@ -1,0 +1,157 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AT-011",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AT-011",
+    "cluster": "aion-time-signals",
+    "title": "race: first result wins, cancel and record the rest",
+    "depends_on": [
+      "AT-009"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C31"
+    ],
+    "stories": [
+      "S6"
+    ],
+    "purpose": "Implement the race primitive: spawn N children, return the first result to arrive, then cancel the remaining children and record their cancellation. This is the pattern for primary/fallback calls and timeouts-via-race, built on the correlation/cancellation substrate from AT-009.",
+    "task": "Implement race over a fixed list of child specs. Spawn each as a linked child carrying its correlation token (AT-009), block in selective receive for the first result to arrive, return it, and cancel the remaining in-flight children via the AT-009 cancel path, recording their cancellation.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Return the first result to arrive",
+        "spec": "WHEN race is called with N child specs, THE SYSTEM SHALL spawn N linked children and return the first result to arrive.",
+        "acceptance": [
+          "race.rs defines race(specs) that spawns each spec as a linked child tagged with its correlation token (AT-009 R1) and returns the first arriving result.",
+          "The winner is the first result message received, matched by token to its spawn index (the index is available on the result if the caller needs to know which won).",
+          "A test spawns 3 children, delivers the second-spawned child's result first, and asserts race returns that result.",
+          "If the first result to arrive is a failure, race returns that failure (race resolves on first settle \u2014 first to finish wins whether success or failure); a doc comment states this and a test covers a first-arriving failure."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/concurrency/race.rs"
+          ],
+          "modify": [
+            "crates/aion/src/concurrency/mod.rs"
+          ]
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Cancel and record the losers",
+        "spec": "WHEN race has a winner, THE SYSTEM SHALL cancel the remaining in-flight children via the AT-009 cancel path AND record their cancellation.",
+        "acceptance": [
+          "After the first result settles, race cancels the remaining children (AT-009 R3), terminating their linked processes and recording cancellation for each.",
+          "No losing child's later result is returned or recorded as a completion (the winner stands; late results are drained without effect).",
+          "A test asserts that after the winner is chosen, the other two children are terminated and their cancellation recorded, and a late result from a loser does not alter the race outcome."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/concurrency/race.rs"
+          ]
+        },
+        "checklist": [
+          "C31"
+        ],
+        "stories": [
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT reimplement correlation, matching, or cancellation \u2014 those are AT-009.",
+      "SHALL NOT implement all or map \u2014 those are AT-010 and AT-012.",
+      "SHALL NOT define the Gleam workflow.race surface \u2014 that is AF."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion passes, including winner-selection and loser-cancellation tests.",
+      "cargo fmt --check passes.",
+      "Losing children are cancelled and recorded; late loser results have no effect (verified by test).",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C31",
+        "text": "race spawns N linked children, returns the first result to arrive, then cancels the remaining children and records their cancellation."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S6",
+        "text": "As a workflow author, I want to fan work out with all, race the fastest of several with race, and fan out dynamically from data with map so that I can express concurrency directly without writing a join runtime."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny across the cluster's modules."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "Library errors use thiserror domain types; no anyhow in library code; no unwrap/expect in library code; lock poisoning handled explicitly."
+      },
+      {
+        "id": "CO6",
+        "text": "These modules live in the aion crate. The seam with AE (workflow process lifecycle, supervision, module loading, residency resolution) is via an explicit engine-facing handle/trait this cluster consumes; this cluster does not manage process lifecycle."
+      },
+      {
+        "id": "CO7",
+        "text": "Every interaction that changes what a workflow observed is recorded as an aion-core Event before/at the point of delivery; queries record nothing. No code path delivers a recordable observation without recording it (no silent observation)."
+      },
+      {
+        "id": "CO8",
+        "text": "Durable timers go through EventStore::schedule_timer / expired_timers; all AT event appends (TimerStarted/Fired/Cancelled, SignalReceived, ChildWorkflow*) go through the target workflow's single Recorder via the engine seam (AD CO6) \u2014 never a direct EventStore::append and no bespoke side-channel persistence outside the aion-store contract."
+      },
+      {
+        "id": "CO9",
+        "text": "Tests run against aion-store's InMemoryStore; timer expiry, signal delivery + durability, query reply, child spawn, and all/race/map each have explicit test coverage. Time-dependent tests inject the clock \u2014 no wall-clock sleeps in tests."
+      },
+      {
+        "id": "CO10",
+        "text": "Timer poll intervals, query timeouts, and recovery-tick cadence are engine-configured, never hardcoded defaults (per the no-assumed-defaults rule)."
+      }
+    ],
+    "intention": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow spawning, and the all/race/map concurrency primitives. A workflow process sleeps for a month and wakes; an external system signals an awaiting workflow and the workflow continues in microseconds; an operator queries a live workflow without perturbing it; a parent spawns children and fans work out across the BEAM. These are the interaction surfaces, and they must be both microsecond-fast on the live path and exactly recoverable after a crash. Every interaction that changes what a workflow observed (a timer firing, a signal arriving, a child completing) is recorded as an aion-core Event so that AD's replay returns the same observation without re-waiting; every interaction that observes without changing (a query) is never recorded. The work here is the live half of durable execution \u2014 recording the observable, delivering it over beamr's native mailbox and timer wheel, and recovering it on restart \u2014 paired with AD's replay half that reads those same events back.",
+    "design_path": "docs/design/aion-time-signals",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the engine-side mechanisms that let a running workflow process interact with the outside world and coordinate concurrent work: durable timers, signal delivery, read-only queries, child-workflow"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -2,7 +2,7 @@
   "repo_root": "/Users/tom/Developer/ablative/aion",
   "brief_id": "OBS-004",
   "reviewers": [
-    "Waffles"
+    "Waffles the Terrible"
   ],
   "base_ref": "main",
   "placement": "local",
@@ -245,5 +245,6 @@
   "review_cap": 1,
   "round_backoff_ms": 2000,
   "review_deadline_ms": 300000,
-  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355"
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
 }

@@ -1,0 +1,90 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-002",
+    "cluster": "aion-dx",
+    "title": "Stale database detection and actionable error messages",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "A pre-existing .db file from a previous schema version crashes the server with 'store serialization error: missing field run_id'. Developers hit this after any schema-changing update. The server should detect stale databases at startup and give clear guidance.",
+    "task": "Add a schema version check at server startup. If the database schema is incompatible, emit a clear error message telling the developer to delete the .db file and restart. Also improve the cancel endpoint error from 'engine backend failure' to include the actual reason.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Detect stale database schema at startup",
+        "spec": "WHEN the server starts and the store contains events with an incompatible schema, THE SYSTEM SHALL detect this before serving requests and exit with a clear error message: 'Database schema mismatch \u2014 delete [path] and restart, or run migrations.' THE SYSTEM SHALL NOT crash with an opaque deserialization error.",
+        "acceptance": [
+          "Starting with a stale .db file produces a clear error naming the file path.",
+          "The error exits with code 2 (config/startup error).",
+          "Starting with a fresh or compatible .db file works normally."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/state.rs",
+            "crates/aion-server/src/main.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Actionable error messages for cancel and other engine operations",
+        "spec": "WHEN an engine operation fails, THE SYSTEM SHALL return the actual error reason in the response body, not a generic 'engine backend failure'. Cancel, signal, query, and describe endpoints SHALL all include the typed error variant and reason.",
+        "acceptance": [
+          "Cancel of a dead workflow returns a message explaining why (e.g. 'workflow process is not live').",
+          "No endpoint returns the bare string 'engine backend failure' without a reason.",
+          "Error responses include an 'error_type' field with the variant name."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-server/src/api/handlers.rs",
+            "crates/aion-server/src/api/http.rs",
+            "crates/aion-server/src/api/grpc.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT implement database migrations \u2014 detect and advise, don't auto-migrate.",
+      "SHALL NOT change the error taxonomy in the engine crate."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo fmt --check passes.",
+      "cargo test --workspace passes.",
+      "Stale database produces a clear, actionable error at startup."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

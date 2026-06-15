@@ -1,0 +1,230 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AP-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AP-001",
+    "cluster": "aion-package",
+    "title": "aion-package crate scaffold, error taxonomy, and beam set types",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5"
+    ],
+    "stories": [
+      "S1",
+      "S5"
+    ],
+    "purpose": "Create the aion-package leaf crate and the two foundational types every later brief builds on: the PackageError taxonomy that every failure path maps into, and the BeamModule/BeamSet types that carry compiled modules with a canonical ordering. This is the foundation for the manifest, hashing, write, and read paths.",
+    "task": "Create the aion-package crate as a workspace member depending only on aion-core among Aion crates. Add a thin lib.rs re-export surface. Define PackageError as a closed thiserror enum covering every malformed-input case the read path can hit. Define BeamModule (logical name + exact bytes) and BeamSet (an ordered collection of BeamModules) with a deterministic canonical ordering sorted by logical name. Do not define the manifest, hashing, namespacing, or the write/read paths \u2014 those land in later briefs.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Crate scaffold and workspace wiring",
+        "spec": "THE SYSTEM SHALL create the aion-package crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL NOT add any dependency on an Aion crate other than aion-core.",
+        "acceptance": [
+          "crates/aion-package exists and is registered in the workspace Cargo.toml members list.",
+          "aion-package/Cargo.toml depends on aion-core plus external crates only (a zip crate, serde, a hashing crate, thiserror) \u2014 no dependency on aion, aion-server, beamr, or any storage backend.",
+          "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+          "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints.",
+          "cargo check -p aion-package passes."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/Cargo.toml",
+            "crates/aion-package/src/lib.rs"
+          ],
+          "modify": [
+            "Cargo.toml"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C2"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "PackageError taxonomy",
+        "spec": "THE SYSTEM SHALL define PackageError as a closed thiserror enum with a distinct variant for every malformed-input case: archive-read/not-a-ZIP failure, missing manifest, manifest parse failure, unknown format_version, missing entry module, integrity (hash) mismatch, and malformed beam entry.",
+        "acceptance": [
+          "error.rs defines PackageError as a thiserror enum (no anyhow).",
+          "Distinct variants exist for: ArchiveRead (not a ZIP / read failure, wrapping the underlying cause), MissingManifest, ManifestParse, UnknownFormatVersion { found }, MissingEntryModule { module }, IntegrityMismatch { expected, computed }, and MalformedBeamEntry { entry }.",
+          "PackageError derives Debug, implements std::error::Error and Display via thiserror, and is Send + Sync.",
+          "Each variant's Display message names the failing condition precisely (no generic catch-all message).",
+          "No variant is a bare String catch-all that collapses distinct failures together."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/error.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C3"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "BeamModule and BeamSet with canonical ordering",
+        "spec": "THE SYSTEM SHALL define BeamModule carrying a logical module name and its exact compiled bytes, and BeamSet as an ordered collection of BeamModules with a deterministic canonical ordering sorted by logical module name and independent of insertion order.",
+        "acceptance": [
+          "beam.rs defines BeamModule { name: String, bytes: Vec<u8> } (or equivalent) preserving bytes exactly, deriving Clone, Debug, PartialEq.",
+          "BeamSet stores BeamModules and exposes a canonical iteration order sorted by logical module name.",
+          "Constructing a BeamSet from the same modules in different insertion orders yields the same canonical order (a unit test asserts this).",
+          "BeamSet rejects or is documented to reject duplicate logical module names so the canonical order is unambiguous.",
+          "BeamSet exposes lookup of a module's bytes by logical name."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/beam.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C4",
+          "C5"
+        ],
+        "stories": [
+          "S1"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the Manifest \u2014 that lands in AP-002.",
+      "SHALL NOT compute the content hash \u2014 that lands in AP-003.",
+      "SHALL NOT define the namespacing transform \u2014 that lands in AP-004.",
+      "SHALL NOT implement the write or read path \u2014 those land in AP-005 and AP-006."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-package passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "crates/aion-package exists, is registered as a workspace member, and depends only on aion-core among Aion crates (plus external crates: zip, serde, a hashing crate, thiserror)."
+      },
+      {
+        "id": "C2",
+        "text": "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic, and sets unsafe_code = \"deny\"."
+      },
+      {
+        "id": "C3",
+        "text": "PackageError is a closed thiserror enum with distinct variants for: not-a-ZIP/archive-read failure, missing manifest, manifest parse failure, unknown format_version, missing entry module, integrity (hash) mismatch, and malformed beam entry."
+      },
+      {
+        "id": "C4",
+        "text": "BeamModule carries a logical module name and its exact compiled bytes; BeamSet is an ordered collection of BeamModules."
+      },
+      {
+        "id": "C5",
+        "text": "BeamSet exposes a canonical ordering (sorted by logical module name) that is deterministic and independent of insertion order."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As the engine, I want to load a .aion from a path or byte buffer and get a validated package so that I can register its modules without trusting loose files on disk."
+      },
+      {
+        "id": "S5",
+        "text": "As a workflow author, I want to package my compiled beams and a manifest into a single .aion file so that deploying my workflow is copying one file."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO7",
+        "text": "The content hash is computed over the canonical beam set only \u2014 never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."
+      },
+      {
+        "id": "CO8",
+        "text": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."
+      },
+      {
+        "id": "CO9",
+        "text": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."
+      },
+      {
+        "id": "CO10",
+        "text": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."
+      },
+      {
+        "id": "CO11",
+        "text": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."
+      },
+      {
+        "id": "CO12",
+        "text": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."
+      },
+      {
+        "id": "CO13",
+        "text": "The deployed-name separator is the literal '$' character (logical_name$hash). It is mandated, not illustrative: the engine (AE-005) must split on the identical character. '$' does not occur in Gleam logical module names, so the bijection stays unambiguous."
+      },
+      {
+        "id": "CO14",
+        "text": "The content hash is SHA-256 (via the sha2 crate). The algorithm is part of the format contract so packer and loader on different hosts agree."
+      }
+    ],
+    "intention": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+    "design_path": "docs/design/aion-package",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (w"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

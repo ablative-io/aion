@@ -1,0 +1,248 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AC-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AC-001",
+    "cluster": "aion-core",
+    "title": "aion-core crate scaffold, domain identifiers, and payload",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C13",
+      "C14"
+    ],
+    "stories": [
+      "S2",
+      "S8",
+      "S11"
+    ],
+    "purpose": "Create the aion-core leaf crate and define the foundational value types every other type and crate references: the newtype identifiers and the type-erased Payload carrier. This is the foundation of the entire Aion type system. Payload lives here, not in AC-002, because both the error taxonomy (AC-004) and the event model (AC-002) depend on it \u2014 placing it at the root keeps the brief dependency graph acyclic.",
+    "task": "Create the aion-core crate with a thin lib.rs re-export surface, an ids module defining WorkflowId, ActivityId, TimerId, and RunId as distinct newtypes, and a payload module defining the Payload newtype that carries opaque serialised values through events and errors. The crate must depend on no other Aion crate. Identifiers must be constructible, serialisable, and printable, and must be distinct types the compiler will not interchange. Payload must round-trip losslessly to and from serde_json::Value.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Crate scaffold and workspace wiring",
+        "spec": "THE SYSTEM SHALL create the aion-core crate as a workspace member with a lib.rs that contains only module declarations and re-exports. THE SYSTEM SHALL NOT add any dependency on another Aion crate.",
+        "acceptance": [
+          "crates/aion-core exists and is registered in the workspace Cargo.toml members list.",
+          "aion-core/Cargo.toml declares only external dependencies (serde, serde_json, uuid, thiserror, chrono or equivalent) \u2014 no aion-* dependency.",
+          "src/lib.rs contains only pub mod declarations and pub use re-exports, no logic.",
+          "cargo check -p aion-core passes.",
+          "The crate sets unsafe_code = \"deny\" and inherits the workspace clippy lints."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/Cargo.toml",
+            "crates/aion-core/src/lib.rs"
+          ],
+          "modify": [
+            "Cargo.toml"
+          ]
+        },
+        "checklist": [
+          "C5"
+        ],
+        "stories": [
+          "S11"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Identifier newtypes",
+        "spec": "THE SYSTEM SHALL define WorkflowId, ActivityId, TimerId, and RunId as distinct newtypes. WorkflowId and RunId SHALL wrap a Uuid. ActivityId SHALL derive from a scheduling sequence position. TimerId SHALL support both an author-assigned name and an engine-assigned value.",
+        "acceptance": [
+          "ids.rs defines WorkflowId(Uuid) and RunId(Uuid) with new() and new_v4()-style constructors.",
+          "ActivityId is constructible from a u64 sequence position and exposes that position, so replay can match a recorded result to its scheduling call deterministically.",
+          "TimerId has two constructors: a named one (from a String) and an anonymous one (from the engine, derived from sequence position).",
+          "Each identifier is a separate type; the compiler rejects passing one identifier type where another is expected.",
+          "No bare Uuid or String appears in the public surface where one of these identifiers is meant."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/ids.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C1",
+          "C2",
+          "C3",
+          "C4"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Identifier traits \u2014 serde, display, equality",
+        "spec": "THE SYSTEM SHALL derive Serialize, Deserialize, Clone, Debug, PartialEq, Eq, and Hash on every identifier, and SHALL implement Display. Round-tripping an identifier through serde_json SHALL produce an equal value.",
+        "acceptance": [
+          "All four identifiers derive Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash.",
+          "All four implement Display rendering a stable, human-readable form.",
+          "A unit test round-trips each identifier through serde_json and asserts equality.",
+          "WorkflowId and RunId are usable as HashMap keys (Eq + Hash verified by a test)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-core/src/ids.rs"
+          ]
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Payload newtype",
+        "spec": "THE SYSTEM SHALL define Payload as a newtype over a byte buffer plus a content-type tag. THE SYSTEM SHALL provide lossless conversion between Payload and serde_json::Value. Payload is the type-erased carrier for all user data that flows through events and error details.",
+        "acceptance": [
+          "payload.rs defines Payload holding bytes and a content-type tag (an enum or stable string identifying the encoding).",
+          "Payload::from_json(&serde_json::Value) and Payload::to_json() -> Result round-trip losslessly for all JSON value kinds.",
+          "Payload derives Serialize, Deserialize, Clone, Debug, PartialEq.",
+          "A unit test asserts round-trip fidelity for null, bool, number, string, array, and object."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-core/src/payload.rs"
+          ],
+          "modify": [
+            "crates/aion-core/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C13",
+          "C14"
+        ],
+        "stories": [
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the Event enum \u2014 that lands in AC-002. Payload (the value carrier) lands here because both AC-002 and AC-004 depend on it.",
+      "SHALL NOT define WorkflowStatus, filters, or errors \u2014 those land in AC-003 and AC-004.",
+      "SHALL NOT define the EventStore trait \u2014 that is the aion-store crate in AC-005."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-core passes.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "WorkflowId is a newtype over Uuid deriving Serialize, Deserialize, Clone, Debug, Eq, Hash, and Display."
+      },
+      {
+        "id": "C2",
+        "text": "ActivityId is a newtype whose value derives from the activity's scheduling sequence position, enabling deterministic replay matching."
+      },
+      {
+        "id": "C3",
+        "text": "TimerId is a newtype supporting both author-assigned (named) and engine-assigned (anonymous) construction."
+      },
+      {
+        "id": "C4",
+        "text": "RunId is a newtype distinguishing successive runs of the same logical workflow (reset / continue-as-new)."
+      },
+      {
+        "id": "C5",
+        "text": "No public signature in aion-core accepts a bare Uuid or String where a domain identifier is meant."
+      },
+      {
+        "id": "C13",
+        "text": "Payload is a newtype over bytes with a content-type tag."
+      },
+      {
+        "id": "C14",
+        "text": "Payload constructs from and converts to serde_json::Value and round-trips losslessly."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S2",
+        "text": "As the engine, I want to read a workflow's complete ordered history so that I can replay it to reconstruct the workflow's state."
+      },
+      {
+        "id": "S8",
+        "text": "As a workflow author, I want time and identifiers to be deterministic so that my workflow replays to exactly the same state every time."
+      },
+      {
+        "id": "S11",
+        "text": "As a worker, I want to depend on the domain types without pulling in the store trait so that my worker binary stays small and decoupled."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in both crates."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-core and aion-store are leaf crates \u2014 they depend on no other Aion crate. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "Every type that crosses the wire or the store derives Serialize + Deserialize (these are data types, not credentials)."
+      },
+      {
+        "id": "CO7",
+        "text": "WorkflowStatus is always derivable from event history; no independent status mutation."
+      },
+      {
+        "id": "CO8",
+        "text": "InMemoryStore must pass the same behavioural test suite future durable backends are held to \u2014 it is the oracle, so it must be correct."
+      },
+      {
+        "id": "CO9",
+        "text": "Identifiers are newtypes; no bare Uuid or String in public signatures where an ID is meant."
+      }
+    ],
+    "intention": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a client lists running workflows, a store persists history, or a worker reports a result, they all use the types defined here. The types must make illegal states unrepresentable \u2014 a completed workflow cannot also be running, an activity result cannot exist without a preceding schedule. Nothing here depends on beamr, the engine, networking, or any storage backend. This is the still point at the centre: pure types and one trait, so the rest of Aion can be built against stable contracts.",
+    "design_path": "docs/design/aion-core",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the vocabulary every other part of Aion speaks: the event types, identifiers, workflow status, error taxonomy, and the persistence contract. When the engine records an activity completion, a cl"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,240 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AR-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AR-007",
+    "cluster": "aion-workers",
+    "title": "aion-worker-python: packaging, protocol session, asyncio loop, and reconnect",
+    "depends_on": [
+      "AR-006"
+    ],
+    "blocked_by": [
+      "aion-proto gRPC/protobuf definitions (cluster AW) must be available to generate Python stubs from"
+    ],
+    "checklist": [
+      "C19",
+      "C20",
+      "C21",
+      "C22"
+    ],
+    "stories": [
+      "S8",
+      "S9"
+    ],
+    "purpose": "Bring the worker protocol to Python \u2014 the home for ML and data-science activities. Port the reference state machine (AR-001..AR-006) to an asyncio implementation: a PyPI-packaged project with a session over generated gRPC stubs, a concurrent worker loop, and reconnect-with-re-report. The author-facing typed-activity surface lands in AR-008; this brief is the protocol substrate.",
+    "task": "Create the aion-worker-python project (pyproject.toml, PyPI-ready) depending on grpcio and protobuf, with generated stubs from the aion-proto definitions. Implement session.py (connect+handshake+register over the stubs, behind a session abstraction), loop.py (asyncio receive\u2192dispatch\u2192report with operator-configured bounded concurrency and backpressure), and reconnect.py (backoff reconnect, re-register, re-report un-acked results). Mirror the Rust semantics exactly. The dispatch seam calls into the typed-activity layer from AR-008.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "PyPI packaging and stub generation",
+        "spec": "THE SYSTEM SHALL define a PyPI-installable project depending on grpcio and protobuf, with the aion-proto stubs generated into the package and __init__.py exposing only re-exports.",
+        "acceptance": [
+          "pyproject.toml declares the package metadata, the grpcio and protobuf runtime deps, and a build step that generates gRPC stubs from the aion-proto definitions into aion_worker/proto/.",
+          "aion_worker/__init__.py contains only imports/re-exports of the public surface (no logic), per CO3.",
+          "pip install -e . (or the project's build) succeeds and import aion_worker works.",
+          "A minimal smoke test imports the package and asserts the public names are present."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/pyproject.toml",
+            "sdks/python/aion-worker/aion_worker/__init__.py",
+            "sdks/python/aion-worker/aion_worker/proto/__init__.py"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C19"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Protocol session over gRPC stubs",
+        "spec": "THE SYSTEM SHALL implement a session that connects to the engine endpoint, performs the handshake (task queue + identity), and registers activity-type names, behind a session abstraction the loop depends on.",
+        "acceptance": [
+          "session.py defines a session class with async connect+handshake (task_queue, identity), register(activity_types), a receive-task async iterator, report_result, report_failure, and send_heartbeat \u2014 over the generated stubs.",
+          "The loop and reconnect modules depend on the session abstraction, not on raw stubs directly (per D3), so a fake in-memory session can substitute in tests (CO6).",
+          "Configuration (endpoint, task queue, identity, max concurrency, credentials passthrough) is read from an explicit WorkerConfig dataclass with no hardcoded concurrency default (CO10).",
+          "A test substitutes a fake session and asserts handshake and registration carry the configured task queue, identity, and activity names."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/session.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/__init__.py"
+          ]
+        },
+        "checklist": [
+          "C20"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Asyncio worker loop with bounded concurrency",
+        "spec": "WHILE connected, THE SYSTEM SHALL consume the receive stream, dispatch each task as an asyncio task up to the configured max concurrency, and report completion or failure. THE SYSTEM SHALL apply backpressure when the pool is saturated and SHALL NOT spawn unbounded tasks.",
+        "acceptance": [
+          "loop.py drives the session's receive async iterator, dispatching each task to a seam (filled by AR-008) and reporting outcomes via the session.",
+          "Concurrency is bounded by an asyncio.Semaphore (or equivalent) sized by WorkerConfig.max_concurrency; when saturated, the loop stops pulling new tasks (backpressure).",
+          "A test sets max_concurrency=2, feeds 5 slow tasks via the fake session, and asserts peak concurrent dispatch is 2.",
+          "Each received/reported task is logged via the standard logging module without logging payload contents."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/loop.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/__init__.py"
+          ]
+        },
+        "checklist": [
+          "C21"
+        ],
+        "stories": [
+          "S8"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Reconnect and un-acked re-report",
+        "spec": "WHEN the session drops, THE SYSTEM SHALL reconnect with bounded backoff, re-register, and re-report un-acked results before serving new tasks.",
+        "acceptance": [
+          "reconnect.py tracks reported-but-unacknowledged results keyed by ActivityId and reconnects with bounded exponential backoff (cap from config, not hardcoded).",
+          "On reconnect it re-runs handshake + registration and re-reports the un-acked backlog before the loop pulls any new task (per D7 / CO11).",
+          "A test reports a completion, simulates a disconnect before acknowledgement, reconnects, and asserts the completion is re-reported before any new task is dispatched.",
+          "The full reconnect path runs against the fake session with no live engine (CO6)."
+        ],
+        "files": {
+          "create": [
+            "sdks/python/aion-worker/aion_worker/reconnect.py"
+          ],
+          "modify": [
+            "sdks/python/aion-worker/aion_worker/loop.py"
+          ]
+        },
+        "checklist": [
+          "C22"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT define the @activity decorator, context, errors, or Worker object \u2014 that is AR-008 (the loop calls a dispatch seam AR-008 fills).",
+      "SHALL NOT define or alter aion-proto \u2014 it generates stubs from AW's definitions (CO5).",
+      "SHALL NOT implement engine-side de-duplication \u2014 that is AW."
+    ],
+    "verification": [
+      "ruff check passes on the package.",
+      "mypy --strict passes on the package (no blanket type: ignore, per CO2).",
+      "pytest passes, including the concurrency-cap and reconnect-re-report tests.",
+      "The package imports cleanly and the protocol path is covered against the fake session.",
+      "No # noqa / # type: ignore blanket suppressions in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C19",
+        "text": "aion-worker-python is a PyPI-packaged project (pyproject.toml) depending on grpcio and protobuf, with __init__.py exposing only re-exports."
+      },
+      {
+        "id": "C20",
+        "text": "A session module performs connect+handshake (task queue + identity) and activity-type registration over generated gRPC stubs, behind a session abstraction the loop depends on."
+      },
+      {
+        "id": "C21",
+        "text": "An asyncio worker loop receives tasks from the server stream, dispatches up to the operator-configured concurrency, and reports completion or failure; backpressure is applied when the pool is full."
+      },
+      {
+        "id": "C22",
+        "text": "The Python SDK reconnects with bounded backoff, re-registers, and re-reports un-acked results before serving new tasks."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S8",
+        "text": "As a worker operator, I want to configure the engine endpoint, task queue, identity, and max concurrency so that I can point a worker at the right engine and scale it without editing code."
+      },
+      {
+        "id": "S9",
+        "text": "As a worker operator, I want a worker to reconnect automatically after a network drop and re-report any work it already finished so that a disconnect never loses a completed activity or double-runs a side effect."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in aion-worker (Rust). No unsafe."
+      },
+      {
+        "id": "CO2",
+        "text": "No lint-bypass directives. Rust: no #[allow]/#[expect]/#[ignore]. Python: no blanket # type: ignore or # noqa. TS: no // @ts-ignore / // @ts-nocheck / eslint-disable. Fix the code instead."
+      },
+      {
+        "id": "CO3",
+        "text": "mod.rs/lib.rs (Rust) and __init__.py/index.ts (Python/TS) are declarations and re-exports only \u2014 no logic."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace) in every language."
+      },
+      {
+        "id": "CO5",
+        "text": "The wire contract is owned by aion-proto (AW). This cluster references wire types and RPCs; it does not define or alter them. Where AW and this design disagree on a name or shape, AW wins and the SDK adapts."
+      },
+      {
+        "id": "CO6",
+        "text": "The activity-execution machinery (loop, dispatch, context, classification, reconnect) must be testable without a live engine, against an in-memory fake session/endpoint. Tests needing a real engine use a runtime env-gate (AION_WORKER_TEST_URL) and skip with a logged line when unset."
+      },
+      {
+        "id": "CO7",
+        "text": "Payload encode/decode uses the content-type tag from aion-core's Payload; JSON is the baseline codec present in all three SDKs. An SDK must not silently change content type on round-trip."
+      },
+      {
+        "id": "CO8",
+        "text": "Failure classification (retryable vs terminal) is explicit at the author boundary in all three SDKs and maps onto the wire identically (D6). Unclassified-defaults-to-retryable is logged, never silent."
+      },
+      {
+        "id": "CO9",
+        "text": "Cancellation is cooperative only (D5). No SDK forcibly kills a running handler's thread/task."
+      },
+      {
+        "id": "CO10",
+        "text": "Concurrency limits are operator-configured (D9). No SDK hardcodes a concurrency cap or other tunable as an assumed default."
+      },
+      {
+        "id": "CO11",
+        "text": "Reconnect must re-report unacknowledged results before serving new tasks (D7). Completed work is never dropped on a disconnect."
+      },
+      {
+        "id": "CO12",
+        "text": "Per-language toolchains gate every brief: Rust cargo clippy -D warnings + cargo fmt --check + cargo test; Python ruff + mypy --strict + pytest; TS tsc --noEmit strict + eslint + vitest. All relevant gates pass clean before a brief lands."
+      }
+    ],
+    "intention": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a function registered under that activity's name, receives the task, runs it in its own runtime, and returns the result for the engine to record. On replay the recorded result comes back without re-execution. Three SDKs, three idioms (Python decorators + type hints + asyncio; TS generics + async/await + npm; Rust traits + async fn + cargo), one protocol, identical durability semantics. A workflow author does not know which language served an activity. It must feel native in each language while all three speak the exact same conversation with the engine, defined once in aion-proto.",
+    "design_path": "docs/design/aion-workers",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "This cluster is how Tier 3 work \u2014 work that cannot run on beamr \u2014 gets done. A workflow dispatches an activity; a worker written in Python, TypeScript, or Rust, connected to the engine and holding a f"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

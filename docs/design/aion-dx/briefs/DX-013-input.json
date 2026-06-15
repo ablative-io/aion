@@ -1,0 +1,71 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-013",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-013",
+    "cluster": "aion-dx",
+    "title": "Fix remaining doc inconsistencies and minor issues",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "Multiple doc inconsistencies remain after DX rounds 1 and 2: ghost config file reference, CLI flag name mismatch, GitHub org name inconsistency, Python version mismatch. These erode trust \u2014 a developer who hits wrong information in docs assumes the project is unmaintained.",
+    "task": "Fix all remaining documentation inconsistencies in GETTING-STARTED.md, example READMEs, and pyproject.toml. Ensure every command, flag name, URL, and version number in documentation matches the actual code.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Fix all doc inconsistencies",
+        "spec": "THE SYSTEM SHALL ensure: (1) no references to nonexistent config files like aion-hello-world.toml, (2) CLI flag names match the actual parser (--drain-timeout not --drain-timeout-seconds), (3) GitHub org name is consistent everywhere (ablative-io/aion), (4) Python version requirement matches pyproject.toml (>=3.10). Every command shown in docs SHALL be copy-pasteable and work.",
+        "acceptance": [
+          "grep -r 'aion-hello-world.toml' returns zero matches.",
+          "grep -r 'drain-timeout-seconds' docs/ returns zero matches.",
+          "GitHub org name is consistent across all docs, Cargo.toml, and pyproject.toml.",
+          "Python version requirement is consistent between docs and pyproject.toml.",
+          "Every shell command in GETTING-STARTED.md is syntactically correct."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "GETTING-STARTED.md",
+            "examples/hello-world/README.md"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change any Rust or Python code \u2014 docs only.",
+      "SHALL NOT rewrite sections that are already correct \u2014 targeted fixes only."
+    ],
+    "verification": [
+      "All commands in GETTING-STARTED.md match the actual CLI parser.",
+      "No references to nonexistent files.",
+      "GitHub URLs are consistent."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

@@ -1,0 +1,215 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AN-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AN-007",
+    "cluster": "aion-nif",
+    "title": "NifContext scoped storage \u2014 replace global TERM_STORAGE",
+    "depends_on": [
+      "AN-004",
+      "AN-005"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C32",
+      "C33",
+      "C34",
+      "C35"
+    ],
+    "stories": [
+      "S9"
+    ],
+    "purpose": "Replace the interim global TERM_STORAGE pattern with a scoped NifContext that owns term storage per NIF invocation. The global static Mutex accumulates heap allocations without bound under concurrent NIF calls \u2014 it was approved as a temporary bridge in AN-002 with the explicit constraint that it must not become permanent. NifContext eliminates the global state entirely: storage lives and dies with the NIF call.",
+    "task": "Define NifContext wrapping ProcessContext plus a Vec of retained heap allocations. Update FromTerm and IntoTerm to take NifContext (or split references into ProcessContext + storage) so IntoTerm encodes through scoped storage rather than the global seam. Update the deterministic_nif and activity_nif macro shims to construct a NifContext at the start of each generated NativeFn and drop it when the function returns. Remove the global TERM_STORAGE static, clear_term_storage, and the begin_nif_call helper from raw.rs and declare.rs. The change is contained to aion-nif internals \u2014 the declaration macro is the public surface; callers never see NifContext.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "NifContext type",
+        "spec": "THE SYSTEM SHALL define NifContext wrapping a ProcessContext reference and an owned Vec of retained heap allocations, so term storage is scoped to one NIF invocation and freed when the context is dropped.",
+        "acceptance": [
+          "A new module (or addition to an existing module) defines NifContext holding a mutable reference to ProcessContext and a Vec<Box<[u64]>> for retained term heap slices.",
+          "NifContext exposes access to the ProcessContext for atom table operations and term allocation.",
+          "NifContext exposes a retain_heap method (or equivalent) that the raw module's owned_* functions use instead of the global static.",
+          "When NifContext is dropped, its retained heap storage is freed (the Vec is dropped, deallocating all retained slices).",
+          "A unit test constructs a NifContext, retains heap storage through an IntoTerm call, and asserts the storage is freed on drop (no leaked allocations)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-nif/src/context.rs"
+          ],
+          "modify": [
+            "crates/aion-nif/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C32"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Update FromTerm and IntoTerm signatures",
+        "spec": "THE SYSTEM SHALL update the FromTerm and IntoTerm trait signatures so that IntoTerm encodes through NifContext's scoped storage rather than the global TERM_STORAGE. FromTerm may take either NifContext or continue with ProcessContext where only atom resolution is needed.",
+        "acceptance": [
+          "IntoTerm::into_term takes a mutable reference that provides both ProcessContext access and scoped heap retention (either &mut NifContext or a split borrow pattern).",
+          "FromTerm::from_term takes a reference that provides ProcessContext access for atom resolution.",
+          "All existing FromTerm/IntoTerm implementations (primitives, collections, Payload bridge) are updated to use the new signatures.",
+          "Existing round-trip tests continue to pass with the updated signatures.",
+          "The raw module's owned_* functions take the scoped storage reference instead of pushing to the global static."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/term.rs",
+            "crates/aion-nif/src/term_collection.rs",
+            "crates/aion-nif/src/payload.rs",
+            "crates/aion-nif/src/raw.rs"
+          ]
+        },
+        "checklist": [
+          "C33"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Update declaration shims",
+        "spec": "THE SYSTEM SHALL update the deterministic_nif and activity_nif macro shims to construct a NifContext at call entry and drop it at call exit, so retained term storage is bounded to one NIF invocation.",
+        "acceptance": [
+          "The generated NativeFn shim in deterministic_nif constructs a NifContext from the received ProcessContext at the top of the function body.",
+          "Argument decoding and return encoding route through the NifContext.",
+          "The NifContext is dropped (implicitly or explicitly) when the NativeFn returns, freeing all retained heap storage from that invocation.",
+          "The activity_nif shim follows the same pattern.",
+          "The begin_nif_call helper in declare.rs is removed (its purpose was to clear global storage between calls; NifContext's scoped lifetime replaces it).",
+          "Existing declaration tests (typed invocation, arity error, decode failure, panic containment) continue to pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/declare.rs"
+          ]
+        },
+        "checklist": [
+          "C34"
+        ],
+        "stories": [
+          "S9"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Remove global TERM_STORAGE",
+        "spec": "THE SYSTEM SHALL remove the TERM_STORAGE global static, the clear_term_storage function, and the keep_owned_term helper that pushed to the global Vec. No global mutable state SHALL remain in the raw module for term retention.",
+        "acceptance": [
+          "The static TERM_STORAGE: OnceLock<Mutex<Vec<Box<[u64]>>>> is removed from raw.rs.",
+          "The pub fn clear_term_storage() is removed from raw.rs.",
+          "The begin_nif_call() function is removed from declare.rs.",
+          "The raw module's owned_* functions take a scoped storage parameter instead of using the global static.",
+          "cargo clippy --workspace --all-targets -- -D warnings passes (no dead code from removed globals).",
+          "A grep for TERM_STORAGE across the crate confirms zero references remain."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-nif/src/raw.rs",
+            "crates/aion-nif/src/declare.rs"
+          ]
+        },
+        "checklist": [
+          "C35"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT change the public declaration macro API (deterministic_nif!, activity_nif!) \u2014 the NifContext is an internal implementation detail constructed and dropped by the generated shim.",
+      "SHALL NOT expose NifContext in any public function signature that NIF authors interact with \u2014 the macro is the public surface.",
+      "SHALL NOT introduce any unsafe outside raw.rs.",
+      "SHALL NOT change the Nif descriptor or NifSet types \u2014 those are unchanged by this refactor."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-nif passes (all existing tests continue to pass with updated signatures).",
+      "cargo fmt --check passes.",
+      "grep -r 'TERM_STORAGE' crates/aion-nif/ returns zero matches.",
+      "grep -r 'clear_term_storage' crates/aion-nif/ returns zero matches.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As a reviewer, I want all unsafe confined to one documented FFI module with SAFETY comments so that I can audit the entire native-boundary risk surface in one place."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny at the crate root. Any unsafe is confined to raw.rs behind a single documented, audited module exception; every unsafe block carries a // SAFETY: comment. No unsafe outside raw.rs. Preferred state is zero unsafe (safe beamr APIs only)."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses anywhere, with the sole explicit exception of the documented #![allow(unsafe_code)] FFI seam in raw.rs (CO1). No other bypass of any kind."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs is declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-nif depends on beamr (term/NIF API) and aion-core (Payload, ActivityError) only. It does NOT depend on aion (the engine); it emits a descriptor set the engine consumes."
+      },
+      {
+        "id": "CO6",
+        "text": "Determinism is a typed property: the deterministic builder yields only Determinism::Pure, the activity builder yields only Determinism::SideEffectful. No untyped declaration path. A side-effectful NIF cannot be expressed as an inline deterministic helper."
+      },
+      {
+        "id": "CO7",
+        "text": "A side-effectful NIF's native body returns Result<T, ActivityError> (aion-core) so a failure carries the retryable/terminal classification AE/AT consult. It never returns a bare string error."
+      },
+      {
+        "id": "CO8",
+        "text": "Generated shims never expose raw &[Term] to author code, never Box::leak in author-reachable paths, and contain panics raised by the author body, converting them to a typed NIF error rather than unwinding across the FFI boundary."
+      },
+      {
+        "id": "CO9",
+        "text": "NifSet rejects a duplicate (module, function, arity) at build time with a typed NifDeclError, never silently overwrites."
+      },
+      {
+        "id": "CO10",
+        "text": "aion-nif registers nothing with beamr itself. It emits a descriptor set; AE's runtime module (the sole beamr boundary) performs the actual registration. aion-nif must not call BifRegistryImpl::register."
+      }
+    ],
+    "intention": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand-rolled MFA registration. The crate serves the Tier-2 in-VM band of the execution model, and its entire organisation keeps the two uses of that band apart. (1) Deterministic helpers \u2014 JSON transform, template render, parse, format, crypto, math \u2014 called inline from workflow code, not recorded, re-executed verbatim on replay, safe because the same inputs always produce the same output. (2) Light in-VM activities \u2014 small side-effectful operations that run on beamr's dirty scheduler and MUST be invoked through the engine's activity contract so the result is recorded once and returned from history on replay, never re-executed. The crate makes the right thing easy and the wrong thing hard to express: a side-effectful NIF is typed as an activity from the first line and cannot be wired as an inline deterministic helper. When done, a host hands its NIF set to EngineBuilder::register_nifs and its Gleam workflows call deterministic ones inline and side-effectful ones as recorded activities, with the determinism guarantee preserved.",
+    "design_path": "docs/design/aion-nif",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Make writing a native Rust function and exposing it to Gleam/Elixir workflows as a NIF obvious and safe: typed arguments in, a typed value out, no raw term arithmetic, no leaked heap pointers, no hand"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

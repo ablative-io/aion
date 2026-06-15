@@ -1,0 +1,218 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "AP-007",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "AP-007",
+    "cluster": "aion-package",
+    "title": "Version record production and round-trip conformance suite",
+    "depends_on": [
+      "AP-005",
+      "AP-006"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C25",
+      "C26",
+      "C27"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S7"
+    ],
+    "purpose": "Define and produce the cross-system WorkflowVersion record from a loaded Package so the engine references a workflow version through one shared type, and provide the conformance suite that proves the write and read paths fit together: a built package loads back intact, builds are reproducible, and integrity rejection actually fires. WorkflowVersion is defined in aion-package (not aion-core) because it embeds the ContentHash, an aion-package type \u2014 aion-core is a leaf and cannot reference it (D10).",
+    "task": "Define the WorkflowVersion record type in aion-package and a function producing it from a loaded Package (logical entry module, content hash, declared activities, input/output schemas). Then build the round-trip conformance suite: write a package, load it, assert manifest/beams/namespaced-names survive; assert two builds of identical inputs are byte-identical; assert a post-pack alteration of the beams is rejected on load. Do not write the record to any store.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "WorkflowVersion record and production from a loaded Package",
+        "spec": "THE SYSTEM SHALL define the WorkflowVersion record in aion-package and produce it from a loaded Package, carrying the logical entry module, the content hash, the declared activities, and the input/output schemas.",
+        "acceptance": [
+          "version.rs defines WorkflowVersion (logical entry module, ContentHash, declared activities, input/output schemas) deriving Serialize, Deserialize, Clone, Debug, PartialEq, and a function (e.g. Package::version_record()) returning it.",
+          "The record carries the logical entry module, the content hash, the declared activities, and the input/output schemas drawn from the loaded Package.",
+          "WorkflowVersion is the single canonical version type: it is defined here (it embeds the aion-package ContentHash, which aion-core cannot reference), and consumers \u2014 the engine (aion) \u2014 depend on aion-package to use it rather than re-deriving a parallel type.",
+          "A unit test builds and loads a package, produces its version record, and asserts each field matches the manifest and content hash."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/src/version.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/lib.rs"
+          ]
+        },
+        "checklist": [
+          "C25"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Write/read round-trip suite",
+        "spec": "THE SYSTEM SHALL provide a test suite that builds a package, loads it back, and asserts the manifest, beam set, and namespaced module names survive intact.",
+        "acceptance": [
+          "tests/roundtrip.rs builds a package (non-trivial: multiple beams, declared activities, schemas, with and without source) and loads it via Package::load_from_bytes.",
+          "The loaded manifest equals the built manifest (with the version stamped), the loaded BeamSet equals the input BeamSet, and the optional source matches.",
+          "The loaded deployed module names equal namespace::deployed_name(logical, content_hash) for every module.",
+          "The test is a real runtime test, not gated out or ignored."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-package/tests/roundtrip.rs"
+          ],
+          "modify": []
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Reproducibility and integrity-rejection assertions",
+        "spec": "THE SYSTEM SHALL assert that two builds of identical inputs are byte-identical and that a package whose beams are altered after packing fails to load with IntegrityMismatch.",
+        "acceptance": [
+          "A test builds identical inputs twice and asserts the output byte buffers are equal (reproducibility, CO8).",
+          "A test takes a valid package's bytes, mutates a byte inside a beam entry (re-zipping or patching the entry), and asserts Package::load returns PackageError::IntegrityMismatch.",
+          "A test asserts that including vs omitting source yields the same content hash / version (CO7).",
+          "All tests run under cargo test without #[ignore]."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-package/tests/roundtrip.rs"
+          ]
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S2",
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT write the version record to any store \u2014 that is AC (in-memory) / AS (libSQL) / AX (Postgres).",
+      "SHALL NOT test VM registration or execution \u2014 that is the engine cluster (AE).",
+      "SHALL NOT define a version type in aion-core; WorkflowVersion is canonical here because it embeds the aion-package ContentHash."
+    ],
+    "verification": [
+      "cargo clippy --workspace --all-targets -- -D warnings passes.",
+      "cargo test -p aion-package passes, including the round-trip suite.",
+      "cargo fmt --check passes.",
+      "No #[allow], #[expect], or #[ignore] directives in new code."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [
+      {
+        "id": "C25",
+        "text": "A version record is producible from a loaded Package, carrying the logical entry module, the content hash, the declared activities, and the input/output schemas, using the shared aion-core version-record type."
+      },
+      {
+        "id": "C26",
+        "text": "A test suite round-trips PackageBuilder output through Package::load and asserts the manifest, beam set, and namespaced names survive intact."
+      },
+      {
+        "id": "C27",
+        "text": "A test asserts reproducibility (two builds of identical inputs are byte-identical) and asserts integrity rejection (a package whose beams are altered after packing fails to load)."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As the engine, I want to load a .aion from a path or byte buffer and get a validated package so that I can register its modules without trusting loose files on disk."
+      },
+      {
+        "id": "S2",
+        "text": "As the engine, I want the package to reject itself when its beams do not match its stored hash so that I never register a truncated or tampered workflow into the VM."
+      },
+      {
+        "id": "S7",
+        "text": "As a workflow author, I want identical inputs to produce a byte-identical .aion so that my builds are reproducible and auditable."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CO1",
+        "text": "unsafe_code = deny in the crate."
+      },
+      {
+        "id": "CO2",
+        "text": "No #[allow]/#[expect]/#[ignore] lint bypasses per CLAUDE.md."
+      },
+      {
+        "id": "CO3",
+        "text": "lib.rs/mod.rs are declarations and re-exports only."
+      },
+      {
+        "id": "CO4",
+        "text": "500-line file limit (excluding tests/comments/whitespace)."
+      },
+      {
+        "id": "CO5",
+        "text": "aion-package depends only on aion-core among Aion crates; not on aion, aion-server, beamr, or any storage backend. Structural; must hold."
+      },
+      {
+        "id": "CO6",
+        "text": "All library errors are thiserror enums; no anyhow in this library crate; no .unwrap()/.expect() outside tests."
+      },
+      {
+        "id": "CO7",
+        "text": "The content hash is computed over the canonical beam set only \u2014 never over archive bytes, compression, timestamps, or source inclusion. Identical beams yield identical versions."
+      },
+      {
+        "id": "CO8",
+        "text": "The write path is deterministic: identical inputs produce a byte-identical .aion. No wall-clock timestamps or nondeterministic ordering may leak into the archive."
+      },
+      {
+        "id": "CO9",
+        "text": "The read path recomputes the content hash and rejects any package whose recomputed hash does not equal the manifest's stored version. Integrity is verified, never trusted."
+      },
+      {
+        "id": "CO10",
+        "text": "Loading is total: every malformed-input case maps to a distinct typed PackageError variant; no panic, no silent fallback, no partial result on error."
+      },
+      {
+        "id": "CO11",
+        "text": "The crate performs no VM loading and no I/O against the event store; it produces validated in-memory values."
+      },
+      {
+        "id": "CO12",
+        "text": "The namespacing transform is a pure, total bijection between (logical module name, content hash) and the deployed module name, with a verified round-trip."
+      },
+      {
+        "id": "CO13",
+        "text": "The deployed-name separator is the literal '$' character (logical_name$hash). It is mandated, not illustrative: the engine (AE-005) must split on the identical character. '$' does not occur in Gleam logical module names, so the bijection stays unambiguous."
+      },
+      {
+        "id": "CO14",
+        "text": "The content hash is SHA-256 (via the sha2 crate). The algorithm is part of the format contract so packer and loader on different hosts agree."
+      }
+    ],
+    "intention": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (workflow entry module + dependencies + needed stdlib beams), optionally the Gleam source, and a content hash. One file in, deployable workflow out. The format is the connective tissue between deployment (copy one file), versioning (the content hash of the beams IS the version), and hot code loading (the .aion is the unit of zero-downtime upgrade). When done, the engine can be handed a path or byte buffer and get back a validated, integrity-checked, version-stamped package with its beams ready to register, and an author can take compiled beams plus a manifest and produce a byte-identical, reproducible .aion.",
+    "design_path": "docs/design/aion-package",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Define the .aion package \u2014 the single file a workflow is deployed as \u2014 and the aion-package crate that reads and writes it. A .aion is a ZIP container holding a manifest, the compiled .beam modules (w"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

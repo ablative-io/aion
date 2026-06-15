@@ -1,0 +1,138 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "DX-025",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "DX-025",
+    "cluster": "aion-dx",
+    "title": "Parent-child orchestration with query for live state",
+    "depends_on": [
+      "DX-016"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "purpose": "Large batch operations need to be decomposed into child workflows for isolation, independent retry, and resource management. Developers also need to inspect running workflows without interrupting them. This example demonstrates parent-child orchestration (child.spawn/child.await), live state inspection via query handlers (query.register/query.reply), and structured concurrency for managing many child workflows. This is the pattern for any job that processes a batch of items with per-item isolation.",
+    "task": "Create a batch-orchestrator example that defines a Gleam parent workflow using the aion_flow SDK. The parent accepts a list of work items, spawns a child workflow for each using child.spawn(), registers a query handler that reports progress (items completed, items pending, items failed), and collects results using child.await(). Include a gleam.toml and a README explaining the parent-child and query patterns.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Parent workflow spawning child workflows",
+        "spec": "THE SYSTEM SHALL define a parent workflow using workflow.define() that accepts a list of work items as input. THE SYSTEM SHALL spawn a child workflow for each item using child.spawn(), passing the item as the child's input.",
+        "acceptance": [
+          "batch_orchestrator.gleam imports from aion_flow and uses workflow.define().",
+          "The parent workflow accepts a list of work items as input.",
+          "child.spawn() is called for each work item, creating an independent child workflow execution.",
+          "Each child workflow processes a single item via an activity and returns a result.",
+          "Child workflows have independent failure domains \u2014 one child failing does not crash the parent or siblings."
+        ],
+        "files": {
+          "create": [
+            "examples/batch-orchestrator/src/batch_orchestrator.gleam"
+          ],
+          "modify": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Query handler for live progress reporting",
+        "spec": "THE SYSTEM SHALL register a query handler using query.register() that returns the current batch progress: total items, completed count, failed count, and pending count. THE SYSTEM SHALL update this state as child workflows complete.",
+        "acceptance": [
+          "query.register() is called with a 'batch_progress' query type.",
+          "The query handler returns a structured response with total, completed, failed, and pending counts.",
+          "Progress state updates as each child.await() resolves.",
+          "Querying the workflow mid-execution returns accurate in-progress counts.",
+          "The query handler uses query.reply() to respond."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/batch-orchestrator/src/batch_orchestrator.gleam"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Result collection and final aggregation",
+        "spec": "THE SYSTEM SHALL await all child workflows using child.await() and collect their results into a summary. THE SYSTEM SHALL return a final result containing the per-item outcomes and overall batch statistics.",
+        "acceptance": [
+          "child.await() is called for each spawned child workflow.",
+          "Results are collected into a summary structure with per-item status (succeeded/failed).",
+          "The workflow result includes total processed, success count, failure count, and per-item details.",
+          "The parent workflow completes only after all children have completed or failed."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "examples/batch-orchestrator/src/batch_orchestrator.gleam"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Project setup and documentation",
+        "spec": "THE SYSTEM SHALL provide a gleam.toml with the aion_flow dependency and a README explaining the parent-child orchestration pattern, how query handlers enable live state inspection, and step-by-step instructions for building and running the example.",
+        "acceptance": [
+          "gleam.toml lists aion_flow as a dependency and has correct project metadata.",
+          "README.md explains when to use child workflows vs. concurrency primitives.",
+          "README.md demonstrates how to query a running workflow for progress (via CLI or client SDK).",
+          "README.md provides build and run instructions including triggering the batch and querying mid-run."
+        ],
+        "files": {
+          "create": [
+            "examples/batch-orchestrator/gleam.toml",
+            "examples/batch-orchestrator/README.md"
+          ],
+          "modify": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify the aion_flow SDK, engine, or server code \u2014 only consume them.",
+      "SHALL NOT add dependencies beyond aion_flow to the Gleam example.",
+      "SHALL NOT implement real data processing \u2014 stub activities with simulated work and occasional failures are sufficient.",
+      "SHALL NOT limit the batch size \u2014 the example should work with any number of items.",
+      "SHALL NOT use concurrency.all() as a substitute for child workflows \u2014 the point is to demonstrate child.spawn()/child.await()."
+    ],
+    "verification": [
+      "gleam build succeeds in the batch-orchestrator directory without warnings.",
+      "The .aion package can be built from the compiled source.",
+      "The parent workflow spawns one child per work item and awaits all results.",
+      "Querying 'batch_progress' mid-execution returns accurate counts of completed, pending, and failed items.",
+      "When one child workflow fails, the parent continues processing remaining children and includes the failure in the final result.",
+      "The final workflow result contains per-item outcomes and aggregate statistics.",
+      "README instructions are complete and accurate."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "stories": [],
+    "constraints": [],
+    "intention": "",
+    "design_path": "docs/design/aion-dx",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": ""
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}
