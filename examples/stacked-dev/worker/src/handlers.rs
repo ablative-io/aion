@@ -144,9 +144,7 @@ fn warm_build(shell: &Shell, workspace: &Workspace) -> Result<StartupResult, Act
 
 /// Run the dev agent against the projected dev prompt via the `norn` CLI.
 fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure> {
-    // The session id is deterministic (the branch name), so resume rounds
-    // target the same session without ever capturing a generated id.
-    let session_id = input.workspace.branch.clone();
+    let session_id = resolve_session_id(&input.workspace.branch);
 
     // norn takes the projected prompt positionally; --print is headless,
     // --session-id mints exactly this id, --workspace-root confines file
@@ -188,7 +186,7 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
 /// …}` envelope.
 pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFailure> {
     let ScoutInput { workspace, prompt } = input;
-    let session_id = format!("{}-scout", workspace.branch);
+    let session_id = resolve_session_id(&format!("{}-scout", workspace.branch));
     let command_run = require_run(
         shell,
         "norn",
@@ -223,7 +221,7 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
 /// …}` envelope.
 pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, ActivityFailure> {
     let ReviewInput { workspace, prompt } = input;
-    let session_id = format!("{}-review", workspace.branch);
+    let session_id = resolve_session_id(&format!("{}-review", workspace.branch));
     let command_run = require_run(
         shell,
         "norn",
@@ -672,6 +670,28 @@ pub fn teardown_workspace(
 }
 
 // --- helpers ----------------------------------------------------------------
+
+/// Find a norn session ID that isn't already in use. Tries the base ID first,
+/// then appends `-attempt-2`, `-attempt-3`, etc. Norn sessions persist at
+/// `~/.norn/sessions/<id>.jsonl`; a stale session from a previous failed run
+/// blocks reuse of the same ID.
+fn resolve_session_id(base: &str) -> String {
+    let sessions_dir = match std::env::var_os("HOME") {
+        Some(home) => std::path::PathBuf::from(home).join(".norn/sessions"),
+        None => return base.to_owned(),
+    };
+    if !sessions_dir.join(format!("{base}.jsonl")).exists() {
+        return base.to_owned();
+    }
+    let mut attempt = 2;
+    loop {
+        let candidate = format!("{base}-attempt-{attempt}");
+        if !sessions_dir.join(format!("{candidate}.jsonl")).exists() {
+            return candidate;
+        }
+        attempt += 1;
+    }
+}
 
 /// The `meridian review request` response envelope — only the fields the
 /// handler consumes (extra fields tolerated, like the Gleam field decoder).
