@@ -1113,6 +1113,7 @@ mod tests {
                 format!("{{\"value\":{value}}}").into_bytes(),
             ))),
             attempt: 1,
+            labels: std::collections::HashMap::new(),
         }
     }
 

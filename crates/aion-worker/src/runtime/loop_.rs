@@ -1,6 +1,6 @@
 //! receive->dispatch->report worker loop + bounded concurrency
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
@@ -401,6 +401,17 @@ fn acknowledge_result(
     }
 }
 
+/// Render an activity's display labels as a compact, log-friendly
+/// `key=value` list in stable key order (for example `brief=IP-001
+/// repo=ablative-io/yggdrasil`). Empty when the workflow attached none.
+fn render_labels(labels: &BTreeMap<String, String>) -> String {
+    labels
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn spawn_activity<D>(
     task: ActivityTask,
     permit: tokio::sync::OwnedSemaphorePermit,
@@ -418,6 +429,7 @@ where
         activity_id = task.activity_id.sequence_position(),
         workflow_id = %task.workflow_id,
         attempt = task.attempt,
+        labels = %render_labels(&task.labels),
         "received activity task"
     );
     let key = ActivityExecutionKey::new(task.workflow_id.clone(), task.activity_id.clone());

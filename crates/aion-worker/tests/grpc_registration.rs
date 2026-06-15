@@ -79,6 +79,7 @@ fn task_frame() -> ServerToWorker {
                 activity_type: String::from("greet"),
                 input: None,
                 attempt: 1,
+                labels: std::collections::HashMap::new(),
             },
         )),
     }

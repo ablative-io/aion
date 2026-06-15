@@ -499,6 +499,7 @@ fn encode_task(task: aion_proto::ProtoActivityTask) -> generated::ActivityTask {
             bytes: p.bytes,
         }),
         attempt: task.attempt,
+        labels: task.labels,
     }
 }
 

@@ -80,6 +80,7 @@ pub fn scout(
     ),
     locals.scout,
   )
+  |> activity.label("brief", input.workspace.branch)
 }
 
 /// `dev_review`: the adversarial reviewer round in its own deterministic norn
@@ -99,6 +100,7 @@ pub fn dev_review(
     ),
     locals.dev_review,
   )
+  |> activity.label("brief", input.workspace.branch)
 }
 
 /// `provision_workspace`: provision an isolated workspace off the base ref.
@@ -112,6 +114,8 @@ pub fn provision_workspace(
     codecs_core.workspace_codec(),
     locals.provision_workspace,
   )
+  |> activity.label("brief", input.brief_id)
+  |> activity.label("repo", input.repo_root)
 }
 
 /// `warm_build`: advisory cache warming, dispatched concurrently with `dev`
@@ -140,6 +144,7 @@ pub fn dev(
     codecs_core.startup_result_codec(),
     locals.startup_task,
   )
+  |> activity.label("brief", dev_input.workspace.branch)
 }
 
 /// `scoped_checks`: the fast inner verification limited to affected modules.
@@ -153,6 +158,7 @@ pub fn scoped_checks(
     codecs_core.check_result_codec(),
     locals.scoped_checks,
   )
+  |> activity.label("brief", input.workspace.branch)
 }
 
 /// `dev_resume`: resume the same agent session with diagnostics. Returns a
@@ -168,6 +174,7 @@ pub fn dev_resume(
     codec.json_codec(stage_io.dev_report_to_json, stage_io.dev_report_decoder()),
     locals.dev_resume,
   )
+  |> activity.label("brief", input.session_id)
 }
 
 /// `full_checks`: the authoritative gate body.

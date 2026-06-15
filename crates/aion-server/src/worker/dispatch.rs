@@ -1,5 +1,7 @@
 //! Push dispatch for remote activity workers and result handoff to the engine contract.
 
+use std::collections::BTreeMap;
+
 use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload, WorkflowId};
 use aion_proto::{
     ProtoActivityId, ProtoActivityResult, ProtoActivityTask, ProtoPayload, ProtoWorkflowId,
@@ -27,6 +29,9 @@ pub struct ScheduledActivity {
     /// One-based delivery attempt stamped by the dispatching engine seam.
     /// Zero is malformed on the wire; producers must always stamp it.
     pub attempt: u32,
+    /// Display labels the workflow attached to the activity. Display metadata
+    /// only — carried to the worker for its logs and the dashboard.
+    pub labels: BTreeMap<String, String>,
 }
 
 impl ScheduledActivity {
@@ -39,6 +44,7 @@ impl ScheduledActivity {
             activity_type: self.activity_type.clone(),
             input: Some(ProtoPayload::from(self.input.clone())),
             attempt: self.attempt,
+            labels: self.labels.clone().into_iter().collect(),
         }
     }
 }
@@ -300,6 +306,7 @@ mod tests {
             activity_id: activity_id(),
             input: input.clone(),
             attempt: 1,
+            labels: std::collections::BTreeMap::new(),
         };
 
         dispatcher.dispatch(&scheduled).await?;
@@ -329,6 +336,7 @@ mod tests {
             activity_id: activity_id(),
             input: Payload::new(ContentType::Json, b"{}".to_vec()),
             attempt: 1,
+            labels: std::collections::BTreeMap::new(),
         };
 
         let dispatch_handle = tokio::spawn({
@@ -369,6 +377,7 @@ mod tests {
             activity_id: activity_id(),
             input: Payload::new(ContentType::Json, b"{}".to_vec()),
             attempt: 1,
+            labels: std::collections::BTreeMap::new(),
         };
 
         dispatcher.dispatch(&scheduled).await?;

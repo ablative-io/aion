@@ -6,8 +6,8 @@ use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::{
     activity_error, activity_id_from_correlation, context_error_term, correlation_id,
-    decode_string_arg, error_result_term, json_payload, ok_result_term, record_started,
-    runtime_context,
+    decode_string_arg, error_result_term, json_payload, labels_from_config, ok_result_term,
+    record_started, runtime_context,
 };
 use crate::runtime::nif_context::NifContext;
 use aion_core::{ActivityId, Payload};
@@ -204,6 +204,7 @@ fn dispatch_activity_with_context(
                 call.name.clone(),
                 input_payload,
             )?;
+            let labels = labels_from_config(&call.config);
             let request = ActivityDispatch {
                 namespace,
                 workflow_id: context.workflow_id().clone(),
@@ -212,6 +213,7 @@ fn dispatch_activity_with_context(
                 input: call.input,
                 config: call.config,
                 attempt: call.attempt,
+                labels,
             };
             spawn_completion_task(
                 tokio_handle,
@@ -789,6 +791,7 @@ mod tests {
                     input: r#""r0""#.to_owned(),
                     config: "{}".to_owned(),
                     attempt: super::FIRST_DELIVERY_ATTEMPT,
+                    labels: std::collections::BTreeMap::new(),
                 },
             );
             // The release runs as a task on this same single-threaded

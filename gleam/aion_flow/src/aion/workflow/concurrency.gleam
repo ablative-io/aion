@@ -175,8 +175,16 @@ fn activity_config(activity_value: Activity(i, o)) -> String {
       "heartbeat_ms",
       optional_duration(activity.heartbeat_interval(activity_value)),
     ),
+    #("labels", labels_config(activity.labels(activity_value))),
   ])
   |> json.to_string
+}
+
+/// Encode the activity's display labels as a JSON object of string values.
+/// The engine carries these to the worker for log and dashboard display; it
+/// never interprets them.
+fn labels_config(labels: List(#(String, String))) -> json.Json {
+  json.object(list.map(labels, fn(pair) { #(pair.0, json.string(pair.1)) }))
 }
 
 fn retry_config(policy) -> json.Json {

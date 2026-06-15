@@ -1,5 +1,7 @@
 //! `ActivityTask` decode and `TaskResult`/`TaskFailure` encode.
 
+use std::collections::BTreeMap;
+
 use aion_core::{ActivityId, Payload, WorkflowId};
 use aion_proto::ProtoActivityTask;
 
@@ -19,6 +21,11 @@ pub struct ActivityTask {
     pub attempt: u32,
     /// Opaque activity input payload, preserving its content-type tag.
     pub input: Payload,
+    /// Human-meaningful display labels the workflow attached to the activity
+    /// (for example `brief=IP-001`). Display metadata only — surfaced in the
+    /// worker's logs. `BTreeMap` keeps the rendered order stable; empty when
+    /// the workflow attached none.
+    pub labels: BTreeMap<String, String>,
 }
 
 impl TryFrom<ProtoActivityTask> for ActivityTask {
@@ -63,6 +70,7 @@ impl TryFrom<ProtoActivityTask> for ActivityTask {
             activity_type: value.activity_type,
             attempt: value.attempt,
             input,
+            labels: value.labels.into_iter().collect(),
         })
     }
 }
@@ -107,6 +115,9 @@ mod tests {
             activity_type: String::from("charge-card"),
             input: Some(ProtoPayload::from(input.clone())),
             attempt: 3,
+            labels: [(String::from("brief"), String::from("IP-001"))]
+                .into_iter()
+                .collect(),
         };
 
         let task = ActivityTask::try_from(proto)?;
@@ -118,6 +129,11 @@ mod tests {
         assert_eq!(task.input.content_type(), &ContentType::Json);
         assert_eq!(task.input.bytes(), input.bytes());
         assert_eq!(task.input.to_json()?, input_value);
+        assert_eq!(
+            task.labels.get("brief").map(String::as_str),
+            Some("IP-001"),
+            "display labels must decode from the wire"
+        );
         Ok(())
     }
 
@@ -132,6 +148,7 @@ mod tests {
                 b"{}".to_vec(),
             ))),
             attempt: 1,
+            labels: std::collections::HashMap::new(),
         });
 
         assert!(matches!(result, Err(WorkerError::Decode { .. })));
@@ -148,6 +165,7 @@ mod tests {
                 b"{}".to_vec(),
             ))),
             attempt: 0,
+            labels: std::collections::HashMap::new(),
         });
 
         let Err(error) = result else {

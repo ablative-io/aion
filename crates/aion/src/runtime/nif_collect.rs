@@ -277,6 +277,7 @@ fn dispatch_unscheduled(
                 input: spec.input.clone(),
                 config: spec.config.clone(),
                 attempt: FIRST_DELIVERY_ATTEMPT,
+                labels: super::nif_activity::labels_from_config(&spec.config),
             },
         );
     }

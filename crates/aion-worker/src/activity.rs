@@ -444,6 +444,7 @@ mod tests {
             activity_type: activity_type.to_owned(),
             input: Some(ProtoPayload::from(encode_payload(&input)?)),
             attempt: 1,
+            labels: std::collections::HashMap::new(),
         })
     }
 

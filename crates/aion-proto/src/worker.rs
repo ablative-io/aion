@@ -69,6 +69,12 @@ pub struct ProtoActivityTask {
     /// proto3 default means the producer failed to stamp it).
     #[prost(uint32, tag = "5")]
     pub attempt: u32,
+    /// Human-meaningful display labels the workflow attached to the activity
+    /// (for example `brief=IP-001`). Display metadata only — the engine never
+    /// interprets them; they ride to the worker so its logs and the dashboard
+    /// can show what a dispatch is working on. Empty when none were set.
+    #[prost(map = "string, string", tag = "6")]
+    pub labels: ::std::collections::HashMap<String, String>,
 }
 
 /// Server-initiated drain: the server is going away (restart, deploy,
@@ -269,6 +275,12 @@ mod tests {
                 &json!({"amount": 42}),
             )?)),
             attempt: 3,
+            labels: [
+                (String::from("brief"), String::from("IP-001")),
+                (String::from("repo"), String::from("ablative-io/yggdrasil")),
+            ]
+            .into_iter()
+            .collect(),
         };
 
         assert_json_and_proto_round_trip(&task)
@@ -355,6 +367,7 @@ mod tests {
             activity_type: String::new(),
             input: None,
             attempt: 9,
+            labels: ::std::collections::HashMap::new(),
         };
         let mut bytes = Vec::new();
         task.encode(&mut bytes)?;

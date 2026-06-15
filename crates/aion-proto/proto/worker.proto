@@ -94,6 +94,12 @@ message ActivityTask {
   // Zero is malformed: consumers MUST reject a task whose attempt is 0
   // (proto3 default = the producer failed to stamp it).
   uint32 attempt = 5;
+  // Human-meaningful display labels the workflow attached to the activity
+  // (for example brief=IP-001, repo=ablative-io/yggdrasil). Display metadata
+  // only: the engine never interprets them and they never affect routing or
+  // replay. Carried purely so worker logs and the dashboard can show what a
+  // dispatch is working on. Absent (empty map) when the workflow set none.
+  map<string, string> labels = 6;
 }
 
 // Activity completion or failure reported by a worker.

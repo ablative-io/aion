@@ -419,6 +419,7 @@ fn proto_task(
             b"{}".to_vec(),
         ))),
         attempt: 1,
+        labels: std::collections::HashMap::new(),
     }
 }
 

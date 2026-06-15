@@ -1,5 +1,6 @@
 //! Shared helpers for durable activity NIFs.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload};
@@ -37,6 +38,40 @@ pub(crate) fn install_nif_runtime_context(
         Ok(mut slot) => *slot = Some(context),
         Err(poisoned) => *poisoned.into_inner() = Some(context),
     }
+}
+
+/// Extract the display labels a workflow attached to an activity from its
+/// JSON-encoded dispatch config (the `labels` object the SDK's
+/// `activity_config` emits).
+///
+/// Labels are optional display metadata, so a missing or non-string `labels`
+/// entry yields an empty map rather than failing the dispatch. A `config`
+/// that is not valid JSON at all is logged and treated as label-free — the
+/// SDK always emits valid config, so that path signals a real defect without
+/// taking down an otherwise-valid dispatch over display metadata.
+pub(super) fn labels_from_config(config: &str) -> BTreeMap<String, String> {
+    let value = match serde_json::from_str::<serde_json::Value>(config) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "activity dispatch config was not valid JSON; dispatching with no display labels"
+            );
+            return BTreeMap::new();
+        }
+    };
+    value
+        .get("labels")
+        .and_then(serde_json::Value::as_object)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn runtime_context(state: &EngineNifState) -> Result<RuntimeContext, NifContextError> {

@@ -5,6 +5,7 @@
 //! is installed on the engine's NIF state during build; the NIF recovers it
 //! from its calling context's NIF private data.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use aion_core::{ActivityId, WorkflowId};
@@ -40,6 +41,12 @@ pub struct ActivityDispatch {
     pub config: String,
     /// One-based delivery attempt for this dispatch.
     pub attempt: u32,
+    /// Human-meaningful display labels the workflow attached to the activity
+    /// (for example `brief=IP-001`, `repo=ablative-io/yggdrasil`). The engine
+    /// never interprets these; they ride to the worker purely so its logs and
+    /// the dashboard can show what a dispatch is working on. `BTreeMap` keeps
+    /// the rendered order stable.
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Executes an activity request originating from workflow code.
@@ -92,6 +99,8 @@ pub trait ActivityDispatcher: Send + Sync + 'static {
 mod tests {
     use std::sync::Arc;
 
+    use std::collections::BTreeMap;
+
     use aion_core::{ActivityId, WorkflowId};
 
     use super::{ActivityDispatch, ActivityDispatcher};
@@ -114,6 +123,7 @@ mod tests {
             input: input.to_owned(),
             config: "{}".to_owned(),
             attempt: 1,
+            labels: BTreeMap::new(),
         }
     }
 

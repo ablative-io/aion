@@ -547,6 +547,7 @@ fn proto_task(value: aion_proto::generated::ActivityTask) -> ProtoActivityTask {
         activity_type: value.activity_type,
         input: value.input.map(proto_payload),
         attempt: value.attempt,
+        labels: value.labels,
     }
 }
 
@@ -645,6 +646,7 @@ mod tests {
                     activity_type: String::from("charge-card"),
                     input: None,
                     attempt: 1,
+                    labels: std::collections::HashMap::new(),
                 },
             ))]))
         }

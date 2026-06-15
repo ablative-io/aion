@@ -45,6 +45,7 @@
 //! An activity's duration is bounded only by the workflow's own
 //! `timeout_seconds` and by worker liveness — never by an engine constant.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -537,6 +538,7 @@ impl WorkerActivityDispatcher {
             input,
             config: _,
             attempt,
+            labels,
         } = request;
         let started_at = Instant::now();
         self.ensure_accepting(&namespace, &name, &workflow_id, &activity_id, None)?;
@@ -560,7 +562,7 @@ impl WorkerActivityDispatcher {
             Some(worker_id),
         )?;
 
-        let task = activity_task(&name, &input, &workflow_id, &activity_id, attempt);
+        let task = activity_task(&name, &input, &workflow_id, &activity_id, attempt, labels);
         let rx = self
             .pending
             .insert(workflow_id.clone(), activity_id.clone());
@@ -593,6 +595,7 @@ fn activity_task(
     workflow_id: &WorkflowId,
     activity_id: &ActivityId,
     attempt: u32,
+    labels: BTreeMap<String, String>,
 ) -> ProtoActivityTask {
     ProtoActivityTask {
         workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
@@ -603,6 +606,7 @@ fn activity_task(
             bytes: input.as_bytes().to_vec(),
         }),
         attempt,
+        labels: labels.into_iter().collect(),
     }
 }
 
@@ -790,6 +794,7 @@ mod tests {
             input: "{}".to_owned(),
             config: "{}".to_owned(),
             attempt: 1,
+            labels: std::collections::BTreeMap::new(),
         }
     }
 

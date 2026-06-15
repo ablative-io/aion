@@ -3,6 +3,7 @@
 import aion/codec
 import aion/duration
 import aion/error
+import gleam/list
 import gleam/option.{type Option, None, Some}
 
 /// Backoff strategy carried with an explicit retry policy.
@@ -53,6 +54,7 @@ pub opaque type Activity(i, o) {
     retry_policy: Option(RetryPolicy),
     timeout: Option(duration.Duration),
     heartbeat: Option(duration.Duration),
+    labels: List(#(String, String)),
   )
 }
 
@@ -77,6 +79,7 @@ pub fn new(
     retry_policy: None,
     timeout: None,
     heartbeat: None,
+    labels: [],
   )
 }
 
@@ -94,6 +97,7 @@ pub fn retry(activity: Activity(i, o), policy: RetryPolicy) -> Activity(i, o) {
     retry_policy: Some(policy),
     timeout: activity.timeout,
     heartbeat: activity.heartbeat,
+    labels: activity.labels,
   )
 }
 
@@ -111,6 +115,7 @@ pub fn timeout(
     retry_policy: activity.retry_policy,
     timeout: Some(timeout_duration),
     heartbeat: activity.heartbeat,
+    labels: activity.labels,
   )
 }
 
@@ -128,12 +133,40 @@ pub fn heartbeat(
     retry_policy: activity.retry_policy,
     timeout: activity.timeout,
     heartbeat: Some(heartbeat_interval),
+    labels: activity.labels,
+  )
+}
+
+/// Attach a display label to an activity.
+///
+/// Labels are human-meaningful key/value hints (for example `#("brief",
+/// "IP-001")` or `#("repo", "ablative-io/yggdrasil")`) that ride with the
+/// dispatch to the worker and surface in its logs and the dashboard. They are
+/// display metadata only: the engine never interprets them and they never
+/// affect routing, replay, or the recorded history. Repeated calls accumulate
+/// in call order; nothing is deduplicated or overwritten.
+pub fn label(activity: Activity(i, o), key: String, value: String) -> Activity(i, o) {
+  Activity(
+    name: activity.name,
+    input: activity.input,
+    input_codec: activity.input_codec,
+    output_codec: activity.output_codec,
+    runner: activity.runner,
+    retry_policy: activity.retry_policy,
+    timeout: activity.timeout,
+    heartbeat: activity.heartbeat,
+    labels: list.append(activity.labels, [#(key, value)]),
   )
 }
 
 /// Return the activity name used by the engine dispatch boundary.
 pub fn name(activity: Activity(i, o)) -> String {
   activity.name
+}
+
+/// Return the display labels attached to the activity, in call order.
+pub fn labels(activity: Activity(i, o)) -> List(#(String, String)) {
+  activity.labels
 }
 
 /// Return the typed input captured by the activity value.
