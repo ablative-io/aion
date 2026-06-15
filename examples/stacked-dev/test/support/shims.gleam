@@ -134,35 +134,40 @@ pub const dev_resume_report_json = "{\"summary\":\"applied feedback\",\"commit_m
 /// emits: R1 aligned with no fixes, so no drift and no harden re-verify.
 pub const review_report_json = "{\"summary\":\"verified the diff\",\"commit_message\":\"\",\"enrichments\":[{\"id\":\"R1\",\"alignment\":\"aligned\",\"acceptance\":[{\"criterion\":\"the variant exists\",\"met\":true,\"evidence\":\"crates/aion-core/src/lib.rs:42\"}],\"checklist\":[],\"stories\":[],\"issues\":[],\"fixes\":[]}],\"verification\":[{\"criterion\":\"gleam test\",\"passed\":true,\"note\":\"\"}]}"
 
-/// Install the `norn` shim. Each stage is distinguished by its session-id
-/// suffix: `<branch>-scout` emits a scout report, `<branch>-review` emits a
-/// review report, the bare `<branch>` session emits a dev report, and resume
-/// (`--print --resume ...`) emits a full replacement dev report. Every
-/// envelope is a bare stage report against its schema.
+/// Install the `norn` shim. The real worker handler prepends flags
+/// (`--fast --reasoning-effort x-high`) before `--session-id`, while the local
+/// implementations pass `--session-id` directly, so the shim SCANS argv rather
+/// than checking a fixed position: it reads the `--session-id` value (when
+/// present) and routes by suffix — `<branch>-scout` emits a scout report,
+/// `<branch>-review` a review report, the bare `<branch>` session a dev
+/// report — and treats a `--resume` flag (dev_resume, which carries no
+/// `--session-id`) as a full replacement dev report. `--resume-if-exists` is a
+/// distinct token and never matches the `--resume` case. Every envelope is a
+/// bare stage report against its schema.
 pub fn write_norn(shims: Shims) -> Nil {
   write_shim(shims, "norn", [
-    "case \"$2\" in",
-    "  --session-id)",
-    "    case \"$3\" in",
-    "      *-scout)",
-    "        printf '%s' '" <> scout_report_json <> "'",
-    "        ;;",
-    "      *-review)",
-    "        printf '%s' '" <> review_report_json <> "'",
-    "        ;;",
-    "      *)",
-    "        printf '%s' '" <> dev_report_json <> "'",
-    "        ;;",
-    "    esac",
-    "    ;;",
-    "  --resume)",
-    "    printf '%s' '" <> dev_resume_report_json <> "'",
-    "    ;;",
-    "  *)",
-    "    echo \"unexpected norn invocation: $*\" >&2",
-    "    exit 64",
-    "    ;;",
-    "esac",
+    "original=\"$*\"",
+    "session=\"\"",
+    "resume=0",
+    "while [ \"$#\" -gt 0 ]; do",
+    "  case \"$1\" in",
+    "    --session-id) shift; session=\"$1\" ;;",
+    "    --resume) resume=1 ;;",
+    "  esac",
+    "  shift",
+    "done",
+    "if [ -n \"$session\" ]; then",
+    "  case \"$session\" in",
+    "    *-scout) printf '%s' '" <> scout_report_json <> "' ;;",
+    "    *-review) printf '%s' '" <> review_report_json <> "' ;;",
+    "    *) printf '%s' '" <> dev_report_json <> "' ;;",
+    "  esac",
+    "elif [ \"$resume\" -eq 1 ]; then",
+    "  printf '%s' '" <> dev_resume_report_json <> "'",
+    "else",
+    "  echo \"unexpected norn invocation: $original\" >&2",
+    "  exit 64",
+    "fi",
   ])
 }
 

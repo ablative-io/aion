@@ -338,40 +338,54 @@ esac"#,
         dir,
         "norn",
         r#"dev_report='{"summary":"implemented","commit_message":"feat: R1","enrichments":[{"id":"R1","status":"implemented","files_changed":[{"path":"src/a.gleam","change":"modified","note":"added"}],"how":"added it","deviation":"","checklist":[{"id":"C1","done":true,"note":"done"}],"stories":[{"id":"S1","satisfied":true,"note":"ok"}]}],"attestation":{"no_panics":true,"no_unsafe":true,"boundaries_respected":true,"tests_pass":true}}'
-case "$2" in
-  --session-id)
-    case "$3" in
-      *-scout)
-        printf '%s' '{"summary":"scouted","enrichments":[{"id":"R1","files":["src/a.gleam"],"context":["match conventions"],"approach":"add it","notes":""}],"verification":["gleam test"]}'
-        ;;
-      *-review)
-        printf '%s' '{"summary":"verified","commit_message":"","enrichments":[{"id":"R1","alignment":"aligned","acceptance":[{"criterion":"it exists","met":true,"evidence":"src/a.gleam:1"}],"checklist":["C1"],"stories":["S1"],"issues":[],"fixes":[]}],"verification":[{"criterion":"gleam test","passed":true,"note":""}]}'
-        ;;
-      *)
-        printf '%s' "$dev_report"
-        ;;
-    esac
-    ;;
-  --resume)
-    printf '%s' "$dev_report"
-    ;;
-  *)
-    echo "unexpected norn invocation: $*" >&2
-    exit 64
-    ;;
-esac"#,
+# The real worker handler prepends flags (--fast --reasoning-effort x-high)
+# before --session-id, so scan argv rather than checking a fixed position:
+# read the --session-id value and route by suffix, and treat a --resume flag
+# (dev_resume, no --session-id) as a full dev report. --resume-if-exists is a
+# distinct token and never matches the --resume case.
+original="$*"
+session=""
+resume=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session-id) shift; session="$1" ;;
+    --resume) resume=1 ;;
+  esac
+  shift
+done
+if [ -n "$session" ]; then
+  case "$session" in
+    *-scout)
+      printf '%s' '{"summary":"scouted","enrichments":[{"id":"R1","files":["src/a.gleam"],"context":["match conventions"],"approach":"add it","notes":""}],"verification":["gleam test"]}'
+      ;;
+    *-review)
+      printf '%s' '{"summary":"verified","commit_message":"","enrichments":[{"id":"R1","alignment":"aligned","acceptance":[{"criterion":"it exists","met":true,"evidence":"src/a.gleam:1"}],"checklist":["C1"],"stories":["S1"],"issues":[],"fixes":[]}],"verification":[{"criterion":"gleam test","passed":true,"note":""}]}'
+      ;;
+    *)
+      printf '%s' "$dev_report"
+      ;;
+  esac
+elif [ "$resume" -eq 1 ]; then
+  printf '%s' "$dev_report"
+else
+  echo "unexpected norn invocation: $original" >&2
+  exit 64
+fi"#,
     )?;
     write_shim(dir, "cargo", "exit 0")?;
     write_shim(dir, "git", "exit 0")?;
+    // `request_review` notifies each reviewer with `collective send`; the
+    // handler ignores stdout and only checks the exit status, so the shim acks
+    // the send and records its argv. Any other subcommand is a loud failure.
     write_shim(
         dir,
-        "meridian",
+        "collective",
         r#"case "$1" in
-  review)
-    printf '%s' '{"branch":"stacked-dev-brief-7","reviewers":[{"name":"sample-reviewer","dm_status":"sent"}],"pending_reviewers_persisted":true}'
+  send)
+    exit 0
     ;;
   *)
-    echo "unknown meridian subcommand: $1" >&2
+    echo "unknown collective subcommand: $1" >&2
     exit 64
     ;;
 esac"#,
