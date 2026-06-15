@@ -170,7 +170,7 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
     let session_id = resolve_session_id(&input.workspace.branch);
 
     // norn takes the projected prompt positionally; --print is headless,
-    // --session-id mints exactly this id, --workspace-root confines file
+    // --resume-if-exists creates or resumes this session, --workspace-root confines file
     // tools, --output-schema constrains the structured result to the
     // dev-report shape, and --output-format json emits the final envelope we
     // decode.
@@ -182,7 +182,7 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
             "--fast",
             "--reasoning-effort",
             "x-high",
-            "--session-id",
+            "--resume-if-exists",
             &session_id,
             "--workspace-root",
             &input.workspace.path,
@@ -218,7 +218,7 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
             "--fast",
             "--reasoning-effort",
             "x-high",
-            "--session-id",
+            "--resume-if-exists",
             &session_id,
             "--workspace-root",
             &workspace.path,
@@ -253,7 +253,7 @@ pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, Act
             "--fast",
             "--reasoning-effort",
             "x-high",
-            "--session-id",
+            "--resume-if-exists",
             &session_id,
             "--workspace-root",
             &workspace.path,

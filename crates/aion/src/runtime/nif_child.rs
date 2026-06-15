@@ -210,6 +210,7 @@ fn recover_spawn_in_background(
             workflow_type,
             input,
             package_version,
+            namespace: nif.workflow_handle().namespace().to_owned(),
         },
     );
     if !armed {

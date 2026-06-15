@@ -29,6 +29,8 @@ pub(super) struct RecordedChildSpawn {
     pub(super) input: Payload,
     /// Recorded child package version.
     pub(super) package_version: PackageVersion,
+    /// Namespace inherited from the parent workflow.
+    pub(super) namespace: String,
 }
 
 /// Arm a background task that starts the recorded child until it exists.
@@ -89,7 +91,7 @@ async fn run_spawn_retry(bridge: &Arc<ChildNifBridge>, spawn: &RecordedChildSpaw
             package_version: spawn.package_version.clone(),
         };
         match bridge
-            .start_child_under_recorded_id(&spawn.parent_workflow_id, request)
+            .start_child_under_recorded_id(&spawn.parent_workflow_id, &spawn.namespace, request)
             .await
             .map(|handle| handle.workflow_id().clone())
         {
@@ -193,6 +195,7 @@ mod tests {
             workflow_type: "never_loaded_child".to_owned(),
             input: Payload::new(ContentType::Json, br#""input""#.to_vec()),
             package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            namespace: String::from("default"),
         }
     }
 
@@ -377,6 +380,7 @@ mod tests {
                 workflow_type: "never_loaded_child".to_owned(),
                 input: Payload::new(ContentType::Json, br#""input""#.to_vec()),
                 package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                namespace: String::from("default"),
             },
         ));
 

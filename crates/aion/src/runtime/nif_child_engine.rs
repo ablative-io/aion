@@ -140,7 +140,7 @@ impl ChildNifBridge {
     }
 
     /// Start the child under its parent-recorded identity, inheriting the
-    /// parent's current search attributes.
+    /// parent's current search attributes and namespace.
     ///
     /// Shared by the synchronous spawn path and the background
     /// spawn-recovery retry (F3): both must start exactly the recorded
@@ -154,6 +154,7 @@ impl ChildNifBridge {
     pub(super) async fn start_child_under_recorded_id(
         &self,
         parent_workflow_id: &WorkflowId,
+        parent_namespace: &str,
         request: ChildWorkflowSpawnRequest,
     ) -> Result<WorkflowHandle, EngineError> {
         // Children inherit the parent's current search attributes so
@@ -187,6 +188,7 @@ impl ChildNifBridge {
                 workflow_id: Some(request.child_workflow_id),
                 loaded_version: Some(loaded_version),
                 search_attributes: inherited,
+                namespace: Some(parent_namespace.to_owned()),
                 ..StartWorkflowOptions::default()
             },
         )
@@ -253,12 +255,13 @@ impl EngineHandle for NifChildEngine {
         request: ChildWorkflowSpawnRequest,
     ) -> Result<ChildWorkflowSpawnResult, EngineSeamError> {
         let parent_workflow_id = self.parent.workflow_id().clone();
+        let parent_namespace = self.parent.namespace().to_owned();
         let child = self
             .bridge
             .tokio_handle
             .block_on(
                 self.bridge
-                    .start_child_under_recorded_id(&parent_workflow_id, request),
+                    .start_child_under_recorded_id(&parent_workflow_id, &parent_namespace, request),
             )
             .map_err(|error| EngineSeamError::ChildSpawn {
                 reason: error.to_string(),
