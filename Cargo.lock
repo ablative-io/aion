@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "aion-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-client",
  "aion-core",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "aion-client"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "serde",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aion-nif"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "beamr",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "aion-package"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "serde",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "aion-rs"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "aion-server"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-libsql"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -539,9 +539,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beamr"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ede66a58b4d551fdcfb576141d08439e2390e179cc075b6655839b6eab0a3958"
+checksum = "8d6adf9e794c5602336878764eba8f67b91899b58eebd97ad1fcd98d79bad54c"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -1373,7 +1373,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2001,7 +2001,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2670,7 +2670,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3226,7 +3226,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls 0.23.40",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3264,7 +3264,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.59.0",
 ]
@@ -3599,7 +3599,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3693,7 +3693,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4146,7 +4146,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5049,7 +5049,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
