@@ -154,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
     // yet; usize::MAX is the honest spelling of that intent.
     let config = WorkerConfig::builder()
         .endpoint(cli.endpoint)
+        .namespace(&cli.task_queue)
         .task_queue(&cli.task_queue)
         .identity("stacked-dev-worker-1")
         .max_concurrency(cli.concurrency)
