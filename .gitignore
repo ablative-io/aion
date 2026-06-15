@@ -36,3 +36,4 @@ __pycache__
 .vscode
 .meridian/worksites/
 .claude/
+aion.db
