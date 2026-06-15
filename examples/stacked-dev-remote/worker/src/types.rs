@@ -68,6 +68,10 @@ pub struct ProvisionInput {
     pub placement: Placement,
     /// How the workspace is isolated.
     pub isolation: Isolation,
+    /// Remote clone URL. When present, provisioning clones from this URL into
+    /// a temp directory instead of using `yg` worktree provisioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_url: Option<String>,
 }
 
 /// A provisioned, isolated workspace (`codecs_core.workspace_codec`).
@@ -318,6 +322,10 @@ pub struct LandInput {
     pub base_ref: String,
     /// The dev result being landed.
     pub dev_result: DevResult,
+    /// Remote clone URL. When present, landing pushes and creates a PR
+    /// instead of using `yg branch merge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_url: Option<String>,
 }
 
 /// Output of the `land` activity (`codecs_flow.landed_codec`).
@@ -327,6 +335,24 @@ pub struct Landed {
     pub branch: String,
     /// The tree parent it merged into.
     pub merged_into: String,
+}
+
+/// Input to the `teardown_workspace` activity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TeardownInput {
+    /// The workspace to tear down.
+    pub workspace: Workspace,
+    /// The main repository root (used for local worktree cleanup).
+    pub repo_root: String,
+}
+
+/// Output of the `teardown_workspace` activity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TornDown {
+    /// The branch that was cleaned up.
+    pub branch: String,
+    /// Whether the workspace directory was removed.
+    pub cleaned: bool,
 }
 
 // --- stage-contract reports --------------------------------------------------
@@ -354,12 +380,16 @@ pub struct ScoutEnrichment {
     /// R# id.
     pub id: String,
     /// Key files for this requirement.
+    #[serde(default)]
     pub files: Vec<String>,
     /// Conventions, signatures, gotchas.
+    #[serde(default)]
     pub context: Vec<String>,
     /// How to implement this requirement.
+    #[serde(default)]
     pub approach: String,
     /// Non-obvious notes; empty if none.
+    #[serde(default)]
     pub notes: String,
 }
 

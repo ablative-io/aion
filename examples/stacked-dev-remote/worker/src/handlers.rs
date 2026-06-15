@@ -28,8 +28,9 @@ use crate::shell::{CliRun, Shell};
 use crate::types::{
     AssembleInput, AssembledWave, BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport,
     EnrichInput, GateInput, GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed,
-    ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport, ReviewRequest, ScopedInput,
-    ScoutInput, ScoutReport, StartupResult, StartupTask, Workspace,
+    Placement, ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport, ReviewRequest,
+    ScopedInput, ScoutInput, ScoutReport, StartupResult, StartupTask, TeardownInput, TornDown,
+    Workspace,
 };
 
 /// How much of an unparseable norn stdout rides in the terminal failure
@@ -38,32 +39,80 @@ use crate::types::{
 /// payload.
 const UNPARSEABLE_OUTPUT_HEAD: usize = 1000;
 
-/// `provision_workspace`: provision an isolated workspace via the `yg` CLI.
+/// `provision_workspace`: provision an isolated workspace.
 ///
-/// Only worktree isolation has an implementation; the other typed variants
-/// fail loudly, exactly like the local implementation's seam.
+/// When `clone_url` is present, clones the repo into a temp directory and
+/// creates the branch there — no `yg` needed (the remote machine has no
+/// yggdrasil tree). When absent, falls back to `yg` worktree provisioning.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when the isolation mode has no
-/// implementation, when `yg` cannot run, or when either `yg` verb exits
-/// non-zero.
+/// Terminal [`ActivityFailure`] when `git`/`yg` cannot run, when the clone
+/// fails, or when the isolation mode has no implementation.
 pub fn provision_workspace(
     shell: &Shell,
     input: ProvisionInput,
 ) -> Result<Workspace, ActivityFailure> {
-    match input.isolation {
-        Isolation::Worktree => provision_worktree(shell, input),
-        Isolation::Copy | Isolation::Overlay | Isolation::Vm => {
-            Err(ActivityFailure::terminal(format!(
-                "isolation mode {} is a typed seam with no local implementation \
-                 (TODO(meridian): exchange-VM dispatch)",
-                input.isolation.wire_name()
-            )))
+    if input.clone_url.is_some() {
+        provision_clone(shell, &input)
+    } else {
+        match input.isolation {
+            Isolation::Worktree => provision_worktree(shell, input),
+            Isolation::Copy | Isolation::Overlay | Isolation::Vm => {
+                Err(ActivityFailure::terminal(format!(
+                    "isolation mode {} is a typed seam with no local implementation",
+                    input.isolation.wire_name()
+                )))
+            }
         }
     }
 }
 
+/// Clone from a URL into a temp directory, create the working branch.
+fn provision_clone(shell: &Shell, input: &ProvisionInput) -> Result<Workspace, ActivityFailure> {
+    let clone_url = input.clone_url.as_deref().ok_or_else(|| {
+        ActivityFailure::terminal("provision_clone called without clone_url".to_owned())
+    })?;
+
+    let branch = format!("stacked-dev-{}", input.brief_id);
+
+    // mktemp -d gives us a unique directory on any unix system.
+    let mktemp_run = require_run(shell, "mktemp", &["-d"], "/tmp", "mktemp -d")?;
+    let temp_dir = mktemp_run.stdout.trim().to_owned();
+    if temp_dir.is_empty() {
+        return Err(ActivityFailure::terminal(
+            "mktemp -d returned an empty path".to_owned(),
+        ));
+    }
+
+    let repo_dir = format!("{temp_dir}/repo");
+
+    require_run(
+        shell,
+        "git",
+        &["clone", clone_url, &repo_dir],
+        &temp_dir,
+        "git clone",
+    )?;
+
+    // Create the working branch from the base ref.
+    require_run(
+        shell,
+        "git",
+        &["checkout", "-b", &branch, &input.base_ref],
+        &repo_dir,
+        "git checkout -b",
+    )?;
+
+    Ok(Workspace {
+        path: repo_dir,
+        branch,
+        placement: Placement::Remote,
+        isolation: Isolation::Copy,
+    })
+}
+
+/// Local worktree provisioning via `yg` — fallback when no `clone_url`.
 fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace, ActivityFailure> {
     let ProvisionInput {
         repo_root,
@@ -71,11 +120,8 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
         base_ref,
         placement,
         isolation,
+        ..
     } = input;
-    // Two real yg verbs: add the branch as a child of the base ref, then
-    // provision its worktree at a known absolute path (built from the repo
-    // root) so every downstream activity holds a real directory and never a
-    // cwd-relative guess.
     let branch = format!("stacked-dev-{brief_id}");
     let worktree_path = format!("{repo_root}/.yggdrasil-worktrees/{branch}");
 
@@ -86,8 +132,6 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
         &repo_root,
         "yg branch add",
     )?;
-    // An explicit --path keeps the worktree location known a priori, never
-    // parsed out of human output.
     require_run(
         shell,
         "yg",
@@ -158,6 +202,9 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -191,6 +238,9 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -223,6 +273,9 @@ pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, Act
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -260,6 +313,9 @@ pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, Activi
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--resume",
             &session_id,
             "--output-schema",
@@ -472,30 +528,22 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
     })
 }
 
-/// `land`: commit the dev rounds' files on the branch, then the yg-level
-/// stack operation — merge the branch into its tree parent. Local, no PR
-/// machinery.
-///
-/// Confirmed live (2026-06-13): the dev rounds leave norn's work UNCOMMITTED
-/// in the worktree and `yg branch merge` merges committed work only, so
-/// landing commits first. The merge runs from the MAIN repository:
-/// `yg branch merge` removes the branch's worktree as part of landing — run
-/// from inside the worktree it deletes its own git context mid-merge and
-/// dies.
+/// `land`: commit the dev rounds' files, then either push + create a PR
+/// (remote) or merge via `yg` (local).
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `git` or `yg` cannot run, when the
-/// commit exits non-zero (including a dev round that changed nothing —
-/// landing a no-op is an error, never a silent empty merge), or when the
-/// merge exits non-zero.
+/// Terminal [`ActivityFailure`] when `git`/`yg`/`gh` cannot run, when the
+/// commit exits non-zero, or when the push/merge/PR-create exits non-zero.
 pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> {
     let LandInput {
         workspace,
         repo_root,
         base_ref,
         dev_result,
+        clone_url,
     } = input;
+
     require_run(shell, "git", &["add", "-A"], &workspace.path, "git add")?;
     let message = format!("{}: {}", workspace.branch, dev_result.summary);
     require_run(
@@ -505,16 +553,72 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
         &workspace.path,
         "git commit",
     )?;
+
+    if clone_url.is_some() {
+        land_remote(shell, &workspace, &base_ref, &dev_result.summary)
+    } else {
+        land_local(shell, &workspace, &repo_root, &base_ref)
+    }
+}
+
+/// Push the branch and create a PR via `gh`.
+fn land_remote(
+    shell: &Shell,
+    workspace: &Workspace,
+    base_ref: &str,
+    summary: &str,
+) -> Result<Landed, ActivityFailure> {
+    require_run(
+        shell,
+        "git",
+        &["push", "-u", "origin", &workspace.branch],
+        &workspace.path,
+        "git push",
+    )?;
+
+    let title = format!("{}: {}", workspace.branch, summary);
+    require_run(
+        shell,
+        "gh",
+        &[
+            "pr",
+            "create",
+            "--title",
+            &title,
+            "--body",
+            &format!("Automated PR for branch {}", workspace.branch),
+            "--base",
+            base_ref,
+            "--head",
+            &workspace.branch,
+        ],
+        &workspace.path,
+        "gh pr create",
+    )?;
+
+    Ok(Landed {
+        branch: workspace.branch.clone(),
+        merged_into: base_ref.to_owned(),
+    })
+}
+
+/// Merge via `yg` — the local landing path.
+fn land_local(
+    shell: &Shell,
+    workspace: &Workspace,
+    repo_root: &str,
+    base_ref: &str,
+) -> Result<Landed, ActivityFailure> {
     require_run(
         shell,
         "yg",
         &["branch", "merge", &workspace.branch, "--yes"],
-        &repo_root,
+        repo_root,
         "yg branch merge",
     )?;
     Ok(Landed {
-        branch: workspace.branch,
-        merged_into: base_ref,
+        branch: workspace.branch.clone(),
+        merged_into: base_ref.to_owned(),
     })
 }
 
@@ -602,6 +706,53 @@ pub fn assemble_wave(
     crate::assemble::assemble_wave(input)
 }
 
+/// `teardown_workspace`: remove the workspace directory and clean up norn
+/// sessions. Runs on all error paths after provisioning succeeds.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] only if the workspace path cannot be removed
+/// and it still exists. Missing paths are already clean — not an error.
+pub fn teardown_workspace(
+    _shell: &Shell,
+    input: TeardownInput,
+) -> Result<TornDown, ActivityFailure> {
+    let workspace_path_owned = input.workspace.path;
+    let branch = input.workspace.branch;
+    let workspace_path = std::path::Path::new(&workspace_path_owned);
+
+    let mut cleaned = false;
+    if workspace_path.exists() {
+        std::fs::remove_dir_all(workspace_path).map_err(|source| {
+            ActivityFailure::terminal(format!(
+                "teardown: cannot remove workspace {workspace_path_owned}: {source}",
+            ))
+        })?;
+        cleaned = true;
+    }
+
+    // Also remove the temp parent if the workspace was a clone (the clone
+    // path is {temp_dir}/repo, so the parent is the mktemp dir).
+    if let Some(parent) = workspace_path.parent()
+        && (parent.starts_with("/tmp") || parent.starts_with("/var/folders"))
+    {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    // Clean up norn sessions for this branch.
+    if let Some(home) = std::env::var_os("HOME") {
+        let sessions_dir = std::path::PathBuf::from(home).join(".norn/sessions");
+        if sessions_dir.is_dir() {
+            for suffix in &["", "-scout", "-review"] {
+                let session_file = sessions_dir.join(format!("{branch}{suffix}.jsonl"));
+                let _ = std::fs::remove_file(session_file);
+            }
+        }
+    }
+
+    Ok(TornDown { branch, cleaned })
+}
+
 // --- helpers ----------------------------------------------------------------
 
 /// The `meridian review request` response envelope — only the fields the
@@ -649,7 +800,7 @@ fn require_json<T: serde::de::DeserializeOwned>(
     command_run: &CliRun,
     context: &str,
 ) -> Result<T, ActivityFailure> {
-    let trimmed = command_run.output.trim();
+    let trimmed = command_run.stdout.trim();
     serde_json::from_str(trimmed).map_err(|_| {
         ActivityFailure::terminal(format!("{context} produced unparseable output: {trimmed}"))
     })
@@ -674,7 +825,9 @@ fn parse_report<T: DeserializeOwned>(
         output: T,
     }
 
-    let trimmed = command_run.output.trim();
+    // Use stdout only — stderr carries norn's WARN/INFO log lines which
+    // corrupt the JSON parse.
+    let trimmed = command_run.stdout.trim();
     if let Ok(report) = serde_json::from_str::<T>(trimmed) {
         return Ok(report);
     }
@@ -682,11 +835,29 @@ fn parse_report<T: DeserializeOwned>(
         return Ok(envelope.output);
     }
 
+    // Try extracting the first JSON line from stdout as a last resort.
+    if let Some(json_line) = first_json_line(trimmed) {
+        if let Ok(report) = serde_json::from_str::<T>(json_line) {
+            return Ok(report);
+        }
+        if let Ok(envelope) = serde_json::from_str::<NornEnvelope<T>>(json_line) {
+            return Ok(envelope.output);
+        }
+    }
+
     Err(ActivityFailure::terminal(format!(
         "{context} produced unparseable output \
          (tried the bare report shape and norn's {{\"output\": …}} envelope): {}",
         head(trimmed, UNPARSEABLE_OUTPUT_HEAD)
     )))
+}
+
+/// Extract the first line that looks like a complete JSON object or array.
+fn first_json_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| {
+        (line.starts_with('{') && line.ends_with('}'))
+            || (line.starts_with('[') && line.ends_with(']'))
+    })
 }
 
 /// First `limit` characters of `text`, truncated on a char boundary.

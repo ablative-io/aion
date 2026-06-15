@@ -102,6 +102,32 @@ pub fn assemble_wave(input: AssembleInput) -> Result<AssembledWave, ActivityFail
     run(input).map_err(ActivityFailure::terminal)
 }
 
+/// Resolve a single brief from the design directory inside a workspace.
+/// Returns the brief document and fully-resolved context, reusing the same
+/// resolution logic as `assemble_wave` for a single brief without wave
+/// ordering or refusal checks.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when the brief, design docs, or ledgers
+/// cannot be read or decoded.
+pub fn resolve_brief(design_dir: &str, brief_id: &str) -> Result<WaveEntry, ActivityFailure> {
+    resolve_one(design_dir, brief_id).map_err(ActivityFailure::terminal)
+}
+
+fn resolve_one(design_dir: &str, brief_id: &str) -> Result<WaveEntry, String> {
+    let loaded = load_one(design_dir, brief_id)?;
+    let decisions: Vec<ResolvedAdr> =
+        read_json::<DecisionsFile>(&format!("{design_dir}/decisions.json"))
+            .map(|f| f.decisions)
+            .unwrap_or_default();
+    let roadmap: Vec<RoadmapItem> =
+        read_json::<RoadmapFile>(&format!("{design_dir}/roadmap.json"))
+            .map(|f| f.items)
+            .unwrap_or_default();
+    Ok(build_entry(&loaded, &decisions, &roadmap, design_dir))
+}
+
 fn run(input: AssembleInput) -> Result<AssembledWave, String> {
     let AssembleInput { design_dir, wave } = input;
     let decisions: Vec<ResolvedAdr> =

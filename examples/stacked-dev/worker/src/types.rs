@@ -329,6 +329,24 @@ pub struct Landed {
     pub merged_into: String,
 }
 
+/// Input to the `teardown_workspace` activity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TeardownInput {
+    /// The workspace to tear down.
+    pub workspace: Workspace,
+    /// The main repository root (used for local worktree cleanup).
+    pub repo_root: String,
+}
+
+/// Output of the `teardown_workspace` activity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TornDown {
+    /// The branch that was cleaned up.
+    pub branch: String,
+    /// Whether the workspace directory was removed.
+    pub cleaned: bool,
+}
+
 // --- stage-contract reports --------------------------------------------------
 //
 // The three generated stage-contract shapes (`aion_stacked_dev_io`
@@ -354,12 +372,16 @@ pub struct ScoutEnrichment {
     /// R# id.
     pub id: String,
     /// Key files for this requirement.
+    #[serde(default)]
     pub files: Vec<String>,
     /// Conventions, signatures, gotchas.
+    #[serde(default)]
     pub context: Vec<String>,
     /// How to implement this requirement.
+    #[serde(default)]
     pub approach: String,
     /// Non-obvious notes; empty if none.
+    #[serde(default)]
     pub notes: String,
 }
 

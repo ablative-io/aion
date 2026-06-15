@@ -14,14 +14,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-/// A completed command run: the exit status, combined stdout/stderr text,
-/// and the wall-clock duration of the process.
+/// A completed command run: the exit status, stdout, stderr, and the
+/// wall-clock duration of the process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CliRun {
     /// The process exit status (`128 + signal` when killed by a signal, the
     /// shell convention).
     pub exit_status: i32,
-    /// Combined stdout/stderr text (stdout first).
+    /// Captured stdout text.
+    pub stdout: String,
+    /// Captured stderr text.
+    pub stderr: String,
+    /// Combined stdout+stderr for diagnostics (stdout first).
     pub output: String,
     /// Wall-clock duration of the process.
     pub duration_ms: u64,
@@ -131,11 +135,15 @@ impl Shell {
         })?;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+        let mut combined = stdout_text.clone();
+        combined.push_str(&stderr_text);
 
         Ok(CliRun {
             exit_status: exit_code(output.status),
+            stdout: stdout_text,
+            stderr: stderr_text,
             output: combined,
             duration_ms,
         })

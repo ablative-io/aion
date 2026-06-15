@@ -29,7 +29,7 @@ use crate::types::{
     AssembleInput, AssembledWave, BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport,
     EnrichInput, GateInput, GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed,
     ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport, ReviewRequest, ScopedInput,
-    ScoutInput, ScoutReport, StartupResult, StartupTask, Workspace,
+    ScoutInput, ScoutReport, StartupResult, StartupTask, TeardownInput, TornDown, Workspace,
 };
 
 /// How much of an unparseable norn stdout rides in the terminal failure
@@ -158,6 +158,9 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -191,6 +194,9 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -223,6 +229,9 @@ pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, Act
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -260,6 +269,9 @@ pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, Activi
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--resume",
             &session_id,
             "--output-schema",
@@ -602,6 +614,63 @@ pub fn assemble_wave(
     crate::assemble::assemble_wave(input)
 }
 
+/// `teardown_workspace`: remove the workspace directory and clean up norn
+/// sessions. Runs on all error paths after provisioning succeeds.
+///
+/// For local worktrees, removes the worktree directory, the git branch, and
+/// the yg branch. For cloned workspaces, removes the entire temp directory.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] only if the workspace path cannot be removed
+/// and it still exists. Missing paths are already clean — not an error.
+pub fn teardown_workspace(
+    shell: &Shell,
+    input: TeardownInput,
+) -> Result<TornDown, ActivityFailure> {
+    let workspace_path_owned = input.workspace.path;
+    let branch = input.workspace.branch;
+    let repo_root = input.repo_root;
+    let workspace_path = std::path::Path::new(&workspace_path_owned);
+
+    let mut cleaned = false;
+
+    // Remove git worktree if it exists.
+    if workspace_path.exists() {
+        let _ = shell.run(
+            "git",
+            &["worktree", "remove", "--force", &workspace_path_owned],
+            &repo_root,
+        );
+        // If git worktree remove didn't clean it (e.g. not a worktree),
+        // fall back to rm -rf.
+        if workspace_path.exists() {
+            std::fs::remove_dir_all(workspace_path).map_err(|source| {
+                ActivityFailure::terminal(format!(
+                    "teardown: cannot remove workspace {workspace_path_owned}: {source}",
+                ))
+            })?;
+        }
+        cleaned = true;
+    }
+
+    // Remove the git branch.
+    let _ = shell.run("git", &["branch", "-D", &branch], &repo_root);
+
+    // Clean up norn sessions for this branch.
+    if let Some(home) = std::env::var_os("HOME") {
+        let sessions_dir = std::path::PathBuf::from(home).join(".norn/sessions");
+        if sessions_dir.is_dir() {
+            for suffix in &["", "-scout", "-review"] {
+                let session_file = sessions_dir.join(format!("{branch}{suffix}.jsonl"));
+                let _ = std::fs::remove_file(session_file);
+            }
+        }
+    }
+
+    Ok(TornDown { branch, cleaned })
+}
+
 // --- helpers ----------------------------------------------------------------
 
 /// The `meridian review request` response envelope — only the fields the
@@ -649,7 +718,7 @@ fn require_json<T: serde::de::DeserializeOwned>(
     command_run: &CliRun,
     context: &str,
 ) -> Result<T, ActivityFailure> {
-    let trimmed = command_run.output.trim();
+    let trimmed = command_run.stdout.trim();
     serde_json::from_str(trimmed).map_err(|_| {
         ActivityFailure::terminal(format!("{context} produced unparseable output: {trimmed}"))
     })
@@ -674,7 +743,7 @@ fn parse_report<T: DeserializeOwned>(
         output: T,
     }
 
-    let trimmed = command_run.output.trim();
+    let trimmed = command_run.stdout.trim();
     if let Ok(report) = serde_json::from_str::<T>(trimmed) {
         return Ok(report);
     }
@@ -682,11 +751,29 @@ fn parse_report<T: DeserializeOwned>(
         return Ok(envelope.output);
     }
 
+    // Try extracting the first JSON line from stdout as a last resort.
+    if let Some(json_line) = first_json_line(trimmed) {
+        if let Ok(report) = serde_json::from_str::<T>(json_line) {
+            return Ok(report);
+        }
+        if let Ok(envelope) = serde_json::from_str::<NornEnvelope<T>>(json_line) {
+            return Ok(envelope.output);
+        }
+    }
+
     Err(ActivityFailure::terminal(format!(
         "{context} produced unparseable output \
          (tried the bare report shape and norn's {{\"output\": …}} envelope): {}",
         head(trimmed, UNPARSEABLE_OUTPUT_HEAD)
     )))
+}
+
+/// Extract the first line that looks like a complete JSON object or array.
+fn first_json_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| {
+        (line.starts_with('{') && line.ends_with('}'))
+            || (line.starts_with('[') && line.ends_with(']'))
+    })
 }
 
 /// First `limit` characters of `text`, truncated on a char boundary.

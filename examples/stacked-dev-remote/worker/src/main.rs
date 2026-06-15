@@ -72,7 +72,7 @@ where
 }
 
 /// Every activity name this worker serves, in registration order.
-const SERVED_ACTIVITIES: [&str; 12] = [
+const SERVED_ACTIVITIES: [&str; 13] = [
     "provision_workspace",
     "warm_build",
     "dev",
@@ -85,6 +85,7 @@ const SERVED_ACTIVITIES: [&str; 12] = [
     "dev_review",
     "enrich_brief",
     "assemble_wave",
+    "teardown_workspace",
 ];
 
 #[tokio::main]
@@ -159,7 +160,14 @@ async fn main() -> anyhow::Result<()> {
         )?
         // assemble_wave is the dispatcher activity (BD-006); it serves the
         // dispatch entry's [["assemble_wave"]] list and reads ledgers itself.
-        .register_activity("assemble_wave", blocking(shell, handlers::assemble_wave))?
+        .register_activity(
+            "assemble_wave",
+            blocking(shell.clone(), handlers::assemble_wave),
+        )?
+        .register_activity(
+            "teardown_workspace",
+            blocking(shell, handlers::teardown_workspace),
+        )?
         .build()?
         .run()
         .await?;

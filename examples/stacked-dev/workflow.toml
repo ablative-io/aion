@@ -35,7 +35,7 @@ entry_function = "run"
 timeout_seconds = 604800
 input_schema = "schemas/input.json"
 output_schema = "schemas/output.json"
-activities = ["provision_workspace", "dev_resume", "request_review", "enrich_brief", "land"]
+activities = ["provision_workspace", "dev_resume", "request_review", "enrich_brief", "land", "teardown_workspace"]
 output = "stacked-dev.aion"
 
 [[workflow]]
