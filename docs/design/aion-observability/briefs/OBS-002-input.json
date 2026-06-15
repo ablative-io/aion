@@ -1,0 +1,270 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "OBS-002",
+  "reviewers": [
+    "Waffles"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "OBS-002",
+    "cluster": "aion-observability",
+    "title": "Propagate a child's terminal failure visibly to parent and watchers",
+    "depends_on": [
+      "OBS-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C12",
+      "C13",
+      "C14",
+      "C15",
+      "C16",
+      "C17",
+      "C18"
+    ],
+    "stories": [
+      "S4",
+      "S5",
+      "S6",
+      "S7"
+    ],
+    "design_anchor": [
+      "ADR-003",
+      "ADR-005"
+    ],
+    "purpose": "Closes the other half of the dogfood observability gap: a child workflow's terminal failure must surface to the parent run and to watchers without hand-investigation (RM-024). The recorded ChildWorkflowFailed terminal \u2014 written onto the parent's history by the child-terminal watcher through the parent's Recorder (invariant 3, CN4) \u2014 already drives the parent's describe timeline and is already forwarded by the existing event-stream subscription; this brief adds the loud edge (an error log when the watcher records a failed-child terminal) and verifies the two visibility paths end to end (describe timeline carries the child id + reason; a subscribed watcher receives the parent-side event). It introduces no new event type and no new push path (CN3, design non-goals): propagation is expressed entirely over the existing recorded ChildWorkflowFailed. Depends on OBS-001 so the engine/server exit logging lands first; this brief layers the child-specific edge on top and re-verifies the shared invariant/gate items C16-C18 across its own diff.",
+    "task": "Make a failed child loud and verifiably visible using the ChildWorkflowFailed event the watcher already records \u2014 no new event, no new push channel, no status field. Two parts: (1) Add an error-level tracing call in crates/aion/src/runtime/nif_child_watch.rs::record_parent_child_terminal at the point it records a ChildWorkflowFailed terminal (the TerminalOutcome::Failed arm, and the Cancelled/TimedOut arms that map to ChildWorkflowFailed), carrying parent workflow id, parent run id, child workflow id, and the child's WorkflowError.message \u2014 matching the warn/error lines run_watch already emits for transient and invariant record failures. The Completed arm must not log at error. The log is a pure side effect: it changes no recorded event and no returned RecordDisposition (CN5). (2) Verify the two existing visibility paths carry the failure: (a) a parent history containing a ChildWorkflowFailed is encoded into the describe response timeline by crates/aion-server/src/api/handlers/describe.rs and crates/aion-server/src/api/handlers/payload.rs::encode_history, with the child id and reason intact; (b) a watcher subscribed through the existing crates/aion-server/src/stream/ subscription receives the parent-side ChildWorkflowFailed event because it is a normal appended event. Scope boundary \u2014 in: the child-failure log in nif_child_watch.rs, tests asserting it, and tests verifying the describe-timeline and watcher-stream paths carry the failure; re-verification of shared invariant/gate items C16-C18 across this diff. Out: the engine exit funnel log and the server record_events terminal-failure logs (OBS-001); any new event type, status field, or push path; any change to how the watcher records (record-before-wake discipline, retry/backoff) \u2014 only a log is added. Split-item note: C16/C17/C18 are cluster-wide invariant/gate items shared with OBS-001; this brief re-verifies them across its own diff at the cluster landing commit.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Loud error log when the watcher records a failed-child terminal",
+        "spec": "WHEN record_parent_child_terminal in crates/aion/src/runtime/nif_child_watch.rs records a ChildWorkflowFailed terminal for the parent \u2014 the TerminalOutcome::Failed arm, and the TerminalOutcome::Cancelled and TerminalOutcome::TimedOut arms that map to record_child_workflow_failed \u2014 THE SYSTEM SHALL emit an error-level tracing call carrying the parent workflow id, parent run id, child workflow id, and the recorded WorkflowError.message, consistent with the existing run_watch warn/error field conventions (parent_workflow_id, parent_run_id, child_workflow_id, reason/error via Display). THE SYSTEM SHALL NOT emit the error log on the TerminalOutcome::Completed arm, SHALL NOT emit it on the early-return ParentTerminal or AlreadyRecorded dispositions (no new terminal was recorded there), and SHALL NOT change the RecordDisposition returned or any event recorded (CN5).",
+        "acceptance": [
+          "On the TerminalOutcome::Failed arm, after record_child_workflow_failed succeeds, an ERROR-level tracing event is emitted carrying parent_workflow_id, parent_run_id, child_workflow_id, and the child's WorkflowError.message \u2014 asserted by a capturing-subscriber test driving record_parent_child_terminal with a Failed outcome and finding the ERROR record with the message text.",
+          "On the TerminalOutcome::Completed arm, no ERROR-level child-failure record is emitted by record_parent_child_terminal.",
+          "When record_parent_child_terminal returns AlreadyRecorded (the child terminal was already on the parent segment) or ParentTerminal, no new ERROR-level child-failure record is emitted (the failure is logged once, at the recording, mirroring P4).",
+          "The Cancelled and TimedOut arms, which map to record_child_workflow_failed with the 'cancelled:'/'timed_out:' prefixed message, also emit the ERROR record carrying that message.",
+          "cargo test -p aion passes including the new nif_child_watch logging test; the RecordDisposition returned by each arm is unchanged from before."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion/src/runtime/nif_child_watch.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C12",
+          "C13"
+        ],
+        "stories": [
+          "S4",
+          "S7"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Failed child surfaces on the parent's describe timeline",
+        "spec": "THE SYSTEM SHALL surface a failed child on the parent run's describe output: WHEN a parent history contains a ChildWorkflowFailed event and describe is requested with history included, THE SYSTEM SHALL return a timeline that includes the encoded ChildWorkflowFailed carrying the child workflow id and the child's failure reason, via crates/aion-server/src/api/handlers/describe.rs and crates/aion-server/src/api/handlers/payload.rs::encode_history. This is a verification requirement over the existing describe path (status remains projected by status_from_events; CN1) \u2014 THE SYSTEM SHALL NOT add a new field to the describe response or a new event to carry the child failure; the existing ChildWorkflowFailed encoding is what is verified.",
+        "acceptance": [
+          "A test builds a parent history of WorkflowStarted, ChildWorkflowStarted, ChildWorkflowFailed (with a known child workflow id and a WorkflowError message), runs it through the describe handler with include_history true, and asserts the returned timeline contains the encoded ChildWorkflowFailed with the child workflow id and the reason text intact.",
+          "The same describe response's summary status is derived by status_from_events (the parent is still Running if it has not itself terminated), confirming the child failure is visible in the timeline without being conflated into the parent's projected status.",
+          "No new field is added to the describe response type and no new Event variant is introduced (diff review confirms the encoding of the existing ChildWorkflowFailed is what carries it).",
+          "cargo test -p aion-server passes including the describe-timeline child-failure test."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C14"
+        ],
+        "stories": [
+          "S6"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Subscribed watcher receives the parent-side child-failure event",
+        "spec": "THE SYSTEM SHALL deliver the parent-side ChildWorkflowFailed event to a watcher subscribed through the existing crates/aion-server/src/stream/ subscription surface, because the event is a normal appended event the stream already forwards through its namespace gate. This is a verification requirement over the existing push path \u2014 THE SYSTEM SHALL NOT add a new push channel, SSE endpoint, or notification integration (design non-goal): the deliverable is a test proving the existing stream carries the failed-child event to a subscriber.",
+        "acceptance": [
+          "A test subscribes through the existing event-subscription path, appends a ChildWorkflowFailed event for a workflow within the subscribed namespace, and asserts the subscriber's stream yields the encoded ChildWorkflowFailed event.",
+          "The test asserts no new push path was needed: the event arrives through the same subscription/forward mechanism used for other appended events (the test imports only the existing stream API).",
+          "An event for a different namespace is not delivered to the subscriber (the existing namespace gate still applies; the new visibility does not bypass authorization).",
+          "cargo test -p aion-server passes including the watcher-stream child-failure test."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C15"
+        ],
+        "stories": [
+          "S5"
+        ]
+      },
+      {
+        "id": "R4",
+        "title": "Cluster invariants and gate hold across this diff",
+        "spec": "THE SYSTEM SHALL introduce no new Event variant, no new Payload type, and no mutable status field, deriving status only via status_from_events (invariant 4, CN1); no code added by this brief SHALL call EventStore::append directly (invariant 3, CN4) \u2014 the ChildWorkflowFailed surfaced is the one already written by record_parent_child_terminal through the parent's Recorder. The added logging SHALL be free of #[allow], #[expect], unwrap, and expect in non-test library code, and crates/aion/src/runtime/nif_child_watch.rs SHALL remain under 500 LOC excluding tests (CN7). WHEN the cluster lands, cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite SHALL pass clean (CN7). THE SYSTEM SHALL add no timeout, rate limit, or cap (ADR-003, CN8). Split-item note: C16/C17/C18 are shared with OBS-001; this requirement re-verifies them across OBS-002's diff.",
+        "acceptance": [
+          "git diff for OBS-002 introduces no new Event variant, no new Payload type, and no new status field; grep confirms.",
+          "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over the non-test lines added to crates/aion/src/runtime/nif_child_watch.rs returns no matches introduced by this brief.",
+          "wc -l on crates/aion/src/runtime/nif_child_watch.rs shows under 500 lines excluding the test module.",
+          "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; the full workspace test suite passes at the cluster landing commit.",
+          "No EventStore::append call is added by this brief; the surfaced ChildWorkflowFailed is the one already recorded through the parent Recorder (grep confirms no new direct append)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C16",
+          "C17",
+          "C18"
+        ],
+        "stories": [
+          "S7"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT add the engine exit-funnel log (handle_process_exit_async) or the server record_events terminal-failure logs \u2014 those are OBS-001.",
+      "SHALL NOT introduce a new Event variant, a new Payload type, a mutable status field, or any second source of truth for the child's status (CN1, CN3).",
+      "SHALL NOT add a new push channel, SSE endpoint, dashboard integration, or notification path \u2014 the existing event-stream subscription carries the ChildWorkflowFailed (design non-goal).",
+      "SHALL NOT call EventStore::append directly; the ChildWorkflowFailed surfaced is the one already recorded through the parent's Recorder under its lock (CN4).",
+      "SHALL NOT change the child-terminal watcher's record-before-wake discipline, retry/backoff, or run-chain following \u2014 this brief adds a log and verifies existing paths, nothing more.",
+      "SHALL NOT add a new field to the describe response or change how the timeline is encoded \u2014 the existing ChildWorkflowFailed encoding is verified, not extended.",
+      "SHALL NOT add any timeout, deadline, rate limit, or cap (ADR-003, CN8)."
+    ],
+    "verification": [
+      "cargo test -p aion -p aion-server passes, including the new nif_child_watch child-failure log test (R1), the describe-timeline test (R2), and the watcher-stream test (R3).",
+      "Run the watcher log test for each arm: Failed/Cancelled/TimedOut produce an ERROR record carrying the child reason; Completed and the AlreadyRecorded/ParentTerminal early returns produce no child-failure ERROR record.",
+      "Build a parent history with a ChildWorkflowFailed, run it through describe, and confirm the timeline carries the child id and reason while the parent's projected status is unchanged (status_from_events) (R2, CN1).",
+      "Subscribe through the existing stream, append a ChildWorkflowFailed in the subscribed namespace, and confirm delivery; append one in another namespace and confirm it is gated out (R3).",
+      "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both exit 0; grep for #[allow]/#[expect]/unwrap/expect in the modified non-test lib code returns nothing new; nif_child_watch.rs stays under 500 LOC excluding tests (R4).",
+      "Diff review confirms no new Event variant, no new Payload type, no status field, no direct EventStore::append, and no new push path were introduced (R4, CN1/CN3/CN4)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-003",
+        "title": "No default timeouts anywhere in the engine",
+        "decision": "The engine imposes no activity time bound of its own. Activity waits are unbounded, terminated only by completion, worker loss, server shutdown, or a workflow-level timeout the author explicitly chose. Rejected: a bigger default \u2014 agentic activities legitimately run for over an hour, and any number we picked would be ADR-001 violated.",
+        "quote": "we shouldn't have a default timeout, the agent steps can take well over an hour",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-005",
+        "title": "Failed runs are terminal; recovery resumes Running runs only",
+        "decision": "A failed run is a terminal, immutable record. Retry means a fresh `aion start` with a new run identity; recovery after restart resumes Running runs only. Rejected: in-place retry of failed runs \u2014 it would rewrite history that event-sourcing exists to preserve, and 'which attempt was this event from' becomes unanswerable.",
+        "quote": "",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C12",
+        "text": "record_parent_child_terminal in crates/aion/src/runtime/nif_child_watch.rs emits an error-level tracing call when it records a ChildWorkflowFailed terminal, carrying the parent workflow id, parent run id, child workflow id, and the child's WorkflowError.message \u2014 matching the existing warn/error lines the watcher emits for transient and invariant record failures."
+      },
+      {
+        "id": "C13",
+        "text": "The added child-failure log is emitted on the TerminalOutcome::Failed arm only (and the Cancelled/TimedOut arms that map to ChildWorkflowFailed), not on the Completed arm, and does not change the RecordDisposition returned or the events recorded."
+      },
+      {
+        "id": "C14",
+        "text": "A failed child's terminal surfaces on the parent run's describe timeline: the recorded ChildWorkflowFailed carries the child workflow id and the child's reason, and is encoded into the describe history by describe.rs and payload.rs::encode_history (verified end to end against a parent history containing a ChildWorkflowFailed)."
+      },
+      {
+        "id": "C15",
+        "text": "A watcher subscribed to the event stream receives the parent-side ChildWorkflowFailed event when a child fails: the existing subscription/push surface forwards it because it is a normal appended event, with no new push path added."
+      },
+      {
+        "id": "C16",
+        "text": "No new Event variant, no new Payload type, and no mutable status field are introduced anywhere in the cluster; status remains derived solely by status_from_events (invariant 4), and no brief calls EventStore::append directly (invariant 3)."
+      },
+      {
+        "id": "C17",
+        "text": "No #[allow], #[expect], unwrap, or expect appears in the non-test library code added by either brief; every touched source file stays under 500 LOC excluding tests."
+      },
+      {
+        "id": "C18",
+        "text": "cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite pass clean at the cluster's landing commit."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As an AI team member who dispatched a parent run with children, I want a child's failure to show up loudly \u2014 on the parent's timeline and in the log \u2014 so that I notice a failed child fast instead of waiting on a parent that will never converge."
+      },
+      {
+        "id": "S5",
+        "text": "As an AI orchestrator watching the event stream, I want the parent-side child-failure event delivered to my subscription so that I can react to a failed child without polling describe."
+      },
+      {
+        "id": "S6",
+        "text": "As an AI lead reviewing why a run died, I want the parent's describe timeline to carry the child's id and its failure reason so that I can see which child failed and why without reconstructing it from separate logs."
+      },
+      {
+        "id": "S7",
+        "text": "As an AI lead, I want the failure announcement to be derived from the recorded terminal event rather than a separately stored status so that the log I read and the durable history I audit can never disagree."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Status stays a projection (invariant 4): every log and every propagation READS an already-recorded terminal event; this cluster introduces no mutable status field and no second source of truth, and never calls status_from_events to gate a write."
+      },
+      {
+        "id": "CN2",
+        "text": "No silent failures (CLAUDE.md): every workflow-process exit path logs. Because all paths funnel through handle_process_exit_async, the abnormal-exit branch, the monitor-failure branch, and the clean-completion branch each emit a log; the only branch that does not is the idempotent replay of an already-recorded terminal (P4)."
+      },
+      {
+        "id": "CN3",
+        "text": "Logging over new events: OBS-001 and OBS-002 add no new durable Event variant and no new Payload type; they log existing terminals and rely on the existing recorded ChildWorkflowFailed for propagation (invariant 1's type-erased Event/Payload contract is untouched)."
+      },
+      {
+        "id": "CN4",
+        "text": "Single-writer Recorder respected (invariant 3): no brief calls EventStore::append directly; the ChildWorkflowFailed OBS-002 surfaces is the one already written by record_parent_child_terminal through the parent's Recorder under its lock \u2014 no second writer is added."
+      },
+      {
+        "id": "CN5",
+        "text": "Adding a log never alters control flow: the tracing calls are pure side effects emitted before the existing notify/reconcile/return; no recorded event, no notification, no registry reconciliation, and no return value changes, and a log macro can never short-circuit a durable terminal (P5)."
+      },
+      {
+        "id": "CN6",
+        "text": "Error message surfaced verbatim: the log carries the WorkflowError.message text as produced by runtime/outcome.rs (the VM exit-reason formatting); neither brief reformats, truncates, or paraphrases it."
+      },
+      {
+        "id": "CN7",
+        "text": "Library-code purity: no #[allow], #[expect], unwrap, or expect in non-test lib code; clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; every touched file stays under 500 LOC excluding tests."
+      },
+      {
+        "id": "CN8",
+        "text": "No arbitrary defaults (ADR-001/ADR-003): this cluster adds no timeout, no rate limit, and no cap; making a crash loud is the fix, not converting a hang into a deadline."
+      },
+      {
+        "id": "CN9",
+        "text": "Disjoint from RM-022/RM-023: the touched files are in crates/aion (engine), crates/aion-server, and crates/aion (runtime child-watch) only \u2014 no overlap, so the cluster runs concurrently with RM-022/023 in the parallel stress batch."
+      }
+    ],
+    "intention": "When a workflow process crashes, the operator watching the server learns it at the moment it happens \u2014 an error-level log line carrying the workflow id, the workflow type, and the underlying VM message \u2014 and a child's terminal failure surfaces to its parent run and to anyone watching the event stream without a manual investigation. When this is done, the only way a failure can be discovered is no longer `aion describe`: the failure is loud where people already look (the server log, the worker log, the parent's timeline, the watcher stream), and silence on those surfaces means the run is genuinely still alive, not dead-and-mute. The durable record stays the source of truth; observability is the speaker that reads it aloud the instant the terminal lands.",
+    "design_path": "docs/design/aion-observability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When a workflow process crashes, the operator watching the server learns it at the moment it happens \u2014 an error-level log line carrying the workflow id, the workflow type, and the underlying VM messag"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355"
+}

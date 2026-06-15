@@ -29,7 +29,8 @@ use crate::types::{
     AssembleInput, AssembledWave, BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport,
     DevResult, EnrichInput, GateInput, GateResult, GateScope, GateVerdict, Isolation, LandInput,
     Landed, Placement, ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport,
-    ReviewRequest, ScopedInput, ScoutInput, ScoutReport, StartupResult, StartupTask, Workspace,
+    ReviewRequest, ScopedInput, ScoutInput, ScoutReport, StartupResult, StartupTask, TeardownInput,
+    TornDown, Workspace,
 };
 
 /// How much of an unparseable norn stdout rides in the terminal failure
@@ -259,6 +260,9 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -292,6 +296,9 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -324,6 +331,9 @@ pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, Act
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--session-id",
             &session_id,
             "--workspace-root",
@@ -361,6 +371,9 @@ pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, Activi
         "norn",
         &[
             "--print",
+            "--fast",
+            "--reasoning-effort",
+            "x-high",
             "--resume",
             &session_id,
             "--output-schema",
@@ -607,6 +620,7 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
         &workspace.path,
         "git commit",
     )?;
+    clean_build_artifacts(&workspace.path);
     match workspace.placement {
         Placement::Remote => land_remote(shell, &workspace, &base_ref, &dev_result),
         Placement::Local => {
@@ -672,6 +686,57 @@ fn land_remote(
         branch: workspace.branch.clone(),
         merged_into: format!("pr-into-{base_ref}"),
     })
+}
+
+pub fn teardown_workspace(
+    shell: &Shell,
+    input: TeardownInput,
+) -> Result<TornDown, ActivityFailure> {
+    let branch = input.workspace.branch;
+    let workspace_path = input.workspace.path;
+
+    clean_build_artifacts(&workspace_path);
+
+    for suffix in ["", "-scout", "-review"] {
+        let session = format!("{branch}{suffix}");
+        let _ = shell.run("norn", &["session", "remove", &session], ".");
+    }
+
+    match input.workspace.placement {
+        Placement::Local => {
+            let _ = shell.run(
+                "yg",
+                &["branch", "teardown", &branch],
+                &input.repo_root,
+            );
+            let _ = shell.run(
+                "yg",
+                &["branch", "remove", "--yes", &branch],
+                &input.repo_root,
+            );
+            let _ = shell.run("git", &["branch", "-D", &branch], &input.repo_root);
+        }
+        Placement::Remote => {
+            if std::path::Path::new(&workspace_path).is_dir() {
+                let _ = std::fs::remove_dir_all(&workspace_path);
+            }
+        }
+    }
+
+    Ok(TornDown {
+        branch,
+        cleaned: true,
+    })
+}
+
+fn clean_build_artifacts(workspace_path: &str) {
+    let target = format!("{workspace_path}/target");
+    if std::path::Path::new(&target).is_dir() {
+        tracing::info!(path = %target, "removing build artifacts before landing");
+        if let Err(error) = std::fs::remove_dir_all(&target) {
+            tracing::warn!(path = %target, %error, "failed to remove build artifacts");
+        }
+    }
 }
 
 /// `enrich_brief`: append one stage report or the execution block into the

@@ -79,6 +79,7 @@ struct RegistryState {
     next_worker_id: u64,
     workers: BTreeMap<WorkerId, WorkerHandle>,
     by_activity: RegistryMap,
+    rotation: HashMap<ActivityKey, usize>,
 }
 
 impl Default for RegistryState {
@@ -87,6 +88,7 @@ impl Default for RegistryState {
             next_worker_id: 1,
             workers: BTreeMap::new(),
             by_activity: HashMap::new(),
+            rotation: HashMap::new(),
         }
     }
 }
@@ -178,7 +180,8 @@ impl ConnectedWorkerRegistry {
         })
     }
 
-    /// Return a snapshot of workers registered for the namespace and activity type.
+    /// Return a snapshot of workers registered for the namespace and activity
+    /// type, rotated so each call starts from the next worker in the pool.
     ///
     /// # Errors
     ///
@@ -188,13 +191,23 @@ impl ConnectedWorkerRegistry {
         namespace: &str,
         activity_type: &str,
     ) -> Result<Vec<WorkerHandle>, ServerError> {
-        let state = self.state()?;
+        let mut state = self.state()?;
         let key = (namespace.to_owned(), activity_type.to_owned());
-        Ok(state
+        let workers: Vec<WorkerHandle> = state
             .by_activity
             .get(&key)
             .map(|workers| workers.values().cloned().collect())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if workers.is_empty() {
+            return Ok(workers);
+        }
+        let idx = state.rotation.entry(key).or_insert(0);
+        let start = *idx % workers.len();
+        *idx = idx.wrapping_add(1);
+        let mut rotated = Vec::with_capacity(workers.len());
+        rotated.extend_from_slice(&workers[start..]);
+        rotated.extend_from_slice(&workers[..start]);
+        Ok(rotated)
     }
 
     /// Return a snapshot of every connected worker stream.

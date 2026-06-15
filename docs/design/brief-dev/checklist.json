@@ -230,6 +230,31 @@
           "done": false
         }
       ]
+    },
+    {
+      "name": "Remote Clone-and-PR Variant",
+      "items": [
+        {
+          "id": "C39",
+          "text": "The canonical worker (examples/stacked-dev/worker/src/handlers.rs) routes provision_workspace on placement: Remote calls provision_clone (git clone + checkout -b), Local routes on isolation as before; land routes Remote to land_remote (git push + gh pr create), Local to yg branch merge; types.rs carries clone_url: Option<String> on ProvisionInput and LandInput.",
+          "done": false
+        },
+        {
+          "id": "C40",
+          "text": "A remote worker deployment document (examples/stacked-dev/worker/REMOTE-WORKER.md) describes build, required CLI tools (git, gh, norn), credential setup, server connection, served activity types, and an example invocation.",
+          "done": false
+        },
+        {
+          "id": "C41",
+          "text": "A render-remote-input script generates stacked_dev or dispatch input JSON with placement=remote and clone_url from CLI arguments, validating against the existing input schemas, with no hardcoded defaults for caps or deadlines.",
+          "done": false
+        },
+        {
+          "id": "C42",
+          "text": "Shim-based tests in handlers_shims.rs cover provision_clone (git clone + checkout -b) and land_remote (git push + gh pr create); wire_compat.rs pins ProvisionInput and LandInput with clone_url byte-compatible both directions against the Gleam codecs.",
+          "done": false
+        }
+      ]
     }
   ]
 }

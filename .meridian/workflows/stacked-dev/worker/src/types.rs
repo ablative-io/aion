@@ -329,6 +329,24 @@ pub struct LandInput {
     pub clone_url: Option<String>,
 }
 
+/// Input to the `teardown_workspace` activity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TeardownInput {
+    /// The workspace to tear down.
+    pub workspace: Workspace,
+    /// The main repository root.
+    pub repo_root: String,
+}
+
+/// Output of the `teardown_workspace` activity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TornDown {
+    /// The branch that was cleaned up.
+    pub branch: String,
+    /// Whether cleanup succeeded.
+    pub cleaned: bool,
+}
+
 /// Output of the `land` activity (`codecs_flow.landed_codec`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Landed {

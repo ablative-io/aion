@@ -16,6 +16,14 @@
         {
           "id": "S3",
           "text": "As an operator, I want the failure logged even when the failing process ran on a remote worker the server never hosted so that I can rely on the one log surface I already watch rather than chasing per-worker logs."
+        },
+        {
+          "id": "S11",
+          "text": "As an operator, I want a standalone validate endpoint and CLI subcommand I can use to check whether an input payload conforms to a workflow type's schema so that I can verify inputs programmatically before dispatch or as part of a pre-deploy check."
+        },
+        {
+          "id": "S14",
+          "text": "As an operator investigating a provision that took an unexpected branch suffix, I want the collision report to name the specific branch, session file path, and worktree directory that were found pre-existing so that I can clean up stale artifacts without trial and error."
         }
       ]
     },
@@ -30,6 +38,14 @@
         {
           "id": "S5",
           "text": "As an AI orchestrator watching the event stream, I want the parent-side child-failure event delivered to my subscription so that I can react to a failed child without polling describe."
+        },
+        {
+          "id": "S10",
+          "text": "As an AI team member dispatching a workflow, I want the CLI start command to validate my input JSON against the workflow type's schema before starting so that I discover input errors immediately instead of watching the workflow fail mid-flight on a decode error."
+        },
+        {
+          "id": "S13",
+          "text": "As an AI team member dispatching a stacked-dev workflow, I want the worker to detect and report pre-existing branch, norn session, and worktree collisions before provisioning so that I know upfront when a workspace will conflict with artifacts from a previous run."
         }
       ]
     },
@@ -44,6 +60,10 @@
         {
           "id": "S7",
           "text": "As an AI lead, I want the failure announcement to be derived from the recorded terminal event rather than a separately stored status so that the log I read and the durable history I audit can never disagree."
+        },
+        {
+          "id": "S12",
+          "text": "As an AI lead debugging a dispatch error, I want the validation error to include the field path and a description of what the schema expected versus what was provided so that I can fix the input without reverse-engineering the codec or reading the raw schema."
         }
       ]
     },
@@ -58,6 +78,10 @@
         {
           "id": "S9",
           "text": "As a future maintainer, I want the logging to be a pure side effect that never alters what is recorded or returned so that I can reason about failure handling and observability independently."
+        },
+        {
+          "id": "S15",
+          "text": "As a future maintainer, I want the collision detection to be a separate pre-flight check from the collision handling (attempt-N branch suffixing) so that detection logic can be extended to new resource types without coupling it to the resolution strategy."
         }
       ]
     }

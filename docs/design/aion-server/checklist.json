@@ -88,6 +88,13 @@
         {"id": "C32", "text": "The server serves cluster AU's built static asset bundle from a configured (or embedded) path.", "done": false},
         {"id": "C33", "text": "The dashboard is backed only by the same public gRPC/HTTP handlers and WebSocket feed every other client uses; there is no dashboard-specific API.", "done": false}
       ]
+    },
+    {
+      "name": "Worker Dispatch Load Balancing",
+      "items": [
+        {"id": "C34", "text": "The connected-worker registry tracks a rotation index per (namespace, activity_type) as in-memory state (not persisted); the index advances on each dispatch and wraps at the worker count, remaining valid after registrations and deregistrations.", "done": false},
+        {"id": "C35", "text": "The dispatch method starts iteration from the rotation index, wrapping around the sorted worker list; a closed-channel send deregisters the worker and tries the next in rotation order; the existing error for no-workers and all-closed-channels is preserved.", "done": false}
+      ]
     }
   ]
 }

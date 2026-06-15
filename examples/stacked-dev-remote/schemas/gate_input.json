@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gate input",
+  "description": "The gate runs workspace-wide today; the affected_closure scope is a typed seam awaiting the trusted graph-derived closure (open question Q2).",
+  "type": "object",
+  "required": ["workspace", "files_touched", "scope"],
+  "additionalProperties": false,
+  "properties": {
+    "workspace": {
+      "type": "object",
+      "required": ["path", "branch", "placement", "isolation"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "placement": { "type": "string", "enum": ["local", "remote"] },
+        "isolation": { "type": "string", "enum": ["worktree", "copy", "overlay", "vm"] }
+      }
+    },
+    "files_touched": { "type": "array", "items": { "type": "string" } },
+    "scope": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["workspace_wide", "affected_closure"] },
+        "modules": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

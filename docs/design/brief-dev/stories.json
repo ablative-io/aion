@@ -118,6 +118,16 @@
           "text": "As an AI lead, I want the review_verdict signal to be sender-agnostic so that my verdict, cast through the Meridian coordinator, decides the run exactly as a human's would."
         }
       ]
+    },
+    {
+      "name": "Remote Worker",
+      "role": "Running the dev pipeline from a machine without local repo access",
+      "stories": [
+        {
+          "id": "S20",
+          "text": "As an AI team member on a remote machine, I want the stacked-dev workflow to clone the repo from a URL and open a PR instead of using local yg worktrees so that I can run the dev pipeline from any network-reachable host without local repo access."
+        }
+      ]
     }
   ]
 }

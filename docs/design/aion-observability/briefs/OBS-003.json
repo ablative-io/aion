@@ -1,0 +1,108 @@
+{
+  "id": "OBS-003",
+  "cluster": "aion-observability",
+  "title": "Pre-flight input validation for workflow dispatch",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C19", "C20", "C21", "C22", "C23", "C16", "C17", "C18"],
+  "stories": ["S10", "S11", "S12"],
+  "design_anchor": ["ADR-003", "ADR-005"],
+  "purpose": "Closes the pre-flight validation gap where a workflow dispatched with malformed input JSON succeeds at dispatch but fails mid-flight when the Gleam codec attempts to decode the input — a failure that wastes compute, produces a terminal WorkflowFailed (ADR-005: irrecoverable), and forces the operator to describe the run to discover what went wrong. The .aion manifest already carries the workflow type's input_schema (JSON Schema) in the deployed WorkflowVersion; this brief adds a validate path that checks the input payload against that schema before the workflow starts: a server-side validate endpoint, a CLI validate subcommand, and a pre-dispatch check in the CLI start command that fails fast with structured field-level errors instead of launching a doomed workflow. OBS-001 and OBS-002 make failures loud after they happen; this brief prevents a common class of failures — malformed input — from happening at all.",
+  "task": "Prevent workflows from failing mid-flight due to malformed input by validating the input payload against the workflow type's deployed input_schema before dispatch — no new event type, no status field, no mutation. Three surfaces: (1) A server-side validate endpoint in crates/aion-server/src/api/handlers/validate.rs — following the existing handler pattern (NamespaceGuard, CallerIdentity, request -> Result<response, WireError> as in crates/aion-server/src/api/handlers/workflows.rs), the handler looks up the currently routed WorkflowVersion for the given workflow_type, validates the input payload against the WorkflowVersion's input_schema using JSON Schema validation (e.g. the jsonschema crate), and returns a structured result: success, or an array of validation errors each carrying the JSON path of the failing field and a human-readable violation description. The handler is a pure read: it appends no event, starts no workflow, modifies no server state. Transport wiring follows the existing route pattern in crates/aion-server/src/api/http/ and/or the gRPC service definition. (2) A CLI validate subcommand added to RemoteCommand in crates/aion-cli/src/main.rs — following the existing start/signal/query/cancel/list/describe pattern, it connects to the server, calls the validate endpoint, prints the result (a success confirmation or structured validation errors with field paths), and exits with code 0 on success, 1 on failure. Accepts the same --input conventions as the start command (JSON string). (3) A pre-dispatch validation check wired into the CLI start command — before sending the start request, the start path calls the validate endpoint; on failure it prints the validation errors and exits with code 1 without starting the workflow; on success it proceeds with the existing start flow unchanged. A --skip-validation flag lets the operator bypass the pre-dispatch check when the input is known good or the schema is not yet deployed. Scope boundary — in: the validate handler, the CLI validate subcommand, the start pre-dispatch check, and tests asserting all three. Out: changes to the .aion archive format, the manifest, the WorkflowVersion record, or the codegen pipeline (the input_schema already exists); changes to the server-side start handler (the validation gate is on the CLI side); any new Event variant, Payload type, or status field.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Server-side validate endpoint",
+      "spec": "WHEN the server receives a validate request carrying a workflow_type and an input payload, THE SYSTEM SHALL look up the currently routed WorkflowVersion for the workflow_type, validate the input payload against the WorkflowVersion's input_schema using JSON Schema validation, and return a structured result: on success, a response indicating the input is valid; on failure, a response carrying an array of validation errors, each with the JSON path of the failing field and a human-readable description of the schema violation (required field missing, type mismatch, enum violation, pattern violation, additional properties, etc.). WHEN the workflow_type has no deployed version (no routed WorkflowVersion), THE SYSTEM SHALL return a not-found error following the existing WireError conventions in crates/aion-server/src/api/handlers/error.rs. THE SYSTEM SHALL NOT start a workflow, record an event, append to any event store, or modify any server state — the validate endpoint is a pure read operation that checks the input against the stored schema (CN5). THE SYSTEM SHALL NOT add any timeout or rate limit to the validate path (ADR-003, CN8).",
+      "acceptance": [
+        "A validate request with a well-formed JSON input payload that conforms to the workflow type's input_schema returns a success response with no validation errors — asserted by a test that deploys a workflow type with a known schema, sends a conforming payload, and checks the response indicates valid.",
+        "A validate request with a JSON input payload missing a required field returns a failure response carrying a validation error array with the missing field's JSON path — asserted by a test with a schema requiring field 'name' and a payload omitting it.",
+        "A validate request where a field has the wrong type (e.g. a string where a number is expected) returns a failure response carrying a validation error identifying the field path, the expected type, and the actual value.",
+        "A validate request for a workflow_type with no deployed WorkflowVersion returns a not-found WireError following the existing error conventions.",
+        "No Event is appended and no workflow process is started by the validate handler — asserted by checking the event store count is unchanged after the validate call.",
+        "cargo test -p aion-server passes including the new validate handler tests."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/api/handlers/validate.rs"],
+        "modify": ["crates/aion-server/src/api/handlers/mod.rs"],
+        "delete": []
+      },
+      "checklist": ["C20", "C22", "C23"],
+      "stories": ["S11", "S12"]
+    },
+    {
+      "id": "R2",
+      "title": "CLI validate subcommand",
+      "spec": "WHEN the user invokes the CLI with a validate subcommand providing a workflow_type and an input payload (as a JSON string argument following the existing --input convention of the start command in crates/aion-cli/src/main.rs), THE SYSTEM SHALL connect to the aion server, call the validate endpoint with the workflow type and input, and print the result to stdout: on success, a confirmation that the input is valid; on failure, the structured validation errors (field paths and descriptions) to stderr and an exit code of 1. THE SYSTEM SHALL accept the validate subcommand at the same level as the existing start, signal, query, cancel, list, and describe subcommands under RemoteCommand. THE SYSTEM SHALL NOT start a workflow or modify any server state.",
+      "acceptance": [
+        "Running the validate subcommand with a conforming input against a deployed workflow type prints a success confirmation and exits with code 0.",
+        "Running the validate subcommand with a non-conforming input prints the structured validation errors (including field paths) to stderr and exits with code 1.",
+        "Running the validate subcommand with a non-existent workflow type prints a not-found error and exits with code 1.",
+        "The validate subcommand accepts --input as a JSON string, consistent with the start command's input handling.",
+        "cargo test -p aion-cli passes including the new validate subcommand parse and help-text tests."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-cli/src/main.rs"],
+        "delete": []
+      },
+      "checklist": ["C19"],
+      "stories": ["S10", "S11"]
+    },
+    {
+      "id": "R3",
+      "title": "Start command pre-dispatch validation gate",
+      "spec": "WHEN the user invokes the CLI start command, THE SYSTEM SHALL call the validate endpoint with the provided workflow_type and input payload before dispatching the start request to the server. IF the validate endpoint returns a validation failure, THE SYSTEM SHALL print the validation errors to stderr and exit with code 1 without sending the start request — the workflow is never started for input that would fail on decode, preventing an irrecoverable terminal WorkflowFailed (ADR-005). IF the validate endpoint returns success, THE SYSTEM SHALL proceed with the existing start flow unchanged: the same start request is sent, the same response is printed, the same exit code rules apply. THE SYSTEM SHALL support a --skip-validation flag on the start command that bypasses the pre-dispatch validation check entirely — the start request is sent directly without calling validate first. This flag provides an escape for cases where the operator knows the input is valid, the schema is not yet deployed, or the validate endpoint is unavailable (CN8: no blocking default without an escape hatch).",
+      "acceptance": [
+        "Running start with a non-conforming input prints the validation errors and exits with code 1; no StartWorkflow event is recorded — asserted by a test that verifies the event store is empty after the failed start attempt.",
+        "Running start with a conforming input validates successfully and starts the workflow as before — the existing start integration tests continue to pass unchanged.",
+        "Running start with --skip-validation bypasses validation: even if the input would fail validation, the start request is sent to the server and the workflow starts (the mid-flight decode failure path is unchanged).",
+        "Running start against a workflow type with no deployed version causes the validate check to return not-found, and the start exits with code 1 without starting the workflow.",
+        "The --skip-validation flag is documented in the CLI help text for the start subcommand."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-cli/src/main.rs"],
+        "delete": []
+      },
+      "checklist": ["C21"],
+      "stories": ["S10"]
+    },
+    {
+      "id": "R4",
+      "title": "Cluster invariants and gate hold across the diff",
+      "spec": "THE SYSTEM SHALL introduce no new Event variant, no new Payload type, and no mutable status field — the validate endpoint reads the existing WorkflowVersion's input_schema and performs a pure JSON Schema check, producing no durable state (invariant 4, CN1). No code added by this brief SHALL call EventStore::append directly (invariant 3, CN4). The added code SHALL be free of #[allow], #[expect], unwrap, and expect in non-test library code, and every touched source file SHALL remain under 500 LOC excluding tests (CN7). WHEN the cluster lands, cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite SHALL pass clean. THE SYSTEM SHALL add no timeout, rate limit, or cap (ADR-003, CN8).",
+      "acceptance": [
+        "git diff for the cluster introduces no new variant in the Event enum and no new Payload type; grep for a new status field added to any struct returns nothing.",
+        "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over the non-test lines of crates/aion-server/src/api/handlers/validate.rs and the modified sections of crates/aion-cli/src/main.rs returns no matches introduced by this brief.",
+        "wc -l on every file this brief creates or modifies shows under 500 lines excluding test modules.",
+        "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; the full workspace test suite passes.",
+        "No EventStore::append call is added by this brief — the validate endpoint is a pure read."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C16", "C17", "C18"],
+      "stories": ["S12"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the server-side start handler — validation is a CLI-side pre-dispatch gate; the server start endpoint remains unchanged.",
+    "SHALL NOT modify the .aion archive format, the manifest schema, the WorkflowVersion record, or the codegen pipeline — the input_schema that validation checks against already exists in the deployed WorkflowVersion.",
+    "SHALL NOT introduce a new Event variant, a new Payload type, or a mutable status field (CN1, CN3).",
+    "SHALL NOT call EventStore::append directly (invariant 3, CN4) — the validate endpoint is a pure read.",
+    "SHALL NOT add any timeout, rate limit, or cap to the validate endpoint or the pre-dispatch check (ADR-003, CN8).",
+    "SHALL NOT change the existing build-time validation in crates/aion-package/src/project/config.rs — this brief adds runtime pre-dispatch validation, a separate concern.",
+    "SHALL NOT change the Gleam codec or the decode path inside the workflow process — this brief catches the error before the process starts, it does not change how the process decodes input."
+  ],
+  "verification": [
+    "cargo test -p aion-server -p aion-cli passes, including the new validate endpoint tests (R1), the CLI validate subcommand tests (R2), and the start pre-dispatch validation tests (R3).",
+    "Send a validate request with conforming input: success response, no events recorded. Send with non-conforming input: failure response with field-path details, no events recorded. Send for unknown workflow type: not-found error (R1).",
+    "Run the CLI validate subcommand: conforming input exits 0; non-conforming input exits 1 with structured field-path errors; unknown workflow type exits 1 with not-found error (R2).",
+    "Run the CLI start command with non-conforming input: exit 1, no workflow started. With conforming input: workflow starts as before. With --skip-validation and non-conforming input: workflow starts, validation bypassed (R3).",
+    "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both exit 0; grep for #[allow]/#[expect]/unwrap/expect in the modified non-test lib code returns nothing new (R4).",
+    "Diff review confirms no new Event variant, no new Payload type, no status field, no direct EventStore::append call, and no timeout/rate-limit/cap were introduced (R4, CN1/CN3/CN4/CN8)."
+  ]
+}

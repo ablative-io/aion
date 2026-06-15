@@ -1,0 +1,114 @@
+{
+  "id": "BD-008",
+  "cluster": "brief-dev",
+  "title": "Remote clone-and-PR workflow variant",
+  "depends_on": ["BD-005"],
+  "blocked_by": [],
+  "checklist": ["C39", "C40", "C41", "C42"],
+  "stories": ["S20"],
+  "design_anchor": [],
+  "purpose": "The stacked-dev workflow family currently provisions workspaces via yg worktree (local) and lands via yg branch merge (local). This couples the worker to the machine that holds the repo. A remote placement variant enables workers running on machines that do not have the repo locally: provision clones from a URL and creates a branch, land pushes and creates a PR via gh. The Gleam workflow code already carries placement and clone_url through the activity layer (types.gleam ProvisionInput, LandInput, codecs_core.gleam, codecs_flow.gleam — all landed with BD-003/BD-005). The deployed worker in .meridian/workflows/stacked-dev/worker/src/handlers.rs already implements provision_clone (git clone + checkout -b) and land_remote (git push + gh pr create), routing on placement in the provision_workspace and land handlers. This brief completes the circuit: syncs the examples/stacked-dev canonical worker source with the deployed .meridian implementation, documents the remote worker deployment configuration, provides input generation tooling for remote runs, and proves the end-to-end path with a test.",
+  "task": "Four deliverables. (1) Sync the examples/stacked-dev/worker/src/handlers.rs canonical source with the .meridian deployed implementation: add the provision_clone function (git clone from clone_url into /tmp/stacked-dev-clones/<branch>, git checkout -b), the land_remote function (git push -u origin <branch>, gh pr create with summary and files), the placement routing in provision_workspace (Remote -> provision_clone, Local -> match isolation) and in land (Remote -> land_remote, Local -> yg branch merge), and the resolve_clone_branch_name and resolve_branch_name helpers. Update examples/stacked-dev/worker/src/types.rs to carry clone_url: Option<String> on ProvisionInput and LandInput if not already present, matching .meridian/workflows/stacked-dev/worker/src/types.rs. (2) Document a remote worker configuration: a section in the worker README or a standalone doc showing how to build the worker binary, configure the aion server address, set up git/gh credentials, and run the worker connecting back to the server. (3) Create a render-input script (examples/stacked-dev/scripts/render-remote-input.py or equivalent) that generates stacked_dev or dispatch input JSON with clone_url and placement=remote from a brief path and design directory, so operators can dispatch remote runs without hand-crafting JSON. (4) Extend the worker test suite (wire_compat.rs and/or handlers_shims.rs) to cover the remote provision and land paths: provision_clone with a clone_url produces a Workspace with placement=Remote, land with placement=Remote invokes git push and gh pr create (via the existing shell shim pattern).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Sync canonical worker with deployed remote handlers",
+      "spec": "THE SYSTEM SHALL update examples/stacked-dev/worker/src/handlers.rs to route on placement in the provision_workspace function: WHEN placement is Remote, THE SYSTEM SHALL call provision_clone which clones from clone_url (required for Remote — fails terminally if absent) into /tmp/stacked-dev-clones/<branch>, runs git checkout -b to create the working branch, and returns a Workspace with the clone path and placement=Remote. WHEN placement is Local, THE SYSTEM SHALL route on isolation as before (Worktree -> provision_worktree, others -> typed seam error). THE SYSTEM SHALL update the land function: WHEN workspace.placement is Remote, THE SYSTEM SHALL call land_remote which runs git push -u origin <branch> and gh pr create with --base, --head, --title, and --body flags, returning a Landed with the branch and base_ref. WHEN workspace.placement is Local, THE SYSTEM SHALL run the existing yg branch merge path. THE SYSTEM SHALL add the resolve_branch_name helper that tries stacked-dev-<brief_id> then -attempt-2, -attempt-3 etc. when a previous run left a branch behind (matching the .meridian implementation). THE SYSTEM SHALL update examples/stacked-dev/worker/src/types.rs to carry clone_url: Option<String> on ProvisionInput and LandInput with Serialize + Deserialize, matching the .meridian wire-compatible types.",
+      "acceptance": [
+        "provision_workspace with placement=Remote and a clone_url calls git clone and git checkout -b, returning a Workspace whose path is under /tmp/stacked-dev-clones/ and whose placement is Remote.",
+        "provision_workspace with placement=Remote and clone_url=None fails with a terminal ActivityFailure naming the missing clone_url.",
+        "provision_workspace with placement=Local routes on isolation as before — the existing provision tests pass unchanged.",
+        "land with workspace.placement=Remote calls git push -u origin <branch> and gh pr create with the correct --base, --head, --title, --body flags.",
+        "land with workspace.placement=Local calls yg branch merge as before — the existing land tests pass unchanged.",
+        "ProvisionInput and LandInput in types.rs carry clone_url: Option<String> and round-trip through serde (the existing wire_compat tests cover the non-clone_url case; new pins cover the clone_url case).",
+        "cargo fmt --check and cargo clippy --all-targets -- -D warnings pass for the worker crate."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/stacked-dev/worker/src/handlers.rs",
+          "examples/stacked-dev/worker/src/types.rs"
+        ],
+        "delete": []
+      },
+      "checklist": ["C39"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R2",
+      "title": "Remote worker deployment configuration",
+      "spec": "THE SYSTEM SHALL document the remote worker deployment in examples/stacked-dev/worker/README.md (or a standalone REMOTE-WORKER.md): how to build the worker binary (cargo build --release from the worker crate), the required environment (git, gh CLI authenticated, network access to the aion server and the clone URL), the connection configuration (server address, namespace, TLS if applicable), the activity types the worker serves, and an example invocation command. The document SHALL cover credential requirements for git push and gh pr create (SSH keys or HTTPS tokens for git, gh auth login for the PR creation). THE SYSTEM SHALL NOT introduce a new configuration file format — the worker binary's existing CLI flags and environment variables are sufficient.",
+      "acceptance": [
+        "A README section or standalone document exists in examples/stacked-dev/worker/ describing the remote worker setup.",
+        "The document lists: build command, required CLI tools (git, gh, norn), credential setup (git push access, gh auth), server connection flags, and served activity types.",
+        "The document includes a runnable example command line for starting the worker in remote mode.",
+        "The document does not invent new configuration file formats or environment variables beyond what the worker binary already accepts."
+      ],
+      "files": {
+        "create": ["examples/stacked-dev/worker/REMOTE-WORKER.md"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C40"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R3",
+      "title": "Input generation for remote dispatch",
+      "spec": "THE SYSTEM SHALL provide a script (examples/stacked-dev/scripts/render-remote-input.py or equivalent) that generates stacked_dev or dispatch input JSON with placement=remote and a clone_url from command-line arguments (--clone-url, --brief-path, --design-dir, --base-ref, --reviewers, plus required caps and deadlines). The generated JSON SHALL validate against the existing stacked_dev input schema (examples/stacked-dev/schemas/input.json) and the dispatch input schema (examples/stacked-dev/schemas/dispatch_input.json). The script SHALL accept all required fields as arguments with no hardcoded defaults for caps, deadlines, or operational values (CN2, ADR-003). WHEN generating dispatch input, the script SHALL assemble the wave by reading the design directory's briefs, applying the same depends_on ordering the dispatcher activity uses.",
+      "acceptance": [
+        "Running the script with --clone-url, --brief-path, --design-dir, --base-ref, and required cap/deadline arguments produces valid JSON that includes placement: \"remote\" and clone_url: <url>.",
+        "The generated JSON validates against the stacked_dev input schema when checked with a JSON Schema validator.",
+        "The script accepts every required cap and deadline as explicit arguments — no hardcoded defaults.",
+        "The script can generate both single-brief stacked_dev input and multi-brief dispatch input depending on the mode flag."
+      ],
+      "files": {
+        "create": ["examples/stacked-dev/scripts/render-remote-input.py"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C41"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R4",
+      "title": "End-to-end test for the remote clone-and-PR path",
+      "spec": "THE SYSTEM SHALL extend the worker test suite (examples/stacked-dev/worker/tests/handlers_shims.rs) with tests covering the remote provision and land paths. A provision_clone test SHALL configure a shell shim that intercepts git clone and git checkout -b, call provision_workspace with placement=Remote and a clone_url, and assert the Workspace has the correct path, branch, and placement=Remote. A land_remote test SHALL configure shell shims for git add, git commit, git push, and gh pr create, call land with a Remote-placed Workspace, and assert the Landed result and that the gh shim received the correct --base, --head, --title, --body arguments. Wire-compat tests SHALL pin the ProvisionInput and LandInput payloads with clone_url present, asserting byte-compatible round-trip through the Gleam codecs in both directions.",
+      "acceptance": [
+        "A shim-based test calls provision_workspace with placement=Remote, clone_url=Some(url), and asserts the shell log shows git clone --branch <base_ref> <url> <path> and git checkout -b <branch>, and the returned Workspace has placement=Remote.",
+        "A shim-based test calls land with a Remote-placed Workspace and asserts the shell log shows git push -u origin <branch> and gh pr create with the correct flags, and the returned Landed carries the branch and base_ref.",
+        "A wire_compat test pins ProvisionInput with clone_url=Some('https://example.com/repo.git') and asserts the Gleam codec decodes it identically and re-encodes to the same bytes.",
+        "A wire_compat test pins LandInput with clone_url=Some('https://example.com/repo.git') and asserts byte-compatible round-trip.",
+        "cargo test in the worker crate passes including all new tests.",
+        "No existing test is modified to accommodate the new paths — the new tests are additive."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "examples/stacked-dev/worker/tests/handlers_shims.rs",
+          "examples/stacked-dev/worker/tests/wire_compat.rs"
+        ],
+        "delete": []
+      },
+      "checklist": ["C42"],
+      "stories": ["S20"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the Gleam workflow code in examples/stacked-dev/src/ — the types, codecs, and activity passthrough for clone_url and placement already exist (BD-003/BD-005).",
+    "SHALL NOT modify the .meridian/workflows/ deployed worker — this brief syncs the canonical examples/ source to match it, not the other way around.",
+    "SHALL NOT introduce a new isolation mode or a new placement variant — Remote and Local are the only placement values.",
+    "SHALL NOT add hardcoded defaults for caps, deadlines, or operational values in the render-input script (CN2, ADR-003).",
+    "SHALL NOT modify the wire protocol, the activity schemas, or the workflow IO schemas — the clone_url field already exists in the schemas.",
+    "SHALL NOT implement SSH tunneling, mTLS, or any transport security in this brief — the remote worker connects to the server using the existing worker SDK transport."
+  ],
+  "verification": [
+    "cd examples/stacked-dev/worker && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test — all exit 0.",
+    "The provision_clone shim test proves git clone and git checkout -b are called with the correct arguments when placement=Remote.",
+    "The land_remote shim test proves git push and gh pr create are called with the correct arguments when placement=Remote.",
+    "The wire_compat tests pin ProvisionInput and LandInput with clone_url and round-trip them against the Gleam codecs.",
+    "The render-remote-input.py script generates JSON that validates against the stacked_dev input schema.",
+    "REMOTE-WORKER.md exists and describes build, credentials, connection, and an example invocation.",
+    "No file under examples/stacked-dev/src/ is modified by this brief's diff."
+  ]
+}

@@ -151,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
             blocking(shell.clone(), handlers::request_review),
         )?
         .register_activity("land", blocking(shell.clone(), handlers::land))?
+        .register_activity("teardown_workspace", blocking(shell.clone(), handlers::teardown_workspace))?
         .register_activity("scout", blocking(shell.clone(), handlers::scout))?
         .register_activity("dev_review", blocking(shell.clone(), handlers::dev_review))?
         .register_activity(

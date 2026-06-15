@@ -1,0 +1,249 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "OBS-004",
+  "reviewers": [
+    "Waffles"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "OBS-004",
+    "cluster": "aion-observability",
+    "title": "Pre-flight collision detection in stacked-dev provision_workspace",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C24",
+      "C25",
+      "C26",
+      "C27",
+      "C16",
+      "C17",
+      "C18"
+    ],
+    "stories": [
+      "S13",
+      "S14",
+      "S15"
+    ],
+    "design_anchor": [
+      "ADR-003",
+      "ADR-005"
+    ],
+    "purpose": "Closes the pre-flight collision gap in the stacked-dev worker's provision_workspace handler where stale artifacts from previous runs \u2014 a branch already present in the repository, a norn session file left behind at ~/.norn/sessions/, a worktree directory not cleaned up \u2014 are encountered during provisioning without prior detection or reporting. The existing resolve_branch_name function handles branch collision reactively via attempt-N suffixing, but the operator and dispatching agent never learn that a collision occurred, which resources were stale, or why a branch was renamed to an -attempt-N variant. This brief adds a structured pre-flight collision check that detects and logs branch, norn session, and worktree collisions with their specific names and paths before provisioning proceeds \u2014 giving the operator and dispatching agent visibility into workspace state without altering the provisioning flow. OBS-001 and OBS-002 make failures loud after they happen; this brief surfaces the conditions that predict a workspace conflict before it becomes a failure.",
+    "task": "Detect and report pre-existing resource collisions in the stacked-dev worker's provision_workspace handler before provisioning begins, so that operators and dispatching agents see upfront what artifacts from previous runs are present \u2014 the detection is informational and does not change provisioning behavior. Because handlers.rs already exceeds 500 LOC (625 lines excluding blanks/comments, no test module), the collision detection logic SHALL live in a new .meridian/workflows/stacked-dev/worker/src/collision.rs module, called from provision_workspace in handlers.rs. Three read-only checks, one report: at the start of provision_workspace before the existing resolve_branch_name call, invoke the collision detection function with the brief_id, repo_root, and placement/isolation context to perform: (a) branch collision \u2014 test whether the candidate branch name stacked-dev-{brief_id} already exists in the repository by running git branch --list (or the equivalent yg branch existence check that try_branch_add uses internally); (b) norn session collision \u2014 test whether a session file exists at ~/.norn/sessions/{session_id} where session_id is the candidate branch name stacked-dev-{brief_id} (matching the worker's session-id derivation from workspace.branch); (c) worktree collision \u2014 test whether the expected worktree directory already exists on disk at the path provision_worktree would create ({repo_root}/.yggdrasil-worktrees/stacked-dev-{brief_id} for Worktree isolation) or the path provision_clone would create (/tmp/stacked-dev-clones/stacked-dev-{brief_id} for Remote placement). If one or more collisions are detected, emit a single warn-level tracing call carrying the brief_id and, for each collision type, whether it was found and the specific name or path that collides. If no collisions are detected, emit nothing \u2014 silence means a clean workspace. The detection is purely informational: it does not abort provisioning, does not remove stale artifacts, and does not alter the return value or error handling of provision_workspace. The existing collision handling (attempt-N branch suffixing in resolve_branch_name, rm -rf in provision_clone) continues to operate unchanged. Scope boundary \u2014 in: the collision detection function in collision.rs, the call site in provision_workspace, the structured warn-level report log, and tests asserting them. Out: changes to resolve_branch_name, provision_worktree, provision_clone, or the norn session management; automatic cleanup or removal of stale artifacts; any change to the provision_workspace return value, error type, or control flow.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Pre-flight collision detection checks",
+        "spec": "WHEN provision_workspace in .meridian/workflows/stacked-dev/worker/src/handlers.rs begins processing a workspace request, THE SYSTEM SHALL call a collision detection function (in the new collision.rs module) before the existing resolve_branch_name call to perform three read-only checks: (a) branch collision \u2014 test whether the candidate branch name stacked-dev-{brief_id} already exists in the repository by checking the output of git branch --list stacked-dev-{brief_id} (or the equivalent yg branch existence check, consistent with the check try_branch_add in handlers.rs already performs); (b) norn session collision \u2014 test whether a session file exists at ~/.norn/sessions/stacked-dev-{brief_id}, where the session_id is the candidate branch name matching the session-id derivation the worker uses when setting up the norn session from workspace.branch; (c) worktree collision \u2014 test whether the expected worktree directory already exists on disk at {repo_root}/.yggdrasil-worktrees/stacked-dev-{brief_id} for Local/Worktree placement, or /tmp/stacked-dev-clones/stacked-dev-{brief_id} for Remote placement. THE SYSTEM SHALL perform these checks as read-only operations: no branch is created or deleted, no session file is created or removed, no directory is created or removed. THE SYSTEM SHALL NOT fail or return early based on the detection results \u2014 the checks are diagnostic and control flow proceeds to resolve_branch_name regardless of findings.",
+        "acceptance": [
+          "When a branch stacked-dev-{brief_id} already exists in the repository, the collision check detects and reports it \u2014 asserted by a test that creates the branch beforehand, calls the detection function with the corresponding brief_id, and verifies the branch collision is flagged with the full branch name stacked-dev-{brief_id}.",
+          "When a norn session file exists at ~/.norn/sessions/stacked-dev-{brief_id}, the collision check detects and reports it \u2014 asserted by a test that creates the session file at the expected path, calls the detection function, and verifies the session collision is flagged with the full file path.",
+          "When the worktree directory already exists at {repo_root}/.yggdrasil-worktrees/stacked-dev-{brief_id} (Local/Worktree) or /tmp/stacked-dev-clones/stacked-dev-{brief_id} (Remote), the collision check detects and reports it \u2014 asserted by a test that creates the directory, calls the detection function, and verifies the worktree collision is flagged with the full directory path.",
+          "When none of the three resources exist, the detection function returns a report with zero collisions.",
+          "The detection checks do not modify the repository, the session store, or the filesystem \u2014 asserted by verifying the state of branches, files, and directories before and after the checks is identical."
+        ],
+        "files": {
+          "create": [
+            ".meridian/workflows/stacked-dev/worker/src/collision.rs"
+          ],
+          "modify": [
+            ".meridian/workflows/stacked-dev/worker/src/handlers.rs",
+            ".meridian/workflows/stacked-dev/worker/src/lib.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C24",
+          "C25",
+          "C26"
+        ],
+        "stories": [
+          "S13"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Structured collision report logging",
+        "spec": "WHEN one or more collisions are detected by the pre-flight checks (R1), THE SYSTEM SHALL emit a single warn-level tracing call carrying structured fields: the brief_id, and for each collision type (branch, norn_session, worktree), a boolean indicating whether a collision was found and, when true, the specific resource name or path that collides \u2014 the full branch name stacked-dev-{brief_id} for branch collisions, the full path ~/.norn/sessions/stacked-dev-{brief_id} for session collisions, the full path to the worktree directory for worktree collisions. WHEN no collisions are detected, THE SYSTEM SHALL NOT emit a collision report \u2014 silence means a clean workspace with no stale artifacts from previous runs. THE SYSTEM SHALL NOT fail, abort, or alter the provisioning flow based on the collision report: the report is a pure side effect (matching P5 from the cluster design), the return value of provision_workspace is unchanged, and the existing collision handling (attempt-N branch suffixing in resolve_branch_name, rm -rf cleanup in provision_clone) continues to operate as before. THE SYSTEM SHALL use the existing tracing field conventions of the worker crate (structured fields, Display rendering).",
+        "acceptance": [
+          "When a branch collision is detected, the warn-level tracing event includes the brief_id and the colliding branch name \u2014 asserted by a capturing-subscriber test that sets up a pre-existing branch and verifies the WARN record carries the expected fields.",
+          "When multiple collision types are detected simultaneously (e.g. branch and session both pre-exist), a single warn-level tracing event carries all colliding resource details in one log line.",
+          "When all three collision types are detected, the single warn-level event carries all three resource names/paths.",
+          "When no collisions are detected, no collision-report tracing event is emitted \u2014 asserted by a capturing-subscriber test that runs the detection with no pre-existing artifacts and verifies zero WARN-level collision records.",
+          "The provisioning flow after the collision report proceeds identically to the current behavior \u2014 resolve_branch_name still performs its attempt-N suffixing, provision_worktree/provision_clone still runs, and the Workspace return value is unchanged."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            ".meridian/workflows/stacked-dev/worker/src/collision.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C27"
+        ],
+        "stories": [
+          "S13",
+          "S14"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Cluster invariants and gate hold across the diff",
+        "spec": "THE SYSTEM SHALL introduce no new Event variant and no new Payload type \u2014 the worker does not interact with the engine event store; the collision detection is local to the worker process and produces only a tracing side effect. The added code SHALL be free of #[allow], #[expect], unwrap, and expect in non-test code, and the new collision.rs module SHALL remain under 500 LOC excluding tests (CN7). WHEN the worker crate is built, cargo fmt --check and cargo clippy pass clean. THE SYSTEM SHALL add no timeout, rate limit, or cap to the collision detection checks (ADR-003, CN8). The collision detection SHALL NOT introduce any dependency on the aion engine or aion-core crates \u2014 it operates entirely with the worker's existing shell/filesystem tooling.",
+        "acceptance": [
+          "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over the non-test lines of .meridian/workflows/stacked-dev/worker/src/collision.rs returns no matches introduced by this brief.",
+          "wc -l on collision.rs (excluding the test module) is under 500 lines.",
+          "cargo fmt --check and cargo clippy pass clean for the worker crate.",
+          "No EventStore::append call or Event variant is added by this brief (the worker does not interact with the event store).",
+          "No timeout, rate limit, or cap is added to the collision detection path."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C16",
+          "C17",
+          "C18"
+        ],
+        "stories": [
+          "S15"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT modify resolve_branch_name or its attempt-N branch suffixing logic \u2014 this brief detects collisions before resolution, the existing code handles them.",
+      "SHALL NOT modify provision_worktree, provision_clone, or any provisioning logic \u2014 the collision check runs before provisioning begins and does not alter its behavior.",
+      "SHALL NOT remove, rename, or clean up stale artifacts (branches, session files, worktree directories) \u2014 detection is informational only.",
+      "SHALL NOT modify the norn session management code \u2014 the session collision check is a file-existence test at a known path, not a session management operation.",
+      "SHALL NOT fail or abort provision_workspace based on detected collisions \u2014 the report is a warn-level log, not a gate.",
+      "SHALL NOT change the return value, error type, or control flow of provision_workspace \u2014 the only addition is a diagnostic log before the existing logic runs.",
+      "SHALL NOT add any timeout, rate limit, or cap to the collision detection checks (ADR-003, CN8).",
+      "SHALL NOT add detection logic to handlers.rs directly \u2014 handlers.rs already exceeds 500 LOC (CN7); the detection function and its types live in the new collision.rs module."
+    ],
+    "verification": [
+      "cargo test for the stacked-dev worker crate passes, including the new collision detection tests (R1) and the collision report logging tests (R2).",
+      "Set up a pre-existing branch stacked-dev-test, a session file at ~/.norn/sessions/stacked-dev-test, and a worktree directory at the expected path; call the collision detection and verify all three collisions are reported with correct names/paths in a single WARN-level tracing event (R1, R2).",
+      "Call collision detection with no pre-existing artifacts and verify no collision-report tracing event is emitted (R2).",
+      "Run provision_workspace with pre-existing branch artifacts and verify the provisioning flow proceeds identically to the current behavior: resolve_branch_name still suffixes to -attempt-2, the Workspace return value carries the suffixed branch, behavior is unchanged (R2).",
+      "cargo fmt --check and cargo clippy pass clean for the worker crate; grep for #[allow]/#[expect]/unwrap/expect in the non-test code of collision.rs returns nothing new; collision.rs stays under 500 LOC (R3).",
+      "Diff review confirms no changes to resolve_branch_name, provision_worktree, provision_clone, try_branch_add, resolve_clone_branch_name, or the provision_workspace return value/error type (boundaries)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-003",
+        "title": "No default timeouts anywhere in the engine",
+        "decision": "The engine imposes no activity time bound of its own. Activity waits are unbounded, terminated only by completion, worker loss, server shutdown, or a workflow-level timeout the author explicitly chose. Rejected: a bigger default \u2014 agentic activities legitimately run for over an hour, and any number we picked would be ADR-001 violated.",
+        "quote": "we shouldn't have a default timeout, the agent steps can take well over an hour",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-005",
+        "title": "Failed runs are terminal; recovery resumes Running runs only",
+        "decision": "A failed run is a terminal, immutable record. Retry means a fresh `aion start` with a new run identity; recovery after restart resumes Running runs only. Rejected: in-place retry of failed runs \u2014 it would rewrite history that event-sourcing exists to preserve, and 'which attempt was this event from' becomes unanswerable.",
+        "quote": "",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C16",
+        "text": "No new Event variant, no new Payload type, and no mutable status field are introduced anywhere in the cluster; status remains derived solely by status_from_events (invariant 4), and no brief calls EventStore::append directly (invariant 3)."
+      },
+      {
+        "id": "C17",
+        "text": "No #[allow], #[expect], unwrap, or expect appears in the non-test library code added by either brief; every touched source file stays under 500 LOC excluding tests."
+      },
+      {
+        "id": "C18",
+        "text": "cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite pass clean at the cluster's landing commit."
+      },
+      {
+        "id": "C24",
+        "text": "provision_workspace performs a pre-flight branch collision check (via a collision detection function in collision.rs) by testing whether stacked-dev-{brief_id} already exists in the repository before resolve_branch_name runs."
+      },
+      {
+        "id": "C25",
+        "text": "The pre-flight check tests for norn session collision at ~/.norn/sessions/stacked-dev-{brief_id} before provisioning, matching the session-id derivation the worker uses from workspace.branch."
+      },
+      {
+        "id": "C26",
+        "text": "The pre-flight check tests for worktree directory collision at the expected path ({repo_root}/.yggdrasil-worktrees/stacked-dev-{brief_id} for Local/Worktree, /tmp/stacked-dev-clones/stacked-dev-{brief_id} for Remote) before provisioning."
+      },
+      {
+        "id": "C27",
+        "text": "When one or more collisions are detected, a single warn-level tracing call is emitted carrying the brief_id and, for each collision type (branch, norn_session, worktree), whether it was found and the specific name or path that collides; when no collisions are detected, no report is emitted; the report is informational and does not alter the provisioning flow, return value, or error handling."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S14",
+        "text": "As an operator investigating a provision that took an unexpected branch suffix, I want the collision report to name the specific branch, session file path, and worktree directory that were found pre-existing so that I can clean up stale artifacts without trial and error."
+      },
+      {
+        "id": "S13",
+        "text": "As an AI team member dispatching a stacked-dev workflow, I want the worker to detect and report pre-existing branch, norn session, and worktree collisions before provisioning so that I know upfront when a workspace will conflict with artifacts from a previous run."
+      },
+      {
+        "id": "S15",
+        "text": "As a future maintainer, I want the collision detection to be a separate pre-flight check from the collision handling (attempt-N branch suffixing) so that detection logic can be extended to new resource types without coupling it to the resolution strategy."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Status stays a projection (invariant 4): every log and every propagation READS an already-recorded terminal event; this cluster introduces no mutable status field and no second source of truth, and never calls status_from_events to gate a write."
+      },
+      {
+        "id": "CN2",
+        "text": "No silent failures (CLAUDE.md): every workflow-process exit path logs. Because all paths funnel through handle_process_exit_async, the abnormal-exit branch, the monitor-failure branch, and the clean-completion branch each emit a log; the only branch that does not is the idempotent replay of an already-recorded terminal (P4)."
+      },
+      {
+        "id": "CN3",
+        "text": "Logging over new events: OBS-001 and OBS-002 add no new durable Event variant and no new Payload type; they log existing terminals and rely on the existing recorded ChildWorkflowFailed for propagation (invariant 1's type-erased Event/Payload contract is untouched)."
+      },
+      {
+        "id": "CN4",
+        "text": "Single-writer Recorder respected (invariant 3): no brief calls EventStore::append directly; the ChildWorkflowFailed OBS-002 surfaces is the one already written by record_parent_child_terminal through the parent's Recorder under its lock \u2014 no second writer is added."
+      },
+      {
+        "id": "CN5",
+        "text": "Adding a log never alters control flow: the tracing calls are pure side effects emitted before the existing notify/reconcile/return; no recorded event, no notification, no registry reconciliation, and no return value changes, and a log macro can never short-circuit a durable terminal (P5)."
+      },
+      {
+        "id": "CN6",
+        "text": "Error message surfaced verbatim: the log carries the WorkflowError.message text as produced by runtime/outcome.rs (the VM exit-reason formatting); neither brief reformats, truncates, or paraphrases it."
+      },
+      {
+        "id": "CN7",
+        "text": "Library-code purity: no #[allow], #[expect], unwrap, or expect in non-test lib code; clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; every touched file stays under 500 LOC excluding tests."
+      },
+      {
+        "id": "CN8",
+        "text": "No arbitrary defaults (ADR-001/ADR-003): this cluster adds no timeout, no rate limit, and no cap; making a crash loud is the fix, not converting a hang into a deadline."
+      },
+      {
+        "id": "CN9",
+        "text": "Disjoint from RM-022/RM-023: the touched files are in crates/aion (engine), crates/aion-server, and crates/aion (runtime child-watch) only \u2014 no overlap, so the cluster runs concurrently with RM-022/023 in the parallel stress batch."
+      }
+    ],
+    "intention": "When a workflow process crashes, the operator watching the server learns it at the moment it happens \u2014 an error-level log line carrying the workflow id, the workflow type, and the underlying VM message \u2014 and a child's terminal failure surfaces to its parent run and to anyone watching the event stream without a manual investigation. When this is done, the only way a failure can be discovered is no longer `aion describe`: the failure is loud where people already look (the server log, the worker log, the parent's timeline, the watcher stream), and silence on those surfaces means the run is genuinely still alive, not dead-and-mute. The durable record stays the source of truth; observability is the speaker that reads it aloud the instant the terminal lands.",
+    "design_path": "docs/design/aion-observability",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "When a workflow process crashes, the operator watching the server learns it at the moment it happens \u2014 an error-level log line carrying the workflow id, the workflow type, and the underlying VM messag"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355"
+}

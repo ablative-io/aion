@@ -115,6 +115,61 @@
           "done": false
         }
       ]
+    },
+    {
+      "name": "Pre-flight Input Validation",
+      "items": [
+        {
+          "id": "C19",
+          "text": "The CLI provides a validate subcommand under RemoteCommand that accepts a workflow_type and --input payload, calls the server validate endpoint, prints a success confirmation on valid input, and prints structured validation errors with field paths to stderr and exits with code 1 on invalid input.",
+          "done": false
+        },
+        {
+          "id": "C20",
+          "text": "The server exposes a validate endpoint that accepts a workflow_type and an input payload, looks up the currently routed WorkflowVersion's input_schema, validates the payload against the schema using JSON Schema validation, and returns success or a structured error array with JSON path and violation description per error.",
+          "done": false
+        },
+        {
+          "id": "C21",
+          "text": "The CLI start command calls the validate endpoint before dispatching the start request; on validation failure it prints the errors and exits with code 1 without starting the workflow; a --skip-validation flag bypasses the pre-dispatch check entirely.",
+          "done": false
+        },
+        {
+          "id": "C22",
+          "text": "Validation errors include field-level detail: the JSON path of the failing field and a human-readable description of the schema violation (required field missing, type mismatch, enum violation, pattern violation), so the caller can fix the input without reading the raw schema or reverse-engineering the codec.",
+          "done": false
+        },
+        {
+          "id": "C23",
+          "text": "The validate endpoint is side-effect-free: it starts no workflow, records no event, appends nothing to any event store, and modifies no server state — it reads the deployed WorkflowVersion's input_schema and checks the input against it.",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Pre-flight Collision Detection",
+      "items": [
+        {
+          "id": "C24",
+          "text": "provision_workspace performs a pre-flight branch collision check (via a collision detection function in collision.rs) by testing whether stacked-dev-{brief_id} already exists in the repository before resolve_branch_name runs.",
+          "done": false
+        },
+        {
+          "id": "C25",
+          "text": "The pre-flight check tests for norn session collision at ~/.norn/sessions/stacked-dev-{brief_id} before provisioning, matching the session-id derivation the worker uses from workspace.branch.",
+          "done": false
+        },
+        {
+          "id": "C26",
+          "text": "The pre-flight check tests for worktree directory collision at the expected path ({repo_root}/.yggdrasil-worktrees/stacked-dev-{brief_id} for Local/Worktree, /tmp/stacked-dev-clones/stacked-dev-{brief_id} for Remote) before provisioning.",
+          "done": false
+        },
+        {
+          "id": "C27",
+          "text": "When one or more collisions are detected, a single warn-level tracing call is emitted carrying the brief_id and, for each collision type (branch, norn_session, worktree), whether it was found and the specific name or path that collides; when no collisions are detected, no report is emitted; the report is informational and does not alter the provisioning flow, return value, or error handling.",
+          "done": false
+        }
+      ]
     }
   ]
 }

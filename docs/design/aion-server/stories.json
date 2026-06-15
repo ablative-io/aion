@@ -47,7 +47,8 @@
       "stories": [
         {"id": "S11", "text": "As an operator, I want a single binary I point clients and workers at, configured by file/env with no baked-in defaults, so that I can run a managed deployment without embedding the engine in my own code."},
         {"id": "S12", "text": "As an operator running many tenants, I want each namespace isolated so that a caller or worker in one namespace can never touch another's workflows, events, or tasks."},
-        {"id": "S13", "text": "As a security-conscious operator, I want credentials in config to be load-only so that a DSN, token, or TLS key can never be accidentally re-serialised into a log, error, or response."}
+        {"id": "S13", "text": "As a security-conscious operator, I want credentials in config to be load-only so that a DSN, token, or TLS key can never be accidentally re-serialised into a log, error, or response."},
+        {"id": "S14", "text": "As an operator scaling workers horizontally, I want dispatched activities round-robin'd across connected workers so that adding workers actually distributes load instead of every activity going to the lowest-ID worker."}
       ]
     }
   ]

@@ -38,7 +38,11 @@
     { "path": "crates/aion-server/src/api/handlers/describe.rs", "note": "describe handler encodes the parent history including ChildWorkflowFailed — read-only reference for OBS-002's timeline verification", "brief": "" },
     { "path": "crates/aion-server/src/api/handlers/payload.rs", "note": "encode_history turns the recorded ChildWorkflowFailed into the wire timeline describe returns — read-only reference", "brief": "" },
     { "path": "crates/aion-server/src/stream/subscribe.rs", "note": "Event subscription that forwards appended events (including parent-side ChildWorkflowFailed) to watchers — read-only reference for OBS-002's watcher verification", "brief": "" },
-    { "path": "crates/aion-core/src/status.rs", "note": "status_from_events: the projection that proves status is derived, never stored — the invariant-4 anchor both briefs must not violate", "brief": "" }
+    { "path": "crates/aion-core/src/status.rs", "note": "status_from_events: the projection that proves status is derived, never stored — the invariant-4 anchor both briefs must not violate", "brief": "" },
+    { "path": "crates/aion-server/src/api/handlers/validate.rs", "note": "New validate endpoint: accepts workflow_type + input payload, attempts codec decode against the loaded workflow version, returns structured validation result", "brief": "OBS-003" },
+    { "path": "crates/aion-cli/src/main.rs", "note": "validate subcommand + pre-dispatch validation gate on start", "brief": "OBS-003" },
+    { "path": ".meridian/workflows/stacked-dev/worker/src/collision.rs", "note": "Pre-flight collision detection: branch, norn session, worktree directory checks before provisioning", "brief": "OBS-004" },
+    { "path": ".meridian/workflows/stacked-dev/worker/src/handlers.rs", "note": "provision_workspace calls collision detection before branch creation", "brief": "OBS-004" }
   ],
   "inventory": [
     { "path": "crates/aion/src/lifecycle/completion.rs", "note": "handle_process_exit_async records WorkflowCompleted/WorkflowFailed under the recorder lock, notifies waiters, reconciles registry. NO tracing call on any exit branch today — the silent path the dogfood hit. The abnormal-exit and monitor-failure branches build/record a WorkflowError and return Ok without logging." },

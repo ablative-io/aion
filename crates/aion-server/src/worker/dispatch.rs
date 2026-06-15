@@ -8,7 +8,7 @@ use aion_proto::{
 
 use crate::error::ServerError;
 use crate::shutdown::DrainState;
-use crate::worker::registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerMessage};
+use crate::worker::registry::{ConnectedWorkerRegistry, WorkerMessage};
 use tracing::{Instrument, info_span};
 
 /// Scheduled remote activity that must be placed with a connected worker.
@@ -88,10 +88,9 @@ impl ActivityDispatcher {
         async {
             self.drain_state
                 .ensure_accepting(&activity.namespace, &activity.activity_type)?;
-            let mut workers = self
+            let workers = self
                 .registry
                 .workers_for(&activity.namespace, &activity.activity_type)?;
-            workers.sort_by_key(WorkerHandle::id);
 
             if workers.is_empty() {
                 return Err(ServerError::worker_dispatch(

@@ -1,0 +1,101 @@
+{
+  "id": "AW-014",
+  "cluster": "aion-server",
+  "title": "Round-robin worker dispatch load balancing",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C34", "C35"],
+  "stories": ["S14"],
+  "purpose": "The current dispatch path in crates/aion-server/src/worker/dispatch.rs sorts workers by ID and tries them in order. Because sender.send() succeeds as long as the channel is open — it does not check worker load — the lowest-ID worker receives every activity for its (namespace, activity_type) key, and additional workers sit idle. This makes horizontal scaling impossible: adding workers does not distribute load. This brief adds a round-robin rotation index per (namespace, activity_type) on the connected-worker registry so that each dispatch advances the index and starts from the next worker in rotation order, distributing activities evenly across connected workers. The rotation index is in-memory state that resets on server restart — acceptable because dispatch is best-effort load distribution, not a durability guarantee.",
+  "task": "Add a rotation index to the connected-worker registry (crates/aion-server/src/worker/registry.rs) keyed by (namespace, activity_type), and modify the dispatch method (crates/aion-server/src/worker/dispatch.rs) to start iteration from the rotation position instead of always from the lowest-ID worker. The rotation index advances on each dispatch call. When a send fails (channel closed), the dispatch path deregisters the dead worker and tries the next in rotation order — preserving the existing closed-channel fallback behaviour. The select_worker convenience method on the registry also uses the rotation index so any caller selecting a single worker participates in the same distribution. No new event type, no wire protocol change, no persistence of the rotation state.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Round-robin rotation index on the registry",
+      "spec": "THE SYSTEM SHALL maintain a rotation index per (namespace, activity_type) key inside the RegistryState, stored alongside the existing by_activity HashMap. The index SHALL be a usize that starts at 0 for any new key and advances (wrapping) on each call to workers_for or select_worker for that key. The rotation index SHALL be in-memory state only — it is NOT persisted and resets to 0 on server restart. WHEN a worker registers or deregisters for an activity key, the rotation index for that key SHALL remain valid (clamped or wrapped to the new worker count) so that no out-of-bounds indexing occurs after registration changes.",
+      "acceptance": [
+        "RegistryState carries a rotation_index: HashMap<ActivityKey, usize> alongside by_activity, initialised empty.",
+        "workers_for returns workers starting from the rotation position for the (namespace, activity_type) key, and advances the index by 1 (wrapping at the worker count) — a test registering 3 workers and calling workers_for 3 times asserts each call returns a different starting worker.",
+        "select_worker returns the worker at the current rotation position (not always the lowest-ID worker) and advances the index — a test calling select_worker 3 times across 3 workers asserts all 3 workers are returned across the calls.",
+        "Registering or deregistering a worker for an activity key does not cause the rotation index to point past the end of the worker list — a test that deregisters the worker at the current rotation position and then calls workers_for succeeds without panic.",
+        "The rotation index is not written to any persistent store and is not exposed on the wire."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/worker/registry.rs"],
+        "delete": []
+      },
+      "checklist": ["C34"],
+      "stories": ["S14"]
+    },
+    {
+      "id": "R2",
+      "title": "Dispatch uses rotation to start from the next worker",
+      "spec": "WHEN the dispatch method is called for a scheduled activity, THE SYSTEM SHALL obtain the worker list from the registry starting at the rotation position for the activity's (namespace, activity_type) key, and iterate through workers in rotation order (from rotation index, wrapping around to cover all workers). The first worker whose channel accepts the send wins. The sort-by-ID ordering within the rotation window is preserved for deterministic tie-breaking, but the starting offset rotates on each dispatch so that successive dispatches of the same activity type begin at different workers.",
+      "acceptance": [
+        "Dispatching 3 activities of the same type with 3 registered workers results in each worker receiving exactly one task — a test registers 3 workers, dispatches 3 ScheduledActivity values, and asserts each worker's receiver got exactly 1 message.",
+        "Dispatching N activities across M workers (N > M) distributes approximately evenly — a test dispatching 6 activities across 3 workers asserts each received 2.",
+        "The dispatch path still succeeds when the rotated-to worker has a closed channel: it deregisters that worker and delivers to the next in rotation order — the existing dispatch_skips_closed_worker_and_uses_next_match test continues to pass.",
+        "The dispatch error for no connected workers remains unchanged — the existing dispatch_without_matching_worker_reports_unplaced test passes unmodified."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/worker/dispatch.rs"],
+        "delete": []
+      },
+      "checklist": ["C35"],
+      "stories": ["S14"]
+    },
+    {
+      "id": "R3",
+      "title": "Closed-channel fallback preserves deregister-and-try-next",
+      "spec": "WHEN a send to the rotated-to worker fails because its channel is closed, THE SYSTEM SHALL deregister that worker from the registry (existing behaviour) and try the next worker in rotation order. IF all matching workers have closed channels, THE SYSTEM SHALL return the existing worker_dispatch error with the message 'all matching worker streams closed before task could be delivered'. The deregister-and-advance path SHALL NOT skip workers — every registered worker for the key is attempted before reporting failure.",
+      "acceptance": [
+        "A dispatch where the first 2 of 3 workers have closed channels deregisters both, delivers to the third, and succeeds — verified by asserting the registry count drops to 1 and the surviving worker's receiver has 1 message.",
+        "A dispatch where all workers have closed channels returns Err(ServerError::WorkerDispatch { .. }) with the existing message text.",
+        "The drain_state.ensure_accepting check is still evaluated before each send attempt in the fallback loop — a test that sets the drain state to draining mid-iteration confirms the dispatch fails with the drain error, not a channel error."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion-server/src/worker/dispatch.rs"],
+        "delete": []
+      },
+      "checklist": ["C35"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Invariants hold across the diff",
+      "spec": "THE SYSTEM SHALL introduce no new Event variant, no new wire protocol message, and no breaking change to the worker registration or dispatch contract. No code added by this brief SHALL call EventStore::append directly. The rotation index SHALL NOT be persisted, serialised, or exposed on the wire. The added code SHALL be free of #[allow], #[expect], unwrap, and expect in non-test library code. WHEN the brief lands, cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite SHALL pass clean.",
+      "acceptance": [
+        "git diff for the brief introduces no new variant in any proto or wire type; grep for 'rotation' in aion-proto returns no matches.",
+        "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over the non-test lines of the modified files in crates/aion-server/src/worker/ returns no matches introduced by this brief.",
+        "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; cargo test -p aion-server passes.",
+        "The existing test suite in crates/aion-server/src/worker/dispatch.rs and registry.rs passes without modification to assertions (the tests may need updated expectations for round-robin behaviour but the same scenarios remain covered)."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT persist the rotation index — it is volatile in-memory state that resets on server restart.",
+    "SHALL NOT add a load-aware dispatch strategy (channel depth, latency, CPU) — round-robin is the scope; load-aware dispatch is a future concern.",
+    "SHALL NOT change the wire protocol, add a new proto message, or modify the worker registration handshake.",
+    "SHALL NOT introduce a new Event variant or modify the activity completion contract.",
+    "SHALL NOT add any configuration knob for the dispatch strategy — round-robin is the only strategy in this brief."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes.",
+    "cargo test -p aion-server passes, including the existing dispatch tests and the new round-robin distribution tests.",
+    "cargo fmt --check passes.",
+    "Register 3 workers for the same activity type, dispatch 3 activities, and observe each worker's channel received exactly 1 task (R2).",
+    "Register 3 workers, close the first worker's receiver, dispatch 1 activity, and observe the second worker receives it and the first is deregistered (R3).",
+    "Restart the server and confirm the rotation index starts from 0 — no stale index from a prior run (R1).",
+    "No #[allow], #[expect], or #[ignore] directives in new code."
+  ]
+}

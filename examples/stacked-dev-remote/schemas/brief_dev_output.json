@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "brief_dev output",
+  "description": "The three stage reports (mirroring the stage-contract canon), the verify-round count, and the advisory warm-build outcome.",
+  "type": "object",
+  "required": ["scout", "dev", "review", "verify_rounds", "build_warm"],
+  "additionalProperties": false,
+  "properties": {
+    "scout": {
+      "type": "object",
+      "required": ["summary", "enrichments", "verification"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string" },
+        "enrichments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "files", "context", "approach", "notes"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "files": { "type": "array", "items": { "type": "string" } },
+              "context": { "type": "array", "items": { "type": "string" } },
+              "approach": { "type": "string" },
+              "notes": { "type": "string" }
+            }
+          }
+        },
+        "verification": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "dev": {
+      "type": "object",
+      "required": ["summary", "commit_message", "enrichments", "attestation"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string" },
+        "commit_message": { "type": "string" },
+        "enrichments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status", "files_changed", "how", "deviation", "checklist", "stories"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "status": { "type": "string", "enum": ["implemented", "blocked"] },
+              "files_changed": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "change", "note"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": { "type": "string" },
+                    "change": { "type": "string", "enum": ["created", "modified", "deleted"] },
+                    "note": { "type": "string" }
+                  }
+                }
+              },
+              "how": { "type": "string" },
+              "deviation": { "type": "string" },
+              "checklist": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "done", "note"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": { "type": "string" },
+                    "done": { "type": "boolean" },
+                    "note": { "type": "string" }
+                  }
+                }
+              },
+              "stories": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "satisfied", "note"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": { "type": "string" },
+                    "satisfied": { "type": "boolean" },
+                    "note": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "attestation": {
+          "type": "object",
+          "required": ["no_panics", "no_unsafe", "boundaries_respected", "tests_pass"],
+          "additionalProperties": false,
+          "properties": {
+            "no_panics": { "type": "boolean" },
+            "no_unsafe": { "type": "boolean" },
+            "boundaries_respected": { "type": "boolean" },
+            "tests_pass": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": ["summary", "commit_message", "enrichments", "verification"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string" },
+        "commit_message": { "type": "string" },
+        "enrichments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "alignment", "acceptance", "checklist", "stories", "issues", "fixes"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "alignment": { "type": "string", "enum": ["aligned", "drifted", "fixed"] },
+              "acceptance": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["criterion", "met", "evidence"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "criterion": { "type": "string" },
+                    "met": { "type": "boolean" },
+                    "evidence": { "type": "string" }
+                  }
+                }
+              },
+              "checklist": { "type": "array", "items": { "type": "string" } },
+              "stories": { "type": "array", "items": { "type": "string" } },
+              "issues": { "type": "array", "items": { "type": "string" } },
+              "fixes": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "verification": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["criterion", "passed", "note"],
+            "additionalProperties": false,
+            "properties": {
+              "criterion": { "type": "string" },
+              "passed": { "type": "boolean" },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "verify_rounds": { "type": "integer", "minimum": 1 },
+    "build_warm": {
+      "type": "object",
+      "required": ["ok", "duration_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
