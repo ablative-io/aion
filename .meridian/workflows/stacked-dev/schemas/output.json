@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "stacked_dev output",
+  "type": "object",
+  "required": [
+    "branch",
+    "merged_into",
+    "session_id",
+    "build_warm",
+    "verify_rounds",
+    "review_rounds"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "merged_into": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "build_warm": {
+      "type": "object",
+      "required": [
+        "ok",
+        "duration_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "verify_rounds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_rounds": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

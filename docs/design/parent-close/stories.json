@@ -1,0 +1,91 @@
+{
+  "cluster": "parent-close",
+  "personas": [
+    {
+      "name": "AI Team Member",
+      "role": "Dispatching and composing multi-level workflow trees",
+      "stories": [
+        {
+          "id": "S1",
+          "text": "As an AI team member dispatching a parent workflow with long-running children, I want to declare at spawn time what happens to each child if the parent terminates so that a cancelled parent does not leave orphaned children consuming resources indefinitely."
+        },
+        {
+          "id": "S2",
+          "text": "As an AI team member, I want Abandon as an explicit policy choice so that I can intentionally hand off a child to outlive its parent — the fire-and-forget pattern — without relying on undocumented implicit behaviour."
+        },
+        {
+          "id": "S3",
+          "text": "As an AI team member running a fan-out dispatch workflow, I want RequestCancel on my children so that if the dispatch is cancelled, each child gets a chance to clean up before stopping, rather than being killed mid-operation."
+        },
+        {
+          "id": "S4",
+          "text": "As an AI team member, I want the policy to be required at compile time so that I cannot accidentally spawn a child with no declared lifecycle relationship — the omission is a build error, not a runtime surprise."
+        }
+      ]
+    },
+    {
+      "name": "AI Lead",
+      "role": "Reviewing workflow designs and approving dispatch configurations",
+      "stories": [
+        {
+          "id": "S5",
+          "text": "As an AI lead reviewing a workflow design, I want the parent-close policy visible in the recorded ChildWorkflowStarted event so that I can audit from the event history what lifecycle contract the author intended for each child."
+        },
+        {
+          "id": "S6",
+          "text": "As an AI lead, I want recursive propagation — a terminated child triggers its own children's policies — so that the lifecycle contract is honoured through the entire descendant tree, not just one level deep."
+        },
+        {
+          "id": "S7",
+          "text": "As an AI lead reviewing after a server crash, I want recovery to re-arm any pending policy propagation so that a parent terminal followed by a crash does not leave children in a state inconsistent with their declared policy."
+        }
+      ]
+    },
+    {
+      "name": "Workflow Author",
+      "role": "Writing Gleam workflow code using the aion_flow SDK",
+      "stories": [
+        {
+          "id": "S8",
+          "text": "As a workflow author, I want the policy parameter on child.spawn and child.spawn_and_wait so that I state the parent-child lifecycle contract in the same expression where I state the child's type and input."
+        },
+        {
+          "id": "S9",
+          "text": "As a workflow author, I want Terminate available for children that must not outlive the parent under any circumstances so that a parent's failure immediately kills the child without waiting for a graceful shutdown that may never come."
+        },
+        {
+          "id": "S10",
+          "text": "As a workflow author, I want the policy choice to be per-spawn, not per-workflow-type, so that the same child workflow type can be spawned with RequestCancel in one context and Abandon in another."
+        }
+      ]
+    },
+    {
+      "name": "Operator",
+      "role": "Running and monitoring the aion engine in production",
+      "stories": [
+        {
+          "id": "S11",
+          "text": "As an operator, I want the engine to propagate the policy on ALL parent terminals — including successful completion — so that a parent completing successfully does not silently leave descendants whose only purpose was to serve the parent's now-finished run."
+        },
+        {
+          "id": "S12",
+          "text": "As an operator, I want already-terminal children to be skipped by propagation so that a child that completed before the parent's terminal is not re-terminated or double-cancelled."
+        }
+      ]
+    },
+    {
+      "name": "Future Maintainer",
+      "role": "Reading and extending the parent-close implementation months later",
+      "stories": [
+        {
+          "id": "S13",
+          "text": "As a future maintainer, I want the policy recorded in the ChildWorkflowStarted event (not in a separate table or configuration) so that the propagation logic reads one source of truth — the event history — and I can trace the policy from spawn to dispatch without cross-referencing runtime state."
+        },
+        {
+          "id": "S14",
+          "text": "As a future maintainer, I want propagation to use the existing terminal event types (WorkflowFailed for Terminate, WorkflowCancelled for RequestCancel) so that status_from_events and all downstream consumers work without modification."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,267 @@
+{
+  "cluster": "parent-close",
+  "title": "Per-spawn parent-close policy: what happens to children when a parent terminates",
+  "intention": "When an author spawns a child workflow, they state \u2014 at spawn time, as a required argument \u2014 what the engine does with that child if the parent reaches a terminal state. The three policies are RequestCancel (graceful cascade: send the child a cancellation request and let it handle it), Terminate (immediate kill: the child is terminated without a chance to clean up), and Abandon (the child hands off and keeps running past the parent's death \u2014 today's implicit behaviour made explicit). When this is done, no child workflow ever outlives or dies with its parent by accident: the relationship is declared, durable, recursive, and re-armed on recovery. The engine propagates the chosen policy on ALL parent terminals \u2014 completed, failed, cancelled, timed out \u2014 not just cancellation, because a parent that completed successfully still leaves descendants that may or may not have a reason to keep running, and that decision belongs to the author, not the engine.",
+  "problem": "Today, when a parent workflow terminates, its children are unconditionally abandoned: they continue running regardless of how the parent exited. This is the only behaviour available, and it is implicit \u2014 the author never chose it. A cancelled parent's grandchild parked on a three-month timer outlives the entire tree (demonstrated by nested_workflows_e2e). The engine provides no mechanism to cascade termination or cancellation to descendants. The fork ADR-004 resolved: pick a system default (violates ADR-001), or make the author choose per spawn. Tom accepted the per-spawn required-argument model: the author declares the parent-close relationship at spawn time, the engine enforces it durably and recursively. The spawn APIs (child.spawn, child.spawn_and_wait in aion_flow; Command::SpawnChild and spawn_child in the engine) carry no policy parameter today, and ChildWorkflowStarted carries no policy field \u2014 so the recorded history cannot express which policy was chosen, and recovery cannot re-arm a propagation it does not know about.",
+  "solution": "Three serial briefs. (1) PC-001 (type foundation): add a ParentClosePolicy enum (RequestCancel, Terminate, Abandon) to aion-core, add the policy field to the ChildWorkflowStarted event variant, add it to Command::SpawnChild, thread it through the Recorder's record_child_workflow_started, re-export from aion-core's lib.rs, and update the CorrelationKey/resolver to carry and match on the policy. This is pure type plumbing \u2014 no behavioural change to the engine. (2) PC-002 (engine propagation): when a parent workflow reaches any terminal state (Completed, Failed, Cancelled, TimedOut), the engine walks the parent's history for ChildWorkflowStarted events, reads each child's recorded policy, and dispatches the appropriate action \u2014 RequestCancel sends a cancellation, Terminate records an immediate WorkflowFailed for the child, Abandon does nothing. Propagation is recursive: a child that is terminated or cancelled triggers its own children's policies. Recovery must re-arm: when a workflow recovers at startup and its history shows it reached a terminal but its children's policies have not yet been applied (the server crashed between the parent's terminal and the propagation), recovery walks and dispatches the pending policies. (3) PC-003 (SDK + call sites): the Gleam SDK gains the required policy parameter on child.spawn and child.spawn_and_wait, the spawn_config is extended to carry the policy to the NIF boundary, and every call site \u2014 stacked-dev (stacked_dev.gleam, dispatch.gleam) and the test fixtures (nested_chain, child_query) \u2014 is updated with an explicit policy choice. An e2e test proves each policy: RequestCancel cascades, Terminate kills, Abandon survives.",
+  "principles": [
+    {
+      "id": "P1",
+      "text": "No implicit behaviour: the author declares the parent-child lifecycle relationship at spawn time; there is no default, and the engine never guesses (ADR-001, ADR-004)."
+    },
+    {
+      "id": "P2",
+      "text": "All terminals propagate: the engine applies the child's policy on every parent terminal \u2014 completed, failed, cancelled, timed out \u2014 not only on cancellation, because the author's intent about the child's fate does not depend on how the parent ended."
+    },
+    {
+      "id": "P3",
+      "text": "Recursive propagation: a child whose policy triggers a terminal itself propagates to its own children, all the way down the tree, using each descendant's own recorded policy."
+    },
+    {
+      "id": "P4",
+      "text": "Durable and recoverable: the policy is recorded in ChildWorkflowStarted so it survives restarts; recovery re-arms any pending propagation the server missed between the parent's terminal and the dispatch."
+    },
+    {
+      "id": "P5",
+      "text": "The policy is a per-spawn property of the parent-child edge, not a property of the child workflow type: the same child type can be spawned with different policies by different parents or by the same parent at different call sites."
+    }
+  ],
+  "decisions": [
+    "ADR-001",
+    "ADR-002",
+    "ADR-004"
+  ],
+  "goals": [
+    "ParentClosePolicy (RequestCancel, Terminate, Abandon) is a first-class type in aion-core, re-exported from lib.rs, and carried by ChildWorkflowStarted and Command::SpawnChild \u2014 verified by the type being referenced from both the engine and the SDK.",
+    "child.spawn and child.spawn_and_wait in the Gleam SDK require the policy parameter with no default \u2014 verified by the compiler rejecting a spawn call that omits it.",
+    "When a parent workflow reaches any terminal state (Completed, Failed, Cancelled, TimedOut), the engine walks the parent's recorded ChildWorkflowStarted events, reads each child's policy, and dispatches: RequestCancel sends a cancellation request to the child, Terminate records an immediate terminal for the child, Abandon takes no action \u2014 verified by e2e tests exercising each policy on each terminal kind.",
+    "Propagation is recursive: a terminated or cancelled child triggers its own children's policies down the tree \u2014 verified by a three-level chain e2e test.",
+    "Recovery re-arms pending propagations: if the engine crashes between a parent's terminal and the policy dispatch, recovery at startup walks and applies the pending policies \u2014 verified by a recovery test that simulates the crash window.",
+    "Every existing spawn call site (stacked-dev, nested_chain, child_query) compiles with the required policy parameter \u2014 verified by cargo build and gleam build succeeding.",
+    "No #[allow], #[expect], unwrap, expect in library code; clippy -D warnings clean; every file under 500 LOC; no arbitrary defaults (ADR-001)."
+  ],
+  "non_goals": [
+    {
+      "text": "A system-wide default policy that applies when the author omits the argument.",
+      "reason": "ADR-001 forbids arbitrary defaults; ADR-004 requires the policy per spawn. The compiler error on omission is the feature."
+    },
+    {
+      "text": "Policy changes after spawn (e.g., updating a running child's policy).",
+      "reason": "The policy is recorded in ChildWorkflowStarted and is immutable once the event is appended \u2014 event-sourcing does not allow rewriting history. A new spawn with a different policy is a new child."
+    },
+    {
+      "text": "Partial propagation or best-effort delivery.",
+      "reason": "Propagation is durable: if the engine crashes mid-propagation, recovery re-arms. There is no 'tried and gave up' path."
+    },
+    {
+      "text": "Extending the SDK with a policy builder or fluent configuration API.",
+      "reason": "The policy is a single required enum argument; a builder pattern is overengineering for a three-variant enum. The spawn signature change is the API."
+    },
+    {
+      "text": "Coordinating with RM-024 (observability) or RM-022/RM-023 (kit/workflow-toolkit).",
+      "reason": "This cluster touches aion-core (event, lib), aion (durability, lifecycle), aion_flow (child.gleam, workflow.gleam), and examples/test fixtures \u2014 disjoint from RM-022/023/024 file sets."
+    },
+    {
+      "text": "Adding a new terminal status for 'terminated by parent policy'.",
+      "reason": "A Terminate policy records a WorkflowFailed with a message indicating parent-policy termination; a RequestCancel policy sends a WorkflowCancelled through the existing cancellation path. No new status variant is introduced (invariant 4)."
+    }
+  ],
+  "structure": [
+    {
+      "path": "crates/aion-core/src/event.rs",
+      "note": "ParentClosePolicy enum definition; policy field added to ChildWorkflowStarted variant",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion-core/src/lib.rs",
+      "note": "Re-export ParentClosePolicy from the crate root",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion/src/durability/command.rs",
+      "note": "Add policy field to Command::SpawnChild",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion/src/durability/executor.rs",
+      "note": "Thread policy through spawn_child, record_child_workflow_started, resolve_or_execute_live",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion/src/durability/recorder.rs",
+      "note": "record_child_workflow_started gains policy parameter, records it in the event",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion/src/durability/correlation.rs",
+      "note": "Correlation key derivation acknowledges the new field on ChildWorkflowStarted (no structural change \u2014 correlation is by spawn ordinal, not policy)",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion/src/durability/resolver.rs",
+      "note": "Resolver passes through the policy field when replaying a ChildWorkflowStarted from history",
+      "brief": "PC-001"
+    },
+    {
+      "path": "crates/aion/src/lifecycle/completion.rs",
+      "note": "After recording a parent terminal, dispatch policy propagation for each child ChildWorkflowStarted in the parent's history",
+      "brief": "PC-002"
+    },
+    {
+      "path": "crates/aion/src/durability/recovery.rs",
+      "note": "Recovery re-arms: on startup, walk recovered workflows for parent terminals whose children have pending policy propagation",
+      "brief": "PC-002"
+    },
+    {
+      "path": "crates/aion/src/runtime/nif_child_watch.rs",
+      "note": "Read-only reference: child-terminal watcher already records ChildWorkflowFailed/Cancelled; Terminate policy produces the same terminal through the recorder, not through the watcher",
+      "brief": ""
+    },
+    {
+      "path": "gleam/aion_flow/src/aion/child.gleam",
+      "note": "spawn and spawn_and_wait gain required ParentClosePolicy parameter; spawn_config carries it to the NIF boundary",
+      "brief": "PC-003"
+    },
+    {
+      "path": "gleam/aion_flow/src/aion/workflow.gleam",
+      "note": "spawn and spawn_and_wait forwarding signatures gain the policy parameter",
+      "brief": "PC-003"
+    },
+    {
+      "path": "examples/stacked-dev/src/stacked_dev.gleam",
+      "note": "Two spawn_and_wait call sites gain explicit policy argument",
+      "brief": "PC-003"
+    },
+    {
+      "path": "examples/stacked-dev/src/dispatch.gleam",
+      "note": "One spawn_and_wait call site gains explicit policy argument",
+      "brief": "PC-003"
+    },
+    {
+      "path": "crates/aion/tests/fixtures/nested_chain/src/level_one.gleam",
+      "note": "child.spawn call gains policy argument",
+      "brief": "PC-003"
+    },
+    {
+      "path": "crates/aion/tests/fixtures/nested_chain/src/level_two.gleam",
+      "note": "child.spawn call gains policy argument",
+      "brief": "PC-003"
+    },
+    {
+      "path": "crates/aion/tests/fixtures/nested_chain/src/level_self.gleam",
+      "note": "child.spawn_and_wait call gains policy argument",
+      "brief": "PC-003"
+    },
+    {
+      "path": "crates/aion/tests/fixtures/child_query/src/parent_query.gleam",
+      "note": "child.spawn call gains policy argument",
+      "brief": "PC-003"
+    },
+    {
+      "path": "crates/aion/tests/parent_close_e2e.rs",
+      "note": "E2e test exercising all three parent-close policies",
+      "brief": "PC-003"
+    },
+    {
+      "path": "crates/aion/tests/nested_workflows_e2e.rs",
+      "note": "Existing nested workflow test updated for policy parameter",
+      "brief": "PC-003"
+    }
+  ],
+  "inventory": [
+    {
+      "path": "crates/aion-core/src/event.rs",
+      "note": "Event enum: ChildWorkflowStarted has fields envelope, child_workflow_id, workflow_type, input, package_version \u2014 no policy field today. ParentClosePolicy does not exist."
+    },
+    {
+      "path": "crates/aion-core/src/lib.rs",
+      "note": "Re-exports Event, EventEnvelope, WorkflowError, Payload, WorkflowId, etc. No ParentClosePolicy."
+    },
+    {
+      "path": "crates/aion/src/durability/command.rs",
+      "note": "Command::SpawnChild has key, workflow_type, input \u2014 no policy field. Resolution::ChildStarted(WorkflowId) carries no policy."
+    },
+    {
+      "path": "crates/aion/src/durability/executor.rs",
+      "note": "resolve_or_execute_live handles Command::SpawnChild by calling executor.spawn_child(workflow_type, input) \u2014 no policy. record_child_workflow_started is called with recorded_at, child_workflow_id, workflow_type, input, package_version \u2014 no policy."
+    },
+    {
+      "path": "crates/aion/src/durability/recorder.rs",
+      "note": "record_child_workflow_started accepts recorded_at, child_workflow_id, workflow_type, input, package_version and builds Event::ChildWorkflowStarted \u2014 no policy parameter."
+    },
+    {
+      "path": "crates/aion/src/durability/correlation.rs",
+      "note": "CorrelationKey::Child(u64) counts prior ChildWorkflowStarted events to derive the ordinal. The policy field would be a new field on ChildWorkflowStarted but does not affect the ordinal derivation."
+    },
+    {
+      "path": "crates/aion/src/lifecycle/completion.rs",
+      "note": "handle_process_exit_async records the terminal (Completed/Failed) and notifies waiters. No child-policy propagation step exists after the terminal record."
+    },
+    {
+      "path": "crates/aion/src/durability/recovery.rs",
+      "note": "Recovery replays commands against history and reaches a resume point or terminal. No step walks ChildWorkflowStarted events to re-arm policy propagation for parent terminals found during recovery."
+    },
+    {
+      "path": "gleam/aion_flow/src/aion/child.gleam",
+      "note": "spawn(name, workflow_fn, input, input_codec, output_codec, error_codec) \u2014 6 params, no policy. spawn_and_wait(name, workflow_fn, input, input_codec, output_codec, error_codec) \u2014 6 params, no policy. spawn_config() returns an empty JSON object."
+    },
+    {
+      "path": "gleam/aion_flow/src/aion/workflow.gleam",
+      "note": "spawn and spawn_and_wait forward to child.spawn and child.spawn_and_wait with the same 6-param signatures."
+    },
+    {
+      "path": "examples/stacked-dev/src/stacked_dev.gleam",
+      "note": "Two workflow.spawn_and_wait calls (lines ~206, ~254) with 6 arguments each."
+    },
+    {
+      "path": "examples/stacked-dev/src/dispatch.gleam",
+      "note": "One workflow.spawn_and_wait call (line ~193) with 6 arguments."
+    },
+    {
+      "path": "crates/aion/tests/fixtures/nested_chain/src/",
+      "note": "level_one.gleam and level_two.gleam use child.spawn + child.await; level_self.gleam uses child.spawn_and_wait. All with 6-param signatures."
+    },
+    {
+      "path": "crates/aion/tests/fixtures/child_query/src/parent_query.gleam",
+      "note": "One child.spawn call with 6 arguments."
+    }
+  ],
+  "constraints": [
+    {
+      "id": "CN1",
+      "text": "Status stays a projection (invariant 4): the policy propagation for Terminate records a WorkflowFailed and for RequestCancel records a WorkflowCancelled \u2014 both through the existing terminal event types. No new terminal event type or status variant is introduced; status_from_events derives status from the same events as before."
+    },
+    {
+      "id": "CN2",
+      "text": "Single-writer Recorder respected (invariant 3): policy propagation records child terminals through the child's own Recorder under its lock. The parent does not append events to the child's history directly via EventStore::append."
+    },
+    {
+      "id": "CN3",
+      "text": "Type-erased events (invariant 1): ParentClosePolicy is a field on ChildWorkflowStarted, not a new Event variant. The Event/Payload contract is extended by a field, not a new family."
+    },
+    {
+      "id": "CN4",
+      "text": "No arbitrary defaults (ADR-001): the policy parameter is required at every spawn call site. The engine never infers or defaults a policy. A missing policy is a compile-time error in Gleam and a missing-field error in the Rust Command construction."
+    },
+    {
+      "id": "CN5",
+      "text": "No backwards compatibility (ADR-002): the spawn signature changes are breaking. Old call sites that do not supply the policy will not compile. There is no compatibility shim, no deprecated overload, and no migration path beyond updating the call."
+    },
+    {
+      "id": "CN6",
+      "text": "Library-code purity: no #[allow], #[expect], unwrap, or expect in non-test lib code; clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; every touched file stays under 500 LOC excluding tests."
+    },
+    {
+      "id": "CN7",
+      "text": "Propagation covers all terminals: the engine dispatches the policy not only when the parent is cancelled but also when it completes, fails, or times out. The parent's terminal kind determines only THAT propagation happens, not WHETHER to propagate; the child's recorded policy determines WHAT action to take."
+    },
+    {
+      "id": "CN8",
+      "text": "Recovery completeness: if the engine crashes between a parent's terminal event and the policy dispatch for one or more children, recovery at startup re-walks the parent's ChildWorkflowStarted events, checks each child's current status, and dispatches any policy that was not yet applied. No propagation is lost to a crash."
+    },
+    {
+      "id": "CN9",
+      "text": "Determinism boundary respected (invariant 2): the policy is a recorded field on ChildWorkflowStarted and is replayed deterministically. Recovery reads the policy from history, not from configuration or wall-clock state."
+    }
+  ]
+}

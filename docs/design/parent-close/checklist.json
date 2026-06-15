@@ -1,0 +1,185 @@
+{
+  "cluster": "parent-close",
+  "sections": [
+    {
+      "name": "Type Foundation",
+      "items": [
+        {
+          "id": "C1",
+          "text": "ParentClosePolicy enum with variants RequestCancel, Terminate, and Abandon is defined in crates/aion-core/src/event.rs with derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize) and doc comments explaining each variant's semantics.",
+          "done": false
+        },
+        {
+          "id": "C2",
+          "text": "ParentClosePolicy is re-exported from crates/aion-core/src/lib.rs so downstream crates (aion, aion-server) import it as aion_core::ParentClosePolicy.",
+          "done": false
+        },
+        {
+          "id": "C3",
+          "text": "Event::ChildWorkflowStarted gains a policy: ParentClosePolicy field, recorded alongside child_workflow_id, workflow_type, input, and package_version.",
+          "done": false
+        },
+        {
+          "id": "C4",
+          "text": "Command::SpawnChild in crates/aion/src/durability/command.rs gains a policy: ParentClosePolicy field alongside key, workflow_type, and input.",
+          "done": false
+        },
+        {
+          "id": "C5",
+          "text": "record_child_workflow_started in crates/aion/src/durability/recorder.rs gains a policy: ParentClosePolicy parameter and threads it into the Event::ChildWorkflowStarted it appends.",
+          "done": false
+        },
+        {
+          "id": "C6",
+          "text": "resolve_or_execute_live in crates/aion/src/durability/executor.rs threads the policy from Command::SpawnChild through to record_child_workflow_started after a live spawn.",
+          "done": false
+        },
+        {
+          "id": "C7",
+          "text": "The resolver in crates/aion/src/durability/resolver.rs passes through the policy field when replaying a ChildWorkflowStarted from recorded history, preserving it for any downstream consumer that inspects the replayed event.",
+          "done": false
+        },
+        {
+          "id": "C8",
+          "text": "CorrelationKey derivation in crates/aion/src/durability/correlation.rs is unchanged: the policy field on ChildWorkflowStarted does not alter the Child(ordinal) correlation key because correlation is by spawn position, not by policy.",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Engine Propagation",
+      "items": [
+        {
+          "id": "C9",
+          "text": "When handle_process_exit_async in crates/aion/src/lifecycle/completion.rs records a fresh terminal (Completed, Failed, or the monitor-failure error arm), it invokes a propagation step that walks the parent's ChildWorkflowStarted events and dispatches each child's recorded ParentClosePolicy.",
+          "done": false
+        },
+        {
+          "id": "C10",
+          "text": "When a workflow is cancelled (WorkflowCancelled terminal), the same propagation step is invoked, walking children and dispatching their policies.",
+          "done": false
+        },
+        {
+          "id": "C11",
+          "text": "When a workflow times out (WorkflowTimedOut terminal), the same propagation step is invoked.",
+          "done": false
+        },
+        {
+          "id": "C12",
+          "text": "RequestCancel policy dispatches a cancellation request to the child workflow through the existing cancellation path (the same mechanism used by explicit cancel requests), letting the child handle it gracefully.",
+          "done": false
+        },
+        {
+          "id": "C13",
+          "text": "Terminate policy records an immediate WorkflowFailed terminal for the child through the child's Recorder (invariant 3: single writer) with a message indicating parent-policy termination, and notifies the child's completion subscribers.",
+          "done": false
+        },
+        {
+          "id": "C14",
+          "text": "Abandon policy takes no action: the child continues running as if the parent had not terminated.",
+          "done": false
+        },
+        {
+          "id": "C15",
+          "text": "Propagation is recursive: a child terminated or cancelled by its parent's policy triggers the child's own children's policies, walking the descendant tree until all edges are resolved.",
+          "done": false
+        },
+        {
+          "id": "C16",
+          "text": "A child that has already reached a terminal state (its own completion, failure, cancellation, or timeout) is skipped by propagation: the policy is not re-applied to an already-terminal child.",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Recovery Re-arm",
+      "items": [
+        {
+          "id": "C17",
+          "text": "During startup recovery in crates/aion/src/durability/recovery.rs, after recovering a workflow whose history contains a terminal event, the recovery step walks the workflow's ChildWorkflowStarted events and checks whether each child's policy has been applied (the child has reached a terminal or the Abandon policy was selected). Unapplied policies are dispatched.",
+          "done": false
+        },
+        {
+          "id": "C18",
+          "text": "The recovery re-arm reads the policy from the recorded ChildWorkflowStarted event in the parent's history, not from any configuration or runtime state, preserving the determinism boundary (invariant 2).",
+          "done": false
+        },
+        {
+          "id": "C19",
+          "text": "If multiple children have pending propagations, recovery dispatches them in the same ChildWorkflowStarted recording order (deterministic, reproducible).",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "SDK and Call Sites",
+      "items": [
+        {
+          "id": "C20",
+          "text": "child.spawn in gleam/aion_flow/src/aion/child.gleam gains a required policy parameter (a Gleam type representing the three variants) before the codec parameters, and spawn_config encodes the policy into the JSON config passed to the NIF boundary.",
+          "done": false
+        },
+        {
+          "id": "C21",
+          "text": "child.spawn_and_wait in gleam/aion_flow/src/aion/child.gleam gains the same required policy parameter, forwarded to spawn.",
+          "done": false
+        },
+        {
+          "id": "C22",
+          "text": "workflow.spawn and workflow.spawn_and_wait in gleam/aion_flow/src/aion/workflow.gleam gain the required policy parameter, forwarding to child.spawn and child.spawn_and_wait.",
+          "done": false
+        },
+        {
+          "id": "C23",
+          "text": "Both spawn_and_wait call sites in examples/stacked-dev/src/stacked_dev.gleam are updated with an explicit ParentClosePolicy argument.",
+          "done": false
+        },
+        {
+          "id": "C24",
+          "text": "The spawn_and_wait call site in examples/stacked-dev/src/dispatch.gleam is updated with an explicit ParentClosePolicy argument.",
+          "done": false
+        },
+        {
+          "id": "C25",
+          "text": "All child.spawn and child.spawn_and_wait call sites in the test fixtures (nested_chain level_one.gleam, level_two.gleam, level_self.gleam; child_query parent_query.gleam) are updated with explicit policy arguments.",
+          "done": false
+        },
+        {
+          "id": "C26",
+          "text": "An e2e test exercises all three policies: a parent that terminates with a RequestCancel child verifies the child receives a cancellation; a parent with a Terminate child verifies the child is immediately failed; a parent with an Abandon child verifies the child continues running after the parent's terminal.",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Invariants and Gate",
+      "items": [
+        {
+          "id": "C27",
+          "text": "No new Event variant is introduced (the policy is a field on ChildWorkflowStarted, not a new event); no new terminal status variant is added; status_from_events derives status from the same event types as before (invariant 4, CN1).",
+          "done": false
+        },
+        {
+          "id": "C28",
+          "text": "No EventStore::append call is added outside the Recorder; all terminal records for policy-terminated children go through the child's Recorder under its lock (invariant 3, CN2).",
+          "done": false
+        },
+        {
+          "id": "C29",
+          "text": "No #[allow], #[expect], unwrap, or expect appears in non-test library code added by any brief; every touched source file stays under 500 LOC excluding tests (CN6).",
+          "done": false
+        },
+        {
+          "id": "C30",
+          "text": "cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and the full workspace test suite pass clean at the cluster's landing commit.",
+          "done": false
+        },
+        {
+          "id": "C31",
+          "text": "No arbitrary default for the policy: omitting the policy parameter is a compile-time error in both Gleam and Rust (CN4, ADR-001).",
+          "done": false
+        }
+      ]
+    }
+  ]
+}

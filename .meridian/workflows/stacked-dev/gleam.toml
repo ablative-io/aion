@@ -1,0 +1,14 @@
+name = "aion_stacked_dev"
+version = "0.1.0"
+target = "erlang"
+description = "Aion stacked-dev workflow family: provision, concurrent warm-build + dev, a scoped verify-fix loop, an authoritative gate child, a signal-driven review loop, and land."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = ">= 0.4.0 and < 0.5.0"
+meridian_activities = { path = "../../../gleam/meridian-activities" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

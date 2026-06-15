@@ -1,0 +1,27 @@
+[package]
+name = "haematite"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Content-addressed, branchable, actor-native storage engine"
+
+[dependencies]
+blake3 = "1"
+zstd = "0.13"
+beamr = "0.6.1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+cast_possible_truncation = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

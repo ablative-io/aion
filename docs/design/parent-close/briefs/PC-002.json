@@ -1,0 +1,177 @@
+{
+  "id": "PC-002",
+  "cluster": "parent-close",
+  "title": "Engine propagation of parent-close policy on parent terminals, recursive, with recovery re-arm",
+  "depends_on": ["PC-001"],
+  "blocked_by": [],
+  "checklist": ["C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18", "C19", "C27", "C28", "C29", "C30"],
+  "stories": ["S1", "S2", "S3", "S6", "S7", "S9", "S11", "S12", "S14"],
+  "design_anchor": ["ADR-001", "ADR-004", "ADR-005"],
+  "purpose": "Implements the engine-side behaviour that gives ParentClosePolicy its meaning: when a parent workflow reaches any terminal state, the engine walks the parent's ChildWorkflowStarted events, reads each child's recorded policy (established by PC-001), and dispatches the appropriate action. RequestCancel sends the child a cancellation request through the existing cancel path; Terminate records an immediate WorkflowFailed for the child through the child's own Recorder (invariant 3); Abandon does nothing. Propagation is recursive — a child terminated or cancelled by its parent's policy triggers that child's own children's policies, all the way down the tree. Recovery re-arms: if the engine crashes between a parent's terminal and the policy dispatch, startup recovery walks the gap and applies pending policies. This brief introduces no new event type (Terminate uses WorkflowFailed, RequestCancel uses WorkflowCancelled), no new status variant, and no direct EventStore::append call.",
+  "task": "Wire parent-close policy propagation into the engine's terminal handling and recovery paths. Two touch points: (1) crates/aion/src/lifecycle/completion.rs — after handle_process_exit_async records a fresh terminal (Completed, Failed, the Err monitor-failure arm), and at the cancellation and timeout terminal paths, invoke a propagation function that: reads the parent's history to find ChildWorkflowStarted events, extracts each child's policy, checks whether the child has already reached a terminal (skip if so), and dispatches the policy action. The propagation function must be recursive: dispatching Terminate or RequestCancel may itself produce a child terminal that triggers the grandchild's policies. (2) crates/aion/src/durability/recovery.rs — after recovering a workflow whose history contains a terminal event (RecoveryOutcome::Terminal), walk the ChildWorkflowStarted events in the parent's history, check each child's current status (terminal or still running), and dispatch the policy for any child whose policy has not been applied. Recovery reads the policy from the recorded ChildWorkflowStarted event (invariant 2: determinism boundary). If multiple children have pending propagations, dispatch in ChildWorkflowStarted recording order. Scope boundary — in: the propagation function in completion.rs, the recovery re-arm in recovery.rs, and tests for both (unit tests for the propagation logic and the recovery re-arm, plus integration tests exercising each policy on each terminal kind). Out: the ParentClosePolicy type definition and event/command field additions (PC-001, already landed); the SDK signature changes and call-site updates (PC-003); any new Event variant or status variant; any direct EventStore::append call.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Propagation on fresh terminal: Completed, Failed, monitor-failure",
+      "spec": "WHEN handle_process_exit_async in crates/aion/src/lifecycle/completion.rs records a fresh terminal (Ok(Completed), Ok(Failed), or Err monitor-failure mapped to Failed) and notification succeeds, THE SYSTEM SHALL invoke a propagation step that: (a) reads the parent's event history from the store, (b) collects all ChildWorkflowStarted events and their recorded ParentClosePolicy, (c) for each child, checks whether the child has already reached a terminal state (by reading the child's history and checking for a terminal event), (d) for each non-terminal child, dispatches the policy action per R3/R4/R5. THE SYSTEM SHALL NOT change the terminal recording, completion notification, visibility upsert, or registry reconciliation that handle_process_exit_async already performs — propagation runs AFTER notification, so watchers learn of the parent's terminal before children are affected. THE SYSTEM SHALL NOT propagate when the exit is the idempotent-replay branch (terminal already in history) — that branch returns early before notification, and recovery handles re-arming separately (R6).",
+      "acceptance": [
+        "A parent workflow that completes successfully (WorkflowCompleted) with two children — one with RequestCancel and one with Terminate — triggers propagation: the RequestCancel child receives a cancellation, the Terminate child receives an immediate WorkflowFailed — verified by an integration test.",
+        "A parent workflow that fails (WorkflowFailed) with a child with RequestCancel triggers the cancellation — verified by an integration test.",
+        "A parent workflow whose monitor fails (the Err arm) with a child with Terminate triggers the immediate failure for the child — verified by a unit test driving handle_process_exit_async.",
+        "The idempotent-replay branch (terminal already in history) does NOT trigger propagation — verified by a test that drives handle_process_exit_async with a pre-existing terminal and asserts no child action is dispatched.",
+        "The parent's completion notification fires BEFORE propagation begins — verified by asserting the notification subscriber receives the terminal before the child's terminal is recorded."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C9"],
+      "stories": ["S1", "S11"]
+    },
+    {
+      "id": "R2",
+      "title": "Propagation on cancellation and timeout terminals",
+      "spec": "WHEN a workflow reaches a WorkflowCancelled or WorkflowTimedOut terminal, THE SYSTEM SHALL invoke the same propagation step as R1, walking the parent's ChildWorkflowStarted events and dispatching each child's recorded policy. THE SYSTEM SHALL use the same propagation function as R1 — the parent's terminal kind determines THAT propagation happens, not WHAT action to take; the child's recorded policy determines the action.",
+      "acceptance": [
+        "A cancelled parent with a child with Terminate triggers the child's immediate failure — verified by an integration test.",
+        "A timed-out parent with a child with RequestCancel triggers the child's cancellation — verified by an integration test.",
+        "A cancelled parent with a child with Abandon leaves the child running — verified by an integration test asserting the child has no terminal event after the parent's cancellation."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C10", "C11"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R3",
+      "title": "RequestCancel policy dispatch",
+      "spec": "WHEN the propagation step encounters a child with policy RequestCancel and the child has not yet reached a terminal, THE SYSTEM SHALL send a cancellation request to the child through the existing cancellation mechanism (the same path used by an explicit aion cancel command or a workflow.cancel API call). THE SYSTEM SHALL NOT record a terminal for the child directly — the child's own process handles the cancellation request and decides its terminal (graceful shutdown). THE SYSTEM SHALL NOT block the parent's propagation on the child's cancellation completing — the request is sent and propagation moves to the next child.",
+      "acceptance": [
+        "A child with RequestCancel receives a WorkflowCancelled event through the existing cancel path after its parent terminates — verified by an integration test that checks the child's event history.",
+        "The parent's propagation completes without waiting for the child to finish cancelling — verified by asserting the propagation function returns before the child's process exits.",
+        "If the child has already completed before the parent terminates, the RequestCancel dispatch is skipped — verified by a test."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C12", "C16"],
+      "stories": ["S3", "S12"]
+    },
+    {
+      "id": "R4",
+      "title": "Terminate policy dispatch",
+      "spec": "WHEN the propagation step encounters a child with policy Terminate and the child has not yet reached a terminal, THE SYSTEM SHALL record an immediate WorkflowFailed terminal for the child through the child's own Recorder under its lock (invariant 3: single writer), with a WorkflowError message indicating parent-policy termination (e.g., 'terminated by parent-close policy: parent {parent_workflow_id} reached terminal'). THE SYSTEM SHALL notify the child's completion subscribers after recording the terminal (same pattern as handle_process_exit_async). THE SYSTEM SHALL NOT call EventStore::append directly — the child's Recorder is the sole append path.",
+      "acceptance": [
+        "A child with Terminate receives a WorkflowFailed event with a message containing 'parent-close policy' after its parent terminates — verified by an integration test reading the child's history.",
+        "The child's terminal is recorded through the child's Recorder — verified by asserting no direct EventStore::append call is added in the diff.",
+        "The child's completion subscribers are notified — verified by asserting a subscriber parked on the child's completion receives the terminal.",
+        "If the child has already completed before the parent terminates, the Terminate dispatch is skipped — verified by a test."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C13", "C16", "C28"],
+      "stories": ["S9", "S12", "S14"]
+    },
+    {
+      "id": "R5",
+      "title": "Abandon policy dispatch",
+      "spec": "WHEN the propagation step encounters a child with policy Abandon, THE SYSTEM SHALL take no action: the child continues running as if the parent had not terminated. THE SYSTEM SHALL NOT record any event on the child, send any signal to the child, or modify the child's state in any way.",
+      "acceptance": [
+        "A child with Abandon has no new events in its history after its parent terminates — verified by an integration test that reads the child's history before and after the parent's terminal and asserts they are identical.",
+        "The abandoned child's process continues running (is still Resident in the engine registry) after the parent's terminal — verified by checking the registry."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C14"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R6",
+      "title": "Recursive propagation through descendant tree",
+      "spec": "WHEN a child is terminated (Terminate policy) or cancelled (RequestCancel policy leads to the child reaching a WorkflowCancelled terminal), THE SYSTEM SHALL trigger the child's own children's parent-close policies by invoking the same propagation function recursively, using each grandchild's recorded policy from the child's ChildWorkflowStarted events. Propagation walks the entire descendant tree until every edge is resolved: each node's children are dispatched according to their recorded policy, and an Abandon leaf or an already-terminal leaf terminates the recursion along that branch.",
+      "acceptance": [
+        "A three-level chain (grandparent -> parent -> child) where the grandparent terminates with a Terminate parent, and the parent has a Terminate child, results in both the parent and the child receiving WorkflowFailed terminals — verified by an integration test.",
+        "A three-level chain where the grandparent terminates with a Terminate parent, but the parent has an Abandon child, results in the parent being terminated but the child continuing — verified by an integration test.",
+        "Recursive propagation does not infinite-loop on a workflow that has already been terminated — verified by the already-terminal skip guard (C16)."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/lifecycle/completion.rs"],
+        "delete": []
+      },
+      "checklist": ["C15"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R7",
+      "title": "Recovery re-arms pending propagations",
+      "spec": "WHEN startup recovery in crates/aion/src/durability/recovery.rs recovers a workflow whose history contains a terminal event (RecoveryOutcome::Terminal), THE SYSTEM SHALL walk the workflow's ChildWorkflowStarted events, read each child's recorded ParentClosePolicy from the event, check whether the child has reached a terminal state, and dispatch the policy for any child whose policy has not been applied. THE SYSTEM SHALL read the policy from the recorded ChildWorkflowStarted event, not from configuration or runtime state (invariant 2: determinism boundary). WHEN multiple children have pending propagations, THE SYSTEM SHALL dispatch them in ChildWorkflowStarted recording order (by sequence number). THE SYSTEM SHALL handle the case where recovery itself discovers a child that needs its own children's policies dispatched (recursive re-arm).",
+      "acceptance": [
+        "A simulated crash scenario: a parent with a Terminate child has its terminal recorded but the child's WorkflowFailed is not recorded (simulating a crash between the parent's terminal and the propagation). After recovery, the child has a WorkflowFailed event — verified by a recovery test.",
+        "Recovery reads the policy from the parent's ChildWorkflowStarted event — verified by asserting the recovery code path reads history, not configuration.",
+        "If the child already has a terminal (the propagation ran before the crash), recovery skips it — verified by a test asserting no double-terminal.",
+        "If multiple children have pending propagations, they are dispatched in recording order — verified by a test with two children asserting the order of their terminals."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/aion/src/durability/recovery.rs"],
+        "delete": []
+      },
+      "checklist": ["C17", "C18", "C19"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R8",
+      "title": "Cluster invariants hold across PC-002 diff",
+      "spec": "THE SYSTEM SHALL introduce no new Event variant: Terminate uses WorkflowFailed and RequestCancel uses WorkflowCancelled, both existing terminal event types (CN1, invariant 4). THE SYSTEM SHALL NOT call EventStore::append directly; all child terminals are recorded through the child's Recorder (CN2, invariant 3). THE SYSTEM SHALL be free of #[allow], #[expect], unwrap, and expect in non-test library code, and every touched file SHALL remain under 500 LOC excluding tests (CN6). WHEN PC-002 lands (on top of PC-001), cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, and cargo test --workspace SHALL pass clean.",
+      "acceptance": [
+        "git diff for PC-002 introduces no new Event variant — grep confirms.",
+        "git diff shows no direct EventStore::append call added — grep for '::append(' in the modified files confirms only Recorder calls.",
+        "grep -nE '#\\[allow|#\\[expect|\\.unwrap\\(\\)|\\.expect\\(' over non-test lines added by this brief returns no matches.",
+        "wc -l on crates/aion/src/lifecycle/completion.rs and crates/aion/src/durability/recovery.rs shows each under 500 lines excluding test modules.",
+        "cargo fmt --check exits 0; cargo clippy --workspace --all-targets -- -D warnings exits 0; cargo test --workspace passes."
+      ],
+      "files": {
+        "create": [],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C27", "C28", "C29", "C30"],
+      "stories": ["S14"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT define or modify the ParentClosePolicy type — that is PC-001, already landed.",
+    "SHALL NOT change the SDK spawn/spawn_and_wait signatures or any Gleam code — that is PC-003.",
+    "SHALL NOT introduce a new Event variant; Terminate produces WorkflowFailed and RequestCancel produces WorkflowCancelled through existing paths (CN1).",
+    "SHALL NOT call EventStore::append directly; all child terminals go through the child's Recorder (CN2, invariant 3).",
+    "SHALL NOT add a new status variant; status_from_events works on the same terminal events as before (invariant 4).",
+    "SHALL NOT add any timeout, rate limit, or cap to propagation (ADR-001).",
+    "SHALL NOT retry or resurrect a failed child — failed runs are terminal (ADR-005).",
+    "SHALL NOT add #[allow], #[expect], unwrap, or expect in non-test library code."
+  ],
+  "verification": [
+    "cargo test --workspace passes, including new integration tests exercising each policy (RequestCancel, Terminate, Abandon) on each parent terminal kind (Completed, Failed, Cancelled, TimedOut).",
+    "A three-level recursive propagation test: grandparent terminates, parent is Terminated, parent's child is Terminated — both descendants receive WorkflowFailed.",
+    "A recovery re-arm test: parent has a terminal but child's policy was not applied (simulated crash); after recovery, child's policy is dispatched.",
+    "A skip test: child already terminal before parent terminates — propagation does not re-terminate the child.",
+    "The idempotent-replay branch does not trigger propagation — tested by driving handle_process_exit_async with a pre-existing terminal.",
+    "Parent's completion notification fires before propagation — asserted by notification timing in a test.",
+    "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both exit 0.",
+    "grep for #[allow]/#[expect]/unwrap/expect in modified non-test lib code returns nothing new.",
+    "grep for EventStore::append in the modified files returns no new direct append calls.",
+    "wc -l on completion.rs and recovery.rs: each under 500 LOC excluding tests."
+  ]
+}

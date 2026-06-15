@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "stacked_dev input",
+  "description": "Carries the v2 brief document and the pre-resolved reference context in place of the four document strings (ADR-008). Every loop cap, backoff, and deadline is required — the caller decides them, the workflow bakes no defaults (CN2).",
+  "type": "object",
+  "required": [
+    "repo_root",
+    "brief_id",
+    "reviewers",
+    "base_ref",
+    "placement",
+    "isolation",
+    "brief_document",
+    "resolved_context",
+    "verify_fix_cap",
+    "review_cap",
+    "round_backoff_ms",
+    "review_deadline_ms",
+    "workspace_id"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "repo_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the repository the worktree is provisioned from."
+    },
+    "brief_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "description": "Member names or UUIDs to request review from."
+    },
+    "base_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "placement": {
+      "type": "string",
+      "enum": [
+        "local",
+        "remote"
+      ]
+    },
+    "isolation": {
+      "type": "string",
+      "enum": [
+        "worktree",
+        "copy",
+        "overlay",
+        "vm"
+      ]
+    },
+    "brief_document": {
+      "type": "object",
+      "required": ["id", "cluster", "title", "depends_on", "blocked_by", "checklist", "stories", "design_anchor", "purpose", "task", "requirements", "boundaries", "verification"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "cluster": { "type": "string" },
+        "title": { "type": "string" },
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "blocked_by": { "type": "array", "items": { "type": "string" } },
+        "checklist": { "type": "array", "items": { "type": "string" } },
+        "stories": { "type": "array", "items": { "type": "string" } },
+        "design_anchor": { "type": "array", "items": { "type": "string" } },
+        "purpose": { "type": "string" },
+        "task": { "type": "string" },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "spec", "acceptance", "files", "checklist", "stories"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "spec": { "type": "string" },
+              "acceptance": { "type": "array", "items": { "type": "string" } },
+              "files": {
+                "type": "object",
+                "required": ["create", "modify", "delete"],
+                "additionalProperties": false,
+                "properties": {
+                  "create": { "type": "array", "items": { "type": "string" } },
+                  "modify": { "type": "array", "items": { "type": "string" } },
+                  "delete": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "checklist": { "type": "array", "items": { "type": "string" } },
+              "stories": { "type": "array", "items": { "type": "string" } },
+              "scout": {
+                "type": "object",
+                "required": ["files", "context", "approach", "notes"],
+                "additionalProperties": false,
+                "properties": {
+                  "files": { "type": "array", "items": { "type": "string" } },
+                  "context": { "type": "array", "items": { "type": "string" } },
+                  "approach": { "type": "string" },
+                  "notes": { "type": "string" }
+                }
+              },
+              "dev": {
+                "type": "object",
+                "required": ["status", "files_changed", "how", "deviation", "checklist", "stories"],
+                "additionalProperties": false,
+                "properties": {
+                  "status": { "type": "string", "enum": ["implemented", "blocked"] },
+                  "files_changed": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "change", "note"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": { "type": "string" },
+                        "change": { "type": "string", "enum": ["created", "modified", "deleted"] },
+                        "note": { "type": "string" }
+                      }
+                    }
+                  },
+                  "how": { "type": "string" },
+                  "deviation": { "type": "string" },
+                  "checklist": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "done", "note"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": { "type": "string" },
+                        "done": { "type": "boolean" },
+                        "note": { "type": "string" }
+                      }
+                    }
+                  },
+                  "stories": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "satisfied", "note"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": { "type": "string" },
+                        "satisfied": { "type": "boolean" },
+                        "note": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              },
+              "review": {
+                "type": "object",
+                "required": ["alignment", "acceptance", "checklist", "stories", "issues", "fixes"],
+                "additionalProperties": false,
+                "properties": {
+                  "alignment": { "type": "string", "enum": ["aligned", "drifted", "fixed"] },
+                  "acceptance": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["criterion", "met", "evidence"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "criterion": { "type": "string" },
+                        "met": { "type": "boolean" },
+                        "evidence": { "type": "string" }
+                      }
+                    }
+                  },
+                  "checklist": { "type": "array", "items": { "type": "string" } },
+                  "stories": { "type": "array", "items": { "type": "string" } },
+                  "issues": { "type": "array", "items": { "type": "string" } },
+                  "fixes": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "boundaries": { "type": "array", "items": { "type": "string" } },
+        "verification": { "type": "array", "items": { "type": "string" } },
+        "execution": {
+          "type": "object",
+          "required": ["status", "workflow_id", "branch", "session_id", "gate", "attestation", "review_verdict", "landed_commit", "merged_into", "completed_at"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "type": "string", "enum": ["in_flight", "landed", "failed"] },
+            "workflow_id": { "type": "string" },
+            "branch": { "type": "string" },
+            "session_id": { "type": "string" },
+            "gate": {
+              "type": "object",
+              "required": ["fmt", "clippy", "tests", "fix_rounds"],
+              "additionalProperties": false,
+              "properties": {
+                "fmt": { "type": "boolean" },
+                "clippy": { "type": "boolean" },
+                "tests": { "type": "boolean" },
+                "fix_rounds": { "type": "integer" }
+              }
+            },
+            "attestation": {
+              "type": "object",
+              "required": ["no_panics", "no_unsafe", "boundaries_respected", "tests_pass"],
+              "additionalProperties": false,
+              "properties": {
+                "no_panics": { "type": "boolean" },
+                "no_unsafe": { "type": "boolean" },
+                "boundaries_respected": { "type": "boolean" },
+                "tests_pass": { "type": "boolean" }
+              }
+            },
+            "review_verdict": { "type": "string", "enum": ["approved", "changes_requested", "rejected"] },
+            "landed_commit": { "type": "string" },
+            "merged_into": { "type": "string" },
+            "completed_at": { "type": "string" }
+          }
+        }
+      }
+    },
+    "resolved_context": {
+      "type": "object",
+      "required": ["adrs", "checklist", "stories", "constraints", "intention", "design_path", "provenance"],
+      "additionalProperties": false,
+      "properties": {
+        "adrs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "decision", "quote", "decided_by"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "decision": { "type": "string" },
+              "quote": { "type": "string" },
+              "decided_by": { "type": "string" }
+            }
+          }
+        },
+        "checklist": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "stories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "intention": { "type": "string" },
+        "design_path": { "type": "string" },
+        "provenance": {
+          "type": "object",
+          "required": ["requested_by", "quote"],
+          "additionalProperties": false,
+          "properties": {
+            "requested_by": { "type": "string" },
+            "quote": { "type": "string" }
+          }
+        }
+      }
+    },
+    "verify_fix_cap": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_cap": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "round_backoff_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "review_deadline_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dev Report",
+  "description": "Structured output contract for the dev stage: implementation of every requirement in the brief. The enrichments entries are appended in place to the brief's requirements as their dev blocks. The attestation records what the agent BELIEVES — the workflow runs the real gate afterwards and stores both; the attestation is never trusted as the gate.",
+  "type": "object",
+  "required": ["summary", "commit_message", "enrichments", "attestation"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "1-2 sentences on what was done"
+    },
+    "commit_message": {
+      "type": "string",
+      "description": "Conventional-commits style message for this round's commit"
+    },
+    "enrichments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "files_changed", "how", "deviation", "checklist", "stories"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^R\\d+$",
+            "description": "R# id — one entry per requirement, blocked ones included with status blocked"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["implemented", "blocked"]
+          },
+          "files_changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "change", "note"],
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "change": { "type": "string", "enum": ["created", "modified", "deleted"] },
+                "note": { "type": "string" }
+              }
+            }
+          },
+          "how": {
+            "type": "string",
+            "description": "How this requirement was met — the rationale and shape of the change, not a diff narration"
+          },
+          "deviation": {
+            "type": "string",
+            "description": "Empty if the scouted plan was followed; otherwise what changed and why — silent deviation is a review finding"
+          },
+          "checklist": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "done", "note"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "pattern": "^C\\d+$" },
+                "done": { "type": "boolean" },
+                "note": { "type": "string" }
+              }
+            },
+            "description": "Delivery claim per C# assigned to this R#"
+          },
+          "stories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "satisfied", "note"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "pattern": "^S\\d+$" },
+                "satisfied": { "type": "boolean" },
+                "note": { "type": "string" }
+              }
+            },
+            "description": "Satisfaction claim per S# assigned to this R#"
+          }
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "required": ["no_panics", "no_unsafe", "boundaries_respected", "tests_pass"],
+      "additionalProperties": false,
+      "properties": {
+        "no_panics": { "type": "boolean", "description": "No unwrap/expect/panic/todo in library code" },
+        "no_unsafe": { "type": "boolean", "description": "No unsafe blocks added" },
+        "boundaries_respected": { "type": "boolean", "description": "All SHALL NOT boundaries observed" },
+        "tests_pass": { "type": "boolean", "description": "The agent's belief — the workflow measures the truth at the gate" }
+      }
+    }
+  }
+}

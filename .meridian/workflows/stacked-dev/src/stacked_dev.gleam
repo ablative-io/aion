@@ -1,0 +1,646 @@
+//// The stacked-dev top-level workflow: brief in, landed on main out.
+////
+//// Control flow (brief section 5):
+////
+//// 1. `provision_workspace` — everything downstream needs the `Workspace`.
+//// 2. `brief_dev` child (`workflow.spawn_and_wait`): the v2 all-norn
+////    pipeline (scout → concurrent warm-build + dev → verify-fix loop →
+////    adversarial review → harden) that replaces the old inner child.
+//// 3. `gate` child (`workflow.spawn_and_wait`): the authoritative
+////    workspace-wide checks, run once after the verify loop converges.
+//// 4. The bounded review loop: `request_review`, then `workflow.receive`
+////    on the `review_verdict` signal raced against a durable deadline with
+////    `workflow.with_timeout`. Approve proceeds; RequestChanges resumes the
+////    dev session with the structured notes, re-gates, and re-requests;
+////    Reject or a deadline expiry is a typed `Failed`.
+//// 5. `enrich_brief` — write the execution block into the worktree brief so
+////    the enriched record lands in the same merge as the code (ADR-009).
+//// 6. `land` — `yg branch merge` into the tree parent, only on Approve
+////    and a passing gate.
+////
+//// A `stacked_dev_status` query answers `{phase, round}` live state; the
+//// handler is re-registered at every stage transition, so replay re-arms it
+//// automatically.
+////
+//// Resolves open question Q6 (one workflow or a family): all three
+//// workflows are independently dispatchable entries of this one package,
+//// AND this top-level composes the two children via `spawn_and_wait`.
+//// Every loop cap, backoff, and deadline is a REQUIRED input field — no
+//// arbitrary defaults baked in (open question Q5).
+
+import aion/codec
+import aion/duration
+import aion/error
+import aion/query
+import aion/signal
+import aion/workflow
+import aion_stacked_dev_io as stage_io
+import brief_dev
+import gate
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+import gleam/int
+import gleam/list
+import stacked_dev/codecs_flow
+import stacked_dev/codecs_workflows
+import stacked_dev/errors
+import stacked_dev/meridian_dispatch
+import stacked_dev/types.{
+  type AttestationBlock, type BriefDevResult, type BriefDocument, type DevResult,
+  type Enrichment, type ExecutionBlock, type GateResult, type ReviewVerdict,
+  type StackedDevError, type StackedDevInput, type StackedDevResult,
+  type Workspace, Approve, AttestationBlock, BriefDevInput, BriefDevResult,
+  BriefDevStageFailed, DevBlocked, DevBlockedInChild, DevEnrichment, DevFailed,
+  DevResult, EnrichInput, ExecutionBlock, ExecutionEnrichment, ExecutionLanded,
+  GateBlock, GateFail, GateInput, GatePass, GateRejected, GateResult,
+  HardenRegressed, HardenRegressedInChild, LandFailed, LandInput,
+  ProvisionFailed, ProvisionInput, Reject, RequestChanges,
+  ReviewCapExhausted, ReviewDrifted, ReviewDriftedInChild, ReviewEnrichment,
+  ReviewRejected, ReviewRequest, ReviewTimedOut, ReviewVerdict, ScoutEnrichment,
+  ScoutFailed, ScoutFailedInChild, StackedDevResult, StackedDevStatus,
+  StageFailed, VerdictApproved, VerifyExhausted, VerifyFixExhausted,
+  WorkspaceWide,
+}
+
+/// Name of the human/SDK review-verdict signal this workflow waits on.
+/// Drive it with:
+/// `aion signal <run-id> review_verdict --payload '{"decision":"approve"}'`.
+pub const review_signal_name = "review_verdict"
+
+/// Name of the live `{phase, round}` status query this workflow answers.
+pub const status_query_name = "stacked_dev_status"
+
+/// Typed definition binding the codecs to the execute function.
+pub fn definition() -> workflow.WorkflowDefinition(
+  StackedDevInput,
+  StackedDevResult,
+  StackedDevError,
+) {
+  workflow.define(
+    "stacked-dev",
+    codecs_workflows.stacked_dev_input_codec(),
+    codecs_workflows.stacked_dev_result_codec(),
+    codecs_workflows.stacked_dev_error_codec(),
+    execute,
+  )
+}
+
+/// Typed reference to the review-verdict signal (also used by tests and
+/// in-engine senders).
+pub fn review_signal() -> workflow.SignalRef(ReviewVerdict) {
+  signal.new(review_signal_name, codecs_flow.review_verdict_codec())
+}
+
+/// Engine entry point.
+///
+/// The runtime delivers the start input as a raw JSON string: decode it with
+/// the input codec, run the typed workflow, and encode the success value
+/// back to its JSON string for the recorded result payload.
+pub fn run(raw_input: Dynamic) -> Result(String, StackedDevError) {
+  case decode.run(raw_input, decode.string) {
+    Ok(raw_json) ->
+      case codecs_workflows.stacked_dev_input_codec().decode(raw_json) {
+        Ok(input) ->
+          case execute(input) {
+            Ok(output) ->
+              Ok(codecs_workflows.stacked_dev_result_codec().encode(output))
+            Error(workflow_error) -> Error(workflow_error)
+          }
+        Error(codec.DecodeError(reason: reason, path: _)) ->
+          Error(StageFailed(
+            stage: "decode_input",
+            message: "failed to decode workflow input: " <> reason,
+          ))
+      }
+    Error(_) ->
+      Error(StageFailed(
+        stage: "decode_input",
+        message: "workflow input payload was not a string",
+      ))
+  }
+}
+
+/// Typed workflow body: provision, brief_dev child, gate child, review loop,
+/// enrich the execution block, land.
+pub fn execute(
+  input: StackedDevInput,
+) -> Result(StackedDevResult, StackedDevError) {
+  use _ <- result_try(set_status("provisioning", 0))
+  use workspace <- result_try(provision(input))
+  use _ <- result_try(set_status("developing", 0))
+  use brief_dev_result <- result_try(run_brief_dev(input, workspace))
+  let dev_result = dev_result_of(workspace, brief_dev_result)
+  use _ <- result_try(set_status("gating", 0))
+  use gate_result <- result_try(run_gate(workspace, dev_result.files_touched))
+  case gate_result {
+    GateResult(verdict: GatePass) ->
+      review_loop(
+        input,
+        workspace,
+        dev_result,
+        gate_result,
+        brief_dev_result,
+        1,
+      )
+    GateResult(verdict: GateFail(report: report)) ->
+      // A converged verify loop that still fails the authoritative gate
+      // surfaces loudly instead of silently looping: scoped checks missed
+      // something and the report says what.
+      Error(GateRejected(report: report))
+  }
+}
+
+/// Derive the outer arc's `DevResult` from the brief_dev child's dev report:
+/// the deterministic session id (the branch), the deduplicated changed-file
+/// paths, and the report summary. The outer arc's request_review/land
+/// payloads still carry `DevResult` (CN8) while the inner child speaks the v2
+/// report shapes.
+fn dev_result_of(
+  _workspace: Workspace,
+  brief_dev_result: BriefDevResult,
+) -> DevResult {
+  DevResult(
+    session_id: brief_dev_result.dev_session_id,
+    files_touched: changed_files(brief_dev_result.dev),
+    summary: brief_dev_result.dev.summary,
+  )
+}
+
+/// The deduplicated `files_changed` paths across every enrichment of a dev
+/// report, in first-seen order.
+fn changed_files(dev_report: stage_io.DevReport) -> List(String) {
+  dev_report.enrichments
+  |> list.flat_map(fn(entry) {
+    list.map(entry.files_changed, fn(change) { change.path })
+  })
+  |> list.unique
+}
+
+fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
+  case
+    meridian_dispatch.run_provision(ProvisionInput(
+      repo_root: input.repo_root,
+      brief_id: input.brief_id,
+      base_ref: input.base_ref,
+      placement: input.placement,
+      isolation: input.isolation,
+    ))
+  {
+    Ok(workspace) -> Ok(workspace)
+    Error(activity_error) ->
+      Error(ProvisionFailed(message: errors.activity_message(activity_error)))
+  }
+}
+
+/// Spawn the `brief_dev` child and lift each of its typed errors into a
+/// distinct `StackedDevError`, payloads intact (BD-005 R4): scout failure,
+/// dev block, verify exhaustion, review drift, harden regression, and stage
+/// failure.
+fn run_brief_dev(
+  input: StackedDevInput,
+  workspace: Workspace,
+) -> Result(BriefDevResult, StackedDevError) {
+  case
+    workflow.spawn_and_wait(
+      brief_dev.workflow_type,
+      brief_dev.execute,
+      BriefDevInput(
+        workspace: workspace,
+        document: input.brief_document,
+        context: input.resolved_context,
+        verify_fix_cap: input.verify_fix_cap,
+        round_backoff_ms: input.round_backoff_ms,
+        workspace_id: input.workspace_id,
+      ),
+      codecs_workflows.brief_dev_input_codec(),
+      codecs_workflows.brief_dev_result_codec(),
+      codecs_workflows.brief_dev_error_codec(),
+    )
+  {
+    Ok(result) -> Ok(result)
+    Error(error.ChildWorkflowFailed(ScoutFailed(message: message))) ->
+      Error(ScoutFailedInChild(message: message))
+    Error(error.ChildWorkflowFailed(DevBlocked(requirement_ids: requirement_ids))) ->
+      Error(DevBlockedInChild(requirement_ids: requirement_ids))
+    Error(error.ChildWorkflowFailed(VerifyFixExhausted(
+      rounds: rounds,
+      diagnostics: diagnostics,
+    ))) -> Error(VerifyExhausted(rounds: rounds, diagnostics: diagnostics))
+    Error(error.ChildWorkflowFailed(ReviewDrifted(drifted: drifted))) ->
+      Error(ReviewDriftedInChild(drifted: drifted))
+    Error(error.ChildWorkflowFailed(HardenRegressed(diagnostics: diagnostics))) ->
+      Error(HardenRegressedInChild(diagnostics: diagnostics))
+    Error(error.ChildWorkflowFailed(BriefDevStageFailed(
+      stage: stage,
+      message: message,
+    ))) -> Error(DevFailed(message: stage <> ": " <> message))
+    Error(child_error) ->
+      Error(StageFailed(
+        stage: "brief_dev",
+        message: child_engine_message(child_error),
+      ))
+  }
+}
+
+/// Spawn the `gate` child for the workspace-wide authoritative checks
+/// (open question Q2: workspace-wide today; the affected-closure scope is a
+/// typed seam).
+fn run_gate(
+  workspace: Workspace,
+  files_touched: List(String),
+) -> Result(GateResult, StackedDevError) {
+  case
+    workflow.spawn_and_wait(
+      gate.workflow_type,
+      gate.execute,
+      GateInput(
+        workspace: workspace,
+        files_touched: files_touched,
+        scope: WorkspaceWide,
+      ),
+      codecs_flow.gate_input_codec(),
+      codecs_flow.gate_result_codec(),
+      codecs_flow.gate_error_codec(),
+    )
+  {
+    Ok(result) -> Ok(result)
+    Error(error.ChildWorkflowFailed(types.GateStageFailed(
+      stage: stage,
+      message: message,
+    ))) -> Error(StageFailed(stage: "gate/" <> stage, message: message))
+    Error(child_error) ->
+      Error(StageFailed(
+        stage: "gate",
+        message: child_engine_message(child_error),
+      ))
+  }
+}
+
+/// One bounded review round: request review, race the verdict signal
+/// against the durable deadline, and act on the typed decision. The single
+/// `review_verdict` signal is THE decision — no quorum logic, no second
+/// signal (ADR-006).
+fn review_loop(
+  input: StackedDevInput,
+  workspace: Workspace,
+  dev_result: DevResult,
+  gate_result: GateResult,
+  brief_dev_result: BriefDevResult,
+  round: Int,
+) -> Result(StackedDevResult, StackedDevError) {
+  case round > input.review_cap {
+    True -> Error(ReviewCapExhausted(rounds: input.review_cap))
+    False -> {
+      use _ <- result_try(set_status("in_review", round))
+      use _ <- result_try(request_review(
+        input,
+        workspace,
+        dev_result,
+        gate_result,
+      ))
+      case
+        workflow.with_timeout(
+          fn() { workflow.receive(review_signal()) },
+          duration.milliseconds(input.review_deadline_ms),
+        )
+      {
+        Ok(ReviewVerdict(decision: Approve)) ->
+          // Strictly before land: write the execution block into the worktree
+          // brief so the enriched record rides the same merge as the code
+          // (C25, ADR-009).
+          enrich_then_land(
+            input,
+            workspace,
+            dev_result,
+            gate_result,
+            brief_dev_result,
+            round,
+          )
+        Ok(ReviewVerdict(decision: RequestChanges(notes: notes))) ->
+          fix_and_regate(
+            input,
+            workspace,
+            dev_result,
+            brief_dev_result,
+            round,
+            codecs_flow.review_notes_feedback(notes),
+          )
+        Ok(ReviewVerdict(decision: Reject(reason: reason))) ->
+          Error(ReviewRejected(reason: reason))
+        Error(error.TimedOutError(error.TimedOut(message: _))) ->
+          Error(ReviewTimedOut(deadline_ms: input.review_deadline_ms))
+        Error(error.InnerError(receive_error)) ->
+          Error(StageFailed(
+            stage: "await_verdict",
+            message: errors.receive_message(receive_error),
+          ))
+        Error(error.TimeoutEngineFailure(message: message)) ->
+          Error(StageFailed(stage: "await_verdict", message: message))
+      }
+    }
+  }
+}
+
+fn request_review(
+  input: StackedDevInput,
+  workspace: Workspace,
+  dev_result: DevResult,
+  gate_result: GateResult,
+) -> Result(Nil, StackedDevError) {
+  case
+    meridian_dispatch.run_request_review(ReviewRequest(
+      workspace: workspace,
+      brief_id: input.brief_id,
+      reviewers: input.reviewers,
+      dev_result: dev_result,
+      gate_result: gate_result,
+    ))
+  {
+    Ok(_ack) -> Ok(Nil)
+    Error(activity_error) ->
+      Error(StageFailed(
+        stage: "request_review",
+        message: errors.activity_message(activity_error),
+      ))
+  }
+}
+
+/// RequestChanges path: resume the dev session with the structured notes,
+/// re-gate, sleep the durable backoff, and enter the next review round. The
+/// resumed dev round returns a FULL replacement dev report; the outer arc's
+/// `DevResult` is derived from it (the session id stays the branch).
+fn fix_and_regate(
+  input: StackedDevInput,
+  workspace: Workspace,
+  dev_result: DevResult,
+  brief_dev_result: BriefDevResult,
+  round: Int,
+  feedback: String,
+) -> Result(StackedDevResult, StackedDevError) {
+  case
+    meridian_dispatch.run_dev_resume(
+      workspace,
+      input.workspace_id,
+      dev_result.session_id,
+      feedback,
+    )
+  {
+    Ok(resumed_report) -> {
+      let resumed =
+        dev_result_of(
+          workspace,
+          BriefDevResult(..brief_dev_result, dev: resumed_report),
+        )
+      use _ <- result_try(set_status("gating", round))
+      use regate_result <- result_try(run_gate(workspace, resumed.files_touched))
+      case regate_result {
+        GateResult(verdict: GatePass) ->
+          case workflow.sleep(duration.milliseconds(input.round_backoff_ms)) {
+            Ok(Nil) ->
+              review_loop(
+                input,
+                workspace,
+                resumed,
+                regate_result,
+                BriefDevResult(..brief_dev_result, dev: resumed_report),
+                round + 1,
+              )
+            Error(engine_error) ->
+              Error(StageFailed(
+                stage: "review_backoff",
+                message: errors.engine_message(engine_error),
+              ))
+          }
+        GateResult(verdict: GateFail(report: report)) ->
+          Error(GateRejected(report: report))
+      }
+    }
+    Error(activity_error) ->
+      Error(StageFailed(
+        stage: "dev_resume",
+        message: errors.activity_message(activity_error),
+      ))
+  }
+}
+
+/// The Approve path: write the brief's full provenance into the worktree, then
+/// land. Each enrich_brief run sits strictly between the Approve receive and
+/// the land activity so the landed merge carries the brief's own record (C25).
+/// The four stages are written in order — scout findings, the dev record, the
+/// review verdicts, then the execution block — so the landed brief carries what
+/// was asked, what the scout found, what the dev did, and what the review proved
+/// (S12/C21), not just the execution record. enrich_brief merges into the HANDED
+/// document, so each call threads the merged result into the next (passing the
+/// original brief every time would overwrite prior stages). The execution block
+/// records the MEASURED gate and the BELIEVED attestation as two distinct
+/// sources (P1) and leaves `landed_commit` empty — a commit cannot name itself
+/// (ADR-009).
+fn enrich_then_land(
+  input: StackedDevInput,
+  workspace: Workspace,
+  dev_result: DevResult,
+  gate_result: GateResult,
+  brief_dev_result: BriefDevResult,
+  round: Int,
+) -> Result(StackedDevResult, StackedDevError) {
+  use completed_at <- result_try(now_stamp())
+  let block =
+    execution_block(
+      input,
+      workspace,
+      gate_result,
+      brief_dev_result,
+      completed_at,
+    )
+  use after_scout <- result_try(run_enrich(
+    workspace,
+    input.brief_document,
+    ScoutEnrichment(report: brief_dev_result.scout),
+  ))
+  use after_dev <- result_try(run_enrich(
+    workspace,
+    after_scout,
+    DevEnrichment(report: brief_dev_result.dev),
+  ))
+  use after_review <- result_try(run_enrich(
+    workspace,
+    after_dev,
+    ReviewEnrichment(report: brief_dev_result.review),
+  ))
+  use _ <- result_try(run_enrich(
+    workspace,
+    after_review,
+    ExecutionEnrichment(block: block),
+  ))
+  land(input, workspace, dev_result, brief_dev_result, round)
+}
+
+/// Build the execution block: the measured gate result from the gate child
+/// (its binary verdict and the verify-round count as fix_rounds) and the dev
+/// attestation from the brief_dev dev report — two distinct sources, never
+/// one copied into the other (P1).
+fn execution_block(
+  input: StackedDevInput,
+  workspace: Workspace,
+  gate_result: GateResult,
+  brief_dev_result: BriefDevResult,
+  completed_at: String,
+) -> ExecutionBlock {
+  let gate_passed = case gate_result {
+    GateResult(verdict: GatePass) -> True
+    GateResult(verdict: GateFail(report: _)) -> False
+  }
+  ExecutionBlock(
+    status: ExecutionLanded,
+    workflow_id: input.brief_id,
+    branch: workspace.branch,
+    session_id: workspace.branch,
+    gate: GateBlock(
+      fmt: gate_passed,
+      clippy: gate_passed,
+      tests: gate_passed,
+      fix_rounds: brief_dev_result.verify_rounds,
+    ),
+    attestation: attestation_block(brief_dev_result.dev.attestation),
+    review_verdict: VerdictApproved,
+    landed_commit: "",
+    merged_into: input.base_ref,
+    completed_at: completed_at,
+  )
+}
+
+/// Project the dev report's attestation onto the execution block's
+/// attestation type (the believed claims, never the gate — P1).
+fn attestation_block(
+  attestation: stage_io.DevReportAttestation,
+) -> AttestationBlock {
+  AttestationBlock(
+    no_panics: attestation.no_panics,
+    no_unsafe: attestation.no_unsafe,
+    boundaries_respected: attestation.boundaries_respected,
+    tests_pass: attestation.tests_pass,
+  )
+}
+
+/// Run the `enrich_brief` activity with the execution block. The activity
+/// stamps `completed_at` itself; the workflow's projection here is overridden
+/// by the activity, so the value passed is irrelevant to the on-disk record.
+/// Run the `enrich_brief` activity for one stage and return the merged
+/// document. The activity merges into the HANDED document (not the on-disk
+/// file), so a multi-stage chain must thread each result into the next.
+fn run_enrich(
+  workspace: Workspace,
+  document: BriefDocument,
+  enrichment: Enrichment,
+) -> Result(BriefDocument, StackedDevError) {
+  case
+    meridian_dispatch.run_enrich_brief(EnrichInput(
+      workspace: workspace,
+      document: document,
+      enrichment: enrichment,
+    ))
+  {
+    Ok(merged) -> Ok(merged)
+    Error(activity_error) ->
+      Error(StageFailed(
+        stage: "enrich_brief",
+        message: errors.activity_message(activity_error),
+      ))
+  }
+}
+
+/// The execution block's `completed_at` stamp from the deterministic workflow
+/// clock (the recorded event timestamp, replay-stable) rendered as its
+/// canonical millisecond string — never a wall-clock reading (determinism
+/// boundary).
+fn now_stamp() -> Result(String, StackedDevError) {
+  case workflow.now() {
+    Ok(timestamp) ->
+      Ok(int.to_string(workflow.timestamp_to_milliseconds(timestamp)))
+    Error(engine_error) ->
+      Error(StageFailed(
+        stage: "completed_at",
+        message: errors.engine_message(engine_error),
+      ))
+  }
+}
+
+/// Land only on Approve and a passing gate (both already established by the
+/// caller). The land sequence (git add/commit in the worktree, then yg merge
+/// from repo_root) is byte-unchanged (CN8); the enriched brief was written
+/// before this runs, so it rides the commit into the merge.
+fn land(
+  input: StackedDevInput,
+  workspace: Workspace,
+  dev_result: DevResult,
+  brief_dev_result: BriefDevResult,
+  round: Int,
+) -> Result(StackedDevResult, StackedDevError) {
+  use _ <- result_try(set_status("landing", round))
+  case
+    meridian_dispatch.run_land(LandInput(
+      workspace: workspace,
+      repo_root: input.repo_root,
+      base_ref: input.base_ref,
+      dev_result: dev_result,
+    ))
+  {
+    Ok(landed) -> {
+      use _ <- result_try(set_status("landed", round))
+      Ok(StackedDevResult(
+        branch: landed.branch,
+        merged_into: landed.merged_into,
+        session_id: dev_result.session_id,
+        build_warm: brief_dev_result.build_warm,
+        verify_rounds: brief_dev_result.verify_rounds,
+        review_rounds: round,
+      ))
+    }
+    Error(activity_error) ->
+      Error(LandFailed(message: errors.activity_message(activity_error)))
+  }
+}
+
+/// Re-register the status handler with the current phase and round, so
+/// `stacked_dev_status` queries answer live state at every yield point
+/// (re-registration per stage, per docs/guides/workflows.md).
+fn set_status(phase: String, round: Int) -> Result(Nil, StackedDevError) {
+  let status = StackedDevStatus(phase: phase, round: round)
+  case
+    query.handler(
+      status_query_name,
+      codecs_workflows.stacked_dev_status_codec(),
+      fn() { status },
+    )
+  {
+    Ok(Nil) -> Ok(Nil)
+    Error(query_error) ->
+      Error(StageFailed(
+        stage: "register_status",
+        message: errors.query_message(query_error),
+      ))
+  }
+}
+
+fn child_engine_message(
+  child_error: error.ChildError(child_workflow_error),
+) -> String {
+  case child_error {
+    error.ChildWorkflowFailed(_) ->
+      "child failed with an error the caller already handles"
+    error.ChildOutputDecodeFailed(_) -> "child output could not be decoded"
+    error.ChildErrorDecodeFailed(_) ->
+      "child error payload could not be decoded"
+    error.ChildEngineFailure(message: message) -> message
+  }
+}
+
+fn result_try(
+  result: Result(value, StackedDevError),
+  next: fn(value) -> Result(output, StackedDevError),
+) -> Result(output, StackedDevError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(workflow_error) -> Error(workflow_error)
+  }
+}
