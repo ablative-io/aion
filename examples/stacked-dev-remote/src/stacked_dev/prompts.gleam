@@ -19,6 +19,9 @@
 //// from `ResolvedContext` values at call time.
 
 import aion_stacked_dev_io as stage_io
+import gleam/dynamic/decode
+import gleam/int
+import gleam/json
 import gleam/list
 import gleam/string
 import stacked_dev/types.{
@@ -117,19 +120,96 @@ pub fn review_prompt(
 }
 
 /// The fix-round prompt: brief id, the wholesale-replacement instruction,
-/// the diagnostics verbatim, and the boundaries. Requirements and scout
+/// rendered diagnostics, and the boundaries. Requirements and scout
 /// blocks are not re-rendered — the resumed session already holds them
 /// (S9 context economy).
 pub fn resume_feedback(document: BriefDocument, diagnostics: String) -> String {
   join_blocks([
     "Brief: " <> document.id,
-    "Fix the reported failures below. Use cargo check, cargo test, cargo "
-      <> "clippy, and cargo fmt to verify your fixes compile and pass before "
-      <> "returning. Then return a full replacement dev report against the "
-      <> "dev-report schema. The replacement is wholesale — a complete report "
-      <> "covering every requirement, never a partial field merge.",
-    "Diagnostics:\n" <> diagnostics,
+    "Fix the reported failures below. Run the diagnostic commands after "
+      <> "each fix to confirm. Then return a full replacement dev report "
+      <> "against the dev-report schema. The replacement is wholesale — a "
+      <> "complete report covering every requirement, never a partial field "
+      <> "merge.",
+    render_diagnostics(diagnostics),
     boundaries_section(document.boundaries),
+  ])
+}
+
+fn render_diagnostics(raw: String) -> String {
+  case json.parse(raw, diagnostics_report_decoder()) {
+    Ok(report) -> format_report(report)
+    Error(_) -> "Diagnostics:\n" <> raw
+  }
+}
+
+type DiagnosticsReport {
+  DiagnosticsReport(diagnostics: List(Diagnostic))
+}
+
+type Diagnostic {
+  Diagnostic(
+    file: String,
+    line: Int,
+    message: String,
+    fix: String,
+    do_not: List(String),
+  )
+}
+
+fn diagnostics_report_decoder() -> decode.Decoder(DiagnosticsReport) {
+  use diagnostics <- decode.field(
+    "diagnostics",
+    decode.list(diagnostic_decoder()),
+  )
+  decode.success(DiagnosticsReport(diagnostics:))
+}
+
+fn diagnostic_decoder() -> decode.Decoder(Diagnostic) {
+  use #(file, line, message) <- decode.field("event", event_decoder())
+  use #(fix, do_not) <- decode.field("verdict", verdict_decoder())
+  decode.success(Diagnostic(file:, line:, message:, fix:, do_not:))
+}
+
+fn event_decoder() -> decode.Decoder(#(String, Int, String)) {
+  use file <- decode.field("file", decode.string)
+  use line <- decode.field("line", decode.int)
+  use message <- decode.field("message", decode.string)
+  decode.success(#(file, line, message))
+}
+
+fn verdict_decoder() -> decode.Decoder(#(String, List(String))) {
+  decode.at(["Report", "guidance"], {
+    use fix <- decode.field("fix", decode.string)
+    use do_not <- decode.field("do_not", decode.list(decode.string))
+    decode.success(#(fix, do_not))
+  })
+}
+
+fn format_report(report: DiagnosticsReport) -> String {
+  let failure_lines =
+    list.map(report.diagnostics, fn(d) {
+      "- " <> d.file <> ":" <> int.to_string(d.line) <> " — " <> d.message
+      <> "\n  Fix: " <> d.fix
+    })
+  let all_do_nots =
+    report.diagnostics
+    |> list.flat_map(fn(d) { d.do_not })
+    |> list.unique()
+  let do_not_section = case all_do_nots {
+    [] -> ""
+    items ->
+      "Do not:\n"
+      <> {
+        items
+        |> list.map(fn(item) { "- " <> item })
+        |> string.join("\n")
+      }
+  }
+  join_blocks([
+    "Failures (" <> int.to_string(list.length(report.diagnostics)) <> "):",
+    string.join(failure_lines, "\n\n"),
+    do_not_section,
   ])
 }
 
