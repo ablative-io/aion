@@ -185,6 +185,7 @@ fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
         base_ref: input.base_ref,
         placement: input.placement,
         isolation: input.isolation,
+        clone_url: input.clone_url,
       )),
     )
   {
@@ -589,6 +590,7 @@ fn land(
         repo_root: input.repo_root,
         base_ref: input.base_ref,
         dev_result: dev_result,
+        clone_url: input.clone_url,
       )),
     )
   {

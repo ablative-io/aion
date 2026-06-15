@@ -6,6 +6,8 @@ import aion/codec
 import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
+import gleam/option
 import stacked_dev/types.{
   type BuildWarm, type CheckResult, type CheckVerdict, type DevInput,
   type DevResult, type Isolation, type Placement, type ProvisionInput,
@@ -60,13 +62,18 @@ fn isolation_decoder() -> decode.Decoder(Isolation) {
 pub fn provision_input_codec() -> codec.Codec(ProvisionInput) {
   codec.json_codec(
     fn(input: ProvisionInput) {
-      json.object([
+      let base = [
         #("repo_root", json.string(input.repo_root)),
         #("brief_id", json.string(input.brief_id)),
         #("base_ref", json.string(input.base_ref)),
         #("placement", json.string(placement_to_string(input.placement))),
         #("isolation", json.string(isolation_to_string(input.isolation))),
-      ])
+      ]
+      case input.clone_url {
+        option.Some(url) ->
+          json.object(list.append(base, [#("clone_url", json.string(url))]))
+        option.None -> json.object(base)
+      }
     },
     provision_input_decoder(),
   )
@@ -80,12 +87,18 @@ pub fn provision_input_decoder() -> decode.Decoder(ProvisionInput) {
   use base_ref <- decode.field("base_ref", decode.string)
   use placement <- decode.field("placement", placement_decoder())
   use isolation <- decode.field("isolation", isolation_decoder())
+  use clone_url <- decode.optional_field(
+    "clone_url",
+    option.None,
+    decode.map(decode.string, option.Some),
+  )
   decode.success(ProvisionInput(
     repo_root: repo_root,
     brief_id: brief_id,
     base_ref: base_ref,
     placement: placement,
     isolation: isolation,
+    clone_url: clone_url,
   ))
 }
 

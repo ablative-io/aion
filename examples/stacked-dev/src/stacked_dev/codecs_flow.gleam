@@ -8,6 +8,8 @@ import aion/codec
 import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
+import gleam/option
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_brief_blocks as blocks
 import stacked_dev/codecs_core
@@ -370,12 +372,17 @@ fn enrichment_decoder() -> decode.Decoder(Enrichment) {
 pub fn land_input_codec() -> codec.Codec(LandInput) {
   codec.json_codec(
     fn(input: LandInput) {
-      json.object([
+      let base = [
         #("workspace", codecs_core.workspace_to_json(input.workspace)),
         #("repo_root", json.string(input.repo_root)),
         #("base_ref", json.string(input.base_ref)),
         #("dev_result", codecs_core.dev_result_to_json(input.dev_result)),
-      ])
+      ]
+      case input.clone_url {
+        option.Some(url) ->
+          json.object(list.append(base, [#("clone_url", json.string(url))]))
+        option.None -> json.object(base)
+      }
     },
     {
       use workspace <- decode.field(
@@ -388,11 +395,17 @@ pub fn land_input_codec() -> codec.Codec(LandInput) {
         "dev_result",
         codecs_core.dev_result_decoder(),
       )
+      use clone_url <- decode.optional_field(
+        "clone_url",
+        option.None,
+        decode.map(decode.string, option.Some),
+      )
       decode.success(LandInput(
         workspace: workspace,
         repo_root: repo_root,
         base_ref: base_ref,
         dev_result: dev_result,
+        clone_url: clone_url,
       ))
     },
   )

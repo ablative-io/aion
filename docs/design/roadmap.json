@@ -15,15 +15,17 @@
         "context": "Accepted the standing recommendation from the nested-workflow e2e wave; see ADR-004 for the decision and its quote."
       },
       "links": {
-        "cluster": "",
+        "cluster": "parent-close",
         "decisions": [
+          "ADR-001",
+          "ADR-002",
           "ADR-004"
         ],
-        "briefs": [],
+        "briefs": ["PC-001", "PC-002", "PC-003"],
         "commits": []
       },
       "depends_on": [],
-      "notes": "Engine-wide semantics — wants a cluster design before briefing, not a direct brief."
+      "notes": "Cluster designed (parent-close): PC-001 type foundation, PC-002 engine propagation + recovery re-arm, PC-003 SDK + call sites + e2e test. Serial: PC-001 first, then PC-002 and PC-003 (both depend on PC-001)."
     },
     {
       "id": "RM-002",

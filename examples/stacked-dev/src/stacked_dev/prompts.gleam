@@ -41,11 +41,11 @@ pub const dev_instructions = "Implement this brief. Deliver every "
   <> "requirement exactly as specified, starting from the scout findings "
   <> "rendered under each one. If you deviate from the scouted approach, "
   <> "declare it in the dev report's deviation field for that requirement "
-  <> "— silent deviation is a review finding. Do not burn the session "
-  <> "running the full suite: the workflow runs the real gate afterwards "
-  <> "and measures the results itself. Stay inside the boundaries. Return "
-  <> "a dev report against the dev-report schema with one entry per "
-  <> "requirement and an honest attestation."
+  <> "— silent deviation is a review finding. Use cargo check, cargo test, "
+  <> "cargo clippy, and cargo fmt to verify your work compiles and passes "
+  <> "before returning. Stay inside the boundaries. Return a dev report "
+  <> "against the dev-report schema with one entry per requirement and an "
+  <> "honest attestation."
 
 /// Static review-stage instructions: verify the diff, evidence per
 /// criterion, fix everything found.
@@ -53,10 +53,11 @@ pub const review_instructions = "Review this brief adversarially. Verify "
   <> "the actual diff, never the dev report — the report is a claim, the "
   <> "code is the evidence. Return one verdict per acceptance criterion "
   <> "with file:line or test-name evidence. Fix everything you find: there "
-  <> "are no minor issues, and this review includes the harden pass. Where "
-  <> "the dev's attestation diverges from the measured checks, read the "
-  <> "divergence as signal. Return a review report against the "
-  <> "review-report schema."
+  <> "are no minor issues, and this review includes the harden pass. Use "
+  <> "cargo check, cargo test, cargo clippy, and cargo fmt to verify your "
+  <> "fixes compile and pass. Where the dev's attestation diverges from "
+  <> "the measured checks, read the divergence as signal. Return a review "
+  <> "report against the review-report schema."
 
 /// The scout projection: instructions, binding decisions, provenance,
 /// design context, every requirement with its resolved references, and the
@@ -122,10 +123,11 @@ pub fn review_prompt(
 pub fn resume_feedback(document: BriefDocument, diagnostics: String) -> String {
   join_blocks([
     "Brief: " <> document.id,
-    "Fix the reported failures below, then return a full replacement dev "
-      <> "report against the dev-report schema. The replacement is wholesale "
-      <> "— a complete report covering every requirement, never a partial "
-      <> "field merge.",
+    "Fix the reported failures below. Use cargo check, cargo test, cargo "
+      <> "clippy, and cargo fmt to verify your fixes compile and pass before "
+      <> "returning. Then return a full replacement dev report against the "
+      <> "dev-report schema. The replacement is wholesale — a complete report "
+      <> "covering every requirement, never a partial field merge.",
     "Diagnostics:\n" <> diagnostics,
     boundaries_section(document.boundaries),
   ])

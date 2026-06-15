@@ -206,6 +206,7 @@ fn run_child(
         review_cap: input.review_cap,
         round_backoff_ms: input.round_backoff_ms,
         review_deadline_ms: input.review_deadline_ms,
+        clone_url: input.clone_url,
       ),
       codecs_workflows.stacked_dev_input_codec(),
       codecs_workflows.stacked_dev_result_codec(),

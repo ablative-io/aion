@@ -12,6 +12,8 @@
 import aion/codec
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
+import gleam/option
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/codecs_workflows
@@ -31,7 +33,7 @@ import stacked_dev/types.{
 pub fn dispatch_input_codec() -> codec.Codec(DispatchInput) {
   codec.json_codec(
     fn(input: DispatchInput) {
-      json.object([
+      let base = [
         #("design_dir", json.string(input.design_dir)),
         #("wave", json.array(input.wave, json.string)),
         #("repo_root", json.string(input.repo_root)),
@@ -50,7 +52,12 @@ pub fn dispatch_input_codec() -> codec.Codec(DispatchInput) {
         #("round_backoff_ms", json.int(input.round_backoff_ms)),
         #("review_deadline_ms", json.int(input.review_deadline_ms)),
         #("halt_on_failure", json.bool(input.halt_on_failure)),
-      ])
+      ]
+      case input.clone_url {
+        option.Some(url) ->
+          json.object(list.append(base, [#("clone_url", json.string(url))]))
+        option.None -> json.object(base)
+      }
     },
     {
       use design_dir <- decode.field("design_dir", decode.string)
@@ -65,6 +72,11 @@ pub fn dispatch_input_codec() -> codec.Codec(DispatchInput) {
       use round_backoff_ms <- decode.field("round_backoff_ms", decode.int)
       use review_deadline_ms <- decode.field("review_deadline_ms", decode.int)
       use halt_on_failure <- decode.field("halt_on_failure", decode.bool)
+      use clone_url <- decode.optional_field(
+        "clone_url",
+        option.None,
+        decode.map(decode.string, option.Some),
+      )
       decode.success(DispatchInput(
         design_dir: design_dir,
         wave: wave,
@@ -78,6 +90,7 @@ pub fn dispatch_input_codec() -> codec.Codec(DispatchInput) {
         round_backoff_ms: round_backoff_ms,
         review_deadline_ms: review_deadline_ms,
         halt_on_failure: halt_on_failure,
+        clone_url: clone_url,
       ))
     },
   )

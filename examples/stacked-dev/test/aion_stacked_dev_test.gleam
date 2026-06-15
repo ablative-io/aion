@@ -64,6 +64,7 @@ fn base_input(shim_set: shims.Shims) -> StackedDevInput {
     review_cap: 3,
     round_backoff_ms: 25,
     review_deadline_ms: 60_000,
+    clone_url: option.None,
   )
 }
 

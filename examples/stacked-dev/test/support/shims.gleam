@@ -285,6 +285,7 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
       base_ref: "main",
       placement: Local,
       isolation: Worktree,
+      clone_url: option.None,
     )),
   )
   register_activity(
@@ -335,6 +336,7 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
       repo_root: "/sample/repo",
       base_ref: "main",
       dev_result: dev_result,
+      clone_url: option.None,
     )),
   )
   // The enrich_brief activity writes the worktree brief from a real path; the

@@ -34,6 +34,7 @@ pub type ProvisionInput {
     base_ref: String,
     placement: Placement,
     isolation: Isolation,
+    clone_url: option.Option(String),
   )
 }
 
@@ -224,6 +225,7 @@ pub type LandInput {
     repo_root: String,
     base_ref: String,
     dev_result: DevResult,
+    clone_url: option.Option(String),
   )
 }
 
@@ -309,6 +311,7 @@ pub type StackedDevInput {
     review_cap: Int,
     round_backoff_ms: Int,
     review_deadline_ms: Int,
+    clone_url: option.Option(String),
   )
 }
 
@@ -657,6 +660,7 @@ pub type DispatchInput {
     round_backoff_ms: Int,
     review_deadline_ms: Int,
     halt_on_failure: Bool,
+    clone_url: option.Option(String),
   )
 }
 

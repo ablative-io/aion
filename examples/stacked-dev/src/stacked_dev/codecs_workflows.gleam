@@ -9,6 +9,8 @@ import aion/codec
 import aion_stacked_dev_io as stage_io
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
+import gleam/option
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_core
 import stacked_dev/types.{
@@ -210,7 +212,7 @@ fn drifted_requirement_decoder() -> decode.Decoder(DriftedRequirement) {
 pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
   codec.json_codec(
     fn(input: StackedDevInput) {
-      json.object([
+      let base = [
         #("repo_root", json.string(input.repo_root)),
         #("brief_id", json.string(input.brief_id)),
         #("reviewers", json.array(input.reviewers, json.string)),
@@ -235,7 +237,12 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
         #("review_cap", json.int(input.review_cap)),
         #("round_backoff_ms", json.int(input.round_backoff_ms)),
         #("review_deadline_ms", json.int(input.review_deadline_ms)),
-      ])
+      ]
+      case input.clone_url {
+        option.Some(url) ->
+          json.object(list.append(base, [#("clone_url", json.string(url))]))
+        option.None -> json.object(base)
+      }
     },
     {
       use provision <- decode.then(codecs_core.provision_input_decoder())
@@ -265,6 +272,7 @@ pub fn stacked_dev_input_codec() -> codec.Codec(StackedDevInput) {
         review_cap: review_cap,
         round_backoff_ms: round_backoff_ms,
         review_deadline_ms: review_deadline_ms,
+        clone_url: provision.clone_url,
       ))
     },
   )
