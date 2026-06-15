@@ -148,13 +148,13 @@ fn execute_with_workspace(
   use gate_result <- result_try(run_gate(workspace, dev_result.files_touched))
   case gate_result {
     GateResult(verdict: GatePass) ->
-      review_loop(
+      enrich_then_land(
         input,
         workspace,
         dev_result,
         gate_result,
         brief_dev_result,
-        1,
+        0,
       )
     GateResult(verdict: GateFail(report: report)) ->
       Error(GateRejected(report: report))
