@@ -119,6 +119,24 @@ fn ok_term_or_nil(ctx: &mut ProcessContext, value: &str) -> Term {
     ok_result_term(ctx, value).unwrap_or(Term::NIL)
 }
 
+/// NIF backing `aion_flow_ffi:workflow_id/0`.
+pub(crate) fn workflow_id_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    if args.len() > 255 {
+        return Err(Term::NIL);
+    }
+    if !args.is_empty() {
+        return Ok(error_term(
+            ctx,
+            &format!("workflow_id: expected 0 arguments, got {}", args.len()),
+        ));
+    }
+
+    match context_from_process(ctx) {
+        Ok(context) => Ok(ok_term_or_nil(ctx, &context.workflow_id().to_string())),
+        Err(error) => Ok(error_term(ctx, &error)),
+    }
+}
+
 /// NIF backing `aion_flow_ffi:now/0`.
 pub(crate) fn now_impl(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     if args.len() > 255 {

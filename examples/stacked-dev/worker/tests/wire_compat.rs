@@ -563,7 +563,7 @@ fn review_request_wire_shape() -> TestResult {
     let (dev_result_literal, dev_result) = dev_result();
     assert_wire(
         &format!(
-            r#"{{"workspace":{workspace_literal},"brief_id":"brief-7","reviewers":["sample-reviewer"],"dev_result":{dev_result_literal},"gate_result":{{"verdict":{{"outcome":"pass"}}}}}}"#
+            r#"{{"workspace":{workspace_literal},"brief_id":"brief-7","reviewers":["sample-reviewer"],"dev_result":{dev_result_literal},"gate_result":{{"verdict":{{"outcome":"pass"}}}},"workflow_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}}"#
         ),
         &ReviewRequest {
             workspace,
@@ -573,6 +573,7 @@ fn review_request_wire_shape() -> TestResult {
             gate_result: GateResult {
                 verdict: GateVerdict::Pass,
             },
+            workflow_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
         },
     )
 }

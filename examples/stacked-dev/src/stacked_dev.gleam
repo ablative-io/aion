@@ -371,6 +371,14 @@ fn request_review(
   dev_result: DevResult,
   gate_result: GateResult,
 ) -> Result(Nil, StackedDevError) {
+  let wf_id = case workflow.id() {
+    Ok(id) -> id
+    Error(engine_error) ->
+      return Error(StageFailed(
+        stage: "request_review",
+        message: "workflow.id() failed: " <> engine_error.message,
+      ))
+  }
   case
     workflow.run(
       activities.request_review(ReviewRequest(
@@ -379,6 +387,7 @@ fn request_review(
         reviewers: input.reviewers,
         dev_result: dev_result,
         gate_result: gate_result,
+        workflow_id: wf_id,
       )),
     )
   {

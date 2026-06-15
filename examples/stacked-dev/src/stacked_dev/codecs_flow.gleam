@@ -145,6 +145,7 @@ pub fn review_request_codec() -> codec.Codec(ReviewRequest) {
         #("reviewers", json.array(request.reviewers, json.string)),
         #("dev_result", codecs_core.dev_result_to_json(request.dev_result)),
         #("gate_result", gate_result_to_json(request.gate_result)),
+        #("workflow_id", json.string(request.workflow_id)),
       ])
     },
     {
@@ -159,12 +160,14 @@ pub fn review_request_codec() -> codec.Codec(ReviewRequest) {
         codecs_core.dev_result_decoder(),
       )
       use gate_result <- decode.field("gate_result", gate_result_decoder())
+      use workflow_id <- decode.field("workflow_id", decode.string)
       decode.success(ReviewRequest(
         workspace: workspace,
         brief_id: brief_id,
         reviewers: reviewers,
         dev_result: dev_result,
         gate_result: gate_result,
+        workflow_id: workflow_id,
       ))
     },
   )

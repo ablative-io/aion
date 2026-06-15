@@ -24,6 +24,9 @@ pub fn dispatch_activity(
 @external(erlang, "aion_flow_ffi", "await_activity_result")
 pub fn await_activity_result(correlation_id: String) -> Result(String, String)
 
+@external(erlang, "aion_flow_ffi", "workflow_id")
+pub fn workflow_id() -> Result(String, String)
+
 @external(erlang, "aion_flow_ffi", "now")
 pub fn now() -> Result(String, String)
 

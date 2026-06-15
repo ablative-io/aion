@@ -547,14 +547,10 @@ fn full_checks_affected_closure_scope_is_a_terminal_seam() -> TestResult {
 /// Collective shim: accepts any send command, exits zero with a JSON result.
 const COLLECTIVE_SHIM: &str = r#"printf '%s' '{"results":[{"status":"ok"}]}'"#;
 
-/// Aion list shim: returns an empty running workflow list (no match).
-const AION_LIST_SHIM: &str = r"printf '%s' '[]'";
-
 #[test]
 fn request_review_sends_collective_dm_to_each_reviewer() -> TestResult {
     let shims = Shims::new()?;
     shims.write("collective", COLLECTIVE_SHIM)?;
-    shims.write("aion", AION_LIST_SHIM)?;
     let workspace = workspace(shims.root_string());
 
     let acked = handlers::request_review(
@@ -571,6 +567,7 @@ fn request_review_sends_collective_dm_to_each_reviewer() -> TestResult {
             gate_result: stacked_dev_worker::types::GateResult {
                 verdict: GateVerdict::Pass,
             },
+            workflow_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
         },
     )
     .map_err(|failure| failure.message().to_owned())?;
@@ -581,6 +578,10 @@ fn request_review_sends_collective_dm_to_each_reviewer() -> TestResult {
     assert!(
         log.contains("sample-reviewer"),
         "expected reviewer name in args, got: {log}"
+    );
+    assert!(
+        log.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        "expected workflow_id in signal command, got: {log}"
     );
     Ok(())
 }

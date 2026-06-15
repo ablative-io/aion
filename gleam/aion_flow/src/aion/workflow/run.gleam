@@ -67,6 +67,18 @@ pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
 
 /// Return AD's recorded deterministic timestamp.
 ///
+/// Return the current workflow execution's unique identifier.
+///
+/// The engine assigns a v4 UUID at workflow start and records it in the
+/// `WorkflowStarted` event. This NIF reads the identifier from the
+/// process's registered workflow handle, so it is stable across replay.
+pub fn id() -> Result(String, error.EngineError) {
+  case ffi.workflow_id() {
+    Ok(workflow_id) -> Ok(workflow_id)
+    Error(raw_error) -> Error(error.EngineFailure(message: raw_error))
+  }
+}
+
 /// This is the only time source exposed to workflow code. Workflow authors must
 /// not call wall-clock APIs such as Gleam/Erlang clocks from workflow logic, as
 /// ambient time would desynchronise replay.

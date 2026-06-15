@@ -296,6 +296,9 @@ pub struct ReviewRequest {
     pub dev_result: DevResult,
     /// The gate result accompanying the request.
     pub gate_result: GateResult,
+    /// The parent workflow's unique identifier, used to construct the signal
+    /// command reviewers send to approve or request changes.
+    pub workflow_id: String,
 }
 
 /// Output of the `request_review` activity (`codecs_flow.review_ack_codec`).

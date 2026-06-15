@@ -12,7 +12,7 @@ use beamr::term::binary_ref::BinaryRef;
 use super::nif::{Mfa, NifEntry};
 use super::nif_child;
 use super::nif_continue_as_new;
-use super::nif_determinism::{now_impl, random_impl, random_int_impl};
+use super::nif_determinism::{now_impl, random_impl, random_int_impl, workflow_id_impl};
 use super::nif_signal;
 use super::nif_timeout;
 use super::nif_timer;
@@ -91,6 +91,7 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
             Mfa::new(FFI_MODULE, "await_activity_result", 1),
             await_activity_result,
         ),
+        NifEntry::new(Mfa::new(FFI_MODULE, "workflow_id", 0), workflow_id_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "now", 0), now_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "random", 0), random_impl),
         NifEntry::new(Mfa::new(FFI_MODULE, "random_int", 2), random_int_impl),
@@ -234,11 +235,12 @@ mod tests {
             .map(|entry| entry.mfa.display())
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(entries.len(), 21);
+        assert_eq!(entries.len(), 22);
         assert_eq!(unique.len(), entries.len());
         for normal_nif in [
             "dispatch_activity",
             "await_activity_result",
+            "workflow_id",
             "now",
             "random",
             "random_int",
@@ -266,6 +268,7 @@ mod tests {
                     entry.mfa.function.as_str(),
                     "dispatch_activity"
                         | "await_activity_result"
+                        | "workflow_id"
                         | "now"
                         | "random"
                         | "random_int"

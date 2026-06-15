@@ -460,17 +460,12 @@ pub fn request_review(shell: &Shell, input: &ReviewRequest) -> Result<ReviewAck,
         reviewers,
         dev_result,
         gate_result,
+        workflow_id,
     } = input;
 
-    let workflow_id = find_parent_workflow_id(shell, &workspace.branch);
-
-    let signal_cmd = match &workflow_id {
-        Some(id) => format!(
-            "aion signal {id} review_verdict --payload '{{\"decision\":\"approve\"}}'"
-        ),
-        None => "aion signal <WORKFLOW_ID> review_verdict --payload '{\"decision\":\"approve\"}'\n\
-             (find the workflow ID with: aion list --status running --pretty)".to_owned(),
-    };
+    let signal_cmd = format!(
+        "aion signal {workflow_id} review_verdict --payload '{{\"decision\":\"approve\"}}'"
+    );
 
     let gate_status = match &gate_result.verdict {
         GateVerdict::Pass => "passed",
@@ -485,13 +480,12 @@ pub fn request_review(shell: &Shell, input: &ReviewRequest) -> Result<ReviewAck,
          Files touched: {files}\n\
          Gate: {gate_status}\n\n\
          To approve:\n{signal_cmd}\n\n\
-         To request changes:\naion signal {wf_id} review_verdict --payload \
+         To request changes:\naion signal {workflow_id} review_verdict --payload \
          '{{\"decision\":\"request_changes\",\"notes\":[{{\"note\":\"your feedback here\"}}]}}'",
         branch = workspace.branch,
         path = workspace.path,
         summary = dev_result.summary,
         files = dev_result.files_touched.join(", "),
-        wf_id = workflow_id.as_deref().unwrap_or("<WORKFLOW_ID>"),
     );
 
     for reviewer in reviewers {
@@ -513,31 +507,6 @@ pub fn request_review(shell: &Shell, input: &ReviewRequest) -> Result<ReviewAck,
     Ok(ReviewAck {
         request_id: workspace.branch.clone(),
     })
-}
-
-/// Best-effort lookup of the parent `stacked_dev` workflow ID by searching
-/// running workflows. Returns `None` if the lookup fails — the DM will
-/// include manual instructions instead.
-fn find_parent_workflow_id(shell: &Shell, _branch: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct ListEntry {
-        workflow_id: String,
-        workflow_type: String,
-    }
-
-    let run = shell.run(
-        "aion",
-        &["list", "--status", "running"],
-        ".",
-    ).ok()?;
-    if !run.succeeded() {
-        return None;
-    }
-    let entries: Vec<ListEntry> = serde_json::from_str(&run.stdout).ok()?;
-    entries
-        .into_iter()
-        .find(|entry| entry.workflow_type == "stacked_dev")
-        .map(|entry| entry.workflow_id)
 }
 
 /// `land`: commit the dev rounds' files on the branch, then the yg-level

@@ -57,6 +57,10 @@ pub fn map(
   concurrency.map(items, to_activity)
 }
 
+pub fn id() -> Result(String, error.EngineError) {
+  dispatch.id()
+}
+
 pub fn now() -> Result(Timestamp, error.EngineError) {
   dispatch.now()
 }

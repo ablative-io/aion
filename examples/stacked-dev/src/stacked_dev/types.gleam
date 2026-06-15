@@ -184,6 +184,7 @@ pub type ReviewRequest {
     reviewers: List(String),
     dev_result: DevResult,
     gate_result: GateResult,
+    workflow_id: String,
   )
 }
 
