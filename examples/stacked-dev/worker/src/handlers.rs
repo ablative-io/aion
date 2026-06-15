@@ -72,22 +72,10 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
         placement,
         isolation,
     } = input;
-    // Two real yg verbs: add the branch as a child of the base ref, then
-    // provision its worktree at a known absolute path (built from the repo
-    // root) so every downstream activity holds a real directory and never a
-    // cwd-relative guess.
-    let branch = format!("stacked-dev-{brief_id}");
+    let base_branch = format!("stacked-dev-{brief_id}");
+    let branch = resolve_branch_name(shell, &base_branch, &base_ref, &repo_root)?;
     let worktree_path = format!("{repo_root}/.yggdrasil-worktrees/{branch}");
 
-    require_run(
-        shell,
-        "yg",
-        &["branch", "add", &branch, &base_ref],
-        &repo_root,
-        "yg branch add",
-    )?;
-    // An explicit --path keeps the worktree location known a priori, never
-    // parsed out of human output.
     require_run(
         shell,
         "yg",
@@ -101,6 +89,41 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
         placement,
         isolation,
     })
+}
+
+/// Try `yg branch add` with the base name, then `-attempt-2`, `-attempt-3`,
+/// etc. until one succeeds. Returns the branch name that was added.
+fn resolve_branch_name(
+    shell: &Shell,
+    base: &str,
+    base_ref: &str,
+    repo_root: &str,
+) -> Result<String, ActivityFailure> {
+    if try_branch_add(shell, base, base_ref, repo_root) {
+        return Ok(base.to_owned());
+    }
+    let mut attempt = 2;
+    loop {
+        let candidate = format!("{base}-attempt-{attempt}");
+        if try_branch_add(shell, &candidate, base_ref, repo_root) {
+            return Ok(candidate);
+        }
+        attempt += 1;
+        if attempt > 1000 {
+            return Err(ActivityFailure::terminal(format!(
+                "could not find an unused branch name after 1000 attempts (base: {base})"
+            )));
+        }
+    }
+}
+
+/// Attempt `yg branch add`; returns true on success, false if the branch
+/// already exists.
+fn try_branch_add(shell: &Shell, branch: &str, base_ref: &str, repo_root: &str) -> bool {
+    matches!(
+        shell.run("yg", &["branch", "add", branch, base_ref], repo_root),
+        Ok(run) if run.succeeded()
+    )
 }
 
 /// Serve one startup fan-out task: the advisory warm build or the dev round.
