@@ -210,12 +210,13 @@ async fn register_recovered_resident(
     )
     .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
     let completion = CompletionNotifier::new();
+    let namespace = namespace_from_history(history);
     let handle = WorkflowHandle::new(WorkflowHandleParts {
         workflow_id: workflow_id.clone(),
         run_id: run_id.clone(),
         pid,
         workflow_type: workflow_type.to_owned(),
-        namespace: String::from("default"),
+        namespace,
         loaded_version,
         cached_status: projected_status,
         residency: HandleResidency::Resident,
@@ -326,6 +327,23 @@ fn recover_active_workflow(
     }
 
     recovery.recover_active_workflow(workflow_id, workflow_type, history, catalog)
+}
+
+/// Extract the namespace from the workflow's `SearchAttributesUpdated`
+/// event. The `aion.namespace` attribute is set at workflow start and
+/// carried through child inheritance. Falls back to `"default"` when
+/// no namespace attribute is recorded (pre-namespace workflows).
+fn namespace_from_history(history: &[Event]) -> String {
+    for event in history {
+        if let Event::SearchAttributesUpdated { attributes, .. } = event {
+            if let Some(aion_core::SearchAttributeValue::String(ns)) =
+                attributes.get("aion.namespace")
+            {
+                return ns.clone();
+            }
+        }
+    }
+    String::from("default")
 }
 
 fn started_workflow_type(
