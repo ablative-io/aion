@@ -204,7 +204,13 @@ impl ConnectedWorkerRegistry {
     }
 
     /// Return a snapshot of workers registered for the namespace and activity
-    /// type, rotated so each call starts from the next worker in the pool.
+    /// type, ordered by worker id and then rotated so each call starts from the
+    /// next worker in the pool.
+    ///
+    /// The id sort matters: `by_activity` holds workers in a `HashMap`, whose
+    /// iteration order is unspecified. Sorting first makes the rotation below
+    /// the sole, deterministic source of ordering — true round-robin across
+    /// calls with the same membership, not a wobble layered on hash order.
     ///
     /// # Errors
     ///
@@ -216,7 +222,7 @@ impl ConnectedWorkerRegistry {
     ) -> Result<Vec<WorkerHandle>, ServerError> {
         let mut state = self.state()?;
         let key = (namespace.to_owned(), activity_type.to_owned());
-        let workers: Vec<WorkerHandle> = state
+        let mut workers: Vec<WorkerHandle> = state
             .by_activity
             .get(&key)
             .map(|workers| workers.values().cloned().collect())
@@ -224,6 +230,7 @@ impl ConnectedWorkerRegistry {
         if workers.is_empty() {
             return Ok(workers);
         }
+        workers.sort_by_key(WorkerHandle::id);
         let idx = state.rotation.entry(key).or_insert(0);
         let start = *idx % workers.len();
         *idx = idx.wrapping_add(1);
