@@ -28,13 +28,16 @@ struct Args {
     endpoint: String,
     /// Maximum concurrent activity executions.
     concurrency: usize,
+    /// Task queue (namespace) to register on.
+    task_queue: String,
 }
 
-/// Parse CLI flags: `--endpoint <url>` (required), `--concurrency <n>` (optional).
+/// Parse CLI flags.
 fn parse_args() -> anyhow::Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut endpoint = None;
     let mut concurrency = None;
+    let mut task_queue = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--endpoint" => {
@@ -53,10 +56,14 @@ fn parse_args() -> anyhow::Result<Args> {
                         .context("--concurrency must be a positive integer")?,
                 );
             }
+            "--task-queue" => {
+                let value = args.next().context("--task-queue requires a value")?;
+                task_queue = Some(value);
+            }
             other => {
                 bail!(
                     "unknown argument `{other}`\nusage: stacked-dev-worker \
-                     --endpoint <grpc-url> [--concurrency <n>]"
+                     --endpoint <grpc-url> [--concurrency <n>] [--task-queue <name>]"
                 )
             }
         }
@@ -66,6 +73,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "missing required --endpoint <grpc-url> (the server's [server] grpc_address)",
         )?,
         concurrency: concurrency.unwrap_or(4),
+        task_queue: task_queue.unwrap_or_else(|| "default".to_owned()),
     })
 }
 
@@ -146,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
     // yet; usize::MAX is the honest spelling of that intent.
     let config = WorkerConfig::builder()
         .endpoint(cli.endpoint)
-        .task_queue("default")
+        .task_queue(&cli.task_queue)
         .identity("stacked-dev-worker-1")
         .max_concurrency(cli.concurrency)
         .reconnect_initial_backoff(Duration::from_millis(100))
