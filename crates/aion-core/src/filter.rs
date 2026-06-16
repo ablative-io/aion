@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{Event, WorkflowId, WorkflowStatus, status_from_events};
+use crate::{Event, WorkflowId, WorkflowStatus, current_lease_terminal, status_from_events};
 
 /// Query input for listing workflow executions.
 ///
@@ -109,46 +109,10 @@ impl WorkflowSummary {
             workflow_type,
             status: status_from_events(events),
             started_at,
-            ended_at: terminal_recorded_at_for_current_run(events),
+            ended_at: current_lease_terminal(events).map(|event| *event.recorded_at()),
             parent: None,
         })
     }
-}
-
-fn terminal_recorded_at_for_current_run(events: &[Event]) -> Option<DateTime<Utc>> {
-    for event in events.iter().rev() {
-        match event {
-            Event::WorkflowStarted { .. } => return None,
-            Event::WorkflowCompleted { envelope, .. }
-            | Event::WorkflowFailed { envelope, .. }
-            | Event::WorkflowCancelled { envelope, .. }
-            | Event::WorkflowTimedOut { envelope, .. }
-            | Event::WorkflowContinuedAsNew { envelope, .. } => return Some(envelope.recorded_at),
-            Event::SearchAttributesUpdated { .. }
-            | Event::ActivityScheduled { .. }
-            | Event::ActivityStarted { .. }
-            | Event::ActivityCompleted { .. }
-            | Event::ActivityFailed { .. }
-            | Event::ActivityCancelled { .. }
-            | Event::TimerStarted { .. }
-            | Event::TimerFired { .. }
-            | Event::TimerCancelled { .. }
-            | Event::WithTimeoutCompleted { .. }
-            | Event::SignalReceived { .. }
-            | Event::SignalSent { .. }
-            | Event::ChildWorkflowStarted { .. }
-            | Event::ChildWorkflowCompleted { .. }
-            | Event::ChildWorkflowFailed { .. }
-            | Event::ChildWorkflowCancelled { .. }
-            | Event::ScheduleCreated { .. }
-            | Event::ScheduleUpdated { .. }
-            | Event::SchedulePaused { .. }
-            | Event::ScheduleResumed { .. }
-            | Event::ScheduleDeleted { .. }
-            | Event::ScheduleTriggered { .. } => {}
-        }
-    }
-    None
 }
 
 #[cfg(test)]

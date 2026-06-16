@@ -331,6 +331,10 @@ fn is_queryable_event(event: &Event) -> bool {
             | Event::WorkflowCancelled { .. }
             | Event::WorkflowTimedOut { .. }
             | Event::WorkflowContinuedAsNew { .. }
+            // A reopen changes the projected status (Failed -> Running), so it
+            // must feed status_from_events on the read side just like the other
+            // lifecycle events, or a resumed workflow would still read as Failed.
+            | Event::WorkflowResumed { .. }
     )
 }
 

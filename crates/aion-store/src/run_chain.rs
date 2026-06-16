@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use aion_core::{Event, RunId, status_from_events};
+use aion_core::{Event, RunId, current_lease_terminal, status_from_events};
 
 use crate::{RunSummary, StoreError};
 
@@ -54,41 +54,8 @@ fn project_run_summary(events: &[Event]) -> Result<RunSummary, StoreError> {
         parent_run_id: parent_run_id.clone(),
         status: status_from_events(events),
         started_at: envelope.recorded_at,
-        closed_at: events.iter().rev().find_map(terminal_recorded_at),
+        closed_at: current_lease_terminal(events).map(|event| *event.recorded_at()),
     })
-}
-
-fn terminal_recorded_at(event: &Event) -> Option<chrono::DateTime<chrono::Utc>> {
-    match event {
-        Event::WorkflowCompleted { envelope, .. }
-        | Event::WorkflowFailed { envelope, .. }
-        | Event::WorkflowCancelled { envelope, .. }
-        | Event::WorkflowTimedOut { envelope, .. }
-        | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
-        Event::WorkflowStarted { .. }
-        | Event::SearchAttributesUpdated { .. }
-        | Event::ActivityScheduled { .. }
-        | Event::ActivityStarted { .. }
-        | Event::ActivityCompleted { .. }
-        | Event::ActivityFailed { .. }
-        | Event::ActivityCancelled { .. }
-        | Event::TimerStarted { .. }
-        | Event::TimerFired { .. }
-        | Event::TimerCancelled { .. }
-        | Event::WithTimeoutCompleted { .. }
-        | Event::SignalReceived { .. }
-        | Event::SignalSent { .. }
-        | Event::ChildWorkflowStarted { .. }
-        | Event::ChildWorkflowCompleted { .. }
-        | Event::ChildWorkflowFailed { .. }
-        | Event::ChildWorkflowCancelled { .. }
-        | Event::ScheduleCreated { .. }
-        | Event::ScheduleUpdated { .. }
-        | Event::SchedulePaused { .. }
-        | Event::ScheduleResumed { .. }
-        | Event::ScheduleDeleted { .. }
-        | Event::ScheduleTriggered { .. } => None,
-    }
 }
 
 fn order_by_parent_chain(summaries: Vec<RunSummary>) -> Result<Vec<RunSummary>, StoreError> {

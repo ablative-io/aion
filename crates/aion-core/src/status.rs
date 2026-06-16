@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Event;
+use crate::{Event, RunId};
 
 /// Projected lifecycle status for a workflow execution.
 ///
@@ -53,7 +53,12 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
         .iter()
         .rev()
         .find_map(|event| match event {
-            Event::WorkflowStarted { .. } => Some(WorkflowStatus::Running),
+            // A run start and a reopen both put the run in Running. A reopen
+            // supersedes the run's prior terminal event under this same
+            // last-lifecycle-event-wins scan.
+            Event::WorkflowStarted { .. } | Event::WorkflowResumed { .. } => {
+                Some(WorkflowStatus::Running)
+            }
             Event::WorkflowCompleted { .. } => Some(WorkflowStatus::Completed),
             Event::WorkflowFailed { .. } => Some(WorkflowStatus::Failed),
             Event::WorkflowCancelled { .. } => Some(WorkflowStatus::Cancelled),
@@ -85,6 +90,76 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
         .unwrap_or(WorkflowStatus::Running)
 }
 
+/// Returns the terminal lifecycle event of the run's current lease, or `None`
+/// when the run is not currently terminal — either it never recorded a terminal
+/// event, or a later [`Event::WorkflowResumed`] reopened it.
+///
+/// This is the single reset-aware terminal predicate every site derives from:
+/// close-time is its `recorded_at`, the terminal outcome is a match on the
+/// returned event, and "is the run terminal now" is `is_some()`. Scanning back
+/// from the end it stops at the first reset point (a run start or a reopen), so
+/// terminality is scoped to "since the last reopen point" — a run holds exactly
+/// one terminal event per lease.
+#[must_use]
+pub fn current_lease_terminal(events: &[Event]) -> Option<&Event> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::WorkflowCompleted { .. }
+            | Event::WorkflowFailed { .. }
+            | Event::WorkflowCancelled { .. }
+            | Event::WorkflowTimedOut { .. }
+            | Event::WorkflowContinuedAsNew { .. } => Some(Some(event)),
+            // Reset points: the current lease has no terminal before them.
+            Event::WorkflowStarted { .. } | Event::WorkflowResumed { .. } => Some(None),
+            Event::SearchAttributesUpdated { .. }
+            | Event::ActivityScheduled { .. }
+            | Event::ActivityStarted { .. }
+            | Event::ActivityCompleted { .. }
+            | Event::ActivityFailed { .. }
+            | Event::ActivityCancelled { .. }
+            | Event::TimerStarted { .. }
+            | Event::TimerFired { .. }
+            | Event::TimerCancelled { .. }
+            | Event::WithTimeoutCompleted { .. }
+            | Event::SignalReceived { .. }
+            | Event::SignalSent { .. }
+            | Event::ChildWorkflowStarted { .. }
+            | Event::ChildWorkflowCompleted { .. }
+            | Event::ChildWorkflowFailed { .. }
+            | Event::ChildWorkflowCancelled { .. }
+            | Event::ScheduleCreated { .. }
+            | Event::ScheduleUpdated { .. }
+            | Event::SchedulePaused { .. }
+            | Event::ScheduleResumed { .. }
+            | Event::ScheduleDeleted { .. }
+            | Event::ScheduleTriggered { .. } => None,
+        })
+        .flatten()
+}
+
+/// Returns the slice of `events` belonging to the run identified by `run_id`:
+/// from that run's [`Event::WorkflowStarted`] up to (but excluding) the next
+/// run's start, or an empty slice when the run is absent.
+///
+/// Scoping [`current_lease_terminal`] to a `run_segment` answers "is this
+/// particular run currently terminal" without a separate bespoke scan per call
+/// site.
+#[must_use]
+pub fn run_segment<'a>(events: &'a [Event], run_id: &RunId) -> &'a [Event] {
+    let Some(start) = events.iter().position(
+        |event| matches!(event, Event::WorkflowStarted { run_id: id, .. } if id == run_id),
+    ) else {
+        return &[];
+    };
+    let end = events[start + 1..]
+        .iter()
+        .position(|event| matches!(event, Event::WorkflowStarted { .. }))
+        .map_or(events.len(), |offset| start + 1 + offset);
+    &events[start..end]
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -92,7 +167,7 @@ mod tests {
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
-    use super::{WorkflowStatus, status_from_events};
+    use super::{WorkflowStatus, current_lease_terminal, run_segment, status_from_events};
     use crate::{
         ActivityId, Event, EventEnvelope, Payload, RunId, ScheduleId, SearchAttributeValue,
         WorkflowError, WorkflowId,
@@ -331,6 +406,163 @@ mod tests {
         ];
 
         assert_eq!(status_from_events(&events), WorkflowStatus::TimedOut);
+        Ok(())
+    }
+
+    fn run_id() -> RunId {
+        RunId::new(uuid::Uuid::from_u128(1))
+    }
+
+    fn workflow_resumed(seq: u64, reopened: Vec<ActivityId>) -> Event {
+        Event::WorkflowResumed {
+            envelope: envelope(seq),
+            run_id: run_id(),
+            reopened,
+        }
+    }
+
+    #[test]
+    fn resume_after_failure_projects_running() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            Event::WorkflowFailed {
+                envelope: envelope(2),
+                error: workflow_error("transient"),
+            },
+            workflow_resumed(3, vec![ActivityId::from_sequence_position(2)]),
+        ];
+
+        assert_eq!(status_from_events(&events), WorkflowStatus::Running);
+        Ok(())
+    }
+
+    #[test]
+    fn resume_then_new_terminal_projects_that_terminal() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            Event::WorkflowFailed {
+                envelope: envelope(2),
+                error: workflow_error("transient"),
+            },
+            workflow_resumed(3, vec![ActivityId::from_sequence_position(2)]),
+            Event::WorkflowCompleted {
+                envelope: envelope(4),
+                result: payload("result")?,
+            },
+        ];
+
+        assert_eq!(status_from_events(&events), WorkflowStatus::Completed);
+        Ok(())
+    }
+
+    #[test]
+    fn current_lease_terminal_is_none_for_running_and_reopened()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let running = vec![workflow_started(1)?];
+        assert!(current_lease_terminal(&running).is_none());
+
+        let failed = vec![
+            workflow_started(1)?,
+            Event::WorkflowFailed {
+                envelope: envelope(2),
+                error: workflow_error("boom"),
+            },
+        ];
+        assert!(matches!(
+            current_lease_terminal(&failed),
+            Some(Event::WorkflowFailed { .. })
+        ));
+
+        let mut reopened = failed.clone();
+        reopened.push(workflow_resumed(
+            3,
+            vec![ActivityId::from_sequence_position(2)],
+        ));
+        assert!(
+            current_lease_terminal(&reopened).is_none(),
+            "a reopened run has no current-lease terminal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn current_lease_terminal_returns_terminal_after_reopen_and_retermination()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            Event::WorkflowFailed {
+                envelope: envelope(2),
+                error: workflow_error("boom"),
+            },
+            workflow_resumed(3, vec![ActivityId::from_sequence_position(2)]),
+            Event::WorkflowCompleted {
+                envelope: envelope(4),
+                result: payload("result")?,
+            },
+        ];
+
+        assert!(matches!(
+            current_lease_terminal(&events),
+            Some(Event::WorkflowCompleted { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn run_segment_scopes_to_the_named_run() -> Result<(), Box<dyn std::error::Error>> {
+        let first_run = RunId::new(uuid::Uuid::from_u128(10));
+        let second_run = RunId::new(uuid::Uuid::from_u128(20));
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1),
+                workflow_type: String::from("checkout"),
+                input: payload("input")?,
+                run_id: first_run.clone(),
+                parent_run_id: None,
+                package_version: crate::PackageVersion::new("a".repeat(64)),
+            },
+            Event::WorkflowContinuedAsNew {
+                envelope: envelope(2),
+                input: payload("again")?,
+                workflow_type: None,
+                parent_run_id: first_run.clone(),
+            },
+            Event::WorkflowStarted {
+                envelope: envelope(3),
+                workflow_type: String::from("checkout"),
+                input: payload("input")?,
+                run_id: second_run.clone(),
+                parent_run_id: Some(first_run.clone()),
+                package_version: crate::PackageVersion::new("a".repeat(64)),
+            },
+            Event::WorkflowCompleted {
+                envelope: envelope(4),
+                result: payload("result")?,
+            },
+        ];
+
+        let first = run_segment(&events, &first_run);
+        assert_eq!(first.len(), 2, "first run spans its start through its CAN");
+        assert!(matches!(
+            current_lease_terminal(first),
+            Some(Event::WorkflowContinuedAsNew { .. })
+        ));
+
+        let second = run_segment(&events, &second_run);
+        assert_eq!(
+            second.len(),
+            2,
+            "second run spans its start through completion"
+        );
+        assert!(matches!(
+            current_lease_terminal(second),
+            Some(Event::WorkflowCompleted { .. })
+        ));
+
+        assert!(
+            run_segment(&events, &RunId::new(uuid::Uuid::from_u128(99))).is_empty(),
+            "absent run yields an empty segment"
+        );
         Ok(())
     }
 }

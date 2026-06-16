@@ -35,6 +35,7 @@ struct MetricsInner {
     registry: Registry,
     workflows_started: IntCounterVec,
     workflows_completed: IntCounterVec,
+    workflows_resumed: IntCounterVec,
     activities_dispatched: IntCounterVec,
     activities_completed: IntCounterVec,
     activity_duration: HistogramVec,
@@ -54,6 +55,8 @@ impl MetricsInner {
             .register(Box::new(self.workflows_started.clone()))?;
         self.registry
             .register(Box::new(self.workflows_completed.clone()))?;
+        self.registry
+            .register(Box::new(self.workflows_resumed.clone()))?;
         self.registry
             .register(Box::new(self.activities_dispatched.clone()))?;
         self.registry
@@ -123,6 +126,14 @@ impl Metrics {
         self.inner
             .workflows_completed
             .with_label_values(&[namespace, status])
+            .inc();
+    }
+
+    /// Increment the workflow-resume counter when a failed run is reopened.
+    pub fn workflow_resumed(&self, namespace: &str) {
+        self.inner
+            .workflows_resumed
+            .with_label_values(&[namespace])
             .inc();
     }
 
@@ -234,8 +245,7 @@ impl Metrics {
     }
 }
 
-fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
-    let registry = Registry::new();
+fn build_workflow_metrics() -> Result<(IntCounterVec, IntCounterVec, IntCounterVec), MetricsError> {
     let workflows_started = IntCounterVec::new(
         Opts::new(
             "aion_workflows_started_total",
@@ -250,6 +260,19 @@ fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
         ),
         &["namespace", "status"],
     )?;
+    let workflows_resumed = IntCounterVec::new(
+        Opts::new(
+            "aion_workflows_resumed_total",
+            "Total failed workflow runs reopened for resume by namespace.",
+        ),
+        &["namespace"],
+    )?;
+    Ok((workflows_started, workflows_completed, workflows_resumed))
+}
+
+fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
+    let registry = Registry::new();
+    let (workflows_started, workflows_completed, workflows_resumed) = build_workflow_metrics()?;
     let activities_dispatched = IntCounterVec::new(
         Opts::new(
             "aion_activities_dispatched_total",
@@ -318,6 +341,7 @@ fn build_metrics_inner() -> Result<MetricsInner, MetricsError> {
         registry,
         workflows_started,
         workflows_completed,
+        workflows_resumed,
         activities_dispatched,
         activities_completed,
         activity_duration,

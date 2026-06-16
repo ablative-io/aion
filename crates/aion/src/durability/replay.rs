@@ -247,26 +247,28 @@ fn workflow_started_at(
 }
 
 fn terminal_from_history(workflow_id: &WorkflowId, history: &[Event]) -> Option<TerminalRecord> {
-    history.iter().rev().find_map(|event| {
-        if event.workflow_id() != workflow_id {
-            return None;
+    // Reset-aware: a reopen (WorkflowResumed) supersedes the run's prior terminal,
+    // so a reopened run has no replay terminal and the reopened command hands off
+    // live (ResumeLive) instead of being rejected as non-determinism.
+    let event = aion_core::current_lease_terminal(history)?;
+    if event.workflow_id() != workflow_id {
+        return None;
+    }
+
+    let terminal = match event {
+        Event::WorkflowCompleted { result, .. } => ReplayTerminal::Completed(result.clone()),
+        Event::WorkflowFailed { error, .. } => ReplayTerminal::Failed(error.clone()),
+        Event::WorkflowCancelled { reason, .. } => ReplayTerminal::Cancelled(reason.clone()),
+        Event::WorkflowTimedOut { timeout, .. } => ReplayTerminal::TimedOut(timeout.clone()),
+        Event::WorkflowContinuedAsNew { input, .. } => {
+            ReplayTerminal::ContinuedAsNew(input.clone())
         }
+        _ => return None,
+    };
 
-        let terminal = match event {
-            Event::WorkflowCompleted { result, .. } => ReplayTerminal::Completed(result.clone()),
-            Event::WorkflowFailed { error, .. } => ReplayTerminal::Failed(error.clone()),
-            Event::WorkflowCancelled { reason, .. } => ReplayTerminal::Cancelled(reason.clone()),
-            Event::WorkflowTimedOut { timeout, .. } => ReplayTerminal::TimedOut(timeout.clone()),
-            Event::WorkflowContinuedAsNew { input, .. } => {
-                ReplayTerminal::ContinuedAsNew(input.clone())
-            }
-            _ => return None,
-        };
-
-        Some(TerminalRecord {
-            seq: event.seq(),
-            terminal,
-        })
+    Some(TerminalRecord {
+        seq: event.seq(),
+        terminal,
     })
 }
 
@@ -360,6 +362,66 @@ mod tests {
             key: CorrelationKey::Timer(TimerId::anonymous(3)),
             fire_at: timestamp(100)?,
         })
+    }
+
+    fn reopened_history() -> TestResult<Vec<aion_core::Event>> {
+        let activity_id = ActivityId::from_sequence_position(0);
+        Ok(vec![
+            aion_core::Event::WorkflowStarted {
+                envelope: envelope(1, 10)?,
+                workflow_type: "workflow".to_owned(),
+                input: payload("input")?,
+                run_id: run_id(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
+            aion_core::Event::ActivityScheduled {
+                envelope: envelope(2, 20)?,
+                activity_id: activity_id.clone(),
+                activity_type: "activity".to_owned(),
+                input: payload("activity-input")?,
+            },
+            aion_core::Event::ActivityFailed {
+                envelope: envelope(3, 30)?,
+                activity_id: activity_id.clone(),
+                error: aion_core::ActivityError {
+                    kind: aion_core::ActivityErrorKind::Terminal,
+                    message: "boom".to_owned(),
+                    details: None,
+                },
+                attempt: 1,
+            },
+            aion_core::Event::WorkflowFailed {
+                envelope: envelope(4, 40)?,
+                error: aion_core::WorkflowError {
+                    message: "boom".to_owned(),
+                    details: None,
+                },
+            },
+            aion_core::Event::WorkflowResumed {
+                envelope: envelope(5, 50)?,
+                run_id: run_id(),
+                reopened: vec![activity_id],
+            },
+        ])
+    }
+
+    #[test]
+    fn reopened_activity_resolves_live_not_terminal() -> TestResult {
+        // Regression for the resume-foundation critical path: a reopened run's
+        // terminal must be superseded so the reopened activity hands off live
+        // (ResumeLive) instead of being rejected as a non-determinism violation.
+        let workflow_id = workflow_id();
+        let run_id = run_id();
+        let mut replay = Replay::new(&workflow_id, &run_id, reopened_history()?)?;
+
+        let step = replay.step(&activity_command()?)?;
+        assert_eq!(
+            step,
+            ReplayStep::ResumeLive,
+            "a reopened activity must re-dispatch live, not replay its superseded failure"
+        );
+        Ok(())
     }
 
     #[test]

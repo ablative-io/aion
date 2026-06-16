@@ -45,4 +45,4 @@ pub use search::{
     SearchAttributeError, SearchAttributeSchema, SearchAttributeType, SearchAttributeValue,
     search_attributes_from_events,
 };
-pub use status::{WorkflowStatus, status_from_events};
+pub use status::{WorkflowStatus, current_lease_terminal, run_segment, status_from_events};

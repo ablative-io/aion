@@ -237,7 +237,23 @@ workflow_type: string | null,
 /**
  * Run identifier for the current run that is being continued.
  */
-parent_run_id: RunId, } } | { "type": "SearchAttributesUpdated", "data": { 
+parent_run_id: RunId, } } | { "type": "WorkflowResumed", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Run being reopened — the run that recorded the superseded terminal
+ * event and that the resumed execution continues.
+ */
+run_id: RunId, 
+/**
+ * Activities to re-dispatch on replay: those that ended in a terminal
+ * failure in this run with no later successful attempt. The history
+ * cursor treats each as a reset point so the recorded failure is
+ * superseded and the activity resolves to live re-dispatch.
+ */
+reopened: Array<ActivityId>, } } | { "type": "SearchAttributesUpdated", "data": { 
 /**
  * Recording metadata for this event.
  */

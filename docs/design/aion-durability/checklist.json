@@ -89,6 +89,20 @@
         {"id": "C38", "text": "An integration test records a workflow's events via the Recorder, then replays from the same store and asserts the replayed Resolutions match the recorded outcomes in order and the resume point is correct.", "done": false},
         {"id": "C39", "text": "An integration test asserts workflow.now values during replay equal the recorded event timestamps in order, and that random draws match across two independent replays of the same run.", "done": false}
       ]
+    },
+    {
+      "name": "Workflow Resume / Reopen",
+      "items": [
+        {"id": "C40", "text": "A WorkflowResumed event variant exists on the Event enum, engine-internal (never authored by workflow code), carrying the reopened run id and the set of activity correlation keys to re-dispatch; it round-trips through serde and every store/wire layer like any other event.", "done": false},
+        {"id": "C41", "text": "status_from_events projects WorkflowResumed as Running, so a WorkflowResumed recorded after a terminal WorkflowFailed supersedes it under the existing last-lifecycle-event-wins scan, exactly as a replacement WorkflowStarted does for continue-as-new.", "done": false},
+        {"id": "C42", "text": "Terminal detection is consolidated onto one reset-aware predicate: a run is terminal iff a terminal event was recorded since its last reopen point (or run start), not merely if any terminal event exists in the run; every site (status projection, terminal-outcome, run-has-terminal, close-time, startup/list_active) uses it and agrees.", "done": false},
+        {"id": "C43", "text": "A workflow whose latest events are WorkflowFailed then WorkflowResumed is re-included by EventStore::list_active and by startup recovery (it projects Running) and is not skipped by the is_terminal guard.", "done": false},
+        {"id": "C44", "text": "The exactly-one-terminal guard (ensure_no_recorded_terminal and the process-exit terminal recorder) is scoped to the current lease: it still rejects a second terminal within one lease, but permits a new terminal after an intervening reopen point, preserving exactly-one-terminal-per-lease.", "done": false},
+        {"id": "C45", "text": "The history cursor treats a WorkflowResumed naming correlation key K as a reset point for K: attempts recorded for K before the reset are superseded, and replay resolves K to its next recorded attempt or, if none yet, reports K exhausted so the resolver returns ResumeLive for live re-dispatch.", "done": false},
+        {"id": "C46", "text": "After a reopen and a fresh recorded attempt for K, replay deterministically resolves K to the new attempt's recorded outcome on every subsequent replay, because the WorkflowResumed marker is itself recorded in append-only history.", "done": false},
+        {"id": "C47", "text": "The Recorder is the sole append path for WorkflowResumed via a single-writer builder method using the same WriteToken/expected-seq discipline as every other recorded event; no code path appends it directly to the store.", "done": false},
+        {"id": "C48", "text": "Reopen targets only activities that ended in a terminal failure with no later successful attempt in the run; merely in-flight (scheduled, no terminal) activities are not listed and continue to re-dispatch via the existing recovery path.", "done": false}
+      ]
     }
   ]
 }

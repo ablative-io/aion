@@ -311,12 +311,31 @@ impl HistoryCursor {
                 } if event_activity_id == &activity_id => {
                     matched.push(index);
                 }
+                Event::ActivityScheduled {
+                    activity_id: event_activity_id,
+                    ..
+                } if event_activity_id == &activity_id => {
+                    // A reopen re-dispatches the activity, recording a fresh
+                    // ActivityScheduled for the same ordinal. Consume it as part
+                    // of this activity's span so no straggler Scheduled is left
+                    // matchable to mis-resolve a later command.
+                    matched.push(index);
+                }
                 Event::ActivityFailed {
                     activity_id: event_activity_id,
                     ..
                 } if event_activity_id == &activity_id => {
                     matched.push(index);
-                    if !self.has_later_activity_attempt_or_outcome(index + 1, &activity_id) {
+                    // A reopen (resume) supersedes this recorded failure: treat
+                    // it like a non-terminal retry attempt and keep walking, so
+                    // a later recorded attempt resolves the activity, or — with
+                    // none yet — the walk exhausts and the activity re-dispatches
+                    // live.
+                    let superseded_by_reopen =
+                        self.activity_reopened_after(index + 1, &activity_id);
+                    if !superseded_by_reopen
+                        && !self.has_later_activity_attempt_or_outcome(index + 1, &activity_id)
+                    {
                         return self.consume_indices(matched);
                     }
                 }
@@ -444,6 +463,20 @@ impl HistoryCursor {
         })
     }
 
+    /// Whether a later [`Event::WorkflowResumed`] names `activity_id` among its
+    /// reopened activities. A reopen supersedes the activity's recorded terminal
+    /// failure, so the walk treats that failure as a non-terminal attempt and
+    /// continues — to a later recorded attempt, or to exhaustion so the activity
+    /// re-dispatches live.
+    fn activity_reopened_after(&self, start: usize, activity_id: &ActivityId) -> bool {
+        self.events.iter().skip(start).any(|event| {
+            matches!(
+                event,
+                Event::WorkflowResumed { reopened, .. } if reopened.contains(activity_id)
+            )
+        })
+    }
+
     fn is_outcome_for_start_key(&self, event: &Event, expected_key: &CorrelationKey) -> bool {
         match (event, expected_key) {
             (
@@ -514,6 +547,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
+        Event::WorkflowResumed { .. } => "WorkflowResumed",
         Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
@@ -623,6 +657,141 @@ mod tests {
             },
             attempt,
         })
+    }
+
+    fn resumed(seq: u64, reopened: &[u64]) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowResumed {
+            envelope: envelope(seq)?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            reopened: reopened
+                .iter()
+                .map(|ordinal| ActivityId::from_sequence_position(*ordinal))
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn reopen_supersedes_terminal_failure_and_exhausts() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Terminal)?,
+            resumed(3, &[0])?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        assert!(
+            matches!(result, CursorResolveResult::Exhausted),
+            "a reopened terminal failure with no later attempt must resolve live, got {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_then_new_attempt_resolves_to_the_new_outcome()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Terminal)?,
+            resumed(3, &[0])?,
+            scheduled(4, 0)?,
+            completed(5, 0)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert!(
+                    matches!(events.last(), Some(Event::ActivityCompleted { .. })),
+                    "reopened activity must resolve to its post-reopen completion"
+                );
+            }
+            other => return Err(format!("expected Matched completion, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_failure_without_reopen_still_matches_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Terminal)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert!(matches!(events.last(), Some(Event::ActivityFailed { .. })));
+            }
+            other => return Err(format!("expected Matched terminal failure, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_with_new_attempt_leaves_no_straggler_for_later_commands()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // After a reopen re-dispatches activity 0 (a second Scheduled is
+        // recorded), the next command (activity 1) must still resolve cleanly:
+        // the post-reopen Scheduled(0) must not be left matchable.
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Terminal)?,
+            resumed(3, &[0])?,
+            scheduled(4, 0)?,
+            completed(5, 0)?,
+            scheduled(6, 1)?,
+            completed(7, 1)?,
+        ])?;
+
+        let first = cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+        assert!(
+            matches!(first, CursorResolveResult::Matched(_)),
+            "reopened activity 0 resolves, got {first:?}"
+        );
+
+        let second =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(1));
+        match second {
+            CursorResolveResult::Matched(events) => {
+                assert!(
+                    matches!(events.last(), Some(Event::ActivityCompleted { .. })),
+                    "activity 1 must resolve to its completion after a reopen of activity 0"
+                );
+            }
+            other => {
+                return Err(format!(
+                    "activity 1 must resolve cleanly after a reopen, got {other:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_of_a_different_activity_does_not_supersede_this_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cursor = HistoryCursor::new(vec![
+            scheduled(1, 0)?,
+            failed(2, 0, 1, ActivityErrorKind::Terminal)?,
+            resumed(3, &[5])?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+
+        assert!(
+            matches!(result, CursorResolveResult::Matched(_)),
+            "a reopen naming another activity must not reopen this one, got {result:?}"
+        );
+        Ok(())
     }
 
     #[test]

@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use aion_core::{Event, Payload, RunId, WorkflowError, WorkflowId};
+use aion_core::{
+    Event, Payload, RunId, WorkflowError, WorkflowId, current_lease_terminal, run_segment,
+};
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
@@ -216,69 +218,29 @@ pub(crate) fn terminal_outcome_from_history(
     events: &[Event],
     run_id: &RunId,
 ) -> Option<TerminalOutcome> {
-    let run_start = events.iter().position(|event| {
-        matches!(
-            event,
-            Event::WorkflowStarted {
-                run_id: event_run_id,
-                ..
-            } if event_run_id == run_id
-        )
-    })?;
-    let run_end = events[run_start + 1..]
-        .iter()
-        .position(|event| matches!(event, Event::WorkflowStarted { .. }))
-        .map_or(events.len(), |offset| run_start + 1 + offset);
-
-    events[run_start + 1..run_end]
-        .iter()
-        .rev()
-        .find_map(|event| match event {
-            Event::WorkflowCompleted { result, .. } => {
-                Some(TerminalOutcome::Completed(result.clone()))
-            }
-            Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
-            Event::WorkflowCancelled { reason, .. } => {
-                Some(TerminalOutcome::Cancelled(reason.clone()))
-            }
-            Event::WorkflowTimedOut { timeout, .. } => {
-                Some(TerminalOutcome::TimedOut(timeout.clone()))
-            }
-            Event::WorkflowContinuedAsNew {
-                input,
-                workflow_type,
-                parent_run_id,
-                ..
-            } if parent_run_id == run_id => Some(TerminalOutcome::ContinuedAsNew {
-                input: input.clone(),
-                workflow_type: workflow_type.clone(),
-                parent_run_id: parent_run_id.clone(),
-            }),
-            Event::WorkflowStarted { .. }
-            | Event::WorkflowContinuedAsNew { .. }
-            | Event::SearchAttributesUpdated { .. }
-            | Event::ActivityScheduled { .. }
-            | Event::ActivityStarted { .. }
-            | Event::ActivityCompleted { .. }
-            | Event::ActivityFailed { .. }
-            | Event::ActivityCancelled { .. }
-            | Event::TimerStarted { .. }
-            | Event::TimerFired { .. }
-            | Event::TimerCancelled { .. }
-            | Event::WithTimeoutCompleted { .. }
-            | Event::SignalReceived { .. }
-            | Event::SignalSent { .. }
-            | Event::ChildWorkflowStarted { .. }
-            | Event::ChildWorkflowCompleted { .. }
-            | Event::ChildWorkflowFailed { .. }
-            | Event::ChildWorkflowCancelled { .. }
-            | Event::ScheduleCreated { .. }
-            | Event::ScheduleUpdated { .. }
-            | Event::SchedulePaused { .. }
-            | Event::ScheduleResumed { .. }
-            | Event::ScheduleDeleted { .. }
-            | Event::ScheduleTriggered { .. } => None,
-        })
+    // Reset-aware: scope to the run, then take the current lease's terminal
+    // event. A WorkflowResumed after a terminal supersedes it, so a reopened run
+    // reports no terminal outcome until it terminates again.
+    match current_lease_terminal(run_segment(events, run_id))? {
+        Event::WorkflowCompleted { result, .. } => Some(TerminalOutcome::Completed(result.clone())),
+        Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
+        Event::WorkflowCancelled { reason, .. } => Some(TerminalOutcome::Cancelled(reason.clone())),
+        Event::WorkflowTimedOut { timeout, .. } => Some(TerminalOutcome::TimedOut(timeout.clone())),
+        Event::WorkflowContinuedAsNew {
+            input,
+            workflow_type,
+            parent_run_id,
+            ..
+        } if parent_run_id == run_id => Some(TerminalOutcome::ContinuedAsNew {
+            input: input.clone(),
+            workflow_type: workflow_type.clone(),
+            parent_run_id: parent_run_id.clone(),
+        }),
+        // current_lease_terminal yields only terminal lifecycle events; a
+        // ContinuedAsNew whose parent is a different run is not this run's
+        // outcome.
+        _ => None,
+    }
 }
 
 #[cfg(test)]

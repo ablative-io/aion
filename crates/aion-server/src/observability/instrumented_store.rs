@@ -57,6 +57,9 @@ impl InstrumentedEventStore {
                     self.metrics
                         .workflow_completed(&self.namespace, "continued_as_new");
                 }
+                Event::WorkflowResumed { .. } => {
+                    self.metrics.workflow_resumed(&self.namespace);
+                }
                 Event::SignalReceived { .. } => {
                     self.metrics.signal_delivered(&self.namespace, "resident");
                 }

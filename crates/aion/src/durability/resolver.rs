@@ -278,6 +278,7 @@ fn resolution_from_matched(events: &[Event]) -> Result<ResolvedCommand, Durabili
         | Event::WorkflowCancelled { .. }
         | Event::WorkflowTimedOut { .. }
         | Event::WorkflowContinuedAsNew { .. }
+        | Event::WorkflowResumed { .. }
         | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }
@@ -310,6 +311,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
+        Event::WorkflowResumed { .. } => "WorkflowResumed",
         Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",

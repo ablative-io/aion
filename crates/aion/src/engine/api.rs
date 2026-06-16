@@ -451,58 +451,26 @@ impl Engine {
 }
 
 pub(crate) fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
-    for event in events.iter().rev() {
-        match event {
-            Event::WorkflowStarted { .. } => return None,
-            Event::WorkflowCompleted { result, .. } => {
-                return Some(TerminalOutcome::Completed(result.clone()));
-            }
-            Event::WorkflowFailed { error, .. } => {
-                return Some(TerminalOutcome::Failed(error.clone()));
-            }
-            Event::WorkflowCancelled { reason, .. } => {
-                return Some(TerminalOutcome::Cancelled(reason.clone()));
-            }
-            Event::WorkflowTimedOut { timeout, .. } => {
-                return Some(TerminalOutcome::TimedOut(timeout.clone()));
-            }
-            Event::WorkflowContinuedAsNew {
-                input,
-                workflow_type,
-                parent_run_id,
-                ..
-            } => {
-                return Some(TerminalOutcome::ContinuedAsNew {
-                    input: input.clone(),
-                    workflow_type: workflow_type.clone(),
-                    parent_run_id: parent_run_id.clone(),
-                });
-            }
-            Event::SearchAttributesUpdated { .. }
-            | Event::ActivityScheduled { .. }
-            | Event::ActivityStarted { .. }
-            | Event::ActivityCompleted { .. }
-            | Event::ActivityFailed { .. }
-            | Event::ActivityCancelled { .. }
-            | Event::TimerStarted { .. }
-            | Event::TimerFired { .. }
-            | Event::TimerCancelled { .. }
-            | Event::WithTimeoutCompleted { .. }
-            | Event::SignalReceived { .. }
-            | Event::SignalSent { .. }
-            | Event::ChildWorkflowStarted { .. }
-            | Event::ChildWorkflowCompleted { .. }
-            | Event::ChildWorkflowFailed { .. }
-            | Event::ChildWorkflowCancelled { .. }
-            | Event::ScheduleCreated { .. }
-            | Event::ScheduleUpdated { .. }
-            | Event::SchedulePaused { .. }
-            | Event::ScheduleResumed { .. }
-            | Event::ScheduleDeleted { .. }
-            | Event::ScheduleTriggered { .. } => {}
-        }
+    // Reset-aware via the shared single-source predicate: the current lease's
+    // terminal event, where a reopen (WorkflowResumed) supersedes any earlier
+    // terminal.
+    match aion_core::current_lease_terminal(events)? {
+        Event::WorkflowCompleted { result, .. } => Some(TerminalOutcome::Completed(result.clone())),
+        Event::WorkflowFailed { error, .. } => Some(TerminalOutcome::Failed(error.clone())),
+        Event::WorkflowCancelled { reason, .. } => Some(TerminalOutcome::Cancelled(reason.clone())),
+        Event::WorkflowTimedOut { timeout, .. } => Some(TerminalOutcome::TimedOut(timeout.clone())),
+        Event::WorkflowContinuedAsNew {
+            input,
+            workflow_type,
+            parent_run_id,
+            ..
+        } => Some(TerminalOutcome::ContinuedAsNew {
+            input: input.clone(),
+            workflow_type: workflow_type.clone(),
+            parent_run_id: parent_run_id.clone(),
+        }),
+        _ => None,
     }
-    None
 }
 
 fn outcome_to_result(outcome: TerminalOutcome) -> Result<Payload, WorkflowError> {

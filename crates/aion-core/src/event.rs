@@ -95,6 +95,27 @@ pub enum Event {
         /// Run identifier for the current run that is being continued.
         parent_run_id: RunId,
     },
+    /// A failed run was reopened for resume.
+    ///
+    /// Engine-internal — never authored by workflow or SDK code. This is the
+    /// compensating event that reconciles resume with the status-is-a-projection
+    /// invariant: under the last-lifecycle-event-wins scan it supersedes the
+    /// run's prior terminal event and returns the run to Running, exactly as a
+    /// replacement [`Event::WorkflowStarted`] does for continue-as-new. Terminal
+    /// detection is scoped to "since the last reopen point", so a run holds
+    /// exactly one terminal event per lease.
+    WorkflowResumed {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Run being reopened — the run that recorded the superseded terminal
+        /// event and that the resumed execution continues.
+        run_id: RunId,
+        /// Activities to re-dispatch on replay: those that ended in a terminal
+        /// failure in this run with no later successful attempt. The history
+        /// cursor treats each as a reset point so the recorded failure is
+        /// superseded and the activity resolves to live re-dispatch.
+        reopened: Vec<ActivityId>,
+    },
     /// Workflow search attributes were updated for visibility and query projection.
     SearchAttributesUpdated {
         /// Recording metadata for this event.
@@ -321,6 +342,7 @@ impl Event {
             | Self::WorkflowCancelled { envelope, .. }
             | Self::WorkflowTimedOut { envelope, .. }
             | Self::WorkflowContinuedAsNew { envelope, .. }
+            | Self::WorkflowResumed { envelope, .. }
             | Self::SearchAttributesUpdated { envelope, .. }
             | Self::ActivityScheduled { envelope, .. }
             | Self::ActivityStarted { envelope, .. }

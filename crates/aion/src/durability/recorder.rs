@@ -384,6 +384,35 @@ impl Recorder {
         Ok(())
     }
 
+    /// Records a reopen of a failed run for resume.
+    ///
+    /// The reopen supersedes the run's prior terminal event in the status
+    /// projection (returning it to Running) and names the activities to
+    /// re-dispatch on replay. It refreshes the visibility projection so the
+    /// reopened workflow is listed as active again. This is the sole append
+    /// path for [`Event::WorkflowResumed`]; like every recorded event it lands
+    /// through the single-writer sequence discipline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the
+    /// sequence tracker cannot advance after a successful append.
+    pub async fn record_workflow_resumed(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        run_id: RunId,
+        reopened: Vec<ActivityId>,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::WorkflowResumed {
+            envelope,
+            run_id,
+            reopened,
+        })
+        .await?;
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
+    }
+
     /// Records a validated search-attribute update for this workflow.
     ///
     /// # Errors
@@ -813,14 +842,9 @@ fn visibility_record_from_history(
 }
 
 fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
-    history.iter().rev().find_map(|event| match event {
-        Event::WorkflowCompleted { envelope, .. }
-        | Event::WorkflowFailed { envelope, .. }
-        | Event::WorkflowCancelled { envelope, .. }
-        | Event::WorkflowTimedOut { envelope, .. }
-        | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
-        _ => None,
-    })
+    // Reset-aware close time, aligned with the projected status: a reopened
+    // (resumed) workflow has no close time until it terminates again.
+    aion_core::current_lease_terminal(history).map(|event| *event.recorded_at())
 }
 
 #[cfg(test)]
@@ -970,6 +994,56 @@ mod tests {
         assert_eq!(history[0].seq(), 1);
         assert_eq!(history[1].seq(), 2);
         assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_workflow_resumed_and_projects_running()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(1);
+        let run_id = aion_core::RunId::new(uuid::Uuid::from_u128(1));
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+        recorder
+            .record_workflow_started(
+                recorded_at(1),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
+            )
+            .await?;
+        recorder
+            .record_workflow_failed(
+                recorded_at(2),
+                aion_core::WorkflowError {
+                    message: String::from("transient"),
+                    details: None,
+                },
+            )
+            .await?;
+        recorder
+            .record_workflow_resumed(
+                recorded_at(3),
+                run_id,
+                vec![aion_core::ActivityId::from_sequence_position(2)],
+            )
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[2].seq(), 3);
+        assert_eq!(recorder.current_head(), 3);
+        assert!(matches!(history[2], Event::WorkflowResumed { .. }));
+        assert_eq!(
+            aion_core::status_from_events(&history),
+            aion_core::WorkflowStatus::Running,
+            "a recorded reopen returns the failed workflow to Running"
+        );
         Ok(())
     }
 

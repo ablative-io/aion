@@ -1,6 +1,6 @@
 //! signal/query/subscribe surface (AT/AD delegation)
 
-use aion_core::{Event, Payload, RunId, WorkflowId};
+use aion_core::{Event, Payload, RunId, WorkflowId, current_lease_terminal, run_segment};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
@@ -336,54 +336,11 @@ impl Engine {
 }
 
 pub(crate) fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
-    let mut in_requested_run = false;
-    for event in history {
-        match event {
-            Event::WorkflowStarted { run_id, .. } => {
-                if in_requested_run {
-                    return false;
-                }
-                in_requested_run = run_id == run;
-            }
-            Event::WorkflowCompleted { .. }
-            | Event::WorkflowFailed { .. }
-            | Event::WorkflowCancelled { .. }
-            | Event::WorkflowTimedOut { .. }
-            | Event::WorkflowContinuedAsNew { .. }
-                if in_requested_run =>
-            {
-                return true;
-            }
-            Event::SearchAttributesUpdated { .. }
-            | Event::ActivityScheduled { .. }
-            | Event::ActivityStarted { .. }
-            | Event::ActivityCompleted { .. }
-            | Event::ActivityFailed { .. }
-            | Event::ActivityCancelled { .. }
-            | Event::TimerStarted { .. }
-            | Event::TimerFired { .. }
-            | Event::TimerCancelled { .. }
-            | Event::WithTimeoutCompleted { .. }
-            | Event::SignalReceived { .. }
-            | Event::SignalSent { .. }
-            | Event::ChildWorkflowStarted { .. }
-            | Event::ChildWorkflowCompleted { .. }
-            | Event::ChildWorkflowFailed { .. }
-            | Event::ChildWorkflowCancelled { .. }
-            | Event::ScheduleCreated { .. }
-            | Event::ScheduleUpdated { .. }
-            | Event::SchedulePaused { .. }
-            | Event::ScheduleResumed { .. }
-            | Event::ScheduleDeleted { .. }
-            | Event::ScheduleTriggered { .. }
-            | Event::WorkflowCompleted { .. }
-            | Event::WorkflowFailed { .. }
-            | Event::WorkflowCancelled { .. }
-            | Event::WorkflowTimedOut { .. }
-            | Event::WorkflowContinuedAsNew { .. } => {}
-        }
-    }
-    false
+    // Reset-aware: a run is terminal only if its current lease ended in a
+    // terminal event. A WorkflowResumed after a terminal reopens the run, so a
+    // reopened run is not treated as terminal (it can receive signals and
+    // complete again).
+    current_lease_terminal(run_segment(history, run)).is_some()
 }
 
 /// Poll the registry for `(id, run)` until the handle appears or the
@@ -431,6 +388,7 @@ const fn event_family(event: &Event) -> EventFamily {
         | Event::WorkflowCancelled { .. }
         | Event::WorkflowTimedOut { .. }
         | Event::WorkflowContinuedAsNew { .. }
+        | Event::WorkflowResumed { .. }
         | Event::SearchAttributesUpdated { .. } => EventFamily::Workflow,
         Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }

@@ -40,6 +40,7 @@ where
     multi_batch_append_advances_sequence(make_store().await).await?;
     stale_expected_sequence_writes_nothing(make_store().await).await?;
     list_active_reflects_projected_status(make_store().await).await?;
+    reopen_returns_failed_workflow_to_active(make_store().await).await?;
     list_workflow_ids_includes_running_and_terminal_histories(make_store().await).await?;
     query_applies_all_filters(make_store().await).await?;
     read_run_chain_orders_continuations(make_store().await).await?;
@@ -258,6 +259,65 @@ async fn list_active_reflects_projected_status(
         &[running],
         "terminal workflow lifecycle events, including continued-as-new, should remove workflows from active listing",
     )
+}
+
+async fn reopen_returns_failed_workflow_to_active(
+    store: Arc<dyn EventStore>,
+) -> Result<(), StoreError> {
+    let reopened = workflow_id();
+
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &reopened,
+            &[workflow_started(1, &reopened, "checkout")?],
+            0,
+        )
+        .await?;
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &reopened,
+            &[workflow_failed_at(2, &reopened, 2)?],
+            1,
+        )
+        .await?;
+
+    expect_empty(
+        store.list_active().await?,
+        "a failed workflow is not active",
+    )?;
+
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &reopened,
+            &[workflow_resumed(3, &reopened)?],
+            2,
+        )
+        .await?;
+
+    expect_contains_exactly(
+        store.list_active().await?,
+        std::slice::from_ref(&reopened),
+        "a reopened (resumed) workflow projects Running and is active again",
+    )?;
+
+    let running = store
+        .query(&WorkflowFilter {
+            status: Some(WorkflowStatus::Running),
+            ..WorkflowFilter::default()
+        })
+        .await?;
+    if !running
+        .iter()
+        .any(|summary| summary.workflow_id == reopened && summary.status == WorkflowStatus::Running)
+    {
+        return Err(StoreError::Backend(String::from(
+            "a reopened workflow must query as Running, not its superseded Failed status",
+        )));
+    }
+    Ok(())
 }
 
 async fn query_applies_all_filters(store: Arc<dyn EventStore>) -> Result<(), StoreError> {
@@ -700,6 +760,14 @@ fn workflow_failed_at(
             message: String::from("failed"),
             details: None,
         },
+    })
+}
+
+fn workflow_resumed(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
+    Ok(Event::WorkflowResumed {
+        envelope: envelope(seq, workflow_id)?,
+        run_id: run_id(1),
+        reopened: vec![aion_core::ActivityId::from_sequence_position(2)],
     })
 }
 

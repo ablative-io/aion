@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aion_core::{Event, RunId, WorkflowId, status_from_events};
+use aion_core::{Event, RunId, WorkflowId, current_lease_terminal, status_from_events};
 use aion_store::EventStore;
 use aion_store::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
 use chrono::{DateTime, Utc};
@@ -120,34 +120,7 @@ fn started_run_id(history: &[Event]) -> Result<RunId, EngineError> {
 }
 
 fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
-    history.iter().rev().find_map(|event| match event {
-        Event::WorkflowCompleted { envelope, .. }
-        | Event::WorkflowFailed { envelope, .. }
-        | Event::WorkflowCancelled { envelope, .. }
-        | Event::WorkflowTimedOut { envelope, .. }
-        | Event::WorkflowContinuedAsNew { envelope, .. } => Some(envelope.recorded_at),
-        Event::WorkflowStarted { .. }
-        | Event::SearchAttributesUpdated { .. }
-        | Event::ActivityScheduled { .. }
-        | Event::ActivityStarted { .. }
-        | Event::ActivityCompleted { .. }
-        | Event::ActivityFailed { .. }
-        | Event::ActivityCancelled { .. }
-        | Event::TimerStarted { .. }
-        | Event::TimerFired { .. }
-        | Event::TimerCancelled { .. }
-        | Event::WithTimeoutCompleted { .. }
-        | Event::SignalReceived { .. }
-        | Event::SignalSent { .. }
-        | Event::ChildWorkflowStarted { .. }
-        | Event::ChildWorkflowCompleted { .. }
-        | Event::ChildWorkflowFailed { .. }
-        | Event::ChildWorkflowCancelled { .. }
-        | Event::ScheduleCreated { .. }
-        | Event::ScheduleUpdated { .. }
-        | Event::SchedulePaused { .. }
-        | Event::ScheduleResumed { .. }
-        | Event::ScheduleDeleted { .. }
-        | Event::ScheduleTriggered { .. } => None,
-    })
+    // Reset-aware close time: the current lease's terminal event, aligned with
+    // the projected status. A reopened (resumed) workflow has no close time.
+    current_lease_terminal(history).map(|event| *event.recorded_at())
 }
