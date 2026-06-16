@@ -20,17 +20,16 @@
 use std::path::PathBuf;
 
 use aion_worker::ActivityFailure;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 
 use crate::schemas::{DEV_OUTPUT_SCHEMA, REVIEW_OUTPUT_SCHEMA, SCOUT_OUTPUT_SCHEMA};
 use crate::shell::{CliRun, Shell};
 use crate::types::{
     AssembleInput, AssembledWave, BriefDocument, CheckResult, CheckVerdict, DevInput, DevReport,
     EnrichInput, GateInput, GateResult, GateScope, GateVerdict, Isolation, LandInput, Landed,
-    Placement, ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport, ReviewRequest,
-    ScopedInput, ScoutInput, ScoutReport, StartupResult, StartupTask, TeardownInput, TornDown,
-    Workspace,
+    ProvisionInput, ResumeInput, ReviewAck, ReviewInput, ReviewReport, ReviewRequest, ScopedInput,
+    ScoutInput, ScoutReport, StartupResult, StartupTask, TeardownInput, TornDown, Workspace,
 };
 
 /// How much of an unparseable norn stdout rides in the terminal failure
@@ -39,80 +38,42 @@ use crate::types::{
 /// payload.
 const UNPARSEABLE_OUTPUT_HEAD: usize = 1000;
 
-/// `provision_workspace`: provision an isolated workspace.
+/// Config directory for headless Claude Code invocations. Isolates workflow
+/// sessions from the user's personal ~/.claude — carries its own settings
+/// (with the diagnostic-crush hook) and session history.
+const CLAUDE_CONFIG_DIR: &str = "~/.claude-workflow";
+
+/// Environment variables injected into every `claude` child process.
+fn claude_envs() -> Vec<(&'static str, &'static str)> {
+    vec![("CLAUDE_CONFIG_DIR", CLAUDE_CONFIG_DIR)]
+}
+
+/// `provision_workspace`: provision an isolated workspace via the `yg` CLI.
 ///
-/// When `clone_url` is present, clones the repo into a temp directory and
-/// creates the branch there — no `yg` needed (the remote machine has no
-/// yggdrasil tree). When absent, falls back to `yg` worktree provisioning.
+/// Only worktree isolation has an implementation; the other typed variants
+/// fail loudly, exactly like the local implementation's seam.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `git`/`yg` cannot run, when the clone
-/// fails, or when the isolation mode has no implementation.
+/// Terminal [`ActivityFailure`] when the isolation mode has no
+/// implementation, when `yg` cannot run, or when either `yg` verb exits
+/// non-zero.
 pub fn provision_workspace(
     shell: &Shell,
     input: ProvisionInput,
 ) -> Result<Workspace, ActivityFailure> {
-    if input.clone_url.is_some() {
-        provision_clone(shell, &input)
-    } else {
-        match input.isolation {
-            Isolation::Worktree => provision_worktree(shell, input),
-            Isolation::Copy | Isolation::Overlay | Isolation::Vm => {
-                Err(ActivityFailure::terminal(format!(
-                    "isolation mode {} is a typed seam with no local implementation",
-                    input.isolation.wire_name()
-                )))
-            }
+    match input.isolation {
+        Isolation::Worktree => provision_worktree(shell, input),
+        Isolation::Copy | Isolation::Overlay | Isolation::Vm => {
+            Err(ActivityFailure::terminal(format!(
+                "isolation mode {} is a typed seam with no local implementation \
+                 (TODO(meridian): exchange-VM dispatch)",
+                input.isolation.wire_name()
+            )))
         }
     }
 }
 
-/// Clone from a URL into a temp directory, create the working branch.
-fn provision_clone(shell: &Shell, input: &ProvisionInput) -> Result<Workspace, ActivityFailure> {
-    let clone_url = input.clone_url.as_deref().ok_or_else(|| {
-        ActivityFailure::terminal("provision_clone called without clone_url".to_owned())
-    })?;
-
-    let branch = format!("stacked-dev-{}", input.brief_id);
-
-    // mktemp -d gives us a unique directory on any unix system.
-    let mktemp_run = require_run(shell, "mktemp", &["-d"], "/tmp", "mktemp -d")?;
-    let temp_dir = mktemp_run.stdout.trim().to_owned();
-    if temp_dir.is_empty() {
-        return Err(ActivityFailure::terminal(
-            "mktemp -d returned an empty path".to_owned(),
-        ));
-    }
-
-    let repo_dir = format!("{temp_dir}/repo");
-
-    require_run(
-        shell,
-        "git",
-        &["clone", clone_url, &repo_dir],
-        &temp_dir,
-        "git clone",
-    )?;
-
-    // Create the working branch from the base ref.
-    require_run(
-        shell,
-        "git",
-        &["checkout", "-b", &branch, &input.base_ref],
-        &repo_dir,
-        "git checkout -b",
-    )?;
-
-    Ok(Workspace {
-        path: repo_dir,
-        branch,
-        placement: Placement::Remote,
-        isolation: Isolation::Copy,
-    })
-}
-
-/// Local worktree provisioning via `yg` — fallback when no `clone_url`.
 fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace, ActivityFailure> {
     let ProvisionInput {
         repo_root,
@@ -120,7 +81,6 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
         base_ref,
         placement,
         isolation,
-        ..
     } = input;
     let base_branch = format!("stacked-dev-{brief_id}");
     let branch = resolve_branch_name(shell, &base_branch, &base_ref, &repo_root)?;
@@ -215,38 +175,75 @@ fn warm_build(shell: &Shell, workspace: &Workspace) -> Result<StartupResult, Act
     }
 }
 
-/// Run the dev agent against the projected dev prompt via the `norn` CLI.
+/// Run the dev agent against the projected dev prompt via Claude Code headless.
+///
+/// Claude Code has no --workspace-root flag, so the working directory is set
+/// to the worktree path. The --name flag sets a deterministic session name
+/// that dev_resume can later --resume by.
 fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure> {
     let session_id = input.workspace.branch.clone();
+    let envs = claude_envs();
 
-    // norn takes the projected prompt positionally; --print is headless,
-    // --resume-if-exists creates or resumes this session, --workspace-root confines file
-    // tools, --output-schema constrains the structured result to the
-    // dev-report shape, and --output-format json emits the final envelope we
-    // decode.
-    let command_run = require_run(
+    let command_run = require_run_with_envs(
         shell,
-        "norn",
+        "claude",
         &[
             "--print",
-            "--reasoning-effort",
-            "x-high",
-            "--session-id",
+            "--dangerously-skip-permissions",
+            "--setting-sources",
+            "user",
+            "--name",
             &session_id,
-            "--resume-if-exists",
-            "--workspace-root",
-            &input.workspace.path,
-            "--output-schema",
+            "--json-schema",
             DEV_OUTPUT_SCHEMA,
             "--output-format",
             "json",
             &input.prompt,
         ],
         &input.workspace.path,
-        "norn dev",
+        &envs,
+        "claude dev",
     )?;
-    let dev_report = parse_report::<DevReport>(&command_run, "norn dev")?;
+    let dev_report = parse_report::<DevReport>(&command_run, "claude dev")?;
     Ok(StartupResult::Developed { dev_report })
+}
+
+/// `dev_resume`: resume the same Claude Code session with feedback
+/// (scoped-check diagnostics). Returns a FULL replacement dev report.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when Claude Code cannot run, exits non-zero,
+/// or answers with output matching neither the bare report nor the
+/// `{"output": …}` envelope.
+pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, ActivityFailure> {
+    let ResumeInput {
+        session_id,
+        feedback,
+        workspace_path,
+    } = input;
+    let envs = claude_envs();
+    let command_run = require_run_with_envs(
+        shell,
+        "claude",
+        &[
+            "--print",
+            "--dangerously-skip-permissions",
+            "--setting-sources",
+            "user",
+            "--resume",
+            &session_id,
+            "--json-schema",
+            DEV_OUTPUT_SCHEMA,
+            "--output-format",
+            "json",
+            &feedback,
+        ],
+        &workspace_path,
+        &envs,
+        "claude resume",
+    )?;
+    parse_report::<DevReport>(&command_run, "claude resume")
 }
 
 /// `scout`: the read-only orientation round in its own deterministic norn
@@ -317,43 +314,6 @@ pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, Act
         "norn review",
     )?;
     parse_report::<ReviewReport>(&command_run, "norn review")
-}
-
-/// `dev_resume`: resume the same dev agent session with feedback (scoped-check
-/// diagnostics). Returns a FULL replacement dev report.
-///
-/// # Errors
-///
-/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
-/// answers with output matching neither the bare report nor the `{"output":
-/// …}` envelope.
-pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, ActivityFailure> {
-    // Resume by the deterministic session id; the feedback is the prompt.
-    // Like the local implementation, resume carries no --workspace-root (the
-    // workspace root is not on ResumeInput yet — TODO(meridian) in locals).
-    let ResumeInput {
-        session_id,
-        feedback,
-    } = input;
-    let command_run = require_run(
-        shell,
-        "norn",
-        &[
-            "--print",
-            "--reasoning-effort",
-            "x-high",
-            "--resume",
-            &session_id,
-            "--output-schema",
-            DEV_OUTPUT_SCHEMA,
-            "--output-format",
-            "json",
-            &feedback,
-        ],
-        ".",
-        "norn resume",
-    )?;
-    parse_report::<DevReport>(&command_run, "norn resume")
 }
 
 /// `scoped_checks`: compute the affected package set from the dependency
@@ -492,84 +452,97 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
     }
 }
 
-/// `request_review`: emit a review request. It only requests — the verdict
-/// arrives later on the `review_verdict` signal.
+/// `request_review`: notify reviewers via collective DM that work is ready
+/// for review. The verdict arrives later on the `review_verdict` signal.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `meridian` cannot run, exits non-zero,
-/// or answers without a parseable response envelope.
-pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
-    // CONFIRMED against the real CLI (live runs, 2026-06-13):
-    // `meridian review request <BRANCH> --reviewer <NAME>... --as Meridian`.
-    // The branch positional must come FIRST: `--reviewer` is greedy
-    // multi-value and swallows a trailing positional as another reviewer.
-    // `--as` names the requesting identity — always the Meridian system
-    // member (the CLI refuses to guess when the workspace has several
-    // members). The meridian workspace resolves from the CLI's own global
-    // config.
+/// Terminal [`ActivityFailure`] when the collective send command cannot run
+/// or any reviewer DM fails to send.
+pub fn request_review(shell: &Shell, input: &ReviewRequest) -> Result<ReviewAck, ActivityFailure> {
     let ReviewRequest {
         workspace,
+        brief_id,
         reviewers,
-        ..
+        dev_result,
+        gate_result,
+        workflow_id,
     } = input;
-    let mut args: Vec<String> = vec![
-        "review".to_owned(),
-        "request".to_owned(),
-        workspace.branch.clone(),
-    ];
-    for reviewer in &reviewers {
-        args.push("--reviewer".to_owned());
-        args.push(reviewer.clone());
+
+    let signal_cmd = format!(
+        "aion signal {workflow_id} review_verdict --payload '{{\"decision\":\"approve\"}}'"
+    );
+
+    let gate_status = match &gate_result.verdict {
+        GateVerdict::Pass => "passed",
+        GateVerdict::Fail { .. } => "failed",
+    };
+
+    let message = format!(
+        "Brief {brief_id} is ready for review.\n\n\
+         Branch: {branch}\n\
+         Worktree: {path}\n\
+         Summary: {summary}\n\
+         Files touched: {files}\n\
+         Gate: {gate_status}\n\n\
+         To approve:\n{signal_cmd}\n\n\
+         To request changes:\naion signal {workflow_id} review_verdict --payload \
+         '{{\"decision\":\"request_changes\",\"notes\":[{{\"note\":\"your feedback here\"}}]}}'",
+        branch = workspace.branch,
+        path = workspace.path,
+        summary = dev_result.summary,
+        files = dev_result.files_touched.join(", "),
+    );
+
+    for reviewer in reviewers {
+        require_run(
+            shell,
+            "collective",
+            &[
+                "send",
+                "--as",
+                "Meridian",
+                "--to",
+                reviewer,
+                "--subject",
+                &format!("Review: {brief_id}"),
+                "--message",
+                &message,
+            ],
+            ".",
+            &format!("collective send to {reviewer}"),
+        )?;
     }
-    args.push("--as".to_owned());
-    args.push("Meridian".to_owned());
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let command_run = require_run(
-        shell,
-        "meridian",
-        &arg_refs,
-        &workspace.path,
-        "meridian review request",
-    )?;
-    // CONFIRMED against the real CLI (live run, 2026-06-13): the response
-    // envelope is `{"branch": .., "reviewers": [{"name", "dm_status", ..}],
-    // ..}` — there is no request id. The branch IS the request's identity
-    // (meridian persists `pending_reviewers` against the branch lifecycle),
-    // so the recorded ack carries it. Every requested reviewer must have
-    // been notified (`dm_status: "sent"`); anything else fails loudly.
-    let response: ReviewRequestResponse = require_json(&command_run, "meridian review request")?;
-    if let Some(unsent) = response
-        .reviewers
-        .iter()
-        .find(|reviewer| reviewer.dm_status != "sent")
-    {
-        return Err(ActivityFailure::terminal(format!(
-            "meridian review request did not notify reviewer {}: dm_status was {:?}",
-            unsent.name, unsent.dm_status
-        )));
-    }
+
     Ok(ReviewAck {
-        request_id: response.branch,
+        request_id: workspace.branch.clone(),
     })
 }
 
-/// `land`: commit the dev rounds' files, then either push + create a PR
-/// (remote) or merge via `yg` (local).
+/// `land`: commit the dev rounds' files on the branch, then the yg-level
+/// stack operation — merge the branch into its tree parent. Local, no PR
+/// machinery.
+///
+/// Confirmed live (2026-06-13): the dev rounds leave norn's work UNCOMMITTED
+/// in the worktree and `yg branch merge` merges committed work only, so
+/// landing commits first. The merge runs from the MAIN repository:
+/// `yg branch merge` removes the branch's worktree as part of landing — run
+/// from inside the worktree it deletes its own git context mid-merge and
+/// dies.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] when `git`/`yg`/`gh` cannot run, when the
-/// commit exits non-zero, or when the push/merge/PR-create exits non-zero.
+/// Terminal [`ActivityFailure`] when `git` or `yg` cannot run, when the
+/// commit exits non-zero (including a dev round that changed nothing —
+/// landing a no-op is an error, never a silent empty merge), or when the
+/// merge exits non-zero.
 pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> {
     let LandInput {
         workspace,
         repo_root,
         base_ref,
         dev_result,
-        clone_url,
     } = input;
-
     require_run(shell, "git", &["add", "-A"], &workspace.path, "git add")?;
     let message = format!("{}: {}", workspace.branch, dev_result.summary);
     require_run(
@@ -579,72 +552,16 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
         &workspace.path,
         "git commit",
     )?;
-
-    if clone_url.is_some() {
-        land_remote(shell, &workspace, &base_ref, &dev_result.summary)
-    } else {
-        land_local(shell, &workspace, &repo_root, &base_ref)
-    }
-}
-
-/// Push the branch and create a PR via `gh`.
-fn land_remote(
-    shell: &Shell,
-    workspace: &Workspace,
-    base_ref: &str,
-    summary: &str,
-) -> Result<Landed, ActivityFailure> {
-    require_run(
-        shell,
-        "git",
-        &["push", "-u", "origin", &workspace.branch],
-        &workspace.path,
-        "git push",
-    )?;
-
-    let title = format!("{}: {}", workspace.branch, summary);
-    require_run(
-        shell,
-        "gh",
-        &[
-            "pr",
-            "create",
-            "--title",
-            &title,
-            "--body",
-            &format!("Automated PR for branch {}", workspace.branch),
-            "--base",
-            base_ref,
-            "--head",
-            &workspace.branch,
-        ],
-        &workspace.path,
-        "gh pr create",
-    )?;
-
-    Ok(Landed {
-        branch: workspace.branch.clone(),
-        merged_into: base_ref.to_owned(),
-    })
-}
-
-/// Merge via `yg` — the local landing path.
-fn land_local(
-    shell: &Shell,
-    workspace: &Workspace,
-    repo_root: &str,
-    base_ref: &str,
-) -> Result<Landed, ActivityFailure> {
     require_run(
         shell,
         "yg",
         &["branch", "merge", &workspace.branch, "--yes"],
-        repo_root,
+        &repo_root,
         "yg branch merge",
     )?;
     Ok(Landed {
-        branch: workspace.branch.clone(),
-        merged_into: base_ref.to_owned(),
+        branch: workspace.branch,
+        merged_into: base_ref,
     })
 }
 
@@ -732,70 +649,38 @@ pub fn assemble_wave(
     crate::assemble::assemble_wave(input)
 }
 
-/// `teardown_workspace`: remove the workspace directory and clean up norn
-/// sessions. Runs on all error paths after provisioning succeeds.
+/// `teardown_workspace`: reclaim build cache from a provisioned workspace.
+///
+/// Preserves the worktree, git branch, and norn session logs so failed
+/// workflows leave their artifacts intact for inspection and diagnosis.
+/// Only runs `cargo clean` to free the build cache disk space.
 ///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] only if the workspace path cannot be removed
-/// and it still exists. Missing paths are already clean — not an error.
+/// Never fails terminally — a `cargo clean` failure is logged but not
+/// propagated, since the teardown is best-effort cleanup on an error path.
 pub fn teardown_workspace(
-    _shell: &Shell,
+    shell: &Shell,
     input: TeardownInput,
 ) -> Result<TornDown, ActivityFailure> {
-    let workspace_path_owned = input.workspace.path;
     let branch = input.workspace.branch;
-    let workspace_path = std::path::Path::new(&workspace_path_owned);
 
-    let mut cleaned = false;
-    if workspace_path.exists() {
-        std::fs::remove_dir_all(workspace_path).map_err(|source| {
-            ActivityFailure::terminal(format!(
-                "teardown: cannot remove workspace {workspace_path_owned}: {source}",
-            ))
-        })?;
-        cleaned = true;
+    if std::path::Path::new(&input.workspace.path).exists() {
+        let _ = shell.run("cargo", &["clean"], &input.workspace.path);
     }
 
-    // Also remove the temp parent if the workspace was a clone (the clone
-    // path is {temp_dir}/repo, so the parent is the mktemp dir).
-    if let Some(parent) = workspace_path.parent()
-        && (parent.starts_with("/tmp") || parent.starts_with("/var/folders"))
-    {
-        let _ = std::fs::remove_dir_all(parent);
-    }
-
-    // Clean up norn sessions for this branch.
-    if let Some(home) = std::env::var_os("HOME") {
-        let sessions_dir = std::path::PathBuf::from(home).join(".norn/sessions");
-        if sessions_dir.is_dir() {
-            for suffix in &["", "-scout", "-review"] {
-                let session_file = sessions_dir.join(format!("{branch}{suffix}.jsonl"));
-                let _ = std::fs::remove_file(session_file);
-            }
-        }
-    }
-
-    Ok(TornDown { branch, cleaned })
+    Ok(TornDown {
+        branch,
+        cleaned: true,
+    })
 }
 
 // --- helpers ----------------------------------------------------------------
 
-/// The `meridian review request` response envelope — only the fields the
-/// handler consumes (extra fields tolerated, like the Gleam field decoder).
-#[derive(Deserialize)]
-struct ReviewRequestResponse {
-    branch: String,
-    reviewers: Vec<ReviewerNotification>,
-}
-
-/// One reviewer's notification outcome inside [`ReviewRequestResponse`].
-#[derive(Deserialize)]
-struct ReviewerNotification {
-    name: String,
-    dm_status: String,
-}
-
+/// Find a norn session ID that isn't already in use. Tries the base ID first,
+/// then appends `-attempt-2`, `-attempt-3`, etc. Norn sessions persist at
+/// `~/.norn/sessions/<id>.jsonl`; a stale session from a previous failed run
+/// blocks reuse of the same ID.
 /// Require a command to run AND exit zero; anything else is a terminal
 /// activity failure carrying the command's diagnostics. Wording identical to
 /// `locals.require_run`.
@@ -806,7 +691,18 @@ fn require_run(
     cwd: &str,
     context: &str,
 ) -> Result<CliRun, ActivityFailure> {
-    match shell.run(executable, args, cwd) {
+    require_run_with_envs(shell, executable, args, cwd, &[], context)
+}
+
+fn require_run_with_envs(
+    shell: &Shell,
+    executable: &str,
+    args: &[&str],
+    cwd: &str,
+    envs: &[(&str, &str)],
+    context: &str,
+) -> Result<CliRun, ActivityFailure> {
+    match shell.run_with_envs(executable, args, cwd, envs) {
         Ok(command_run) if command_run.succeeded() => Ok(command_run),
         Ok(command_run) => Err(ActivityFailure::terminal(format!(
             "{context} failed — exit status {}: {}",
@@ -818,18 +714,6 @@ fn require_run(
             failure.message()
         ))),
     }
-}
-
-/// Decode a command's stdout as JSON; malformed output is a terminal
-/// activity failure carrying the raw text, like `locals.require_json`.
-fn require_json<T: serde::de::DeserializeOwned>(
-    command_run: &CliRun,
-    context: &str,
-) -> Result<T, ActivityFailure> {
-    let trimmed = command_run.stdout.trim();
-    serde_json::from_str(trimmed).map_err(|_| {
-        ActivityFailure::terminal(format!("{context} produced unparseable output: {trimmed}"))
-    })
 }
 
 /// Decode a norn command's stdout as a stage report, generic over the report
@@ -851,8 +735,6 @@ fn parse_report<T: DeserializeOwned>(
         output: T,
     }
 
-    // Use stdout only — stderr carries norn's WARN/INFO log lines which
-    // corrupt the JSON parse.
     let trimmed = command_run.stdout.trim();
     if let Ok(report) = serde_json::from_str::<T>(trimmed) {
         return Ok(report);

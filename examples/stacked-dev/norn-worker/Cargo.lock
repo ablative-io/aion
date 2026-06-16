@@ -1072,7 +1072,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stacked-dev-worker"
+name = "stacked-dev-worker-norn"
 version = "0.1.0"
 dependencies = [
  "aion-worker",

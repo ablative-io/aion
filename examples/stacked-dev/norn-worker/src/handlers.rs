@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use aion_worker::ActivityFailure;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 
 use crate::schemas::{DEV_OUTPUT_SCHEMA, REVIEW_OUTPUT_SCHEMA, SCOUT_OUTPUT_SCHEMA};
 use crate::shell::{CliRun, Shell};
@@ -179,7 +179,6 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
         "norn",
         &[
             "--print",
-            "--fast",
             "--reasoning-effort",
             "x-high",
             "--session-id",
@@ -216,9 +215,8 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
         "norn",
         &[
             "--print",
-            "--fast",
             "--reasoning-effort",
-            "x-high",
+            "medium",
             "--session-id",
             &session_id,
             "--resume-if-exists",
@@ -252,7 +250,6 @@ pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, Act
         "norn",
         &[
             "--print",
-            "--fast",
             "--reasoning-effort",
             "x-high",
             "--session-id",
@@ -293,7 +290,6 @@ pub fn dev_resume(shell: &Shell, input: ResumeInput) -> Result<DevReport, Activi
         "norn",
         &[
             "--print",
-            "--fast",
             "--reasoning-effort",
             "x-high",
             "--resume",
@@ -494,10 +490,14 @@ pub fn request_review(shell: &Shell, input: &ReviewRequest) -> Result<ReviewAck,
             "collective",
             &[
                 "send",
-                "--as", "Meridian",
-                "--to", reviewer,
-                "--subject", &format!("Review: {brief_id}"),
-                "--message", &message,
+                "--as",
+                "Meridian",
+                "--to",
+                reviewer,
+                "--subject",
+                &format!("Review: {brief_id}"),
+                "--message",
+                &message,
             ],
             ".",
             &format!("collective send to {reviewer}"),
