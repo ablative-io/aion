@@ -1,6 +1,6 @@
 {
   "project": "aion",
-  "updated": "2026-06-13",
+  "updated": "2026-06-16",
   "decisions": [
     {
       "id": "ADR-001",
@@ -213,6 +213,24 @@
         "brief_dev is reshaped to thread sealed payloads plus thin facts, and prompt rendering moves into the activity bodies (RM-023)",
         "Replay cost drops — no per-replay re-decode or re-render — and the workflow heap stays small regardless of report size",
         "New agentic families inherit the thin pattern by default through the dev-pipeline template"
+      ],
+      "supersedes": [],
+      "superseded_by": ""
+    },
+    {
+      "id": "ADR-013",
+      "title": "Reopen reuses the existing single-writer Recorder; no new lock primitive",
+      "status": "decided",
+      "scope": "aion-durability",
+      "date": "2026-06-16",
+      "decided_by": "Tom",
+      "context": "The reopen operation (AD-012) must append WorkflowReopened to a terminal-Failed workflow and respawn it, and invariant #3 requires exactly one Recorder per workflow across that whole sequence. Two situations exist: the workflow failed in this server's lifetime (its handle is still registered, residency Suspended) or it failed before a restart (no handle exists at all). The fork: reuse the existing per-workflow write lock, or introduce a new global per-workflow reopen-lock primitive to serialise reopen attempts. Raised because Tom initially read 'single writer' as conflicting with the engine's massive-concurrency goal; clarified that invariant #3 is per-workflow (one writer for one workflow's event log, a requirement of deterministic replay), while concurrency is between workflows (millions of independent processes) and even within a workflow the activity work still fans out — only the per-workflow log append is serialised.",
+      "decision": "The reopen operation reuses the existing per-workflow write lock — the handle's recorder Arc<Mutex<Recorder>> — serialised at creation by the registry mutex via an atomic insert-if-absent (a Suspended handle carrying a Recorder::resume_at at the history head is created when none exists, else the existing one is reused). One continuous Recorder is held from the WorkflowReopened append through the respawn; register_recovered_resident is parameterised to accept that injected recorder so reopen and startup recovery share one respawn-and-register path. Rejected: a dedicated global reopen-lock map — it adds a second concurrency mechanism when the recorder mutex already IS the per-workflow write lock, and the recorder's expected-sequence discipline already turns a racing double-reopen into a hard SequenceConflict (safety), so a lock would only add graceful serialisation, not correctness.",
+      "quote": "I think I agree with your recommended approach",
+      "consequences": [
+        "register_recovered_resident is refactored to accept an externally-held Recorder; the refactor must be behaviour-preserving for startup recovery",
+        "Invariant #3 is reaffirmed for reopen and is explicitly per-workflow, not global — cross-workflow concurrency is unaffected",
+        "REVISIT (deferred, not decided): the single-writer-per-workflow model may be re-examined once the liminal messaging bus (improved-NATS, fan-in/fan-out) and the hematite storage engine (multi-reader/multi-writer, embedded), both built on beamr, mature — they could change the per-workflow concurrency and append story. Flagged here as a deliberate come-back-to; no change is made now."
       ],
       "supersedes": [],
       "superseded_by": ""
