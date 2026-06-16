@@ -1,0 +1,137 @@
+{
+  "id": "AD-012",
+  "cluster": "aion-durability",
+  "title": "Reopen operation — re-drive a failed workflow from the failed step",
+  "depends_on": ["AD-011", "AD-010", "AD-007", "AD-006", "AD-005"],
+  "blocked_by": [],
+  "checklist": ["C49", "C50", "C51", "C52", "C53", "C54"],
+  "stories": ["S12", "S11"],
+  "purpose": "Build the engine-level reopen operation on top of the AD-011 foundation: turn a terminal-Failed workflow back into a running one that re-executes from the step that failed, reusing the recorded results of every step that already succeeded. AD-011 added the WorkflowReopened event, the reset-aware terminality, and the cursor reopen rule; this brief adds the operation that actually appends WorkflowReopened to a dead workflow and re-drives it through the existing recovery machinery. The crux is invariant #3 (single writer): appending to a terminated workflow and then respawning it must use exactly one continuous Recorder. The operation takes only a workflow id — the failed step(s) and the namespace are derived from history — so the operator does no bookkeeping. This brief is engine-only; the ReopenWorkflow RPC and the aion reopen CLI are AO-007, and the aion list failed_step/failure_reason columns are the visibility brief.",
+  "task": "Add an engine reopen operation (Engine::reopen_workflow by workflow id + run) that: (1) loads history and validates via current_lease_terminal that the run is genuinely terminal-Failed, returning a typed EngineError for not-found, not-terminal, terminal-for-a-non-Failed-reason, or already-Running; (2) computes the reopened activity set from history — the activities that ended in a terminal failure with no later successful attempt in the current lease, never an in-flight (scheduled, no terminal) one; (3) upholds invariant #3 by ensuring exactly one continuous Recorder from the WorkflowReopened append through the respawn: ensure a per-workflow handle exists (insert-if-absent under the registry lock, carrying a Recorder positioned at the history head), lock that handle's recorder, append WorkflowReopened through it, and hand that same recorder to the resident-registration flow; (4) reuses the recovery path to respawn + replay by parameterising register_recovered_resident to accept the externally-held recorder (so startup recovery and reopen share one respawn-and-register path), re-deriving the namespace from history so the reopened step re-dispatches to a worker in the workflow's own namespace; (5) handles every edge case — reject non-Failed, double-reopen is a graceful already-Running reject not a second marker, a reopened run that fails again is reopenable again, and a server restart after a reopen re-drives via the existing startup path with no special-casing. Add EngineError::InvalidState for the precondition failures. Cover every behaviour with real runtime tests, including the namespace-affinity guarantee.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Engine reopen operation with terminal-Failed validation",
+      "spec": "THE SYSTEM SHALL expose an engine reopen operation, keyed by workflow id and run, that loads history, validates via current_lease_terminal that the run is currently terminal-Failed, and rejects any workflow that is not found, not terminal, terminal for a non-Failed reason, or already Running with a typed EngineError.",
+      "acceptance": [
+        "Engine::reopen_workflow(&self, id: &WorkflowId, run: &RunId) -> Result<WorkflowHandle, EngineError> exists, takes the shutdown-gate operation guard like cancel/continue_as_new, and delegates to a new lifecycle::reopen module (mod.rs stays declarations-only).",
+        "The operation reads history via the EventStore and uses aion_core::current_lease_terminal to decide the current-lease terminal: it proceeds only when that is Some(Event::WorkflowFailed { .. }) for the target run.",
+        "EngineError::InvalidState { reason } is added and returned (with a message naming the actual status) for: history present but current lease not terminal; current-lease terminal is Completed/Cancelled/TimedOut rather than Failed; the workflow is already Running (live resident or already reopened). WorkflowNotFound is returned when no history exists for the id/run.",
+        "Only terminal-Failed is reopenable in this cut; the rejection paths are covered by real runtime tests over InMemoryStore (one per rejection reason).",
+        "No behaviour changes for any workflow that is never reopened."
+      ],
+      "files": {
+        "create": [
+          "crates/aion/src/lifecycle/reopen.rs"
+        ],
+        "modify": [
+          "crates/aion/src/engine/api.rs",
+          "crates/aion/src/error.rs",
+          "crates/aion/src/lifecycle/mod.rs"
+        ]
+      },
+      "checklist": ["C49"],
+      "stories": ["S12", "S11"]
+    },
+    {
+      "id": "R2",
+      "title": "Compute the reopened activity set from history",
+      "spec": "THE SYSTEM SHALL compute the reopened activity set for the WorkflowReopened event from history as exactly the activities that ended in a terminal failure with no later successful attempt in the current lease, never including a merely in-flight (scheduled, no terminal) activity.",
+      "acceptance": [
+        "A pure function derives the reopened keys from the run's event segment: an activity key is included iff its latest recorded outcome in the lease is a terminal ActivityFailed with no later ActivityCompleted/ActivityFailed superseding it.",
+        "An activity that was scheduled but never reached a terminal outcome at crash time is NOT included (it already re-dispatches via the existing collect_all recovery path).",
+        "A concurrent fan-out that failed several activities yields every terminal-failed key with no later success.",
+        "The computed keys are written into the WorkflowReopened event and match the ActivityId representation the cursor reset rule (AD-011 R3) consumes.",
+        "Real runtime tests cover: single failed step; in-flight sibling excluded; concurrent multi-failure; an activity that failed-then-succeeded-in-an-earlier-lease is not re-listed."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion/src/lifecycle/reopen.rs"
+        ]
+      },
+      "checklist": ["C50"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R3",
+      "title": "Single continuous Recorder from append through respawn (invariant #3)",
+      "spec": "THE SYSTEM SHALL hold exactly one continuous Recorder from the WorkflowReopened append through the respawn, ensuring a per-workflow handle exists under the registry lock and reusing that handle's recorder for both the append and the resident registration, so no second writer is ever constructed.",
+      "acceptance": [
+        "The reopen operation ensures a per-workflow handle exists by an atomic insert-if-absent under the registry lock: if the failed workflow has no live handle (e.g. after a restart) a Suspended handle is created carrying a Recorder::resume_at positioned at the current history head; if a Suspended handle already exists (failed in this lifetime) it is reused.",
+        "The WorkflowReopened append goes through that handle's recorder while its lock is held; the same recorder (now advanced past the marker) is handed to the resident-registration flow — never a freshly constructed one.",
+        "register_recovered_resident is parameterised to accept the externally-held recorder (its current self-constructing call site in startup recovery passes the recorder it builds), so startup recovery and reopen share one respawn-and-register path; the refactor changes no startup behaviour.",
+        "After reopen the handle is Resident with cached status Running and the same recorder; invariant #3 holds (a SequenceConflict on the append surfaces as a hard error, evidencing the single-writer discipline, with no head re-read/retry).",
+        "Real runtime tests cover both the handle-present and handle-absent (post-restart-simulated) paths and assert one recorder identity is used throughout."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion/src/lifecycle/reopen.rs",
+          "crates/aion/src/engine/startup.rs",
+          "crates/aion/src/engine/registry/table.rs"
+        ]
+      },
+      "checklist": ["C51", "C52"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R4",
+      "title": "Respawn + replay with namespace-affinity guarantee",
+      "spec": "THE SYSTEM SHALL re-drive the reopened workflow through the existing recovery respawn-and-replay path, re-deriving the namespace from history so the reopened step re-dispatches to a worker in the workflow's own namespace — a remote-namespace workflow reopens on a remote worker, never local.",
+      "acceptance": [
+        "After the WorkflowReopened append the operation spawns a fresh BEAM process at the entrypoint, resolves the pinned .aion package version, and registers the handle as Resident exactly as startup recovery does, with lazy per-NIF replay returning recorded results for completed steps and ResumeLive at the reopened step.",
+        "Namespace is re-derived from history (namespace_from_history) and the reopened step re-dispatches keyed by (namespace, activity_type); a remote-namespace workflow's reopened step is offered only to a remote worker.",
+        "The namespace-affinity guarantee is pinned by a real test asserting the reopened step's dispatch namespace equals the workflow's recorded namespace (the inverse of the 2026-06-15 recovered-remote-routing-local bug).",
+        "If no worker is registered in the namespace the reopened step parks and waits for one, exactly as normal dispatch does — no fallback to another namespace.",
+        "A returned WorkflowHandle reflects the now-Running run."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion/src/lifecycle/reopen.rs",
+          "crates/aion/src/engine/startup.rs"
+        ]
+      },
+      "checklist": ["C53"],
+      "stories": ["S12", "S11"]
+    },
+    {
+      "id": "R5",
+      "title": "Edge cases: double reopen, re-failure, restart durability",
+      "spec": "THE SYSTEM SHALL handle reopen edge cases safely: a concurrent or repeated reopen is a graceful already-Running reject rather than a second marker, a reopened run that fails again is reopenable again, and a server restart after a reopen re-drives via the existing startup recovery path with no special-casing.",
+      "acceptance": [
+        "A second reopen of a workflow that is already Running (reopened) returns EngineError::InvalidState (already Running) and does not append a second WorkflowReopened; two racing reopens never both append (the recorder's expected-seq discipline guarantees at most one append, and the loser surfaces a typed error, not corruption).",
+        "A reopened run that records a fresh WorkflowFailed is reopenable again; history accumulates WorkflowFailed -> WorkflowReopened -> WorkflowFailed and the projection is always the last event.",
+        "After a reopen, a simulated restart (rebuild from store + run startup recovery) re-derives the workflow as Running and re-drives the reopened step through the existing path, with no reopen-specific special-casing in startup.",
+        "Real runtime tests over InMemoryStore cover the double-reopen reject, the re-failure-then-reopen-again chain, and the restart-after-reopen durability case."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion/src/lifecycle/reopen.rs"
+        ]
+      },
+      "checklist": ["C54"],
+      "stories": ["S11"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add the ReopenWorkflow server RPC, the client op, or the aion reopen CLI — that is AO-007.",
+    "SHALL NOT add failed_step/failure_reason summary projection or any aion list output change — that is the visibility brief.",
+    "SHALL NOT introduce automatic retry, classification, or any RetryPolicy plumbing — that is the L1+L2 follow-on.",
+    "SHALL NOT add a new global per-workflow lock primitive — the per-workflow write lock is the existing handle recorder mutex, serialised at insertion by the registry lock.",
+    "SHALL NOT allow reopening any status other than Failed in this cut (Cancelled/TimedOut are a named follow-on).",
+    "SHALL NOT change the WorkflowReopened event shape, the status projection, the cursor reset rule, or the reset-aware terminality — those are AD-011 and are reused unchanged.",
+    "SHALL NOT alter startup recovery behaviour for any workflow that is never reopened — the register_recovered_resident refactor is behaviour-preserving."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes with no #[allow]/#[expect]/#[ignore] bypasses.",
+    "cargo fmt --check passes.",
+    "cargo test across aion-core, aion-store, aion-store-libsql, aion, and aion-server passes, including all new reopen-operation tests.",
+    "Every touched file remains within the 500-code-line limit (excluding tests/comments/whitespace); split by responsibility if a file would exceed it.",
+    "The terminal-Failed validation, the reopened-set computation, the single-continuous-recorder discipline (invariant #3), the namespace-affinity guarantee, and every edge case are each proven by real runtime tests (no #[ignore], no env gate).",
+    "register_recovered_resident's refactor is proven behaviour-preserving by the existing startup-recovery tests continuing to pass unchanged.",
+    "Rigorous Opus sub-agent review against this brief and docs/WORKFLOW-REOPEN-DESIGN.md before the work is considered done."
+  ]
+}
