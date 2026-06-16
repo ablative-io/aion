@@ -219,7 +219,7 @@ pub(crate) fn terminal_outcome_from_history(
     run_id: &RunId,
 ) -> Option<TerminalOutcome> {
     // Reset-aware: scope to the run, then take the current lease's terminal
-    // event. A WorkflowResumed after a terminal supersedes it, so a reopened run
+    // event. A WorkflowReopened after a terminal supersedes it, so a reopened run
     // reports no terminal outcome until it terminates again.
     match current_lease_terminal(run_segment(events, run_id))? {
         Event::WorkflowCompleted { result, .. } => Some(TerminalOutcome::Completed(result.clone())),

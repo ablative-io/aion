@@ -452,7 +452,7 @@ impl Engine {
 
 pub(crate) fn terminal_outcome_from_history(events: &[Event]) -> Option<TerminalOutcome> {
     // Reset-aware via the shared single-source predicate: the current lease's
-    // terminal event, where a reopen (WorkflowResumed) supersedes any earlier
+    // terminal event, where a reopen (WorkflowReopened) supersedes any earlier
     // terminal.
     match aion_core::current_lease_terminal(events)? {
         Event::WorkflowCompleted { result, .. } => Some(TerminalOutcome::Completed(result.clone())),

@@ -93,7 +93,7 @@ everything already done, so **only the failed step re-runs**.
 invariant "status is a projection; each terminal status has exactly one terminal
 event" (CLAUDE.md #4) and the Resident/Suspended residency flag. A `Failed`
 workflow has a `WorkflowFailed` event; history is append-only, so resume cannot
-delete it. The likely shape is a new compensating event (e.g. `WorkflowResumed`
+delete it. The likely shape is a new compensating event (e.g. `WorkflowReopened`
 or an activity-level retry-requested event) that supersedes the terminal failure
 in the projection, returns the workflow to `Resident`/`Running`, and triggers
 re-dispatch of the failed step. This decision touches durability and needs
@@ -131,8 +131,8 @@ clean terminal we get now. So L1 and L2 land together as one deliverable.
 ## 5. Default posture for agent steps
 
 Classify transient → retry with generous backoff; on exhaustion, leave the
-workflow **Failed-but-Resumable** (don't tear down), and print a
-`resume with: aion resume <id>` hint the way the pipeline already prints the
+workflow **Failed-but-Reopenable** (don't tear down), and print a
+`reopen with: aion reopen <id>` hint the way the pipeline already prints the
 review-signal commands.
 
 ## 6. Sequencing & rough effort

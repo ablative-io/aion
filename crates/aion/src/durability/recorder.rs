@@ -384,26 +384,26 @@ impl Recorder {
         Ok(())
     }
 
-    /// Records a reopen of a failed run for resume.
+    /// Records a reopen of a failed run.
     ///
     /// The reopen supersedes the run's prior terminal event in the status
     /// projection (returning it to Running) and names the activities to
     /// re-dispatch on replay. It refreshes the visibility projection so the
     /// reopened workflow is listed as active again. This is the sole append
-    /// path for [`Event::WorkflowResumed`]; like every recorded event it lands
+    /// path for [`Event::WorkflowReopened`]; like every recorded event it lands
     /// through the single-writer sequence discipline.
     ///
     /// # Errors
     ///
     /// Returns [`DurabilityError`] if the event store rejects the append or the
     /// sequence tracker cannot advance after a successful append.
-    pub async fn record_workflow_resumed(
+    pub async fn record_workflow_reopened(
         &mut self,
         recorded_at: DateTime<Utc>,
         run_id: RunId,
         reopened: Vec<ActivityId>,
     ) -> Result<(), DurabilityError> {
-        self.append_with(recorded_at, |envelope| Event::WorkflowResumed {
+        self.append_with(recorded_at, |envelope| Event::WorkflowReopened {
             envelope,
             run_id,
             reopened,
@@ -843,7 +843,7 @@ fn visibility_record_from_history(
 
 fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
     // Reset-aware close time, aligned with the projected status: a reopened
-    // (resumed) workflow has no close time until it terminates again.
+    // (reopened) workflow has no close time until it terminates again.
     aion_core::current_lease_terminal(history).map(|event| *event.recorded_at())
 }
 
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_workflow_resumed_and_projects_running()
+    async fn records_workflow_reopened_and_projects_running()
     -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = workflow_id(1);
         let run_id = aion_core::RunId::new(uuid::Uuid::from_u128(1));
@@ -1027,7 +1027,7 @@ mod tests {
             )
             .await?;
         recorder
-            .record_workflow_resumed(
+            .record_workflow_reopened(
                 recorded_at(3),
                 run_id,
                 vec![aion_core::ActivityId::from_sequence_position(2)],
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(history.len(), 3);
         assert_eq!(history[2].seq(), 3);
         assert_eq!(recorder.current_head(), 3);
-        assert!(matches!(history[2], Event::WorkflowResumed { .. }));
+        assert!(matches!(history[2], Event::WorkflowReopened { .. }));
         assert_eq!(
             aion_core::status_from_events(&history),
             aion_core::WorkflowStatus::Running,

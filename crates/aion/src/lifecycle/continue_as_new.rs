@@ -175,7 +175,7 @@ fn guard_no_pending_work(events: &[Event]) -> Result<(), EngineError> {
             | Event::WorkflowCancelled { .. }
             | Event::WorkflowTimedOut { .. }
             | Event::WorkflowContinuedAsNew { .. }
-            | Event::WorkflowResumed { .. }
+            | Event::WorkflowReopened { .. }
             | Event::SearchAttributesUpdated { .. }
             | Event::TimerStarted { .. }
             | Event::TimerFired { .. }

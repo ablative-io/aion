@@ -77,7 +77,7 @@ const fn event_status(event: &Event) -> WorkflowStatus {
         Event::WorkflowContinuedAsNew { .. } => WorkflowStatus::ContinuedAsNew,
         Event::WorkflowStarted { .. }
         // A reopen returns the workflow to Running at the moment it is recorded.
-        | Event::WorkflowResumed { .. }
+        | Event::WorkflowReopened { .. }
         | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }

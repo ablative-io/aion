@@ -292,7 +292,7 @@ async fn reopen_returns_failed_workflow_to_active(
         .append(
             crate::store::conformance_write_token(),
             &reopened,
-            &[workflow_resumed(3, &reopened)?],
+            &[workflow_reopened(3, &reopened)?],
             2,
         )
         .await?;
@@ -300,7 +300,7 @@ async fn reopen_returns_failed_workflow_to_active(
     expect_contains_exactly(
         store.list_active().await?,
         std::slice::from_ref(&reopened),
-        "a reopened (resumed) workflow projects Running and is active again",
+        "a reopened workflow projects Running and is active again",
     )?;
 
     let running = store
@@ -763,8 +763,8 @@ fn workflow_failed_at(
     })
 }
 
-fn workflow_resumed(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
-    Ok(Event::WorkflowResumed {
+fn workflow_reopened(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
+    Ok(Event::WorkflowReopened {
         envelope: envelope(seq, workflow_id)?,
         run_id: run_id(1),
         reopened: vec![aion_core::ActivityId::from_sequence_position(2)],

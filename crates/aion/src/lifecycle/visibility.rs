@@ -121,6 +121,6 @@ fn started_run_id(history: &[Event]) -> Result<RunId, EngineError> {
 
 fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
     // Reset-aware close time: the current lease's terminal event, aligned with
-    // the projected status. A reopened (resumed) workflow has no close time.
+    // the projected status. A reopened workflow has no close time.
     current_lease_terminal(history).map(|event| *event.recorded_at())
 }

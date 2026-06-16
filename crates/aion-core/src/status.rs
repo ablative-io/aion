@@ -56,7 +56,7 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
             // A run start and a reopen both put the run in Running. A reopen
             // supersedes the run's prior terminal event under this same
             // last-lifecycle-event-wins scan.
-            Event::WorkflowStarted { .. } | Event::WorkflowResumed { .. } => {
+            Event::WorkflowStarted { .. } | Event::WorkflowReopened { .. } => {
                 Some(WorkflowStatus::Running)
             }
             Event::WorkflowCompleted { .. } => Some(WorkflowStatus::Completed),
@@ -92,7 +92,7 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
 
 /// Returns the terminal lifecycle event of the run's current lease, or `None`
 /// when the run is not currently terminal — either it never recorded a terminal
-/// event, or a later [`Event::WorkflowResumed`] reopened it.
+/// event, or a later [`Event::WorkflowReopened`] reopened it.
 ///
 /// This is the single reset-aware terminal predicate every site derives from:
 /// close-time is its `recorded_at`, the terminal outcome is a match on the
@@ -112,7 +112,7 @@ pub fn current_lease_terminal(events: &[Event]) -> Option<&Event> {
             | Event::WorkflowTimedOut { .. }
             | Event::WorkflowContinuedAsNew { .. } => Some(Some(event)),
             // Reset points: the current lease has no terminal before them.
-            Event::WorkflowStarted { .. } | Event::WorkflowResumed { .. } => Some(None),
+            Event::WorkflowStarted { .. } | Event::WorkflowReopened { .. } => Some(None),
             Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
@@ -413,8 +413,8 @@ mod tests {
         RunId::new(uuid::Uuid::from_u128(1))
     }
 
-    fn workflow_resumed(seq: u64, reopened: Vec<ActivityId>) -> Event {
-        Event::WorkflowResumed {
+    fn workflow_reopened(seq: u64, reopened: Vec<ActivityId>) -> Event {
+        Event::WorkflowReopened {
             envelope: envelope(seq),
             run_id: run_id(),
             reopened,
@@ -422,14 +422,14 @@ mod tests {
     }
 
     #[test]
-    fn resume_after_failure_projects_running() -> Result<(), Box<dyn std::error::Error>> {
+    fn reopen_after_failure_projects_running() -> Result<(), Box<dyn std::error::Error>> {
         let events = vec![
             workflow_started(1)?,
             Event::WorkflowFailed {
                 envelope: envelope(2),
                 error: workflow_error("transient"),
             },
-            workflow_resumed(3, vec![ActivityId::from_sequence_position(2)]),
+            workflow_reopened(3, vec![ActivityId::from_sequence_position(2)]),
         ];
 
         assert_eq!(status_from_events(&events), WorkflowStatus::Running);
@@ -437,14 +437,14 @@ mod tests {
     }
 
     #[test]
-    fn resume_then_new_terminal_projects_that_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    fn reopen_then_new_terminal_projects_that_terminal() -> Result<(), Box<dyn std::error::Error>> {
         let events = vec![
             workflow_started(1)?,
             Event::WorkflowFailed {
                 envelope: envelope(2),
                 error: workflow_error("transient"),
             },
-            workflow_resumed(3, vec![ActivityId::from_sequence_position(2)]),
+            workflow_reopened(3, vec![ActivityId::from_sequence_position(2)]),
             Event::WorkflowCompleted {
                 envelope: envelope(4),
                 result: payload("result")?,
@@ -474,7 +474,7 @@ mod tests {
         ));
 
         let mut reopened = failed.clone();
-        reopened.push(workflow_resumed(
+        reopened.push(workflow_reopened(
             3,
             vec![ActivityId::from_sequence_position(2)],
         ));
@@ -494,7 +494,7 @@ mod tests {
                 envelope: envelope(2),
                 error: workflow_error("boom"),
             },
-            workflow_resumed(3, vec![ActivityId::from_sequence_position(2)]),
+            workflow_reopened(3, vec![ActivityId::from_sequence_position(2)]),
             Event::WorkflowCompleted {
                 envelope: envelope(4),
                 result: payload("result")?,

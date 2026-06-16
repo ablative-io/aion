@@ -237,14 +237,14 @@ workflow_type: string | null,
 /**
  * Run identifier for the current run that is being continued.
  */
-parent_run_id: RunId, } } | { "type": "WorkflowResumed", "data": { 
+parent_run_id: RunId, } } | { "type": "WorkflowReopened", "data": { 
 /**
  * Recording metadata for this event.
  */
 envelope: EventEnvelope, 
 /**
  * Run being reopened — the run that recorded the superseded terminal
- * event and that the resumed execution continues.
+ * event and that the reopened execution continues.
  */
 run_id: RunId, 
 /**

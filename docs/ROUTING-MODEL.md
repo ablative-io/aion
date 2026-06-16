@@ -1,12 +1,12 @@
 # Routing model — namespace, task-queue, node
 
 > Status: design notes, not yet briefs. Captured 2026-06-16 during the L3
-> (workflow resume) design discussion. Records the agreed direction for how
+> (workflow reopen) design discussion. Records the agreed direction for how
 > work is routed to workers so we can build it deliberately rather than letting
 > it stay as the current single-dimension accident.
 >
 > Decision so far: **workflows are keyed to a namespace, set at the workflow
-> level.** L3 (resume) builds on the namespace dimension as it exists today; the
+> level.** L3 (reopen) builds on the namespace dimension as it exists today; the
 > namespace/task-queue split (Tier 2 below) is the next brief after L3; node
 > affinity (Tier 3) is a later follow-on. Nothing in Tier 2/3 is implemented.
 
@@ -38,25 +38,25 @@ other two are names without teeth.
 
 - **node** — the specific device a worker runs on. The unit of *physical*
   affinity: when a workflow's external state lives on one machine (a git
-  worktree, a norn session, cloned files), a resumed or continued run has to
+  worktree, a norn session, cloned files), a reopened or continued run has to
   land back on **that** device. Today there is no node identity in routing.
 
 **Worker backends and resumability (decided 2026-06-16).** Worker flavours can
 run different agent backends — norn or Claude Code — behind the same structured
 output, so the brief/handler logic is unchanged; only the agent invocation
-differs. The two backends differ in *session resume*, which matters because L3
-resume relies on a step reconnecting to its prior session (see
-`docs/WORKFLOW-RESUME-DESIGN.md` §13):
+differs. The two backends differ in *session reopen*, which matters because L3
+reopen relies on a step reconnecting to its prior session (see
+`docs/WORKFLOW-REOPEN-DESIGN.md` §13):
 - **norn**: `--session-id <branch>` + `--resume-if-exists` — a re-dispatched
   step reconnects to the same branch-keyed session automatically. Fully
-  resumable.
+  reopenable.
 - **Claude Code**: the session id must be a valid UUID; you can instead set a
-  *name* and resume by that name, but there is **no `--resume-if-exists`
+  *name* and reopen by that name, but there is **no `--resume-if-exists`
   equivalent**. So Claude workers run **locally** and are treated as best-effort
-  / effectively non-resumable for now — be careful with them. Making a
-  Claude-backed step auto-resume would need worker-side run-then-retry-with-
-  resume logic (try; if the named session already exists, re-invoke with the
-  resume flag) or a workflow change. Deferred — more complexity than needed now.
+  / effectively non-reopenable for now — be careful with them. Making a
+  Claude-backed step auto-reopen would need worker-side run-then-retry-with-
+  reopen logic (try; if the named session already exists, re-invoke with the
+  reopen flag) or a workflow change. Deferred — more complexity than needed now.
 
 Hierarchy: **namespace ⊃ task-queue ⊃ node**. A workflow picks a namespace;
 task queues partition workers within it; a node is a specific worker location.
@@ -131,13 +131,13 @@ Tier 2.
 - activity-level task-queue selection in the Gleam SDK (how a step says "run me
   on the claude queue"), threaded through the dispatch config into the engine —
   same path the activity labels already ride.
-- record `task_queue` in history (in `ActivityScheduled`) so resume/recovery can
+- record `task_queue` in history (in `ActivityScheduled`) so reopen/recovery can
   re-target the same queue (it is **not** recorded today).
 - tests across all of it.
 Medium effort; needs the design pass for the open questions in §5.
 
 ### Tier 3 — node affinity (later follow-on)
-Worker node identity + sticky pinning so a workflow resumes/continues on the
+Worker node identity + sticky pinning so a workflow reopens/continues on the
 **same physical device** that holds its external state. Biggest of the three;
 separate design. Needed when a namespace+task-queue ever has more than one
 worker on different machines.
@@ -157,15 +157,15 @@ worker on different machines.
   cursor's keyspace; verify the round-robin + closed-channel fallback still hold
   per `(namespace, task_queue, activity_type)`.
 
-## 6. Relationship to L3 (workflow resume)
+## 6. Relationship to L3 (workflow reopen)
 
-L3 and this routing split are **decoupled**. L3 keys resume affinity on
-**namespace**, which is durable today, so it already returns a resumed
-`remote` workflow to a `remote` worker (the requirement that a remote resume
+L3 and this routing split are **decoupled**. L3 keys reopen affinity on
+**namespace**, which is durable today, so it already returns a reopened
+`remote` workflow to a `remote` worker (the requirement that a remote reopen
 land on the device holding the files is met by preserving the namespace). L3 is
 designed to preserve the workflow's **whole recorded routing identity**, so when
 task-queue becomes a durable dimension (Tier 2) and node affinity arrives
-(Tier 3), resume picks them up with no rework — the routing identity just gains
-fields that resume already carries forward wholesale.
+(Tier 3), reopen picks them up with no rework — the routing identity just gains
+fields that reopen already carries forward wholesale.
 
 See `docs/WORKFLOW-RESILIENCE.md` for L3 itself.

@@ -326,7 +326,7 @@ impl HistoryCursor {
                     ..
                 } if event_activity_id == &activity_id => {
                     matched.push(index);
-                    // A reopen (resume) supersedes this recorded failure: treat
+                    // A reopen supersedes this recorded failure: treat
                     // it like a non-terminal retry attempt and keep walking, so
                     // a later recorded attempt resolves the activity, or — with
                     // none yet — the walk exhausts and the activity re-dispatches
@@ -463,7 +463,7 @@ impl HistoryCursor {
         })
     }
 
-    /// Whether a later [`Event::WorkflowResumed`] names `activity_id` among its
+    /// Whether a later [`Event::WorkflowReopened`] names `activity_id` among its
     /// reopened activities. A reopen supersedes the activity's recorded terminal
     /// failure, so the walk treats that failure as a non-terminal attempt and
     /// continues — to a later recorded attempt, or to exhaustion so the activity
@@ -472,7 +472,7 @@ impl HistoryCursor {
         self.events.iter().skip(start).any(|event| {
             matches!(
                 event,
-                Event::WorkflowResumed { reopened, .. } if reopened.contains(activity_id)
+                Event::WorkflowReopened { reopened, .. } if reopened.contains(activity_id)
             )
         })
     }
@@ -547,7 +547,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowCancelled { .. } => "WorkflowCancelled",
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
-        Event::WorkflowResumed { .. } => "WorkflowResumed",
+        Event::WorkflowReopened { .. } => "WorkflowReopened",
         Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
@@ -659,8 +659,8 @@ mod tests {
         })
     }
 
-    fn resumed(seq: u64, reopened: &[u64]) -> Result<Event, Box<dyn std::error::Error>> {
-        Ok(Event::WorkflowResumed {
+    fn reopened(seq: u64, reopened: &[u64]) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowReopened {
             envelope: envelope(seq)?,
             run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
             reopened: reopened
@@ -675,7 +675,7 @@ mod tests {
         let mut cursor = HistoryCursor::new(vec![
             scheduled(1, 0)?,
             failed(2, 0, 1, ActivityErrorKind::Terminal)?,
-            resumed(3, &[0])?,
+            reopened(3, &[0])?,
         ])?;
 
         let result =
@@ -694,7 +694,7 @@ mod tests {
         let mut cursor = HistoryCursor::new(vec![
             scheduled(1, 0)?,
             failed(2, 0, 1, ActivityErrorKind::Terminal)?,
-            resumed(3, &[0])?,
+            reopened(3, &[0])?,
             scheduled(4, 0)?,
             completed(5, 0)?,
         ])?;
@@ -743,7 +743,7 @@ mod tests {
         let mut cursor = HistoryCursor::new(vec![
             scheduled(1, 0)?,
             failed(2, 0, 1, ActivityErrorKind::Terminal)?,
-            resumed(3, &[0])?,
+            reopened(3, &[0])?,
             scheduled(4, 0)?,
             completed(5, 0)?,
             scheduled(6, 1)?,
@@ -781,7 +781,7 @@ mod tests {
         let mut cursor = HistoryCursor::new(vec![
             scheduled(1, 0)?,
             failed(2, 0, 1, ActivityErrorKind::Terminal)?,
-            resumed(3, &[5])?,
+            reopened(3, &[5])?,
         ])?;
 
         let result =

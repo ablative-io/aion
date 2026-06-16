@@ -337,7 +337,7 @@ impl Engine {
 
 pub(crate) fn run_has_terminal_history(history: &[Event], run: &RunId) -> bool {
     // Reset-aware: a run is terminal only if its current lease ended in a
-    // terminal event. A WorkflowResumed after a terminal reopens the run, so a
+    // terminal event. A WorkflowReopened after a terminal reopens the run, so a
     // reopened run is not treated as terminal (it can receive signals and
     // complete again).
     current_lease_terminal(run_segment(history, run)).is_some()
@@ -388,7 +388,7 @@ const fn event_family(event: &Event) -> EventFamily {
         | Event::WorkflowCancelled { .. }
         | Event::WorkflowTimedOut { .. }
         | Event::WorkflowContinuedAsNew { .. }
-        | Event::WorkflowResumed { .. }
+        | Event::WorkflowReopened { .. }
         | Event::SearchAttributesUpdated { .. } => EventFamily::Workflow,
         Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }

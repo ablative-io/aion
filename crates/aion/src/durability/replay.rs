@@ -247,7 +247,7 @@ fn workflow_started_at(
 }
 
 fn terminal_from_history(workflow_id: &WorkflowId, history: &[Event]) -> Option<TerminalRecord> {
-    // Reset-aware: a reopen (WorkflowResumed) supersedes the run's prior terminal,
+    // Reset-aware: a reopen (WorkflowReopened) supersedes the run's prior terminal,
     // so a reopened run has no replay terminal and the reopened command hands off
     // live (ResumeLive) instead of being rejected as non-determinism.
     let event = aion_core::current_lease_terminal(history)?;
@@ -398,7 +398,7 @@ mod tests {
                     details: None,
                 },
             },
-            aion_core::Event::WorkflowResumed {
+            aion_core::Event::WorkflowReopened {
                 envelope: envelope(5, 50)?,
                 run_id: run_id(),
                 reopened: vec![activity_id],
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn reopened_activity_resolves_live_not_terminal() -> TestResult {
-        // Regression for the resume-foundation critical path: a reopened run's
+        // Regression for the reopen-foundation critical path: a reopened run's
         // terminal must be superseded so the reopened activity hands off live
         // (ResumeLive) instead of being rejected as a non-determinism violation.
         let workflow_id = workflow_id();
