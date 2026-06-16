@@ -129,11 +129,18 @@ pub fn execute(
   use workspace <- result_try(provision(input))
   let result = execute_with_workspace(input, workspace)
   case result {
-    Ok(_) -> result
-    Error(error) -> {
+    // Success: the work has landed on the tree parent, so the now-merged
+    // branch and its worktree are safe to clean up. Teardown runs ONLY here.
+    Ok(_) -> {
       teardown(input, workspace)
-      Error(error)
+      result
     }
+    // Failure: the workspace — worktree, branch, and every committed dev
+    // round — is preserved INTACT so the run can be reopened and resumed from
+    // the failed step. Destroying it here would defeat the entire point of
+    // durable resume, so teardown NEVER runs on a failure path. (Cleaning the
+    // build cache is fine; deleting the work product is not — and was the bug.)
+    Error(_) -> result
   }
 }
 

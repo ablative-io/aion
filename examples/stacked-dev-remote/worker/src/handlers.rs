@@ -733,7 +733,10 @@ pub fn assemble_wave(
 }
 
 /// `teardown_workspace`: remove the workspace directory and clean up norn
-/// sessions. Runs on all error paths after provisioning succeeds.
+/// sessions. The workflow invokes this ONLY on the success path, after the
+/// work has landed on the tree parent — never on a failure path, where the
+/// worktree, branch, and committed dev rounds must survive intact so the run
+/// can be reopened and resumed from the failed step.
 ///
 /// # Errors
 ///
