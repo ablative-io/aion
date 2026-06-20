@@ -12,8 +12,8 @@
 ## The instant loop — aion dev (WA-002)
 
 - [ ] **C7** — `aion dev` watches a package and on save rebuilds, repackages, and hot-reloads the new content-hash version without restarting the engine.
-- [ ] **C8** — The dev UI triggers a workflow run and streams that run's events live over the existing WebSocket event stream.
-- [ ] **C9** — The dev UI replays a failed run and lets the author mock a named activity's result on an opt-in basis for a given run.
+- [ ] **C8** — The dev server triggers a workflow run and streams that run's events live over the existing WebSocket event stream.
+- [ ] **C9** — The dev server replays a failed run and lets the author mock a named activity's result on an opt-in basis for a given run.
 - [ ] **C10** — The dev loop runs the real engine, store, and event stream — there is no mock-only execution path whose semantics diverge from production (CN4).
 - [ ] **C11** — An end-to-end test edits a workflow under `aion dev` and observes the new version serve a fresh run with no engine restart.
 
@@ -26,18 +26,18 @@
 
 ## The lens — time-travel debugger (WA-004)
 
-- [ ] **C16** — A run's history is navigable event-by-event in the dashboard, reading the existing event store with no second debug log (CN5).
+- [ ] **C16** — A run's history is navigable event-by-event through the `aion inspect` surface, reading the existing event store with no second debug log (CN5).
 - [ ] **C17** — At each event the debugger shows the workflow-visible state projection and the recorded now() and random() values for that step.
 - [ ] **C18** — On a NonDeterminismError the debugger surfaces the exact divergent command (expected vs found at the sequence) the resolver already computes.
-- [ ] **C19** — The debugger offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.
+- [ ] **C19** — The `aion inspect` surface offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.
 - [ ] **C20** — The per-event state projection is exposed by the engine from history and replay, not maintained as a parallel mutable store.
 
 ## The canvas — bidirectional visual projection (WA-005)
 
-- [ ] **C21** — A workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) is extracted from the package and rendered to a graph automatically.
-- [ ] **C22** — A live run overlays its progress on the same graph, lighting the active node as the engine emits events.
-- [ ] **C23** — Rendering an example and diffing the node/edge set against the workflow's known structure matches, proving the diagram is generated from the source rather than hand-drawn.
-- [ ] **C24** — A bounded structural edit on the canvas regenerates Gleam that still type-checks; the canvas is never the authoritative artifact (CN6).
+- [ ] **C21** — A workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) is extracted from the package as a graph model automatically.
+- [ ] **C22** — The graph model identifies each node by its correlation key (activity sequence, signal name, timer id, child ordinal) so a consumer can map a run's recorded events onto it.
+- [ ] **C23** — Extracting an example's structure and diffing the node/edge set against the workflow's known structure matches, proving the graph model is derived from the source rather than hand-drawn.
+- [ ] **C24** — A bounded structural delta regenerates Gleam that still type-checks; the graph model is never the authoritative artifact (CN6).
 
 ## Agentic authoring and the determinism gate (WA-006, WA-007)
 

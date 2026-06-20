@@ -78,6 +78,10 @@
     {
       "text": "Inline multi-language workflow authoring.",
       "reason": "In-VM (Tier 1/2) authoring stays BEAM-target Gleam per the DESIGN-OVERVIEW language-reach note; other languages remain Tier-3 remote workers, which this cluster generates stubs for but does not turn into an inline authoring surface."
+    },
+    {
+      "text": "The rendered dashboard/React UI — the time-travel scrubber, the visual canvas, and the dev-server web client.",
+      "reason": "Per the 2026-06-21 scope call, the rendered views are deferred to the dashboard family (RM-007). This cluster delivers the engine, CLI, and data surfaces those views consume — the per-event state projection, the `aion inspect` stepping/what-if surface, the graph model with per-node correlation identity, the Gleam regeneration, and the dev-server endpoints — not the React rendering or overlay."
     }
   ],
   "structure": [
@@ -123,22 +127,17 @@
     },
     {
       "path": "crates/aion/src/durability/replay_inspect.rs",
-      "note": "Per-event workflow-visible state projection and the determinism diff (expected vs found at a sequence) exposed for the debugger, reading existing history and replay",
+      "note": "Per-event workflow-visible state projection and the determinism diff (expected vs found at a sequence) exposed for the `aion inspect` surface and the dashboard time-travel view (RM-007), reading existing history and replay",
       "brief": "WA-004"
     },
     {
-      "path": "crates/aion-dashboard/src/timetravel/",
-      "note": "Time-travel scrubber UI: step a run event-by-event, show state and recorded now()/random() per step, surface the divergent command on a NonDeterminismError, and offer a what-if re-run via the test harness",
+      "path": "crates/aion-cli/src/inspect.rs",
+      "note": "`aion inspect`: step a recorded run event-by-event over the state projection (state + recorded now()/random() per step, the divergent command on a NonDeterminismError) and run a what-if re-run via the test harness — the data surface the dashboard time-travel view (RM-007) consumes",
       "brief": "WA-004"
-    },
-    {
-      "path": "crates/aion-dashboard/src/canvas/",
-      "note": "Bidirectional visual canvas: render a workflow's primitive structure to a graph, overlay a live run's progress, and regenerate Gleam from bounded structural edits",
-      "brief": "WA-005"
     },
     {
       "path": "crates/aion-package/src/structure.rs",
-      "note": "Extract a workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) from the package for the canvas and the per-run graph",
+      "note": "Extract a workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) as a graph model, identify each node by its correlation key so a consumer can overlay a run's events, and regenerate type-checking Gleam from a bounded structural delta",
       "brief": "WA-005"
     },
     {

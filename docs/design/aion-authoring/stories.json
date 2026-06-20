@@ -57,7 +57,7 @@
       "stories": [
         {
           "id": "S9",
-          "text": "As an operator, I want to scrub a run event-by-event and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why."
+          "text": "As an operator, I want to step through a run event-by-event (via `aion inspect`) and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why."
         },
         {
           "id": "S10",
@@ -71,7 +71,7 @@
       "stories": [
         {
           "id": "S11",
-          "text": "As a non-coding stakeholder, I want to see a workflow as a diagram that stays in sync with the code and lights up as a run executes, so that I can follow and discuss the process without reading the source."
+          "text": "As a non-coding stakeholder, I want a workflow's structure exposed as a graph model that stays in sync with the code and carries per-node run identity, so that a viewer (the dashboard, RM-007) can render and overlay it for me to follow and discuss without reading the source."
         }
       ]
     },

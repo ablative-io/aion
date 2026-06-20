@@ -27,8 +27,8 @@
     "design_anchor": [
       "ADR-014"
     ],
-    "purpose": "Reframes RM-009 ('declarative DSL + visual builder') away from a separate DSL and toward a generated, always-in-sync canvas (RM-009 as designed here). Because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), the diagram can be generated from the source, overlaid with a live run, and edited within bounds \u2014 a projection of the typed source, never a second authoring surface (ADR-014).",
-    "task": "Make the diagram a faithful projection of the typed source. In: extract a workflow's primitive structure from the package and render it to a graph automatically; overlay a live run's progress on the same graph; and regenerate Gleam from bounded structural edits such that it still type-checks. Out: unbounded diagram-to-code synthesis, and any path that makes the canvas the authoritative artifact.",
+    "purpose": "Reframes RM-009 ('declarative DSL + visual builder') away from a separate DSL and toward a generated, always-in-sync graph model (RM-009 as designed here). Because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), the graph model can be generated from the source, carry per-node run identity for a consumer to overlay, and be regenerated from bounded structural deltas \u2014 a projection of the typed source, never a second authoring surface (ADR-014). The rendered canvas UI and the live overlay are the dashboard family (RM-007).",
+    "task": "Make the graph model a faithful projection of the typed source. In: extract a workflow's primitive structure from the package and emit it as a graph model automatically; identify each node by its correlation key so a consumer can overlay a run's events; and regenerate Gleam from bounded structural deltas such that it still type-checks. The rendered canvas UI and the live overlay are the dashboard family (RM-007). Out: unbounded diagram-to-code synthesis, the rendered UI, and any path that makes the model the authoritative artifact.",
     "requirements": [
       {
         "id": "R1",
@@ -56,18 +56,18 @@
       },
       {
         "id": "R2",
-        "title": "Live execution overlay and bounded round-trip",
-        "spec": "WHILE a run executes, THE SYSTEM SHALL overlay its progress on the same graph, lighting the active node as the engine emits events. WHEN a bounded structural edit is made on the canvas, THE SYSTEM SHALL regenerate Gleam that still type-checks. THE SYSTEM SHALL NOT make the canvas the authoritative artifact.",
+        "title": "Per-node run identity and bounded Gleam regeneration",
+        "spec": "THE SYSTEM SHALL identify each graph-model node by its correlation key (activity sequence position, signal name, timer id, child spawn ordinal) so a consumer can map a run's recorded events onto the graph. WHEN a bounded structural delta is applied to the model, THE SYSTEM SHALL regenerate Gleam that still type-checks. THE SYSTEM SHALL NOT build the rendered canvas UI or overlay (deferred to RM-007), and SHALL NOT make the model the authoritative artifact.",
         "acceptance": [
-          "A live run lights the active node on the graph as events arrive over the existing event stream.",
-          "A bounded structural edit on the canvas regenerates Gleam that compiles under gleam build (C24).",
-          "The canvas is a projection \u2014 the typed source remains the source of truth (CN6)."
+          "Each node in the extracted graph model carries the correlation key needed to map a run's events onto it (C22).",
+          "A bounded structural delta regenerates Gleam that compiles under gleam build (C24).",
+          "The model is a projection \u2014 the typed source remains the source of truth (CN6); the rendered canvas that overlays a live run is RM-007."
         ],
         "files": {
-          "create": [
-            "crates/aion-dashboard/src/canvas/"
+          "create": [],
+          "modify": [
+            "crates/aion-package/src/structure.rs"
           ],
-          "modify": [],
           "delete": []
         },
         "checklist": [
@@ -82,7 +82,8 @@
     "boundaries": [
       "SHALL NOT support unbounded diagram-to-code synthesis \u2014 only bounded structural round-trip that regenerates type-checking Gleam.",
       "SHALL NOT make the canvas the authoritative artifact; the typed source is the source of truth (ADR-014).",
-      "SHALL NOT change the event stream or the package format."
+      "SHALL NOT change the event stream or the package format.",
+      "SHALL NOT build the rendered canvas UI or the live overlay \u2014 RM-007 owns them; this brief delivers the graph model and the Gleam regeneration."
     ],
     "verification": [
       "Node/edge diff test against a known workflow structure.",
@@ -96,32 +97,32 @@
         "id": "ADR-014",
         "title": "Authoring: the typed Gleam module is the single source of truth; no separate DSL",
         "decision": "The typed Gleam workflow-plus-activities module is the single source of truth. The activity signature already carries the contract (its input and output types, codecs, and tier); the engine generates the rest \u2014 worker handler stubs, registration, the manifest activities list, codecs, schemas, wire-compat goldens, and test skeletons \u2014 and projects the rest \u2014 the diagram and the time-travel state. No standalone textual DSL becomes a parallel authoring surface, because it would forfeit the compile-time type safety that is Aion's core differentiator (the aion-flow guarantee that an invalid composition fails gleam build). A visual canvas is a generated projection of the typed source with a live execution overlay and bounded structural round-trip, not a second source. Rejected: a separate DSL or manifest as the source of truth \u2014 it re-creates the spec-vs-implementation drift the typed module already eliminates and trades a strong static guarantee for a weaker one.",
-        "quote": "",
-        "decided_by": ""
+        "quote": "ADR-014 is ratified",
+        "decided_by": "Tom"
       }
     ],
     "checklist": [
       {
         "id": "C21",
-        "text": "A workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) is extracted from the package and rendered to a graph automatically."
+        "text": "A workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) is extracted from the package as a graph model automatically."
       },
       {
         "id": "C22",
-        "text": "A live run overlays its progress on the same graph, lighting the active node as the engine emits events."
+        "text": "The graph model identifies each node by its correlation key (activity sequence, signal name, timer id, child ordinal) so a consumer can map a run's recorded events onto it."
       },
       {
         "id": "C23",
-        "text": "Rendering an example and diffing the node/edge set against the workflow's known structure matches, proving the diagram is generated from the source rather than hand-drawn."
+        "text": "Extracting an example's structure and diffing the node/edge set against the workflow's known structure matches, proving the graph model is derived from the source rather than hand-drawn."
       },
       {
         "id": "C24",
-        "text": "A bounded structural edit on the canvas regenerates Gleam that still type-checks; the canvas is never the authoritative artifact (CN6)."
+        "text": "A bounded structural delta regenerates Gleam that still type-checks; the graph model is never the authoritative artifact (CN6)."
       }
     ],
     "stories": [
       {
         "id": "S11",
-        "text": "As a non-coding stakeholder, I want to see a workflow as a diagram that stays in sync with the code and lights up as a run executes, so that I can follow and discuss the process without reading the source."
+        "text": "As a non-coding stakeholder, I want a workflow's structure exposed as a graph model that stays in sync with the code and carries per-node run identity, so that a viewer (the dashboard, RM-007) can render and overlay it for me to follow and discuss without reading the source."
       }
     ],
     "constraints": [

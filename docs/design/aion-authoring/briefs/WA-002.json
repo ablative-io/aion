@@ -7,7 +7,7 @@
   "checklist": ["C7", "C8", "C9", "C10", "C11"],
   "stories": ["S4", "S5", "S6"],
   "design_anchor": ["ADR-001"],
-  "purpose": "The highest-ROI experience lever the durable-execution field has converged on (RM-025): a save-to-running inner loop and a local dev UI with production parity. Aion gets the hard pieces nearly free — hot code loading is the reload, content-hash versioning makes concurrent versions safe, and the existing WebSocket event firehose is the live view.",
+  "purpose": "The highest-ROI experience lever the durable-execution field has converged on (RM-025): a save-to-running inner loop and a local dev server with production parity. Aion gets the hard pieces nearly free — hot code loading is the reload, content-hash versioning makes concurrent versions safe, and the existing WebSocket event firehose is the live view. The rendered web client that consumes these endpoints is the dashboard family (RM-007); this brief delivers the loop and the server endpoints.",
   "task": "Give authors a tight inner loop and a faithful local UI. In: `aion dev` that watches a package and rebuilds, repackages, and hot-loads the new content-hash version on save (subsuming the RM-004 watch slice); and local dev UI endpoints that trigger a run, stream its events live over the existing WebSocket stream, mock a named activity per-run, and replay a failed run, all over the real engine, store, and event stream. Out: codegen (WA-001), server-side compilation of submitted source (WA-003), and any mock-only execution path whose semantics diverge from production.",
   "requirements": [
     {
@@ -29,10 +29,10 @@
     },
     {
       "id": "R2",
-      "title": "Local dev UI with production parity",
-      "spec": "WHEN a developer uses the dev UI, THE SYSTEM SHALL let them trigger a run, stream that run's events live over the existing WebSocket stream, mock a named activity's result on an opt-in basis for a given run, and replay a failed run. THE SYSTEM SHALL run the real engine, store, and event stream, and SHALL NOT provide a mock-only execution path whose semantics diverge from production.",
+      "title": "Local dev-server endpoints with production parity",
+      "spec": "WHEN a developer uses the dev server, THE SYSTEM SHALL expose endpoints to trigger a run, stream that run's events live over the existing WebSocket stream, mock a named activity's result on an opt-in basis for a given run, and replay a failed run. THE SYSTEM SHALL run the real engine, store, and event stream, and SHALL NOT provide a mock-only execution path whose semantics diverge from production.",
       "acceptance": [
-        "Triggering a run from the dev UI streams that run's events live over the existing WebSocket event stream.",
+        "Triggering a run via the dev server streams that run's events live over the existing WebSocket event stream.",
         "Opt-in activity mocking returns a canned typed result for one run without changing the engine.",
         "Replaying a failed run re-drives it through the real engine and store; there is no separate mock-only engine (CN4)."
       ],
@@ -48,7 +48,8 @@
   "boundaries": [
     "SHALL NOT add activity codegen (WA-001) or server-side source compilation (WA-003).",
     "SHALL NOT create a mock-only engine or a dev-only execution path that diverges from production semantics.",
-    "SHALL NOT introduce default poll intervals or timeouts in the watch loop (ADR-001) — values are configurable or deferred."
+    "SHALL NOT introduce default poll intervals or timeouts in the watch loop (ADR-001) — values are configurable or deferred.",
+    "SHALL NOT build the rendered dev-server web client — the dashboard family (RM-007) owns the UI; this brief delivers the server endpoints and the watch/hot-reload loop."
   ],
   "verification": [
     "An end-to-end test edits a workflow and sees the new version serve a fresh run with no restart.",

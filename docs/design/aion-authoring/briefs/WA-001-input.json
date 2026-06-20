@@ -161,8 +161,8 @@
         "id": "ADR-014",
         "title": "Authoring: the typed Gleam module is the single source of truth; no separate DSL",
         "decision": "The typed Gleam workflow-plus-activities module is the single source of truth. The activity signature already carries the contract (its input and output types, codecs, and tier); the engine generates the rest \u2014 worker handler stubs, registration, the manifest activities list, codecs, schemas, wire-compat goldens, and test skeletons \u2014 and projects the rest \u2014 the diagram and the time-travel state. No standalone textual DSL becomes a parallel authoring surface, because it would forfeit the compile-time type safety that is Aion's core differentiator (the aion-flow guarantee that an invalid composition fails gleam build). A visual canvas is a generated projection of the typed source with a live execution overlay and bounded structural round-trip, not a second source. Rejected: a separate DSL or manifest as the source of truth \u2014 it re-creates the spec-vs-implementation drift the typed module already eliminates and trades a strong static guarantee for a weaker one.",
-        "quote": "",
-        "decided_by": ""
+        "quote": "ADR-014 is ratified",
+        "decided_by": "Tom"
       }
     ],
     "checklist": [

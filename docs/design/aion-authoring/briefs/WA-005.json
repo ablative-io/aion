@@ -9,8 +9,8 @@
   "checklist": ["C21", "C22", "C23", "C24"],
   "stories": ["S11"],
   "design_anchor": ["ADR-014"],
-  "purpose": "Reframes RM-009 ('declarative DSL + visual builder') away from a separate DSL and toward a generated, always-in-sync canvas (RM-009 as designed here). Because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), the diagram can be generated from the source, overlaid with a live run, and edited within bounds — a projection of the typed source, never a second authoring surface (ADR-014).",
-  "task": "Make the diagram a faithful projection of the typed source. In: extract a workflow's primitive structure from the package and render it to a graph automatically; overlay a live run's progress on the same graph; and regenerate Gleam from bounded structural edits such that it still type-checks. Out: unbounded diagram-to-code synthesis, and any path that makes the canvas the authoritative artifact.",
+  "purpose": "Reframes RM-009 ('declarative DSL + visual builder') away from a separate DSL and toward a generated, always-in-sync graph model (RM-009 as designed here). Because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), the graph model can be generated from the source, carry per-node run identity for a consumer to overlay, and be regenerated from bounded structural deltas — a projection of the typed source, never a second authoring surface (ADR-014). The rendered canvas UI and the live overlay are the dashboard family (RM-007).",
+  "task": "Make the graph model a faithful projection of the typed source. In: extract a workflow's primitive structure from the package and emit it as a graph model automatically; identify each node by its correlation key so a consumer can overlay a run's events; and regenerate Gleam from bounded structural deltas such that it still type-checks. The rendered canvas UI and the live overlay are the dashboard family (RM-007). Out: unbounded diagram-to-code synthesis, the rendered UI, and any path that makes the model the authoritative artifact.",
   "requirements": [
     {
       "id": "R1",
@@ -31,16 +31,16 @@
     },
     {
       "id": "R2",
-      "title": "Live execution overlay and bounded round-trip",
-      "spec": "WHILE a run executes, THE SYSTEM SHALL overlay its progress on the same graph, lighting the active node as the engine emits events. WHEN a bounded structural edit is made on the canvas, THE SYSTEM SHALL regenerate Gleam that still type-checks. THE SYSTEM SHALL NOT make the canvas the authoritative artifact.",
+      "title": "Per-node run identity and bounded Gleam regeneration",
+      "spec": "THE SYSTEM SHALL identify each graph-model node by its correlation key (activity sequence position, signal name, timer id, child spawn ordinal) so a consumer can map a run's recorded events onto the graph. WHEN a bounded structural delta is applied to the model, THE SYSTEM SHALL regenerate Gleam that still type-checks. THE SYSTEM SHALL NOT build the rendered canvas UI or overlay (deferred to RM-007), and SHALL NOT make the model the authoritative artifact.",
       "acceptance": [
-        "A live run lights the active node on the graph as events arrive over the existing event stream.",
-        "A bounded structural edit on the canvas regenerates Gleam that compiles under gleam build (C24).",
-        "The canvas is a projection — the typed source remains the source of truth (CN6)."
+        "Each node in the extracted graph model carries the correlation key needed to map a run's events onto it (C22).",
+        "A bounded structural delta regenerates Gleam that compiles under gleam build (C24).",
+        "The model is a projection — the typed source remains the source of truth (CN6); the rendered canvas that overlays a live run is RM-007."
       ],
       "files": {
-        "create": ["crates/aion-dashboard/src/canvas/"],
-        "modify": [],
+        "create": [],
+        "modify": ["crates/aion-package/src/structure.rs"],
         "delete": []
       },
       "checklist": ["C22", "C24"],
@@ -50,7 +50,8 @@
   "boundaries": [
     "SHALL NOT support unbounded diagram-to-code synthesis — only bounded structural round-trip that regenerates type-checking Gleam.",
     "SHALL NOT make the canvas the authoritative artifact; the typed source is the source of truth (ADR-014).",
-    "SHALL NOT change the event stream or the package format."
+    "SHALL NOT change the event stream or the package format.",
+    "SHALL NOT build the rendered canvas UI or the live overlay — RM-007 owns them; this brief delivers the graph model and the Gleam regeneration."
   ],
   "verification": [
     "Node/edge diff test against a known workflow structure.",

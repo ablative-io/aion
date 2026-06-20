@@ -46,12 +46,12 @@
         },
         {
           "id": "C8",
-          "text": "The dev UI triggers a workflow run and streams that run's events live over the existing WebSocket event stream.",
+          "text": "The dev server triggers a workflow run and streams that run's events live over the existing WebSocket event stream.",
           "done": false
         },
         {
           "id": "C9",
-          "text": "The dev UI replays a failed run and lets the author mock a named activity's result on an opt-in basis for a given run.",
+          "text": "The dev server replays a failed run and lets the author mock a named activity's result on an opt-in basis for a given run.",
           "done": false
         },
         {
@@ -96,7 +96,7 @@
       "items": [
         {
           "id": "C16",
-          "text": "A run's history is navigable event-by-event in the dashboard, reading the existing event store with no second debug log (CN5).",
+          "text": "A run's history is navigable event-by-event through the `aion inspect` surface, reading the existing event store with no second debug log (CN5).",
           "done": false
         },
         {
@@ -111,7 +111,7 @@
         },
         {
           "id": "C19",
-          "text": "The debugger offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.",
+          "text": "The `aion inspect` surface offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.",
           "done": false
         },
         {
@@ -126,22 +126,22 @@
       "items": [
         {
           "id": "C21",
-          "text": "A workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) is extracted from the package and rendered to a graph automatically.",
+          "text": "A workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) is extracted from the package as a graph model automatically.",
           "done": false
         },
         {
           "id": "C22",
-          "text": "A live run overlays its progress on the same graph, lighting the active node as the engine emits events.",
+          "text": "The graph model identifies each node by its correlation key (activity sequence, signal name, timer id, child ordinal) so a consumer can map a run's recorded events onto it.",
           "done": false
         },
         {
           "id": "C23",
-          "text": "Rendering an example and diffing the node/edge set against the workflow's known structure matches, proving the diagram is generated from the source rather than hand-drawn.",
+          "text": "Extracting an example's structure and diffing the node/edge set against the workflow's known structure matches, proving the graph model is derived from the source rather than hand-drawn.",
           "done": false
         },
         {
           "id": "C24",
-          "text": "A bounded structural edit on the canvas regenerates Gleam that still type-checks; the canvas is never the authoritative artifact (CN6).",
+          "text": "A bounded structural delta regenerates Gleam that still type-checks; the graph model is never the authoritative artifact (CN6).",
           "done": false
         }
       ]

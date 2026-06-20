@@ -24,13 +24,13 @@
 
 ## Operator — Diagnosing a run
 
-**S9.** As an operator, I want to scrub a run event-by-event and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why.
+**S9.** As an operator, I want to step through a run event-by-event (via `aion inspect`) and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why.
 
 **S10.** As an operator, I want a non-determinism failure to point at the exact divergent command, so that the scariest class of durable-execution bug becomes a one-glance explanation instead of a guessing game.
 
 ## Stakeholder — Reading and shaping a workflow without writing Gleam
 
-**S11.** As a non-coding stakeholder, I want to see a workflow as a diagram that stays in sync with the code and lights up as a run executes, so that I can follow and discuss the process without reading the source.
+**S11.** As a non-coding stakeholder, I want a workflow's structure exposed as a graph model that stays in sync with the code and carries per-node run identity, so that a viewer (the dashboard, RM-007) can render and overlay it for me to follow and discuss without reading the source.
 
 ## Human Developer — Authoring a durable agent and proving determinism
 

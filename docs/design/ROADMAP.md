@@ -2,7 +2,16 @@
 
 _Updated: 2026-06-21_
 
-## Briefed (4)
+## Briefed (11)
+
+### RM-009 — Bidirectional visual canvas: code↔diagram projection with live overlay
+
+- **Kind:** feature
+
+On top of the typed SDK, not instead of it: because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), render it to a graph automatically, overlay a live run's progress on the same graph, and allow bounded structural round-trip — a projection of the typed source, never a second authoring surface (ADR-014). Reframes the original 'declarative DSL + visual builder' idea away from a separate DSL and toward a generated, always-in-sync canvas that doubles as the monitoring view.
+
+- **Links:** cluster `aion-authoring`; decisions ADR-014; briefs WA-005
+- **Notes:** Briefed as WA-005. The graph model is generated from the workflow's extracted primitive structure and never the authoritative artifact (CN6). Scope (2026-06-21 frontend call): this cluster delivers the graph model + per-node correlation identity + Gleam regeneration; the rendered canvas UI and live overlay are deferred to the dashboard family (RM-007).
 
 ### RM-017 — brief_dev + dispatch workflow family
 
@@ -16,6 +25,19 @@ The all-norn inner dev pipeline as an aion workflow (scout → dev → firsthand
 - **Links:** cluster `brief-dev`; decisions ADR-008, ADR-009; briefs BD-001, BD-002, BD-003, BD-004, BD-005, BD-006, BD-007
 - **Depends on:** RM-016
 - **Notes:** Briefed 2026-06-13, coverage clean. ADR-008/ADR-009 DECIDED by Tom same day — blocked_by on BD-003/004/005 cleared. BD-003..005 must land as ONE wave (the family doesn't compile between BD-003's module deletion and BD-005's rewire). Implementation in flight.
+
+### RM-021 — Workflow authoring experience: declare activities once, generate the rest
+
+- **Kind:** design
+
+Collapse new-family authoring to: schemas + one workflow module + one activities module. Everything that is today hand-mirrored gets generated — the Rust worker handlers (which must mirror locals invocation-for-invocation, i.e. a generator's job by definition), SERVED_ACTIVITIES, wire_compat pins, workflow.toml entries, locals/worker registration plumbing, and the hermetic-shim harness skeleton. Likely shape: `aion new workflow <name>` scaffolds inside an existing package; an activity declaration form (in Gleam or manifest) drives worker codegen the same way schemas already drive codec codegen. Evidence: in the brief-dev cluster, each activity exists in ~4 places that must agree byte-for-byte.
+
+> I was sort of hoping for like a you write up the file and you know you might have like a file with some functions you might have a fight and then you just have sort of like remain work profile. It's just a couple of steps or something like that I don't know but like where can we reduce the authoring time and that kind of stuff?
+> — Tom, 2026-06-13
+
+- **Links:** cluster `aion-authoring`; decisions ADR-014; briefs WA-001
+- **Depends on:** RM-017
+- **Notes:** Briefed 2026-06-21 as WA-001 (declare-once codegen) — Layer 1 keystone of aion-authoring. Bound by ADR-014 (typed module is the single source of truth; no separate DSL), ratified 2026-06-21. Designs the generator work (worker handlers, codecs, manifests, wire goldens, test skeletons). Distinct from RM-003 (CLI input ergonomics).
 
 ### RM-022 — aion_kit: the worker standard library
 
@@ -54,48 +76,6 @@ A workflow-process crash (e.g. the brief_dev heap-full before beamr 0.6.1) recor
 - **Links:** cluster `aion-observability`; briefs OBS-001, OBS-002
 - **Notes:** Disjoint from RM-022/023 (Rust: aion-server + engine + worker), so a clean concurrent run alongside them — part of the parallel stress batch.
 
-## Designed (9)
-
-### RM-001 — Implement parent-close policy
-
-- **Kind:** feature
-
-Required per-spawn RequestCancel | Terminate | Abandon on child.spawn / spawn_and_wait; propagation on all parent terminals, recursive, with recovery re-arming pending propagations. SDK + docs + template updates ride along.
-
-- **Links:** cluster `parent-close`; decisions ADR-001, ADR-002, ADR-004; briefs PC-001, PC-002, PC-003
-- **Notes:** Cluster designed (parent-close): PC-001 type foundation, PC-002 engine propagation + recovery re-arm, PC-003 SDK + call sites + e2e test. Serial: PC-001 first, then PC-002 and PC-003 (both depend on PC-001).
-
-### RM-009 — Bidirectional visual canvas: code↔diagram projection with live overlay
-
-- **Kind:** feature
-
-On top of the typed SDK, not instead of it: because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), render it to a graph automatically, overlay a live run's progress on the same graph, and allow bounded structural round-trip — a projection of the typed source, never a second authoring surface (ADR-014). Reframes the original 'declarative DSL + visual builder' idea away from a separate DSL and toward a generated, always-in-sync canvas that doubles as the monitoring view.
-
-- **Links:** cluster `aion-authoring`; decisions ADR-014
-- **Notes:** Designed as brief WA-005. The canvas is generated from the workflow's extracted primitive structure and never becomes the authoritative artifact (CN6); unbounded diagram-to-code synthesis is a non-goal.
-
-### RM-015 — Multi-reviewer verdict coordinator
-
-- **Kind:** feature
-
-Reviewers vote via meridian review complete; the Meridian coordinator applies quorum and fires the single review_verdict signal. aion-side contract already live-proven; the work is Meridian-side plus the branch→workflow-id mapping seam at review-request time.
-
-- **Links:** decisions ADR-006
-- **Notes:** Implementation lives in the yggdrasil/Meridian repo and rides their re-pin to published aion 0.6.0 + hex aion_flow 0.4.0 (pins currently 88 commits behind at rev 489be454).
-
-### RM-021 — Workflow authoring experience: declare activities once, generate the rest
-
-- **Kind:** design
-
-Collapse new-family authoring to: schemas + one workflow module + one activities module. Everything that is today hand-mirrored gets generated — the Rust worker handlers (which must mirror locals invocation-for-invocation, i.e. a generator's job by definition), SERVED_ACTIVITIES, wire_compat pins, workflow.toml entries, locals/worker registration plumbing, and the hermetic-shim harness skeleton. Likely shape: `aion new workflow <name>` scaffolds inside an existing package; an activity declaration form (in Gleam or manifest) drives worker codegen the same way schemas already drive codec codegen. Evidence: in the brief-dev cluster, each activity exists in ~4 places that must agree byte-for-byte.
-
-> I was sort of hoping for like a you write up the file and you know you might have like a file with some functions you might have a fight and then you just have sort of like remain work profile. It's just a couple of steps or something like that I don't know but like where can we reduce the authoring time and that kind of stuff?
-> — Tom, 2026-06-13
-
-- **Links:** cluster `aion-authoring`; decisions ADR-014
-- **Depends on:** RM-017
-- **Notes:** Designed 2026-06-21 as Layer 1 (declare-once codegen) of the aion-authoring cluster; the keystone under the layered authoring vision. Bound by ADR-014 (typed module is the single source of truth; no separate DSL), which is PROPOSED and awaits Tom's ratification. RM-022 (aion_kit) and RM-023 (dev-pipeline template) remain the first concretisations; this designs the generator work (worker handlers, codecs, manifests, wire goldens, test skeletons) as brief WA-001. Distinct from RM-003 (CLI input ergonomics) — family-authoring cost, not dispatch cost.
-
 ### RM-025 — aion dev: instant authoring loop + local dev server with production parity
 
 - **Kind:** feature
@@ -105,9 +85,9 @@ Collapse new-family authoring to: schemas + one workflow module + one activities
 > either like a DSL or something like that to generate code to scaffold ... an experience that would qualify for best in class
 > — Tom, 2026-06-21
 
-- **Links:** cluster `aion-authoring`; decisions ADR-014
+- **Links:** cluster `aion-authoring`; decisions ADR-014; briefs WA-002
 - **Depends on:** RM-021
-- **Notes:** Designed as brief WA-002. Folds in RM-004 (watch mode) as its rebuild/hot-reload slice. CN4: no mock-only path whose semantics diverge from production; activity mocking is opt-in per run.
+- **Notes:** Briefed as WA-002. Folds in RM-004 (watch mode). CN4: no mock-only path diverges from production; activity mocking is opt-in per run. Scope (2026-06-21 frontend call): the dev-server endpoints and the hot-reload loop are in scope; the rendered web client is deferred to the dashboard family (RM-007).
 
 ### RM-026 — Server-as-compiler authoring loop (aion-toolchain)
 
@@ -115,8 +95,8 @@ Collapse new-family authoring to: schemas + one workflow module + one activities
 
 Build the designed-but-absent aion-toolchain crate and aion-server authoring endpoints: submit Gleam source, the server shells out to the gleam binary, type-checks, returns errors inline, packages a .aion, and hot-loads it — an authoring REPL against a running engine with no local toolchain. An asset only an engine that owns a hot-loading VM can offer (Temporal structurally cannot), and the foundation for a hosted web playground. Optional and gated on --gleam-path; without it the server deploys pre-built .aion only.
 
-- **Links:** cluster `aion-authoring`
-- **Notes:** Designed as brief WA-003. CN7: aion-toolchain shells out to the gleam binary, never embeds it; aion and aion-server carry no compiler dependency.
+- **Links:** cluster `aion-authoring`; briefs WA-003
+- **Notes:** Briefed as WA-003. CN7: aion-toolchain shells out to the gleam binary, never embeds it; aion and aion-server carry no compiler dependency without --gleam-path.
 
 ### RM-027 — Time-travel debugger over the event-store oplog
 
@@ -127,8 +107,8 @@ A scrubber in the dashboard over a run's history: step event-by-event, see workf
 > Feel free to get creative and be provide innovative solutions
 > — Tom, 2026-06-21
 
-- **Links:** cluster `aion-authoring`; decisions ADR-007
-- **Notes:** Designed as brief WA-004. Complements RM-007 (per-run event timeline) — the timeline is the list view, this is the state-at-each-step scrubber. CN5: reads existing history and replay, no parallel debug log.
+- **Links:** cluster `aion-authoring`; decisions ADR-007; briefs WA-004
+- **Notes:** Briefed as WA-004. Scope (2026-06-21 frontend call): delivers the engine state projection + determinism diff + the `aion inspect` stepping/what-if data surface; the rendered dashboard time-travel scrubber UI is deferred to RM-007 (which also owns the per-run event timeline). CN5: reads existing history and replay, no parallel debug log.
 
 ### RM-028 — Agentic-first authoring: aion new agent scaffold
 
@@ -136,9 +116,9 @@ A scrubber in the dashboard over a run's history: step event-by-event, see workf
 
 `aion new agent` scaffolds a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate, generalising the dogfooded stacked-dev shape so a new agentic family is configuration, not bespoke code. Human-in-the-loop is just workflow.receive with a timeout — the headline feature of LangGraph-class tools is already an Aion primitive, and durable suspend-for-weeks is already free. Where the market is sprinting (Golem's agentic refocus), and where Aion's first consumer already lives.
 
-- **Links:** cluster `aion-authoring`
+- **Links:** cluster `aion-authoring`; briefs WA-006
 - **Depends on:** RM-021, RM-023
-- **Notes:** Designed as brief WA-006. The human approval pause is a workflow.receive with a timeout (C27), not a bespoke poll.
+- **Notes:** Briefed as WA-006. The human approval pause is a workflow.receive with a timeout (C27), not a bespoke poll. Depends on WA-001 codegen and the RM-023 dev-pipeline template.
 
 ### RM-029 — Determinism linter + generated test scaffolds + input skeletons
 
@@ -146,9 +126,29 @@ A scrubber in the dashboard over a run's history: step event-by-event, see workf
 
 `aion check --deterministic` is a static lint that flags any wall-clock or entropy call reachable from workflow code, turning the determinism boundary into a CI gate that complements the SDK's type-level structural block — a provable-determinism guarantee no competitor offers. Alongside it, `aion generate` emits an aion/testing skeleton per workflow (each activity mocked, a clock advance per timer, a replay-determinism assertion) and `aion input <type>` emits a valid input skeleton from the workflow's input type, so testing and triggering start from a scaffold, not a blank file.
 
-- **Links:** cluster `aion-authoring`
+- **Links:** cluster `aion-authoring`; briefs WA-007
 - **Depends on:** RM-021
-- **Notes:** Designed as brief WA-007. Relates to RM-003 (CLI input ergonomics): the `aion input` skeleton is generated from the workflow input type here; RM-003's client-side validation and polymorphic --input remain its own dispatch-time work.
+- **Notes:** Briefed as WA-007. Relates to RM-003: the `aion input` skeleton is generated from the workflow input type here; RM-003's client-side validation and polymorphic --input remain its own dispatch-time work.
+
+## Designed (2)
+
+### RM-001 — Implement parent-close policy
+
+- **Kind:** feature
+
+Required per-spawn RequestCancel | Terminate | Abandon on child.spawn / spawn_and_wait; propagation on all parent terminals, recursive, with recovery re-arming pending propagations. SDK + docs + template updates ride along.
+
+- **Links:** cluster `parent-close`; decisions ADR-001, ADR-002, ADR-004; briefs PC-001, PC-002, PC-003
+- **Notes:** Cluster designed (parent-close): PC-001 type foundation, PC-002 engine propagation + recovery re-arm, PC-003 SDK + call sites + e2e test. Serial: PC-001 first, then PC-002 and PC-003 (both depend on PC-001).
+
+### RM-015 — Multi-reviewer verdict coordinator
+
+- **Kind:** feature
+
+Reviewers vote via meridian review complete; the Meridian coordinator applies quorum and fires the single review_verdict signal. aion-side contract already live-proven; the work is Meridian-side plus the branch→workflow-id mapping seam at review-request time.
+
+- **Links:** decisions ADR-006
+- **Notes:** Implementation lives in the yggdrasil/Meridian repo and rides their re-pin to published aion 0.6.0 + hex aion_flow 0.4.0 (pins currently 88 commits behind at rev 489be454).
 
 ## Idea (15)
 

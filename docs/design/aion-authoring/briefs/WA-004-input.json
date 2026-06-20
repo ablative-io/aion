@@ -28,7 +28,7 @@
       "ADR-007"
     ],
     "purpose": "The differentiated showcase (RM-027). The event store is already a complete oplog, deterministic replay already reconstructs exact state, and the resolver already computes expected-vs-found on a non-determinism fault \u2014 so a Golem/Temporal-class time-travel debugger is nearly free on the data side. This brief adds the lens, reading the existing history and replay, never a second store (ADR-007, P6).",
-    "task": "Add a debugging lens over what the engine already records. In: an engine surface that exposes, per event, the workflow-visible state projection and the recorded now()/random() values (computed from existing history and replay), and the divergent command on a NonDeterminismError; and a dashboard scrubber that steps a run event-by-event and offers a what-if re-run from a chosen event via the existing aion/testing replay path. Out: any new persistence or debug log, and any change to the event schema.",
+    "task": "Add a debugging lens over what the engine already records. In: an engine surface that exposes, per event, the workflow-visible state projection and the recorded now()/random() values (computed from existing history and replay), and the divergent command on a NonDeterminismError; and an `aion inspect` CLI surface that steps a run event-by-event and offers a what-if re-run from a chosen event via the existing aion/testing replay path (the dashboard time-travel view that renders this surface is RM-007). Out: the rendered dashboard UI, any new persistence or debug log, and any change to the event schema.",
     "requirements": [
       {
         "id": "R1",
@@ -59,16 +59,16 @@
       },
       {
         "id": "R2",
-        "title": "Dashboard scrubber and what-if re-run",
-        "spec": "WHEN an operator opens a run in the dashboard, THE SYSTEM SHALL let them step the run event-by-event and run a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.",
+        "title": "aion inspect: stepping and what-if re-run (the data surface the dashboard consumes)",
+        "spec": "WHEN an operator runs `aion inspect <run>`, THE SYSTEM SHALL let them step the run event-by-event over the state projection and run a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path. THE SYSTEM SHALL NOT build the rendered dashboard scrubber UI (deferred to RM-007).",
         "acceptance": [
-          "The scrubber steps a recorded run event-by-event, showing the projected state at each step.",
+          "`aion inspect <run>` steps a recorded run event-by-event, printing the projected state at each step.",
           "A what-if re-run forks from a chosen event with a mocked outcome and reports the resulting path, using the existing replay harness.",
-          "The scrubber reads the existing event history; no debug-only log is introduced (C16)."
+          "It reads the existing event history; no debug-only log is introduced (C16). The dashboard time-travel view that renders this surface is RM-007."
         ],
         "files": {
           "create": [
-            "crates/aion-dashboard/src/timetravel/"
+            "crates/aion-cli/src/inspect.rs"
           ],
           "modify": [],
           "delete": []
@@ -84,7 +84,8 @@
     "boundaries": [
       "SHALL NOT introduce a parallel debug log or state store \u2014 time-travel reads existing history and replay (ADR-007).",
       "SHALL NOT change the Event schema or the recorded payloads.",
-      "SHALL NOT overlap with RM-007's per-run event timeline list view beyond consuming the same history."
+      "SHALL NOT overlap with RM-007's per-run event timeline list view beyond consuming the same history.",
+      "SHALL NOT build the rendered dashboard time-travel UI \u2014 RM-007 owns it; this brief delivers the engine projection and the `aion inspect` data surface."
     ],
     "verification": [
       "Validated against a recorded run and an injected determinism fault.",
@@ -105,7 +106,7 @@
     "checklist": [
       {
         "id": "C16",
-        "text": "A run's history is navigable event-by-event in the dashboard, reading the existing event store with no second debug log (CN5)."
+        "text": "A run's history is navigable event-by-event through the `aion inspect` surface, reading the existing event store with no second debug log (CN5)."
       },
       {
         "id": "C17",
@@ -117,7 +118,7 @@
       },
       {
         "id": "C19",
-        "text": "The debugger offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path."
+        "text": "The `aion inspect` surface offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path."
       },
       {
         "id": "C20",
@@ -127,7 +128,7 @@
     "stories": [
       {
         "id": "S9",
-        "text": "As an operator, I want to scrub a run event-by-event and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why."
+        "text": "As an operator, I want to step through a run event-by-event (via `aion inspect`) and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why."
       },
       {
         "id": "S10",
