@@ -20,7 +20,8 @@
         {"id": "S7", "text": "As an operator, I want a non-deterministic workflow to fail loudly with an error that names the workflow, the position, and what diverged so that I can find and fix the offending workflow code instead of debugging corrupted state."},
         {"id": "S8", "text": "As an operator, I want a failure recovering one workflow not to abort recovery of the others so that one bad workflow cannot take down the whole engine restart."},
         {"id": "S11", "text": "As an operator, I want to reopen a failed workflow from the step that failed, replaying the steps that already succeeded, so that an hour of completed work is not lost to a transient failure and I do not have to restart the whole run."},
-        {"id": "S12", "text": "As an operator, I want a single reopen operation that takes only a workflow id and re-drives it from the failed step on a worker in its own namespace, so that recovering a failed run needs no manual namespace, step, or worker bookkeeping."}
+        {"id": "S12", "text": "As an operator, I want a single reopen operation that takes only a workflow id and re-drives it from the failed step on a worker in its own namespace, so that recovering a failed run needs no manual namespace, step, or worker bookkeeping."},
+        {"id": "S13", "text": "As an operator, I want to reopen a workflow I deliberately cancelled and have it resume from exactly where it was when I cancelled it, so that a deliberate stop is not a redo-from-scratch and the steps that already ran are not lost."}
       ]
     },
     {

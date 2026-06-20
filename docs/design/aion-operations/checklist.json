@@ -67,6 +67,18 @@
         {"id": "C31", "text": "When auth.enabled=false (default), no authentication is required and the namespace is taken from request metadata (existing NamespaceGuard behaviour)."},
         {"id": "C32", "text": "The auth module compiles only when cfg(feature='auth') is active; the base binary has no jsonwebtoken or JWKS dependencies."}
       ]
+    },
+    {
+      "name": "Reopen Operation Surface",
+      "items": [
+        {"id": "C33", "text": "The workflow gRPC service exposes a Reopen RPC with ReopenRequest (namespace, workflow id, optional run id) and a ReopenResponse that returns the reopened run id and its projected Running status, mirroring Cancel; the proto regenerates cleanly."},
+        {"id": "C34", "text": "A dedicated INVALID_STATE wire error code carries the AD-012 reopen precondition failures (run not terminal, terminal for a non-Failed reason, or already Running) with error_type 'InvalidState' and the reason, distinct from NOT_FOUND and BACKEND; WorkflowNotFound still maps to NOT_FOUND."},
+        {"id": "C35", "text": "The server exposes reopen over gRPC (WorkflowGrpcService::reopen) and HTTP (POST /workflows/reopen), both routed through one shared handler that resolves the run, calls Engine::reopen_workflow, and maps every EngineError to the right wire/HTTP code (INVALID_STATE -> gRPC FailedPrecondition / HTTP 409); the terminal-Failed precondition is the engine's, surfaced not re-implemented in the handler."},
+        {"id": "C36", "text": "The client SDK exposes Client::reopen(workflow_id, optional run_id) returning the reopened run and its Running status, with transport and convert support mirroring cancel, and a distinct typed ClientError for the InvalidState case."},
+        {"id": "C37", "text": "The CLI exposes `aion reopen <workflow-id> [--run-id]`, calling Client::reopen and printing the now-Running run, or the typed failure ('not reopenable: <reason>' for InvalidState, 'not found' for WorkflowNotFound) — never a raw transport error."},
+        {"id": "C38", "text": "Every reopen error path — not found, not terminal, terminal for a non-Failed reason, already Running — is proven at the gRPC, HTTP, and CLI layers with the correct typed code and message, and the happy path returns Running."},
+        {"id": "C39", "text": "Every file touched by the reopen surface stays within the 500-code-line limit; the pre-existing over-limit files (api/grpc.rs, client ops.rs, cli main.rs, api/handlers/workflows.rs) are split by responsibility as the reopen additions land."}
+      ]
     }
   ]
 }

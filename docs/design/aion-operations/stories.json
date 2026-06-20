@@ -10,7 +10,8 @@
         {"id": "S3", "text": "As a platform operator, I want /health/live and /health/ready probes so that Kubernetes can manage pod lifecycle and route traffic only to healthy instances."},
         {"id": "S4", "text": "As a platform operator, I want graceful shutdown on SIGTERM so that rolling deploys do not lose in-flight work or require manual intervention."},
         {"id": "S5", "text": "As a platform operator, I want structured JSON logs with workflow_id and namespace fields so that I can correlate events across my log aggregation pipeline."},
-        {"id": "S6", "text": "As a platform operator, I want environment variable overrides so that I can configure Aion in container deployments where config files are awkward."}
+        {"id": "S6", "text": "As a platform operator, I want environment variable overrides so that I can configure Aion in container deployments where config files are awkward."},
+        {"id": "S13", "text": "As a platform operator, I want an `aion reopen <id>` command (and the RPC behind it) so that I can re-drive a failed workflow from the step that failed without re-dispatching the whole run by hand."}
       ]
     },
     {

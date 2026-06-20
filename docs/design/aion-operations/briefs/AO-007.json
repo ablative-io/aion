@@ -1,0 +1,135 @@
+{
+  "id": "AO-007",
+  "cluster": "aion-operations",
+  "title": "Reopen operation surface — ReopenWorkflow RPC, HTTP, client, and `aion reopen` CLI",
+  "depends_on": ["AD-012"],
+  "blocked_by": [],
+  "checklist": ["C33", "C34", "C35", "C36", "C37", "C38", "C39"],
+  "stories": ["S13"],
+  "purpose": "Expose AD-012's engine reopen operation across the full wire surface so an operator can actually invoke it: a ReopenWorkflow gRPC RPC, the matching HTTP endpoint, a client SDK method, and an `aion reopen <id>` CLI subcommand — mirroring the existing cancel operation exactly. AD-012 builds Engine::reopen_workflow but gives it no caller; engine-only is half a feature. This brief is the operator's hand on the reopen lever. It is wire-and-CLI only: it adds no engine behaviour, and it carries whatever the engine reopens unchanged (so when AD-013 widens reopen to Cancelled, this surface needs no edit).",
+  "task": "Mirror the cancel operation end-to-end for reopen. (1) Proto: add a Reopen RPC to the workflow gRPC service in crates/aion-proto/proto/workflow.proto with ReopenRequest (namespace, workflow_id, optional run_id — reusing common.proto WorkflowId/RunId) and a ReopenResponse that returns the reopened run id and its projected Running status (not an empty ack — the caller learns the run is live); add a dedicated WireErrorCode INVALID_STATE in common.proto for the AD-012 precondition failures. (2) gRPC handler: WorkflowGrpcService::reopen in aion-server/src/api/grpc.rs, decoding the request, calling the shared handler, mapping EngineError (including the new EngineError::InvalidState from AD-012) to a tonic Status via the grpc_code path. (3) HTTP handler reopen_workflow in aion-server/src/api/http/workflows.rs + route POST /workflows/reopen in api/http/router.rs. (4) Shared handler reopen() in aion-server/src/api/handlers/workflows.rs that resolves the run id (latest if omitted) and calls Engine::reopen_workflow, surfacing the engine's terminal-Failed precondition rather than re-checking status. (5) Extend wire_from_engine in aion-server/src/error.rs to map EngineError::InvalidState to the new INVALID_STATE wire code (distinct from NotFound and Backend). (6) Client SDK Client::reopen in aion-client/src/ops.rs + GrpcWorkflowTransport::reopen + encode/decode helpers in transport/convert.rs. (7) CLI: an `aion reopen <workflow-id> [--run-id]` subcommand in aion-cli/src/main.rs, dispatched to a reopen_workflow() function that prints the now-Running run or the typed failure. (8) Several touched files are already at or over the 500-code-line limit (grpc.rs ~914, client ops.rs ~924, cli main.rs ~868, handlers/workflows.rs ~536) — split by responsibility (per-operation modules) so no file crosses the limit because of this brief. Cover the happy path and every error path (not-found, not-terminal, non-Failed terminal, already-Running) at the wire and CLI layers with real tests.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Wire contract: Reopen RPC, messages, and a typed precondition code",
+      "spec": "THE SYSTEM SHALL add a Reopen RPC to the workflow gRPC service with request and response messages mirroring Cancel, and SHALL extend the wire error taxonomy so the AD-012 reopen precondition failures cross the wire as a distinct, typed code separable from not-found and backend errors.",
+      "acceptance": [
+        "crates/aion-proto/proto/workflow.proto declares `rpc Reopen(ReopenRequest) returns (ReopenResponse);` alongside Cancel; ReopenRequest carries namespace, workflow_id (common.WorkflowId), and an optional run_id (common.RunId; absent means the latest run).",
+        "ReopenResponse is NOT empty: it returns the reopened run_id and the projected status (Running) so the caller learns the run is live again — distinct from CancelResponse which is an empty ack.",
+        "A dedicated WireErrorCode INVALID_STATE is added in crates/aion-proto/proto/common.proto for the reopen precondition failures (run not terminal, terminal for a non-Failed reason, or already Running); it is distinct from NOT_FOUND and BACKEND.",
+        "The proto regenerates cleanly via the existing tonic-build path and the new messages round-trip through the encode/decode helpers added beside the cancel helpers."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-proto/proto/workflow.proto",
+          "crates/aion-proto/proto/common.proto"
+        ]
+      },
+      "checklist": ["C33", "C34"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R2",
+      "title": "Server handlers: gRPC, HTTP, and the shared reopen handler",
+      "spec": "THE SYSTEM SHALL implement the Reopen RPC on the gRPC service, the matching HTTP endpoint and route, and one shared handler that resolves the run, calls Engine::reopen_workflow, and maps every EngineError to the correct wire and HTTP code — mirroring cancel, but surfacing the engine's terminal-Failed precondition rather than re-checking status in the handler.",
+      "acceptance": [
+        "WorkflowGrpcService::reopen in crates/aion-server/src/api/grpc.rs decodes the request, calls the shared handler, and maps the result or error to a tonic Status through the existing status_from_wire_error / grpc_code path (INVALID_STATE maps to FailedPrecondition).",
+        "reopen_workflow in crates/aion-server/src/api/http/workflows.rs returns the reopened run + status as JSON, and is registered as POST /workflows/reopen in crates/aion-server/src/api/http/router.rs; INVALID_STATE maps to HTTP 409 Conflict via the HttpWireError wrapper, NotFound to 404.",
+        "The shared handler reopen() in crates/aion-server/src/api/handlers/workflows.rs resolves the run id via resolve_run_id (latest if omitted) and calls engine.reopen_workflow; UNLIKE cancel's terminal guard it does NOT pre-check status — the terminal-Failed precondition is the engine's (AD-012) and the handler only surfaces its typed error.",
+        "crates/aion-server/src/error.rs wire_from_engine maps EngineError::InvalidState -> WireErrorCode::InvalidState with error_type \"InvalidState\" and the reason message; EngineError::WorkflowNotFound still maps to NotFound.",
+        "Encode/decode helpers for ReopenRequest/ReopenResponse are added beside the cancel helpers."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/api/grpc.rs",
+          "crates/aion-server/src/api/http/workflows.rs",
+          "crates/aion-server/src/api/http/router.rs",
+          "crates/aion-server/src/api/handlers/workflows.rs",
+          "crates/aion-server/src/error.rs"
+        ]
+      },
+      "checklist": ["C35"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R3",
+      "title": "Client SDK reopen method",
+      "spec": "THE SYSTEM SHALL add a client SDK reopen method mirroring cancel, returning the reopened run and its Running status, with transport and conversion support.",
+      "acceptance": [
+        "Client::reopen(&self, workflow_id: &WorkflowId, run_id: Option<&RunId>) -> Result<ReopenOutcome, ClientError> in crates/aion-client/src/ops.rs builds the ReopenRequest and calls the transport; ReopenOutcome carries the run id and the Running status.",
+        "GrpcWorkflowTransport::reopen in crates/aion-client/src/transport/grpc.rs sends the tonic request and maps tonic Status to ClientError (INVALID_STATE -> a distinct typed ClientError variant, not conflated with not-found).",
+        "encode_reopen_request / decode_reopen_response are added in crates/aion-client/src/transport/convert.rs beside the cancel helpers."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-client/src/ops.rs",
+          "crates/aion-client/src/transport/grpc.rs",
+          "crates/aion-client/src/transport/convert.rs"
+        ]
+      },
+      "checklist": ["C36"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R4",
+      "title": "`aion reopen <id>` CLI subcommand",
+      "spec": "THE SYSTEM SHALL add an `aion reopen` CLI subcommand mirroring `aion cancel`, taking a workflow id and optional run id, calling the client reopen method, and printing the reopened run or the typed failure.",
+      "acceptance": [
+        "A RemoteCommand::Reopen { workflow_id, run_id } clap variant in crates/aion-cli/src/main.rs takes a positional workflow id and an optional --run-id, dispatched in execute() to a reopen_workflow() function.",
+        "reopen_workflow() parses the ids (parse_workflow_id / parse_run_id), calls client.reopen, and prints a result naming the workflow and run and stating it is now Running.",
+        "The error paths print the typed failure clearly: InvalidState -> a 'not reopenable: <reason>' message, WorkflowNotFound -> 'not found' — never a raw transport error.",
+        "`aion reopen --help` documents the subcommand and its arguments."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-cli/src/main.rs"
+        ]
+      },
+      "checklist": ["C37"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R5",
+      "title": "End-to-end coverage and file-size discipline",
+      "spec": "THE SYSTEM SHALL prove the whole reopen surface with real tests across the happy path and every error path at the wire and CLI layers, and SHALL keep every touched file within the 500-code-line limit, splitting pre-existing over-limit files by responsibility as the reopen additions land.",
+      "acceptance": [
+        "A terminal-Failed workflow reopened via the gRPC endpoint and via the HTTP endpoint returns Running; the client method is covered against a live server for the happy path and at least one error path.",
+        "Reopening a not-found / Completed / Cancelled / already-Running workflow returns the correct wire code and error_type at the server layer (INVALID_STATE for the three non-Failed-terminal/already-Running cases, NotFound for absent), and the CLI surfaces each as the right message.",
+        "grpc.rs (~914), client ops.rs (~924), cli main.rs (~868), and handlers/workflows.rs (~536) are at or over the 500-code-line limit already; the reopen additions are placed so each file stays within the limit — peel per-operation modules as needed — and no file crosses the limit because of this brief.",
+        "cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --check, and the full test suite pass with no #[allow]/#[expect]/#[ignore] bypasses."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/aion-server/src/api/grpc.rs",
+          "crates/aion-client/src/ops.rs",
+          "crates/aion-cli/src/main.rs",
+          "crates/aion-server/src/api/handlers/workflows.rs"
+        ]
+      },
+      "checklist": ["C38", "C39"],
+      "stories": ["S13"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change Engine::reopen_workflow or any AD-012 engine behaviour — this brief only exposes it across the wire and CLI.",
+    "SHALL NOT add reopen for Cancelled or TimedOut runs — the engine reopens only Failed in this cut (AD-012); when AD-013 widens it, this surface carries the wider engine behaviour unchanged with no edit here.",
+    "SHALL NOT add the failed_step / failure_reason summary columns or any aion list output change — that is the visibility brief.",
+    "SHALL NOT introduce automatic retry, classification, or any RetryPolicy plumbing — that is the L1+L2 follow-on.",
+    "SHALL NOT alter the existing start/cancel/signal/query wire surface except to share helpers and module structure (the per-operation splits the 500-line limit forces).",
+    "SHALL NOT make the server re-implement the terminal-Failed precondition — the decision is the engine's; the server and CLI only carry and surface its typed result."
+  ],
+  "verification": [
+    "cargo clippy --workspace --all-targets -- -D warnings passes with no #[allow]/#[expect]/#[ignore] bypasses.",
+    "cargo fmt --check passes.",
+    "cargo test across aion-proto, aion-server, aion-client, aion-cli, and aion passes, including all new reopen-surface tests.",
+    "The proto regenerates cleanly and the Reopen RPC is present on the generated workflow service; the new INVALID_STATE wire code is mapped at both the gRPC (FailedPrecondition) and HTTP (409) layers.",
+    "Every reopen error path (not found, not terminal, non-Failed terminal, already Running) is proven at the gRPC, HTTP, and CLI layers by real tests, and the happy path returns Running.",
+    "Every touched file remains within the 500-code-line limit (excluding tests/comments/whitespace); pre-existing over-limit files are split by responsibility.",
+    "Rigorous Opus sub-agent review against this brief, AD-012, and docs/WORKFLOW-REOPEN-DESIGN.md before the work is considered done."
+  ]
+}
