@@ -1,6 +1,6 @@
 {
   "project": "aion",
-  "updated": "2026-06-16",
+  "updated": "2026-06-21",
   "decisions": [
     {
       "id": "ADR-001",
@@ -231,6 +231,25 @@
         "register_recovered_resident is refactored to accept an externally-held Recorder; the refactor must be behaviour-preserving for startup recovery",
         "Invariant #3 is reaffirmed for reopen and is explicitly per-workflow, not global — cross-workflow concurrency is unaffected",
         "REVISIT (deferred, not decided): the single-writer-per-workflow model may be re-examined once the liminal messaging bus (improved-NATS, fan-in/fan-out) and the hematite storage engine (multi-reader/multi-writer, embedded), both built on beamr, mature — they could change the per-workflow concurrency and append story. Flagged here as a deliberate come-back-to; no change is made now."
+      ],
+      "supersedes": [],
+      "superseded_by": ""
+    },
+    {
+      "id": "ADR-014",
+      "title": "Authoring: the typed Gleam module is the single source of truth; no separate DSL",
+      "status": "proposed",
+      "scope": "aion-authoring",
+      "date": "",
+      "decided_by": "",
+      "context": "Shipping one activity today means writing it in five to seven places that must agree byte-for-byte (the activity.new wrapper and its name, the local body, the call site, the codec pair, the worker handler, the worker registration, the workflow.toml entry, and for typed workers a hand-derived wire-compat golden). The recurring instinct — recorded as RM-009 (declarative DSL + visual builder) and gestured at whenever authoring friction bites — is to answer this with a separate declarative DSL or a visual builder as the authoring surface. The industry is split: Restate, Inngest, and DBOS stay code-first with explicit named side-effect blocks, while a class of tools offer visual builders as the source. The fork: introduce a separate DSL or manifest as the source of truth, or keep the typed Gleam module as the single source and generate, observe, and project everything else from it.",
+      "decision": "The typed Gleam workflow-plus-activities module is the single source of truth. The activity signature already carries the contract (its input and output types, codecs, and tier); the engine generates the rest — worker handler stubs, registration, the manifest activities list, codecs, schemas, wire-compat goldens, and test skeletons — and projects the rest — the diagram and the time-travel state. No standalone textual DSL becomes a parallel authoring surface, because it would forfeit the compile-time type safety that is Aion's core differentiator (the aion-flow guarantee that an invalid composition fails gleam build). A visual canvas is a generated projection of the typed source with a live execution overlay and bounded structural round-trip, not a second source. Rejected: a separate DSL or manifest as the source of truth — it re-creates the spec-vs-implementation drift the typed module already eliminates and trades a strong static guarantee for a weaker one.",
+      "quote": "",
+      "consequences": [
+        "RM-021 (declare-once codegen), RM-009 (reframed as a visual projection), and the new aion-authoring roadmap items (RM-025..RM-029) are bound by this principle.",
+        "The activity declaration form drives worker, manifest, codec, schema, and test codegen the way I/O schemas already drive codec codegen (ADR-007 precedent); aion gains an `aion generate` surface extending today's I/O-only `aion codegen`.",
+        "No standalone DSL runtime is built; the visual canvas is a projection of the typed source, never the authoritative artifact.",
+        "AWAITING RATIFICATION: this is a recommendation recorded as proposed; Tom's call flips it to decided. The aion-authoring cluster is designed against it in the meantime."
       ],
       "supersedes": [],
       "superseded_by": ""

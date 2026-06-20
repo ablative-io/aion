@@ -1,0 +1,58 @@
+{
+  "id": "WA-003",
+  "cluster": "aion-authoring",
+  "title": "Server-as-compiler: the aion-toolchain authoring loop",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C12", "C13", "C14", "C15"],
+  "stories": ["S7", "S8"],
+  "design_anchor": ["ADR-002"],
+  "purpose": "Build the designed-but-absent server-side authoring loop (RM-026): submit Gleam source, the server type-checks it, returns errors inline, packages, and hot-loads — an authoring REPL against a running engine with no local toolchain. An asset only an engine that owns a hot-loading VM can offer, and the foundation for a hosted playground.",
+  "task": "Make authoring a live loop against the running engine, optionally. In: a new aion-toolchain crate that compiles and type-checks Gleam workflow source by shelling out to the gleam binary and packages a .aion on success; and aion-server authoring endpoints, gated on --gleam-path, that accept source, return the gleam type error inline on failure, and package and hot-load on success. Out: embedding the Gleam compiler (the toolchain always shells out); making the toolchain mandatory (without --gleam-path the server deploys pre-built .aion only).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "aion-toolchain compiles, type-checks, and packages",
+      "spec": "WHEN given Gleam workflow source, THE SYSTEM SHALL compile and type-check it by shelling out to the gleam binary and package a .aion on success. THE SYSTEM SHALL NOT embed a Gleam compiler.",
+      "acceptance": [
+        "aion-toolchain compiles a valid workflow source to a loadable .aion by invoking the external gleam binary.",
+        "A type-erroneous source yields the gleam type error rather than a panic or a partial package.",
+        "The crate embeds no compiler — verified by its dependency set carrying no Gleam compiler crate."
+      ],
+      "files": {
+        "create": ["crates/aion-toolchain/"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C12", "C15"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "Server authoring endpoints, gated and optional",
+      "spec": "WHEN Gleam source is submitted to the authoring endpoint and --gleam-path is configured, THE SYSTEM SHALL return the gleam type error inline on a compile failure and package and hot-load on success. WHEN --gleam-path is absent, THE SYSTEM SHALL deploy pre-built .aion files only and carry no compiler dependency.",
+      "acceptance": [
+        "Submitting a type-erroneous workflow returns the gleam error inline over the wire.",
+        "Submitting a corrected workflow packages it via aion-toolchain and hot-loads it so it runs.",
+        "Without --gleam-path the authoring endpoints are absent and the server still deploys pre-built .aion files (CN7)."
+      ],
+      "files": {
+        "create": ["crates/aion-server/src/authoring/"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C13", "C14"],
+      "stories": ["S7", "S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT embed the Gleam compiler in aion or aion-server — aion-toolchain shells out to the gleam binary.",
+    "SHALL NOT make server-side authoring mandatory — it is gated on --gleam-path and optional.",
+    "SHALL NOT add codegen (WA-001) or the dev loop (WA-002)."
+  ],
+  "verification": [
+    "Inline type-error reporting proven by submitting an erroneous then a corrected workflow.",
+    "Optionality proven: without --gleam-path the server has no compiler dependency and still deploys .aion.",
+    "clippy -D warnings and fmt clean."
+  ]
+}

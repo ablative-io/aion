@@ -1,0 +1,188 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "WA-004",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "WA-004",
+    "cluster": "aion-authoring",
+    "title": "Time-travel debugger over the event-store oplog",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [
+      "C16",
+      "C17",
+      "C18",
+      "C19",
+      "C20"
+    ],
+    "stories": [
+      "S9",
+      "S10"
+    ],
+    "design_anchor": [
+      "ADR-007"
+    ],
+    "purpose": "The differentiated showcase (RM-027). The event store is already a complete oplog, deterministic replay already reconstructs exact state, and the resolver already computes expected-vs-found on a non-determinism fault \u2014 so a Golem/Temporal-class time-travel debugger is nearly free on the data side. This brief adds the lens, reading the existing history and replay, never a second store (ADR-007, P6).",
+    "task": "Add a debugging lens over what the engine already records. In: an engine surface that exposes, per event, the workflow-visible state projection and the recorded now()/random() values (computed from existing history and replay), and the divergent command on a NonDeterminismError; and a dashboard scrubber that steps a run event-by-event and offers a what-if re-run from a chosen event via the existing aion/testing replay path. Out: any new persistence or debug log, and any change to the event schema.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Per-event state projection and determinism diff from history",
+        "spec": "WHEN inspecting a run, THE SYSTEM SHALL expose, per event, the workflow-visible state projection and the recorded now() and random() values, computed from the existing event history and deterministic replay. WHEN a NonDeterminismError exists for the run, THE SYSTEM SHALL expose the divergent command as expected-vs-found at the sequence. THE SYSTEM SHALL NOT maintain a parallel mutable state store.",
+        "acceptance": [
+          "A per-event workflow-visible state projection is returned for a recorded run, computed from history and replay with no second store (C20).",
+          "The recorded now() and random() values for each step are exposed alongside the state.",
+          "An injected determinism fault surfaces the exact divergent command (expected vs found at the sequence) the resolver computes."
+        ],
+        "files": {
+          "create": [
+            "crates/aion/src/durability/replay_inspect.rs"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C16",
+          "C17",
+          "C18",
+          "C20"
+        ],
+        "stories": [
+          "S9",
+          "S10"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Dashboard scrubber and what-if re-run",
+        "spec": "WHEN an operator opens a run in the dashboard, THE SYSTEM SHALL let them step the run event-by-event and run a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.",
+        "acceptance": [
+          "The scrubber steps a recorded run event-by-event, showing the projected state at each step.",
+          "A what-if re-run forks from a chosen event with a mocked outcome and reports the resulting path, using the existing replay harness.",
+          "The scrubber reads the existing event history; no debug-only log is introduced (C16)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-dashboard/src/timetravel/"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C19"
+        ],
+        "stories": [
+          "S9"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT introduce a parallel debug log or state store \u2014 time-travel reads existing history and replay (ADR-007).",
+      "SHALL NOT change the Event schema or the recorded payloads.",
+      "SHALL NOT overlap with RM-007's per-run event timeline list view beyond consuming the same history."
+    ],
+    "verification": [
+      "Validated against a recorded run and an injected determinism fault.",
+      "CN5 asserted: no second source of truth \u2014 projections come from history and replay.",
+      "clippy -D warnings and fmt clean."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-007",
+        "title": "Design system v2: JSON ledgers above clusters, enrichment in place",
+        "decision": "Two project ledgers (roadmap.json, decisions.json) above the clusters; stage contracts as first-class schemas inside the aion codegen subset; the brief is one living document \u2014 the pipeline appends scout/dev/review per requirement and an execution block per brief, in place, never touching authored fields. Rejected: a sibling runs/ ledger \u2014 the brief as a single spec-plus-record document was the original intent, and aion's event history already provides the append-only audit trail.",
+        "quote": "basically stuff is just depended to it so I would actually be happy to have it to have it saved back in place from where it came from",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C16",
+        "text": "A run's history is navigable event-by-event in the dashboard, reading the existing event store with no second debug log (CN5)."
+      },
+      {
+        "id": "C17",
+        "text": "At each event the debugger shows the workflow-visible state projection and the recorded now() and random() values for that step."
+      },
+      {
+        "id": "C18",
+        "text": "On a NonDeterminismError the debugger surfaces the exact divergent command (expected vs found at the sequence) the resolver already computes."
+      },
+      {
+        "id": "C19",
+        "text": "The debugger offers a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path."
+      },
+      {
+        "id": "C20",
+        "text": "The per-event state projection is exposed by the engine from history and replay, not maintained as a parallel mutable store."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S9",
+        "text": "As an operator, I want to scrub a run event-by-event and see its state and the recorded clock and random values at each step, so that I can understand exactly what the workflow did and why."
+      },
+      {
+        "id": "S10",
+        "text": "As an operator, I want a non-determinism failure to point at the exact divergent command, so that the scariest class of durable-execution bug becomes a one-glance explanation instead of a guessing game."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Generated code is regenerable and drift-gated: `aion generate --check` reproduces every generated file byte-identical or fails; no generated file is hand-maintained alongside the source (ADR-002 forbids parallel sources; mirrors the existing aion codegen --check)."
+      },
+      {
+        "id": "CN2",
+        "text": "No defaults in generated configuration (ADR-001): codegen never emits a retry policy, timeout, backoff, or any value the author did not choose; a required value stays a required hole, never a silent default."
+      },
+      {
+        "id": "CN3",
+        "text": "The determinism boundary is unchanged (invariant 2): generation emits activity plumbing and handler stubs, never side-effecting bodies; generated workflow code still routes every side effect through workflow.run, and generated code introduces no wall-clock or entropy path."
+      },
+      {
+        "id": "CN4",
+        "text": "Production parity: the dev loop and dev UI run the real engine, the real store, and the real event stream; there is no mock-only execution path whose semantics diverge from production, and activity mocking is opt-in per run, not a separate engine."
+      },
+      {
+        "id": "CN5",
+        "text": "No second source of truth for introspection (ADR-007): time-travel, the determinism diff, and the live canvas overlay read the existing event history and deterministic replay; no parallel debug log or state store is introduced."
+      },
+      {
+        "id": "CN6",
+        "text": "The visual canvas is a projection (ADR-014): it is generated from the typed source; any structural round-trip is bounded and regenerates Gleam that still type-checks; the canvas never becomes the authoritative artifact."
+      },
+      {
+        "id": "CN7",
+        "text": "aion-toolchain shells out to the gleam binary and stays optional: aion and aion-server carry no compiler dependency; without --gleam-path the server deploys pre-built .aion files only (the DESIGN-OVERVIEW boundary)."
+      },
+      {
+        "id": "CN8",
+        "text": "Thin-workflow respected (ADR-012): generated activities thread sealed payloads plus thin facts; codegen does not reintroduce heavy decode or prompt rendering into the deterministic workflow process."
+      },
+      {
+        "id": "CN9",
+        "text": "Library-code purity: clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for SDK changes; no unwrap/expect/allow/expect-attr in library code; every touched file stays under 500 LOC excluding tests."
+      }
+    ],
+    "intention": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, registration lists, manifest entries, codecs, JSON schemas, wire-compat goldens, test skeletons) is generated from that typed source; everything that is observed (a run's state, its determinism, its shape) is projected from the event history the engine already records. When this cluster is done, the gap between 'I have a typed workflow' and 'I have a durable, deployed, debuggable workflow' is a save and a glance, not a day of hand-mirroring four files that must agree byte-for-byte. The authoring language stays Gleam \u2014 the type system is the contract and Aion's sharpest edge \u2014 and the declarative and visual surfaces become projections of that typed source, never a second place to author from. This is the experience an author reaches for, the loop they iterate in, the lens they debug through, and the canvas a non-coding stakeholder reads, all anchored to one source of truth.",
+    "design_path": "docs/design/aion-authoring",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, r"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

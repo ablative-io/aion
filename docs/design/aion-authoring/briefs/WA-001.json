@@ -1,0 +1,77 @@
+{
+  "id": "WA-001",
+  "cluster": "aion-authoring",
+  "title": "Declare-once codegen: generate the activity plumbing from the typed declaration",
+  "depends_on": [],
+  "blocked_by": [
+    "ADR-014 (proposed — awaiting ratification)"
+  ],
+  "checklist": ["C1", "C2", "C3", "C4", "C5", "C6"],
+  "stories": ["S1", "S2", "S3"],
+  "design_anchor": ["ADR-014", "ADR-001", "ADR-002", "ADR-007", "ADR-012"],
+  "purpose": "The keystone of the authoring cluster (RM-021). Today an activity is hand-mirrored across five to seven files that must agree byte-for-byte; this brief makes the typed activity declaration the single source of truth (ADR-014) and generates the rest. It extends the existing aion codegen machinery (which already turns I/O schemas into codecs, ADR-007 precedent) from workflow I/O to the full activity surface, with a drift gate so generated output can never silently rot.",
+  "task": "Make the typed activity declaration the only per-activity artifact an author writes, and generate the plumbing from it. In: an activity declaration form (a typed signature plus a tier annotation InVm | RemotePython | RemoteRust) in the aion_flow activities surface; an `aion generate` command that derives the activity.new wrapper, the value-type codec pairs, the worker handler stub for the tier, the worker registration entry, the workflow.toml activities entry, and the wire-compat golden; an `aion generate --check` drift gate; a round-trip guarantee (delete all generated files, regenerate byte-identical); and an authoring guide. Out: the dev loop (WA-002), server-side compile (WA-003), the determinism linter and test/input scaffolds (WA-007), and generating the side-effecting bodies of activities (the author writes those; the determinism boundary is unchanged).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Typed activity declaration form with a tier annotation",
+      "spec": "WHEN an author declares an activity, THE SYSTEM SHALL accept a typed signature plus a tier annotation (InVm | RemotePython | RemoteRust) in the activities surface that the generator reads to drive codegen. THE SYSTEM SHALL NOT require the author to also hand-write the activity.new wrapper, the codecs, the worker handler, the registration entry, or the manifest entry for that activity.",
+      "acceptance": [
+        "An activity declaration form exists in gleam/aion_flow/src/aion/activity.gleam that carries the activity's input type, output type, and tier.",
+        "A declared activity type-checks under gleam build with no hand-written activity.new wrapper present.",
+        "The declaration is the only per-activity artifact the author writes — verified by an example activity whose wrapper/codecs/worker/registration/manifest are all absent from hand-written source."
+      ],
+      "files": {
+        "create": [],
+        "modify": ["gleam/aion_flow/src/aion/activity.gleam"],
+        "delete": []
+      },
+      "checklist": ["C1"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "aion generate derives the activity plumbing",
+      "spec": "WHEN `aion generate` runs against a package, THE SYSTEM SHALL derive from each typed declaration the activity.new wrapper, the value-type codec pairs, the worker handler stub for the declared tier, the worker registration entry, the workflow.toml activities entry, and the wire-compat golden. THE SYSTEM SHALL NOT emit any retry policy, timeout, or backoff value the author did not declare (ADR-001).",
+      "acceptance": [
+        "Running `aion generate` on examples/order-saga emits the activity.new wrappers, codec pairs, worker handler stubs, registration entries, and workflow.toml activities entries for every declared activity.",
+        "Each remote activity gets a wire-compat golden derived from its value-type codecs, with no hand-derived literal.",
+        "No generated activity configuration contains a retry/timeout/backoff value absent from the declaration — verified by generating an activity with no policy and asserting the generated config carries none."
+      ],
+      "files": {
+        "create": ["crates/aion-cli/src/generate.rs"],
+        "modify": ["crates/aion-package/src/codegen/"],
+        "delete": []
+      },
+      "checklist": ["C2", "C3", "C5"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R3",
+      "title": "Drift gate, round-trip guarantee, and the authoring guide",
+      "spec": "WHEN `aion generate --check` runs, THE SYSTEM SHALL regenerate every generated file in memory and exit non-zero if any on-disk generated file differs. WHEN every generated file for a package is deleted and `aion generate` is re-run, THE SYSTEM SHALL reproduce them byte-identical.",
+      "acceptance": [
+        "`aion generate --check` exits non-zero on a hand-edited generated file and exits zero when the tree is clean.",
+        "Deleting every generated file for examples/order-saga and running `aion generate` reproduces them byte-identical, proven by a round-trip test.",
+        "docs/authoring.md walks the declare -> generate -> run model end to end using the saga."
+      ],
+      "files": {
+        "create": ["docs/authoring.md"],
+        "modify": ["crates/aion-cli/src/generate.rs", "crates/aion-package/src/codegen/"],
+        "delete": []
+      },
+      "checklist": ["C4", "C6"],
+      "stories": ["S2"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT generate the side-effecting body of any activity or workflow — only the plumbing that must agree byte-for-byte.",
+    "SHALL NOT build the dev loop (WA-002), the server compile loop (WA-003), or the determinism/test/input scaffolds (WA-007).",
+    "SHALL NOT introduce any default retry policy, timeout, or backoff (ADR-001)."
+  ],
+  "verification": [
+    "clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for the SDK change.",
+    "The delete-all-and-regenerate round-trip is byte-identical for examples/order-saga.",
+    "The --check drift gate is proven in both directions (clean tree passes, hand-edit fails)."
+  ]
+}

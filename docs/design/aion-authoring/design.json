@@ -1,0 +1,237 @@
+{
+  "cluster": "aion-authoring",
+  "title": "Aion Authoring — the typed module is the source, plus the loop, the lens, and the canvas",
+  "intention": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures — and nothing else. Everything that is mirrored today (worker handlers, registration lists, manifest entries, codecs, JSON schemas, wire-compat goldens, test skeletons) is generated from that typed source; everything that is observed (a run's state, its determinism, its shape) is projected from the event history the engine already records. When this cluster is done, the gap between 'I have a typed workflow' and 'I have a durable, deployed, debuggable workflow' is a save and a glance, not a day of hand-mirroring four files that must agree byte-for-byte. The authoring language stays Gleam — the type system is the contract and Aion's sharpest edge — and the declarative and visual surfaces become projections of that typed source, never a second place to author from. This is the experience an author reaches for, the loop they iterate in, the lens they debug through, and the canvas a non-coding stakeholder reads, all anchored to one source of truth.",
+  "problem": "Shipping one activity today means writing it in five to seven places that must agree byte-for-byte: the activity.new wrapper and its name string, the local/in-VM body, the orchestration call site (with the step name hard-coded again), the encode/decode codec pair, the worker handler that mirrors the body invocation-for-invocation, the worker's registration list, and the workflow.toml activities entry — plus, for typed workers, a hand-derived wire-compat golden. A six-activity saga pays that surface six times. The roadmap already names the pain (RM-021, 'declare activities once, generate the rest'; RM-003, CLI input ergonomics; RM-004, watch mode; RM-009, declarative DSL + visual builder) but the generator work is unbuilt: aion codegen generates workflow I/O codecs only, aion new scaffolds whole projects but not per-activity plumbing, and the server-side authoring loop (compile + type-check + package + hot-load, designed in DESIGN-OVERVIEW as aion-toolchain) has no crate. Meanwhile the engine already records every event and broadcasts it over WebSocket, and deterministic replay already reconstructs exact state — so the data a time-travel debugger needs exists, with no lens over it. The recurring temptation is to answer all of this with a separate declarative DSL or a visual builder as the authoring surface; that would forfeit the compile-time type safety that is the whole reason to author in Gleam. The pain is real and the assets to fix it are already in the codebase, mostly unexploited.",
+  "solution": "One cluster, organised as a layered authoring stack over a single source of truth — the typed Gleam workflow-plus-activities module (ADR-014). (1) Declare-once codegen: the activity declaration (a typed signature plus a tier annotation — in-VM, remote-Python, remote-Rust) is the only thing an author writes per activity; `aion generate` derives the activity.new wrapper, the codec pairs from the value types, the worker handler stub, the registration list, the workflow.toml activities entry, the wire-compat golden, and a test skeleton. This extends the existing aion codegen machinery (which already turns I/O schemas into codecs) from 'workflow I/O' to 'every activity', with an `--check` drift gate so a hand-edit is a build failure, not silent rot. (2) The instant loop: `aion dev` watches the package, rebuilds, repackages, and hot-reloads on save (RM-004), and serves a local dev UI with production parity — trigger a run, watch its events stream live, mock an activity, replay a failed run — over the same engine, store, and event stream production uses. (3) Server-as-compiler: build the designed-but-absent aion-toolchain crate and the aion-server authoring endpoints so an author submits Gleam source, the server shells out to the gleam binary, type-checks, returns errors inline, packages, and hot-loads — an authoring REPL against a running engine with no local toolchain, an asset only an engine that owns a hot-loading VM can offer. (4) The lens: a time-travel debugger in the dashboard reads the existing event history and replay — scrub a run event-by-event, see workflow-visible state and the recorded now()/random() at each step, and when a NonDeterminismError fires, point at the exact divergent command the resolver already computed (expected vs found). (5) The canvas: because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), render it to a graph automatically, overlay a live run's progress on that same graph, and allow bounded structural round-trip — a projection, not a second source (the answer to RM-009's 'on top of the typed SDK, not instead of it'). (6) Agentic-first authoring and the determinism gate: `aion new agent` scaffolds a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate, generalising the dogfooded stacked-dev shape; and `aion check --deterministic` is a static lint that flags any non-deterministic call reachable from workflow code, turning the determinism boundary into a CI gate that complements the type-level structural block. Each layer is independently valuable and shippable; together they are the best-in-class authoring experience.",
+  "principles": [
+    {
+      "id": "P1",
+      "text": "Single source of truth: the typed Gleam workflow-plus-activities module is the only authored artifact; every mirrored surface (worker, registration, manifest, codecs, schemas, wire goldens, tests) is generated from it and every observed surface (run state, determinism, shape) is projected from the recorded event history — nothing load-bearing is authored twice (ADR-014)."
+    },
+    {
+      "id": "P2",
+      "text": "No new authoring DSL: the authoring language stays Gleam, because the type system is the contract; a declarative or visual surface is a generated projection of the typed source with bounded round-trip, never a parallel place to author from (ADR-014, ADR-001)."
+    },
+    {
+      "id": "P3",
+      "text": "Generated code is honest and drift-gated: every generated file is reproducible and `aion generate --check` regenerates it byte-identical or fails, so a hand-edit to generated output is a build failure, not a silent divergence (mirrors the existing aion codegen --check; ADR-002 forbids parallel sources)."
+    },
+    {
+      "id": "P4",
+      "text": "No defaults in generated configuration: codegen never invents a retry policy, timeout, or backoff; it emits the author's explicit choice or leaves the required hole required (ADR-001)."
+    },
+    {
+      "id": "P5",
+      "text": "Parity in the loop: the local development experience runs the real engine, the real store, and the real event stream; what an author sees locally is what runs in production, with no mock-only path that diverges from production semantics."
+    },
+    {
+      "id": "P6",
+      "text": "The oplog is the debugger: introspection — time-travel, the determinism diff, the live canvas overlay — reads the event history and deterministic replay the engine already produces; it adds a lens, never a second source of truth (mirrors ADR-007's rejection of a sibling record store)."
+    },
+    {
+      "id": "P7",
+      "text": "Determinism is provable, not merely conventional: a static check flags any wall-clock or entropy call reachable from workflow code, turning the determinism boundary into a CI gate that complements the SDK's type-level structural block (invariant 2)."
+    }
+  ],
+  "decisions": [
+    "ADR-014",
+    "ADR-001",
+    "ADR-002",
+    "ADR-007",
+    "ADR-012"
+  ],
+  "goals": [
+    "A new activity is declared once (a typed signature plus a tier annotation) and `aion generate` emits the activity.new wrapper, the codec pairs, the worker handler stub, the registration entry, the workflow.toml activities entry, and the wire-compat golden — verified by deleting every generated file for an example and regenerating it byte-identical, and by `aion generate --check` failing on a hand-edited generated file.",
+    "`aion dev` watches a package, rebuilds/repackages/hot-reloads on save, and serves a local UI that triggers a run, streams its events live, mocks an activity, and replays a failed run — verified by an end-to-end test that edits a workflow and sees the new version serve a run with no restart.",
+    "The server compiles and type-checks submitted Gleam source, returns the gleam type error inline on failure, and packages and hot-loads on success — verified by submitting a type-erroneous workflow, getting the error over the wire, then submitting a corrected one that runs.",
+    "A run's history is navigable event-by-event in the dashboard, showing workflow-visible state and the recorded now()/random() values at each step, and a NonDeterminismError surfaces the exact divergent command (expected vs found) — verified against a recorded run and an injected determinism fault.",
+    "A workflow renders to a graph automatically and a live run overlays its progress on that graph — verified by rendering an example and diffing the node/edge set against the workflow's known primitive structure.",
+    "`aion new agent` scaffolds a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate, and `aion check --deterministic` flags a workflow that reaches a wall-clock/entropy call — verified by the scaffold compiling and running end-to-end and by a positive and negative determinism fixture.",
+    "No #[allow]/#[expect], no unwrap/expect in library code, clippy -D warnings clean, fmt clean, every file under 500 LOC, and no generated default values (ADR-001)."
+  ],
+  "non_goals": [
+    {
+      "text": "A standalone textual workflow DSL as the authoring surface.",
+      "reason": "ADR-014: the typed Gleam module is the source of truth; a separate DSL forfeits the compile-time type safety that is Aion's differentiator and re-creates the spec-vs-implementation drift the typed module already eliminates."
+    },
+    {
+      "text": "A visual builder that is the source of truth or round-trips arbitrary code.",
+      "reason": "The canvas is a generated projection of the typed source with bounded structural round-trip; unbounded diagram-to-code synthesis would make the canvas a second authoritative artifact, which P2 forbids."
+    },
+    {
+      "text": "Generating the side-effecting bodies of activities or workflows.",
+      "reason": "Codegen emits the plumbing that must agree byte-for-byte (wrappers, codecs, registration, manifest, handler stubs); the side-effecting body is the author's, and the determinism boundary is unchanged (invariant 2)."
+    },
+    {
+      "text": "Embedding the Gleam compiler inside aion or aion-server.",
+      "reason": "aion-toolchain shells out to the gleam binary and stays optional (the DESIGN-OVERVIEW boundary); without --gleam-path the server deploys pre-built .aion files only, so aion and aion-server carry no compiler dependency."
+    },
+    {
+      "text": "A new test framework.",
+      "reason": "Generated test scaffolds target the existing aion/testing harness (simulated clock, activity mocks, replay assertions); the cluster generates skeletons, not a runtime."
+    },
+    {
+      "text": "A separate persistence or oplog for debugging.",
+      "reason": "Time-travel and the determinism diff read the existing event store and deterministic replay; introducing a parallel debug log would re-open the spec/record split ADR-007 closed (P6)."
+    },
+    {
+      "text": "Inline multi-language workflow authoring.",
+      "reason": "In-VM (Tier 1/2) authoring stays BEAM-target Gleam per the DESIGN-OVERVIEW language-reach note; other languages remain Tier-3 remote workers, which this cluster generates stubs for but does not turn into an inline authoring surface."
+    }
+  ],
+  "structure": [
+    {
+      "path": "crates/aion-package/src/codegen/",
+      "note": "Extend the codegen module from workflow I/O codecs to the full activity surface: activity.new wrappers, value-type codecs, worker handler stubs, registration entries, workflow.toml activities entries, and wire-compat goldens, all from the typed declaration",
+      "brief": "WA-001"
+    },
+    {
+      "path": "crates/aion-cli/src/generate.rs",
+      "note": "`aion generate` and `aion generate --check`: regenerate the activity plumbing for a package; --check fails on any drift between the typed source and the generated files",
+      "brief": "WA-001"
+    },
+    {
+      "path": "gleam/aion_flow/src/aion/activity.gleam",
+      "note": "The activity declaration form the generator reads: a tier annotation (InVm | RemotePython | RemoteRust) on a typed activity signature that drives worker and codec codegen the way I/O schemas drive codec codegen",
+      "brief": "WA-001"
+    },
+    {
+      "path": "docs/authoring.md",
+      "note": "The authoring guide: the one-source-of-truth model end to end — declare, generate, run, observe — with the saga walked through",
+      "brief": "WA-001"
+    },
+    {
+      "path": "crates/aion-cli/src/dev/",
+      "note": "`aion dev`: file-watch -> rebuild -> repackage -> hot-reload loop over a package (subsumes the RM-004 watch slice)",
+      "brief": "WA-002"
+    },
+    {
+      "path": "crates/aion-server/src/dev_ui/",
+      "note": "Local dev UI endpoints with production parity: trigger a run, stream its events live, mock an activity, replay a failed run — over the real engine and event stream",
+      "brief": "WA-002"
+    },
+    {
+      "path": "crates/aion-toolchain/",
+      "note": "New optional crate: shell out to the gleam binary, compile and type-check workflow source, package a .aion; never embeds the compiler",
+      "brief": "WA-003"
+    },
+    {
+      "path": "crates/aion-server/src/authoring/",
+      "note": "Server-side authoring endpoints gated on --gleam-path: accept Gleam source, return type errors inline, package via aion-toolchain, hot-load",
+      "brief": "WA-003"
+    },
+    {
+      "path": "crates/aion/src/durability/replay_inspect.rs",
+      "note": "Per-event workflow-visible state projection and the determinism diff (expected vs found at a sequence) exposed for the debugger, reading existing history and replay",
+      "brief": "WA-004"
+    },
+    {
+      "path": "crates/aion-dashboard/src/timetravel/",
+      "note": "Time-travel scrubber UI: step a run event-by-event, show state and recorded now()/random() per step, surface the divergent command on a NonDeterminismError, and offer a what-if re-run via the test harness",
+      "brief": "WA-004"
+    },
+    {
+      "path": "crates/aion-dashboard/src/canvas/",
+      "note": "Bidirectional visual canvas: render a workflow's primitive structure to a graph, overlay a live run's progress, and regenerate Gleam from bounded structural edits",
+      "brief": "WA-005"
+    },
+    {
+      "path": "crates/aion-package/src/structure.rs",
+      "note": "Extract a workflow's primitive structure (run / spawn / receive / all / race / sleep and control flow) from the package for the canvas and the per-run graph",
+      "brief": "WA-005"
+    },
+    {
+      "path": "crates/aion-cli/src/new/agent.rs",
+      "note": "`aion new agent`: scaffold a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate, generalising the stacked-dev shape",
+      "brief": "WA-006"
+    },
+    {
+      "path": "crates/aion-cli/src/check_deterministic.rs",
+      "note": "`aion check --deterministic`: static lint over workflow modules that flags any wall-clock or entropy call reachable from workflow code",
+      "brief": "WA-007"
+    },
+    {
+      "path": "crates/aion-package/src/codegen/test_scaffold.rs",
+      "note": "Generate an aion/testing skeleton per workflow: each activity pre-mocked, a clock advance per timer, and a replay-determinism assertion",
+      "brief": "WA-007"
+    },
+    {
+      "path": "crates/aion-cli/src/input.rs",
+      "note": "`aion input <workflow_type>`: emit a valid input skeleton derived from the workflow's input type so an input document is never hand-written from scratch",
+      "brief": "WA-007"
+    }
+  ],
+  "inventory": [
+    {
+      "path": "crates/aion-cli/src/codegen.rs",
+      "note": "`aion codegen [--check]` exists but generates workflow I/O codecs only (input.json / output.json -> <package>_io.gleam). It wraps aion_package::codegen_project. No activity, worker, manifest, or wire-compat codegen."
+    },
+    {
+      "path": "crates/aion-cli/src/new/",
+      "note": "`aion new <name> [--template ...] [--worker python|rust]` scaffolds a whole project (HelloWorld, ApprovalFlow, Saga, DevPipeline) with gleam.toml, workflow.toml, src, schemas, and an optional worker. It does NOT generate per-activity plumbing; workflow.toml and codecs are hand-written. No `aion new agent`."
+    },
+    {
+      "path": "crates/aion-package/src/",
+      "note": "The .aion format, content-hash versioning, and the codegen entry (codegen_project) the CLI wraps for I/O codecs. No activity-surface codegen, no structure extraction, no test-scaffold generation."
+    },
+    {
+      "path": "crates/aion-server/src/",
+      "note": "A pure network adapter over the embedded engine (HTTP/gRPC/WebSocket). No --gleam-path configuration, no compile/type-check/package endpoints. The event stream is already broadcast over WebSocket."
+    },
+    {
+      "path": "crates/aion-toolchain (designed, absent)",
+      "note": "Server-side authoring (compile -> type-check -> package -> hot-load) is specified in DESIGN-OVERVIEW.md and COMPONENT-ARCHITECTURE.md but no crate exists and aion-server has no authoring endpoints."
+    },
+    {
+      "path": "crates/aion/src/durability/",
+      "note": "Deterministic replay reconstructs exact state; the resolver computes expected-vs-found on a NonDeterminismError; now() returns the recorded timestamp and random() a seeded value. The data a time-travel debugger and determinism diff need exists; there is no per-event state-projection surface."
+    },
+    {
+      "path": "gleam/aion_flow/src/aion/testing.gleam",
+      "note": "The test harness exists: a simulated clock (advance), an activity mock registry, and replay-determinism assertions. No generator emits skeletons against it."
+    },
+    {
+      "path": "crates/aion-dashboard/src/",
+      "note": "React monitoring UI. A per-run event timeline is RM-007 (idea, not built). No time-travel scrubber and no code/diagram canvas."
+    }
+  ],
+  "constraints": [
+    {
+      "id": "CN1",
+      "text": "Generated code is regenerable and drift-gated: `aion generate --check` reproduces every generated file byte-identical or fails; no generated file is hand-maintained alongside the source (ADR-002 forbids parallel sources; mirrors the existing aion codegen --check)."
+    },
+    {
+      "id": "CN2",
+      "text": "No defaults in generated configuration (ADR-001): codegen never emits a retry policy, timeout, backoff, or any value the author did not choose; a required value stays a required hole, never a silent default."
+    },
+    {
+      "id": "CN3",
+      "text": "The determinism boundary is unchanged (invariant 2): generation emits activity plumbing and handler stubs, never side-effecting bodies; generated workflow code still routes every side effect through workflow.run, and generated code introduces no wall-clock or entropy path."
+    },
+    {
+      "id": "CN4",
+      "text": "Production parity: the dev loop and dev UI run the real engine, the real store, and the real event stream; there is no mock-only execution path whose semantics diverge from production, and activity mocking is opt-in per run, not a separate engine."
+    },
+    {
+      "id": "CN5",
+      "text": "No second source of truth for introspection (ADR-007): time-travel, the determinism diff, and the live canvas overlay read the existing event history and deterministic replay; no parallel debug log or state store is introduced."
+    },
+    {
+      "id": "CN6",
+      "text": "The visual canvas is a projection (ADR-014): it is generated from the typed source; any structural round-trip is bounded and regenerates Gleam that still type-checks; the canvas never becomes the authoritative artifact."
+    },
+    {
+      "id": "CN7",
+      "text": "aion-toolchain shells out to the gleam binary and stays optional: aion and aion-server carry no compiler dependency; without --gleam-path the server deploys pre-built .aion files only (the DESIGN-OVERVIEW boundary)."
+    },
+    {
+      "id": "CN8",
+      "text": "Thin-workflow respected (ADR-012): generated activities thread sealed payloads plus thin facts; codegen does not reintroduce heavy decode or prompt rendering into the deterministic workflow process."
+    },
+    {
+      "id": "CN9",
+      "text": "Library-code purity: clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for SDK changes; no unwrap/expect/allow/expect-attr in library code; every touched file stays under 500 LOC excluding tests."
+    }
+  ]
+}

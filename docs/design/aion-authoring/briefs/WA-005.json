@@ -1,0 +1,60 @@
+{
+  "id": "WA-005",
+  "cluster": "aion-authoring",
+  "title": "Bidirectional visual canvas: code-to-diagram projection with live overlay",
+  "depends_on": [],
+  "blocked_by": [
+    "ADR-014 (proposed — awaiting ratification)"
+  ],
+  "checklist": ["C21", "C22", "C23", "C24"],
+  "stories": ["S11"],
+  "design_anchor": ["ADR-014"],
+  "purpose": "Reframes RM-009 ('declarative DSL + visual builder') away from a separate DSL and toward a generated, always-in-sync canvas (RM-009 as designed here). Because a workflow is a typed function over a small known vocabulary (run / spawn / receive / all / race / sleep), the diagram can be generated from the source, overlaid with a live run, and edited within bounds — a projection of the typed source, never a second authoring surface (ADR-014).",
+  "task": "Make the diagram a faithful projection of the typed source. In: extract a workflow's primitive structure from the package and render it to a graph automatically; overlay a live run's progress on the same graph; and regenerate Gleam from bounded structural edits such that it still type-checks. Out: unbounded diagram-to-code synthesis, and any path that makes the canvas the authoritative artifact.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Structure extraction and automatic graph rendering",
+      "spec": "WHEN rendering a workflow, THE SYSTEM SHALL extract its primitive structure (run / spawn / receive / all / race / sleep and control flow) from the package and render a graph automatically. The rendered node and edge set SHALL match the workflow's actual structure.",
+      "acceptance": [
+        "Structure extraction yields the node and edge set for a workflow from the package.",
+        "Rendering examples/order-saga produces a graph whose node/edge set matches the workflow's known structure, proven by a diff test (C23).",
+        "The diagram is generated from the source, not hand-drawn."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/structure.rs"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C21", "C23"],
+      "stories": ["S11"]
+    },
+    {
+      "id": "R2",
+      "title": "Live execution overlay and bounded round-trip",
+      "spec": "WHILE a run executes, THE SYSTEM SHALL overlay its progress on the same graph, lighting the active node as the engine emits events. WHEN a bounded structural edit is made on the canvas, THE SYSTEM SHALL regenerate Gleam that still type-checks. THE SYSTEM SHALL NOT make the canvas the authoritative artifact.",
+      "acceptance": [
+        "A live run lights the active node on the graph as events arrive over the existing event stream.",
+        "A bounded structural edit on the canvas regenerates Gleam that compiles under gleam build (C24).",
+        "The canvas is a projection — the typed source remains the source of truth (CN6)."
+      ],
+      "files": {
+        "create": ["crates/aion-dashboard/src/canvas/"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C22", "C24"],
+      "stories": ["S11"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT support unbounded diagram-to-code synthesis — only bounded structural round-trip that regenerates type-checking Gleam.",
+    "SHALL NOT make the canvas the authoritative artifact; the typed source is the source of truth (ADR-014).",
+    "SHALL NOT change the event stream or the package format."
+  ],
+  "verification": [
+    "Node/edge diff test against a known workflow structure.",
+    "Regenerated Gleam from a bounded edit type-checks.",
+    "clippy -D warnings and fmt clean."
+  ]
+}

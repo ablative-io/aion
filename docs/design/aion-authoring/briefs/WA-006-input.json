@@ -1,0 +1,171 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "WA-006",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "WA-006",
+    "cluster": "aion-authoring",
+    "title": "Agentic-first authoring: aion new agent scaffold",
+    "depends_on": [
+      "WA-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C25",
+      "C26",
+      "C27"
+    ],
+    "stories": [
+      "S12"
+    ],
+    "design_anchor": [
+      "ADR-003"
+    ],
+    "purpose": "Generalises the dogfooded stacked-dev shape into a scaffold (RM-028) so a new agentic family is configuration, not bespoke code. Human-in-the-loop is just workflow.receive with a timeout \u2014 LangGraph's headline feature is already an Aion primitive \u2014 and durable suspend-for-weeks is already free. This is where the market is sprinting and where Aion's first consumer already lives.",
+    "task": "Scaffold a durable agent loop from configuration. In: `aion new agent` that scaffolds a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate, with the human approval pause expressed as a workflow.receive with a timeout; and an end-to-end proof that the scaffold compiles and runs a trivial agent including the signal wait. Out: bundling a specific agent runtime (the norn driver stays worker-side, ADR-011) and any default timeout on the agent steps or the approval wait (ADR-003).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Scaffold the durable agent loop",
+        "spec": "WHEN `aion new agent` runs, THE SYSTEM SHALL scaffold a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate. The human approval pause SHALL be a workflow.receive with a timeout, not a bespoke polling mechanism.",
+        "acceptance": [
+          "`aion new agent` emits a runnable agent-loop package parameterised by prompts, schemas, and a gate (C25).",
+          "The scaffold's human approval pause is a workflow.receive with a timeout (C27).",
+          "The scaffold does not bundle a specific agent runtime; the agent step is parameterised (ADR-011)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-cli/src/new/agent.rs"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C25",
+          "C27"
+        ],
+        "stories": [
+          "S12"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "The scaffold compiles and runs end-to-end",
+        "spec": "WHEN the scaffolded package is built, THE SYSTEM SHALL compile and run a trivial agent end-to-end, including the human-in-the-loop signal wait that resolves on a signal and times out otherwise.",
+        "acceptance": [
+          "The scaffold compiles under gleam build and the worker build (C26).",
+          "A trivial agent runs end-to-end through scout -> act -> verify -> review.",
+          "The approval signal wait resolves when a signal arrives and times out when none does within the configured deadline."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-cli/src/new/agent.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C26"
+        ],
+        "stories": [
+          "S12"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT bundle a specific agent runtime into the scaffold \u2014 the agent step is parameterised; the norn driver stays worker-side (ADR-011).",
+      "SHALL NOT add a default timeout to the agent steps or the approval wait (ADR-003) \u2014 deadlines are author-chosen.",
+      "SHALL NOT reimplement the codegen of WA-001; it consumes it."
+    ],
+    "verification": [
+      "The scaffold compiles and runs a trivial agent end-to-end including the signal wait.",
+      "clippy -D warnings and fmt clean; gleam format --check clean."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-003",
+        "title": "No default timeouts anywhere in the engine",
+        "decision": "The engine imposes no activity time bound of its own. Activity waits are unbounded, terminated only by completion, worker loss, server shutdown, or a workflow-level timeout the author explicitly chose. Rejected: a bigger default \u2014 agentic activities legitimately run for over an hour, and any number we picked would be ADR-001 violated.",
+        "quote": "we shouldn't have a default timeout, the agent steps can take well over an hour",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C25",
+        "text": "`aion new agent` scaffolds a durable agent loop (scout -> act -> verify -> signal-gated review) parameterised by prompts + schemas + gate, generalising the stacked-dev shape."
+      },
+      {
+        "id": "C26",
+        "text": "The agent scaffold compiles and runs a trivial agent end-to-end, including a human-in-the-loop signal wait with a timeout."
+      },
+      {
+        "id": "C27",
+        "text": "The agent scaffold's human approval pause is a workflow.receive with a timeout, not a bespoke polling mechanism."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S12",
+        "text": "As a developer, I want to scaffold a durable agent loop with a human approval pause from prompts, schemas, and a gate, so that a new agentic family is configuration rather than bespoke code."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Generated code is regenerable and drift-gated: `aion generate --check` reproduces every generated file byte-identical or fails; no generated file is hand-maintained alongside the source (ADR-002 forbids parallel sources; mirrors the existing aion codegen --check)."
+      },
+      {
+        "id": "CN2",
+        "text": "No defaults in generated configuration (ADR-001): codegen never emits a retry policy, timeout, backoff, or any value the author did not choose; a required value stays a required hole, never a silent default."
+      },
+      {
+        "id": "CN3",
+        "text": "The determinism boundary is unchanged (invariant 2): generation emits activity plumbing and handler stubs, never side-effecting bodies; generated workflow code still routes every side effect through workflow.run, and generated code introduces no wall-clock or entropy path."
+      },
+      {
+        "id": "CN4",
+        "text": "Production parity: the dev loop and dev UI run the real engine, the real store, and the real event stream; there is no mock-only execution path whose semantics diverge from production, and activity mocking is opt-in per run, not a separate engine."
+      },
+      {
+        "id": "CN5",
+        "text": "No second source of truth for introspection (ADR-007): time-travel, the determinism diff, and the live canvas overlay read the existing event history and deterministic replay; no parallel debug log or state store is introduced."
+      },
+      {
+        "id": "CN6",
+        "text": "The visual canvas is a projection (ADR-014): it is generated from the typed source; any structural round-trip is bounded and regenerates Gleam that still type-checks; the canvas never becomes the authoritative artifact."
+      },
+      {
+        "id": "CN7",
+        "text": "aion-toolchain shells out to the gleam binary and stays optional: aion and aion-server carry no compiler dependency; without --gleam-path the server deploys pre-built .aion files only (the DESIGN-OVERVIEW boundary)."
+      },
+      {
+        "id": "CN8",
+        "text": "Thin-workflow respected (ADR-012): generated activities thread sealed payloads plus thin facts; codegen does not reintroduce heavy decode or prompt rendering into the deterministic workflow process."
+      },
+      {
+        "id": "CN9",
+        "text": "Library-code purity: clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for SDK changes; no unwrap/expect/allow/expect-attr in library code; every touched file stays under 500 LOC excluding tests."
+      }
+    ],
+    "intention": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, registration lists, manifest entries, codecs, JSON schemas, wire-compat goldens, test skeletons) is generated from that typed source; everything that is observed (a run's state, its determinism, its shape) is projected from the event history the engine already records. When this cluster is done, the gap between 'I have a typed workflow' and 'I have a durable, deployed, debuggable workflow' is a save and a glance, not a day of hand-mirroring four files that must agree byte-for-byte. The authoring language stays Gleam \u2014 the type system is the contract and Aion's sharpest edge \u2014 and the declarative and visual surfaces become projections of that typed source, never a second place to author from. This is the experience an author reaches for, the loop they iterate in, the lens they debug through, and the canvas a non-coding stakeholder reads, all anchored to one source of truth.",
+    "design_path": "docs/design/aion-authoring",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, r"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

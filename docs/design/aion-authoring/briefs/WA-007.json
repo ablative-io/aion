@@ -1,0 +1,75 @@
+{
+  "id": "WA-007",
+  "cluster": "aion-authoring",
+  "title": "Determinism linter, generated test scaffolds, and input skeletons",
+  "depends_on": ["WA-001"],
+  "blocked_by": [],
+  "checklist": ["C28", "C29", "C30"],
+  "stories": ["S13", "S14"],
+  "design_anchor": ["ADR-001"],
+  "purpose": "The cross-cutting moves that separate good from best-in-class (RM-029). A static determinism gate turns the determinism boundary into a CI check that complements the SDK's type-level structural block — a provable-determinism guarantee no competitor offers. Alongside it, generated test skeletons and input skeletons mean testing and triggering a workflow start from a scaffold, not a blank file.",
+  "task": "Add the quality and ergonomics scaffolds that ride on the codegen. In: `aion check --deterministic`, a static lint that flags any wall-clock or entropy call reachable from workflow code; generated aion/testing skeletons per workflow (each activity mocked, a clock advance per timer, a replay-determinism assertion); and `aion input <workflow_type>`, which emits a valid input skeleton from the workflow's input type. Out: RM-003's polymorphic --input and client-side validation (separate dispatch-time work), and any new test framework (the scaffolds target the existing aion/testing harness).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "aion check --deterministic static gate",
+      "spec": "WHEN `aion check --deterministic` runs over a workflow module, THE SYSTEM SHALL flag any wall-clock or entropy call reachable from workflow code and SHALL pass a workflow that reaches none.",
+      "acceptance": [
+        "A positive fixture (a workflow that reaches a wall-clock or entropy call) fails the check.",
+        "A negative fixture (a clean workflow) passes the check.",
+        "The check is usable as a CI gate, exiting non-zero on a violation (C28)."
+      ],
+      "files": {
+        "create": ["crates/aion-cli/src/check_deterministic.rs"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C28"],
+      "stories": ["S13"]
+    },
+    {
+      "id": "R2",
+      "title": "Generated test scaffolds against aion/testing",
+      "spec": "WHEN `aion generate` runs, THE SYSTEM SHALL emit an aion/testing skeleton per workflow: each activity pre-mocked, a clock advance per timer, and a replay-determinism assertion. THE SYSTEM SHALL NOT introduce a new test framework.",
+      "acceptance": [
+        "The generated skeleton mocks each of the workflow's activities and advances the simulated clock once per timer.",
+        "The generated skeleton includes a replay-determinism assertion using the existing aion/testing harness (C29).",
+        "No new test framework is introduced — the skeleton targets aion/testing."
+      ],
+      "files": {
+        "create": ["crates/aion-package/src/codegen/test_scaffold.rs"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C29"],
+      "stories": ["S14"]
+    },
+    {
+      "id": "R3",
+      "title": "aion input skeleton from the workflow input type",
+      "spec": "WHEN `aion input <workflow_type>` runs, THE SYSTEM SHALL emit a valid input skeleton derived from the workflow's input type.",
+      "acceptance": [
+        "`aion input <workflow_type>` emits an input skeleton derived from the workflow's input type (C30).",
+        "The emitted skeleton round-trips through the workflow's input codec without a decode error.",
+        "The skeleton is generated from the type, not hand-written."
+      ],
+      "files": {
+        "create": ["crates/aion-cli/src/input.rs"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C30"],
+      "stories": ["S14"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement RM-003's polymorphic --input or client-side input validation — that is separate dispatch-time work; this delivers only the type-derived skeleton.",
+    "SHALL NOT introduce a new test framework — generated scaffolds target the existing aion/testing harness.",
+    "SHALL NOT add default values to generated skeletons (ADR-001)."
+  ],
+  "verification": [
+    "Positive and negative determinism fixtures prove the gate both directions.",
+    "The generated test skeleton compiles and runs under gleam test; the input skeleton validates against the input codec.",
+    "clippy -D warnings and fmt clean."
+  ]
+}

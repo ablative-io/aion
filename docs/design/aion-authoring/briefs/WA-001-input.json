@@ -1,0 +1,259 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "WA-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "WA-001",
+    "cluster": "aion-authoring",
+    "title": "Declare-once codegen: generate the activity plumbing from the typed declaration",
+    "depends_on": [],
+    "blocked_by": [
+      "ADR-014 (proposed \u2014 awaiting ratification)"
+    ],
+    "checklist": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C6"
+    ],
+    "stories": [
+      "S1",
+      "S2",
+      "S3"
+    ],
+    "design_anchor": [
+      "ADR-014",
+      "ADR-001",
+      "ADR-002",
+      "ADR-007",
+      "ADR-012"
+    ],
+    "purpose": "The keystone of the authoring cluster (RM-021). Today an activity is hand-mirrored across five to seven files that must agree byte-for-byte; this brief makes the typed activity declaration the single source of truth (ADR-014) and generates the rest. It extends the existing aion codegen machinery (which already turns I/O schemas into codecs, ADR-007 precedent) from workflow I/O to the full activity surface, with a drift gate so generated output can never silently rot.",
+    "task": "Make the typed activity declaration the only per-activity artifact an author writes, and generate the plumbing from it. In: an activity declaration form (a typed signature plus a tier annotation InVm | RemotePython | RemoteRust) in the aion_flow activities surface; an `aion generate` command that derives the activity.new wrapper, the value-type codec pairs, the worker handler stub for the tier, the worker registration entry, the workflow.toml activities entry, and the wire-compat golden; an `aion generate --check` drift gate; a round-trip guarantee (delete all generated files, regenerate byte-identical); and an authoring guide. Out: the dev loop (WA-002), server-side compile (WA-003), the determinism linter and test/input scaffolds (WA-007), and generating the side-effecting bodies of activities (the author writes those; the determinism boundary is unchanged).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Typed activity declaration form with a tier annotation",
+        "spec": "WHEN an author declares an activity, THE SYSTEM SHALL accept a typed signature plus a tier annotation (InVm | RemotePython | RemoteRust) in the activities surface that the generator reads to drive codegen. THE SYSTEM SHALL NOT require the author to also hand-write the activity.new wrapper, the codecs, the worker handler, the registration entry, or the manifest entry for that activity.",
+        "acceptance": [
+          "An activity declaration form exists in gleam/aion_flow/src/aion/activity.gleam that carries the activity's input type, output type, and tier.",
+          "A declared activity type-checks under gleam build with no hand-written activity.new wrapper present.",
+          "The declaration is the only per-activity artifact the author writes \u2014 verified by an example activity whose wrapper/codecs/worker/registration/manifest are all absent from hand-written source."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src/aion/activity.gleam"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C1"
+        ],
+        "stories": [
+          "S1"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "aion generate derives the activity plumbing",
+        "spec": "WHEN `aion generate` runs against a package, THE SYSTEM SHALL derive from each typed declaration the activity.new wrapper, the value-type codec pairs, the worker handler stub for the declared tier, the worker registration entry, the workflow.toml activities entry, and the wire-compat golden. THE SYSTEM SHALL NOT emit any retry policy, timeout, or backoff value the author did not declare (ADR-001).",
+        "acceptance": [
+          "Running `aion generate` on examples/order-saga emits the activity.new wrappers, codec pairs, worker handler stubs, registration entries, and workflow.toml activities entries for every declared activity.",
+          "Each remote activity gets a wire-compat golden derived from its value-type codecs, with no hand-derived literal.",
+          "No generated activity configuration contains a retry/timeout/backoff value absent from the declaration \u2014 verified by generating an activity with no policy and asserting the generated config carries none."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-cli/src/generate.rs"
+          ],
+          "modify": [
+            "crates/aion-package/src/codegen/"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C2",
+          "C3",
+          "C5"
+        ],
+        "stories": [
+          "S3"
+        ]
+      },
+      {
+        "id": "R3",
+        "title": "Drift gate, round-trip guarantee, and the authoring guide",
+        "spec": "WHEN `aion generate --check` runs, THE SYSTEM SHALL regenerate every generated file in memory and exit non-zero if any on-disk generated file differs. WHEN every generated file for a package is deleted and `aion generate` is re-run, THE SYSTEM SHALL reproduce them byte-identical.",
+        "acceptance": [
+          "`aion generate --check` exits non-zero on a hand-edited generated file and exits zero when the tree is clean.",
+          "Deleting every generated file for examples/order-saga and running `aion generate` reproduces them byte-identical, proven by a round-trip test.",
+          "docs/authoring.md walks the declare -> generate -> run model end to end using the saga."
+        ],
+        "files": {
+          "create": [
+            "docs/authoring.md"
+          ],
+          "modify": [
+            "crates/aion-cli/src/generate.rs",
+            "crates/aion-package/src/codegen/"
+          ],
+          "delete": []
+        },
+        "checklist": [
+          "C4",
+          "C6"
+        ],
+        "stories": [
+          "S2"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT generate the side-effecting body of any activity or workflow \u2014 only the plumbing that must agree byte-for-byte.",
+      "SHALL NOT build the dev loop (WA-002), the server compile loop (WA-003), or the determinism/test/input scaffolds (WA-007).",
+      "SHALL NOT introduce any default retry policy, timeout, or backoff (ADR-001)."
+    ],
+    "verification": [
+      "clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for the SDK change.",
+      "The delete-all-and-regenerate round-trip is byte-identical for examples/order-saga.",
+      "The --check drift gate is proven in both directions (clean tree passes, hand-edit fails)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "No arbitrary limits, no assumed defaults",
+        "decision": "Configurable values come from the builder/author or are deferred to the layer that owns them (e.g. beamr's own defaults). No caps, rate limits, or hardcoded defaults invented at the aion layer. Values are discussed before implementation. Rejected: convenience defaults \u2014 they are decisions made for the user without telling them.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-002",
+        "title": "No backwards compatibility during the build",
+        "decision": "Replace, don't add alongside. No compat shims, no zombie code, no #[deprecated] markers. Breaking changes are made cleanly and consumers move forward. Rejected: incremental deprecation cycles \u2014 they double the surface under test for an audience of zero.",
+        "quote": "",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-007",
+        "title": "Design system v2: JSON ledgers above clusters, enrichment in place",
+        "decision": "Two project ledgers (roadmap.json, decisions.json) above the clusters; stage contracts as first-class schemas inside the aion codegen subset; the brief is one living document \u2014 the pipeline appends scout/dev/review per requirement and an execution block per brief, in place, never touching authored fields. Rejected: a sibling runs/ ledger \u2014 the brief as a single spec-plus-record document was the original intent, and aion's event history already provides the append-only audit trail.",
+        "quote": "basically stuff is just depended to it so I would actually be happy to have it to have it saved back in place from where it came from",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-012",
+        "title": "Workflow code stays thin: large activity results ride as opaque payloads",
+        "decision": "Workflow code stays thin. Large activity results ride between stages as opaque sealed payloads the workflow never opens; the workflow decodes only a small facts projection \u2014 the few fields it needs to route control flow (pass/fail, changed files, blocked, drift). Decoding and prompt rendering happen in the consuming activity on the worker, which has a full heap and runs the work once rather than on every replay. Rejected: decoding and rendering full reports in workflow code \u2014 it puts the determinism boundary's heavy lifting in the wrong place and was the regression that exposed the beamr crash.",
+        "quote": "we're not changing the output of the agents right we're still keeping all of that which is not decoding it all within the workflow so it also stays packaged up and then it passes out to the worker the worker unpacks it and provides the prompt to the agent",
+        "decided_by": "Tom"
+      },
+      {
+        "id": "ADR-014",
+        "title": "Authoring: the typed Gleam module is the single source of truth; no separate DSL",
+        "decision": "The typed Gleam workflow-plus-activities module is the single source of truth. The activity signature already carries the contract (its input and output types, codecs, and tier); the engine generates the rest \u2014 worker handler stubs, registration, the manifest activities list, codecs, schemas, wire-compat goldens, and test skeletons \u2014 and projects the rest \u2014 the diagram and the time-travel state. No standalone textual DSL becomes a parallel authoring surface, because it would forfeit the compile-time type safety that is Aion's core differentiator (the aion-flow guarantee that an invalid composition fails gleam build). A visual canvas is a generated projection of the typed source with a live execution overlay and bounded structural round-trip, not a second source. Rejected: a separate DSL or manifest as the source of truth \u2014 it re-creates the spec-vs-implementation drift the typed module already eliminates and trades a strong static guarantee for a weaker one.",
+        "quote": "",
+        "decided_by": ""
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C1",
+        "text": "An activity is declared once as a typed signature plus a tier annotation (InVm | RemotePython | RemoteRust) in the activities module, and that declaration is the only per-activity artifact an author writes."
+      },
+      {
+        "id": "C2",
+        "text": "`aion generate` derives, from the typed declaration, the activity.new wrapper, the value-type codec pairs, the worker handler stub, the worker registration entry, and the workflow.toml activities entry."
+      },
+      {
+        "id": "C3",
+        "text": "`aion generate` derives the wire-compat golden for each remote activity from the value-type codecs, so the worker/SDK wire shapes are pinned without a hand-derived literal."
+      },
+      {
+        "id": "C4",
+        "text": "`aion generate --check` regenerates every generated file in memory and exits non-zero if any on-disk generated file differs, so a hand-edit to generated output is a build failure."
+      },
+      {
+        "id": "C5",
+        "text": "Generated activity configuration carries no invented defaults: a retry policy, timeout, or backoff appears in generated code only when the author declared it, otherwise the required hole remains required (ADR-001)."
+      },
+      {
+        "id": "C6",
+        "text": "Deleting every generated file for a worked example (e.g. order-saga) and running `aion generate` reproduces them byte-identical, proven by a round-trip test."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S1",
+        "text": "As a developer, I want to declare an activity once as a typed signature and a tier, so that I do not hand-mirror its name, codecs, worker handler, registration, and manifest entry across five to seven files that must agree byte-for-byte."
+      },
+      {
+        "id": "S2",
+        "text": "As a developer, I want generated plumbing to be regenerable and drift-checked, so that a stale hand-edit is caught by the build instead of corrupting a wire shape silently."
+      },
+      {
+        "id": "S3",
+        "text": "As a developer, I want generated activity configuration to contain only the policies I chose, so that I am never silently bound by a retry or timeout default I did not set."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Generated code is regenerable and drift-gated: `aion generate --check` reproduces every generated file byte-identical or fails; no generated file is hand-maintained alongside the source (ADR-002 forbids parallel sources; mirrors the existing aion codegen --check)."
+      },
+      {
+        "id": "CN2",
+        "text": "No defaults in generated configuration (ADR-001): codegen never emits a retry policy, timeout, backoff, or any value the author did not choose; a required value stays a required hole, never a silent default."
+      },
+      {
+        "id": "CN3",
+        "text": "The determinism boundary is unchanged (invariant 2): generation emits activity plumbing and handler stubs, never side-effecting bodies; generated workflow code still routes every side effect through workflow.run, and generated code introduces no wall-clock or entropy path."
+      },
+      {
+        "id": "CN4",
+        "text": "Production parity: the dev loop and dev UI run the real engine, the real store, and the real event stream; there is no mock-only execution path whose semantics diverge from production, and activity mocking is opt-in per run, not a separate engine."
+      },
+      {
+        "id": "CN5",
+        "text": "No second source of truth for introspection (ADR-007): time-travel, the determinism diff, and the live canvas overlay read the existing event history and deterministic replay; no parallel debug log or state store is introduced."
+      },
+      {
+        "id": "CN6",
+        "text": "The visual canvas is a projection (ADR-014): it is generated from the typed source; any structural round-trip is bounded and regenerates Gleam that still type-checks; the canvas never becomes the authoritative artifact."
+      },
+      {
+        "id": "CN7",
+        "text": "aion-toolchain shells out to the gleam binary and stays optional: aion and aion-server carry no compiler dependency; without --gleam-path the server deploys pre-built .aion files only (the DESIGN-OVERVIEW boundary)."
+      },
+      {
+        "id": "CN8",
+        "text": "Thin-workflow respected (ADR-012): generated activities thread sealed payloads plus thin facts; codegen does not reintroduce heavy decode or prompt rendering into the deterministic workflow process."
+      },
+      {
+        "id": "CN9",
+        "text": "Library-code purity: clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for SDK changes; no unwrap/expect/allow/expect-attr in library code; every touched file stays under 500 LOC excluding tests."
+      }
+    ],
+    "intention": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, registration lists, manifest entries, codecs, JSON schemas, wire-compat goldens, test skeletons) is generated from that typed source; everything that is observed (a run's state, its determinism, its shape) is projected from the event history the engine already records. When this cluster is done, the gap between 'I have a typed workflow' and 'I have a durable, deployed, debuggable workflow' is a save and a glance, not a day of hand-mirroring four files that must agree byte-for-byte. The authoring language stays Gleam \u2014 the type system is the contract and Aion's sharpest edge \u2014 and the declarative and visual surfaces become projections of that typed source, never a second place to author from. This is the experience an author reaches for, the loop they iterate in, the lens they debug through, and the canvas a non-coding stakeholder reads, all anchored to one source of truth.",
+    "design_path": "docs/design/aion-authoring",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, r"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}

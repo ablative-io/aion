@@ -1,0 +1,58 @@
+{
+  "id": "WA-004",
+  "cluster": "aion-authoring",
+  "title": "Time-travel debugger over the event-store oplog",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C16", "C17", "C18", "C19", "C20"],
+  "stories": ["S9", "S10"],
+  "design_anchor": ["ADR-007"],
+  "purpose": "The differentiated showcase (RM-027). The event store is already a complete oplog, deterministic replay already reconstructs exact state, and the resolver already computes expected-vs-found on a non-determinism fault — so a Golem/Temporal-class time-travel debugger is nearly free on the data side. This brief adds the lens, reading the existing history and replay, never a second store (ADR-007, P6).",
+  "task": "Add a debugging lens over what the engine already records. In: an engine surface that exposes, per event, the workflow-visible state projection and the recorded now()/random() values (computed from existing history and replay), and the divergent command on a NonDeterminismError; and a dashboard scrubber that steps a run event-by-event and offers a what-if re-run from a chosen event via the existing aion/testing replay path. Out: any new persistence or debug log, and any change to the event schema.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Per-event state projection and determinism diff from history",
+      "spec": "WHEN inspecting a run, THE SYSTEM SHALL expose, per event, the workflow-visible state projection and the recorded now() and random() values, computed from the existing event history and deterministic replay. WHEN a NonDeterminismError exists for the run, THE SYSTEM SHALL expose the divergent command as expected-vs-found at the sequence. THE SYSTEM SHALL NOT maintain a parallel mutable state store.",
+      "acceptance": [
+        "A per-event workflow-visible state projection is returned for a recorded run, computed from history and replay with no second store (C20).",
+        "The recorded now() and random() values for each step are exposed alongside the state.",
+        "An injected determinism fault surfaces the exact divergent command (expected vs found at the sequence) the resolver computes."
+      ],
+      "files": {
+        "create": ["crates/aion/src/durability/replay_inspect.rs"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C16", "C17", "C18", "C20"],
+      "stories": ["S9", "S10"]
+    },
+    {
+      "id": "R2",
+      "title": "Dashboard scrubber and what-if re-run",
+      "spec": "WHEN an operator opens a run in the dashboard, THE SYSTEM SHALL let them step the run event-by-event and run a what-if re-run from a chosen event with a mocked outcome via the existing aion/testing replay path.",
+      "acceptance": [
+        "The scrubber steps a recorded run event-by-event, showing the projected state at each step.",
+        "A what-if re-run forks from a chosen event with a mocked outcome and reports the resulting path, using the existing replay harness.",
+        "The scrubber reads the existing event history; no debug-only log is introduced (C16)."
+      ],
+      "files": {
+        "create": ["crates/aion-dashboard/src/timetravel/"],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": ["C19"],
+      "stories": ["S9"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT introduce a parallel debug log or state store — time-travel reads existing history and replay (ADR-007).",
+    "SHALL NOT change the Event schema or the recorded payloads.",
+    "SHALL NOT overlap with RM-007's per-run event timeline list view beyond consuming the same history."
+  ],
+  "verification": [
+    "Validated against a recorded run and an injected determinism fault.",
+    "CN5 asserted: no second source of truth — projections come from history and replay.",
+    "clippy -D warnings and fmt clean."
+  ]
+}

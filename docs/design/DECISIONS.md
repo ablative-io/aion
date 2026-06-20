@@ -1,8 +1,8 @@
 # aion — Decisions
 
-_Updated: 2026-06-13_
+_Updated: 2026-06-21_
 
-## Decided (12)
+## Decided (13)
 
 ### ADR-001 — No arbitrary limits, no assumed defaults
 
@@ -185,3 +185,35 @@ _Updated: 2026-06-13_
 - brief_dev is reshaped to thread sealed payloads plus thin facts, and prompt rendering moves into the activity bodies (RM-023)
 - Replay cost drops — no per-replay re-decode or re-render — and the workflow heap stays small regardless of report size
 - New agentic families inherit the thin pattern by default through the dev-pipeline template
+
+### ADR-013 — Reopen reuses the existing single-writer Recorder; no new lock primitive
+
+- **Scope:** aion-durability · **Date:** 2026-06-16 · **Decided by:** Tom
+
+**Context.** The reopen operation (AD-012) must append WorkflowReopened to a terminal-Failed workflow and respawn it, and invariant #3 requires exactly one Recorder per workflow across that whole sequence. Two situations exist: the workflow failed in this server's lifetime (its handle is still registered, residency Suspended) or it failed before a restart (no handle exists at all). The fork: reuse the existing per-workflow write lock, or introduce a new global per-workflow reopen-lock primitive to serialise reopen attempts. Raised because Tom initially read 'single writer' as conflicting with the engine's massive-concurrency goal; clarified that invariant #3 is per-workflow (one writer for one workflow's event log, a requirement of deterministic replay), while concurrency is between workflows (millions of independent processes) and even within a workflow the activity work still fans out — only the per-workflow log append is serialised.
+
+**Decision.** The reopen operation reuses the existing per-workflow write lock — the handle's recorder Arc<Mutex<Recorder>> — serialised at creation by the registry mutex via an atomic insert-if-absent (a Suspended handle carrying a Recorder::resume_at at the history head is created when none exists, else the existing one is reused). One continuous Recorder is held from the WorkflowReopened append through the respawn; register_recovered_resident is parameterised to accept that injected recorder so reopen and startup recovery share one respawn-and-register path. Rejected: a dedicated global reopen-lock map — it adds a second concurrency mechanism when the recorder mutex already IS the per-workflow write lock, and the recorder's expected-sequence discipline already turns a racing double-reopen into a hard SequenceConflict (safety), so a lock would only add graceful serialisation, not correctness.
+
+> I think I agree with your recommended approach
+> — Tom, 2026-06-16
+
+**Consequences:**
+- register_recovered_resident is refactored to accept an externally-held Recorder; the refactor must be behaviour-preserving for startup recovery
+- Invariant #3 is reaffirmed for reopen and is explicitly per-workflow, not global — cross-workflow concurrency is unaffected
+- REVISIT (deferred, not decided): the single-writer-per-workflow model may be re-examined once the liminal messaging bus (improved-NATS, fan-in/fan-out) and the hematite storage engine (multi-reader/multi-writer, embedded), both built on beamr, mature — they could change the per-workflow concurrency and append story. Flagged here as a deliberate come-back-to; no change is made now.
+
+## Proposed (1)
+
+### ADR-014 — Authoring: the typed Gleam module is the single source of truth; no separate DSL
+
+- **Scope:** aion-authoring
+
+**Context.** Shipping one activity today means writing it in five to seven places that must agree byte-for-byte (the activity.new wrapper and its name, the local body, the call site, the codec pair, the worker handler, the worker registration, the workflow.toml entry, and for typed workers a hand-derived wire-compat golden). The recurring instinct — recorded as RM-009 (declarative DSL + visual builder) and gestured at whenever authoring friction bites — is to answer this with a separate declarative DSL or a visual builder as the authoring surface. The industry is split: Restate, Inngest, and DBOS stay code-first with explicit named side-effect blocks, while a class of tools offer visual builders as the source. The fork: introduce a separate DSL or manifest as the source of truth, or keep the typed Gleam module as the single source and generate, observe, and project everything else from it.
+
+**Decision.** The typed Gleam workflow-plus-activities module is the single source of truth. The activity signature already carries the contract (its input and output types, codecs, and tier); the engine generates the rest — worker handler stubs, registration, the manifest activities list, codecs, schemas, wire-compat goldens, and test skeletons — and projects the rest — the diagram and the time-travel state. No standalone textual DSL becomes a parallel authoring surface, because it would forfeit the compile-time type safety that is Aion's core differentiator (the aion-flow guarantee that an invalid composition fails gleam build). A visual canvas is a generated projection of the typed source with a live execution overlay and bounded structural round-trip, not a second source. Rejected: a separate DSL or manifest as the source of truth — it re-creates the spec-vs-implementation drift the typed module already eliminates and trades a strong static guarantee for a weaker one.
+
+**Consequences:**
+- RM-021 (declare-once codegen), RM-009 (reframed as a visual projection), and the new aion-authoring roadmap items (RM-025..RM-029) are bound by this principle.
+- The activity declaration form drives worker, manifest, codec, schema, and test codegen the way I/O schemas already drive codec codegen (ADR-007 precedent); aion gains an `aion generate` surface extending today's I/O-only `aion codegen`.
+- No standalone DSL runtime is built; the visual canvas is a projection of the typed source, never the authoritative artifact.
+- AWAITING RATIFICATION: this is a recommendation recorded as proposed; Tom's call flips it to decided. The aion-authoring cluster is designed against it in the meantime.

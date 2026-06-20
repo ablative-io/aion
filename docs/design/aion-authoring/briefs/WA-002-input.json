@@ -1,0 +1,195 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "brief_id": "WA-002",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "brief_document": {
+    "id": "WA-002",
+    "cluster": "aion-authoring",
+    "title": "aion dev: the instant authoring loop and a local dev server with production parity",
+    "depends_on": [
+      "WA-001"
+    ],
+    "blocked_by": [],
+    "checklist": [
+      "C7",
+      "C8",
+      "C9",
+      "C10",
+      "C11"
+    ],
+    "stories": [
+      "S4",
+      "S5",
+      "S6"
+    ],
+    "design_anchor": [
+      "ADR-001"
+    ],
+    "purpose": "The highest-ROI experience lever the durable-execution field has converged on (RM-025): a save-to-running inner loop and a local dev UI with production parity. Aion gets the hard pieces nearly free \u2014 hot code loading is the reload, content-hash versioning makes concurrent versions safe, and the existing WebSocket event firehose is the live view.",
+    "task": "Give authors a tight inner loop and a faithful local UI. In: `aion dev` that watches a package and rebuilds, repackages, and hot-loads the new content-hash version on save (subsuming the RM-004 watch slice); and local dev UI endpoints that trigger a run, stream its events live over the existing WebSocket stream, mock a named activity per-run, and replay a failed run, all over the real engine, store, and event stream. Out: codegen (WA-001), server-side compilation of submitted source (WA-003), and any mock-only execution path whose semantics diverge from production.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Watch, rebuild, repackage, hot-load on save",
+        "spec": "WHEN a watched package source file changes, THE SYSTEM SHALL rebuild, repackage, and hot-load the new content-hash version without restarting the engine. WHILE a prior run is in flight, THE SYSTEM SHALL leave it on its pinned version (content-hash immutability).",
+        "acceptance": [
+          "Editing a workflow under `aion dev` triggers a rebuild, repackage, and hot-load with no engine restart.",
+          "A workflow already running keeps executing on the version it started with.",
+          "An end-to-end test edits a workflow and observes the new content-hash version serve a fresh run with no restart."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-cli/src/dev/"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C7",
+          "C11"
+        ],
+        "stories": [
+          "S4"
+        ]
+      },
+      {
+        "id": "R2",
+        "title": "Local dev UI with production parity",
+        "spec": "WHEN a developer uses the dev UI, THE SYSTEM SHALL let them trigger a run, stream that run's events live over the existing WebSocket stream, mock a named activity's result on an opt-in basis for a given run, and replay a failed run. THE SYSTEM SHALL run the real engine, store, and event stream, and SHALL NOT provide a mock-only execution path whose semantics diverge from production.",
+        "acceptance": [
+          "Triggering a run from the dev UI streams that run's events live over the existing WebSocket event stream.",
+          "Opt-in activity mocking returns a canned typed result for one run without changing the engine.",
+          "Replaying a failed run re-drives it through the real engine and store; there is no separate mock-only engine (CN4)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-server/src/dev_ui/"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [
+          "C8",
+          "C9",
+          "C10"
+        ],
+        "stories": [
+          "S5",
+          "S6"
+        ]
+      }
+    ],
+    "boundaries": [
+      "SHALL NOT add activity codegen (WA-001) or server-side source compilation (WA-003).",
+      "SHALL NOT create a mock-only engine or a dev-only execution path that diverges from production semantics.",
+      "SHALL NOT introduce default poll intervals or timeouts in the watch loop (ADR-001) \u2014 values are configurable or deferred."
+    ],
+    "verification": [
+      "An end-to-end test edits a workflow and sees the new version serve a fresh run with no restart.",
+      "Production parity is asserted: the dev loop drives the real engine, store, and event stream.",
+      "clippy -D warnings and fmt clean."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "No arbitrary limits, no assumed defaults",
+        "decision": "Configurable values come from the builder/author or are deferred to the layer that owns them (e.g. beamr's own defaults). No caps, rate limits, or hardcoded defaults invented at the aion layer. Values are discussed before implementation. Rejected: convenience defaults \u2014 they are decisions made for the user without telling them.",
+        "quote": "",
+        "decided_by": "Tom"
+      }
+    ],
+    "checklist": [
+      {
+        "id": "C7",
+        "text": "`aion dev` watches a package and on save rebuilds, repackages, and hot-reloads the new content-hash version without restarting the engine."
+      },
+      {
+        "id": "C8",
+        "text": "The dev UI triggers a workflow run and streams that run's events live over the existing WebSocket event stream."
+      },
+      {
+        "id": "C9",
+        "text": "The dev UI replays a failed run and lets the author mock a named activity's result on an opt-in basis for a given run."
+      },
+      {
+        "id": "C10",
+        "text": "The dev loop runs the real engine, store, and event stream \u2014 there is no mock-only execution path whose semantics diverge from production (CN4)."
+      },
+      {
+        "id": "C11",
+        "text": "An end-to-end test edits a workflow under `aion dev` and observes the new version serve a fresh run with no engine restart."
+      }
+    ],
+    "stories": [
+      {
+        "id": "S4",
+        "text": "As a developer, I want my workflow to rebuild and hot-reload on save, so that I iterate in seconds instead of running a manual build-package-deploy cycle each time."
+      },
+      {
+        "id": "S5",
+        "text": "As a developer, I want to trigger a run and watch its events stream live in a local UI, so that I can see exactly what happened without reading raw logs."
+      },
+      {
+        "id": "S6",
+        "text": "As a developer, I want the local experience to use the real engine and event stream, so that what works locally works in production with no fidelity gap."
+      }
+    ],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Generated code is regenerable and drift-gated: `aion generate --check` reproduces every generated file byte-identical or fails; no generated file is hand-maintained alongside the source (ADR-002 forbids parallel sources; mirrors the existing aion codegen --check)."
+      },
+      {
+        "id": "CN2",
+        "text": "No defaults in generated configuration (ADR-001): codegen never emits a retry policy, timeout, backoff, or any value the author did not choose; a required value stays a required hole, never a silent default."
+      },
+      {
+        "id": "CN3",
+        "text": "The determinism boundary is unchanged (invariant 2): generation emits activity plumbing and handler stubs, never side-effecting bodies; generated workflow code still routes every side effect through workflow.run, and generated code introduces no wall-clock or entropy path."
+      },
+      {
+        "id": "CN4",
+        "text": "Production parity: the dev loop and dev UI run the real engine, the real store, and the real event stream; there is no mock-only execution path whose semantics diverge from production, and activity mocking is opt-in per run, not a separate engine."
+      },
+      {
+        "id": "CN5",
+        "text": "No second source of truth for introspection (ADR-007): time-travel, the determinism diff, and the live canvas overlay read the existing event history and deterministic replay; no parallel debug log or state store is introduced."
+      },
+      {
+        "id": "CN6",
+        "text": "The visual canvas is a projection (ADR-014): it is generated from the typed source; any structural round-trip is bounded and regenerates Gleam that still type-checks; the canvas never becomes the authoritative artifact."
+      },
+      {
+        "id": "CN7",
+        "text": "aion-toolchain shells out to the gleam binary and stays optional: aion and aion-server carry no compiler dependency; without --gleam-path the server deploys pre-built .aion files only (the DESIGN-OVERVIEW boundary)."
+      },
+      {
+        "id": "CN8",
+        "text": "Thin-workflow respected (ADR-012): generated activities thread sealed payloads plus thin facts; codegen does not reintroduce heavy decode or prompt rendering into the deterministic workflow process."
+      },
+      {
+        "id": "CN9",
+        "text": "Library-code purity: clippy --workspace --all-targets -- -D warnings and cargo fmt --check pass clean; gleam format --check clean for SDK changes; no unwrap/expect/allow/expect-attr in library code; every touched file stays under 500 LOC excluding tests."
+      }
+    ],
+    "intention": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, registration lists, manifest entries, codecs, JSON schemas, wire-compat goldens, test skeletons) is generated from that typed source; everything that is observed (a run's state, its determinism, its shape) is projected from the event history the engine already records. When this cluster is done, the gap between 'I have a typed workflow' and 'I have a durable, deployed, debuggable workflow' is a save and a glance, not a day of hand-mirroring four files that must agree byte-for-byte. The authoring language stays Gleam \u2014 the type system is the contract and Aion's sharpest edge \u2014 and the declarative and visual surfaces become projections of that typed source, never a second place to author from. This is the experience an author reaches for, the loop they iterate in, the lens they debug through, and the canvas a non-coding stakeholder reads, all anchored to one source of truth.",
+    "design_path": "docs/design/aion-authoring",
+    "provenance": {
+      "requested_by": "Tom",
+      "quote": "Authoring a durable workflow on Aion should feel like writing one typed Gleam function and a file of typed activity signatures \u2014 and nothing else. Everything that is mirrored today (worker handlers, r"
+    }
+  },
+  "verify_fix_cap": 3,
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "review_deadline_ms": 300000,
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "clone_url": "https://github.com/tomWhiting/aion.git"
+}
