@@ -18,6 +18,8 @@ pub mod recorder;
 pub mod recovery;
 /// Replay driver and replay-step outcomes.
 pub mod replay;
+/// Time-travel inspection lens over a recorded run (read-only projection).
+pub mod replay_inspect;
 /// Command resolver that compares live commands with recorded history.
 pub mod resolver;
 /// Event sequence-head helpers.
@@ -42,6 +44,10 @@ pub use recovery::{
     RecoveryDriver, RecoveryOutcome, RecoveryPlan, RecoveryReport, RecoveryResumePoint, recover,
 };
 pub use replay::{Replay, ReplayOutcome, ReplayStep, ReplayTerminal};
+pub use replay_inspect::{
+    DivergentCommand, InspectStep, MockOutcome, RunInspection, StepProjection, WhatIfOutcome,
+    inspect_run, what_if_from,
+};
 pub use resolver::{
     NON_DETERMINISM_WORKFLOW_ERROR_PREFIX, ResolvedCommand, Resolver, fail_on_violation,
 };
