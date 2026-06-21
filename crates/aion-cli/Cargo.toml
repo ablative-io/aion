@@ -20,6 +20,11 @@ name = "aion"
 path = "src/main.rs"
 
 [dependencies]
+# The engine, for the read-only time-travel lens (aion::durability::inspect_run /
+# what_if_from) the `aion inspect` surface drives. Already in the CLI's graph
+# transitively via aion-server; naming it directly keeps WA-004's projection in
+# the engine where the brief places it, not duplicated in the CLI.
+aion = { package = "aion-rs", version = "0.6.1", path = "../aion" }
 aion-client = { version = "0.6.1", path = "../aion-client" }
 aion-core = { version = "0.6.1", path = "../aion-core" }
 aion-package = { version = "0.6.1", path = "../aion-package" }
@@ -40,6 +45,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 aion-store = { version = "0.6.1", path = "../aion-store" }
+chrono = { workspace = true }
 fs4 = { workspace = true }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

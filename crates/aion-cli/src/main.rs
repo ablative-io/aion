@@ -22,6 +22,7 @@ use crate::payload::{
 mod codegen;
 mod deploy;
 mod generate;
+mod inspect;
 mod new;
 mod output;
 mod package;
@@ -242,6 +243,39 @@ enum RemoteCommand {
         #[arg(long)]
         raw: bool,
     },
+    /// Time-travel over a recorded run's event-store oplog.
+    ///
+    /// Reads the run's existing history over the same `describe` read every
+    /// other command uses — no debug-only log and no second store. For each
+    /// recorded event it prints the workflow-visible state projection and the
+    /// recorded `now()` and deterministic `random()` for that step; on a
+    /// non-determinism fault it prints the exact divergent command (expected
+    /// vs found at the sequence) the resolver already computed.
+    ///
+    /// With `--from <seq> --mock <json>` it runs a what-if re-run from the
+    /// chosen event with a mocked outcome via the existing replay path and
+    /// reports the resulting path. The what-if is entirely in-memory and
+    /// read-only; it never writes the event log. `--from` and `--mock` are
+    /// required together — a what-if never defaults its fork point or outcome.
+    /// `--mock` shape: `{"kind":"activity_completed","result":<json>}`,
+    /// `{"kind":"activity_failed","message":"..."}`,
+    /// `{"kind":"child_completed","result":<json>}`,
+    /// `{"kind":"child_failed","message":"..."}`,
+    /// `{"kind":"signal_delivered","payload":<json>}`, or
+    /// `{"kind":"timer_fired"}`.
+    Inspect {
+        /// Workflow identifier.
+        workflow_id: String,
+        /// Specific run identifier. Defaults to the latest recorded run.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Fork the what-if re-run from this recorded event sequence.
+        #[arg(long)]
+        from: Option<u64>,
+        /// Mocked outcome JSON for the what-if fork (see the command help).
+        #[arg(long)]
+        mock: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -344,6 +378,21 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
             run_id,
             raw,
         } => describe_workflow(client, workflow_id, run_id.as_deref(), *raw).await,
+        RemoteCommand::Inspect {
+            workflow_id,
+            run_id,
+            from,
+            mock,
+        } => {
+            inspect::run(
+                client,
+                workflow_id,
+                run_id.as_deref(),
+                *from,
+                mock.as_deref(),
+            )
+            .await
+        }
     }
 }
 
@@ -631,6 +680,67 @@ mod tests {
     }
 
     #[test]
+    fn inspect_parses_workflow_run_from_and_mock() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "inspect", WORKFLOW_ID])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Inspect {
+            workflow_id,
+            run_id,
+            from,
+            mock,
+        })) = cli.command
+        else {
+            anyhow::bail!("expected inspect command");
+        };
+        assert_eq!(workflow_id, WORKFLOW_ID);
+        assert!(run_id.is_none());
+        assert!(from.is_none());
+        assert!(mock.is_none());
+
+        let cli = Cli::try_parse_from(["aion", "inspect", WORKFLOW_ID, "--run-id", RUN_ID])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Inspect { run_id, .. })) =
+            cli.command
+        else {
+            anyhow::bail!("expected inspect command");
+        };
+        assert_eq!(run_id.as_deref(), Some(RUN_ID));
+
+        let cli = Cli::try_parse_from([
+            "aion",
+            "inspect",
+            WORKFLOW_ID,
+            "--from",
+            "3",
+            "--mock",
+            r#"{"kind":"timer_fired"}"#,
+        ])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Inspect { from, mock, .. })) =
+            cli.command
+        else {
+            anyhow::bail!("expected inspect command");
+        };
+        assert_eq!(from, Some(3));
+        assert_eq!(mock.as_deref(), Some(r#"{"kind":"timer_fired"}"#));
+        Ok(())
+    }
+
+    #[test]
+    fn inspect_help_documents_oplog_read_and_what_if() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(inspect) = command.find_subcommand_mut("inspect") else {
+            anyhow::bail!("inspect subcommand should be registered");
+        };
+        let help = inspect.render_long_help().to_string();
+
+        assert!(help.contains("no debug-only log and no second store"));
+        assert!(help.contains("random()"));
+        assert!(help.contains("divergent command"));
+        assert!(help.contains("--from"));
+        assert!(help.contains("--mock"));
+        assert!(help.contains("what-if"));
+        Ok(())
+    }
+
+    #[test]
     fn describe_help_documents_raw_payload_flag() -> anyhow::Result<()> {
         let mut command = Cli::command();
         let Some(describe) = command.find_subcommand_mut("describe") else {
@@ -663,7 +773,11 @@ mod tests {
                 )) => assert!(run_id.is_none()),
                 Command::Server(_)
                 | Command::Client(
-                    ClientCommand::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
+                    ClientCommand::Remote(
+                        RemoteCommand::Start { .. }
+                        | RemoteCommand::List { .. }
+                        | RemoteCommand::Inspect { .. },
+                    )
                     | ClientCommand::New(_)
                     | ClientCommand::Codegen { .. }
                     | ClientCommand::Generate { .. }
@@ -710,7 +824,8 @@ mod tests {
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }
                         | RemoteCommand::List { .. }
-                        | RemoteCommand::Describe { .. },
+                        | RemoteCommand::Describe { .. }
+                        | RemoteCommand::Inspect { .. },
                     )
                     | ClientCommand::New(_)
                     | ClientCommand::Codegen { .. }
