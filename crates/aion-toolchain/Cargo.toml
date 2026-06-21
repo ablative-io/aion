@@ -16,9 +16,10 @@ categories = ["development-tools"]
 workspace = true
 
 # Dependency set is load-bearing for CN7/C15: the toolchain depends only on
-# aion-package (the .aion format) plus thiserror. There is NO Gleam compiler
-# crate and NO beamr here — the toolchain only ever spawns the external
-# `gleam` binary. The `no_gleam_compiler_in_dependency_tree` test asserts this.
+# aion-package (the .aion format), thiserror, serde/toml, and tempfile. There
+# is NO Gleam compiler crate and NO beamr here — the toolchain only ever spawns
+# the external `gleam` binary. The `no_gleam_compiler_in_dependency_tree` test
+# asserts this.
 [dependencies]
 aion-package = { version = "0.6.1", path = "../aion-package" }
 thiserror = { workspace = true }
@@ -26,6 +27,8 @@ thiserror = { workspace = true }
 # that submitted source is written into. Neither is a compiler dependency.
 serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true }
-
-[dev-dependencies]
+# tempfile stages each submission's isolated build workspace (a throwaway
+# sibling copy of the read-only project template, removed on drop), so
+# concurrent submissions never share an entry-file, build/ dir, or .aion output.
+# It is a filesystem utility, not a compiler dependency.
 tempfile = "3.27.0"
