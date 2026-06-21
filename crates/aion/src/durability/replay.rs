@@ -80,17 +80,6 @@ impl Replay {
         self.determinism.now()
     }
 
-    /// Returns the determinism context for callers that need deterministic random output.
-    #[must_use]
-    pub const fn determinism(&self) -> &DeterminismContext {
-        &self.determinism
-    }
-
-    /// Mutably borrows the determinism context for callers that need deterministic random output.
-    pub fn determinism_mut(&mut self) -> &mut DeterminismContext {
-        &mut self.determinism
-    }
-
     /// Resolves the next engine-supplied workflow command against recorded history.
     ///
     /// # Errors

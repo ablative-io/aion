@@ -4,14 +4,18 @@
 //! `describe` read every other client command uses — there is no debug-only log
 //! and no second store (C16, CN5). It resolves the run (the latest recorded
 //! `WorkflowStarted`, or `--run-id`), then asks the engine's
-//! [`aion::durability::inspect_run`] for the per-event state projection plus the
-//! recorded `now()`/`random()` at each step and the divergent command on a
-//! non-determinism fault. With `--from <seq> --mock <json>` it runs a what-if
-//! re-run from the chosen event via the same replay path and reports the path.
+//! [`aion::durability::inspect_run`] for the per-event state projection, the
+//! recorded `now()` at each step, and the divergent command on a
+//! non-determinism fault. `random()` is surfaced as a run-level draw-ordinal
+//! projection, not a per-step field — draws are deterministic and never
+//! recorded, and their per-step count is workflow-code dependent (see
+//! [`aion::durability::RandomDrawProjection`]). With `--from <seq> --mock <json>`
+//! it runs a what-if re-run from the chosen event via the same replay path and
+//! reports the path.
 
 use aion::durability::{
-    DivergentCommand, InspectStep, MockOutcome, RunInspection, StepProjection, WhatIfOutcome,
-    inspect_run, what_if_from,
+    DivergentCommand, InspectStep, MockOutcome, RandomDrawProjection, RunInspection,
+    StepProjection, WhatIfOutcome, inspect_run, what_if_from,
 };
 use aion_client::Client;
 use aion_core::{
@@ -105,6 +109,7 @@ fn inspection_to_json(inspection: &RunInspection) -> Result<Value> {
         "workflow_id": inspection.workflow_id.to_string(),
         "run_id": inspection.run_id.to_string(),
         "steps": steps,
+        "random": random_to_json(&inspection.random),
         "divergence": inspection.divergence.as_ref().map(divergence_to_json),
     }))
 }
@@ -115,9 +120,37 @@ fn step_to_json(step: &InspectStep) -> Result<Value> {
         "event_kind": step.event_kind,
         "correlation_key": step.correlation_key.as_ref().map(|key| format!("{key:?}")),
         "now": step.now.to_rfc3339(),
-        "random_u64": step.random_u64,
         "projection": projection_to_json(&step.projection)?,
     }))
+}
+
+/// Renders the run's deterministic `random()` draw-ordinal projection.
+///
+/// `random()` is *not* a per-step value: draws are deterministic, never
+/// recorded, and their per-step count is workflow-code dependent (only an
+/// in-VM replay can recover counts — deferred). So this surfaces the projection
+/// honestly: the value the production `random()` path serves at each draw
+/// ordinal, computed by the same formula the running workflow used. The sample
+/// shows the first draw ordinals; a consumer (the RM-007 dashboard) queries any
+/// ordinal it needs against the same projection.
+const RANDOM_SAMPLE_ORDINALS: u64 = 8;
+
+fn random_to_json(random: &RandomDrawProjection) -> Value {
+    let mut sample = Vec::with_capacity(usize::try_from(RANDOM_SAMPLE_ORDINALS).unwrap_or(0));
+    for ordinal in 0..RANDOM_SAMPLE_ORDINALS {
+        sample.push(json!({
+            "ordinal": ordinal,
+            "random": random.random_at(ordinal),
+        }));
+    }
+    json!({
+        "kind": "draw_ordinal_projection",
+        "note": "random() is deterministic and never recorded; this is the value \
+                 the production random() path serves at each draw ordinal for this \
+                 run, not a per-event field. Per-step draw counts require an in-VM \
+                 replay (deferred).",
+        "sample": sample,
+    })
 }
 
 fn projection_to_json(projection: &StepProjection) -> Result<Value> {
@@ -155,13 +188,11 @@ fn divergence_to_json(divergence: &DivergentCommand) -> Value {
 }
 
 fn what_if_to_json(from_seq: u64, outcome: &WhatIfOutcome) -> Value {
+    // `from_seq` is emitted once, on the outer object; the per-kind body never
+    // repeats it.
     let body = match outcome {
-        WhatIfOutcome::Resolved {
-            from_seq,
-            resolution,
-        } => json!({
+        WhatIfOutcome::Resolved { resolution, .. } => json!({
             "kind": "resolved",
-            "from_seq": from_seq,
             "resolution": format!("{resolution:?}"),
         }),
         WhatIfOutcome::Terminal(terminal) => json!({
@@ -254,11 +285,13 @@ fn optional_details(value: &Value) -> Result<Option<Payload>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_mock, resolve_run_id};
-    use aion::durability::MockOutcome;
+    use super::{
+        RANDOM_SAMPLE_ORDINALS, inspection_to_json, parse_mock, resolve_run_id, what_if_to_json,
+    };
+    use aion::durability::{MockOutcome, ReplayTerminal, Resolution, WhatIfOutcome, inspect_run};
     use aion_core::{ActivityErrorKind, Event, EventEnvelope, Payload, RunId, WorkflowId};
     use chrono::Utc;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use uuid::Uuid;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -353,5 +386,115 @@ mod tests {
     fn parse_mock_requires_the_result_or_payload_field() {
         assert!(parse_mock(r#"{"kind":"activity_completed"}"#).is_err());
         assert!(parse_mock(r#"{"kind":"signal_delivered"}"#).is_err());
+    }
+
+    #[test]
+    fn what_if_to_json_emits_from_seq_exactly_once() -> TestResult {
+        // The de-dup fix: from_seq lives on the outer object only; the resolved
+        // body never repeats it.
+        let value = what_if_to_json(
+            2,
+            &WhatIfOutcome::Resolved {
+                from_seq: 2,
+                resolution: Resolution::TimerFired,
+            },
+        );
+        assert_eq!(value["from_seq"], json!(2));
+        let outcome = value
+            .get("outcome")
+            .and_then(Value::as_object)
+            .ok_or("outcome should be an object")?;
+        assert!(
+            !outcome.contains_key("from_seq"),
+            "the resolved body must not repeat from_seq",
+        );
+        assert_eq!(outcome["kind"], json!("resolved"));
+        Ok(())
+    }
+
+    #[test]
+    fn what_if_to_json_terminal_and_diverged_carry_from_seq_once() -> TestResult {
+        let terminal = what_if_to_json(
+            7,
+            &WhatIfOutcome::Terminal(ReplayTerminal::Completed(Payload::from_json(&json!(
+                "done"
+            ))?)),
+        );
+        assert_eq!(terminal["from_seq"], json!(7));
+        assert_eq!(terminal["outcome"]["kind"], json!("terminal"));
+        Ok(())
+    }
+
+    fn run_id_value() -> RunId {
+        RunId::new(Uuid::from_u128(2))
+    }
+
+    fn inspectable_history() -> TestResult<Vec<Event>> {
+        Ok(vec![
+            Event::WorkflowStarted {
+                envelope: EventEnvelope {
+                    seq: 1,
+                    recorded_at: Utc::now(),
+                    workflow_id: WorkflowId::new(Uuid::from_u128(1)),
+                },
+                workflow_type: "wf".to_owned(),
+                input: Payload::from_json(&json!(null))?,
+                run_id: run_id_value(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
+            Event::WorkflowCompleted {
+                envelope: EventEnvelope {
+                    seq: 2,
+                    recorded_at: Utc::now(),
+                    workflow_id: WorkflowId::new(Uuid::from_u128(1)),
+                },
+                result: Payload::from_json(&json!("done"))?,
+            },
+        ])
+    }
+
+    #[test]
+    fn inspection_json_renders_random_as_a_draw_ordinal_projection_not_per_step() -> TestResult {
+        // The honesty property at the CLI surface: there is no per-step random
+        // field; random is a documented draw-ordinal projection whose sample
+        // values match the production formula the engine exposes.
+        let history = inspectable_history()?;
+        let inspection = inspect_run(history, &run_id_value())?;
+        let value = inspection_to_json(&inspection)?;
+
+        // No step carries a random field.
+        let steps = value["steps"]
+            .as_array()
+            .ok_or("steps should be an array")?;
+        for step in steps {
+            let step = step.as_object().ok_or("step should be an object")?;
+            assert!(
+                !step.contains_key("random_u64") && !step.contains_key("random"),
+                "no per-step random field may exist (random is a run-level projection)",
+            );
+        }
+
+        // The run-level random projection is present, labelled, and sampled.
+        let random = value["random"].as_object().ok_or("random should exist")?;
+        assert_eq!(random["kind"], json!("draw_ordinal_projection"));
+        assert!(
+            random.contains_key("note"),
+            "the projection must document itself"
+        );
+        let sample = random["sample"]
+            .as_array()
+            .ok_or("sample should be an array")?;
+        assert_eq!(sample.len(), usize::try_from(RANDOM_SAMPLE_ORDINALS)?);
+
+        // Each sampled value equals the engine projection at that ordinal.
+        for (ordinal, entry) in sample.iter().enumerate() {
+            let ordinal = u64::try_from(ordinal)?;
+            assert_eq!(entry["ordinal"], json!(ordinal));
+            let expected = inspection.random.random_at(ordinal);
+            let actual = entry["random"].as_f64().ok_or("random should be a float")?;
+            assert!((expected - actual).abs() < f64::EPSILON);
+        }
+        Ok(())
     }
 }
