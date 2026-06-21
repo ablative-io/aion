@@ -1,0 +1,15 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: https://github.com/ablative-io/aion/blob/main/docs/packaging.md
+
+[[workflow]]
+entry_module = "{{name}}"
+entry_function = "run"
+# Author-chosen whole-run ceiling. The engine imposes no default; this is the
+# deadline you have chosen for the entire agent loop, not a step deadline. The
+# per-step agent deadlines and the human-review wait are passed in the start
+# input (`review_timeout_ms`) — they are never defaulted here.
+timeout_seconds = 604800
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["scout", "act", "verify"]
+output = "{{name}}.aion"

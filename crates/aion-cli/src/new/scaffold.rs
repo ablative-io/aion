@@ -149,19 +149,18 @@ fn manifest(args: &NewArgs) -> Result<Vec<ManifestFile>> {
             if args.template.activities().is_empty() {
                 bail!(
                     "the {} template declares no activities, so there is no worker to scaffold; \
-                     use `--template saga`, `--template dev-pipeline`, or drop `--worker`",
+                     use `--template saga`, `--template agent`, `--template dev-pipeline`, or \
+                     drop `--worker`",
                     args.template.id()
                 );
             }
             files.extend_from_slice(args.template.worker_files());
         }
         None => {
-            if args.template.requires_worker() {
+            if let Some(reason) = args.template.worker_requirement_reason() {
                 bail!(
-                    "the {} template requires a worker: all eight of its activities \
-                     (provision, warm build, dev agent, checks, gate, review request, land) \
-                     are served by the standalone worker crate in a live deployment, so a \
-                     scaffold without one cannot run; pass `--worker rust`",
+                    "the {} template requires a worker: {reason}, so a scaffold without one \
+                     cannot run; pass `--worker rust`",
                     args.template.id()
                 );
             }
