@@ -44,7 +44,7 @@ impl Replay {
         let terminal = terminal_from_history(workflow_id, &history);
         let cursor = HistoryCursor::new(history)?;
         let resolver = Resolver::new(workflow_id.clone(), cursor);
-        let determinism = DeterminismContext::new(started_at, workflow_id, run_id);
+        let determinism = DeterminismContext::new(started_at);
 
         Ok(Self {
             workflow_id: workflow_id.clone(),

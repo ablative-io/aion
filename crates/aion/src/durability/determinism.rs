@@ -15,7 +15,6 @@
 //! random stream in this context — keeping one would be a second, divergent
 //! source that no production code consumes (ADR-002).
 
-use aion_core::{RunId, WorkflowId};
 use chrono::{DateTime, Utc};
 
 /// Per-execution deterministic state for workflow-visible time.
@@ -32,15 +31,9 @@ impl DeterminismContext {
     ///
     /// `workflow_started_recorded_at` must be the `recorded_at` timestamp from
     /// the run's first recorded `WorkflowStarted` event. Before any later event
-    /// is applied, [`Self::now`] returns this timestamp. The identifiers are
-    /// accepted so the constructor keeps the run-scoped shape the replay driver
-    /// builds it with, even though only the timestamp participates in `now`.
+    /// is applied, [`Self::now`] returns this timestamp.
     #[must_use]
-    pub const fn new(
-        workflow_started_recorded_at: DateTime<Utc>,
-        _workflow_id: &WorkflowId,
-        _run_id: &RunId,
-    ) -> Self {
+    pub const fn new(workflow_started_recorded_at: DateTime<Utc>) -> Self {
         Self {
             current_recorded_at: workflow_started_recorded_at,
         }
@@ -62,9 +55,7 @@ impl DeterminismContext {
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{RunId, WorkflowId};
     use chrono::{DateTime, TimeZone, Utc};
-    use uuid::Uuid;
 
     use super::DeterminismContext;
 
@@ -76,24 +67,12 @@ mod tests {
             .ok_or_else(|| format!("invalid fixed timestamp {seconds}").into())
     }
 
-    fn workflow_id() -> WorkflowId {
-        WorkflowId::new(Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888))
-    }
-
-    fn run_id(value: u128) -> RunId {
-        RunId::new(Uuid::from_u128(value))
-    }
-
     #[test]
     fn now_starts_at_workflow_started_and_advances_with_recorded_events() -> TestResult {
         let started_at = timestamp(1_700_000_000)?;
         let first_event_at = timestamp(1_700_000_010)?;
         let second_event_at = timestamp(1_700_000_020)?;
-        let mut context = DeterminismContext::new(
-            started_at,
-            &workflow_id(),
-            &run_id(0x9999_aaaa_bbbb_cccc_dddd_eeee_ffff_0000),
-        );
+        let mut context = DeterminismContext::new(started_at);
 
         assert_eq!(context.now(), started_at);
         context.advance_to_recorded_at(first_event_at);
@@ -112,10 +91,8 @@ mod tests {
             timestamp(1_700_100_005)?,
             timestamp(1_700_100_030)?,
         ];
-        let workflow_id = workflow_id();
-        let run_id = run_id(0xaaaa_bbbb_cccc_dddd_eeee_ffff_0000_1111);
-        let mut first = DeterminismContext::new(started_at, &workflow_id, &run_id);
-        let mut second = DeterminismContext::new(started_at, &workflow_id, &run_id);
+        let mut first = DeterminismContext::new(started_at);
+        let mut second = DeterminismContext::new(started_at);
 
         assert_eq!(first.now(), second.now());
         for recorded_at in events {
