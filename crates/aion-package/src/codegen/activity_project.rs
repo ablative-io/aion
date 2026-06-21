@@ -23,7 +23,9 @@ use super::declaration::{ActivityDeclaration, Tier};
 use super::error::CodegenError;
 use super::project::{CodegenMode, check_on_disk, parse_project_schemas, read_package_name};
 use super::schema::{GleamType, SchemaArtifact};
+use super::test_scaffold::{self, WorkflowTestFacts};
 use super::{activity_golden, activity_worker_python, activity_worker_rust, activity_wrappers};
+use crate::structure::extract_workflow_facts;
 
 /// One generated file: its path and fully-rendered contents.
 #[derive(Debug)]
@@ -130,6 +132,88 @@ pub fn generate_activities(
     };
 
     Ok(ActivityReport { artifacts, written })
+}
+
+/// The result of generating (or checking) a workflow's `aion/testing` skeleton.
+#[derive(Debug)]
+pub struct TestScaffoldReport {
+    /// The generated scaffold module path, relative to the project root.
+    pub module_relative: String,
+    /// The number of activities pre-mocked in the scaffold.
+    pub mocked_activities: usize,
+    /// The number of clock advances scaffolded (one per durable timer).
+    pub timer_advances: usize,
+    /// Whether the module was written (`Write`) or only checked (`Check`).
+    pub written: bool,
+}
+
+/// Generates (or, in [`CodegenMode::Check`], verifies) the `aion/testing`
+/// skeleton `test/<entry_module>_scaffold_test.gleam` for the workflow whose
+/// typed entry lives in `src/<entry_module>.gleam`.
+///
+/// The skeleton mocks each declared activity, advances the simulated clock once
+/// per durable timer the workflow arms, and asserts the typed entry function
+/// replays deterministically — targeting the existing `aion/testing` harness,
+/// with every author hole left as a labelled `todo` (no invented defaults,
+/// ADR-001).
+///
+/// # Errors
+///
+/// Returns a [`CodegenError`] for an unreadable `gleam.toml`/`schemas/`, an
+/// unsupported schema construct, a declared value type with no matching schema,
+/// an unreadable or facts-less entry-module source, a write failure, or — in
+/// check mode — a missing or drifted scaffold.
+pub fn generate_test_scaffold(
+    root: &Path,
+    entry_module: &str,
+    declarations: &[ActivityDeclaration],
+    mode: CodegenMode,
+) -> Result<TestScaffoldReport, CodegenError> {
+    let package_name = read_package_name(root)?;
+    let schemas = parse_project_schemas(root)?;
+    let resolved = resolve(declarations, &schemas)?;
+
+    let source_path = root.join("src").join(format!("{entry_module}.gleam"));
+    let source =
+        std::fs::read_to_string(&source_path).map_err(|source| CodegenError::EntrySourceRead {
+            path: source_path.clone(),
+            source,
+        })?;
+    let facts = extract_workflow_facts(&source).map_err(|error| CodegenError::ScaffoldFacts {
+        path: source_path.clone(),
+        reason: error.to_string(),
+    })?;
+
+    let test_facts = WorkflowTestFacts {
+        entry_module,
+        entry_function: &facts.typed_entry_function,
+        timer_count: facts.timer_count,
+    };
+    let contents = test_scaffold::emit_scaffold_module(&package_name, &test_facts, &resolved);
+
+    let relative = format!("test/{entry_module}_scaffold_test.gleam");
+    let artifact = ActivityArtifact {
+        path: root.join(&relative),
+        relative: relative.clone(),
+        contents,
+    };
+    let written = match mode {
+        CodegenMode::Write => {
+            write_artifact(&artifact)?;
+            true
+        }
+        CodegenMode::Check => {
+            check_on_disk(&artifact.path, &artifact.contents)?;
+            false
+        }
+    };
+
+    Ok(TestScaffoldReport {
+        module_relative: relative,
+        mocked_activities: resolved.len(),
+        timer_advances: facts.timer_count,
+        written,
+    })
 }
 
 /// Writes one artifact, creating any missing parent directories first.

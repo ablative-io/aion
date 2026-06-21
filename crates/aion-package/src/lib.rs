@@ -46,7 +46,8 @@ pub use beam::{BeamModule, BeamSet, RESERVED_MODULE_NAMES};
 pub use builder::PackageBuilder;
 pub use codegen::{
     ActivityArtifact, ActivityDeclaration, ActivityReport, CodecReport, CodegenError, CodegenMode,
-    CodegenReport, Tier, codegen_project, generate_activities, generate_codecs, parse_declarations,
+    CodegenReport, TestScaffoldReport, Tier, build_input_skeleton, codegen_project,
+    generate_activities, generate_codecs, generate_test_scaffold, parse_declarations,
 };
 pub use error::PackageError;
 pub use extraction::ExtractionLimits;
@@ -64,7 +65,9 @@ pub use project::{
     ProjectReport, package_project,
 };
 pub use structure::{
-    ArmLabel, CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive,
-    StructuralDelta, StructureError, WorkflowGraph, extract_structure, regenerate_gleam,
+    ArmLabel, CorrelationKey, DeterminismError, EdgeKind, FactsError, GraphEdge, GraphNode, NodeId,
+    NodePrimitive, StructuralDelta, StructureError, Violation, ViolationKind, WorkflowFacts,
+    WorkflowGraph, analyze_determinism, extract_structure, extract_workflow_facts,
+    regenerate_gleam,
 };
 pub use version::WorkflowVersion;
