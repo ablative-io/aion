@@ -22,6 +22,14 @@
 //! regeneration and never writes one, but it is not side-effect-free: it still
 //! drives the toolchain to read the declarations, so the same transient
 //! rename-aside/probe/restore happens during the build.
+//!
+//! Extraction is **single-flight per project**: the rename-aside/probe/restore
+//! dance mutates the source tree in place, so two concurrent `aion generate`
+//! runs on the same project would set aside the same modules and collide. An
+//! exclusive `.aiongen.lock` file (created atomically with `create_new`) is
+//! held for the whole of extraction; a second concurrent run fails fast with a
+//! clear error rather than corrupting the tree, and the lock is removed on
+//! every exit path — success, `bail!`, or panic — by its RAII guard.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -58,6 +66,11 @@ const ASIDE_SUFFIX: &str = ".aiongen-aside";
 /// crashed prior run without risking a same-named author module.
 const PROBE_DOC: &str =
     "//// Temporary manifest-extraction probe written by `aion generate`. Safe to delete.";
+
+/// Advisory single-flight lock file, created exclusively at the project root for
+/// the duration of one extraction so two concurrent runs cannot set aside the
+/// same modules and collide. Held by [`ExtractionLock`], removed on every exit.
+const LOCK_FILE: &str = ".aiongen.lock";
 
 /// JSON document printed on stdout after a successful `generate` run.
 #[derive(Serialize)]
@@ -169,6 +182,12 @@ fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
     // real sources.
     recover_leftover_scratch(&src)?;
 
+    // Take the single-flight lock before mutating the tree: a second concurrent
+    // `aion generate` on this project fails fast here rather than colliding on
+    // the rename-aside step. The guard removes the lock on every exit path
+    // below — success, `bail!`, or panic — via its `Drop`.
+    let _lock = ExtractionLock::acquire(root)?;
+
     let wrappers_module = format!("{package_name}_activity_wrappers");
     let blocking = modules_reaching(&src, &wrappers_module)?;
 
@@ -258,12 +277,26 @@ fn module_name(src_root: &Path, file: &Path) -> String {
 
 /// Extracts the imported module names from Gleam source: the token after
 /// `import`, up to the first `.` (the `.{..}` unqualified list) or whitespace
-/// (an `as` alias).
+/// (an `as` alias or a trailing `// comment`).
+///
+/// A line whose first non-whitespace token is a `//` comment (including a
+/// `////` module-doc) is never treated as an import, even when the comment text
+/// happens to contain the word `import`. A real import with a trailing inline
+/// comment (`import foo // note`) still resolves to `foo`, because the bare
+/// module name is taken from the first whitespace-delimited token after the
+/// keyword. Missing a genuine import would break extraction (the importer would
+/// not be set aside), so the heuristic errs toward detection, never suppression.
 fn parse_imports(contents: &str) -> Vec<String> {
     contents
         .lines()
         .filter_map(|line| {
-            let rest = line.trim_start().strip_prefix("import ")?;
+            let trimmed = line.trim_start();
+            // Skip comment lines (`//`, `///`, `////`) so a comment that
+            // mentions `import` is never mistaken for one.
+            if trimmed.starts_with("//") {
+                return None;
+            }
+            let rest = trimmed.strip_prefix("import ")?;
             let token = rest
                 .split_whitespace()
                 .next()?
@@ -376,6 +409,57 @@ fn recover_asides(dir: &Path) -> Result<()> {
 fn aside_original(path: &Path) -> Option<PathBuf> {
     let name = path.to_str()?;
     name.strip_suffix(ASIDE_SUFFIX).map(PathBuf::from)
+}
+
+/// Single-flight advisory lock for one project's extraction. Created
+/// exclusively (`create_new`, an atomic create-if-absent) at the project root;
+/// a second concurrent run finds it present and fails fast instead of colliding
+/// on the rename-aside step. The lock is removed when this guard drops, on every
+/// exit path of [`extract_declarations`].
+struct ExtractionLock {
+    path: PathBuf,
+}
+
+impl ExtractionLock {
+    /// Acquires the lock at `<root>/.aiongen.lock`, failing if another run holds
+    /// it.
+    fn acquire(root: &Path) -> Result<Self> {
+        let path = root.join(LOCK_FILE);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => Ok(Self { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+                "another `aion generate` is already extracting declarations for this project \
+                 (lock file {} exists). Wait for it to finish; if you are sure no other run is \
+                 in progress, delete {} and retry.",
+                path.display(),
+                path.display()
+            ),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to acquire the manifest-extraction lock {}",
+                    path.display()
+                )
+            }),
+        }
+    }
+}
+
+impl Drop for ExtractionLock {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.path) {
+            if self.path.exists() {
+                eprintln!(
+                    "warning: failed to remove the manifest-extraction lock {}: {error}; \
+                     delete it manually before the next `aion generate`",
+                    self.path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Tracks the temporary on-disk changes one extraction makes — the probe module
@@ -535,7 +619,11 @@ fn workflow_activities(table: &toml_edit::Table) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_marked_json, module_name, parse_imports, reaches};
+    use super::{
+        ExtractionLock, LOCK_FILE, extract_marked_json, module_name, parse_imports, reaches,
+        sync_workflow_activities,
+    };
+    use aion_package::{ActivityDeclaration, CodegenMode, Tier};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
@@ -564,6 +652,49 @@ mod tests {
                 "order_saga_codecs".to_owned(),
                 "nested/mod".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn comment_lines_are_never_treated_as_imports() {
+        // A `//` line comment, a `////` module-doc, and an indented comment that
+        // each contain the word `import` must all be skipped.
+        let source = "// import should_not_count\n\
+                      //// import also/not/counted\n   \
+                      // import indented_comment\n";
+        assert!(parse_imports(source).is_empty());
+    }
+
+    #[test]
+    fn indented_real_import_is_found() {
+        assert_eq!(
+            parse_imports("  import real/mod\n"),
+            vec!["real/mod".to_owned()]
+        );
+    }
+
+    #[test]
+    fn aliased_and_unqualified_imports_yield_bare_name() {
+        // Unqualified-with-alias and a nested path both reduce to the bare name.
+        assert_eq!(
+            parse_imports("import foo.{X} as y\n"),
+            vec!["foo".to_owned()]
+        );
+        assert_eq!(parse_imports("import a/b/c\n"), vec!["a/b/c".to_owned()]);
+        assert_eq!(parse_imports("import foo as bar\n"), vec!["foo".to_owned()]);
+    }
+
+    #[test]
+    fn trailing_comment_after_import_is_ignored_but_module_kept() {
+        // The trailing `// note` must not suppress the import, and must not
+        // become part of the module name.
+        assert_eq!(
+            parse_imports("import foo // note\n"),
+            vec!["foo".to_owned()]
+        );
+        assert_eq!(
+            parse_imports("import a/b/c // a trailing import comment\n"),
+            vec!["a/b/c".to_owned()]
         );
     }
 
@@ -653,6 +784,198 @@ mod tests {
 
         // Idempotent on a clean tree.
         recover_leftover_scratch(src)?;
+        Ok(())
+    }
+
+    /// Builds an [`ActivityDeclaration`] with the given name; the other fields
+    /// are irrelevant to workflow.toml syncing, which compares by name only.
+    fn declaration(name: &str) -> ActivityDeclaration {
+        ActivityDeclaration {
+            name: name.to_owned(),
+            tier: Tier::InVm,
+            input_type: "Input".to_owned(),
+            output_type: "Output".to_owned(),
+        }
+    }
+
+    /// Reads back the `[[workflow]]` `activities` array from a written
+    /// workflow.toml as owned strings, in order.
+    fn read_workflow_activities(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let document = std::fs::read_to_string(path)?.parse::<toml_edit::DocumentMut>()?;
+        let Some(array) = document
+            .get("workflow")
+            .and_then(|item| item.as_array_of_tables())
+            .and_then(|tables| tables.iter().next())
+            .and_then(|table| table.get("activities"))
+            .and_then(|item| item.as_array())
+        else {
+            return Err("workflow.toml has no [[workflow]] activities array".into());
+        };
+        Ok(array
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect())
+    }
+
+    #[test]
+    fn sync_clean_match_write_is_unchanged_and_preserves_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        // Deliberate formatting + a comment that must survive an unchanged sync.
+        let original =
+            "# keep me\n[[workflow]]\nname = \"saga\"\nactivities = [\"charge\", \"ship\"]\n";
+        std::fs::write(&toml, original)?;
+
+        let declarations = [declaration("charge"), declaration("ship")];
+        let action = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Write)?;
+
+        assert_eq!(action, "unchanged");
+        // Byte-for-byte untouched: formatting and the comment are preserved.
+        assert_eq!(std::fs::read_to_string(&toml)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_clean_match_check_is_checked() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        std::fs::write(&toml, "[[workflow]]\nactivities = [\"charge\", \"ship\"]\n")?;
+
+        let declarations = [declaration("charge"), declaration("ship")];
+        let action = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Check)?;
+
+        assert_eq!(action, "checked");
+        Ok(())
+    }
+
+    #[test]
+    fn sync_stale_list_write_rewrites_in_declared_order() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        // Stale: wrong order and a missing name.
+        std::fs::write(&toml, "[[workflow]]\nactivities = [\"ship\"]\n")?;
+
+        let declarations = [
+            declaration("charge"),
+            declaration("ship"),
+            declaration("refund"),
+        ];
+        let action = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Write)?;
+
+        assert_eq!(action, "synced");
+        // The rewritten array equals the declared names, in declaration order.
+        assert_eq!(
+            read_workflow_activities(&toml)?,
+            vec!["charge".to_owned(), "ship".to_owned(), "refund".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sync_stale_list_check_bails_with_path_and_reason() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        std::fs::write(&toml, "[[workflow]]\nactivities = [\"ship\"]\n")?;
+
+        let declarations = [declaration("charge"), declaration("ship")];
+        let result = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Check);
+
+        let Err(error) = result else {
+            return Err("a stale list under --check must be an error".into());
+        };
+        let message = format!("{error}");
+        assert!(
+            message.contains("workflow.toml") && message.contains("out of date"),
+            "error must name the toml and say it is out of date: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sync_multiple_workflow_tables_bails_naming_the_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        let two_tables = "[[workflow]]\nname = \"a\"\n[[workflow]]\nname = \"b\"\n";
+        std::fs::write(&toml, two_tables)?;
+
+        let declarations = [declaration("charge")];
+        let result = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Write);
+
+        let Err(error) = result else {
+            return Err("more than one [[workflow]] table must be an error".into());
+        };
+        let message = format!("{error}");
+        assert!(
+            message.contains('2'),
+            "error must name the [[workflow]] count: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sync_no_workflow_table_bails() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        std::fs::write(&toml, "name = \"no-workflow-table\"\n")?;
+
+        let declarations = [declaration("charge")];
+        let result = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Write);
+
+        assert!(
+            result.is_err(),
+            "a workflow.toml with no [[workflow]] table must be an error"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sync_missing_activities_key_is_created_on_write() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let toml = temp.path().join("workflow.toml");
+        // No `activities` key at all → treated as empty, so a non-empty desired
+        // list is stale and the key is created.
+        std::fs::write(&toml, "[[workflow]]\nname = \"saga\"\n")?;
+
+        let declarations = [declaration("charge"), declaration("ship")];
+        let action = sync_workflow_activities(temp.path(), &declarations, CodegenMode::Write)?;
+
+        assert_eq!(action, "synced");
+        assert_eq!(
+            read_workflow_activities(&toml)?,
+            vec!["charge".to_owned(), "ship".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extraction_lock_is_exclusive_then_reacquirable() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+
+        let guard = ExtractionLock::acquire(root)?;
+        assert!(root.join(LOCK_FILE).is_file(), "lock file must exist");
+
+        // A second acquisition while the first is held must fail fast.
+        assert!(
+            ExtractionLock::acquire(root).is_err(),
+            "a second concurrent lock acquisition must fail"
+        );
+
+        // Dropping the guard removes the lock and allows re-acquisition.
+        drop(guard);
+        assert!(
+            !root.join(LOCK_FILE).exists(),
+            "the lock file must be removed when the guard drops"
+        );
+        let _again = ExtractionLock::acquire(root)?;
+        assert!(
+            root.join(LOCK_FILE).is_file(),
+            "the lock must be re-acquirable once released"
+        );
         Ok(())
     }
 }

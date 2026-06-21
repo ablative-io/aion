@@ -18,6 +18,9 @@ workspace = true
 [features]
 test-support = []
 
+[dev-dependencies]
+tempfile = "3.27.0"
+
 [dependencies]
 aion-core = { version = "0.6.1", path = "../aion-core" }
 serde = { workspace = true, features = ["derive"] }

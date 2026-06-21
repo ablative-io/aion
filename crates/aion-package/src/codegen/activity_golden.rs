@@ -226,20 +226,10 @@ mod tests {
     };
 
     /// `OrderInputLine` -> `order_input_line`, matching the schema walker's
-    /// derived function prefixes.
+    /// derived function prefixes. Delegates to the canonical helper so the test
+    /// and production share one PascalCase→snake conversion.
     fn snake(pascal: &str) -> String {
-        let mut out = String::with_capacity(pascal.len() + 4);
-        for (index, ch) in pascal.char_indices() {
-            if ch.is_ascii_uppercase() {
-                if index != 0 {
-                    out.push('_');
-                }
-                out.push(ch.to_ascii_lowercase());
-            } else {
-                out.push(ch);
-            }
-        }
-        out
+        crate::codegen::names::pascal_to_snake(pascal)
     }
 
     fn named(type_name: &str) -> GleamType {

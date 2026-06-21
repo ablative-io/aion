@@ -14,8 +14,11 @@
 //! failure (checklist C4).
 //!
 //! No retry/timeout/backoff for an *activity* is ever emitted (ADR-001); the
-//! only values present are the worker's own gRPC connection parameters, read
-//! from the environment so the do-not-edit file stays byte-stable across hosts,
+//! only values present are the worker's own gRPC connection parameters. Every
+//! required connection value is read from the environment and the worker fails
+//! loud (returns an error naming the variable) if one is unset or unparseable —
+//! no invented default string or number is ever emitted (ADR-001). Reading from
+//! the environment also keeps the do-not-edit file byte-stable across hosts,
 //! mirroring the committed `examples/order-saga` worker.
 
 use std::collections::HashSet;
@@ -60,7 +63,7 @@ pub(crate) fn emit(package_name: &str, activities: &[&ResolvedActivity]) -> Stri
         }
     }
 
-    emit_main(&mut out, package_name, activities);
+    emit_main(&mut out, activities);
     out
 }
 
@@ -149,45 +152,27 @@ fn emit_enum(out: &mut String, definition: &EnumDef) {
 }
 
 /// Renders the `#[tokio::main]` entry point: the env-driven config and the
-/// `register_activity` chain in declaration order.
-fn emit_main(out: &mut String, package_name: &str, activities: &[&ResolvedActivity]) {
+/// `register_activity` chain in declaration order, followed by the two
+/// fail-loud environment helpers it uses. Every required connection value is
+/// read from the environment with no invented fallback (ADR-001); a missing or
+/// unparseable variable is surfaced as an error naming the variable.
+fn emit_main(out: &mut String, activities: &[&ResolvedActivity]) {
     out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
     out.push_str("    let config = WorkerConfig::builder()\n");
+    out.push_str("        .endpoint(require_var(\"AION_WORKER_ENDPOINT\")?)\n");
+    out.push_str("        .task_queue(require_var(\"AION_TASK_QUEUE\")?)\n");
+    out.push_str("        .identity(require_var(\"AION_WORKER_IDENTITY\")?)\n");
+    out.push_str("        .max_concurrency(require_parse(\"AION_WORKER_CONCURRENCY\")?)\n");
     out.push_str(
-        "        .endpoint(\n            std::env::var(\"AION_WORKER_ENDPOINT\")\n                \
-         .unwrap_or_else(|_| \"http://127.0.0.1:50051\".to_owned()),\n        )\n",
+        "        .reconnect_initial_backoff(Duration::from_secs_f64(require_parse(\n            \
+         \"AION_RECONNECT_INITIAL_BACKOFF_SECONDS\",\n        )?))\n",
     );
     out.push_str(
-        "        .task_queue(\n            std::env::var(\"AION_TASK_QUEUE\")\n                \
-         .unwrap_or_else(|_| \"default\".to_owned()),\n        )\n",
-    );
-    let _ = write!(
-        out,
-        "        .identity(\n            std::env::var(\"AION_WORKER_IDENTITY\")\n                \
-         .unwrap_or_else(|_| \"{package_name}-rust-worker\".to_owned()),\n        )\n"
+        "        .reconnect_max_backoff(Duration::from_secs_f64(require_parse(\n            \
+         \"AION_RECONNECT_MAX_BACKOFF_SECONDS\",\n        )?))\n",
     );
     out.push_str(
-        "        .max_concurrency(\n            std::env::var(\"AION_WORKER_CONCURRENCY\")\n                \
-         .ok()\n                .and_then(|value| value.parse().ok())\n                \
-         .unwrap_or(4),\n        )\n",
-    );
-    out.push_str(
-        "        .reconnect_initial_backoff(Duration::from_secs_f64(\n            \
-         std::env::var(\"AION_RECONNECT_INITIAL_BACKOFF_SECONDS\")\n                \
-         .ok()\n                .and_then(|value| value.parse().ok())\n                \
-         .unwrap_or(0.5),\n        ))\n",
-    );
-    out.push_str(
-        "        .reconnect_max_backoff(Duration::from_secs_f64(\n            \
-         std::env::var(\"AION_RECONNECT_MAX_BACKOFF_SECONDS\")\n                \
-         .ok()\n                .and_then(|value| value.parse().ok())\n                \
-         .unwrap_or(5.0),\n        ))\n",
-    );
-    out.push_str(
-        "        .reconnect_max_attempts(\n            \
-         std::env::var(\"AION_RECONNECT_MAX_ATTEMPTS\")\n                \
-         .ok()\n                .and_then(|value| value.parse().ok())\n                \
-         .unwrap_or(10),\n        )\n",
+        "        .reconnect_max_attempts(require_parse(\"AION_RECONNECT_MAX_ATTEMPTS\")?)\n",
     );
     out.push_str("        .build()?;\n\n");
 
@@ -200,6 +185,35 @@ fn emit_main(out: &mut String, package_name: &str, activities: &[&ResolvedActivi
         );
     }
     out.push_str("        .build()?\n        .run()\n        .await?;\n\n    Ok(())\n}\n");
+
+    emit_env_helpers(out);
+}
+
+/// Emits the two fail-loud environment helpers the generated `main` uses to
+/// read every required connection value. `require_var` errors when a variable
+/// is unset; `require_parse` additionally errors when the value fails to parse
+/// into the target type. Both name the offending variable in the error. They
+/// are always referenced by `main`, so no dead-code warning arises.
+fn emit_env_helpers(out: &mut String) {
+    out.push_str(
+        "\n/// Reads a required environment variable, erroring if it is unset.\n\
+         fn require_var(name: &str) -> Result<String, Box<dyn std::error::Error>> {\n    \
+         std::env::var(name)\n        \
+         .map_err(|_| format!(\"required environment variable `{name}` is not set\").into())\n\
+         }\n",
+    );
+    out.push_str(
+        "\n/// Reads and parses a required environment variable.\n\
+         fn require_parse<T>(name: &str) -> Result<T, Box<dyn std::error::Error>>\n\
+         where\n    \
+         T: std::str::FromStr,\n    \
+         T::Err: std::fmt::Display,\n\
+         {\n    \
+         require_var(name)?\n        \
+         .parse::<T>()\n        \
+         .map_err(|error| format!(\"environment variable `{name}` is invalid: {error}\").into())\n\
+         }\n",
+    );
 }
 
 /// Maps a Gleam type to its Rust representation.
@@ -443,13 +457,24 @@ mod tests {
         let charge_at = module.find("charge_payment\", handlers");
         let ship_at = module.find("ship_order\", handlers");
         assert!(charge_at < ship_at);
-        // Env-driven config; no activity retry/timeout/backoff.
-        assert!(module.contains("std::env::var(\"AION_WORKER_ENDPOINT\")"));
-        assert!(module.contains(".identity(\n            std::env::var(\"AION_WORKER_IDENTITY\")\n                .unwrap_or_else(|_| \"order_saga-rust-worker\".to_owned()),"));
-        // All connection config — including reconnect — is read from the
-        // environment; nothing is hardcoded (ADR-001).
-        assert!(module.contains("std::env::var(\"AION_RECONNECT_MAX_ATTEMPTS\")"));
-        assert!(module.contains("std::env::var(\"AION_RECONNECT_INITIAL_BACKOFF_SECONDS\")"));
+        // Env-driven config; every required connection value is read fail-loud
+        // through the helpers, with no invented default (ADR-001).
+        assert!(module.contains(".endpoint(require_var(\"AION_WORKER_ENDPOINT\")?)"));
+        assert!(module.contains(".task_queue(require_var(\"AION_TASK_QUEUE\")?)"));
+        assert!(module.contains(".identity(require_var(\"AION_WORKER_IDENTITY\")?)"));
+        assert!(module.contains(".max_concurrency(require_parse(\"AION_WORKER_CONCURRENCY\")?)"));
+        assert!(module.contains("require_parse(\"AION_RECONNECT_MAX_ATTEMPTS\")?"));
+        assert!(module.contains("\"AION_RECONNECT_INITIAL_BACKOFF_SECONDS\""));
+        assert!(module.contains("\"AION_RECONNECT_MAX_BACKOFF_SECONDS\""));
+        // The fail-loud helpers must be emitted and used.
+        assert!(module.contains("fn require_var(name: &str)"));
+        assert!(module.contains("fn require_parse<T>(name: &str)"));
+        // No invented connection default anywhere — not an `unwrap_or` in sight,
+        // nor a hardcoded reconnect literal (ADR-001).
+        assert!(
+            !module.contains("unwrap_or"),
+            "generated worker must invent no connection default (ADR-001)"
+        );
         assert!(
             !module.contains("Duration::from_secs(5)")
                 && !module.contains("Duration::from_millis(500)"),

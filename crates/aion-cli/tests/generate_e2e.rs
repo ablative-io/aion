@@ -156,12 +156,60 @@ fn generate_round_trips_check_gates_and_invents_no_defaults() -> Result<(), Test
     // timeout, or backoff policy — only the policies an author declared, of
     // which order-saga declares none.
     let wrappers = fs::read_to_string(&wrappers)?;
-    for forbidden in ["retry", "timeout", "backoff", "RetryPolicy"] {
+    for forbidden in ["retry", "timeout", "backoff", "heartbeat", "RetryPolicy"] {
         assert!(
             !wrappers.contains(forbidden),
             "generated wrappers must not invent activity policy, found `{forbidden}`"
         );
     }
+
+    Ok(())
+}
+
+/// Drives the real `aion generate --check` against a project whose
+/// `workflow.toml` `activities` list has been desynced from the declarations,
+/// and requires it to fail loudly naming workflow.toml. This is C4's drift gate
+/// for the workflow.toml artifact, otherwise only proven by the library unit
+/// tests; here it runs end-to-end through the built binary and the toolchain.
+#[test]
+fn generate_check_gates_workflow_toml_drift() -> Result<(), TestError> {
+    let (_temp, project) = stage_order_saga()?;
+
+    // A first generation establishes the schema-derived modules and a clean,
+    // in-sync workflow.toml, so the only drift the leg introduces is the one it
+    // injects below.
+    let (ok, output) = run_generate(&project, false)?;
+    assert!(ok, "first `aion generate` failed:\n{output}");
+
+    // A clean tree must pass `--check` before we desync it, so the failure below
+    // is unambiguously caused by the workflow.toml edit and nothing else.
+    let (ok, output) = run_generate(&project, true)?;
+    assert!(ok, "`--check` failed on a clean tree:\n{output}");
+
+    // Desync workflow.toml: append a bogus activity name that the declarations
+    // do not produce, making the list stale.
+    let toml_path = project.join("workflow.toml");
+    let mut toml = fs::read_to_string(&toml_path)?;
+    toml = toml.replace(
+        "    \"cancel_shipment\",\n",
+        "    \"cancel_shipment\",\n    \"not_a_real_activity\",\n",
+    );
+    assert!(
+        toml.contains("not_a_real_activity"),
+        "the desync edit must alter the activities list"
+    );
+    fs::write(&toml_path, &toml)?;
+
+    // `--check` must now exit non-zero and name the drifted artifact.
+    let (ok, output) = run_generate(&project, true)?;
+    assert!(
+        !ok,
+        "`--check` passed despite a desynced workflow.toml activities list:\n{output}"
+    );
+    assert!(
+        output.contains("workflow.toml") && output.contains("out of date"),
+        "the --check failure must reference workflow.toml and say it is out of date:\n{output}"
+    );
 
     Ok(())
 }

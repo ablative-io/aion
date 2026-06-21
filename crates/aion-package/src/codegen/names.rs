@@ -114,6 +114,25 @@ pub(crate) fn fn_prefix(segments: &[String]) -> String {
     segments.join("_")
 }
 
+/// Converts a generated `PascalCase` type name to the `snake_case` schema stem
+/// it derives from (`OrderInput` → `order_input`). The inverse shape of
+/// [`type_name`], used to name the `schemas/<stem>.json` document a type came
+/// from — for the "schema missing" error hint and the golden test helpers.
+pub(crate) fn pascal_to_snake(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (index, ch) in name.char_indices() {
+        if ch.is_ascii_uppercase() {
+            if index != 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Where a generated name was derived from, for collision reporting.
 #[derive(Clone, Debug)]
 pub(crate) struct NameOrigin {

@@ -79,19 +79,40 @@ def worker_failure(message: str) -> DispatchOutcome:
     )
 
 
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        raise SystemExit(f"required environment variable {name} is not set")
+    return value
+
+
+def _require_int(name: str) -> int:
+    raw = _require_env(name)
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"environment variable {name} is not a valid integer: {raw!r}") from None
+
+
+def _require_float(name: str) -> float:
+    raw = _require_env(name)
+    try:
+        return float(raw)
+    except ValueError:
+        raise SystemExit(f"environment variable {name} is not a valid number: {raw!r}") from None
+
+
 def worker_config() -> WorkerConfig:
     return WorkerConfig(
-        endpoint=os.environ.get("AION_WORKER_ENDPOINT", "127.0.0.1:50051"),
-        task_queue=os.environ.get("AION_TASK_QUEUE", "default"),
-        identity=os.environ.get("AION_WORKER_IDENTITY", "aion_order_saga-python-worker"),
-        max_concurrency=int(os.environ.get("AION_WORKER_CONCURRENCY", "4")),
+        endpoint=_require_env("AION_WORKER_ENDPOINT"),
+        task_queue=_require_env("AION_TASK_QUEUE"),
+        identity=_require_env("AION_WORKER_IDENTITY"),
+        max_concurrency=_require_int("AION_WORKER_CONCURRENCY"),
         reconnect=ReconnectConfig(
-            initial_backoff_seconds=float(os.environ.get("AION_RECONNECT_INITIAL_BACKOFF_SECONDS", "0.5")),
-            max_backoff_seconds=float(os.environ.get("AION_RECONNECT_MAX_BACKOFF_SECONDS", "5.0")),
-            max_attempts=int(os.environ.get("AION_RECONNECT_MAX_ATTEMPTS", "10")),
+            initial_backoff_seconds=_require_float("AION_RECONNECT_INITIAL_BACKOFF_SECONDS"),
+            max_backoff_seconds=_require_float("AION_RECONNECT_MAX_BACKOFF_SECONDS"),
+            max_attempts=_require_int("AION_RECONNECT_MAX_ATTEMPTS"),
         ),
-        namespace=os.environ.get("AION_NAMESPACE", "default"),
-        subject=os.environ.get("AION_SUBJECT", "worker"),
     )
 
 

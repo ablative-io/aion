@@ -14,8 +14,9 @@
 //! The handler registry follows declaration order (no map iteration), so
 //! generation is deterministic. No activity retry/timeout/backoff is emitted
 //! (ADR-001); the only values present are the worker's own connection
-//! parameters, read from the environment so the do-not-edit file stays
-//! byte-stable across hosts.
+//! parameters. Every required value is read from the environment so the
+//! do-not-edit file stays byte-stable across hosts, and a missing variable
+//! fails loud (no invented default is supplied anywhere; ADR-001).
 
 use std::fmt::Write as _;
 
@@ -99,6 +100,54 @@ def worker_failure(message: str) -> DispatchOutcome:
     )
 "#;
 
+/// Fail-loud environment-variable readers used by `worker_config`. Each
+/// required value is read from the environment with no invented default
+/// (ADR-001); a missing or malformed variable raises `SystemExit` with a clear
+/// message instead of silently substituting a value.
+const CONFIG_HELPERS: &str = r#"
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        raise SystemExit(f"required environment variable {name} is not set")
+    return value
+
+
+def _require_int(name: str) -> int:
+    raw = _require_env(name)
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"environment variable {name} is not a valid integer: {raw!r}") from None
+
+
+def _require_float(name: str) -> float:
+    raw = _require_env(name)
+    try:
+        return float(raw)
+    except ValueError:
+        raise SystemExit(f"environment variable {name} is not a valid number: {raw!r}") from None
+"#;
+
+/// The worker's connection config, fixed for every generated worker. Every
+/// required field is read from the environment via the fail-loud helpers;
+/// `namespace`/`subject` are omitted so they defer to the dataclass defaults
+/// the library owns.
+const WORKER_CONFIG: &str = r#"
+
+def worker_config() -> WorkerConfig:
+    return WorkerConfig(
+        endpoint=_require_env("AION_WORKER_ENDPOINT"),
+        task_queue=_require_env("AION_TASK_QUEUE"),
+        identity=_require_env("AION_WORKER_IDENTITY"),
+        max_concurrency=_require_int("AION_WORKER_CONCURRENCY"),
+        reconnect=ReconnectConfig(
+            initial_backoff_seconds=_require_float("AION_RECONNECT_INITIAL_BACKOFF_SECONDS"),
+            max_backoff_seconds=_require_float("AION_RECONNECT_MAX_BACKOFF_SECONDS"),
+            max_attempts=_require_int("AION_RECONNECT_MAX_ATTEMPTS"),
+        ),
+    )
+"#;
+
 /// Emits `worker/worker.py` serving `activities` (all `RemotePython`), routing
 /// each engine activity name to `handlers.<name>` in declaration order.
 pub(crate) fn emit(package_name: &str, activities: &[&ResolvedActivity]) -> String {
@@ -133,20 +182,9 @@ pub(crate) fn emit(package_name: &str, activities: &[&ResolvedActivity]) -> Stri
     out.push('\n');
     out.push_str(HELPERS);
 
-    let _ = write!(
-        out,
-        "\n\ndef worker_config() -> WorkerConfig:\n    return WorkerConfig(\n        \
-         endpoint=os.environ.get(\"AION_WORKER_ENDPOINT\", \"127.0.0.1:50051\"),\n        \
-         task_queue=os.environ.get(\"AION_TASK_QUEUE\", \"default\"),\n        \
-         identity=os.environ.get(\"AION_WORKER_IDENTITY\", \"{package_name}-python-worker\"),\n        \
-         max_concurrency=int(os.environ.get(\"AION_WORKER_CONCURRENCY\", \"4\")),\n        \
-         reconnect=ReconnectConfig(\n            \
-         initial_backoff_seconds=float(os.environ.get(\"AION_RECONNECT_INITIAL_BACKOFF_SECONDS\", \"0.5\")),\n            \
-         max_backoff_seconds=float(os.environ.get(\"AION_RECONNECT_MAX_BACKOFF_SECONDS\", \"5.0\")),\n            \
-         max_attempts=int(os.environ.get(\"AION_RECONNECT_MAX_ATTEMPTS\", \"10\")),\n        ),\n        \
-         namespace=os.environ.get(\"AION_NAMESPACE\", \"default\"),\n        \
-         subject=os.environ.get(\"AION_SUBJECT\", \"worker\"),\n    )\n"
-    );
+    out.push('\n');
+    out.push_str(CONFIG_HELPERS);
+    out.push_str(WORKER_CONFIG);
 
     let _ = write!(
         out,
@@ -248,12 +286,15 @@ mod tests {
         let first = module.find("\"reserve_inventory\": handlers");
         let second = module.find("\"charge_payment\": handlers");
         assert!(first.is_some() && second.is_some() && first < second);
-        // Env-driven config; no activity retry/timeout/backoff.
-        assert!(module.contains("os.environ.get(\"AION_WORKER_ENDPOINT\", \"127.0.0.1:50051\")"));
-        assert!(
-            module.contains(
-                "identity=os.environ.get(\"AION_WORKER_IDENTITY\", \"demo-python-worker\")"
-            )
-        );
+        // Fail-loud, ADR-001-pure config: every required value is read from the
+        // environment through the require-helpers, with no invented default.
+        assert!(module.contains("_require_env(\"AION_WORKER_ENDPOINT\")"));
+        assert!(module.contains("_require_int(\"AION_WORKER_CONCURRENCY\")"));
+        assert!(module.contains("_require_float(\"AION_RECONNECT_INITIAL_BACKOFF_SECONDS\")"));
+        // No defaulted environment read survives anywhere (the violation form).
+        assert!(!module.contains("os.environ.get(\""));
+        // namespace/subject defer to the library's dataclass defaults.
+        assert!(!module.contains("AION_NAMESPACE"));
+        assert!(!module.contains("AION_SUBJECT"));
     }
 }

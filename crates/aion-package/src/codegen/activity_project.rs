@@ -192,7 +192,10 @@ fn resolve_type<'a>(
                 activity: declaration.name.clone(),
                 role,
                 type_name: type_name.to_owned(),
-                path: PathBuf::from(format!("schemas/{}.json", to_snake(type_name))),
+                path: PathBuf::from(format!(
+                    "schemas/{}.json",
+                    super::names::pascal_to_snake(type_name)
+                )),
             })?;
     Ok(ResolvedType {
         gleam_type: type_name.to_owned(),
@@ -296,23 +299,6 @@ fn file(root: &Path, relative: String, contents: String) -> ActivityArtifact {
         relative,
         contents,
     }
-}
-
-/// Converts a Gleam type name to the snake-case schema stem it derives from,
-/// for the "schema missing" error hint (`OrderInput` → `order_input`).
-fn to_snake(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 4);
-    for (index, ch) in name.char_indices() {
-        if ch.is_ascii_uppercase() {
-            if index != 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
