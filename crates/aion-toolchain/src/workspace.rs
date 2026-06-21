@@ -8,23 +8,26 @@
 //! `[authoring].project_root` is therefore a **read-only template** at request
 //! time; every submission gets its own throwaway working copy.
 //!
-//! [`Workspace::stage`] recursively copies the template into a fresh temporary
-//! directory placed as a **sibling** of the template — under the template's own
-//! parent directory. Sibling placement is load-bearing: a Gleam project's
-//! `aion_flow` path dependency (and every `source = "local"` entry in
-//! `manifest.toml`) is recorded **relative** to the project root, so any
-//! relative path resolves identically from a sibling as from the template
-//! itself. Copying into an arbitrary location (the system temp dir, say) would
-//! break those relative path dependencies; rewriting them would mean parsing
-//! and re-emitting two TOML formats faithfully on every request. Sibling
-//! placement preserves them untouched.
+//! [`Workspace::stage`] creates a fresh temporary directory as a **sibling** of
+//! the template — under the template's own parent directory — and recursively
+//! copies the template's *contents* directly into it, so the working-copy root
+//! sits at exactly the **same directory depth** as the template. Same-depth
+//! sibling placement is load-bearing: a Gleam project's `aion_flow` path
+//! dependency (and every `source = "local"` entry in `manifest.toml`) is
+//! recorded **relative** to the project root, so a relative path such as
+//! `../../gleam/aion_flow` resolves identically from a same-depth sibling as
+//! from the template itself. Copying into an arbitrary location (the system
+//! temp dir, say) — or nesting the working copy one directory deeper than the
+//! template — would break those relative path dependencies; rewriting them
+//! would mean parsing and re-emitting two TOML formats faithfully on every
+//! request. Same-depth sibling placement preserves them untouched.
 //!
 //! The temporary directory is owned by the [`Workspace`] and removed when it is
 //! dropped — on the success path and on every error path alike (the build
 //! artifacts, including the captured submission source, never outlive the
 //! request). The template is never mutated.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::ToolchainError;
 
@@ -35,20 +38,24 @@ use crate::error::ToolchainError;
 /// source is written into, and the build runs entirely within,
 /// [`Workspace::root`] — never the template.
 pub struct Workspace {
-    /// The owned temporary directory; its removal on drop is the cleanup.
+    /// The owned temporary directory; its removal on drop is the cleanup. The
+    /// temp directory **is** the working-copy project root — the template's
+    /// contents are copied directly into it so the root sits at the same
+    /// directory depth as the template (a same-depth sibling), and relative
+    /// path dependencies resolve identically.
     temp: tempfile::TempDir,
-    /// The working-copy project root (the sole child of `temp`).
-    root: PathBuf,
 }
 
 impl Workspace {
     /// Stages a fresh, isolated working copy of `template_root`.
     ///
     /// Creates a temporary directory as a sibling of `template_root` (under its
-    /// parent) and recursively copies the template into it. Sibling placement
-    /// preserves the template's relative path dependencies (`aion_flow` and any
-    /// other `source = "local"` Gleam dependency), which resolve identically
-    /// from a sibling as from the template root.
+    /// parent) and recursively copies the template's contents directly into it,
+    /// so the working-copy root sits at the same directory depth as the
+    /// template. Same-depth sibling placement preserves the template's relative
+    /// path dependencies (`aion_flow` and any other `source = "local"` Gleam
+    /// dependency): a path such as `../../gleam/aion_flow` resolves identically
+    /// from the working copy as from the template root.
     ///
     /// The template is read only — it is never written to or built in. The
     /// returned [`Workspace`] owns the temporary directory and removes it on
@@ -80,25 +87,28 @@ impl Workspace {
                 source,
             })?;
 
-        let root = temp.path().join("project");
-        copy_tree(template_root, &root)?;
+        // Copy the template's contents directly into the temp directory so the
+        // working-copy root IS the temp directory — a same-depth sibling of the
+        // template, never a directory deeper. This keeps relative path
+        // dependencies (`../../gleam/aion_flow`) resolving identically.
+        copy_tree(template_root, temp.path())?;
 
-        Ok(Self { temp, root })
+        Ok(Self { temp })
     }
 
     /// The isolated working-copy project root: where the submitted source is
-    /// written and the build runs.
+    /// written and the build runs. It is the temporary directory itself — a
+    /// same-depth sibling of the template.
     #[must_use]
     pub fn root(&self) -> &Path {
-        &self.root
+        self.temp.path()
     }
 }
 
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Workspace")
-            .field("temp", &self.temp.path())
-            .field("root", &self.root)
+            .field("root", &self.temp.path())
             .finish()
     }
 }
@@ -199,23 +209,25 @@ mod tests {
     }
 
     #[test]
-    fn stage_places_the_workspace_as_a_sibling_of_the_template()
+    fn stage_places_the_workspace_as_a_same_depth_sibling_of_the_template()
     -> Result<(), Box<dyn std::error::Error>> {
         let (_parent, template_root) = template()?;
         let template_parent = template_root.parent().ok_or("template has a parent")?;
         let workspace = Workspace::stage(&template_root)?;
 
-        // The workspace's temp dir is a child of the template's parent, so the
-        // working-copy root resolves relative path dependencies identically to
-        // the template root.
-        let workspace_temp = workspace
-            .root()
-            .parent()
-            .ok_or("workspace root has a parent (the temp dir)")?;
+        // The working-copy root IS the temp dir — a direct child of the
+        // template's parent, at the SAME directory depth as the template. A
+        // relative path dependency such as `../../gleam/aion_flow` therefore
+        // resolves identically from the working copy as from the template.
         assert_eq!(
-            workspace_temp.parent(),
+            workspace.root().parent(),
             Some(template_parent),
-            "the workspace temp dir is a sibling of the template under the same parent"
+            "the workspace root is a same-depth sibling of the template under the same parent"
+        );
+        assert_eq!(
+            workspace.root().components().count(),
+            template_root.components().count(),
+            "the workspace root sits at the same directory depth as the template"
         );
         Ok(())
     }
@@ -225,11 +237,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (_parent, template_root) = template()?;
         let workspace = Workspace::stage(&template_root)?;
+        // The working-copy root IS the temp dir, so removing it on drop removes
+        // the root itself.
         let staged_root = workspace.root().to_path_buf();
-        let staged_temp = staged_root
-            .parent()
-            .ok_or("workspace root has a temp parent")?
-            .to_path_buf();
         assert!(staged_root.join("gleam.toml").is_file());
 
         // Mutate the working copy to prove the template is untouched.
@@ -238,8 +248,8 @@ mod tests {
         drop(workspace);
 
         assert!(
-            !staged_temp.exists(),
-            "the workspace temp dir is removed on drop"
+            !staged_root.exists(),
+            "the workspace temp dir (the working-copy root) is removed on drop"
         );
         assert!(
             template_root.join("gleam.toml").is_file(),

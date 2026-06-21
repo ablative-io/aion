@@ -32,6 +32,3 @@ toml = { workspace = true }
 # concurrent submissions never share an entry-file, build/ dir, or .aion output.
 # It is a filesystem utility, not a compiler dependency.
 tempfile = "3.27.0"
-
-[dev-dependencies]
-tempfile = "3.27.0"

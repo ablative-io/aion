@@ -80,6 +80,55 @@ fn aion_flow_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../gleam/aion_flow")
 }
 
+/// Absolute path to the repository `examples/` directory.
+///
+/// Every real example template (`examples/order-saga`, `examples/approval-gate`,
+/// `examples/stacked-dev-remote`, …) lives here at directory depth 2 and records
+/// its SDK dependency as the **relative** path `../../gleam/aion_flow`. The
+/// relative-dep fixture is provisioned here too, at the same depth, so the
+/// staged working copy (a same-depth sibling) resolves `../../gleam/aion_flow`
+/// to the real `gleam/aion_flow` exactly as production does.
+fn examples_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+}
+
+/// Provisions a fresh single-workflow Gleam project whose `aion_flow`
+/// dependency is the **relative** path `../../gleam/aion_flow` — the exact form
+/// every real example template uses — placed at the same directory depth as
+/// those templates (inside the repo's `examples/`). This is what makes the
+/// staging-depth bug observable: if the working copy were staged one directory
+/// deeper than the template, `../../gleam/aion_flow` would resolve to the wrong
+/// location and `gleam build` would fail to canonicalise the SDK path.
+///
+/// The returned temp dir is auto-removed on drop, so the repo's `examples/`
+/// directory is left clean.
+fn provision_relative_dep_project(
+    label: &str,
+) -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("aion-toolchain-reldep-{label}-"))
+        .tempdir_in(examples_dir())?;
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("gleam.toml"),
+        b"name = \"aion_authoring_fixture\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n\n[dependencies]\naion_flow = { path = \"../../gleam/aion_flow\" }\ngleam_stdlib = \">= 0.34.0 and < 2.0.0\"\ngleam_json = \">= 2.0.0 and < 4.0.0\"\n".as_slice(),
+    )?;
+    std::fs::write(
+        root.join("workflow.toml"),
+        b"[[workflow]]\nentry_module = \"aion_authoring_fixture\"\nentry_function = \"run\"\ntimeout_seconds = 30\ninput_schema = \"schemas/input.json\"\noutput_schema = \"schemas/output.json\"\nactivities = []\noutput = \"fixture.aion\"\n",
+    )?;
+    std::fs::create_dir_all(root.join("schemas"))?;
+    std::fs::write(root.join("schemas/input.json"), br#"{ "type": "string" }"#)?;
+    std::fs::write(root.join("schemas/output.json"), br#"{ "type": "string" }"#)?;
+    std::fs::create_dir_all(root.join("src"))?;
+    std::fs::write(
+        root.join("src/aion_authoring_fixture.gleam"),
+        b"pub fn run(_raw: a) -> Result(String, Nil) {\n  Ok(\"placeholder\")\n}\n",
+    )?;
+    Ok(dir)
+}
+
 /// Provisions a fresh single-workflow Gleam project in a temp dir whose
 /// `aion_flow` dependency points at the absolute workspace SDK path, so a
 /// `gleam build` resolves the local SDK plus cached Hex deps without relying
@@ -267,8 +316,11 @@ fn concurrent_submissions_of_different_source_get_their_own_artifact() -> TestRe
     };
     // One shared, read-only template both submissions build against. If
     // isolation were broken, two concurrent builds would race on this single
-    // root's entry-file, build/ dir, and .aion output.
-    let project = provision_project("concurrent")?;
+    // root's entry-file, build/ dir, and .aion output. The template uses the
+    // production RELATIVE `aion_flow = { path = "../../gleam/aion_flow" }`
+    // dependency (mirroring every real example), so the concurrent path genuinely
+    // exercises the same-depth staging that production relies on.
+    let project = provision_relative_dep_project("concurrent")?;
     let template_root = project.path().to_path_buf();
     let gleam_path = gleam.clone();
 
@@ -346,6 +398,84 @@ fn concurrent_submissions_of_different_source_get_their_own_artifact() -> TestRe
     assert!(
         !template_root.join("build").exists(),
         "the read-only template carries no build/ dir after concurrent submissions"
+    );
+    Ok(())
+}
+
+/// LOAD-BEARING staging-depth test: a template that records its SDK dependency
+/// as the production-shape RELATIVE path `../../gleam/aion_flow` (exactly like
+/// `examples/order-saga`, `examples/approval-gate`, `examples/stacked-dev-remote`)
+/// compiles through the staged workspace and yields a loadable `.aion` with a
+/// real content hash.
+///
+/// This is the test the earlier absolute-dep fixtures could not be: an absolute
+/// `aion_flow` path resolves regardless of staging depth, so it passed even
+/// while production (which uses the relative form) was broken. Here the staged
+/// working copy must sit at the SAME directory depth as the template for
+/// `../../gleam/aion_flow` to resolve to the real SDK — proving the same-depth
+/// sibling staging is correct. Against the buggy `<temp>/project` staging this
+/// fails to canonicalise the SDK path; against the fixed same-depth staging it
+/// succeeds.
+#[test]
+fn relative_dep_template_compiles_through_staged_workspace() -> TestResult {
+    let Some(gleam) = gleam_binary() else {
+        eprintln!(
+            "SKIP relative_dep_template_compiles_through_staged_workspace: `gleam` binary not runnable in this environment"
+        );
+        return Ok(());
+    };
+    let project = provision_relative_dep_project("compiles")?;
+    let request = CompileRequest {
+        template_root: project.path(),
+        gleam_path: &gleam,
+        source: VALID_SOURCE,
+    };
+
+    let compiled = match compile_source(&request) {
+        Ok(compiled) => compiled,
+        Err(ToolchainError::TypeCheck { diagnostics }) => {
+            // A genuine dependency-resolution failure in a sandboxed CI
+            // environment is an environmental skip. The staging-depth bug,
+            // however, surfaced as a `gleam build` failure to *canonicalise* the
+            // relative SDK path — so a diagnostics string mentioning the SDK
+            // path resolution is a real product failure and must NOT be skipped.
+            if diagnostics.contains("aion_flow") && diagnostics.contains("canonicalise") {
+                return Err(format!(
+                    "relative-dep template failed to resolve `../../gleam/aion_flow` through the staged workspace — staging depth is wrong:\n{diagnostics}"
+                )
+                .into());
+            }
+            eprintln!(
+                "SKIP relative_dep_template_compiles_through_staged_workspace: gleam build could not complete in this environment:\n{diagnostics}"
+            );
+            return Ok(());
+        }
+        Err(other) => return Err(Box::new(other)),
+    };
+
+    assert_eq!(compiled.workflow_type, "aion_authoring_fixture");
+    assert!(
+        !compiled.version.content_hash.to_string().is_empty(),
+        "the relative-dep template produces a verified package with a content hash"
+    );
+    assert_eq!(
+        compiled.package.content_hash().to_string(),
+        compiled.version.content_hash.to_string(),
+        "the package and version record agree on the content hash"
+    );
+    // The staged working copy (and its build artifacts) is removed on drop, and
+    // the in-repo template carries nothing — no `.aion`, no `build/`.
+    assert!(
+        !compiled.output_path.exists(),
+        "the per-submission workspace (and its .aion) is cleaned up after compile"
+    );
+    assert!(
+        !project.path().join("fixture.aion").exists(),
+        "the read-only relative-dep template is never written to"
+    );
+    assert!(
+        !project.path().join("build").exists(),
+        "the read-only relative-dep template is never built in"
     );
     Ok(())
 }

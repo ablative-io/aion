@@ -79,24 +79,34 @@ fn gleam_binary() -> Option<PathBuf> {
     }
 }
 
-fn aion_flow_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../gleam/aion_flow")
+/// Absolute path to the repository `examples/` directory.
+///
+/// The fixture is provisioned here, at the same directory depth (2) as every
+/// real example template, so its **relative** `aion_flow = { path =
+/// "../../gleam/aion_flow" }` dependency resolves to the real SDK from the
+/// staged same-depth working copy — exactly as production does.
+fn examples_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
 /// Provisions a built single-workflow Gleam project whose `aion_flow`
-/// dependency points at the absolute workspace SDK path.
+/// dependency is the production-shape **relative** path `../../gleam/aion_flow`
+/// (mirroring every real example template), placed at the same directory depth
+/// as those templates. This makes the server e2e genuinely exercise the
+/// same-depth staging that production relies on: an absolute dependency would
+/// resolve regardless of staging depth and so would not be load-bearing.
+///
+/// The temp dir is auto-removed on drop, leaving the repo's `examples/` clean.
 fn provision_project() -> Result<tempfile::TempDir, TestError> {
     let dir = tempfile::Builder::new()
         .prefix("aion-authoring-server-e2e-")
-        .tempdir()?;
+        .tempdir_in(examples_dir())?;
     let root = dir.path();
-    let flow = aion_flow_path();
-    let flow_display = flow.to_str().ok_or("aion_flow path is not valid UTF-8")?;
 
     std::fs::write(
         root.join("gleam.toml"),
         format!(
-            "name = \"{ENTRY_MODULE}\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n\n[dependencies]\naion_flow = {{ path = \"{flow_display}\" }}\ngleam_stdlib = \">= 0.34.0 and < 2.0.0\"\ngleam_json = \">= 2.0.0 and < 4.0.0\"\n"
+            "name = \"{ENTRY_MODULE}\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n\n[dependencies]\naion_flow = {{ path = \"../../gleam/aion_flow\" }}\ngleam_stdlib = \">= 0.34.0 and < 2.0.0\"\ngleam_json = \">= 2.0.0 and < 4.0.0\"\n"
         ),
     )?;
     std::fs::write(
