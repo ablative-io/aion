@@ -227,6 +227,27 @@ pub enum CodegenError {
         /// The schema artifact whose definitions were searched.
         file: PathBuf,
     },
+
+    /// The test-scaffold generator could not read the workflow's entry-module
+    /// source, which it needs to derive the typed entry function and timer count.
+    #[error("failed to read workflow entry source {path}: {source}")]
+    EntrySourceRead {
+        /// The entry-module source path that could not be read.
+        path: PathBuf,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
+
+    /// The workflow's entry-module source does not yield the facts the test
+    /// scaffold needs (no `aion/workflow` import, no `define` call, or an
+    /// unidentifiable typed entry function).
+    #[error("cannot derive test-scaffold facts from {path}: {reason}")]
+    ScaffoldFacts {
+        /// The entry-module source path the facts were read from.
+        path: PathBuf,
+        /// Why the facts could not be derived.
+        reason: String,
+    },
 }
 
 #[cfg(test)]

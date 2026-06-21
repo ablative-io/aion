@@ -19,9 +19,11 @@ use crate::payload::{
     payload_to_json,
 };
 
+mod check_deterministic;
 mod codegen;
 mod deploy;
 mod generate;
+mod input;
 mod inspect;
 mod new;
 mod output;
@@ -130,6 +132,38 @@ enum ClientCommand {
         /// exits non-zero naming the drifted file (CI gate).
         #[arg(long)]
         check: bool,
+    },
+    /// Statically check a workflow project for determinism violations.
+    ///
+    /// Runs entirely locally: reads `workflow.toml` and each declared
+    /// workflow's `src/<entry_module>.gleam`, and flags any wall-clock or
+    /// entropy call reachable from workflow code — the determinism boundary as
+    /// a CI gate. Exits non-zero, naming every offending call and the
+    /// `workflow.now()` / `workflow.random()` substitute to use, when any
+    /// violation is found.
+    Check {
+        /// Workflow project root containing `workflow.toml` and `src/`.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Run the determinism gate. Required: `check` performs the
+        /// determinism analysis only.
+        #[arg(long)]
+        deterministic: bool,
+    },
+    /// Emit a valid input skeleton derived from a workflow's input type.
+    ///
+    /// Runs entirely locally: reads the workflow's `input_schema` from
+    /// `workflow.toml` — the same JSON Schema the input codec is generated
+    /// from — and prints a structurally-valid JSON document so an input is
+    /// never hand-written from scratch. Required properties carry type-shaped
+    /// placeholders and optional properties are omitted; no values are
+    /// defaulted.
+    Input {
+        /// Workflow type (the workflow's `entry_module`).
+        workflow_type: String,
+        /// Workflow project root containing `workflow.toml` and `schemas/`.
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
     /// Package an already-built Gleam workflow project into `.aion` archives.
     ///
@@ -314,6 +348,14 @@ async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
         ClientCommand::New(args) => new::run(args),
         ClientCommand::Codegen { path, check } => codegen::run(path, *check),
         ClientCommand::Generate { path, check } => generate::run(path, *check),
+        ClientCommand::Check {
+            path,
+            deterministic,
+        } => check_deterministic::run(path, *deterministic),
+        ClientCommand::Input {
+            workflow_type,
+            path,
+        } => input::run(path, workflow_type),
         ClientCommand::Package { path, out, build } => package::run(path, out.as_deref(), *build),
         ClientCommand::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
         ClientCommand::Versions { workflow_type } => {
@@ -682,6 +724,68 @@ mod tests {
     }
 
     #[test]
+    fn check_parses_path_and_requires_the_deterministic_flag() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "check", "examples/order-saga", "--deterministic"])?;
+        let Command::Client(ClientCommand::Check {
+            path,
+            deterministic,
+        }) = cli.command
+        else {
+            anyhow::bail!("expected check command");
+        };
+        assert_eq!(path, Path::new("examples/order-saga"));
+        assert!(deterministic);
+
+        // Path defaults to the current directory; the flag defaults off.
+        let cli = Cli::try_parse_from(["aion", "check"])?;
+        let Command::Client(ClientCommand::Check {
+            path,
+            deterministic,
+        }) = cli.command
+        else {
+            anyhow::bail!("expected check command");
+        };
+        assert_eq!(path, Path::new("."));
+        assert!(!deterministic);
+        Ok(())
+    }
+
+    #[test]
+    fn input_parses_workflow_type_and_path() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "input", "order_saga", "examples/order-saga"])?;
+        let Command::Client(ClientCommand::Input {
+            workflow_type,
+            path,
+        }) = cli.command
+        else {
+            anyhow::bail!("expected input command");
+        };
+        assert_eq!(workflow_type, "order_saga");
+        assert_eq!(path, Path::new("examples/order-saga"));
+
+        // The path defaults to the current directory.
+        let cli = Cli::try_parse_from(["aion", "input", "order_saga"])?;
+        let Command::Client(ClientCommand::Input { path, .. }) = cli.command else {
+            anyhow::bail!("expected input command");
+        };
+        assert_eq!(path, Path::new("."));
+        Ok(())
+    }
+
+    #[test]
+    fn check_help_documents_the_determinism_gate() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(check) = command.find_subcommand_mut("check") else {
+            anyhow::bail!("check subcommand should be registered");
+        };
+        let help = check.render_long_help().to_string();
+        assert!(help.contains("--deterministic"));
+        assert!(help.contains("wall-clock"));
+        assert!(help.contains("Exits non-zero"));
+        Ok(())
+    }
+
+    #[test]
     fn inspect_parses_workflow_run_from_and_mock() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "inspect", WORKFLOW_ID])?;
         let Command::Client(ClientCommand::Remote(RemoteCommand::Inspect {
@@ -783,6 +887,8 @@ mod tests {
                     | ClientCommand::New(_)
                     | ClientCommand::Codegen { .. }
                     | ClientCommand::Generate { .. }
+                    | ClientCommand::Check { .. }
+                    | ClientCommand::Input { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }
@@ -832,6 +938,8 @@ mod tests {
                     | ClientCommand::New(_)
                     | ClientCommand::Codegen { .. }
                     | ClientCommand::Generate { .. }
+                    | ClientCommand::Check { .. }
+                    | ClientCommand::Input { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }

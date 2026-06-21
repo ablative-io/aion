@@ -19,14 +19,18 @@ mod activity_wrappers;
 mod declaration;
 mod emit;
 mod error;
+mod input_skeleton;
 mod json;
 mod names;
 mod project;
 mod schema;
+mod test_scaffold;
 
 pub use activity_project::{
-    ActivityArtifact, ActivityReport, CodecReport, generate_activities, generate_codecs,
+    ActivityArtifact, ActivityReport, CodecReport, TestScaffoldReport, generate_activities,
+    generate_codecs, generate_test_scaffold,
 };
 pub use declaration::{ActivityDeclaration, Tier, parse_declarations};
 pub use error::CodegenError;
+pub use input_skeleton::build_input_skeleton;
 pub use project::{CodegenMode, CodegenReport, codegen_project};

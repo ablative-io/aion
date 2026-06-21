@@ -39,7 +39,7 @@ use std::process::Command;
 
 use aion_package::{
     ActivityDeclaration, CodegenMode, codegen_project, generate_activities, generate_codecs,
-    parse_declarations,
+    generate_test_scaffold, parse_declarations,
 };
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -81,6 +81,8 @@ struct GenerateOutput {
     codecs_module: String,
     /// Every generated activity file (wrappers, worker, golden), in order.
     activity_modules: Vec<String>,
+    /// Generated `test/<entry_module>_scaffold_test.gleam`, relative to the root.
+    test_scaffold: String,
     /// Number of activity declarations the package's `manifest()` returned.
     declarations: usize,
     /// `synced` when the workflow.toml activities list was rewritten,
@@ -131,6 +133,17 @@ pub(crate) fn run(path: &Path, check: bool) -> Result<Value> {
     // declared names.
     let workflow_toml = sync_workflow_activities(path, &declarations, mode)?;
 
+    // Phase 6: the per-workflow `aion/testing` skeleton — each activity mocked,
+    // a clock advance per durable timer, and a replay-determinism assertion.
+    let entry_module = read_entry_module(path)?;
+    let scaffold =
+        generate_test_scaffold(path, &entry_module, &declarations, mode).with_context(|| {
+            format!(
+                "failed to generate the test scaffold for {}",
+                path.display()
+            )
+        })?;
+
     to_value(GenerateOutput {
         io_module: io.module_relative,
         codecs_module: codecs.module_relative,
@@ -139,10 +152,54 @@ pub(crate) fn run(path: &Path, check: bool) -> Result<Value> {
             .iter()
             .map(|artifact| artifact.relative.clone())
             .collect(),
+        test_scaffold: scaffold.module_relative,
         declarations: declarations.len(),
         workflow_toml,
         action: if check { "checked" } else { "written" },
     })
+}
+
+/// Reads the single `[[workflow]]` table's `entry_module` from `workflow.toml`.
+///
+/// The scaffold drives one workflow's typed entry; like the activities sync, it
+/// supports a single-workflow package only and bails loudly otherwise rather
+/// than guessing which workflow to scaffold.
+fn read_entry_module(root: &Path) -> Result<String> {
+    let toml_path = root.join("workflow.toml");
+    let contents = fs::read_to_string(&toml_path)
+        .with_context(|| format!("failed to read {}", toml_path.display()))?;
+    let document = contents
+        .parse::<DocumentMut>()
+        .with_context(|| format!("{} is not valid TOML", toml_path.display()))?;
+    let workflows = document
+        .get("workflow")
+        .and_then(|item| item.as_array_of_tables())
+        .with_context(|| {
+            format!(
+                "{} declares no [[workflow]] entry to scaffold a test for",
+                toml_path.display()
+            )
+        })?;
+    if workflows.len() > 1 {
+        bail!(
+            "{} declares {} [[workflow]] entries; `aion generate` scaffolds a test for a \
+             single-workflow package only",
+            toml_path.display(),
+            workflows.len()
+        );
+    }
+    let entry = workflows
+        .iter()
+        .next()
+        .and_then(|table| table.get("entry_module"))
+        .and_then(|item| item.as_str())
+        .with_context(|| {
+            format!(
+                "{} [[workflow]] entry has no `entry_module` to scaffold a test for",
+                toml_path.display()
+            )
+        })?;
+    Ok(entry.to_owned())
 }
 
 /// Reads the package name from the project's `gleam.toml`.
@@ -189,7 +246,13 @@ fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
     let _lock = ExtractionLock::acquire(root)?;
 
     let wrappers_module = format!("{package_name}_activity_wrappers");
-    let blocking = modules_reaching(&src, &wrappers_module)?;
+    // Set aside every module that transitively imports the to-be-generated
+    // wrappers — in `src/` and in `test/`. The generated test scaffold lives in
+    // `test/` and imports the workflow module (which reaches the wrappers), so a
+    // prior run's scaffold would otherwise break this extraction build. Test
+    // module reachability is resolved through the `src/` import graph, so both
+    // trees are scanned into one map.
+    let blocking = modules_reaching(root, &wrappers_module)?;
 
     let mut scratch = ExtractionScratch::default();
     for module_file in blocking {
@@ -220,12 +283,23 @@ fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
     extract_marked_json(&output.stdout)
 }
 
-/// Returns the source files of every module under `src` that transitively
-/// imports `target` (the to-be-generated wrappers module), so they can be set
-/// aside while the package is built for declaration extraction.
-fn modules_reaching(src: &Path, target: &str) -> Result<Vec<PathBuf>> {
+/// Returns the source files of every module under the project's `src/` and
+/// `test/` trees that transitively imports `target` (the to-be-generated
+/// wrappers module), so they can be set aside while the package is built for
+/// declaration extraction.
+///
+/// Both trees are collected into one import map, each module named relative to
+/// its own tree root (the Gleam module-name convention), so a `test/` module's
+/// reachability resolves through the `src/` import graph. `test/` is optional —
+/// a project without one is collected from `src/` alone.
+fn modules_reaching(root: &Path, target: &str) -> Result<Vec<PathBuf>> {
     let mut imports: HashMap<String, (PathBuf, Vec<String>)> = HashMap::new();
-    collect_modules(src, src, &mut imports)?;
+    let src = root.join("src");
+    collect_modules(&src, &src, &mut imports)?;
+    let test = root.join("test");
+    if test.is_dir() {
+        collect_modules(&test, &test, &mut imports)?;
+    }
 
     let mut blocking = Vec::new();
     for (module, (file, _)) in &imports {

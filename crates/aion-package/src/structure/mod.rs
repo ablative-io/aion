@@ -15,8 +15,10 @@
 
 mod arms;
 mod control_flow;
+mod determinism;
 mod error;
 mod extract;
+mod facts;
 mod ident;
 mod model;
 mod reader;
@@ -26,8 +28,10 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
+pub use determinism::{DeterminismError, Violation, ViolationKind, analyze_determinism};
 pub use error::StructureError;
 pub use extract::extract_structure;
+pub use facts::{FactsError, WorkflowFacts, extract_workflow_facts};
 pub use model::{
     ArmLabel, CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive, WorkflowGraph,
 };
