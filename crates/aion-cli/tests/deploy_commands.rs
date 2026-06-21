@@ -13,8 +13,8 @@ use std::time::Duration;
 use aion_server::ServerState;
 use aion_server::api::deploy_grpc::deploy_service;
 use aion_server::config::{
-    AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig, MetricsConfig,
-    NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
 use serde_json::{Value, json};
 
@@ -102,6 +102,7 @@ fn runtime_config() -> RuntimeConfig {
             max_archive_bytes: Some(1_048_576),
             max_inflated_bytes: Some(2_097_152),
         },
+        authoring: AuthoringConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: "default".to_owned(),

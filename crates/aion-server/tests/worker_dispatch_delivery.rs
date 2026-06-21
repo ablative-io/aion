@@ -27,8 +27,8 @@ use aion_proto::generated::{self, server_to_worker, worker_to_server};
 use aion_server::ServerState;
 use aion_server::api::worker_grpc::worker_service;
 use aion_server::config::{
-    AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig, MetricsConfig,
-    NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
 use aion_server::worker::{ConnectedWorkerRegistry, WorkerActivityDispatcher};
 use aion_server::{NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces};
@@ -83,6 +83,7 @@ fn runtime_config() -> RuntimeConfig {
         },
         workflow_packages: Vec::new(),
         deploy: DeployConfig::default(),
+        authoring: AuthoringConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),

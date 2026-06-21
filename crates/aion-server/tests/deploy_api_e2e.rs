@@ -20,8 +20,8 @@ use aion_proto::{
 };
 use aion_server::api::http::http_router;
 use aion_server::config::{
-    AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig, MetricsConfig,
-    NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
 use aion_server::{NamespaceResolver, ServerState};
 use axum::{body, http::Request, http::StatusCode, response::Response};
@@ -117,6 +117,7 @@ fn runtime_config(deploy: DeployConfig) -> RuntimeConfig {
         },
         workflow_packages: Vec::new(),
         deploy,
+        authoring: AuthoringConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),
