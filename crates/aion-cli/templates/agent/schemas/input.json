@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "task_id",
+    "scout_prompt",
+    "act_prompt",
+    "verify_prompt",
+    "review_timeout_ms"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "scout_prompt": { "type": "string", "minLength": 1 },
+    "act_prompt": { "type": "string", "minLength": 1 },
+    "verify_prompt": { "type": "string", "minLength": 1 },
+    "review_timeout_ms": { "type": "integer", "minimum": 1 }
+  }
+}

@@ -9,6 +9,8 @@
 
 use clap::ValueEnum;
 
+use crate::new::agent::{AGENT_ACTIVITIES, AGENT_FILES, AGENT_WORKER_FILES};
+
 /// One scaffolded file: the project-relative target path and the embedded
 /// contents, both before placeholder substitution.
 pub type ManifestFile = (&'static str, &'static str);
@@ -30,6 +32,12 @@ pub enum Template {
     /// I/O codecs are generated from the schemas by `aion codegen`.
     /// Requires `--worker rust`.
     DevPipeline,
+    /// A durable agent loop: scout → act → verify → signal-gated human
+    /// review, parameterised by prompts and a review deadline. The three
+    /// agent steps are worker-served activities; the human approval pause is
+    /// a durable `workflow.receive` with a timeout. Bundles no agent runtime
+    /// — the driver stays worker-side. Requires `--worker rust`.
+    Agent,
 }
 
 /// Files every template emits. The dev-pipeline template replaces the
@@ -294,6 +302,7 @@ impl Template {
             Self::ApprovalFlow => "approval-flow",
             Self::Saga => "saga",
             Self::DevPipeline => "dev-pipeline",
+            Self::Agent => "agent",
         }
     }
 
@@ -307,6 +316,7 @@ impl Template {
             // The dev pipeline carries its own gleam.toml (gleeunit
             // dev-dependency for the scaffolded test suite).
             Self::DevPipeline => (SHARED_FILES_WITHOUT_GLEAM_TOML, DEV_PIPELINE_FILES),
+            Self::Agent => (SHARED_FILES, AGENT_FILES),
         };
         let mut files = shared.to_vec();
         files.extend_from_slice(own);
@@ -319,6 +329,7 @@ impl Template {
         match self {
             Self::HelloWorld | Self::ApprovalFlow => &[],
             Self::Saga => &["charge_payment", "refund_payment"],
+            Self::Agent => AGENT_ACTIVITIES,
             Self::DevPipeline => &[
                 "provision_workspace",
                 "warm_build",
@@ -340,19 +351,31 @@ impl Template {
         match self {
             Self::HelloWorld | Self::ApprovalFlow => &[],
             Self::Saga => SAGA_WORKER_FILES,
+            Self::Agent => AGENT_WORKER_FILES,
             Self::DevPipeline => DEV_PIPELINE_WORKER_FILES,
         }
     }
 
-    /// Whether `--worker` is mandatory. The dev pipeline's eight activities
-    /// are all worker-served in a deployment; scaffolding it without the
-    /// worker would emit a project that cannot run live, so `aion new`
-    /// refuses instead.
+    /// The reason a worker-required template cannot be scaffolded without one,
+    /// surfaced verbatim in the `aion new` refusal, and the single source of
+    /// truth for whether `--worker` is mandatory (`Some` ⟺ required). A
+    /// worker-required template's activities are all worker-served in a live
+    /// deployment, so scaffolding it without the worker would emit a project
+    /// that cannot run; `aion new` refuses instead. Returns `None` for
+    /// templates that do not require a worker.
     #[must_use]
-    pub fn requires_worker(self) -> bool {
+    pub fn worker_requirement_reason(self) -> Option<&'static str> {
         match self {
-            Self::HelloWorld | Self::ApprovalFlow | Self::Saga => false,
-            Self::DevPipeline => true,
+            Self::HelloWorld | Self::ApprovalFlow | Self::Saga => None,
+            Self::DevPipeline => Some(
+                "all eight of its activities (provision, warm build, dev agent, checks, gate, \
+                 review request, land) are served by the standalone worker crate in a live \
+                 deployment",
+            ),
+            Self::Agent => Some(
+                "its three agent steps (scout, act, verify) are served by the worker, where the \
+                 agent driver lives — the scaffold bundles no runtime of its own",
+            ),
         }
     }
 
@@ -363,7 +386,7 @@ impl Template {
     #[must_use]
     pub fn generates_codecs(self) -> bool {
         match self {
-            Self::HelloWorld | Self::ApprovalFlow | Self::Saga => false,
+            Self::HelloWorld | Self::ApprovalFlow | Self::Saga | Self::Agent => false,
             Self::DevPipeline => true,
         }
     }
@@ -376,6 +399,7 @@ impl Template {
             Self::ApprovalFlow,
             Self::Saga,
             Self::DevPipeline,
+            Self::Agent,
         ]
     }
 }
@@ -507,15 +531,15 @@ mod tests {
                 "dev-pipeline workflow.toml must keep the documented {timeout}"
             );
         }
-        assert!(Template::DevPipeline.requires_worker());
+        assert!(Template::DevPipeline.worker_requirement_reason().is_some());
         assert!(Template::DevPipeline.generates_codecs());
     }
 
     #[test]
-    fn only_the_dev_pipeline_requires_a_worker_or_codegen() {
+    fn worker_free_templates_neither_require_a_worker_nor_run_codegen() {
         for template in [Template::HelloWorld, Template::ApprovalFlow, Template::Saga] {
             assert!(
-                !template.requires_worker(),
+                template.worker_requirement_reason().is_none(),
                 "template {} must not require a worker",
                 template.id()
             );
@@ -525,6 +549,71 @@ mod tests {
                 template.id()
             );
         }
+    }
+
+    #[test]
+    fn only_the_dev_pipeline_runs_codegen() {
+        for template in Template::all() {
+            assert_eq!(
+                template.generates_codecs(),
+                *template == Template::DevPipeline,
+                "only the dev-pipeline template runs codegen; {} disagrees",
+                template.id()
+            );
+        }
+    }
+
+    #[test]
+    fn agent_template_requires_a_worker_without_codegen() {
+        // The agent loop's three steps are worker-served and the driver is
+        // worker-side, so the template demands `--worker rust`; its codecs are
+        // hand-written in the workflow source, so it does not run codegen.
+        assert!(Template::Agent.worker_requirement_reason().is_some());
+        assert!(!Template::Agent.generates_codecs());
+    }
+
+    #[test]
+    fn agent_template_declares_its_three_steps_and_a_review_deadline_input() {
+        let files = Template::Agent.files();
+        let workflow_toml = files
+            .iter()
+            .find(|(path, _)| *path == "workflow.toml")
+            .map(|(_, contents)| *contents)
+            .unwrap_or_default();
+        for activity in ["scout", "act", "verify"] {
+            assert!(
+                workflow_toml.contains(&format!("\"{activity}\"")),
+                "agent workflow.toml must declare the {activity} step"
+            );
+        }
+
+        // The human-review pause is a durable `workflow.receive` raced against
+        // a caller-chosen deadline — never a poll, never a default.
+        let project = files
+            .iter()
+            .find(|(path, _)| *path == "src/{{name}}.gleam")
+            .map(|(_, contents)| *contents)
+            .unwrap_or_default();
+        let condensed: String = project.split_whitespace().collect();
+        assert!(
+            condensed.contains("workflow.with_timeout(fn(){workflow.receive("),
+            "agent review must be workflow.receive raced by with_timeout, not a poll"
+        );
+        assert!(
+            condensed.contains("duration.milliseconds(input.review_timeout_ms)"),
+            "agent review deadline must come from the start input, never a default"
+        );
+
+        // The review deadline is a required start-input field, not defaulted.
+        let input_schema = files
+            .iter()
+            .find(|(path, _)| *path == "schemas/input.json")
+            .map(|(_, contents)| *contents)
+            .unwrap_or_default();
+        assert!(
+            input_schema.contains("\"review_timeout_ms\""),
+            "agent input schema must require the review deadline"
+        );
     }
 
     #[test]

@@ -89,8 +89,11 @@ enum ClientCommand {
     ///
     /// Templates: `hello-world` (default; minimal start → complete),
     /// `approval-flow` (signal vs durable timeout race plus a status
-    /// query), and `saga` (worker-served activities, workflow-driven
-    /// retries, and refund compensation). `--worker rust` additionally
+    /// query), `saga` (worker-served activities, workflow-driven retries, and
+    /// refund compensation), `agent` (a durable agent loop — scout → act →
+    /// verify → signal-gated human review, parameterised by prompts;
+    /// `--worker rust` required), and `dev-pipeline` (the durable dev
+    /// pipeline; `--worker rust` required). `--worker rust` additionally
     /// scaffolds a `worker/` crate serving the template's activities.
     New(new::NewArgs),
     /// Generate Gleam types and JSON codecs from a project's JSON Schemas.

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "task_id",
+    "disposition",
+    "scout_finding",
+    "act_artifact",
+    "verify_verdict",
+    "reviewed_by",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": { "type": "string" },
+    "disposition": { "enum": ["applied", "held"] },
+    "scout_finding": { "type": "string" },
+    "act_artifact": { "type": "string" },
+    "verify_verdict": { "type": "string" },
+    "reviewed_by": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}
