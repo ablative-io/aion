@@ -1,12 +1,15 @@
 # Workflow packaging descriptor consumed by `aion package`.
 # Reference: docs/packaging.md.
+#
+# The `activities` list is generated from the typed declarations in
+# `src/aion_order_saga_activities.gleam`; run `aion generate` to refresh it.
 
 [[workflow]]
 entry_module = "order_saga"
 entry_function = "run"
 timeout_seconds = 60
-input_schema = "schemas/input.json"
-output_schema = "schemas/output.json"
+input_schema = "schemas/order_input.json"
+output_schema = "schemas/shipment.json"
 activities = [
     "reserve_inventory",
     "charge_payment",

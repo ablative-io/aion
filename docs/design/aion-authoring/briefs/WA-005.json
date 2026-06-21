@@ -3,9 +3,7 @@
   "cluster": "aion-authoring",
   "title": "Bidirectional visual canvas: code-to-diagram projection with live overlay",
   "depends_on": [],
-  "blocked_by": [
-    "ADR-014 (proposed — awaiting ratification)"
-  ],
+  "blocked_by": [],
   "checklist": ["C21", "C22", "C23", "C24"],
   "stories": ["S11"],
   "design_anchor": ["ADR-014"],

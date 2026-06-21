@@ -8,3 +8,6 @@ licences = ["MIT"]
 aion_flow = { path = "../../gleam/aion_flow" }
 gleam_stdlib = ">= 0.34.0 and < 2.0.0"
 gleam_json = ">= 2.0.0 and < 4.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

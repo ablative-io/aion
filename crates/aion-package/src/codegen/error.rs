@@ -158,6 +158,75 @@ pub enum CodegenError {
         /// I/O failure reported while reading.
         source: std::io::Error,
     },
+
+    /// The activity manifest JSON emitted by the package's `manifest()` export
+    /// is not a valid declaration array.
+    #[error("activity manifest is not valid declaration JSON: {source}")]
+    ManifestParse {
+        /// JSON parsing failure reported by `serde_json`.
+        source: serde_json::Error,
+    },
+
+    /// A declared activity name cannot name an engine activity or a generated
+    /// artifact (empty, or carrying a path separator, backslash, or the
+    /// deployed-name separator).
+    #[error("activity name `{name}` is invalid: {reason}")]
+    InvalidActivityName {
+        /// The offending activity name.
+        name: String,
+        /// Why the name cannot be used.
+        reason: String,
+    },
+
+    /// Two declarations share an activity name; names must be unique within a
+    /// package so the generated wrappers, registration entries, and
+    /// `workflow.toml` list are unambiguous.
+    #[error("activity `{name}` is declared more than once")]
+    DuplicateActivity {
+        /// The duplicated activity name.
+        name: String,
+    },
+
+    /// A declaration carries a tier outside the supported set.
+    #[error("unknown activity tier `{value}`; expected `in_vm`, `remote_python`, or `remote_rust`")]
+    UnknownTier {
+        /// The unrecognised tier string.
+        value: String,
+    },
+
+    /// A declared activity references a value type with no `schemas/<type>.json`
+    /// document, so its codec cannot be generated.
+    #[error(
+        "activity `{activity}` {role} type `{type_name}` has no schema: expected {path} \
+         (codecs are generated from schemas/*.json)"
+    )]
+    ActivitySchemaMissing {
+        /// The activity whose type is unresolved.
+        activity: String,
+        /// Which side of the activity the type is on (`input` or `output`).
+        role: &'static str,
+        /// The unresolved value type name.
+        type_name: String,
+        /// The schema path that was expected to exist.
+        path: PathBuf,
+    },
+
+    /// While deriving a wire-compat golden, a value type referenced a named
+    /// Gleam type absent from its schema artifact's definitions. The schema
+    /// walker emits every nested record and enum into the artifact, so this
+    /// signals a generator invariant violation rather than bad author input.
+    #[error(
+        "internal: wire-compat golden for type `{root_type}` references undefined \
+         named type `{missing}` in {file}"
+    )]
+    GoldenTypeUnresolved {
+        /// The value type whose golden was being derived.
+        root_type: String,
+        /// The named type that could not be found in the artifact definitions.
+        missing: String,
+        /// The schema artifact whose definitions were searched.
+        file: PathBuf,
+    },
 }
 
 #[cfg(test)]

@@ -38,6 +38,24 @@ pub type RetryPolicy {
   RetryPolicy(max_attempts: Int, backoff: Backoff)
 }
 
+/// Where an activity's side-effecting body executes.
+///
+/// The tier is authored data, not an invented default. `aion generate` reads it
+/// to decide which worker handler stub and registration entry to emit, and
+/// whether a wire-compat golden is generated (remote tiers only). It is a
+/// generation-time concern: it never rides the runtime `Activity` value or the
+/// recorded history.
+pub type Tier {
+  /// Runs in-process inside the BEAM VM via a registered NIF.
+  InVm
+
+  /// Runs in a remote Python worker over the worker protocol.
+  RemotePython
+
+  /// Runs in a remote Rust worker over the worker protocol.
+  RemoteRust
+}
+
 /// A typed activity invocation value.
 ///
 /// `i` is the statically-known input type and `o` is the statically-known output
@@ -145,7 +163,11 @@ pub fn heartbeat(
 /// display metadata only: the engine never interprets them and they never
 /// affect routing, replay, or the recorded history. Repeated calls accumulate
 /// in call order; nothing is deduplicated or overwritten.
-pub fn label(activity: Activity(i, o), key: String, value: String) -> Activity(i, o) {
+pub fn label(
+  activity: Activity(i, o),
+  key: String,
+  value: String,
+) -> Activity(i, o) {
   Activity(
     name: activity.name,
     input: activity.input,
@@ -206,4 +228,94 @@ pub fn heartbeat_interval(
   activity: Activity(i, o),
 ) -> Option(duration.Duration) {
   activity.heartbeat
+}
+
+/// A typed binding of a value type's name to its codec.
+///
+/// `declare` takes one for the input and one for the output. The codec makes
+/// the binding type-check — `type_ref("OrderInput", order_input_codec())` only
+/// compiles when the codec is a `codec.Codec(OrderInput)` — so a mismatched
+/// type and codec is a `gleam build` failure. The `type_name` is the handle the
+/// out-of-process `aion generate` extractor maps to `schemas/<type>.json` to
+/// drive codec and worker codegen; codecs carry no type information at runtime,
+/// so the name is supplied explicitly here.
+pub opaque type TypeRef(a) {
+  TypeRef(type_name: String, codec: codec.Codec(a))
+}
+
+/// Bind a value type's name to its codec for use in an activity declaration.
+pub fn type_ref(type_name: String, value_codec: codec.Codec(a)) -> TypeRef(a) {
+  TypeRef(type_name: type_name, codec: value_codec)
+}
+
+/// Return the codec captured by a type reference.
+pub fn type_ref_codec(reference: TypeRef(a)) -> codec.Codec(a) {
+  reference.codec
+}
+
+/// A type-erased activity declaration: the single per-activity artifact an
+/// author writes.
+///
+/// `declare` captures the typed input and output `TypeRef`s — so the
+/// declaration's contract is checked by `gleam build` — and erases them to the
+/// names the generator needs. Erasure at the boundary is what lets a package's
+/// activities, which have different input and output types, live together in
+/// one `List(Declaration)` (mirroring Aion's type-erased event history). From
+/// this declaration `aion generate` derives the `activity.new` wrapper, the
+/// value-type codec pairs, the worker handler stub, the registration entry, the
+/// `workflow.toml` entry, and (for remote tiers) the wire-compat golden. No
+/// retry/timeout/heartbeat lives here: absence is intentional (ADR-001), so it
+/// is structurally impossible for codegen to emit a policy the author did not
+/// choose.
+pub opaque type Declaration {
+  Declaration(name: String, tier: Tier, input_type: String, output_type: String)
+}
+
+/// Declare an activity from its name, tier, and typed input/output references.
+///
+/// This is the only per-activity artifact an author hand-writes; the plumbing
+/// is generated from it. The side-effecting body (the runner) is written
+/// separately and referenced by the generated wrapper — codegen never
+/// synthesizes a body (the determinism boundary is unchanged).
+pub fn declare(
+  name: String,
+  tier: Tier,
+  input: TypeRef(i),
+  output: TypeRef(o),
+) -> Declaration {
+  Declaration(
+    name: name,
+    tier: tier,
+    input_type: input.type_name,
+    output_type: output.type_name,
+  )
+}
+
+/// Render a tier as the canonical string the generator's wire form uses.
+pub fn tier_to_string(tier: Tier) -> String {
+  case tier {
+    InVm -> "in_vm"
+    RemotePython -> "remote_python"
+    RemoteRust -> "remote_rust"
+  }
+}
+
+/// Return the engine-facing name of a declared activity.
+pub fn declaration_name(declaration: Declaration) -> String {
+  declaration.name
+}
+
+/// Return the tier a declared activity runs on.
+pub fn declaration_tier(declaration: Declaration) -> Tier {
+  declaration.tier
+}
+
+/// Return the input value type name of a declared activity.
+pub fn declaration_input_type(declaration: Declaration) -> String {
+  declaration.input_type
+}
+
+/// Return the output value type name of a declared activity.
+pub fn declaration_output_type(declaration: Declaration) -> String {
+  declaration.output_type
 }

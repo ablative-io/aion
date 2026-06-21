@@ -82,12 +82,7 @@ pub fn codegen_project(root: &Path, mode: CodegenMode) -> Result<CodegenReport, 
         }
     }
 
-    let file_names = list_schema_file_names(&schemas_dir)?;
-    let mut registry = NameRegistry::default();
-    let mut artifacts: Vec<SchemaArtifact> = Vec::with_capacity(file_names.len());
-    for file_name in &file_names {
-        artifacts.push(parse_one_schema(&schemas_dir, file_name, &mut registry)?);
-    }
+    let artifacts = parse_project_schemas(root)?;
 
     let contents = emit::emit_module(&package_name, &artifacts);
     let module_relative = format!("src/{package_name}_io.gleam");
@@ -109,13 +104,35 @@ pub fn codegen_project(root: &Path, mode: CodegenMode) -> Result<CodegenReport, 
     Ok(CodegenReport {
         module_path,
         module_relative,
-        schemas: file_names
+        schemas: artifacts
             .iter()
-            .map(|name| format!("{SCHEMAS_DIR}/{name}"))
+            .map(|artifact| artifact.file.display().to_string())
             .collect(),
         contents,
         written,
     })
+}
+
+/// Parses every `schemas/*.json` document under `root` into a deterministic,
+/// filename-ordered artifact list, with names routed through one shared
+/// [`NameRegistry`] so collisions across schemas fail loudly. Both
+/// [`codegen_project`] and the activity generator parse from this single
+/// source so their generated codecs cannot diverge.
+///
+/// # Errors
+///
+/// Returns a [`CodegenError`] for a missing/unreadable `schemas/` directory,
+/// invalid JSON, an unsupported schema construct, or a generated-name
+/// collision — each naming the offending file and JSON pointer.
+pub(crate) fn parse_project_schemas(root: &Path) -> Result<Vec<SchemaArtifact>, CodegenError> {
+    let schemas_dir = root.join(SCHEMAS_DIR);
+    let file_names = list_schema_file_names(&schemas_dir)?;
+    let mut registry = NameRegistry::default();
+    let mut artifacts: Vec<SchemaArtifact> = Vec::with_capacity(file_names.len());
+    for file_name in &file_names {
+        artifacts.push(parse_one_schema(&schemas_dir, file_name, &mut registry)?);
+    }
+    Ok(artifacts)
 }
 
 /// Lists `*.json` file names directly under `schemas/`, sorted by byte
@@ -191,7 +208,7 @@ fn parse_one_schema(
     schema::parse_schema(&relative, stem, &document, registry)
 }
 
-fn check_on_disk(module_path: &Path, contents: &str) -> Result<(), CodegenError> {
+pub(crate) fn check_on_disk(module_path: &Path, contents: &str) -> Result<(), CodegenError> {
     let on_disk = match std::fs::read(module_path) {
         Ok(bytes) => bytes,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -221,7 +238,7 @@ struct GleamTomlName {
 
 /// Reads the Gleam package name from `<root>/gleam.toml`; it prefixes the
 /// generated module (`src/<name>_io.gleam`).
-fn read_package_name(root: &Path) -> Result<String, CodegenError> {
+pub(crate) fn read_package_name(root: &Path) -> Result<String, CodegenError> {
     let path = root.join("gleam.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,

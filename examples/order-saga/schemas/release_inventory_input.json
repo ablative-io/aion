@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["order_id", "reservation_id", "item", "quantity"],
+  "additionalProperties": false,
+  "properties": {
+    "order_id": { "type": "string" },
+    "reservation_id": { "type": "string" },
+    "item": { "type": "string" },
+    "quantity": { "type": "integer" }
+  }
+}

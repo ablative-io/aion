@@ -41,7 +41,10 @@ pub mod version;
 
 pub use beam::{BeamModule, BeamSet, RESERVED_MODULE_NAMES};
 pub use builder::PackageBuilder;
-pub use codegen::{CodegenError, CodegenMode, CodegenReport, codegen_project};
+pub use codegen::{
+    ActivityArtifact, ActivityDeclaration, ActivityReport, CodecReport, CodegenError, CodegenMode,
+    CodegenReport, Tier, codegen_project, generate_activities, generate_codecs, parse_declarations,
+};
 pub use error::PackageError;
 pub use extraction::ExtractionLimits;
 pub use hash::{ContentHash, content_hash};

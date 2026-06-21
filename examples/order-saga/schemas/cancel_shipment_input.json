@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["order_id", "shipment_id"],
+  "additionalProperties": false,
+  "properties": {
+    "order_id": { "type": "string" },
+    "shipment_id": { "type": "string" }
+  }
+}

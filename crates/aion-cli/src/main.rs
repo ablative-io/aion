@@ -21,6 +21,7 @@ use crate::payload::{
 
 mod codegen;
 mod deploy;
+mod generate;
 mod new;
 mod output;
 mod package;
@@ -106,6 +107,26 @@ enum ClientCommand {
         path: PathBuf,
         /// Verify the generated module on disk is current instead of
         /// writing; exits non-zero naming the drifted file (CI gate).
+        #[arg(long)]
+        check: bool,
+    },
+    /// Generate every per-activity artifact from a package's typed declarations.
+    ///
+    /// Runs locally and drives the Gleam toolchain: reads the declarations its
+    /// `src/<package>_activities.gleam` returns from `manifest()`, then writes
+    /// the io types/codecs, the typed codec wrappers, the `activity.new`
+    /// wrappers, the per-tier worker module, the remote wire-compat golden, and
+    /// the `workflow.toml` activities list — all do-not-edit and derived, so an
+    /// activity is declared once instead of hand-mirrored across files. With
+    /// `--check`, regenerates everything in memory and exits non-zero if any
+    /// on-disk generated file differs (CI drift gate).
+    Generate {
+        /// Workflow project root containing `gleam.toml`, `workflow.toml`,
+        /// `schemas/`, and `src/<package>_activities.gleam`.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Verify every generated file on disk is current instead of writing;
+        /// exits non-zero naming the drifted file (CI gate).
         #[arg(long)]
         check: bool,
     },
@@ -256,6 +277,7 @@ async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
     match command {
         ClientCommand::New(args) => new::run(args),
         ClientCommand::Codegen { path, check } => codegen::run(path, *check),
+        ClientCommand::Generate { path, check } => generate::run(path, *check),
         ClientCommand::Package { path, out, build } => package::run(path, out.as_deref(), *build),
         ClientCommand::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
         ClientCommand::Versions { workflow_type } => {
@@ -644,6 +666,7 @@ mod tests {
                     ClientCommand::Remote(RemoteCommand::Start { .. } | RemoteCommand::List { .. })
                     | ClientCommand::New(_)
                     | ClientCommand::Codegen { .. }
+                    | ClientCommand::Generate { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }
@@ -691,6 +714,7 @@ mod tests {
                     )
                     | ClientCommand::New(_)
                     | ClientCommand::Codegen { .. }
+                    | ClientCommand::Generate { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
                     | ClientCommand::Versions { .. }

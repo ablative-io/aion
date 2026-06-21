@@ -50,6 +50,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 sha2 = "0.11"
 toml = "1.1"
+toml_edit = "0.23"
 rand_chacha = "0.10.0"
 rand_core = "0.10.1"
 zip = "8.6"

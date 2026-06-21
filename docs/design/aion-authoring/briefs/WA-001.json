@@ -3,9 +3,7 @@
   "cluster": "aion-authoring",
   "title": "Declare-once codegen: generate the activity plumbing from the typed declaration",
   "depends_on": [],
-  "blocked_by": [
-    "ADR-014 (proposed — awaiting ratification)"
-  ],
+  "blocked_by": [],
   "checklist": ["C1", "C2", "C3", "C4", "C5", "C6"],
   "stories": ["S1", "S2", "S3"],
   "design_anchor": ["ADR-014", "ADR-001", "ADR-002", "ADR-007", "ADR-012"],

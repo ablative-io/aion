@@ -50,6 +50,31 @@ OrderInput
   -> Error({"failed_step":"ship_order", "compensations":["refund_payment", "release_inventory"]})
 ```
 
+## Source layout: declare once, generate the rest
+
+Each activity is declared exactly once (ADR-014) — its name, tier, and typed
+input/output — in `src/aion_order_saga_activities.gleam`'s `manifest()`, next to
+the activity bodies. Everything that must agree byte-for-byte is generated from
+that declaration by `aion generate` and carries a do-not-edit header:
+
+| File | Authored by |
+| --- | --- |
+| `src/aion_order_saga_activities.gleam` (`manifest()` + bodies) | you |
+| `src/order_saga.gleam` (workflow orchestration) | you |
+| `worker/handlers.py` (Python activity bodies) | you |
+| `schemas/*.json` (value-type schemas) | you |
+| `src/aion_order_saga_io.gleam` (types + codecs) | generated |
+| `src/aion_order_saga_codecs.gleam` (typed codecs) | generated |
+| `src/aion_order_saga_activity_wrappers.gleam` (`activity.new` wrappers) | generated |
+| `worker/worker.py` (worker plumbing → `handlers.py`) | generated |
+| `test/aion_order_saga_wire_compat_test.gleam` (wire goldens) | generated |
+| the `activities` list in `workflow.toml` | generated |
+
+Run `aion generate examples/order-saga` after editing a declaration or schema,
+and `aion generate examples/order-saga --check` in CI — it regenerates every
+file in memory and fails if any on-disk copy has drifted, so a hand-edit to
+generated output is a build error.
+
 You will:
 
 1. build a Gleam workflow that uses `aion_flow`,
@@ -77,13 +102,18 @@ Install the CLI once from the checkout (the crate is aion-cli; the binary is `ai
 cargo install --path crates/aion-cli --locked
 ```
 
-## 1. Build the Gleam workflow
+## 1. Generate the plumbing and build the Gleam workflow
 
 ```sh
+aion generate examples/order-saga
 cd examples/order-saga
 gleam build
 cd ../..
 ```
+
+`aion generate` reads the declarations from `manifest()` and (re)writes the
+generated files listed above; the committed copies are already current, so this
+is a no-op on a clean checkout. `gleam build` then compiles the workflow.
 
 The workflow source lives in `examples/order-saga/src/order_saga.gleam`. It exposes `run`, accepts JSON shaped like:
 
