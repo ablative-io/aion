@@ -58,6 +58,23 @@ pub enum StructureError {
         activity: String,
     },
 
+    /// The manifest names an entry function whose definition is absent from the
+    /// entry-module source, so the control-flow walk has no root to start from.
+    ///
+    /// Reported rather than returning an empty graph: a workflow whose entry
+    /// function the extractor cannot locate fails loudly instead of rendering
+    /// as blank.
+    #[error(
+        "entry function `{function}` is not defined in entry module `{module}`; the control-flow \
+         walk requires the entry function's body to start from"
+    )]
+    EntryFunctionNotFound {
+        /// Logical entry-module name searched.
+        module: String,
+        /// Entry-function name named by the manifest but not found.
+        function: String,
+    },
+
     /// A structural delta fell outside the bounded round-trip vocabulary, so it
     /// is refused rather than synthesising unbounded code (CN6, ADR-014).
     #[error("structural delta is outside the bounded round-trip vocabulary: {reason}")]

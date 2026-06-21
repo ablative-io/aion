@@ -5,8 +5,11 @@
 //! by the same words appearing inside string literals or comments, and it must
 //! read the literal arguments some primitives carry (a timer name, a child
 //! name). This scanner produces exactly the events the extractor needs:
-//! qualified-call sites and `case` keywords, with comments and string contents
-//! excluded from matching but string *literals* recoverable as call arguments.
+//! qualified-call sites, bare identifiers, and the structural punctuation
+//! (`(` `)` `{` `}` `->` `,`) that bounds function bodies and `case` arms —
+//! with comments and string contents excluded from matching but string
+//! *literals* recoverable as call arguments. `case` is not a keyword token; it
+//! arrives as `Token::Ident("case")`, which the control-flow walker recognises.
 //!
 //! It is deliberately not a full Gleam parser. Its job is to make source-text
 //! extraction over a known, small surface sound — not to understand arbitrary
@@ -28,6 +31,14 @@ pub(crate) enum Token {
     OpenParen,
     /// A closing parenthesis `)`.
     CloseParen,
+    /// An opening brace `{` — a block or `case` body opener.
+    OpenBrace,
+    /// A closing brace `}` — a block or `case` body closer.
+    CloseBrace,
+    /// The case-arm arrow `->`.
+    Arrow,
+    /// A comma `,` — an argument or pattern separator.
+    Comma,
     /// A string literal, with its already-unescaped contents.
     StringLiteral(String),
     /// Any other single punctuation/operator character the extractor ignores
@@ -66,6 +77,18 @@ pub(crate) fn tokenise(source: &str) -> Vec<Token> {
         } else if current == ')' {
             tokens.push(Token::CloseParen);
             index += 1;
+        } else if current == '{' {
+            tokens.push(Token::OpenBrace);
+            index += 1;
+        } else if current == '}' {
+            tokens.push(Token::CloseBrace);
+            index += 1;
+        } else if current == ',' {
+            tokens.push(Token::Comma);
+            index += 1;
+        } else if current == '-' && chars.get(index + 1) == Some(&'>') {
+            tokens.push(Token::Arrow);
+            index += 2;
         } else if is_ident_start(current) {
             let (ident, next) = read_ident(&chars, index);
             index = next;
@@ -194,5 +217,24 @@ mod tests {
     fn escapes_in_strings_are_unescaped() {
         let tokens = tokenise("(\"a\\nb\")");
         assert!(tokens.contains(&Token::StringLiteral("a\nb".to_owned())));
+    }
+
+    #[test]
+    fn braces_arrow_and_comma_are_emitted() {
+        let tokens = tokenise("case x { Ok(a) -> b, Error(e) -> c }");
+        assert!(tokens.contains(&Token::OpenBrace));
+        assert!(tokens.contains(&Token::CloseBrace));
+        assert!(tokens.contains(&Token::Arrow));
+        assert!(tokens.contains(&Token::Comma));
+        // `case` is a bare identifier, not a keyword token.
+        assert!(tokens.contains(&Token::Ident("case".to_owned())));
+    }
+
+    #[test]
+    fn arrow_does_not_swallow_a_lone_minus() {
+        // A standalone `-` (subtraction) is not an arrow.
+        let tokens = tokenise("a - b");
+        assert!(tokens.contains(&Token::Other('-')));
+        assert!(!tokens.contains(&Token::Arrow));
     }
 }

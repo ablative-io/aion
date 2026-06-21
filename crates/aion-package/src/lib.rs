@@ -64,7 +64,7 @@ pub use project::{
     ProjectReport, package_project,
 };
 pub use structure::{
-    CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive, StructuralDelta,
-    StructureError, WorkflowGraph, extract_structure, regenerate_gleam,
+    ArmLabel, CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive,
+    StructuralDelta, StructureError, WorkflowGraph, extract_structure, regenerate_gleam,
 };
 pub use version::WorkflowVersion;
