@@ -24,41 +24,40 @@
 //!
 //! ## Control flow
 //!
-//! Gleam `case` is pervasive pattern matching (every `workflow.run` result in a
-//! saga is matched with `case`), not a workflow primitive. The extractor
-//! therefore does *not* mint a [`NodePrimitive::Branch`] for every `case`: doing
-//! so would make a compensating saga's graph wrong (its known structure is a
-//! sequence of `run` nodes, C23). Branch nodes and branch edges remain in the
-//! model for a consumer to introduce when a richer control-flow projection is
-//! warranted; the source-text extractor's vocabulary is strictly the recorded
-//! `aion/workflow` primitive calls.
+//! Extraction is control-flow faithful (the [`super::control_flow`] walker). It
+//! starts at the manifest entry function, recurses the body in source order, and
+//! models a `case` over a workflow-primitive result as a [`NodePrimitive::Branch`]
+//! with labelled `Ok` / `Error` arm edges into the real success and compensation
+//! subgraphs — following local-helper calls so a saga's compensations land on
+//! the error arm, not in a false linear sequence. Control flow it cannot resolve
+//! is surfaced as an explicit [`NodePrimitive::Opaque`] node, never flattened.
 
 use crate::Package;
 
+use super::control_flow::ControlFlowExtractor;
 use super::error::StructureError;
-use super::model::{
-    CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive, WorkflowGraph,
-};
+use super::model::WorkflowGraph;
 use super::scan::{Token, tokenise};
-
-const ACTIVITY_WRAPPER_SUFFIX: &str = "_activity";
 
 /// Extracts the workflow graph model from a loaded package.
 ///
 /// Reads the manifest entry module's verbatim Gleam source from
-/// [`Package::source`], scans it for the `aion/workflow` primitive vocabulary,
-/// and builds an ordered node/edge graph whose nodes carry the correlation key
-/// a consumer overlays a run's recorded events onto (C21, C22, C23).
+/// [`Package::source`], walks it from the entry function over the
+/// `aion/workflow` primitive vocabulary, and builds a control-flow-faithful
+/// node/edge graph whose nodes carry the correlation key a consumer overlays a
+/// run's recorded events onto (C21, C22, C23).
 ///
 /// # Errors
 ///
 /// Returns [`StructureError::MissingEntrySource`] when the entry module has no
 /// source, [`StructureError::EntrySourceNotUtf8`] when its bytes are not UTF-8,
 /// [`StructureError::NoWorkflowImport`] when it does not import `aion/workflow`,
-/// and [`StructureError::UnknownActivity`] when a `run` node names an activity
-/// the manifest does not declare.
+/// [`StructureError::EntryFunctionNotFound`] when the manifest entry function is
+/// not defined in the source, and [`StructureError::UnknownActivity`] when a
+/// `run` node names an activity the manifest does not declare.
 pub fn extract_structure(package: &Package) -> Result<WorkflowGraph, StructureError> {
     let entry_module = package.manifest().entry_module.clone();
+    let entry_function = package.manifest().entry_function.clone();
     let bytes =
         package
             .source()
@@ -83,41 +82,15 @@ pub fn extract_structure(package: &Package) -> Result<WorkflowGraph, StructureEr
         .map(|activity| activity.activity_type.as_str())
         .collect();
 
-    let mut builder = GraphBuilder::new(entry_module);
-    let mut cursor = 0;
-    while cursor < tokens.len() {
-        if let Token::Qualified { left, right } = &tokens[cursor] {
-            if *left == workflow_alias {
-                if let Some(primitive) = recognise(right) {
-                    let args = &tokens[cursor + 1..];
-                    let correlation = builder.correlation_for(primitive, args, &declared)?;
-                    builder.push(primitive, correlation);
-                }
-            }
-        }
-        cursor += 1;
-    }
+    let extractor =
+        ControlFlowExtractor::new(entry_module.clone(), &tokens, workflow_alias, &declared);
+    let extracted = extractor.extract(&entry_function)?;
 
-    Ok(builder.finish())
-}
-
-/// Recognises a `aion/workflow` member name as a node primitive, or `None` for
-/// a member that does not introduce a graph node (for example `now`, `random`,
-/// `id`, `define`, or the definition accessors).
-fn recognise(member: &str) -> Option<NodePrimitive> {
-    match member {
-        "run" => Some(NodePrimitive::Run),
-        "all" => Some(NodePrimitive::All),
-        "race" => Some(NodePrimitive::Race),
-        "map" => Some(NodePrimitive::Map),
-        "spawn" => Some(NodePrimitive::Spawn),
-        "spawn_and_wait" => Some(NodePrimitive::SpawnAndWait),
-        "receive" => Some(NodePrimitive::Receive),
-        "sleep" => Some(NodePrimitive::Sleep),
-        "start_timer" => Some(NodePrimitive::StartTimer),
-        "cancel_timer" => Some(NodePrimitive::CancelTimer),
-        _ => None,
-    }
+    Ok(WorkflowGraph {
+        entry_module,
+        nodes: extracted.nodes,
+        edges: extracted.edges,
+    })
 }
 
 /// Finds the alias the entry module imports `aion/workflow` under.
@@ -131,7 +104,6 @@ fn workflow_alias(tokens: &[Token]) -> Option<String> {
         if matches!(&tokens[index], Token::Ident(word) if word == "import")
             && import_path_is_workflow(tokens, index + 1)
         {
-            // After the path, an optional `as <alias>` renames the import.
             if let Some(alias) = alias_after_import(tokens, index + 1) {
                 return Some(alias);
             }
@@ -174,169 +146,6 @@ fn alias_after_import(tokens: &[Token], path_start: usize) -> Option<String> {
     if matches!(tokens.get(after_path), Some(Token::Ident(word)) if word == "as") {
         if let Some(Token::Ident(alias)) = tokens.get(after_path + 1) {
             return Some(alias.clone());
-        }
-    }
-    None
-}
-
-/// Accumulates nodes and sequential edges in call order, assigning the
-/// per-kind ordinals correlation keys carry.
-struct GraphBuilder {
-    entry_module: String,
-    nodes: Vec<GraphNode>,
-    edges: Vec<GraphEdge>,
-    activity_ordinal: usize,
-    child_ordinal: usize,
-    control_ordinal: usize,
-}
-
-impl GraphBuilder {
-    fn new(entry_module: String) -> Self {
-        Self {
-            entry_module,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            activity_ordinal: 0,
-            child_ordinal: 0,
-            control_ordinal: 0,
-        }
-    }
-
-    /// Builds the correlation key for a primitive from the tokens following its
-    /// call, advancing the relevant ordinal counter.
-    fn correlation_for(
-        &mut self,
-        primitive: NodePrimitive,
-        args: &[Token],
-        declared: &std::collections::BTreeSet<&str>,
-    ) -> Result<CorrelationKey, StructureError> {
-        match primitive {
-            NodePrimitive::Run => {
-                let activity =
-                    run_activity_name(args).ok_or_else(|| StructureError::UnknownActivity {
-                        activity: String::new(),
-                    })?;
-                if !declared.contains(activity.as_str()) {
-                    return Err(StructureError::UnknownActivity { activity });
-                }
-                let ordinal = self.activity_ordinal;
-                self.activity_ordinal += 1;
-                Ok(CorrelationKey::ActivitySequence { ordinal, activity })
-            }
-            NodePrimitive::Spawn | NodePrimitive::SpawnAndWait => {
-                let name = first_string_literal(args).unwrap_or_default();
-                let ordinal = self.child_ordinal;
-                self.child_ordinal += 1;
-                Ok(CorrelationKey::Child { ordinal, name })
-            }
-            NodePrimitive::Receive => Ok(CorrelationKey::Signal {
-                reference: first_argument_reference(args).unwrap_or_default(),
-            }),
-            NodePrimitive::StartTimer => Ok(CorrelationKey::Timer {
-                id: first_string_literal(args).unwrap_or_default(),
-            }),
-            NodePrimitive::CancelTimer => Ok(CorrelationKey::Timer {
-                id: first_argument_reference(args).unwrap_or_default(),
-            }),
-            NodePrimitive::All
-            | NodePrimitive::Race
-            | NodePrimitive::Map
-            | NodePrimitive::Sleep
-            | NodePrimitive::Branch => {
-                let ordinal = self.control_ordinal;
-                self.control_ordinal += 1;
-                Ok(CorrelationKey::ControlFlow { ordinal })
-            }
-        }
-    }
-
-    /// Appends a node and a sequential edge from the previous node.
-    fn push(&mut self, primitive: NodePrimitive, correlation: CorrelationKey) {
-        let id = NodeId(self.nodes.len());
-        if let Some(previous) = self.nodes.last() {
-            self.edges.push(GraphEdge {
-                from: previous.id,
-                to: id,
-                kind: EdgeKind::Sequence,
-            });
-        }
-        self.nodes.push(GraphNode {
-            id,
-            primitive,
-            correlation,
-        });
-    }
-
-    fn finish(self) -> WorkflowGraph {
-        WorkflowGraph {
-            entry_module: self.entry_module,
-            nodes: self.nodes,
-            edges: self.edges,
-        }
-    }
-}
-
-/// Reads the activity name from a `run(<wrappers>.<name>_activity(...))` call.
-///
-/// The first token after `run`'s open paren must be a qualified call whose
-/// member ends with `_activity`; the activity name is that member with the
-/// suffix stripped. Returns `None` for any other shape, so a `run` the
-/// extractor cannot resolve is a loud error rather than a blank node.
-fn run_activity_name(args: &[Token]) -> Option<String> {
-    let mut index = 0;
-    // Skip a single leading open paren of the `run(` call.
-    if matches!(args.first(), Some(Token::OpenParen)) {
-        index = 1;
-    }
-    if let Some(Token::Qualified { left: _, right }) = args.get(index) {
-        if let Some(name) = right.strip_suffix(ACTIVITY_WRAPPER_SUFFIX) {
-            if !name.is_empty() {
-                return Some(name.to_owned());
-            }
-        }
-    }
-    None
-}
-
-/// Reads the first string literal appearing as a call argument, scanning to the
-/// matching close paren of the call. Returns `None` if no literal precedes it.
-fn first_string_literal(args: &[Token]) -> Option<String> {
-    let mut depth = 0_i32;
-    for token in args {
-        match token {
-            Token::OpenParen => depth += 1,
-            Token::CloseParen => {
-                depth -= 1;
-                if depth <= 0 {
-                    return None;
-                }
-            }
-            Token::StringLiteral(literal) if depth >= 1 => return Some(literal.clone()),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Reads the first non-paren argument as a reference token (an identifier or
-/// qualified reference), for primitives whose first argument is a value rather
-/// than a literal (`receive`, `cancel_timer`).
-fn first_argument_reference(args: &[Token]) -> Option<String> {
-    let mut depth = 0_i32;
-    for token in args {
-        match token {
-            Token::OpenParen => depth += 1,
-            Token::CloseParen => {
-                depth -= 1;
-                if depth <= 0 {
-                    return None;
-                }
-            }
-            Token::Ident(word) if depth >= 1 => return Some(word.clone()),
-            Token::Qualified { left, right } if depth >= 1 => {
-                return Some(format!("{left}.{right}"));
-            }
-            _ => {}
         }
     }
     None

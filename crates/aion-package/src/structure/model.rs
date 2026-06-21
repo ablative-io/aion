@@ -10,18 +10,24 @@ use std::collections::BTreeSet;
 
 /// Stable identifier for a node within one extracted graph.
 ///
-/// The id is the node's deterministic position in the workflow's call order
-/// (source order of the recognised primitive calls), which is the order replay
-/// re-executes them in. It is opaque to consumers beyond identity and ordering.
+/// The id is the node's deterministic position in the order the extractor
+/// discovers nodes while walking the workflow's control flow depth-first from
+/// the entry function (success arms before error arms). It is a stable static
+/// position, not a claim about runtime execution order: under branching, which
+/// nodes a run actually executes is data-dependent. The id is opaque to
+/// consumers beyond identity and ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub usize);
 
 /// The workflow primitive a node represents.
 ///
 /// This is the fixed, known vocabulary of `aion/workflow` (the only surface the
-/// extractor understands), plus `Branch` for `case` control flow. Adding a
-/// primitive to the SDK requires adding it here; an unrecognised call is never
-/// silently dropped.
+/// extractor understands), plus `Branch` for a `case` over a primitive result
+/// and `Opaque` for control flow the extractor recognises as present but cannot
+/// faithfully model. Adding a primitive to the SDK requires adding it here; an
+/// unrecognised call is never silently dropped, and control flow the walker
+/// cannot resolve is surfaced as an `Opaque` node, never flattened into a false
+/// sequential edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NodePrimitive {
     /// `workflow.run` — a single recorded activity dispatch.
@@ -44,24 +50,38 @@ pub enum NodePrimitive {
     StartTimer,
     /// `workflow.cancel_timer` — cancel a previously armed timer.
     CancelTimer,
-    /// A `case` expression: workflow control-flow branching.
+    /// A `case` expression branching on a workflow-primitive result: its arms
+    /// fan out to the real success/error subgraphs via labelled branch edges.
     Branch,
+    /// Control flow the extractor detects but cannot faithfully model (a `case`
+    /// whose arms it cannot bound, a recursive helper call, an indirect
+    /// dispatch). It is surfaced as an explicit node carrying the offending
+    /// source snippet — the honest alternative to silently flattening an
+    /// unmodellable shape into a false sequence (the loud-on-unmodellable rule).
+    Opaque,
 }
 
 /// The per-node identity a consumer maps recorded events onto.
 ///
-/// The four event-bearing kinds mirror how AD/AT sequences recorded events:
-/// activities by their deterministic call order plus name, signals by name,
+/// The event-bearing kinds mirror how AD/AT sequences recorded events:
+/// activities by their static source position plus name, signals by name,
 /// timers by id, and children by spawn ordinal plus name. `ControlFlow` carries
 /// no recorded event of its own; it positions a structural node (a branch) in
-/// the call order.
+/// the discovery order. `Opaque` carries the source snippet of control flow the
+/// extractor could not model, so a consumer can surface it for review.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CorrelationKey {
-    /// An activity dispatch: its deterministic call ordinal and activity name.
+    /// An activity dispatch: its static source-order position and activity name.
     ActivitySequence {
-        /// Zero-based position of this activity among all activity dispatches,
-        /// in workflow call order — the order replay re-applies recorded
-        /// `ActivityCompleted` events.
+        /// Zero-based static source-order position of this activity among all
+        /// activity dispatches the extractor discovers, walking control flow
+        /// depth-first from the entry function (success arms before error
+        /// arms). It is a stable structural index, NOT a claim about the order
+        /// replay re-applies recorded events: under branching, which activities
+        /// a given run executes — and in what order — is data-dependent. A
+        /// consumer aligns a recorded `ActivityCompleted` onto a node by the
+        /// activity name and the branch the run actually took, not by assuming
+        /// this ordinal equals the recorded sequence position.
         ordinal: usize,
         /// The engine-facing activity name (the `run` node's activity).
         activity: String,
@@ -93,8 +113,18 @@ pub enum CorrelationKey {
     /// A control-flow node (a branch) that records no event of its own.
     ControlFlow {
         /// Zero-based position of this control-flow node among all control-flow
-        /// nodes, in call order.
+        /// nodes, in discovery order.
         ordinal: usize,
+    },
+    /// An unmodellable control-flow node: control flow the extractor detected
+    /// but could not faithfully classify, carrying the offending source snippet
+    /// so a consumer can render it for review. It records no event of its own.
+    Opaque {
+        /// Zero-based position of this opaque node among all opaque nodes, in
+        /// discovery order.
+        ordinal: usize,
+        /// The source snippet the extractor could not model.
+        snippet: String,
     },
 }
 
@@ -109,18 +139,47 @@ pub struct GraphNode {
     pub correlation: CorrelationKey,
 }
 
+/// Which arm of a `Branch` node a branch edge belongs to.
+///
+/// A `case` over a workflow primitive's `Result` has an `Ok(..)` arm (the
+/// success continuation) and an `Error(..)` arm (the compensation / failure
+/// continuation). A `case` over another subject the walker recurses through
+/// (a decode, a guard) labels each arm by its leading constructor, or
+/// [`ArmLabel::Wildcard`] for a `_` catch-all.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ArmLabel {
+    /// The `Ok(..)` arm — the success continuation.
+    Ok,
+    /// The `Error(..)` arm — the failure / compensation continuation.
+    Error,
+    /// A `_` catch-all arm.
+    Wildcard,
+    /// Any other arm, labelled by its leading pattern constructor.
+    Pattern(String),
+}
+
 /// The relationship a directed edge expresses between two nodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EdgeKind {
     /// Sequential control flow: `from` precedes `to` in the workflow's order.
     Sequence,
-    /// A branch arm: `from` is a `Branch` node, `to` is a node reached only on
-    /// a particular case arm.
-    Branch,
+    /// A branch arm: `from` is a `Branch` node, `to` is the first node reached
+    /// on the `arm` of that `case`. The label distinguishes the success arm
+    /// from the compensation arm so the extracted edge set matches the
+    /// workflow's actual control flow rather than a linear flatten.
+    Branch {
+        /// Which arm of the branch this edge follows.
+        arm: ArmLabel,
+    },
+    /// A concurrent fan-out member: `from` is an `All` / `Race` / `Map` node,
+    /// `to` is one member activity dispatched concurrently under it. The member
+    /// nodes carry their own `ActivitySequence` keys so a consumer can overlay
+    /// each member's recorded `ActivityCompleted` independently.
+    FanOut,
 }
 
 /// A directed edge between two nodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphEdge {
     /// Source node id.
     pub from: NodeId,
@@ -195,8 +254,8 @@ impl WorkflowGraph {
         if self_nodes != other_nodes {
             return false;
         }
-        let self_edges: BTreeSet<GraphEdge> = self.edges.iter().copied().collect();
-        let other_edges: BTreeSet<GraphEdge> = other.edges.iter().copied().collect();
+        let self_edges: BTreeSet<GraphEdge> = self.edges.iter().cloned().collect();
+        let other_edges: BTreeSet<GraphEdge> = other.edges.iter().cloned().collect();
         self_edges == other_edges
     }
 }

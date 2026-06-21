@@ -13,10 +13,13 @@
 //! delivers the data model and the regeneration only — the rendered canvas UI
 //! and the live overlay are deferred to RM-007.
 
+mod arms;
+mod control_flow;
 mod error;
 mod extract;
 mod ident;
 mod model;
+mod reader;
 mod regen;
 mod scan;
 
@@ -26,6 +29,6 @@ mod tests;
 pub use error::StructureError;
 pub use extract::extract_structure;
 pub use model::{
-    CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive, WorkflowGraph,
+    ArmLabel, CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive, WorkflowGraph,
 };
 pub use regen::{StructuralDelta, regenerate_gleam};
