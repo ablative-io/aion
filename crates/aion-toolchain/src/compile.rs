@@ -1,4 +1,5 @@
-//! Core authoring compile loop: write submitted source, run `gleam build`,
+//! Core authoring compile loop: stage an isolated working copy of the project
+//! template, write the submitted source into it, run `gleam build` there, and
 //! package on success.
 //!
 //! This module is the clean generalization of the `gleam build` shell-out
@@ -7,6 +8,15 @@
 //! instead of inheriting stdio so the diagnostics can travel back over the
 //! wire, and it accepts a configurable binary path so the server can be
 //! pointed at an operator-provided `gleam`.
+//!
+//! # Per-submission isolation
+//!
+//! The configured project root is treated as a **read-only template**. Each
+//! call stages its own throwaway working copy (a [`Workspace`]) and writes,
+//! builds, and packages entirely inside that copy, so concurrent submissions
+//! are fully isolated — no shared entry-file, no shared `build/` directory, no
+//! shared `.aion` output, no global lock, and no pool-size cap (ADR-001). The
+//! working copy is removed when the [`Workspace`] drops, on every path.
 //!
 //! The toolchain never rewrites the author's source: it writes the submitted
 //! bytes verbatim into the entry module's file and packages the build output.
@@ -20,19 +30,22 @@ use aion_package::{Package, PackageOptions, WorkflowVersion, package_project};
 
 use crate::error::ToolchainError;
 use crate::project;
+use crate::workspace::Workspace;
 
 /// A request to compile, type-check, and package submitted Gleam source.
 pub struct CompileRequest<'a> {
-    /// The built Gleam workflow project root the source is written into. It
-    /// must already contain `gleam.toml`, `workflow.toml`, the `aion_flow`
-    /// dependency, and `schemas/` — exactly as `aion new` produces one.
-    pub project_root: &'a Path,
+    /// The built Gleam workflow project **template** the submission is built
+    /// against. It must contain `gleam.toml`, `workflow.toml`, the `aion_flow`
+    /// dependency, and `schemas/` — exactly as `aion new` produces one. It is
+    /// read-only at request time: the toolchain copies it into a fresh
+    /// per-submission workspace and never writes to or builds in it.
+    pub template_root: &'a Path,
     /// Path to the external `gleam` binary the toolchain spawns. There is no
     /// default: the caller supplies it (the server resolves it from the
     /// operator-configured `[authoring].gleam_path`).
     pub gleam_path: &'a Path,
-    /// The submitted Gleam source written verbatim to the project's single
-    /// entry-module source file before building.
+    /// The submitted Gleam source written verbatim to the workspace copy's
+    /// single entry-module source file before building.
     pub source: &'a str,
 }
 
@@ -49,12 +62,16 @@ pub struct CompiledWorkflow {
     pub output_path: PathBuf,
 }
 
-/// Compiles, type-checks, and packages submitted Gleam source against a built
-/// project root.
+/// Compiles, type-checks, and packages submitted Gleam source against a
+/// read-only project template, in a fresh per-submission workspace.
 ///
-/// Writes `request.source` to the project's single entry-module source file,
-/// runs `gleam build` (capturing its output), and — only on a zero exit —
-/// packages the project into a verified `.aion`.
+/// Validates the template is a usable single-workflow Gleam project, stages an
+/// isolated working copy of it (a [`Workspace`] — a sibling temp dir that is
+/// removed on drop), writes `request.source` into the working copy's single
+/// entry-module source file, runs `gleam build` in the working copy (capturing
+/// its output), and — only on a zero exit — packages the working copy into a
+/// verified `.aion`. The template is never written to or built in, so
+/// concurrent submissions are fully isolated.
 ///
 /// This is synchronous and blocks on `gleam build` and packaging, both of
 /// which can run for seconds. Async callers MUST wrap it in a blocking task
@@ -62,38 +79,31 @@ pub struct CompiledWorkflow {
 ///
 /// # Errors
 ///
-/// Returns [`ToolchainError::InvalidProject`] when the root is not a usable
-/// single-workflow Gleam project or the entry module name is unsafe,
-/// [`ToolchainError::Io`] when the source cannot be written,
-/// [`ToolchainError::GleamSpawn`] when the `gleam` binary cannot be spawned,
-/// [`ToolchainError::TypeCheck`] (carrying the verbatim compiler diagnostics)
-/// when the build exits non-zero, and [`ToolchainError::Packaging`] when the
-/// built project cannot be assembled into a verified archive.
+/// Returns [`ToolchainError::InvalidProject`] when the template is not a usable
+/// single-workflow Gleam project, the entry module name is unsafe, or the
+/// template has no parent directory to host the workspace,
+/// [`ToolchainError::Io`] when the working copy cannot be staged or the source
+/// cannot be written, [`ToolchainError::GleamSpawn`] when the `gleam` binary
+/// cannot be spawned, [`ToolchainError::TypeCheck`] (carrying the verbatim
+/// compiler diagnostics) when the build exits non-zero, and
+/// [`ToolchainError::Packaging`] when the built project cannot be assembled
+/// into a verified archive.
 pub fn compile_source(request: &CompileRequest<'_>) -> Result<CompiledWorkflow, ToolchainError> {
-    project::validate_project_root(request.project_root)?;
-    let entry_module = project::single_entry_module(request.project_root)?;
-    let source_path = project::entry_module_source_path(request.project_root, &entry_module)?;
-    project::write_entry_source(&source_path, request.source)?;
-    compile_built_project(request.project_root, request.gleam_path)
-}
+    // Validate the template up front so a misconfigured project root fails
+    // before the cost of staging a working copy.
+    project::validate_project_root(request.template_root)?;
+    let entry_module = project::single_entry_module(request.template_root)?;
 
-/// Type-checks and packages an existing built project without overwriting any
-/// source — the `gleam build` plus package half of [`compile_source`].
-///
-/// This is the entry point for re-driving a project whose source is already on
-/// disk (for example a project provisioned by the operator). It is
-/// synchronous and blocks; async callers MUST wrap it in a blocking task.
-///
-/// # Errors
-///
-/// Returns the same variants as [`compile_source`] except the source-write
-/// `Io` failure, which cannot occur here.
-pub fn compile_project(
-    project_root: &Path,
-    gleam_path: &Path,
-) -> Result<CompiledWorkflow, ToolchainError> {
-    project::validate_project_root(project_root)?;
-    compile_built_project(project_root, gleam_path)
+    // Every submission gets its own isolated working copy; the template is
+    // never touched. The workspace (and the captured source within it) is
+    // removed when `workspace` drops at the end of this function — on the
+    // success path and on every `?` early return alike.
+    let workspace = Workspace::stage(request.template_root)?;
+    let workspace_root = workspace.root();
+
+    let source_path = project::entry_module_source_path(workspace_root, &entry_module)?;
+    project::write_entry_source(&source_path, request.source)?;
+    compile_built_project(workspace_root, request.gleam_path)
 }
 
 /// Runs `gleam build` against `project_root` then packages it.

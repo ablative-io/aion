@@ -31,6 +31,25 @@ pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
 }
 "#;
 
+/// A second, distinct valid workflow source: it compiles and type-checks but
+/// produces a different `run` body (and so different bytecode and a different
+/// content hash) than [`VALID_SOURCE`]. Used to prove concurrent submissions of
+/// DIFFERENT source receive THEIR OWN artifact, never cross-talk.
+const OTHER_VALID_SOURCE: &str = r#"import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+
+pub type WorkflowError {
+  BadInput(message: String)
+}
+
+pub fn run(raw_input: Dynamic) -> Result(String, WorkflowError) {
+  case decode.run(raw_input, decode.string) {
+    Ok(name) -> Ok("Goodbye, " <> name <> "!")
+    Error(_) -> Error(BadInput("the other workflow needs a string"))
+  }
+}
+"#;
+
 /// The submitted source for the failure path: `run` claims to return
 /// `Result(String, _)` but returns a bare `Int`, a type error the Gleam
 /// compiler rejects.
@@ -109,7 +128,7 @@ fn valid_source_compiles_to_loadable_package() -> TestResult {
     };
     let project = provision_project("valid")?;
     let request = CompileRequest {
-        project_root: project.path(),
+        template_root: project.path(),
         gleam_path: &gleam,
         source: VALID_SOURCE,
     };
@@ -129,9 +148,21 @@ fn valid_source_compiles_to_loadable_package() -> TestResult {
     };
 
     assert_eq!(compiled.workflow_type, "aion_authoring_fixture");
+    // The verified `.aion` was written and re-loaded into the in-memory
+    // `Package` inside the per-submission workspace, which is removed when
+    // `compile_source` returns — so `output_path` no longer exists on disk, and
+    // the template root is left clean (no `.aion` leaks into it).
     assert!(
-        compiled.output_path.is_file(),
-        "the .aion archive was written"
+        !compiled.output_path.exists(),
+        "the per-submission workspace (and its .aion) is cleaned up after compile"
+    );
+    assert!(
+        !project.path().join("fixture.aion").exists(),
+        "the read-only template is never written to: no .aion is produced in it"
+    );
+    assert!(
+        !project.path().join("build").exists(),
+        "the read-only template is never built in: no build/ dir is produced in it"
     );
     assert!(
         !compiled.version.content_hash.to_string().is_empty(),
@@ -162,7 +193,7 @@ fn type_error_source_yields_inline_diagnostics_and_no_package() -> TestResult {
     };
     let project = provision_project("type-error")?;
     let request = CompileRequest {
-        project_root: project.path(),
+        template_root: project.path(),
         gleam_path: &gleam,
         source: TYPE_ERROR_SOURCE,
     };
@@ -198,7 +229,7 @@ fn missing_gleam_binary_is_typed_spawn_error() -> TestResult {
     let project = provision_project("spawn")?;
     let missing = project.path().join("definitely-not-a-real-gleam-binary");
     let request = CompileRequest {
-        project_root: project.path(),
+        template_root: project.path(),
         gleam_path: &missing,
         source: VALID_SOURCE,
     };
@@ -216,6 +247,105 @@ fn missing_gleam_binary_is_typed_spawn_error() -> TestResult {
     assert!(
         !project.path().join("fixture.aion").exists(),
         "no .aion archive is written when the compiler cannot be spawned"
+    );
+    Ok(())
+}
+
+/// Per-submission isolation (the BEST-solution property at the toolchain
+/// layer): two OVERLAPPING submissions of DIFFERENT source, sharing the SAME
+/// read-only template, each receive THEIR OWN artifact — distinct content
+/// hashes, no cross-talk, no shared `build/` corruption — because each
+/// submission compiles in its own throwaway workspace. The template is left
+/// untouched.
+#[test]
+fn concurrent_submissions_of_different_source_get_their_own_artifact() -> TestResult {
+    let Some(gleam) = gleam_binary() else {
+        eprintln!(
+            "SKIP concurrent_submissions_of_different_source_get_their_own_artifact: `gleam` binary not runnable in this environment"
+        );
+        return Ok(());
+    };
+    // One shared, read-only template both submissions build against. If
+    // isolation were broken, two concurrent builds would race on this single
+    // root's entry-file, build/ dir, and .aion output.
+    let project = provision_project("concurrent")?;
+    let template_root = project.path().to_path_buf();
+    let gleam_path = gleam.clone();
+
+    let template_for_a = template_root.clone();
+    let gleam_for_a = gleam_path.clone();
+    let first = std::thread::spawn(move || {
+        compile_source(&CompileRequest {
+            template_root: &template_for_a,
+            gleam_path: &gleam_for_a,
+            source: VALID_SOURCE,
+        })
+    });
+    let template_for_b = template_root.clone();
+    let gleam_for_b = gleam_path.clone();
+    let second = std::thread::spawn(move || {
+        compile_source(&CompileRequest {
+            template_root: &template_for_b,
+            gleam_path: &gleam_for_b,
+            source: OTHER_VALID_SOURCE,
+        })
+    });
+
+    let first = first.join().map_err(|_| "first compile thread panicked")?;
+    let second = second
+        .join()
+        .map_err(|_| "second compile thread panicked")?;
+
+    // A dependency-resolution failure in a sandboxed CI environment is an
+    // environmental skip on either thread, not a product failure.
+    let (first, second) = match (first, second) {
+        (Ok(first), Ok(second)) => (first, second),
+        (first, second) => {
+            for (label, result) in [("first", first), ("second", second)] {
+                if let Err(ToolchainError::TypeCheck { diagnostics }) = result {
+                    eprintln!(
+                        "SKIP concurrent_submissions_of_different_source_get_their_own_artifact: gleam build could not complete in this environment ({label}):\n{diagnostics}"
+                    );
+                    return Ok(());
+                }
+            }
+            return Err("a concurrent submission failed for a non-environmental reason".into());
+        }
+    };
+
+    // Each submission got its own DISTINCT artifact — different source, so a
+    // different content hash. A shared build/ or .aion would have collapsed
+    // these to one hash (or returned one author the other's bytes).
+    assert_ne!(
+        first.package.content_hash().to_string(),
+        second.package.content_hash().to_string(),
+        "concurrent submissions of different source must receive distinct content hashes (no cross-talk / wrong-artifact return)"
+    );
+    // Each carries its OWN source's bytecode, verified through its own version
+    // record (the package re-loaded from its own isolated workspace).
+    assert_eq!(
+        first.package.content_hash().to_string(),
+        first.version.content_hash.to_string(),
+        "the first artifact's package and version record agree"
+    );
+    assert_eq!(
+        second.package.content_hash().to_string(),
+        second.version.content_hash.to_string(),
+        "the second artifact's package and version record agree"
+    );
+    // Both are the same workflow type (same template entry module) but distinct
+    // versions — exactly the live-authoring loop's shape.
+    assert_eq!(first.workflow_type, "aion_authoring_fixture");
+    assert_eq!(second.workflow_type, "aion_authoring_fixture");
+
+    // The shared template is left pristine: no build artifacts leaked into it.
+    assert!(
+        !template_root.join("fixture.aion").exists(),
+        "the read-only template carries no .aion after concurrent submissions"
+    );
+    assert!(
+        !template_root.join("build").exists(),
+        "the read-only template carries no build/ dir after concurrent submissions"
     );
     Ok(())
 }

@@ -56,6 +56,21 @@ pub fn run(raw_input: Dynamic) -> Result(String, Nil) {
 }
 "#;
 
+/// A second, distinct valid workflow: same entry module (so the same
+/// `workflow_type`) but a different `run` body, hence different bytecode and a
+/// different content hash than [`VALID_SOURCE`]. Used to prove two overlapping
+/// submissions of DIFFERENT source each receive THEIR OWN content hash.
+const OTHER_VALID_SOURCE: &str = r#"import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+
+pub fn run(raw_input: Dynamic) -> Result(String, Nil) {
+  case decode.run(raw_input, decode.string) {
+    Ok(name) -> Ok("Goodbye, " <> name <> "!")
+    Error(_) -> Ok("Goodbye, world!")
+  }
+}
+"#;
+
 fn gleam_binary() -> Option<PathBuf> {
     let candidate = PathBuf::from("gleam");
     match Command::new(&candidate).arg("--version").output() {
@@ -314,6 +329,122 @@ async fn authoring_compiles_loads_and_runs_a_corrected_workflow() -> Result<(), 
     assert!(
         rendered.contains("authoring"),
         "the hot-loaded workflow must run and return its computed result over the decoded input, got: {rendered}"
+    );
+    Ok(())
+}
+
+/// Per-submission isolation over the wire (the BEST-solution property): two
+/// OVERLAPPING `POST /authoring/compile` submissions of DIFFERENT source,
+/// against the one operator-configured (read-only) template, each get back
+/// THEIR OWN `content_hash` — proving no cross-talk and no wrong-artifact
+/// return when concurrent authors race on the shared template. Both load into
+/// the engine as distinct versions of the same workflow type, and the template
+/// is left pristine.
+#[tokio::test]
+async fn concurrent_submissions_return_their_own_content_hash() -> Result<(), TestError> {
+    let Some(gleam) = gleam_binary() else {
+        eprintln!(
+            "SKIP concurrent_submissions_return_their_own_content_hash: `gleam` binary not runnable"
+        );
+        return Ok(());
+    };
+    let project = provision_project()?;
+    let template_root = project.path().to_path_buf();
+    let authoring = AuthoringConfig {
+        gleam_path: Some(gleam),
+        project_root: Some(template_root.clone()),
+    };
+    let (engine, router) = server_with(authoring).await?;
+
+    // Fire BOTH submissions concurrently against the shared template. If the
+    // template were the mutable build root, these two would race on its
+    // entry-file, build/ dir, and .aion output and could return the wrong
+    // artifact; per-submission isolation makes them independent.
+    let first_router = router.clone();
+    let second_router = router.clone();
+    let first_body = compile_request(VALID_SOURCE)?;
+    let second_body = compile_request(OTHER_VALID_SOURCE)?;
+    let (first, second) = tokio::join!(
+        first_router.oneshot(first_body),
+        second_router.oneshot(second_body),
+    );
+    let first = first?;
+    let second = second?;
+
+    // An environment that cannot resolve gleam dependencies skips, exactly like
+    // the single-submission e2e above.
+    for (label, status) in [("first", first.status()), ("second", second.status())] {
+        if status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::INTERNAL_SERVER_ERROR
+        {
+            eprintln!(
+                "SKIP concurrent_submissions_return_their_own_content_hash: gleam build unavailable in this environment ({label}: {status})"
+            );
+            return Ok(());
+        }
+    }
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "the first concurrent submission must compile and hot-load"
+    );
+    assert_eq!(
+        second.status(),
+        StatusCode::OK,
+        "the second concurrent submission must compile and hot-load"
+    );
+
+    let first: serde_json::Value = read_json(first).await?;
+    let second: serde_json::Value = read_json(second).await?;
+
+    // Both are the same workflow type (same template entry module)...
+    assert_eq!(first["workflow_type"], json!(ENTRY_MODULE));
+    assert_eq!(second["workflow_type"], json!(ENTRY_MODULE));
+
+    let first_hash = first["content_hash"]
+        .as_str()
+        .ok_or("first response missing content hash")?;
+    let second_hash = second["content_hash"]
+        .as_str()
+        .ok_or("second response missing content hash")?;
+    assert!(!first_hash.is_empty(), "first content hash must be present");
+    assert!(
+        !second_hash.is_empty(),
+        "second content hash must be present"
+    );
+
+    // ...but DIFFERENT content hashes: each author got back exactly their own
+    // artifact, never the other's (no cross-talk, no wrong-artifact return).
+    assert_ne!(
+        first_hash, second_hash,
+        "two concurrent submissions of different source must each return their OWN content hash"
+    );
+
+    // Both versions are loaded in the engine — distinct content hashes of one
+    // workflow type, the live-authoring loop's shape.
+    let versions = engine.list_workflow_versions()?;
+    let loaded_hashes: Vec<String> = versions
+        .iter()
+        .filter(|info| info.workflow_type == ENTRY_MODULE)
+        .map(|info| info.content_hash.to_string())
+        .collect();
+    assert!(
+        loaded_hashes.iter().any(|hash| hash == first_hash),
+        "the first submission's version is loaded: {loaded_hashes:?}"
+    );
+    assert!(
+        loaded_hashes.iter().any(|hash| hash == second_hash),
+        "the second submission's version is loaded: {loaded_hashes:?}"
+    );
+
+    // The operator-provisioned template is read-only at request time: no build
+    // artifacts leaked into it despite two concurrent submissions.
+    assert!(
+        !template_root.join("fixture.aion").exists(),
+        "the read-only template carries no .aion after concurrent submissions"
+    );
+    assert!(
+        !template_root.join("build").exists(),
+        "the read-only template carries no build/ dir after concurrent submissions"
     );
     Ok(())
 }

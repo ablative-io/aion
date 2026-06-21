@@ -15,11 +15,19 @@
 //! way to compile Gleam on the server, which is exactly why the server-side
 //! authoring endpoints are gated on an explicit `gleam_path`.
 //!
+//! # Per-submission isolation
+//!
+//! [`compile_source`] treats the configured project root as a **read-only
+//! template**: each call stages its own throwaway working copy (a
+//! [`workspace::Workspace`]), writes and builds entirely within it, and removes
+//! it on drop. Concurrent submissions never share an entry-file, a `build/`
+//! directory, or a `.aion` output — no global lock and no pool-size cap.
+//!
 //! # Blocking
 //!
-//! [`compile_source`] and [`compile_project`] are synchronous and block on
-//! `gleam build` and packaging, both of which can run for seconds. Async
-//! callers MUST wrap them in a blocking task (for example
+//! [`compile_source`] is synchronous and blocks on staging the working copy,
+//! `gleam build`, and packaging, all of which can run for seconds. Async
+//! callers MUST wrap it in a blocking task (for example
 //! `tokio::task::spawn_blocking`).
 
 /// Core compile/type-check/package loop over the external `gleam` binary.
@@ -28,6 +36,9 @@ pub mod compile;
 pub mod error;
 /// Project-root validation and entry-module source resolution.
 pub mod project;
+/// Per-submission isolated build workspace (RAII working copy of the template).
+pub mod workspace;
 
-pub use compile::{CompileRequest, CompiledWorkflow, compile_project, compile_source};
+pub use compile::{CompileRequest, CompiledWorkflow, compile_source};
 pub use error::ToolchainError;
+pub use workspace::Workspace;

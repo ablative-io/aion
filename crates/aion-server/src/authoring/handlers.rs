@@ -24,11 +24,17 @@ use crate::config::{AUTHORING_GLEAM_PATH_EMPTY, AUTHORING_PROJECT_ROOT_REQUIRED}
 use crate::{CallerIdentity, ServerState};
 
 /// Request to compile, type-check, and hot-load submitted Gleam source.
+///
+/// Strict parsing (`deny_unknown_fields`, consistent with the server config
+/// surfaces): an unrecognised field is a 400, never silently ignored, so a
+/// typo in the submission body fails loudly instead of being dropped.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompileSourceRequest {
-    /// The Gleam workflow source written verbatim into the server's
-    /// configured authoring project's single entry-module file before
-    /// building. The toolchain never rewrites it.
+    /// The Gleam workflow source written verbatim into a fresh per-submission
+    /// working copy of the server's configured authoring project template,
+    /// into its single entry-module file before building. The toolchain never
+    /// rewrites it.
     pub source: String,
 }
 
@@ -65,9 +71,9 @@ pub async fn compile_and_load(
     request: CompileSourceRequest,
 ) -> Result<CompileSourceResponse, AuthoringApiError> {
     authorize_mutation(state, caller, transport)?;
-    let (gleam_path, project_root) = authoring_paths(state)?;
+    let (gleam_path, template_root) = authoring_paths(state)?;
 
-    let compiled = run_compile(gleam_path, project_root, request.source).await?;
+    let compiled = run_compile(gleam_path, template_root, request.source).await?;
     let engine = engine_handle(state)?;
     match engine.load_package(compiled.package).await {
         Ok(outcome) => {
@@ -147,14 +153,17 @@ fn authoring_paths(state: &ServerState) -> Result<(PathBuf, PathBuf), AuthoringA
 /// Runs the synchronous, multi-second compile-and-package off the async
 /// runtime in a blocking task, then maps the toolchain outcome onto the
 /// authoring wire classes.
+///
+/// The toolchain stages its own per-submission working copy of the read-only
+/// `template_root`, so concurrent blocking tasks never collide on the template.
 async fn run_compile(
     gleam_path: PathBuf,
-    project_root: PathBuf,
+    template_root: PathBuf,
     source: String,
 ) -> Result<aion_toolchain::CompiledWorkflow, AuthoringApiError> {
     let join = tokio::task::spawn_blocking(move || {
         compile_source(&CompileRequest {
-            project_root: &project_root,
+            template_root: &template_root,
             gleam_path: &gleam_path,
             source: &source,
         })
