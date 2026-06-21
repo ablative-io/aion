@@ -21,6 +21,7 @@ use crate::payload::{
 
 mod codegen;
 mod deploy;
+mod dev;
 mod generate;
 mod inspect;
 mod new;
@@ -72,6 +73,17 @@ enum Command {
     /// overrides, serves until a termination signal arrives, then drains
     /// in-flight activities gracefully before exiting.
     Server(server::ServerArgs),
+    /// The instant authoring loop: watch a workflow project and hot-load on save.
+    ///
+    /// Watches the project's `src/` tree and, on every save, rebuilds and
+    /// type-checks it through the external `gleam` binary, repackages it into a
+    /// content-hash-versioned `.aion`, and hot-loads that version into the
+    /// running server named by `--endpoint` — with no engine restart. A run
+    /// already in-flight keeps executing on the immutable version it started
+    /// with; only fresh runs pick up the reload. The `gleam` binary path is
+    /// required (`--gleam-path`); there is no default. An optional
+    /// `--debounce-ms` coalesces an editor's multi-event save into one rebuild.
+    Dev(dev::DevArgs),
     /// Operate a running Aion server or package workflows locally.
     #[command(flatten)]
     Client(ClientCommand),
@@ -287,6 +299,21 @@ async fn main() -> ExitCode {
         // The server owns its own reporting contract: tracing-logged errors
         // and the operations exit codes (2 = config, 130 = forced).
         Command::Server(ref args) => aion_server::run(args.clone().into()).await,
+        Command::Dev(ref args) => {
+            // The dev loop runs locally and drives the running server over the
+            // same operator deploy RPC `aion deploy` uses; it reports through
+            // the one client rendering contract.
+            let result = dev::run(args, deploy_target(&cli))
+                .await
+                .and_then(|value| print_json(&value, cli.pretty));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{}", render::render_error(&error));
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Client(ref command) => {
             let result = run(&cli, command)
                 .await
@@ -774,6 +801,7 @@ mod tests {
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert!(run_id.is_none()),
                 Command::Server(_)
+                | Command::Dev(_)
                 | Command::Client(
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }
@@ -822,6 +850,7 @@ mod tests {
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
                 Command::Server(_)
+                | Command::Dev(_)
                 | Command::Client(
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }
@@ -1014,6 +1043,64 @@ mod tests {
         let help = error.to_string();
         assert!(help.contains("server"));
         assert!(help.contains("Run the Aion workflow server"));
+        Ok(())
+    }
+
+    #[test]
+    fn dev_parses_path_gleam_path_and_optional_debounce() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion",
+            "dev",
+            "examples/hello-world",
+            "--gleam-path",
+            "/usr/local/bin/gleam",
+            "--debounce-ms",
+            "200",
+        ])?;
+        let Command::Dev(args) = cli.command else {
+            anyhow::bail!("expected dev command");
+        };
+        assert_eq!(args.path, Path::new("examples/hello-world"));
+        assert_eq!(args.gleam_path, Path::new("/usr/local/bin/gleam"));
+        assert_eq!(
+            args.debounce_ms,
+            Some(std::time::Duration::from_millis(200))
+        );
+
+        // path defaults to the current directory; debounce is optional and
+        // omitted by default (no invented interval).
+        let cli = Cli::try_parse_from(["aion", "dev", "--gleam-path", "gleam"])?;
+        let Command::Dev(args) = cli.command else {
+            anyhow::bail!("expected dev command");
+        };
+        assert_eq!(args.path, Path::new("."));
+        assert!(args.debounce_ms.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn dev_requires_gleam_path_and_rejects_zero_debounce() {
+        // --gleam-path is required: there is no default gleam binary (ADR-001).
+        assert!(Cli::try_parse_from(["aion", "dev"]).is_err());
+        // A zero debounce window is a no-op the author did not mean to request.
+        assert!(
+            Cli::try_parse_from(["aion", "dev", "--gleam-path", "gleam", "--debounce-ms", "0"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn dev_help_documents_the_instant_loop_and_pinning() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(dev) = command.find_subcommand_mut("dev") else {
+            anyhow::bail!("dev subcommand should be registered");
+        };
+        let help = dev.render_long_help().to_string();
+
+        assert!(help.contains("--gleam-path"));
+        assert!(help.contains("--debounce-ms"));
+        assert!(help.contains("no engine restart"));
+        assert!(help.contains("in-flight"));
         Ok(())
     }
 

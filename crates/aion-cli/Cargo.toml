@@ -29,6 +29,14 @@ aion-client = { version = "0.6.1", path = "../aion-client" }
 aion-core = { version = "0.6.1", path = "../aion-core" }
 aion-package = { version = "0.6.1", path = "../aion-package" }
 aion-server = { version = "0.6.1", path = "../aion-server" }
+# The instant authoring loop (`aion dev`) reuses the toolchain's external
+# `gleam build` shell-out (build_project) instead of reinventing it. The
+# toolchain embeds no compiler — it only spawns the operator-named gleam
+# binary — so naming it here adds no compiler to the CLI.
+aion-toolchain = { version = "0.6.1", path = "../aion-toolchain" }
+# Event-driven filesystem watcher for `aion dev`. No poll interval: notify
+# delivers OS change events; the watch loop never spins on a timer (ADR-001).
+notify = { workspace = true }
 # Deploy is an operator API: its gRPC stub comes from aion-proto's generated
 # module, never from aion-client (the caller SDK is contract-bound and must
 # not grow operator operations).

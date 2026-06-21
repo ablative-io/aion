@@ -7,6 +7,7 @@
 //! - `events` — websocket event-subscription handlers.
 //! - `deploy` — operator deploy handlers (mounted only when `[deploy].enabled`).
 //! - `authoring` — server-side Gleam authoring (mounted only when `[authoring].gleam_path` is set).
+//! - `dev_ui` — local dev-server surface (mounted only when `[dev].enabled`).
 //! - `auth` — caller-identity extraction from request headers.
 //! - `visibility` — visibility query-string parsing and namespace scoping.
 //! - `payload` — HTTP body/payload encode-decode shapes and conversions.
@@ -15,6 +16,7 @@
 mod auth;
 mod authoring;
 mod deploy;
+mod dev_ui;
 mod error;
 mod events;
 mod payload;

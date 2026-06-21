@@ -81,6 +81,8 @@ pub struct ServerConfig {
     pub deploy: DeployConfig,
     /// Server-side Gleam authoring API settings.
     pub authoring: AuthoringConfig,
+    /// Local dev-server surface settings.
+    pub dev: DevConfig,
 }
 
 /// Public transport listener addresses from `[server]`.
@@ -280,6 +282,22 @@ pub(crate) const DEPLOY_MAX_INFLATED_BYTES_REQUIRED: &str = "deploy.max_inflated
 /// Operator-facing message for an absent or zero `query_timeout_ms`.
 pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms is required and has no default: the server always mounts /workflows/query, so the workflow query reply deadline must be configured explicitly; set runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to a positive number of milliseconds";
 
+/// Local dev-server surface settings from `[dev]`.
+///
+/// The dev surface is dark by default, gated on `enabled`: with it false (the
+/// section absent or `enabled = false`) the `/dev/*` routes are not mounted,
+/// the engine installs the bare production activity dispatcher (no mocking
+/// decorator), and nothing dev-specific is ever reachable. Setting `enabled =
+/// true` mounts the dev endpoints and installs the per-run activity-mock
+/// decorator — a development affordance, never on in production. It adds no
+/// arbitrary defaults (ADR-001): the only knob is the on/off gate.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DevConfig {
+    /// Whether the local dev-server surface is mounted. Defaults to false.
+    pub enabled: bool,
+}
+
 /// Server-side Gleam authoring API settings from `[authoring]`.
 ///
 /// The authoring surface is dark by default, gated on `gleam_path`: with no
@@ -334,6 +352,8 @@ pub struct RuntimeConfig {
     pub deploy: DeployConfig,
     /// Server-side Gleam authoring API settings.
     pub authoring: AuthoringConfig,
+    /// Local dev-server surface settings.
+    pub dev: DevConfig,
     /// Engine scheduler thread count.
     pub scheduler_threads: usize,
     /// Engine reply deadline for workflow queries. REQUIRED — carried as an
@@ -418,6 +438,7 @@ impl ServerConfig {
             workflow_packages: self.workflow_packages,
             deploy: self.deploy,
             authoring: self.authoring,
+            dev: self.dev,
             scheduler_threads: self.runtime.scheduler_threads,
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
@@ -1056,6 +1077,44 @@ mod tests {
         assert!(config.deploy.enabled);
         assert_eq!(config.deploy.max_archive_bytes, Some(16_777_216));
         assert_eq!(config.deploy.max_inflated_bytes, Some(67_108_864));
+        Ok(())
+    }
+
+    /// An absent `[dev]` section leaves the dev surface dark.
+    #[test]
+    fn dev_absent_leaves_surface_dark() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        )?;
+
+        assert!(!config.dev.enabled);
+        Ok(())
+    }
+
+    /// `[dev] enabled = true` commissions the dev surface; it adds no other
+    /// knobs (ADR-001: the only setting is the on/off gate).
+    #[test]
+    fn dev_section_parses_enabled() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [dev]
+                enabled = true
+            ",
+        )?;
+
+        assert!(config.dev.enabled);
         Ok(())
     }
 

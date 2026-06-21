@@ -103,6 +103,7 @@ fn runtime_config() -> RuntimeConfig {
             max_inflated_bytes: Some(2_097_152),
         },
         authoring: AuthoringConfig::default(),
+        dev: aion_server::config::DevConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: "default".to_owned(),

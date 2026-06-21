@@ -149,6 +149,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         workflow_packages: Vec::new(),
         deploy: DeployConfig::default(),
         authoring: AuthoringConfig::default(),
+        dev: crate::config::DevConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(std::time::Duration::from_millis(10_000)),
         default_namespace: "default".to_owned(),

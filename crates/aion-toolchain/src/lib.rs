@@ -39,6 +39,6 @@ pub mod project;
 /// Per-submission isolated build workspace (RAII working copy of the template).
 pub mod workspace;
 
-pub use compile::{CompileRequest, CompiledWorkflow, compile_source};
+pub use compile::{CompileRequest, CompiledWorkflow, build_project, compile_source};
 pub use error::ToolchainError;
 pub use workspace::Workspace;

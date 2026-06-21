@@ -9,6 +9,7 @@ use axum::{
 
 use super::authoring::compile_source;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
+use super::dev_ui::{dev_register_mock, dev_replay_run, dev_trigger_run};
 use super::events::subscribe_events_socket;
 use super::schedules::{
     create_schedule, delete_schedule, describe_schedule, list_schedules, pause_schedule,
@@ -63,6 +64,13 @@ async fn authoring_disabled() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
+/// Disabled dev surface: a plain 404 with no body, indistinguishable from an
+/// unmounted route family. When `[dev].enabled` is false the server mounts no
+/// dev endpoints and installs no activity-mock decorator (CN4).
+async fn dev_disabled() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 /// Build the public workflow-management HTTP router.
 pub fn workflow_router(state: ServerState) -> Router {
     // The deploy surface is dark by default: when `[deploy].enabled` is
@@ -95,8 +103,21 @@ pub fn workflow_router(state: ServerState) -> Router {
     } else {
         Router::new().route("/authoring/{*rest}", any(authoring_disabled))
     };
+    // The dev surface is dark by default, gated on `[dev].enabled`: when off the
+    // routes are not mounted and every `/dev/*` path is a plain 404 (the
+    // explicit catch-all keeps the dashboard SPA fallback from answering for
+    // the dev namespace), and the engine runs the bare production dispatcher.
+    let dev = if state.runtime_config().dev.enabled {
+        Router::new()
+            .route("/dev/runs", post(dev_trigger_run))
+            .route("/dev/mocks", post(dev_register_mock))
+            .route("/dev/replay", post(dev_replay_run))
+    } else {
+        Router::new().route("/dev/{*rest}", any(dev_disabled))
+    };
     deploy
         .merge(authoring)
+        .merge(dev)
         .route("/workflows", get(get_workflows))
         .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))

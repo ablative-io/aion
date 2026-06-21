@@ -2,9 +2,13 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use aion::{EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter};
+use aion::{
+    ActivityDispatcher, EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter,
+};
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
+
+use crate::dev_ui::{ActivityMockRegistry, DevMockingDispatcher};
 
 #[cfg(feature = "auth")]
 use crate::auth::JwksCache;
@@ -37,6 +41,9 @@ struct ServerStateInner {
     drain_state: DrainState,
     metrics: Option<Metrics>,
     health: Option<HealthState>,
+    /// Shared per-run activity-mock registry. Present only when the dev surface
+    /// is commissioned; the engine's dispatcher consults this exact instance.
+    activity_mock_registry: Option<ActivityMockRegistry>,
     #[cfg(feature = "auth")]
     jwks_cache: Option<JwksCache>,
 }
@@ -110,7 +117,18 @@ impl ServerState {
         .with_pending(pending_activities.clone())
         .with_drain_state(drain_state.clone())
         .with_tokio_handle(tokio::runtime::Handle::current());
-        let dispatcher = Arc::new(dispatcher);
+        // Dark by default: only when the dev surface is commissioned does the
+        // engine receive the per-run activity-mock decorator. With it off the
+        // engine gets the bare production dispatcher, so a production server has
+        // no mocking path at all (CN4).
+        let (activity_dispatcher, activity_mock_registry): (Arc<dyn ActivityDispatcher>, _) =
+            if runtime.dev.enabled {
+                let registry = ActivityMockRegistry::new();
+                let decorated = DevMockingDispatcher::new(Arc::new(dispatcher), registry.clone());
+                (Arc::new(decorated), Some(registry))
+            } else {
+                (Arc::new(dispatcher), None)
+            };
 
         let mut search_attribute_schema = aion_core::SearchAttributeSchema::new();
         search_attribute_schema
@@ -127,7 +145,7 @@ impl ServerState {
             .in_memory_visibility()
             .search_attribute_schema(search_attribute_schema)
             .scheduler_threads(runtime.scheduler_threads)
-            .activity_dispatcher(dispatcher)
+            .activity_dispatcher(activity_dispatcher)
             .active_registry(active_registry)
             .production_recovery_seam()
             .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
@@ -151,6 +169,7 @@ impl ServerState {
                 drain_state,
                 metrics: exported_metrics,
                 health: Some(HealthState::new(instrumented_store, true)),
+                activity_mock_registry,
                 #[cfg(feature = "auth")]
                 jwks_cache,
             }),
@@ -171,6 +190,7 @@ impl ServerState {
                 drain_state: DrainState::default(),
                 metrics: None,
                 health: None,
+                activity_mock_registry: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -200,6 +220,7 @@ impl ServerState {
                 drain_state: DrainState::default(),
                 metrics: None,
                 health: None,
+                activity_mock_registry: None,
                 jwks_cache: Some(jwks_cache),
             }),
         }
@@ -223,6 +244,7 @@ impl ServerState {
                 drain_state: DrainState::default(),
                 metrics: None,
                 health: None,
+                activity_mock_registry: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -281,6 +303,15 @@ impl ServerState {
     #[must_use]
     pub fn health(&self) -> Option<&HealthState> {
         self.inner.health.as_ref()
+    }
+
+    /// Borrow the shared per-run activity-mock registry when the dev surface is
+    /// commissioned. Returns [`None`] on a server with the dev surface dark, so
+    /// the dev handlers refuse cleanly rather than mocking on a production
+    /// server.
+    #[must_use]
+    pub fn activity_mock_registry(&self) -> Option<&ActivityMockRegistry> {
+        self.inner.activity_mock_registry.as_ref()
     }
 
     /// Borrow the shared JWKS cache when authentication is enabled.
@@ -363,7 +394,7 @@ mod tests {
     use super::ServerState;
     use crate::config::{
         AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-        ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
+        DevConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
         WebSocketConfig, WorkerConfig,
     };
 
@@ -395,6 +426,7 @@ mod tests {
             workflow_packages: Vec::new(),
             deploy: DeployConfig::default(),
             authoring: AuthoringConfig::default(),
+            dev: DevConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

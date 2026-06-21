@@ -26,6 +26,10 @@ pub mod config;
 pub mod dashboard;
 /// Operator deploy surface authorization.
 pub mod deploy;
+/// Local dev-server surface: trigger a run, stream it over the existing
+/// firehose, mock a named activity per-run, and replay a failed run — all over
+/// the real engine, store, and event stream.
+pub mod dev_ui;
 /// Server error and stream-failure types.
 pub mod error;
 /// Engine-internal workflow filtering for enumeration surfaces.
@@ -47,6 +51,7 @@ pub mod worker;
 
 pub use config::ServerConfig;
 pub use deploy::DeployGuard;
+pub use dev_ui::{ActivityMockRegistry, DevMockingDispatcher, MockedActivity};
 pub use error::{ServerError, StreamFailure};
 pub use namespace::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceOperation, NamespaceResolver,

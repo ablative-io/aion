@@ -111,17 +111,32 @@ fn compile_built_project(
     project_root: &Path,
     gleam_path: &Path,
 ) -> Result<CompiledWorkflow, ToolchainError> {
-    run_gleam_build(project_root, gleam_path)?;
+    build_project(project_root, gleam_path)?;
     package_built_project(project_root)
 }
 
-/// Spawns `gleam build` in the project directory, capturing stdout and stderr
-/// so the diagnostics can travel back to the caller.
+/// Compiles and type-checks an on-disk Gleam workflow project in place by
+/// spawning the external `gleam` binary against `project_root`, capturing its
+/// diagnostics instead of inheriting stdio.
+///
+/// This is the single shell-out the toolchain owns: [`compile_source`] calls
+/// it against a per-submission workspace copy, and the local `aion dev` watch
+/// loop calls it directly against the author's project on disk. Neither path
+/// reinvents the `gleam build` invocation or its diagnostic capture.
 ///
 /// A non-zero exit is a [`ToolchainError::TypeCheck`] carrying the verbatim
 /// compiler output (stderr, with any stdout appended): Gleam writes errors to
 /// stderr, but context may split across both streams, so both are captured.
-fn run_gleam_build(project_root: &Path, gleam_path: &Path) -> Result<(), ToolchainError> {
+///
+/// This is synchronous and blocks on `gleam build`, which can run for seconds;
+/// async callers MUST wrap it in a blocking task.
+///
+/// # Errors
+///
+/// Returns [`ToolchainError::GleamSpawn`] when the `gleam` binary at
+/// `gleam_path` cannot be spawned, and [`ToolchainError::TypeCheck`] (carrying
+/// the verbatim compiler diagnostics) when the build exits non-zero.
+pub fn build_project(project_root: &Path, gleam_path: &Path) -> Result<(), ToolchainError> {
     let output = Command::new(gleam_path)
         .arg("build")
         .current_dir(project_root)
