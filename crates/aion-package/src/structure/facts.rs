@@ -201,18 +201,26 @@ fn count_timers(
     let mut callees: Vec<String> = Vec::new();
     let upper = body.end.min(tokens.len());
     let mut index = body.start;
+    let mut depth: usize = 0;
     while index < upper {
         match &tokens[index] {
+            Token::OpenParen => depth += 1,
+            Token::CloseParen => depth = depth.saturating_sub(1),
             Token::Qualified { left, right }
                 if left == alias && (right == "sleep" || right == "start_timer") =>
             {
                 count += 1;
             }
-            Token::Ident(name)
-                if functions.contains_key(name)
-                    && matches!(tokens.get(index + 1), Some(Token::OpenParen)) =>
-            {
-                callees.push(name.clone());
+            // Follow a helper both when applied directly (`name(`) and when
+            // passed as a bare function value in argument position
+            // (`list.map(items, name)`, depth >= 1), mirroring the determinism
+            // walk so the timer count does not undercount a timer reached only
+            // through a higher-order pass.
+            Token::Ident(name) if functions.contains_key(name) => {
+                let applied = matches!(tokens.get(index + 1), Some(Token::OpenParen));
+                if applied || depth >= 1 {
+                    callees.push(name.clone());
+                }
             }
             _ => {}
         }
@@ -286,6 +294,25 @@ mod tests {
              fn dead(input) {\n  workflow.sleep(duration.seconds(1))\n}\n";
         let facts = extract_workflow_facts(source)?;
         assert_eq!(facts.timer_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn timer_in_a_helper_passed_as_a_value_is_counted() -> Result<(), Box<dyn std::error::Error>> {
+        // `delayed` is never applied directly — it is passed as a bare function
+        // value to `list.map`, which invokes it. Counting its timer requires
+        // following the passed helper, the same soundness edge the determinism
+        // walk closes; a direct-call-only walk would undercount to zero.
+        let source = "import aion/workflow\n\
+             pub fn definition() {\n  \
+             workflow.define(\"f\", a(), b(), c(), execute)\n}\n\
+             pub fn execute(input) {\n  \
+             let _ = list.map(input, delayed)\n  \
+             workflow.run(wrappers.charge_activity(input))\n}\n\
+             fn delayed(item) {\n  workflow.sleep(duration.seconds(1))\n}\n";
+        let facts = extract_workflow_facts(source)?;
+        assert_eq!(facts.typed_entry_function, "execute");
+        assert_eq!(facts.timer_count, 1);
         Ok(())
     }
 

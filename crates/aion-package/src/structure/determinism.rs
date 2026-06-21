@@ -11,12 +11,19 @@
 //! It reuses the [`super::scan`] tokeniser and the same control-flow primitive
 //! the extractor uses (function-body mapping plus reachability over local helper
 //! calls), so the linter and the graph projection agree on what "reachable from
-//! workflow code" means. It is deliberately not a Gleam type-checker: the
-//! recognised non-deterministic vocabulary is a fixed, known set of
-//! qualified-call shapes, matched soundly because string literals and comments
-//! are excluded by the tokeniser. A call outside the known set is never flagged
-//! (no false positive on the author's own helpers); a known call reachable from
-//! the entry function is always flagged (no silent miss).
+//! workflow code" means. Reachability follows a helper both when it is applied
+//! directly (`helper(..)`) and when it is passed as a bare function value into a
+//! higher-order call (`list.map(items, helper)`), so a forbidden call hidden
+//! behind a passed helper is not silently missed. It is deliberately not a Gleam
+//! type-checker: the recognised non-deterministic vocabulary is a fixed, known
+//! set of qualified-call shapes, matched soundly because string literals and
+//! comments are excluded by the tokeniser. A call outside the known set is never
+//! flagged (no false positive on the author's own helpers); a known call
+//! reachable from the entry function is always flagged (no silent miss). The one
+//! reachability edge not followed is a helper aliased through a `let` binding and
+//! then passed (`let f = helper  list.map(items, f)`): name-level token analysis
+//! cannot resolve the alias without a type-checker, and the deterministic SDK
+//! surface gives authors no reason to write it.
 //!
 //! The vocabulary covers the wall-clock and entropy sources reachable from the
 //! BEAM's Gleam surface — Erlang's `os`/`erlang` time and uniqueness builtins,
@@ -252,8 +259,11 @@ fn walk(
     let mut callees: Vec<String> = Vec::new();
     let upper = body.end.min(tokens.len());
     let mut index = body.start;
+    let mut depth: usize = 0;
     while index < upper {
         match &tokens[index] {
+            Token::OpenParen => depth += 1,
+            Token::CloseParen => depth = depth.saturating_sub(1),
             Token::Qualified { left, right } => {
                 if let Some(forbidden) = match_forbidden(left, right) {
                     violations.insert(Violation {
@@ -263,11 +273,17 @@ fn walk(
                     });
                 }
             }
-            Token::Ident(name)
-                if functions.contains_key(name)
-                    && matches!(tokens.get(index + 1), Some(Token::OpenParen)) =>
-            {
-                callees.push(name.clone());
+            // A local helper is reachable either when it is applied directly
+            // (`name(`) or when it is passed as a bare function value in
+            // argument position (`list.map(items, name)`, depth >= 1), where a
+            // higher-order call will invoke it. Both call-graph edges are
+            // followed so a forbidden call hidden behind a passed helper is not
+            // silently missed by the gate.
+            Token::Ident(name) if functions.contains_key(name) => {
+                let applied = matches!(tokens.get(index + 1), Some(Token::OpenParen));
+                if applied || depth >= 1 {
+                    callees.push(name.clone());
+                }
             }
             _ => {}
         }
@@ -353,6 +369,26 @@ mod tests {
         assert_eq!(violations[0].call, "float.random");
         assert_eq!(violations[0].kind, ViolationKind::Entropy);
         assert_eq!(violations[0].function, "make_id");
+        Ok(())
+    }
+
+    #[test]
+    fn entropy_in_a_helper_passed_as_a_value_is_flagged() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // `tainted` is never applied directly — it is passed as a bare function
+        // value to a higher-order call (`list.map`), which invokes it. A gate
+        // that followed only direct `name(` calls would miss the entropy hiding
+        // behind the passed helper; this is the soundness edge the depth-aware
+        // walk closes.
+        let source = "pub fn run(input) {\n  \
+             let _ = list.map(input, tainted)\n  \
+             workflow.run(wrappers.charge_activity(input))\n}\n\
+             fn tainted(item) {\n  float.random()\n}\n";
+        let violations = analyze_determinism(source, "run")?;
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].call, "float.random");
+        assert_eq!(violations[0].kind, ViolationKind::Entropy);
+        assert_eq!(violations[0].function, "tainted");
         Ok(())
     }
 
