@@ -241,7 +241,16 @@ fn deterministic_u64(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) ->
     rng.next_u64()
 }
 
-fn deterministic_float(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> f64 {
+/// The deterministic `f64` in `[0.0, 1.0)` the production `workflow.random()`
+/// path serves at NIF call ordinal `sequence` for `(workflow_id, run_id)`.
+///
+/// This is the single production random formula: the `random()` NIF
+/// ([`random_from_context`]) calls exactly this function with the sequence the
+/// handle hands out per call. It is exposed at crate visibility so the
+/// time-travel inspection lens computes the *same* value the running workflow
+/// received at a given draw ordinal, rather than reimplementing the formula or
+/// drawing from an unrelated stream (WA-004).
+pub(crate) fn deterministic_float(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) -> f64 {
     let random = deterministic_u64(workflow_id, run_id, sequence) >> 11;
     let Ok(high) = u32::try_from(random >> 32) else {
         return 0.0;
@@ -252,7 +261,16 @@ fn deterministic_float(workflow_id: &WorkflowId, run_id: &RunId, sequence: u64) 
     (f64::from(high) * 4_294_967_296.0 + f64::from(low)) / FLOAT_SCALE
 }
 
-fn deterministic_i64(
+/// The deterministic `i64` in `[min, max]` the production
+/// `workflow.random_int(min, max)` path serves at NIF call ordinal `sequence`
+/// for `(workflow_id, run_id)`.
+///
+/// This is the single production bounded-random formula, exposed at crate
+/// visibility for the same reason as [`deterministic_float`]: the inspection
+/// lens computes the exact value the running workflow received at a draw ordinal
+/// (WA-004). The caller guarantees `min <= max`; an inverted range never reaches
+/// here (the NIF rejects it loudly).
+pub(crate) fn deterministic_i64(
     workflow_id: &WorkflowId,
     run_id: &RunId,
     sequence: u64,

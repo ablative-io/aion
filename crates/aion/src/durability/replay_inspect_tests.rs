@@ -2,7 +2,7 @@
 
 use aion_core::{
     ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, Payload, RunId, TimerId,
-    WorkflowId,
+    WorkflowError, WorkflowId,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::json;
@@ -12,6 +12,7 @@ use super::{
     DivergentCommand, MockOutcome, StepProjection, WhatIfOutcome, inspect_run, what_if_from,
 };
 use crate::durability::{ReplayTerminal, Resolution};
+use crate::runtime::nif_determinism::{deterministic_float, deterministic_i64};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -132,22 +133,43 @@ fn inspect_run_now_equals_each_event_recorded_at() -> TestResult {
 }
 
 #[test]
-fn inspect_run_random_is_deterministic_per_run() -> TestResult {
-    // R1/C17 (random): two inspections of the same (WorkflowId, RunId) produce
-    // identical random streams.
-    let first = inspect_run(history()?, &run_id())?;
-    let second = inspect_run(history()?, &run_id())?;
+fn inspect_run_random_projection_equals_the_production_formula() -> TestResult {
+    // R1/C17 (random): the faithful-value property. The lens does NOT attach a
+    // synthetic per-event random; it exposes a draw-ordinal projection whose
+    // value at ordinal n is byte-identical to what the production random() NIF
+    // serves — the same `deterministic_float`/`deterministic_i64` the NIF calls.
+    let inspection = inspect_run(history()?, &run_id())?;
+    let workflow_id = workflow_id();
+    let run = run_id();
 
-    let first_random: Vec<u64> = first.steps.iter().map(|step| step.random_u64).collect();
-    let second_random: Vec<u64> = second.steps.iter().map(|step| step.random_u64).collect();
-    assert_eq!(first_random, second_random);
-    assert_eq!(first_random.len(), 6);
+    for ordinal in 0..32 {
+        // random() at ordinal n == the production float at (workflow, run, n).
+        let projected = inspection.random.random_at(ordinal);
+        let production = deterministic_float(&workflow_id, &run, ordinal);
+        assert!(
+            (projected - production).abs() < f64::EPSILON,
+            "random_at({ordinal}) must equal the production deterministic_float",
+        );
+        assert!((0.0..1.0).contains(&projected));
+
+        // random_int() at ordinal n == the production bounded draw.
+        let projected_int = inspection.random.random_int_at(ordinal, 1, 100)?;
+        let production_int = deterministic_i64(&workflow_id, &run, ordinal, 1, 100);
+        assert_eq!(projected_int, production_int);
+        assert!((1..=100).contains(&projected_int));
+    }
     Ok(())
 }
 
 #[test]
-fn inspect_run_random_differs_for_a_different_run() -> TestResult {
-    // R1/C17 (random): a different RunId yields a different random stream.
+fn inspect_run_random_projection_is_deterministic_and_run_distinct() -> TestResult {
+    // R1/C17 (random): two inspections of the same (WorkflowId, RunId) project
+    // identical draw values at every ordinal; a different RunId projects
+    // different values. This holds through the production formula, not a parallel
+    // PRNG stream.
+    let first = inspect_run(history()?, &run_id())?;
+    let second = inspect_run(history()?, &run_id())?;
+
     let other_run = RunId::new(Uuid::from_u128(999));
     let mut other_history = history()?;
     if let Some(Event::WorkflowStarted { run_id, .. }) = other_history.first_mut() {
@@ -155,13 +177,37 @@ fn inspect_run_random_differs_for_a_different_run() -> TestResult {
     } else {
         return Err("expected WorkflowStarted first".into());
     }
-
-    let baseline = inspect_run(history()?, &run_id())?;
     let other = inspect_run(other_history, &other_run)?;
 
-    let baseline_random: Vec<u64> = baseline.steps.iter().map(|step| step.random_u64).collect();
-    let other_random: Vec<u64> = other.steps.iter().map(|step| step.random_u64).collect();
-    assert_ne!(baseline_random, other_random);
+    let mut differs = false;
+    for ordinal in 0..16 {
+        let first_value = first.random.random_at(ordinal);
+        let second_value = second.random.random_at(ordinal);
+        assert!(
+            (first_value - second_value).abs() < f64::EPSILON,
+            "same run must project an identical draw at ordinal {ordinal}",
+        );
+        if (first_value - other.random.random_at(ordinal)).abs() > f64::EPSILON {
+            differs = true;
+        }
+    }
+    assert!(
+        differs,
+        "a different RunId must project a different random draw at some ordinal",
+    );
+    Ok(())
+}
+
+#[test]
+fn random_int_at_rejects_an_inverted_range() -> TestResult {
+    // The projection mirrors the NIF's loud rejection of min > max — never a
+    // silent clamp (no silent failures).
+    let inspection = inspect_run(history()?, &run_id())?;
+    let error = inspection.random.random_int_at(0, 10, 1).err();
+    assert!(matches!(
+        error,
+        Some(crate::durability::DurabilityError::HistoryShape { .. })
+    ));
     Ok(())
 }
 
@@ -285,6 +331,144 @@ fn divergent_command_is_built_from_the_resolver_error() {
     assert_eq!(divergence.seq, 7);
     assert_eq!(divergence.expected, error.expected);
     assert_eq!(divergence.found, error.found);
+}
+
+/// A recorded run exercising a child workflow, a signal, and a timer anchor, so
+/// the what-if path can fork from each `MockOutcome` family. The child is spawned
+/// (started + completed), a signal is received, and a timer is started + fired,
+/// then the run completes. Seven events at 10..70.
+fn child_signal_timer_history() -> TestResult<Vec<Event>> {
+    let child_id = WorkflowId::new(Uuid::from_u128(0xC417));
+    let timer_id = TimerId::anonymous(5);
+    Ok(vec![
+        Event::WorkflowStarted {
+            envelope: envelope(1, 10)?,
+            workflow_type: "workflow".to_owned(),
+            input: payload("input")?,
+            run_id: run_id(),
+            parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
+        },
+        Event::ChildWorkflowStarted {
+            envelope: envelope(2, 20)?,
+            child_workflow_id: child_id.clone(),
+            workflow_type: "child".to_owned(),
+            input: payload("child-input")?,
+            package_version: aion_core::PackageVersion::new("b".repeat(64)),
+        },
+        Event::ChildWorkflowCompleted {
+            envelope: envelope(3, 30)?,
+            child_workflow_id: child_id,
+            result: payload("child-result")?,
+        },
+        Event::SignalReceived {
+            envelope: envelope(4, 40)?,
+            name: "ready".to_owned(),
+            payload: payload("signal-payload")?,
+        },
+        Event::TimerStarted {
+            envelope: envelope(5, 50)?,
+            timer_id: timer_id.clone(),
+            fire_at: timestamp(100)?,
+        },
+        Event::TimerFired {
+            envelope: envelope(6, 60)?,
+            timer_id,
+        },
+        Event::WorkflowCompleted {
+            envelope: envelope(7, 70)?,
+            result: payload("workflow-result")?,
+        },
+    ])
+}
+
+#[test]
+fn what_if_child_completion_resolves_through_the_real_replay() -> TestResult {
+    // R2/C19 (child completed): forking at the ChildWorkflowStarted anchor with a
+    // mocked completion resolves to ChildCompleted via the production Replay over
+    // the forked in-memory history.
+    let outcome = what_if_from(
+        child_signal_timer_history()?,
+        &run_id(),
+        2, // ChildWorkflowStarted
+        &MockOutcome::ChildCompleted(payload("mocked-child-result")?),
+    )?;
+
+    assert_eq!(
+        outcome,
+        WhatIfOutcome::Resolved {
+            from_seq: 2,
+            resolution: Resolution::ChildCompleted(payload("mocked-child-result")?),
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn what_if_child_failure_resolves_through_the_real_replay() -> TestResult {
+    // R2/C19 (child failed): forking at the child anchor with a mocked terminal
+    // failure resolves to ChildFailed.
+    let error = WorkflowError {
+        message: "mocked child failure".to_owned(),
+        details: None,
+    };
+    let outcome = what_if_from(
+        child_signal_timer_history()?,
+        &run_id(),
+        2,
+        &MockOutcome::ChildFailed(error.clone()),
+    )?;
+
+    assert_eq!(
+        outcome,
+        WhatIfOutcome::Resolved {
+            from_seq: 2,
+            resolution: Resolution::ChildFailed(error),
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn what_if_signal_delivery_resolves_through_the_real_replay() -> TestResult {
+    // R2/C19 (signal delivered): forking at the SignalReceived anchor with a
+    // mocked payload resolves to SignalDelivered with that payload.
+    let outcome = what_if_from(
+        child_signal_timer_history()?,
+        &run_id(),
+        4, // SignalReceived
+        &MockOutcome::SignalDelivered(payload("mocked-signal")?),
+    )?;
+
+    assert_eq!(
+        outcome,
+        WhatIfOutcome::Resolved {
+            from_seq: 4,
+            resolution: Resolution::SignalDelivered(payload("mocked-signal")?),
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn what_if_timer_firing_resolves_through_the_real_replay() -> TestResult {
+    // R2/C19 (timer fired): forking at the TimerStarted anchor with a mocked
+    // firing resolves to TimerFired.
+    let outcome = what_if_from(
+        child_signal_timer_history()?,
+        &run_id(),
+        5, // TimerStarted
+        &MockOutcome::TimerFired,
+    )?;
+
+    assert_eq!(
+        outcome,
+        WhatIfOutcome::Resolved {
+            from_seq: 5,
+            resolution: Resolution::TimerFired,
+        }
+    );
+    Ok(())
 }
 
 #[test]

@@ -248,7 +248,9 @@ enum RemoteCommand {
     /// Reads the run's existing history over the same `describe` read every
     /// other command uses — no debug-only log and no second store. For each
     /// recorded event it prints the workflow-visible state projection and the
-    /// recorded `now()` and deterministic `random()` for that step; on a
+    /// recorded `now()` for that step; `random()` is surfaced as a run-level
+    /// draw-ordinal projection (deterministic, never recorded, with a
+    /// workflow-code-dependent per-step count), not a per-step value. On a
     /// non-determinism fault it prints the exact divergent command (expected
     /// vs found at the sequence) the resolver already computed.
     ///

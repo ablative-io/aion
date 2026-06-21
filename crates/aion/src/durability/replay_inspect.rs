@@ -2,28 +2,50 @@
 //!
 //! This is a read-only projection over data the engine already records. It adds
 //! no second store, no new persistence, and no `Event`-schema change (CN5,
-//! ADR-007, P6). Per event it surfaces the workflow-visible state projection,
-//! the recorded `now()` (the event's recorded timestamp, the authoritative
-//! determinism clock), and the deterministic `random()` draw for that step
-//! (seeded from `WorkflowId` + `RunId`, computed by replay rather than stored).
-//! On a [`NonDeterminismError`] it surfaces the exact divergent command
-//! (expected vs found at the sequence) the resolver already computes — never
-//! recomputed here (C18).
+//! ADR-007, P6). Per event it surfaces the workflow-visible state projection and
+//! the recorded `now()` — the event's recorded timestamp, the authoritative
+//! determinism clock (never wall-clock time, exactly the value the production
+//! `now()` NIF serves). On a [`NonDeterminismError`] it surfaces the exact
+//! divergent command (expected vs found at the sequence) the resolver already
+//! computes — never recomputed here (C18).
 //!
-//! The projection reuses the production replay path: it reconstructs the command
-//! stream the engine fed the resolver from the recorded events and drives the
-//! real [`Replay`] over it, so the resolutions come from replay and not a
-//! parallel engine. The what-if re-run forks the same path from a chosen event
-//! with a mocked outcome, entirely in memory, and reports the resulting path.
+//! The state projection reuses the production replay path: it reconstructs the
+//! command stream the engine fed the resolver from the recorded events and
+//! drives the real [`Replay`] over it, so the resolutions come from replay and
+//! not a parallel engine. The what-if re-run forks the same path from a chosen
+//! event with a mocked outcome, entirely in memory, and reports the resulting
+//! path.
+//!
+//! ## Random is a draw-ordinal projection, not a per-event field
+//!
+//! Workflow-visible `random()` is **not** recorded and **not** attached per
+//! event. The production random path is the determinism NIF
+//! ([`crate::runtime::nif_determinism`]): `workflow.random()` /
+//! `workflow.random_int()` draw `deterministic_float` / `deterministic_i64`
+//! keyed by a per-call *draw ordinal* the workflow handle hands out, advanced
+//! once per `random()` call the workflow code actually makes. The number and
+//! event-positions of those draws exist only while the workflow code runs; they
+//! are not derivable from the event log alone (no `Random` event variant
+//! exists, by design — random is deterministic, not recorded).
+//!
+//! So the lens does **not** invent a per-event random stream. Instead it exposes
+//! a [`RandomDrawProjection`] bound to the run's `(WorkflowId, RunId)` that
+//! computes, for any draw ordinal `n`, the *exact* value the production
+//! `random()` / `random_int()` path serves at that ordinal — by calling the
+//! same `deterministic_float` / `deterministic_i64` the NIF calls. The true
+//! per-step draw *count* is recoverable only by driving the workflow code in an
+//! instrumented in-VM replay; that faithful lens is deferred (see the brief's
+//! open issue) and this projection never fabricates a count it cannot know.
 
 use aion_core::{ActivityError, Event, Payload, RunId, WorkflowError, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{
-    Command, CorrelationKey, DeterminismContext, DurabilityError,
-    NON_DETERMINISM_WORKFLOW_ERROR_PREFIX, NonDeterminismError, Replay, ReplayStep, ReplayTerminal,
-    Resolution, correlation::correlation_keys_for_history, current_run_segment,
+    Command, CorrelationKey, DurabilityError, NON_DETERMINISM_WORKFLOW_ERROR_PREFIX,
+    NonDeterminismError, Replay, ReplayStep, ReplayTerminal, Resolution,
+    correlation::correlation_keys_for_history, current_run_segment,
 };
+use crate::runtime::nif_determinism::{deterministic_float, deterministic_i64};
 
 /// Complete inspection of one recorded run, projected from history and replay.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,8 +56,81 @@ pub struct RunInspection {
     pub run_id: RunId,
     /// One projected step per recorded event in the run segment, in order.
     pub steps: Vec<InspectStep>,
+    /// The run's deterministic `random()` draw-ordinal projection.
+    ///
+    /// This computes the value the production `random()` / `random_int()` path
+    /// serves at a given draw ordinal for this `(WorkflowId, RunId)`. It is a
+    /// projection, not a per-event field: see the module docs for why the lens
+    /// cannot attach a random draw to each event without running the workflow
+    /// code in-VM.
+    pub random: RandomDrawProjection,
     /// The divergent command at the run's non-determinism fault, when one exists.
     pub divergence: Option<DivergentCommand>,
+}
+
+/// The deterministic `random()` draw-ordinal projection for one run.
+///
+/// Bound to the run's `(WorkflowId, RunId)`, it reproduces — for any draw
+/// ordinal — the exact value the production determinism NIF serves, by calling
+/// the same `deterministic_float` / `deterministic_i64` the NIF calls. Draw
+/// ordinals start at `0` (the first `workflow.random()` call a run makes draws
+/// ordinal `0`), matching the handle's pre-increment sequence counter.
+///
+/// This carries no draw count: the number of draws a run makes is workflow-code
+/// dependent and unrecoverable from history alone (module docs). It answers
+/// "what would `random()` return at ordinal `n`?", never "how many draws did
+/// step `k` make?".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RandomDrawProjection {
+    workflow_id: WorkflowId,
+    run_id: RunId,
+}
+
+impl RandomDrawProjection {
+    /// Binds the projection to a run.
+    #[must_use]
+    const fn new(workflow_id: WorkflowId, run_id: RunId) -> Self {
+        Self {
+            workflow_id,
+            run_id,
+        }
+    }
+
+    /// The `f64` in `[0.0, 1.0)` `workflow.random()` returns at draw `ordinal`.
+    ///
+    /// This is byte-for-byte the value the production `random()` NIF serves at
+    /// that ordinal for this run — it calls the same `deterministic_float`.
+    #[must_use]
+    pub fn random_at(&self, ordinal: u64) -> f64 {
+        deterministic_float(&self.workflow_id, &self.run_id, ordinal)
+    }
+
+    /// The `i64` in `[min, max]` `workflow.random_int(min, max)` returns at draw
+    /// `ordinal`.
+    ///
+    /// This is the value the production `random_int` NIF serves at that ordinal
+    /// for this run — it calls the same `deterministic_i64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError::HistoryShape`] when `min > max`, mirroring the
+    /// NIF's loud rejection of an inverted range (no silent clamping).
+    pub fn random_int_at(&self, ordinal: u64, min: i64, max: i64) -> Result<i64, DurabilityError> {
+        if min > max {
+            return Err(DurabilityError::HistoryShape {
+                reason: format!(
+                    "random_int_at range is inverted: min {min} is greater than max {max}"
+                ),
+            });
+        }
+        Ok(deterministic_i64(
+            &self.workflow_id,
+            &self.run_id,
+            ordinal,
+            min,
+            max,
+        ))
+    }
 }
 
 /// One recorded event's projection: its determinism context and state delta.
@@ -49,14 +144,9 @@ pub struct InspectStep {
     pub correlation_key: Option<CorrelationKey>,
     /// Workflow-visible `now` at this step: the event's recorded timestamp.
     ///
-    /// This is the authoritative determinism clock, never wall-clock time.
+    /// This is the authoritative determinism clock, never wall-clock time, and
+    /// is exactly the value the production `now()` NIF serves for this step.
     pub now: DateTime<Utc>,
-    /// The deterministic workflow-visible `random()` draw for this step.
-    ///
-    /// History does not record random draws; this value is the next draw from
-    /// the run's seeded PRNG (`WorkflowId` + `RunId`), advanced one draw per
-    /// step, exactly as deterministic replay would produce it.
-    pub random_u64: u64,
     /// The workflow-visible state delta this event contributes.
     pub projection: StepProjection,
 }
@@ -161,28 +251,19 @@ pub enum WhatIfOutcome {
 /// `WorkflowStarted` for `run_id` or is otherwise malformed.
 pub fn inspect_run(history: Vec<Event>, run_id: &RunId) -> Result<RunInspection, DurabilityError> {
     let segment = current_run_segment(history, run_id)?;
+    if segment.is_empty() {
+        return Err(empty_segment_error(run_id));
+    }
     let workflow_id = run_workflow_id(&segment)?;
     let keys = correlation_keys_for_history(&segment);
 
-    let mut determinism = DeterminismContext::new(
-        *segment
-            .first()
-            .ok_or_else(|| empty_segment_error(run_id))?
-            .recorded_at(),
-        &workflow_id,
-        run_id,
-    );
     let mut replay = Replay::new(&workflow_id, run_id, segment.clone())?;
-    let mut commands = reconstruct_commands(&segment);
+    let commands = reconstruct_commands(&segment);
     let mut command_index = 0;
 
     let mut steps = Vec::with_capacity(segment.len());
-    let mut divergence = None;
 
     for (event, correlation_key) in segment.iter().zip(keys.into_iter()) {
-        determinism.advance_to_recorded_at(*event.recorded_at());
-        let random_u64 = determinism.next_random_u64();
-
         let projection = match command_for_event(event) {
             CommandSlot::Issues => {
                 let Some(command) = commands.get(command_index).cloned() else {
@@ -197,9 +278,13 @@ pub fn inspect_run(history: Vec<Event>, run_id: &RunId) -> Result<RunInspection,
                 match replay.step(&command) {
                     Ok(ReplayStep::Recorded(resolution)) => StepProjection::Resolved(resolution),
                     Ok(ReplayStep::Terminal(terminal)) => StepProjection::Terminal(terminal),
-                    Ok(ReplayStep::ResumeLive) => StepProjection::NonReplay,
-                    Err(DurabilityError::NonDeterminism(error)) => {
-                        divergence = Some(DivergentCommand::from(&error));
+                    // ResumeLive contributes no recorded delta. A live
+                    // non-determinism fault is likewise not surfaced from the
+                    // reconstructed stream: the resolver already recorded the
+                    // authoritative expected-vs-found terminal, read back below
+                    // (C18, CN5). Re-deriving it here would be a second,
+                    // possibly divergent computation of the same fault.
+                    Ok(ReplayStep::ResumeLive) | Err(DurabilityError::NonDeterminism(_)) => {
                         StepProjection::NonReplay
                     }
                     Err(other) => return Err(other),
@@ -224,32 +309,21 @@ pub fn inspect_run(history: Vec<Event>, run_id: &RunId) -> Result<RunInspection,
             event_kind: event_kind(event),
             correlation_key,
             now: *event.recorded_at(),
-            random_u64,
             projection,
         });
-
-        if divergence.is_some() {
-            break;
-        }
     }
-
-    // Drain unused commands so the local does not trip clippy unused warnings on
-    // a partially driven stream; the explicit clear documents intent.
-    commands.clear();
 
     // The recorded non-determinism terminal (a WorkflowFailed the resolver
     // produced via fail_on_violation) is the authoritative divergence: the
     // resolver already computed and recorded the expected-vs-found at the
-    // sequence, so we read it back rather than recompute it (C18, CN5). It takes
-    // precedence over any divergence the live reconstruction observed.
-    if let Some(recorded) = recorded_divergence(&segment) {
-        divergence = Some(recorded);
-    }
+    // sequence, so we read it back rather than recompute it (C18, CN5).
+    let divergence = recorded_divergence(&segment);
 
     Ok(RunInspection {
-        workflow_id,
+        workflow_id: workflow_id.clone(),
         run_id: run_id.clone(),
         steps,
+        random: RandomDrawProjection::new(workflow_id, run_id.clone()),
         divergence,
     })
 }

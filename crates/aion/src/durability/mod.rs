@@ -45,8 +45,8 @@ pub use recovery::{
 };
 pub use replay::{Replay, ReplayOutcome, ReplayStep, ReplayTerminal};
 pub use replay_inspect::{
-    DivergentCommand, InspectStep, MockOutcome, RunInspection, StepProjection, WhatIfOutcome,
-    inspect_run, what_if_from,
+    DivergentCommand, InspectStep, MockOutcome, RandomDrawProjection, RunInspection,
+    StepProjection, WhatIfOutcome, inspect_run, what_if_from,
 };
 pub use resolver::{
     NON_DETERMINISM_WORKFLOW_ERROR_PREFIX, ResolvedCommand, Resolver, fail_on_violation,

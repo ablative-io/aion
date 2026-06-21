@@ -34,10 +34,6 @@ fn run_id() -> RunId {
     RunId::new(Uuid::from_u128(0x3333))
 }
 
-fn different_run_id() -> RunId {
-    RunId::new(Uuid::from_u128(0x4444))
-}
-
 fn timestamp(seconds: i64) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
     Utc.timestamp_opt(seconds, 0)
         .single()
@@ -679,8 +675,15 @@ async fn record_then_replay_round_trip_reaches_terminal_without_resume_live()
 }
 
 #[tokio::test]
-async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
--> Result<(), Box<dyn std::error::Error>> {
+async fn replay_determinism_round_trip_uses_recorded_now() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Workflow-visible `now` is the recorded event timestamp, advanced as replay
+    // resolves each command. Workflow-visible random is *not* served by replay
+    // state: the single production random path is the determinism NIF
+    // (`deterministic_float` / `deterministic_i64` keyed by a per-call sequence),
+    // covered by the in-crate `nif_determinism` and `replay_inspect` unit tests
+    // where that formula is reachable. There is no parallel random stream on the
+    // replay path to assert here (ADR-002).
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let history = record_round_trip_history(store, run_id()).await?;
     let workflow_id = workflow_id();
@@ -714,33 +717,12 @@ async fn replay_determinism_round_trip_uses_recorded_now_and_seeded_random()
     );
     assert_eq!(replay.now(), timestamp(80)?);
 
-    let mut first_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
+    // A fresh replay of the same history starts `now` at the first recorded
+    // timestamp every time: replay state is reconstructed, never carried.
+    let first_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
     assert_eq!(first_replay.now(), recorded_timestamps[0]);
-    let mut second_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
+    let second_replay = Replay::new(&workflow_id, &run_id, history.clone())?;
     assert_eq!(second_replay.now(), recorded_timestamps[0]);
-    let mut same_run_bytes = [0_u8; 64];
-    let mut repeated_same_run_bytes = [0_u8; 64];
-    first_replay
-        .determinism_mut()
-        .fill_random_bytes(&mut same_run_bytes);
-    second_replay
-        .determinism_mut()
-        .fill_random_bytes(&mut repeated_same_run_bytes);
-    assert_eq!(same_run_bytes, repeated_same_run_bytes);
-
-    // A different run records its own history (every run starts with its own
-    // WorkflowStarted); identical content under a different run id must still
-    // produce a different determinism seed.
-    let different_run_id = different_run_id();
-    let different_store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-    let different_history =
-        record_round_trip_history(different_store, different_run_id.clone()).await?;
-    let mut different_run_replay = Replay::new(&workflow_id, &different_run_id, different_history)?;
-    let mut different_run_bytes = [0_u8; 64];
-    different_run_replay
-        .determinism_mut()
-        .fill_random_bytes(&mut different_run_bytes);
-    assert_ne!(same_run_bytes, different_run_bytes);
     Ok(())
 }
 
