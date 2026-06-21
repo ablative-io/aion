@@ -21,6 +21,11 @@ aion-proto = { version = "0.6.1", path = "../aion-proto", features = ["generated
 aion-store-libsql = { version = "0.6.1", path = "../aion-store-libsql" }
 aion-store = { version = "0.6.1", path = "../aion-store" }
 aion-package = { version = "0.6.1", path = "../aion-package" }
+# Server-side authoring toolchain. It embeds NO Gleam compiler — it only
+# spawns the external `gleam` binary — so depending on it adds no compiler to
+# aion-server (CN7/C15). The authoring endpoints stay dark unless
+# `[authoring].gleam_path` is configured.
+aion-toolchain = { version = "0.6.1", path = "../aion-toolchain" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }

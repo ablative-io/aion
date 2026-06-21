@@ -5,6 +5,7 @@ members = [
     "crates/aion-store",
     "crates/aion-store-libsql",
     "crates/aion-package",
+    "crates/aion-toolchain",
     "crates/aion",
     "crates/aion-nif",
     "crates/aion-proto",

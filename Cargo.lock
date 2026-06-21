@@ -193,6 +193,7 @@ dependencies = [
  "aion-rs",
  "aion-store",
  "aion-store-libsql",
+ "aion-toolchain",
  "aion-worker",
  "async-trait",
  "axum 0.8.9",
@@ -251,6 +252,17 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aion-toolchain"
+version = "0.6.2"
+dependencies = [
+ "aion-package",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

@@ -6,12 +6,14 @@
 //! - `schedules` — schedule management handlers.
 //! - `events` — websocket event-subscription handlers.
 //! - `deploy` — operator deploy handlers (mounted only when `[deploy].enabled`).
+//! - `authoring` — server-side Gleam authoring (mounted only when `[authoring].gleam_path` is set).
 //! - `auth` — caller-identity extraction from request headers.
 //! - `visibility` — visibility query-string parsing and namespace scoping.
 //! - `payload` — HTTP body/payload encode-decode shapes and conversions.
 //! - `error` — wire-error-to-HTTP response mapping.
 
 mod auth;
+mod authoring;
 mod deploy;
 mod error;
 mod events;

@@ -18,6 +18,8 @@ pub mod api;
 #[cfg(feature = "auth")]
 /// Authentication middleware and token validation.
 pub mod auth;
+/// Server-side Gleam authoring surface (compile, type-check, package, hot-load).
+pub mod authoring;
 /// Runtime configuration loading and validation.
 pub mod config;
 /// Dashboard asset serving helpers.

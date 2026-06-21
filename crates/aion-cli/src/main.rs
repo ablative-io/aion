@@ -823,6 +823,32 @@ mod tests {
     }
 
     #[test]
+    fn server_subcommand_maps_authoring_gleam_path() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from([
+            "aion",
+            "server",
+            "--gleam-path",
+            "/usr/local/bin/gleam",
+            "--authoring-project-root",
+            "/srv/aion/authoring",
+        ])?;
+        let Command::Server(args) = cli.command else {
+            anyhow::bail!("expected server command");
+        };
+        let overrides = CliOverrides::from(args);
+
+        assert_eq!(
+            overrides.gleam_path,
+            Some(PathBuf::from("/usr/local/bin/gleam"))
+        );
+        assert_eq!(
+            overrides.authoring_project_root,
+            Some(PathBuf::from("/srv/aion/authoring"))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn server_workflow_package_flag_is_repeatable() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from([
             "aion",

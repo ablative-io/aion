@@ -1,0 +1,31 @@
+[package]
+name = "aion-toolchain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Server-side Gleam authoring toolchain: shells out to the gleam binary to compile and type-check workflow source, then packages a verified .aion. Embeds no compiler."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-toolchain"
+readme = "README.md"
+keywords = ["aion", "workflow", "gleam", "authoring", "toolchain"]
+categories = ["development-tools"]
+
+[lints]
+workspace = true
+
+# Dependency set is load-bearing for CN7/C15: the toolchain depends only on
+# aion-package (the .aion format) plus thiserror. There is NO Gleam compiler
+# crate and NO beamr here — the toolchain only ever spawns the external
+# `gleam` binary. The `no_gleam_compiler_in_dependency_tree` test asserts this.
+[dependencies]
+aion-package = { version = "0.6.1", path = "../aion-package" }
+thiserror = { workspace = true }
+# serde + toml read the project's workflow.toml to derive the entry module
+# that submitted source is written into. Neither is a compiler dependency.
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"

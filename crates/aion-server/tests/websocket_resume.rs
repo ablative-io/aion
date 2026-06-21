@@ -21,8 +21,8 @@ use aion_core::{Event, EventEnvelope, Payload, WorkflowId};
 use aion_proto::StreamedEvent;
 use aion_server::api::http::workflow_router;
 use aion_server::config::{
-    AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig, MetricsConfig,
-    NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
 use aion_server::{
     NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
@@ -133,6 +133,7 @@ fn runtime_config() -> RuntimeConfig {
         },
         workflow_packages: Vec::new(),
         deploy: DeployConfig::default(),
+        authoring: AuthoringConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: TENANT_A.to_owned(),

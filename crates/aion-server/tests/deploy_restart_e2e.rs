@@ -26,8 +26,8 @@ use aion_proto::{
 };
 use aion_server::api::http::http_router;
 use aion_server::config::{
-    AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig, MetricsConfig,
-    NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
+    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
 };
 use aion_server::{NamespaceResolver, ServerState};
 use aion_store::EventStore;
@@ -124,6 +124,7 @@ fn runtime_config() -> RuntimeConfig {
             max_archive_bytes: Some(MAX_ARCHIVE_BYTES),
             max_inflated_bytes: Some(MAX_INFLATED_BYTES),
         },
+        authoring: AuthoringConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),
