@@ -37,6 +37,13 @@ pub struct CliOverrides {
     pub drain_timeout_seconds: Option<u64>,
     /// Additional workflow package archives loaded after config and auto-discovered packages.
     pub workflow_packages: Vec<PathBuf>,
+    /// Override for `[authoring].gleam_path`: the external `gleam` binary that
+    /// gates the server-side authoring loop. Setting it commissions the
+    /// authoring endpoints.
+    pub gleam_path: Option<PathBuf>,
+    /// Override for `[authoring].project_root`: the built Gleam workflow
+    /// project submitted source is written into and packaged from.
+    pub authoring_project_root: Option<PathBuf>,
 }
 
 /// Complete merged server configuration.
@@ -72,6 +79,8 @@ pub struct ServerConfig {
     pub workflow_packages: Vec<PathBuf>,
     /// Operator deploy API settings.
     pub deploy: DeployConfig,
+    /// Server-side Gleam authoring API settings.
+    pub authoring: AuthoringConfig,
 }
 
 /// Public transport listener addresses from `[server]`.
@@ -271,6 +280,37 @@ pub(crate) const DEPLOY_MAX_INFLATED_BYTES_REQUIRED: &str = "deploy.max_inflated
 /// Operator-facing message for an absent or zero `query_timeout_ms`.
 pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms is required and has no default: the server always mounts /workflows/query, so the workflow query reply deadline must be configured explicitly; set runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to a positive number of milliseconds";
 
+/// Server-side Gleam authoring API settings from `[authoring]`.
+///
+/// The authoring surface is dark by default, gated on `gleam_path`: with no
+/// `gleam_path` set (the section absent or `gleam_path` unset) the
+/// `/authoring/*` routes are not mounted, the server deploys pre-built `.aion`
+/// files only, and nothing ever invokes `gleam` (CN7). Setting `gleam_path`
+/// commissions the authoring loop and makes `project_root` required — the
+/// built Gleam project submitted source is written into and packaged from.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthoringConfig {
+    /// Path to the external `gleam` binary the toolchain spawns. `None`
+    /// (the default) leaves the authoring surface dark; setting it gates the
+    /// `/authoring/*` endpoints on. There is no default binary — the operator
+    /// names it explicitly.
+    pub gleam_path: Option<PathBuf>,
+    /// Built Gleam workflow project root submitted source is written into and
+    /// packaged from. REQUIRED when `gleam_path` is set; no default (house
+    /// rule) — a Gleam project needs `gleam.toml`, the `aion_flow` dependency,
+    /// `workflow.toml`, and `schemas/`, so the operator provisions and names
+    /// the project root.
+    pub project_root: Option<PathBuf>,
+}
+
+/// Operator-facing message for an absent or empty `authoring.gleam_path` value.
+pub(crate) const AUTHORING_GLEAM_PATH_EMPTY: &str = "authoring.gleam_path must not be empty when set: it names the external gleam binary the authoring loop spawns; set authoring.gleam_path (or AION_AUTHORING_GLEAM_PATH) to the path of a runnable gleam binary, or remove it to leave the authoring surface dark";
+
+/// Operator-facing message for an absent `authoring.project_root` when the
+/// authoring surface is commissioned.
+pub(crate) const AUTHORING_PROJECT_ROOT_REQUIRED: &str = "authoring.project_root is required and has no default when authoring.gleam_path is set: submitted Gleam source is written into and packaged from a built project, so the operator must provision and name the project root (a directory with gleam.toml, the aion_flow dependency, workflow.toml, and schemas/); set authoring.project_root (or AION_AUTHORING_PROJECT_ROOT)";
+
 /// Runtime settings retained in shared server state for transport adapters.
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -292,6 +332,8 @@ pub struct RuntimeConfig {
     pub workflow_packages: Vec<PathBuf>,
     /// Operator deploy API settings.
     pub deploy: DeployConfig,
+    /// Server-side Gleam authoring API settings.
+    pub authoring: AuthoringConfig,
     /// Engine scheduler thread count.
     pub scheduler_threads: usize,
     /// Engine reply deadline for workflow queries. REQUIRED — carried as an
@@ -375,6 +417,7 @@ impl ServerConfig {
             websocket: self.websocket,
             workflow_packages: self.workflow_packages,
             deploy: self.deploy,
+            authoring: self.authoring,
             scheduler_threads: self.runtime.scheduler_threads,
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
@@ -399,6 +442,12 @@ impl ServerConfig {
         }
         if let Some(timeout) = cli.drain_timeout_seconds {
             self.drain.timeout_seconds = timeout;
+        }
+        if let Some(gleam_path) = &cli.gleam_path {
+            self.authoring.gleam_path = Some(gleam_path.clone());
+        }
+        if let Some(project_root) = &cli.authoring_project_root {
+            self.authoring.project_root = Some(project_root.clone());
         }
     }
 
@@ -475,6 +524,19 @@ impl ServerConfig {
                 return config_error(format!(
                     "deploy.max_inflated_bytes ({max_inflated_bytes}) must be at least deploy.max_archive_bytes ({max_archive_bytes}): an inflate ceiling below the upload ceiling would refuse archives the upload ceiling admits, even stored uncompressed"
                 ));
+            }
+        }
+        if let Some(gleam_path) = &self.authoring.gleam_path {
+            // The authoring surface is commissioned by a non-empty gleam_path;
+            // an empty value is a misconfiguration, not "dark".
+            if gleam_path.as_os_str().is_empty() {
+                return config_error(AUTHORING_GLEAM_PATH_EMPTY);
+            }
+            // Commissioning the loop requires a project root with no default
+            // (a Gleam project cannot be invented; the operator provisions it).
+            match &self.authoring.project_root {
+                Some(root) if !root.as_os_str().is_empty() => {}
+                _ => return config_error(AUTHORING_PROJECT_ROOT_REQUIRED),
             }
         }
         Ok(())
@@ -994,6 +1056,152 @@ mod tests {
         assert!(config.deploy.enabled);
         assert_eq!(config.deploy.max_archive_bytes, Some(16_777_216));
         assert_eq!(config.deploy.max_inflated_bytes, Some(67_108_864));
+        Ok(())
+    }
+
+    /// An absent `[authoring]` section leaves the surface dark: no `gleam_path`,
+    /// no `project_root`, and validation does not require either.
+    #[test]
+    fn authoring_absent_leaves_surface_dark() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        )?;
+
+        assert_eq!(config.authoring.gleam_path, None);
+        assert_eq!(config.authoring.project_root, None);
+        Ok(())
+    }
+
+    /// A configured `[authoring]` section with both `gleam_path` and
+    /// `project_root` parses and round-trips into `RuntimeConfig`.
+    #[test]
+    fn authoring_section_parses_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [authoring]
+                gleam_path = "/usr/local/bin/gleam"
+                project_root = "/srv/aion/authoring"
+            "#,
+        )?;
+
+        assert_eq!(
+            config.authoring.gleam_path.as_deref(),
+            Some(std::path::Path::new("/usr/local/bin/gleam"))
+        );
+        let (_, runtime) = config.into_parts();
+        assert_eq!(
+            runtime.authoring.gleam_path.as_deref(),
+            Some(std::path::Path::new("/usr/local/bin/gleam"))
+        );
+        assert_eq!(
+            runtime.authoring.project_root.as_deref(),
+            Some(std::path::Path::new("/srv/aion/authoring"))
+        );
+        Ok(())
+    }
+
+    /// Commissioning the authoring loop (a `gleam_path`) without a
+    /// `project_root` must fail startup naming the key and the environment
+    /// override (the deploy required-config pattern).
+    #[test]
+    fn authoring_gleam_path_without_project_root_fails_naming_key_and_env() {
+        let result = ServerConfig::from_slice(
+            br#"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [authoring]
+                gleam_path = "/usr/local/bin/gleam"
+            "#,
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("authoring.project_root"),
+            "validation message must name the missing key: {message}"
+        );
+        assert!(
+            message.contains("AION_AUTHORING_PROJECT_ROOT"),
+            "validation message must name the environment override: {message}"
+        );
+    }
+
+    /// An empty `gleam_path` is a misconfiguration, not "dark": it must fail
+    /// startup naming the key and the environment override.
+    #[test]
+    fn authoring_empty_gleam_path_fails_naming_key_and_env() {
+        let result = ServerConfig::from_slice(
+            br#"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+
+                [authoring]
+                gleam_path = ""
+            "#,
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("authoring.gleam_path"),
+            "validation message must name the empty key: {message}"
+        );
+        assert!(
+            message.contains("AION_AUTHORING_GLEAM_PATH"),
+            "validation message must name the environment override: {message}"
+        );
+    }
+
+    /// CLI overrides commission the authoring loop after file/env merge.
+    #[test]
+    fn cli_overrides_set_authoring_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        )?;
+        let cli = CliOverrides {
+            gleam_path: Some(std::path::PathBuf::from("/opt/gleam")),
+            authoring_project_root: Some(std::path::PathBuf::from("/opt/project")),
+            ..CliOverrides::default()
+        };
+
+        config.apply_cli_overrides(&cli);
+        config.validate()?;
+
+        assert_eq!(
+            config.authoring.gleam_path.as_deref(),
+            Some(std::path::Path::new("/opt/gleam"))
+        );
+        assert_eq!(
+            config.authoring.project_root.as_deref(),
+            Some(std::path::Path::new("/opt/project"))
+        );
         Ok(())
     }
 

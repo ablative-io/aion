@@ -30,6 +30,16 @@ pub struct ServerArgs {
     /// Workflow package archive to load at startup. Repeat to load multiple packages.
     #[arg(long = "workflow-package")]
     workflow_packages: Vec<PathBuf>,
+    /// Path to the external `gleam` binary that commissions the server-side
+    /// authoring loop. Setting it mounts the `/authoring/*` endpoints (and
+    /// requires `--authoring-project-root`); absent, the server compiles no
+    /// Gleam and deploys pre-built `.aion` files only.
+    #[arg(long = "gleam-path")]
+    gleam_path: Option<PathBuf>,
+    /// Built Gleam workflow project root that submitted authoring source is
+    /// written into and packaged from. Required when `--gleam-path` is set.
+    #[arg(long = "authoring-project-root")]
+    authoring_project_root: Option<PathBuf>,
 }
 
 impl From<ServerArgs> for CliOverrides {
@@ -41,6 +51,8 @@ impl From<ServerArgs> for CliOverrides {
             scheduler_threads: args.scheduler_threads.map(NonZeroUsize::get),
             drain_timeout_seconds: args.drain_timeout_seconds.map(NonZeroU64::get),
             workflow_packages: args.workflow_packages,
+            gleam_path: args.gleam_path,
+            authoring_project_root: args.authoring_project_root,
         }
     }
 }

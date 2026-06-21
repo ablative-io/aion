@@ -362,9 +362,9 @@ mod tests {
 
     use super::ServerState;
     use crate::config::{
-        AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-        MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig,
-        WorkerConfig,
+        AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
+        ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
+        WebSocketConfig, WorkerConfig,
     };
 
     fn runtime_config() -> RuntimeConfig {
@@ -394,6 +394,7 @@ mod tests {
             },
             workflow_packages: Vec::new(),
             deploy: DeployConfig::default(),
+            authoring: AuthoringConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

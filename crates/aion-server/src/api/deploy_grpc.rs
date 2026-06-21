@@ -181,9 +181,9 @@ mod tests {
 
     use super::DeployGrpcService;
     use crate::config::{
-        AuthConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-        MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig,
-        WorkerConfig,
+        AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
+        ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
+        WebSocketConfig, WorkerConfig,
     };
     use crate::{
         NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
@@ -222,6 +222,7 @@ mod tests {
             },
             workflow_packages: Vec::new(),
             deploy: DeployConfig::default(),
+            authoring: AuthoringConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(std::time::Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

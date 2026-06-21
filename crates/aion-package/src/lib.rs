@@ -36,6 +36,9 @@ pub mod namespace;
 pub mod package;
 /// Project-level packaging driven by `workflow.toml` descriptors.
 pub mod project;
+/// Workflow primitive-structure projection: the graph model and bounded
+/// Gleam regeneration (a projection of the typed source, never authoritative).
+pub mod structure;
 /// Workflow version identifiers derived from package content.
 pub mod version;
 
@@ -59,5 +62,9 @@ pub use package::Package;
 pub use project::{
     ExcludedModule, ExcludedReason, PackageOptions, PackagedWorkflow, PackagingError,
     ProjectReport, package_project,
+};
+pub use structure::{
+    CorrelationKey, EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive, StructuralDelta,
+    StructureError, WorkflowGraph, extract_structure, regenerate_gleam,
 };
 pub use version::WorkflowVersion;

@@ -7,6 +7,7 @@ use axum::{
     routing::{any, get, post},
 };
 
+use super::authoring::compile_source;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
 use super::events::subscribe_events_socket;
 use super::schedules::{
@@ -55,6 +56,13 @@ async fn deploy_disabled() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
+/// Disabled authoring surface: a plain 404 with no body, indistinguishable
+/// from an unmounted route family. When `[authoring].gleam_path` is absent the
+/// server compiles no Gleam and deploys pre-built `.aion` files only (CN7).
+async fn authoring_disabled() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 /// Build the public workflow-management HTTP router.
 pub fn workflow_router(state: ServerState) -> Router {
     // The deploy surface is dark by default: when `[deploy].enabled` is
@@ -76,7 +84,19 @@ pub fn workflow_router(state: ServerState) -> Router {
     } else {
         Router::new().route("/deploy/{*rest}", any(deploy_disabled))
     };
+    // The authoring surface is dark by default, gated on
+    // `[authoring].gleam_path`: when it is unset the routes are not mounted and
+    // every `/authoring/*` path is a plain 404 (the explicit catch-all keeps
+    // the dashboard SPA fallback from answering for the authoring namespace).
+    // With it absent the server compiles no Gleam and deploys pre-built `.aion`
+    // files only (CN7).
+    let authoring = if state.runtime_config().authoring.gleam_path.is_some() {
+        Router::new().route("/authoring/compile", post(compile_source))
+    } else {
+        Router::new().route("/authoring/{*rest}", any(authoring_disabled))
+    };
     deploy
+        .merge(authoring)
         .route("/workflows", get(get_workflows))
         .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))
