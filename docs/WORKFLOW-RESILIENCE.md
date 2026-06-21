@@ -82,6 +82,11 @@ everything already done, so **only the failed step re-runs**.
 
 - Covers all three buckets (transient, operator-recoverable, even
   misclassified-as-terminal) with no dependency on classification.
+- **Activities are at-least-once across a crash.** If the engine crashes
+  after an activity completes but before the await records its result, the
+  activity may be re-dispatched on recovery (or resume). Activities must
+  therefore be idempotent. (This is independent of the retry work above:
+  it holds today, with or without a retry driver.)
 - Folds in the already-needed `aion recover` CLI (manual DB surgery was done 3×
   in the prior session).
 - Teardown already preserves the worktree/branch/norn session on failure, so

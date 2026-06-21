@@ -49,6 +49,11 @@ completed durable workflow, with every file you need inline.
   [order-saga example](docs/examples/order-saga.md) shows the pattern).
 - The dashboard UI is under development; the CLI and HTTP API are the
   operating surfaces.
+- Cooperative cancellation covers worker shutdown/drain only. There is no
+  cancel frame in the worker protocol, so the server cannot cancel a
+  specific in-flight activity; the SDK sets the cancellation flag when a
+  worker drains or shuts down (local in-flight activities), not in response
+  to a server-initiated per-activity cancel.
 
 ## Documentation
 

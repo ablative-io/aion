@@ -460,7 +460,7 @@ impl RuntimeHandle {
     /// Arm the consumption-gated wake ladder for a delivered marker.
     ///
     /// `enqueue_atom_message` stores the message and wakes the pid, but
-    /// beamr 0.4.9's `Wait`-arm gap can swallow that wake (the message is
+    /// beamr's `Wait`-arm gap can swallow that wake (the message is
     /// stored after the parked process's mailbox re-check and the wake runs
     /// before its wait-set insert), parking the process forever on a
     /// one-shot delivery. Follow-up wakes land after the insert and drain
@@ -468,6 +468,10 @@ impl RuntimeHandle {
     /// wake-observation epoch moves — a suspending-native entry or process
     /// exit after this delivery — so it survives arbitrarily stretched gaps
     /// (OS preemption) without waking healthy processes forever.
+    ///
+    /// NOTE: this workaround was written against beamr 0.4.9. The crate is now
+    /// pinned to beamr 0.6.4; the `Wait`-arm gap may have been fixed upstream,
+    /// so this ladder needs re-validation against 0.6.4 and may now be stale.
     fn confirm_marker_wake(&self, workflow_pid: Pid) {
         let state = std::sync::Arc::clone(self.nif_state());
         let snapshot = state.wake_observation_epoch(workflow_pid);

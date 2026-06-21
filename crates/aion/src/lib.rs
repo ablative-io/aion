@@ -30,9 +30,13 @@
 //!   batch-orchestrator example e2e tests (`tests/example_query_reentry.rs`)
 //!   that drive live queries through the Gleam SDK's query pump while a
 //!   parent is parked in `child.await`. The engine-side query protocol is
-//!   fully functional, but the example's child-result decode path hits
+//!   fully functional, but the example's child-result decode path hit
 //!   beamr 0.4.9 VM gaps in `gleam_json`/`gleam_stdlib`; enable the feature
 //!   once the upstream beamr fixes land and the pin is bumped.
+//!
+//!   NOTE: the crate is now pinned to beamr 0.6.4. The gap this gate guards
+//!   against was identified on 0.4.9 and may have been fixed upstream, so the
+//!   gate needs re-validation against 0.6.4 and may now be stale.
 
 #![deny(unsafe_code)]
 
