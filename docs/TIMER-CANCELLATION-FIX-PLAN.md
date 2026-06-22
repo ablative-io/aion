@@ -390,6 +390,15 @@ and double-cancel idempotency are all sound.
 
 ### FOLLOW-UP (separate, scoped) — pre-existing `timer_is_live` `any`-semantics bug
 
+> **✅ RESOLVED (2026-06-22, commit 761be22e).** `timer_is_live` now delegates to the shared
+> `live_timers_in_active_segment` (last-event-wins, active-segment-scoped) — re-armed named timers
+> are correctly judged live. The helper was UNIFIED: moved into `time/timer_service.rs` (`pub(crate)`),
+> the duplicate in `engine/api.rs` deleted, so the firing/cancel guard and `Engine::cancel`'s enumerator
+> are now one function and can't diverge. Independently adversarially reviewed CLEAN (replay-safe: pure
+> deterministic fold, no live-vs-recovery divergence, idempotent, segment scoping byte-identical). 376 lib
+> tests + 7 new. Remaining minor (tracked, not blocking): `recovery.rs:150 outstanding_future_timers`
+> still uses full-history semantics — harmless pre-existing no-op-reschedule asymmetry, backstopped.
+
 The review surfaced a **pre-existing latent bug in `TimerService::timer_is_live`**
 (`time/timer_service.rs:228-255`): it computes liveness as
 `any(TimerStarted) && !any(TimerFired|TimerCancelled)` over the run segment. For a
