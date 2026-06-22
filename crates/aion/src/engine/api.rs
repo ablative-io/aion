@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use aion_core::{
-    Event, Payload, RunId, SearchAttributeSchema, SearchAttributeValue, TimerId, WorkflowError,
+    Event, Payload, RunId, SearchAttributeSchema, SearchAttributeValue, WorkflowError,
     WorkflowFilter, WorkflowId, WorkflowSummary,
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -30,6 +30,7 @@ use super::api_schedule::{
 };
 use super::delegated::DelegatedSeams;
 use super::shutdown_gate::ShutdownGate;
+use crate::time::timer_service::live_timers_in_active_segment;
 
 /// Live embedded workflow engine assembled by [`crate::EngineBuilder`].
 pub struct Engine {
@@ -563,51 +564,6 @@ pub(crate) fn workflow_not_found(id: &WorkflowId, run: &RunId) -> EngineError {
     EngineError::WorkflowNotFound {
         workflow_type: format!("{id}/{run}"),
     }
-}
-
-/// The live (started, not yet fired or cancelled) timer ids in the workflow's
-/// active run segment — the timers a cancel must tear down.
-///
-/// Scoped to the latest `WorkflowStarted` to mirror
-/// `TimerService::timer_is_live`'s run-segment semantics (anonymous timer
-/// identities are run-scoped ordinals that a continue-as-new replacement run
-/// re-allocates from zero, so a prior run's timer must not be surfaced for the
-/// replacement). Preserves start order and dedups a timer id started more than
-/// once. Returning only ids is sufficient — `TimerService::cancel` takes just
-/// the id and is itself an idempotent no-op for any already-terminal timer.
-///
-/// Known divergence from `TimerService::timer_is_live`: this enumerator uses a
-/// forward scan with removal (the *last* event for an id decides liveness),
-/// whereas `timer_is_live` uses `any`-semantics (started AND not-any-terminal).
-/// They disagree only for a *named* timer restarted after a terminal in the same
-/// segment (`TimerStarted(T), TimerFired(T), TimerStarted(T)`): we correctly
-/// report `T` live, but `TimerService::cancel` then re-checks `timer_is_live`,
-/// sees a terminal anywhere, and no-ops — so no `TimerCancelled` is recorded for
-/// the re-armed instance. That leaves a durable row, but it is harmless: startup
-/// recovery's `fire_timer` consults the same `timer_is_live` and likewise no-ops
-/// it (no `UnknownWorkflow`, no crash). The proper fix is in `timer_is_live`'s
-/// liveness semantics (it affects firing too) and is tracked as a follow-up; it
-/// is deliberately out of scope here. See `docs/TIMER-CANCELLATION-FIX-PLAN.md`.
-fn live_timers_in_active_segment(history: &[Event]) -> Vec<TimerId> {
-    let segment_start = history
-        .iter()
-        .rposition(|event| matches!(event, Event::WorkflowStarted { .. }))
-        .unwrap_or(0);
-    let mut live: Vec<TimerId> = Vec::new();
-    for event in &history[segment_start..] {
-        match event {
-            Event::TimerStarted { timer_id, .. } => {
-                if !live.contains(timer_id) {
-                    live.push(timer_id.clone());
-                }
-            }
-            Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. } => {
-                live.retain(|id| id != timer_id);
-            }
-            _ => {}
-        }
-    }
-    live
 }
 
 #[cfg(test)]

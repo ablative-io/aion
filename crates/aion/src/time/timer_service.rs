@@ -216,8 +216,8 @@ impl TimerService {
         Ok(())
     }
 
-    /// Whether the timer is started and not yet terminal in the workflow's
-    /// active run segment.
+    /// Whether the timer is currently live (started and not since retired) in
+    /// the workflow's active run segment, by last-event-wins.
     ///
     /// A timer belongs to the run that recorded its `TimerStarted`, and
     /// anonymous timer identities are run-scoped ordinals that replacement
@@ -225,33 +225,18 @@ impl TimerService {
     /// the latest run segment keeps a stale fire from a finished run from
     /// recording into — or suppressing — the replacement run's identically
     /// named timer.
+    ///
+    /// Liveness is decided by the *last* timer event for the id (see
+    /// [`live_timers_in_active_segment`]): a re-armed named timer
+    /// (`TimerStarted(T), TimerFired(T), TimerStarted(T)`) is correctly live
+    /// again rather than judged terminal forever by the earlier `TimerFired`.
     async fn timer_is_live(
         &self,
         workflow_id: &WorkflowId,
         timer_id: &TimerId,
     ) -> Result<bool, StoreError> {
         let history = self.store.read_history(workflow_id).await?;
-        let segment_start = history
-            .iter()
-            .rposition(|event| matches!(event, Event::WorkflowStarted { .. }))
-            .unwrap_or(0);
-        let segment = &history[segment_start..];
-        let started = segment.iter().any(|event| {
-            matches!(
-                event,
-                Event::TimerStarted { timer_id: recorded, .. } if recorded == timer_id
-            )
-        });
-        let terminal = segment.iter().any(|event| match event {
-            Event::TimerFired {
-                timer_id: recorded, ..
-            }
-            | Event::TimerCancelled {
-                timer_id: recorded, ..
-            } => recorded == timer_id,
-            _ => false,
-        });
-        Ok(started && !terminal)
+        Ok(live_timers_in_active_segment(&history).contains(timer_id))
     }
 
     async fn next_envelope(&self, workflow_id: &WorkflowId) -> Result<EventEnvelope, StoreError> {
@@ -265,6 +250,42 @@ impl TimerService {
     }
 }
 
+/// The live timer ids in the workflow's active run segment, by last-event-wins.
+///
+/// Scans forward from the latest `WorkflowStarted` (the active run segment) and
+/// lets the *last* event for each timer id decide its liveness: a `TimerStarted`
+/// (re)arms it, a `TimerFired`/`TimerCancelled` retires it. This means a *named*
+/// timer that fired or was cancelled and then re-armed within the same segment
+/// (`TimerStarted(T), TimerFired(T), TimerStarted(T)`) is correctly reported live
+/// again, rather than judged terminal forever by the earlier terminal event.
+///
+/// Start order is preserved and a timer id started more than once is deduped, so
+/// the result is a stable, history-derived (and therefore replay-deterministic)
+/// view of which timers are outstanding. This is the single liveness model shared
+/// by [`TimerService::timer_is_live`] (firing/cancel guard) and the cancel-path
+/// enumerator in `engine::api`, so the two cannot diverge.
+pub(crate) fn live_timers_in_active_segment(history: &[Event]) -> Vec<TimerId> {
+    let segment_start = history
+        .iter()
+        .rposition(|event| matches!(event, Event::WorkflowStarted { .. }))
+        .unwrap_or(0);
+    let mut live: Vec<TimerId> = Vec::new();
+    for event in &history[segment_start..] {
+        match event {
+            Event::TimerStarted { timer_id, .. } => {
+                if !live.contains(timer_id) {
+                    live.push(timer_id.clone());
+                }
+            }
+            Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. } => {
+                live.retain(|id| id != timer_id);
+            }
+            _ => {}
+        }
+    }
+    live
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -273,7 +294,7 @@ mod tests {
     use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
-    use super::{TimerService, TimerServiceError};
+    use super::{TimerService, TimerServiceError, live_timers_in_active_segment};
     use crate::engine_seam::test_support::{
         DeliveredWorkflowMessage, FakeEngineHandle, FakeEngineOperation,
     };
@@ -347,6 +368,162 @@ mod tests {
             parent_run_id: None,
             package_version: aion_core::PackageVersion::new("a".repeat(64)),
         }
+    }
+
+    fn timer_fired_event(workflow_id: &WorkflowId, timer_id: &TimerId, seq: u64) -> Event {
+        Event::TimerFired {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            timer_id: timer_id.clone(),
+        }
+    }
+
+    fn timer_cancelled_event(workflow_id: &WorkflowId, timer_id: &TimerId, seq: u64) -> Event {
+        Event::TimerCancelled {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            timer_id: timer_id.clone(),
+        }
+    }
+
+    fn make_named(name: &str) -> TimerId {
+        // The name is a non-empty literal, so construction never fails; the
+        // anonymous fallback only exists to keep the helper total without an
+        // `unwrap`/`expect` (disallowed by clippy in this crate).
+        TimerId::named(name).unwrap_or_else(|_| TimerId::anonymous(0))
+    }
+
+    fn named_timer_id() -> TimerId {
+        make_named("review-deadline")
+    }
+
+    // --- `live_timers_in_active_segment` / `timer_is_live` semantics ---
+
+    #[test]
+    fn started_timer_is_live() {
+        let workflow_id = workflow_id();
+        let timer_id = named_timer_id();
+        let history = vec![
+            workflow_started_event(&workflow_id, 0),
+            timer_started_event(&workflow_id, &timer_id, 1),
+        ];
+        assert_eq!(live_timers_in_active_segment(&history), vec![timer_id]);
+    }
+
+    #[test]
+    fn started_then_fired_timer_is_dead() {
+        let workflow_id = workflow_id();
+        let timer_id = named_timer_id();
+        let history = vec![
+            workflow_started_event(&workflow_id, 0),
+            timer_started_event(&workflow_id, &timer_id, 1),
+            timer_fired_event(&workflow_id, &timer_id, 2),
+        ];
+        assert!(live_timers_in_active_segment(&history).is_empty());
+    }
+
+    #[test]
+    fn started_then_cancelled_timer_is_dead() {
+        let workflow_id = workflow_id();
+        let timer_id = named_timer_id();
+        let history = vec![
+            workflow_started_event(&workflow_id, 0),
+            timer_started_event(&workflow_id, &timer_id, 1),
+            timer_cancelled_event(&workflow_id, &timer_id, 2),
+        ];
+        assert!(live_timers_in_active_segment(&history).is_empty());
+    }
+
+    #[test]
+    fn restarted_named_timer_after_fire_is_live() {
+        // The bug fix: a named timer that fired then was re-armed in the same run
+        // segment must be live again (last-event-wins), not judged terminal forever
+        // by the earlier `TimerFired`.
+        let workflow_id = workflow_id();
+        let timer_id = named_timer_id();
+        let history = vec![
+            workflow_started_event(&workflow_id, 0),
+            timer_started_event(&workflow_id, &timer_id, 1),
+            timer_fired_event(&workflow_id, &timer_id, 2),
+            timer_started_event(&workflow_id, &timer_id, 3),
+        ];
+        assert_eq!(
+            live_timers_in_active_segment(&history),
+            vec![timer_id],
+            "a re-armed named timer is live again"
+        );
+    }
+
+    #[test]
+    fn restarted_named_timer_after_cancel_is_live() {
+        let workflow_id = workflow_id();
+        let timer_id = named_timer_id();
+        let history = vec![
+            workflow_started_event(&workflow_id, 0),
+            timer_started_event(&workflow_id, &timer_id, 1),
+            timer_cancelled_event(&workflow_id, &timer_id, 2),
+            timer_started_event(&workflow_id, &timer_id, 3),
+        ];
+        assert_eq!(live_timers_in_active_segment(&history), vec![timer_id]);
+    }
+
+    #[test]
+    fn prior_run_segment_timer_is_not_live() {
+        // A timer started in a run segment that a later `WorkflowStarted` closed
+        // (continue-as-new) is out of scope for the active segment.
+        let workflow_id = workflow_id();
+        let prior = named_timer_id();
+        let current = make_named("current-deadline");
+        let history = vec![
+            workflow_started_event(&workflow_id, 0),
+            timer_started_event(&workflow_id, &prior, 1),
+            // New run segment begins; the prior timer must not be surfaced.
+            workflow_started_event(&workflow_id, 2),
+            timer_started_event(&workflow_id, &current, 3),
+        ];
+        assert_eq!(live_timers_in_active_segment(&history), vec![current]);
+    }
+
+    #[tokio::test]
+    async fn re_armed_named_timer_fires_again() -> Result<(), TimerServiceError> {
+        // End-to-end firing-path guard: with last-event-wins, a re-armed named
+        // timer is live, so `fire_timer` records a second `TimerFired` and
+        // delivers it — rather than silently no-opping under the old
+        // `any`-semantics.
+        let process = WorkflowProcessHandle::new(42);
+        let (store, engine, service) = service();
+        let workflow_id = workflow_id();
+        let timer_id = named_timer_id();
+        let fire_at = instant(110);
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
+        engine
+            .record_workflow_event(&workflow_id, timer_fired_event(&workflow_id, &timer_id, 2))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 3),
+        )?;
+
+        service
+            .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
+            .await?;
+
+        assert_eq!(
+            count_timer_fired(&history(&store, &workflow_id).await?, &timer_id),
+            2,
+            "the re-armed timer fires again, recording a second TimerFired"
+        );
+        assert_eq!(engine.delivered_messages()?.len(), 1);
+        Ok(())
     }
 
     #[tokio::test]
