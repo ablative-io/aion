@@ -506,6 +506,22 @@ pub(crate) mod test_support {
             Ok(())
         }
 
+        /// Queues the next response returned by workflow-event recording seam calls.
+        ///
+        /// Used to simulate the engine rejecting a recorded event — e.g. firing a
+        /// timer for a workflow that no longer exists ([`EngineSeamError::UnknownWorkflow`]).
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
+        pub fn push_record_response(
+            &self,
+            response: Result<(), EngineSeamError>,
+        ) -> Result<(), EngineSeamError> {
+            self.state()?.record_responses.push_back(response);
+            Ok(())
+        }
+
         /// Returns a snapshot of seam operations in observed order.
         ///
         /// # Errors

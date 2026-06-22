@@ -8,6 +8,7 @@ use std::time::Duration;
 use aion_store::{ReadableEventStore, StoreError};
 use chrono::{DateTime, Utc};
 
+use crate::engine_seam::EngineSeamError;
 use crate::time::{TimerService, TimerServiceError};
 
 /// Recovery service for durable timers that elapsed outside the live wheel path.
@@ -94,13 +95,38 @@ impl TimerRecovery {
 
     async fn recover_due(&self, now: DateTime<Utc>) -> Result<usize, TimerRecoveryError> {
         let due_timers = self.store.expired_timers(now).await?;
-        let count = due_timers.len();
+        let mut fired = 0;
         for entry in due_timers {
-            self.timer_service
-                .fire_timer(entry.workflow_id, entry.timer_id, entry.fire_at)
-                .await?;
+            match self
+                .timer_service
+                .fire_timer(
+                    entry.workflow_id.clone(),
+                    entry.timer_id.clone(),
+                    entry.fire_at,
+                )
+                .await
+            {
+                Ok(()) => fired += 1,
+                // An orphaned timer whose workflow no longer exists — e.g. the
+                // workflow was cancelled and purged from the engine's known set —
+                // must never abort recovery or block engine startup. The workflow
+                // is gone, so the timer is moot: log it and skip. (A terminal but
+                // still-known workflow's timer is already filtered inside
+                // `fire_timer`'s liveness check, which returns `Ok` without firing.)
+                Err(TimerServiceError::Engine(EngineSeamError::UnknownWorkflow {
+                    workflow_id,
+                })) => {
+                    tracing::warn!(
+                        %workflow_id,
+                        timer_id = %entry.timer_id,
+                        "skipping recovered timer for unknown workflow (orphaned timer); \
+                         the workflow no longer exists"
+                    );
+                }
+                Err(other) => return Err(other.into()),
+            }
         }
-        Ok(count)
+        Ok(fired)
     }
 
     async fn rearm_future_from_active_histories(
@@ -381,6 +407,49 @@ mod tests {
             0
         );
         assert!(engine.delivered_messages()?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn orphaned_timer_for_unknown_workflow_is_skipped_not_fatal() -> Result<(), TestError> {
+        // Regression: a durable timer whose workflow was cancelled and purged
+        // from the engine's known set must NOT abort startup recovery. Before the
+        // fix, `fire_timer`'s `UnknownWorkflow` error propagated and bricked engine
+        // startup — observed in production after a restart:
+        //   "timer recovery fire operation failed: ... workflow <id> is unknown".
+        let (store, engine, recovery) = recovery();
+        let workflow_id = workflow_id();
+        let timer_id = timer_id(6);
+        let fire_at = instant(10);
+
+        // The timer is live in history (started, never fired/cancelled) ...
+        store
+            .schedule_timer(&workflow_id, &timer_id, fire_at)
+            .await?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
+        // ... but the workflow itself is gone: the engine rejects the recovered
+        // fire with `UnknownWorkflow` (exactly what the real engine does when a
+        // cancelled workflow's record has been purged).
+        engine.push_record_response(Err(EngineSeamError::UnknownWorkflow {
+            workflow_id: workflow_id.clone(),
+        }))?;
+
+        // Recovery must SUCCEED by skipping the orphan, not error out.
+        let recovered = recovery.recover_on_startup(instant(20)).await?;
+
+        assert_eq!(recovered, 0, "the orphaned timer is skipped, not fired");
+        assert_eq!(
+            count_timer_fired(&history(&store, &workflow_id).await?, &timer_id),
+            0,
+            "no TimerFired is recorded for an unknown workflow"
+        );
+        assert!(
+            engine.delivered_messages()?.is_empty(),
+            "nothing is delivered for an unknown workflow"
+        );
         Ok(())
     }
 }
