@@ -149,7 +149,7 @@ async fn engine_over(
         .await?)
 }
 
-async fn start_collect_four(
+async fn start_fixture_workflow(
     engine: &Engine,
 ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {
     let handle = engine
@@ -258,29 +258,35 @@ fn worker_result(ordinal: u64) -> String {
 
 // --- shared setup: start, let it dispatch + suspend, prove the outbox path ----
 
-/// Start a fresh `collect_four`, wait until all `FAN_OUT` members have been
-/// scheduled (the run is now parked inside `collect_all`), then prove the
-/// **outbox** path ran (not the live in-process path):
+/// Start a fresh fan-out workflow at `entry` (a four-member `collect_*`),
+/// wait until all `FAN_OUT` members have been scheduled (the run is now
+/// parked inside the collect native), then prove the **outbox** path ran
+/// (not the live in-process path):
 ///
 /// - exactly `FAN_OUT` `ActivityScheduled` events are recorded, with zero
 ///   terminals (nothing settled yet);
 /// - every ordinal's outbox row is persisted `Pending` (read non-destructively
 ///   via `outbox_row_state`), proving `record_fan_out_dispatch` staged them.
 ///
-/// Returns the live store + engine + workflow id + run id + the dispatcher
-/// `fired` flag for the caller to drive and re-assert.
-async fn started_and_suspended(
+/// The dispatch+suspend proof is shape-agnostic — `collect_all`,
+/// `collect_race` and `collect_map` all stage their four fresh members
+/// through the identical `dispatch_unscheduled` → `record_fan_out_dispatch`
+/// path before any settlement rule runs — so every settle shape shares this
+/// setup. Returns the live store + engine + workflow id + run id + the
+/// dispatcher `fired` flag for the caller to drive and re-assert.
+async fn started_and_suspended_at(
     name: &str,
+    entry: &str,
 ) -> Result<
     (Arc<LibSqlStore>, Engine, WorkflowId, RunId, Arc<AtomicBool>),
     Box<dyn std::error::Error>,
 > {
     let store = Arc::new(LibSqlStore::open(unique_temp_path(name)).await?);
     let fired = Arc::new(AtomicBool::new(false));
-    let engine = engine_over(&store, "collect_four", &fired).await?;
-    let (workflow_id, run_id) = start_collect_four(&engine).await?;
+    let engine = engine_over(&store, entry, &fired).await?;
+    let (workflow_id, run_id) = start_fixture_workflow(&engine).await?;
 
-    // Park inside collect_all: all FAN_OUT members scheduled, none settled.
+    // Park inside the collect native: all FAN_OUT members scheduled, none settled.
     let scheduled = wait_for_history(&store, &workflow_id, "fan-out scheduled", |events| {
         count_scheduled(events) == FAN_OUT
     })
@@ -313,6 +319,17 @@ async fn started_and_suspended(
     }
 
     Ok((store, engine, workflow_id, run_id, fired))
+}
+
+/// `started_and_suspended_at` specialized to the `collect_four` (`collect_all`)
+/// entry — the existing happy-path/out-of-order/duplicate/crash/fail-fast cases.
+async fn started_and_suspended(
+    name: &str,
+) -> Result<
+    (Arc<LibSqlStore>, Engine, WorkflowId, RunId, Arc<AtomicBool>),
+    Box<dyn std::error::Error>,
+> {
+    started_and_suspended_at(name, "collect_four").await
 }
 
 /// Claim every currently-pending outbox row. A claim only returns rows that
@@ -1146,6 +1163,242 @@ async fn outbox_late_completion_for_cancelled_ordinal_is_dropped() -> TestResult
     assert!(
         outcome.is_err(),
         "a late completion for a cancelled ordinal must not flip the failed outcome, got {outcome:?}"
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+// --- case (g): collect_race under the flag — winner settles, losers cancelled -
+
+/// Confirmation coverage that a four-member `collect_race` settles end to end
+/// through the SAME shape-agnostic outbox cutover as `collect_all`.
+///
+/// `collect_race` dispatches its four fresh members through the identical
+/// `dispatch_unscheduled` → `record_fan_out_dispatch` path (proven by the
+/// shared [`started_and_suspended_at`] setup: four `Pending` outbox rows, the
+/// in-process dispatcher never fired). We then deliver exactly ONE member's
+/// completion via the faithful cutover path ([`deliver`] →
+/// `deliver_outbox_completion` → `take_and_record` →
+/// `record_fan_out_completion`), and `settle_race` settles the batch.
+///
+/// Observed real `settle_race` winner/loser event shape (asserted below): the
+/// single delivered ordinal is recorded `ActivityCompleted` (exactly ONE
+/// `ActivityCompleted` across the batch), and the three unresolved siblings are
+/// recorded `ActivityCancelled` (one each) by the loser-cancellation sweep —
+/// `FAN_OUT` terminals total, one per ordinal, no `ActivityFailed`. The fixture
+/// returns the winner's payload, so `engine.result` is the winner's worker
+/// result. The in-process dispatcher never fires across the whole run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_race_settles_first_completion_and_cancels_losers() -> TestResult {
+    let (store, engine, workflow_id, run_id, fired) =
+        started_and_suspended_at("race", "collect_race_four").await?;
+
+    // Claim the four staged rows — exactly FAN_OUT, proving the race dispatch
+    // staged every member through the outbox, not the in-process path.
+    let mut rows = claim_all_pending(&store).await?;
+    assert_eq!(
+        rows.len(),
+        FAN_OUT,
+        "claim must return exactly the FAN_OUT pending rows the race dispatch staged"
+    );
+    rows.sort_by_key(|row| row.ordinal);
+
+    // Deliver exactly ONE member's completion — the race winner. The other
+    // three stay Pending and must be cancelled by settle_race.
+    let winner_ordinal = 2u64;
+    let Some(winner_row) = rows
+        .iter()
+        .find(|row| row.ordinal == winner_ordinal)
+        .cloned()
+    else {
+        return Err("no claimed row for the winner ordinal".into());
+    };
+    assert!(
+        deliver(&engine, &winner_row)?,
+        "winner delivery must resolve to a live workflow pid"
+    );
+    store.complete_outbox_row(&winner_row.dispatch_key).await?;
+
+    // settle_race resolves in one sweep: the delivered ordinal becomes the
+    // recorded winner (ActivityCompleted) and the three unresolved siblings are
+    // cancelled (ActivityCancelled). Wait until all FAN_OUT terminals land.
+    let settled = wait_for_history(&store, &workflow_id, "race settled", |events| {
+        count_completed(events) + count_cancelled(events) == FAN_OUT
+    })
+    .await?;
+
+    // The winner: exactly one ActivityCompleted across the whole batch, for the
+    // delivered ordinal, and no ActivityFailed anywhere.
+    assert_eq!(
+        count_completed(&settled),
+        1,
+        "exactly one ActivityCompleted (the race winner): {settled:#?}"
+    );
+    assert_eq!(
+        count_completed_for(&settled, winner_ordinal),
+        1,
+        "ordinal {winner_ordinal} is the recorded winner"
+    );
+    assert_eq!(
+        count_failed(&settled),
+        0,
+        "a successful winner records no ActivityFailed"
+    );
+
+    // The three unresolved siblings are each recorded ActivityCancelled exactly
+    // once by settle_race's loser-cancellation.
+    assert_eq!(
+        count_cancelled(&settled),
+        FAN_OUT - 1,
+        "every losing sibling is cancelled: {settled:#?}"
+    );
+    for ordinal in [0u64, 1, 3] {
+        assert_eq!(
+            count_cancelled_for(&settled, ordinal),
+            1,
+            "losing sibling ordinal {ordinal} is cancelled exactly once"
+        );
+    }
+
+    // Exactly one terminal per ordinal (one Completed + three Cancelled), no
+    // duplicates.
+    for ordinal in 0..FAN_OUT as u64 {
+        let terminals = count_completed_for(&settled, ordinal)
+            + count_failed_for(&settled, ordinal)
+            + count_cancelled_for(&settled, ordinal);
+        assert_eq!(
+            terminals, 1,
+            "ordinal {ordinal} has exactly one terminal (Completed or Cancelled), no duplicates"
+        );
+    }
+
+    // The workflow settles with the delivered member as the winner: the fixture
+    // returns the winner's payload, so engine.result is that worker result.
+    let result = engine
+        .result(&workflow_id, &run_id)
+        .await?
+        .map_err(|error| format!("collect_race_four failed: {error:?}"))?;
+    // The winner's payload is the single JSON-string worker result itself (NOT
+    // wrapped in a list as collect_all/collect_map are): the recorded
+    // ActivityCompleted payload `"worker-N"` is returned verbatim, so it
+    // deserializes to the JSON string value `worker-N`.
+    let value: serde_json::Value = serde_json::from_slice(result.bytes())?;
+    assert_eq!(
+        value,
+        json!(format!("worker-{winner_ordinal}")),
+        "collect_race returns the winner's (ordinal {winner_ordinal}) result verbatim"
+    );
+
+    // The race completed exactly once.
+    let completed_terminals = settled
+        .iter()
+        .filter(|event| matches!(event, Event::WorkflowCompleted { .. }))
+        .count();
+    assert_eq!(
+        completed_terminals, 1,
+        "the race workflow completes exactly once"
+    );
+
+    // The in-process dispatcher never fired across the whole run.
+    assert!(
+        !fired.load(Ordering::SeqCst),
+        "in-process dispatcher must never fire under the outbox flag"
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+// --- case (h): collect_map under the flag — all N complete, ordered result ----
+
+/// Confirmation coverage that a four-member `collect_map` settles end to end
+/// through the SAME shape-agnostic outbox cutover.
+///
+/// `collect_map` is the `CollectKind::All` settlement (`settle_all`) reached
+/// through the distinct `collect_map` NIF entrypoint: every member must
+/// complete and the result is the per-ordinal payloads in input order. This
+/// test drives the distinct NIF symbol through the outbox path to confirm it
+/// routes identically to `collect_all` — all four members delivered via the
+/// outbox, `FAN_OUT` `ActivityCompleted`, one `WorkflowCompleted`, and the
+/// input-ordered collected list as the result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_map_completes_with_n_terminals_and_ordered_result() -> TestResult {
+    let (store, engine, workflow_id, run_id, fired) =
+        started_and_suspended_at("map", "collect_map_four").await?;
+
+    let mut rows = claim_all_pending(&store).await?;
+    assert_eq!(
+        rows.len(),
+        FAN_OUT,
+        "claim must return exactly the FAN_OUT pending rows the map dispatch staged"
+    );
+    rows.sort_by_key(|row| row.ordinal);
+
+    // Deliver every member through the outbox — collect_map requires all to
+    // complete.
+    for row in &rows {
+        assert!(
+            deliver(&engine, row)?,
+            "delivery must resolve to a live workflow pid"
+        );
+        store.complete_outbox_row(&row.dispatch_key).await?;
+        wait_for_history(
+            &store,
+            &workflow_id,
+            &format!("ordinal {} terminal recorded", row.ordinal),
+            |events| count_completed_for(events, row.ordinal) == 1,
+        )
+        .await?;
+    }
+
+    let settled = wait_for_history(&store, &workflow_id, "map settled", |events| {
+        count_completed(events) == FAN_OUT
+    })
+    .await?;
+    assert_eq!(count_completed(&settled), FAN_OUT);
+    for ordinal in 0..FAN_OUT as u64 {
+        assert_eq!(
+            count_completed_for(&settled, ordinal),
+            1,
+            "ordinal {ordinal} must have exactly one terminal"
+        );
+    }
+    assert_eq!(
+        count_cancelled(&settled),
+        0,
+        "a fully-completing collect_map cancels nothing"
+    );
+    assert_eq!(count_failed(&settled), 0, "no member failed");
+
+    // collect_map returns the per-ordinal results in input order.
+    let result = engine
+        .result(&workflow_id, &run_id)
+        .await?
+        .map_err(|error| format!("collect_map_four failed: {error:?}"))?;
+    let value: serde_json::Value = serde_json::from_slice(result.bytes())?;
+    assert_eq!(
+        value,
+        json!([
+            worker_result(0),
+            worker_result(1),
+            worker_result(2),
+            worker_result(3),
+        ]),
+        "collect_map must return all {FAN_OUT} results in input order"
+    );
+
+    let completed_terminals = settled
+        .iter()
+        .filter(|event| matches!(event, Event::WorkflowCompleted { .. }))
+        .count();
+    assert_eq!(
+        completed_terminals, 1,
+        "the map workflow completes exactly once"
+    );
+    assert!(
+        !fired.load(Ordering::SeqCst),
+        "in-process dispatcher must never fire under the outbox flag"
     );
 
     engine.shutdown()?;

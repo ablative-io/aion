@@ -1,7 +1,7 @@
 -module(aion_outbox_fixture).
--export([collect_four/1]).
+-export([collect_four/1, collect_race_four/1, collect_map_four/1]).
 
-%% Fixture for the durable-outbox fan-out cutover end-to-end test in
+%% Fixtures for the durable-outbox fan-out cutover end-to-end tests in
 %% tests/outbox_e2e.rs.
 %%
 %% `collect_four` fans four activities out through the suspending
@@ -16,20 +16,45 @@
 %% `record_fan_out_completion` dedup primitive.
 %%
 %% There is no gate protocol and no release signal: the workflow simply
-%% parks inside `collect_all` until every ordinal has a recorded terminal,
-%% then returns the collected results. The activity names are arbitrary
-%% (positional ordinals 0..3 drive routing, not the names).
+%% parks inside the collect native until enough ordinals have a recorded
+%% terminal to settle, then returns the collected outcome. The activity
+%% names are arbitrary (positional ordinals 0..3 drive routing, not names).
+%%
+%% `collect_race_four` and `collect_map_four` are the same four-member
+%% fan-out through the OTHER two collect natives — they share the exact
+%% shape-agnostic outbox dispatch (`dispatch_unscheduled` →
+%% `record_fan_out_dispatch`) and completion (`take_and_record` →
+%% `record_fan_out_completion`) path, exercising the distinct `settle_race`
+%% (winner/loser) and `collect_map` NIF entrypoints end-to-end under the flag.
 
 collect_four(_Input) ->
     Id = <<"collect-four">>,
-    Specs = [
+    {ok, Results} = aion_flow_ffi:collect_all(Id, four_specs()),
+    Results.
+
+%% Four-member `collect_race` through the outbox: the first delivered
+%% completion settles the batch (the winner) and the three unresolved
+%% siblings are cancelled by `settle_race`. Returns the winner's payload.
+collect_race_four(_Input) ->
+    Id = <<"collect-race-four">>,
+    {ok, Winner} = aion_flow_ffi:collect_race(Id, four_specs()),
+    Winner.
+
+%% Four-member `collect_map` through the outbox: same fan-out semantics as
+%% `collect_all` (every member must complete), driven through the distinct
+%% `collect_map` native. Returns the encoded result list in input order.
+collect_map_four(_Input) ->
+    Id = <<"collect-map-four">>,
+    {ok, Results} = aion_flow_ffi:collect_map(Id, four_specs()),
+    Results.
+
+four_specs() ->
+    [
         spec(<<"fan:0">>),
         spec(<<"fan:1">>),
         spec(<<"fan:2">>),
         spec(<<"fan:3">>)
-    ],
-    {ok, Results} = aion_flow_ffi:collect_all(Id, Specs),
-    Results.
+    ].
 
 spec(Name) ->
     <<"{\"name\":\"", Name/binary, "\",\"input\":\"\\\"in\\\"\",\"config\":\"{}\"}">>.
