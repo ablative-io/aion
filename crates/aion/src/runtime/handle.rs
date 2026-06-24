@@ -78,9 +78,8 @@ pub struct RuntimeHandle {
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
     signal_delivery: SignalDeliveryConfig,
-    /// Additive foundation for the flag-gated durable-outbox cutover; no
-    /// dispatch path reads it yet.
-    #[allow(dead_code)]
+    /// Flag gating the durable-outbox fan-out dispatch path; read by
+    /// `nif_collect.rs` to route fresh fan-out members and completions.
     outbox_enabled: bool,
     /// Bounded follow-up wakes for delivered mailbox markers, healing
     /// beamr 0.4.9's lost-wakeup window (see [`super::wake_confirm`]).
@@ -151,9 +150,8 @@ impl RuntimeHandle {
 
     /// Whether the durable-outbox fan-out dispatch path is enabled.
     ///
-    /// Additive foundation for the flag-gated durable-outbox cutover; no
-    /// dispatch path calls it yet.
-    #[allow(dead_code)]
+    /// Read by `nif_collect.rs` to route fresh fan-out members through the
+    /// durable outbox and record completions via the dedup primitive.
     pub(crate) fn outbox_enabled(&self) -> bool {
         self.outbox_enabled
     }
