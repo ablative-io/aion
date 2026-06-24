@@ -35,7 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, RuntimeHandle, SignalRouter};
-use aion_core::{ActivityId, Event, Payload, RunId, WorkflowId};
+use aion_core::{ActivityErrorKind, ActivityId, Event, Payload, RunId, WorkflowId};
 use aion_package::{
     BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
     ManifestVersion, Package, PackageBuilder,
@@ -204,6 +204,46 @@ fn count_completed_for(history: &[Event], ordinal: u64) -> usize {
         .iter()
         .filter(|event| match event {
             Event::ActivityCompleted { activity_id, .. } => {
+                activity_id.sequence_position() == ordinal
+            }
+            _ => false,
+        })
+        .count()
+}
+
+/// Count `ActivityFailed` events across `history` (mirror of `count_completed`).
+fn count_failed(history: &[Event]) -> usize {
+    history
+        .iter()
+        .filter(|event| matches!(event, Event::ActivityFailed { .. }))
+        .count()
+}
+
+/// Count `ActivityFailed` events for a single `ordinal`.
+fn count_failed_for(history: &[Event], ordinal: u64) -> usize {
+    history
+        .iter()
+        .filter(|event| match event {
+            Event::ActivityFailed { activity_id, .. } => activity_id.sequence_position() == ordinal,
+            _ => false,
+        })
+        .count()
+}
+
+/// Count `ActivityCancelled` events across `history` (mirror of `count_completed`).
+fn count_cancelled(history: &[Event]) -> usize {
+    history
+        .iter()
+        .filter(|event| matches!(event, Event::ActivityCancelled { .. }))
+        .count()
+}
+
+/// Count `ActivityCancelled` events for a single `ordinal`.
+fn count_cancelled_for(history: &[Event], ordinal: u64) -> usize {
+    history
+        .iter()
+        .filter(|event| match event {
+            Event::ActivityCancelled { activity_id, .. } => {
                 activity_id.sequence_position() == ordinal
             }
             _ => false,
@@ -413,6 +453,27 @@ fn deliver(engine: &Engine, row: &OutboxRow) -> Result<bool, Box<dyn std::error:
         &row.workflow_id,
         &ActivityId::from_sequence_position(row.ordinal),
         worker_result(row.ordinal),
+    )?;
+    Ok(delivered)
+}
+
+/// Failure twin of [`deliver`]: route one claimed row's terminal FAILURE
+/// through the faithful cutover path
+/// ([`RuntimeHandle::deliver_outbox_failure`]: registry resolve → runtime
+/// error map → wake). The woken workflow's `take_and_record` records the
+/// terminal through `record_fan_out_completion(FanOutOutcome::Failed{..})` on
+/// its own Recorder, and `settle_all` fails fast on it. `reason` becomes the
+/// recorded `ActivityFailed`'s `error.message` (classified Terminal).
+fn deliver_failure(
+    engine: &Engine,
+    row: &OutboxRow,
+    reason: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let delivered = engine.runtime().deliver_outbox_failure(
+        engine.registry(),
+        &row.workflow_id,
+        &ActivityId::from_sequence_position(row.ordinal),
+        reason.to_owned(),
     )?;
     Ok(delivered)
 }
@@ -814,5 +875,279 @@ async fn outbox_crash_recovery_rearms_stranded_done_row_and_finishes() -> TestRe
     );
 
     engine2.shutdown()?;
+    Ok(())
+}
+
+// --- case (e): fail-fast — one member fails, siblings are cancelled -----------
+
+/// A terminal FAILURE delivered for one fan-out member makes `collect_all`
+/// fail fast: it records that member's `ActivityFailed`, cancels every
+/// unresolved sibling (`ActivityCancelled`), and propagates the failure out of
+/// the workflow.
+///
+/// This exercises the failure twin of the happy path end to end:
+/// `deliver_outbox_failure` (registry resolve → runtime error map → wake) →
+/// `take_and_record` → `record_fan_out_completion(FanOutOutcome::Failed{..})`
+/// for the failing ordinal, then `settle_all`'s fail-fast branch records
+/// `ActivityCancelled` for the three still-`Pending` siblings via
+/// `cancel_pending`.
+///
+/// Observed real fail-fast event shape (asserted below): exactly ONE
+/// `ActivityFailed` for the delivered ordinal (carrying the delivered reason,
+/// classified Terminal, attempt 1) and exactly THREE `ActivityCancelled`, one
+/// per unresolved sibling — `FAN_OUT` terminals total, one per ordinal, no
+/// `ActivityCompleted`. The fixture's `{ok, Results} = collect_all(..)` match
+/// fails on the propagated `{error, _}`, so the workflow does not complete
+/// successfully and `engine.result(..)` surfaces an `Err`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_failure_fails_fast_and_cancels_unresolved_siblings() -> TestResult {
+    let (store, engine, workflow_id, run_id, fired) = started_and_suspended("failfast").await?;
+
+    let mut rows = claim_all_pending(&store).await?;
+    assert_eq!(
+        rows.len(),
+        FAN_OUT,
+        "claim must return exactly the FAN_OUT pending rows the dispatch staged"
+    );
+    rows.sort_by_key(|row| row.ordinal);
+
+    // The single ordinal we deliver as a terminal FAILURE.
+    let failed_ordinal = 1u64;
+    let reason = "terminal:boom";
+    let Some(failed_row) = rows
+        .iter()
+        .find(|row| row.ordinal == failed_ordinal)
+        .cloned()
+    else {
+        return Err("no claimed row for the failed ordinal".into());
+    };
+
+    // Deliver ONE member as a failure (the other three stay Pending). Mark its
+    // outbox row done — the worker reported a terminal failure, the row is
+    // acknowledged just like a success.
+    assert!(
+        deliver_failure(&engine, &failed_row, reason)?,
+        "failure delivery must resolve to a live workflow pid"
+    );
+    store.complete_outbox_row(&failed_row.dispatch_key).await?;
+
+    // Fail-fast settles the whole batch in one sweep: one Failed (ordinal 1) +
+    // three Cancelled (ordinals 0,2,3). Wait until all FAN_OUT terminals land.
+    let settled = wait_for_history(&store, &workflow_id, "fail-fast settled", |events| {
+        count_failed(events) + count_cancelled(events) == FAN_OUT
+    })
+    .await?;
+
+    // The failing ordinal: exactly one ActivityFailed, no other terminal kind.
+    assert_eq!(
+        count_failed(&settled),
+        1,
+        "exactly one ActivityFailed across the batch: {settled:#?}"
+    );
+    assert_eq!(
+        count_failed_for(&settled, failed_ordinal),
+        1,
+        "ordinal {failed_ordinal} has exactly one ActivityFailed"
+    );
+
+    // The recorded ActivityFailed carries the delivered reason faithfully:
+    // classified Terminal, attempt 1 (test 3 folded in — deliver_outbox_failure
+    // → ActivityFailed shape).
+    let Some(Event::ActivityFailed { error, attempt, .. }) = settled.iter().find(|event| {
+        matches!(
+            event,
+            Event::ActivityFailed { activity_id, .. }
+                if activity_id.sequence_position() == failed_ordinal
+        )
+    }) else {
+        return Err(format!(
+            "expected an ActivityFailed for ordinal {failed_ordinal}: {settled:#?}"
+        )
+        .into());
+    };
+    assert_eq!(
+        error.message, reason,
+        "the recorded failure carries the reason deliver_outbox_failure passed"
+    );
+    assert_eq!(
+        error.kind,
+        ActivityErrorKind::Terminal,
+        "a delivered terminal failure is classified Terminal"
+    );
+    assert_eq!(*attempt, 1, "first (and only) delivery attempt");
+
+    // The three unresolved siblings are each recorded ActivityCancelled by the
+    // fail-fast cancellation (cancel_pending), exactly once each.
+    assert_eq!(
+        count_cancelled(&settled),
+        FAN_OUT - 1,
+        "every unresolved sibling is cancelled: {settled:#?}"
+    );
+    for ordinal in [0u64, 2, 3] {
+        assert_eq!(
+            count_cancelled_for(&settled, ordinal),
+            1,
+            "sibling ordinal {ordinal} is cancelled exactly once"
+        );
+    }
+
+    // No member completed, and exactly one terminal per ordinal (one Failed +
+    // three Cancelled) — no duplicates.
+    assert_eq!(
+        count_completed(&settled),
+        0,
+        "fail-fast records no ActivityCompleted"
+    );
+    for ordinal in 0..FAN_OUT as u64 {
+        let terminals = count_completed_for(&settled, ordinal)
+            + count_failed_for(&settled, ordinal)
+            + count_cancelled_for(&settled, ordinal);
+        assert_eq!(
+            terminals, 1,
+            "ordinal {ordinal} has exactly one terminal (Failed or Cancelled), no duplicates"
+        );
+    }
+
+    // The failure propagates out of the workflow: the fixture's `{ok, _}` match
+    // fails on the `{error, _}` collect result, so the run does not complete
+    // successfully and the result is an Err.
+    let outcome = engine.result(&workflow_id, &run_id).await?;
+    assert!(
+        outcome.is_err(),
+        "collect_all fail-fast must propagate the failure out of the workflow, got {outcome:?}"
+    );
+
+    // The in-process dispatcher never fired across the whole run.
+    assert!(
+        !fired.load(Ordering::SeqCst),
+        "in-process dispatcher must never fire under the outbox flag"
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+// --- case (f): late completion for a cancelled ordinal is dropped -------------
+
+/// A LATE success completion arriving for an ordinal that fail-fast already
+/// recorded `ActivityCancelled` is DROPPED — the cancellation stands, NO
+/// `ActivityCompleted` is appended, and the workflow outcome does not change.
+///
+/// This proves the dedup contract end to end: `record_fan_out_completion`'s
+/// `ordinal_is_resolved` predicate treats `ActivityCancelled` as a terminal
+/// resolution, so a worker completion that lands after the cancellation is a
+/// no-op rather than a recorded-over terminal.
+///
+/// Faithfulness note on the observed semantics: fail-fast removes the pending
+/// await and the fixture's `{ok, _}` match fails on the propagated `{error,_}`,
+/// so the workflow process exits — after fail-fast the run is no longer live.
+/// A late `deliver` therefore cannot reach a live mailbox: the delivery is
+/// rejected (the resolved process is no longer live) and never reaches the
+/// recorder, and the retained-completion drain on process exit clears any
+/// racing entry. The exact rejection form (a not-live `Ok(false)`, or an
+/// `Err` because the process slot is already gone) is incidental — both mean
+/// the completion was never recorded. What this test pins is the durable
+/// outcome: the `ActivityCancelled` terminal for the ordinal still stands and
+/// NO `ActivityCompleted` was ever appended for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_late_completion_for_cancelled_ordinal_is_dropped() -> TestResult {
+    // Reuse the fail-fast scenario: deliver ordinal 1 as a failure so the
+    // siblings (0,2,3) are cancelled.
+    let (store, engine, workflow_id, run_id, _fired) = started_and_suspended("latecancel").await?;
+
+    let mut rows = claim_all_pending(&store).await?;
+    assert_eq!(rows.len(), FAN_OUT);
+    rows.sort_by_key(|row| row.ordinal);
+
+    let failed_ordinal = 1u64;
+    // The cancelled sibling we will then try to complete late.
+    let cancelled_ordinal = 0u64;
+    let Some(failed_row) = rows
+        .iter()
+        .find(|row| row.ordinal == failed_ordinal)
+        .cloned()
+    else {
+        return Err("no claimed row for the failed ordinal".into());
+    };
+    let Some(cancelled_row) = rows
+        .iter()
+        .find(|row| row.ordinal == cancelled_ordinal)
+        .cloned()
+    else {
+        return Err("no claimed row for the cancelled ordinal".into());
+    };
+
+    assert!(deliver_failure(&engine, &failed_row, "terminal:boom")?);
+    store.complete_outbox_row(&failed_row.dispatch_key).await?;
+
+    // Wait until the sibling has been recorded ActivityCancelled by fail-fast.
+    let cancelled = wait_for_history(
+        &store,
+        &workflow_id,
+        &format!("ordinal {cancelled_ordinal} cancelled"),
+        |events| count_cancelled_for(events, cancelled_ordinal) == 1,
+    )
+    .await?;
+    assert_eq!(
+        count_cancelled_for(&cancelled, cancelled_ordinal),
+        1,
+        "the sibling was cancelled by fail-fast"
+    );
+    assert_eq!(
+        count_completed_for(&cancelled, cancelled_ordinal),
+        0,
+        "no completion yet for the cancelled ordinal"
+    );
+
+    // Deliver a LATE success completion for the SAME cancelled ordinal. The
+    // cancellation already terminally resolved the ordinal: this completion can
+    // never become a recorded terminal over the ActivityCancelled. After
+    // fail-fast the run has exited, so the delivery is rejected before reaching
+    // any mailbox (no live pid / process gone) — we tolerate either rejection
+    // form; the assertions below pin the durable outcome regardless.
+    let delivered = deliver(&engine, &cancelled_row);
+    assert!(
+        !matches!(delivered, Ok(true)),
+        "a late completion for a cancelled ordinal on a fail-fast-terminated run \
+         must NOT deliver to a live workflow, got {delivered:?}"
+    );
+    store
+        .complete_outbox_row(&cancelled_row.dispatch_key)
+        .await?;
+
+    // Give any woken processing time to (not) record the late completion.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The cancellation stands and NO ActivityCompleted was appended.
+    let after_late = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        count_cancelled_for(&after_late, cancelled_ordinal),
+        1,
+        "the ActivityCancelled terminal for ordinal {cancelled_ordinal} still stands"
+    );
+    assert_eq!(
+        count_completed_for(&after_late, cancelled_ordinal),
+        0,
+        "a late completion for a CANCELLED ordinal must be dropped, not recorded"
+    );
+    // The ordinal still has exactly one terminal — the cancellation — with no
+    // duplicate or second-terminal collision.
+    let terminals = count_completed_for(&after_late, cancelled_ordinal)
+        + count_failed_for(&after_late, cancelled_ordinal)
+        + count_cancelled_for(&after_late, cancelled_ordinal);
+    assert_eq!(
+        terminals, 1,
+        "the cancelled ordinal still has exactly one terminal (the cancellation)"
+    );
+
+    // The workflow outcome is unchanged by the late completion: still a
+    // propagated failure (no panic, no flip to success).
+    let outcome = engine.result(&workflow_id, &run_id).await?;
+    assert!(
+        outcome.is_err(),
+        "a late completion for a cancelled ordinal must not flip the failed outcome, got {outcome:?}"
+    );
+
+    engine.shutdown()?;
     Ok(())
 }
