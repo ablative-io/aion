@@ -78,6 +78,10 @@ pub struct RuntimeHandle {
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
     signal_delivery: SignalDeliveryConfig,
+    /// Additive foundation for the flag-gated durable-outbox cutover; no
+    /// dispatch path reads it yet.
+    #[allow(dead_code)]
+    outbox_enabled: bool,
     /// Bounded follow-up wakes for delivered mailbox markers, healing
     /// beamr 0.4.9's lost-wakeup window (see [`super::wake_confirm`]).
     pub(super) wake_confirmer: super::wake_confirm::WakeConfirmer,
@@ -129,6 +133,7 @@ impl RuntimeHandle {
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
+            outbox_enabled: config.outbox_enabled,
             wake_confirmer: super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?,
             spawned_pid_watermark: AtomicU64::new(0),
         })
@@ -142,6 +147,15 @@ impl RuntimeHandle {
     /// Builder-supplied delivery/readiness policy for spawn-window waits.
     pub(crate) fn signal_delivery(&self) -> SignalDeliveryConfig {
         self.signal_delivery
+    }
+
+    /// Whether the durable-outbox fan-out dispatch path is enabled.
+    ///
+    /// Additive foundation for the flag-gated durable-outbox cutover; no
+    /// dispatch path calls it yet.
+    #[allow(dead_code)]
+    pub(crate) fn outbox_enabled(&self) -> bool {
+        self.outbox_enabled
     }
 
     /// Install collected NIF entries into beamr's native registry.

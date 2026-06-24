@@ -182,6 +182,7 @@ pub struct EngineBuilder {
     visibility_store: Option<Arc<dyn VisibilityStore>>,
     scheduler_threads: Option<usize>,
     signal_delivery: SignalDeliveryConfig,
+    outbox_enabled: bool,
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
     recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
@@ -213,6 +214,7 @@ impl EngineBuilder {
             visibility_store: None,
             scheduler_threads: None,
             signal_delivery: SignalDeliveryConfig::default(),
+            outbox_enabled: false,
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
             recovery: None,
@@ -344,6 +346,13 @@ impl EngineBuilder {
         self
     }
 
+    /// Record whether the durable-outbox fan-out dispatch path is enabled.
+    #[must_use]
+    pub fn outbox_enabled(mut self, enabled: bool) -> Self {
+        self.outbox_enabled = enabled;
+        self
+    }
+
     /// Add one workflow package source to load during `build()`.
     #[must_use]
     pub fn load_workflows(mut self, source: impl Into<WorkflowPackageSource>) -> Self {
@@ -472,6 +481,14 @@ impl EngineBuilder {
         self.visibility_reconciliation_interval
     }
 
+    /// Assemble the runtime configuration from the builder-supplied scheduler,
+    /// signal delivery, and outbox knobs.
+    fn runtime_config(&self) -> RuntimeConfig {
+        RuntimeConfig::new(self.scheduler_threads)
+            .with_signal_delivery(self.signal_delivery)
+            .with_outbox_enabled(self.outbox_enabled)
+    }
+
     /// Construct the live engine.
     ///
     /// # Errors
@@ -480,6 +497,7 @@ impl EngineBuilder {
     /// NIF registration, package loading, store reads, registry/supervision lock
     /// poison, or deferred AD recovery failures for active histories.
     pub async fn build(self) -> Result<Engine, EngineError> {
+        let runtime_config = self.runtime_config();
         let (store, streaming_publisher) = wrap_event_streaming(
             self.store.ok_or(EngineError::MissingStore)?,
             self.event_streaming_capacity,
@@ -489,9 +507,7 @@ impl EngineBuilder {
             .visibility_store
             .ok_or(EngineError::MissingVisibilityStore)?;
 
-        let runtime = Arc::new(RuntimeHandle::new(
-            RuntimeConfig::new(self.scheduler_threads).with_signal_delivery(self.signal_delivery),
-        )?);
+        let runtime = Arc::new(RuntimeHandle::new(runtime_config)?);
 
         let mut nifs = NifRegistration::new();
         nifs.add_engine_nifs().add_host_nifs(self.host_nifs);

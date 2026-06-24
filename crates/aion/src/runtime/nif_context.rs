@@ -11,7 +11,8 @@ use tokio::sync::Mutex;
 
 use crate::EngineError;
 use crate::durability::{
-    Command, DurabilityError, HistoryCursor, Recorder, ResolveOutcome, Resolver,
+    Command, DurabilityError, FanOutCompletionResult, FanOutItem, FanOutOutcome, HistoryCursor,
+    Recorder, ResolveOutcome, Resolver,
 };
 use crate::registry::{Registry, WorkflowHandle};
 
@@ -339,6 +340,45 @@ impl NifContext {
                 let mut recorder = self.recorder.lock().await;
                 recorder
                     .record_activity_cancelled(recorded_at, activity_id)
+                    .await
+            })
+            .map_err(Into::into)
+    }
+
+    /// Records a durable fan-out dispatch batch through the workflow's single-writer recorder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_fan_out_dispatch(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        items: &[FanOutItem],
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder.record_fan_out_dispatch(recorded_at, items).await
+            })
+            .map_err(Into::into)
+    }
+
+    /// Records one fan-out completion through the workflow's single-writer recorder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_fan_out_completion(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        ordinal: u64,
+        outcome: FanOutOutcome,
+    ) -> Result<FanOutCompletionResult, NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder
+                    .record_fan_out_completion(recorded_at, ordinal, outcome)
                     .await
             })
             .map_err(Into::into)

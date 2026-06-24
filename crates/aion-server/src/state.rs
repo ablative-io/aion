@@ -145,6 +145,7 @@ impl ServerState {
             .in_memory_visibility()
             .search_attribute_schema(search_attribute_schema)
             .scheduler_threads(runtime.scheduler_threads)
+            .outbox_enabled(runtime.outbox.enabled)
             .activity_dispatcher(activity_dispatcher)
             .active_registry(active_registry)
             .production_recovery_seam()

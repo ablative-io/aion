@@ -13,6 +13,9 @@ pub struct RuntimeConfig {
 
     /// Bounded readiness and retry policy for live signal mailbox delivery.
     pub signal_delivery: SignalDeliveryConfig,
+
+    /// Whether the durable-outbox fan-out dispatch path is enabled.
+    pub outbox_enabled: bool,
 }
 
 /// Bounded signal delivery retry policy supplied by engine configuration.
@@ -67,6 +70,7 @@ impl RuntimeConfig {
         Self {
             thread_count,
             signal_delivery: SignalDeliveryConfig::default(),
+            outbox_enabled: false,
         }
     }
 
@@ -74,6 +78,13 @@ impl RuntimeConfig {
     #[must_use]
     pub const fn with_signal_delivery(mut self, signal_delivery: SignalDeliveryConfig) -> Self {
         self.signal_delivery = signal_delivery;
+        self
+    }
+
+    /// Override whether the durable-outbox fan-out dispatch path is enabled.
+    #[must_use]
+    pub const fn with_outbox_enabled(mut self, enabled: bool) -> Self {
+        self.outbox_enabled = enabled;
         self
     }
 }
