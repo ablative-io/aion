@@ -284,6 +284,125 @@ async fn claim_all_pending(
     Ok(store.claim_outbox_rows(64).await?)
 }
 
+/// Poll until every `ordinal` in `ordinals` has its outbox row back at
+/// `Pending` (the state the crash-recovery re-arm restores), or time out.
+async fn wait_for_rows_pending(
+    store: &Arc<LibSqlStore>,
+    workflow_id: &WorkflowId,
+    ordinals: &[u64],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    loop {
+        let mut all_pending = true;
+        for &ordinal in ordinals {
+            let key = OutboxRow::dispatch_key_for(workflow_id, ordinal);
+            let status = store
+                .outbox_row_state(&key)
+                .await?
+                .map(|state| state.status);
+            if status != Some(OutboxStatus::Pending) {
+                all_pending = false;
+                break;
+            }
+        }
+        if all_pending {
+            return Ok(());
+        }
+        if std::time::Instant::now() > deadline {
+            let mut states = Vec::new();
+            for &ordinal in ordinals {
+                let key = OutboxRow::dispatch_key_for(workflow_id, ordinal);
+                states.push((ordinal, store.outbox_row_state(&key).await?));
+            }
+            return Err(format!(
+                "timed out waiting for re-arm to flip rows back to Pending: {states:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Assert the pre-crash stranded state: ordinals 0,1 have exactly one terminal
+/// each, ordinals 2,3 have none, the 2,3 outbox rows are `Done`, and a fresh
+/// claim returns nothing (a `Done` row is not claimable — so without the
+/// recovery re-arm the LOST ordinals are stranded forever).
+async fn assert_lost_rows_stranded(
+    store: &Arc<LibSqlStore>,
+    workflow_id: &WorkflowId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pre_crash = store.read_history(workflow_id).await?;
+    assert_eq!(
+        count_completed(&pre_crash),
+        2,
+        "only the two RECORDED ordinals have terminals before the crash"
+    );
+    assert_eq!(count_completed_for(&pre_crash, 0), 1);
+    assert_eq!(count_completed_for(&pre_crash, 1), 1);
+    assert_eq!(
+        count_completed_for(&pre_crash, 2),
+        0,
+        "LOST ordinal 2 has NO terminal before the crash"
+    );
+    assert_eq!(
+        count_completed_for(&pre_crash, 3),
+        0,
+        "LOST ordinal 3 has NO terminal before the crash"
+    );
+    for ordinal in [2u64, 3u64] {
+        let key = OutboxRow::dispatch_key_for(workflow_id, ordinal);
+        let state = store
+            .outbox_row_state(&key)
+            .await?
+            .ok_or_else(|| format!("no outbox row for LOST ordinal {ordinal}"))?;
+        assert_eq!(
+            state.status,
+            OutboxStatus::Done,
+            "LOST ordinal {ordinal} row must be Done (worker accepted) before the crash"
+        );
+    }
+    let nothing = store.claim_outbox_rows(64).await?;
+    assert!(
+        nothing.is_empty(),
+        "Done rows are not claimable — the LOST ordinals are stranded without re-arm, \
+         got {nothing:?}"
+    );
+    Ok(())
+}
+
+/// Assert the post-recovery settled state: exactly `FAN_OUT` terminals, one per
+/// ordinal (no duplicate across the crash), and exactly one `WorkflowCompleted`.
+async fn assert_settled_no_duplicates(
+    store: &Arc<LibSqlStore>,
+    workflow_id: &WorkflowId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let settled = wait_for_history(store, workflow_id, "fan-out settled", |events| {
+        count_completed(events) == FAN_OUT
+    })
+    .await?;
+    assert_eq!(
+        count_completed(&settled),
+        FAN_OUT,
+        "exactly FAN_OUT terminals after recovery"
+    );
+    for ordinal in 0..FAN_OUT as u64 {
+        assert_eq!(
+            count_completed_for(&settled, ordinal),
+            1,
+            "ordinal {ordinal} has exactly one terminal — no duplicate across the crash"
+        );
+    }
+    let completed_terminals = settled
+        .iter()
+        .filter(|event| matches!(event, Event::WorkflowCompleted { .. }))
+        .count();
+    assert_eq!(
+        completed_terminals, 1,
+        "the workflow completes exactly once across the crash boundary"
+    );
+    Ok(())
+}
+
 /// Deliver one claimed row's completion through the faithful cutover path:
 /// `deliver_outbox_completion` (registry resolve → runtime map → wake) then
 /// mark the outbox row done. The woken workflow records the terminal via
@@ -536,5 +655,164 @@ async fn outbox_duplicate_completion_records_exactly_one_terminal() -> TestResul
     );
 
     engine.shutdown()?;
+    Ok(())
+}
+
+// --- case (d): crash mid-flight — recovery re-arms a stranded "done" row ------
+
+/// The crash-recovery re-arm (increment 3b-i) closes the lost-completion hole.
+///
+/// Scenario: a fan-out is dispatched and four outbox rows are staged. Two
+/// ordinals (RECORDED = {0,1}) complete normally — terminal recorded, row
+/// `Done`. The other two (LOST = {2,3}) are marked `Done` by the
+/// `OutboxDispatcher` the instant the worker *accepts* them, but the actual
+/// completion is lost in a crash before any terminal is recorded. A `Done`
+/// outbox row is NOT claimable, so without re-arm those two ordinals are
+/// stranded forever: the workflow has no terminal for them and the dispatcher
+/// will never re-deliver — the workflow can never finish.
+///
+/// On recovery a fresh engine over the SAME store replays the parked run. The
+/// first arrival into `collect_all` sees ordinals 2,3 are scheduled-but-have-no
+/// -terminal (stale) and re-arms their durable outbox rows back to claimable
+/// `Pending` via `rearm_outbox_pending` — it does NOT spawn the in-process
+/// completion dispatcher (the `fired2` flag proves this). The re-armed rows are
+/// then claimed + delivered like any other, and the fan-out settles with
+/// exactly one terminal per ordinal across the crash boundary.
+///
+/// Faithfulness anchors:
+/// - the LOST rows reach `Done`-without-terminal BEFORE the crash (step 5),
+///   so the test genuinely exercises re-arm rescuing a stranded row;
+/// - the restart is a real second engine over the same `Arc<LibSqlStore>` that
+///   recovers/replays the run (modeled on `concurrency_e2e.rs`
+///   `restart_replay_and_finish`), not a re-`start_workflow` or recorder poke;
+/// - recovery must re-arm via the outbox, NOT drive the in-process dispatcher
+///   (`fired2` stays false) — that is what makes the rescue durable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_crash_recovery_rearms_stranded_done_row_and_finishes() -> TestResult {
+    let (store, engine1, workflow_id, run_id, fired1) = started_and_suspended("restart").await?;
+
+    // Claim all four staged rows (Pending -> Claimed). Split into the two we
+    // will faithfully complete and the two whose completion we will "lose".
+    let mut rows = claim_all_pending(&store).await?;
+    assert_eq!(
+        rows.len(),
+        FAN_OUT,
+        "claim must return exactly the FAN_OUT pending rows the dispatch staged"
+    );
+    rows.sort_by_key(|row| row.ordinal);
+    let recorded: Vec<OutboxRow> = rows.iter().filter(|r| r.ordinal < 2).cloned().collect();
+    let lost: Vec<OutboxRow> = rows.iter().filter(|r| r.ordinal >= 2).cloned().collect();
+    assert_eq!(recorded.len(), 2, "RECORDED = ordinals {{0,1}}");
+    assert_eq!(lost.len(), 2, "LOST = ordinals {{2,3}}");
+
+    // RECORDED {0,1}: deliver the completion (terminal recorded) then mark the
+    // outbox row Done — the normal, fully-acknowledged path.
+    for row in &recorded {
+        assert!(
+            deliver(&engine1, row)?,
+            "delivery must resolve to a live workflow pid"
+        );
+        store.complete_outbox_row(&row.dispatch_key).await?;
+        wait_for_history(
+            &store,
+            &workflow_id,
+            &format!("ordinal {} terminal recorded", row.ordinal),
+            |events| count_completed_for(events, row.ordinal) == 1,
+        )
+        .await?;
+    }
+
+    // LOST {2,3}: mark the row Done WITHOUT delivering. This simulates the
+    // OutboxDispatcher flipping the row to `done` the moment the worker accepts
+    // the activity, then crashing before the completion reaches the workflow —
+    // the terminal is never recorded.
+    for row in &lost {
+        store.complete_outbox_row(&row.dispatch_key).await?;
+    }
+
+    // --- pre-crash state: the LOST rows are stranded ------------------------
+    assert_lost_rows_stranded(&store, &workflow_id).await?;
+    assert!(
+        !fired1.load(Ordering::SeqCst),
+        "in-process dispatcher must not have fired before the crash"
+    );
+
+    // --- CRASH: shut the engine down and drop it ---------------------------
+    engine1.shutdown()?;
+    drop(engine1);
+
+    // --- RECOVER: a fresh engine over the SAME store replays the run -------
+    let fired2 = Arc::new(AtomicBool::new(false));
+    let engine2 = engine_over(&store, "collect_four", &fired2).await?;
+
+    // Recovery replays the parked run: ordinals 0,1 resolve from history;
+    // ordinals 2,3 are scheduled-no-terminal => stale => re-armed to claimable
+    // `Pending` on the first arrival into collect_all. Poll until both LOST
+    // rows are Pending again.
+    wait_for_rows_pending(&store, &workflow_id, &[2, 3]).await?;
+
+    // KEY FAITHFULNESS ASSERTION: recovery re-armed via the outbox, it did NOT
+    // drive the in-process dispatcher. Without 3b-i these rows stay Done forever.
+    assert!(
+        !fired2.load(Ordering::SeqCst),
+        "recovery must re-arm the stranded rows via the outbox, NOT drive the \
+         in-process dispatcher"
+    );
+
+    // --- pump the re-armed rows like any other Pending dispatch ------------
+    let mut revived = claim_all_pending(&store).await?;
+    assert_eq!(
+        revived.len(),
+        2,
+        "the re-arm makes exactly the two LOST ordinals claimable again"
+    );
+    revived.sort_by_key(|row| row.ordinal);
+    assert_eq!(
+        revived.iter().map(|r| r.ordinal).collect::<Vec<_>>(),
+        vec![2, 3],
+        "the claimable rows are exactly the LOST ordinals"
+    );
+    for row in &revived {
+        assert!(
+            deliver(&engine2, row)?,
+            "re-delivery must resolve to the recovered workflow pid"
+        );
+        store.complete_outbox_row(&row.dispatch_key).await?;
+        wait_for_history(
+            &store,
+            &workflow_id,
+            &format!("re-armed ordinal {} terminal recorded", row.ordinal),
+            |events| count_completed_for(events, row.ordinal) == 1,
+        )
+        .await?;
+    }
+
+    // --- final state: settled across the crash, no duplicates -------------
+    assert_settled_no_duplicates(&store, &workflow_id).await?;
+
+    // The recovered workflow returns the full input-ordered result list.
+    let result = engine2
+        .result(&workflow_id, &run_id)
+        .await?
+        .map_err(|error| format!("collect_four failed after recovery: {error:?}"))?;
+    let value: serde_json::Value = serde_json::from_slice(result.bytes())?;
+    assert_eq!(
+        value,
+        json!([
+            worker_result(0),
+            worker_result(1),
+            worker_result(2),
+            worker_result(3),
+        ]),
+        "collect_all returns all {FAN_OUT} results in input order after recovery"
+    );
+
+    // Recovery never touched the in-process dispatcher.
+    assert!(
+        !fired2.load(Ordering::SeqCst),
+        "the recovered engine must never fire the in-process dispatcher"
+    );
+
+    engine2.shutdown()?;
     Ok(())
 }
